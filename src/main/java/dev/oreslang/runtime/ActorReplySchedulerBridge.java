@@ -74,6 +74,11 @@ public final class ActorReplySchedulerBridge {
         if (!runtime.currentActorId().orElseThrow().equals(owner.actorId())) {
             throw new SecurityException("caller actor execution identity changed");
         }
+        if (caller.actor() != runtime.currentReplyActorRef()
+                || callee.actor() != destination
+                || !destination.isAlive()) {
+            throw new SecurityException("request endpoints do not match caller/callee actor incarnations");
+        }
         GenerationalReplyRegistry.Ticket<R> ticket =
                 registry.reserve(caller, callee, responseType);
         OresFuture<R> future = bindCurrentActor(
@@ -120,6 +125,10 @@ public final class ActorReplySchedulerBridge {
         if (destination.id().equals(supervisorServiceActor.id())) {
             throw new IllegalArgumentException("supervisor application cannot call itself");
         }
+        if (supervisorApplication.actor() != supervisorServiceActor
+                || callee.actor() != destination || !destination.isAlive()) {
+            throw new SecurityException("supervisor application/callee incarnation mismatch");
+        }
         GenerationalReplyRegistry.Ticket<R> ticket =
                 registry.reserve(supervisorApplication, callee, responseType);
         OresFuture<R> future = bindCurrentActor(
@@ -149,6 +158,10 @@ public final class ActorReplySchedulerBridge {
         final boolean invalidTimeout = timeout.isZero() || timeout.isNegative();
 
         final ActorRuntime.ContinuationTarget owner = runtime.captureCurrentContinuationTarget();
+        if (!ticket.issuedForCaller(runtime.currentReplyActorRef())
+                || caller.actor() != runtime.currentReplyActorRef()) {
+            throw new SecurityException("reply Future belongs to a foreign caller incarnation");
+        }
         // Atomically claim the *producer* ticket before reporting cancellation
         // on the language Future. publishCancellation() runs after Future CAS.
         OresFuture<R> future = new OresFuture<>(
