@@ -60,6 +60,20 @@ final class HatKernelCompilerTest {
     }
 
     @Test
+    void rejectsFloatLiteralsEvenWhenMathematicallyIntegral() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.compileHatKernels("""
+                        define kernel BadFloat as
+                          fnc main(): int {
+                            return 1.0;
+                          }
+                        end
+                        """));
+        assertTrue(failure.getMessage().contains("only source int literals"));
+    }
+
+    @Test
     void rejectsCallsStateAndUnsupportedKernelEffects() {
         IllegalArgumentException call = assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.compileHatKernels("""
