@@ -10,6 +10,41 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class ScopedTaskReadAuthorityV2Test {
     @Test
+    void frozenProofIsInertBeforeWholeProgramTaskPublication() {
+        Ast.Program program = dev.oreslang.parser.Parser.parse("""
+                pub async fnc main(): void {
+                  let Future<int> child = task { return 1; };
+                  return;
+                }
+                """);
+        Ast.TaskExpr task = firstTask(program);
+        long stagedEpoch = 991;
+        var allocation = new ScopedTaskReadAuthority.AllocationIdentity(
+                "PROCESS", "root", 91, 2, true);
+
+        ScopedTaskReadAuthority frozen =
+                ScopedTaskReadAuthority.freezeForOwnershipCheck(
+                        program,
+                        task,
+                        stagedEpoch,
+                        allocation,
+                        List.of(),
+                        Types.Primitive.INT);
+
+        assertNotNull(frozen,
+                "ownership analysis must be able to freeze proof before Task publication");
+        assertThrows(
+                IllegalStateException.class,
+                () -> frozen.require(
+                        program,
+                        task,
+                        stagedEpoch,
+                        allocation.allocationId(),
+                        allocation.generation()),
+                "a frozen proof alone must never grant Task execution authority");
+    }
+
+    @Test
     void exactCheckedCpuTaskCanCarryCompilerOnlyReadProof() {
         Ast.Program program = OresCompiler.parseAndTypeCheck("""
                 pub async fnc main(): void {
