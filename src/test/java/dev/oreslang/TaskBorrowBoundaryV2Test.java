@@ -205,6 +205,24 @@ final class TaskBorrowBoundaryV2Test {
     }
 
     @Test
+    void valueMatchArmCaptureMovesOuterOwnerAtSubmission() {
+        rejectsWith("""
+                pub async fnc main(): void {
+                  let Box owner = new Box();
+                  let Future<int> child = task {
+                    return match 1 over {
+                      on 1 { return owner.value; }
+                      on _ { return 0; }
+                    };
+                  };
+                  stdio.stdout.write(owner.value);
+                  stdio.stdout.write(await child);
+                  return;
+                }
+                """, "moved", "capture");
+    }
+
+    @Test
     void nonSendCapabilityCannotBeLaunderedThroughOwnedClass() {
         rejectsWith("""
                 define class UnsafeWrapper as
