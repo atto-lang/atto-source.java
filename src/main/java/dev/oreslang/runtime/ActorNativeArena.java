@@ -800,6 +800,84 @@ public final class ActorNativeArena implements AutoCloseable {
             synchronized (ActorNativeArena.this) { requireWritable().putDouble(offset, value); }
         }
 
+        /**
+         * Owner-checked dense numeric kernel. Bounds, writability and finite
+         * scalar parameters are validated before the first mutation. One arena
+         * critical section covers the full traversal, avoiding per-element
+         * ownership/monitor traffic while never exposing the native buffer.
+         *
+         * <p>Rows are grouped into blocks. Within a block, successive logical
+         * rows advance by rowStrideElements; successive blocks advance by
+         * blockStrideElements. A single block represents ordinary AoS/SoA/
+         * SoAoS traversal; multiple blocks represent AoSoA tiles.</p>
+         */
+        void integrateDoubleStridedBlocks(
+                int positionBaseElement,
+                int velocityBaseElement,
+                int rows,
+                int rowStrideElements,
+                int blockRows,
+                int blockStrideElements,
+                double dt) {
+            synchronized (ActorNativeArena.this) {
+                ByteBuffer bytes = requireWritable();
+                if (!Double.isFinite(dt) || rows <= 0 || rowStrideElements <= 0
+                        || blockRows <= 0 || blockStrideElements < 0
+                        || positionBaseElement < 0 || velocityBaseElement < 0) {
+                    throw new IllegalArgumentException("invalid dense double kernel geometry");
+                }
+                int elements = capacity / Double.BYTES;
+                if (capacity % Double.BYTES != 0) {
+                    throw new IllegalStateException("double kernel requires aligned region capacity");
+                }
+
+                // Preflight the highest position/velocity element touched by
+                // every block. No partial update is possible on bad geometry.
+                int remaining = rows;
+                int blockBase = 0;
+                while (remaining > 0) {
+                    int active = Math.min(blockRows, remaining);
+                    long laneOffset = Math.multiplyExact(
+                            (long) (active - 1), rowStrideElements);
+                    long pLast = Math.addExact(
+                            Math.addExact((long) positionBaseElement, blockBase),
+                            laneOffset);
+                    long vLast = Math.addExact(
+                            Math.addExact((long) velocityBaseElement, blockBase),
+                            laneOffset);
+                    if (pLast < 0 || vLast < 0
+                            || pLast >= elements || vLast >= elements) {
+                        throw new IndexOutOfBoundsException(
+                                "dense double kernel outside native region");
+                    }
+                    remaining -= active;
+                    if (remaining != 0) {
+                        blockBase = Math.addExact(blockBase, blockStrideElements);
+                    }
+                }
+
+                remaining = rows;
+                blockBase = 0;
+                while (remaining > 0) {
+                    int active = Math.min(blockRows, remaining);
+                    int p = Math.addExact(positionBaseElement, blockBase);
+                    int v = Math.addExact(velocityBaseElement, blockBase);
+                    for (int lane = 0; lane < active; lane++) {
+                        int pByte = Math.multiplyExact(p, Double.BYTES);
+                        int vByte = Math.multiplyExact(v, Double.BYTES);
+                        bytes.putDouble(pByte,
+                                bytes.getDouble(pByte) + bytes.getDouble(vByte) * dt);
+                        p = Math.addExact(p, rowStrideElements);
+                        v = Math.addExact(v, rowStrideElements);
+                    }
+                    remaining -= active;
+                    if (remaining != 0) {
+                        blockBase = Math.addExact(blockBase, blockStrideElements);
+                    }
+                }
+            }
+        }
+
         private ByteBuffer requireWritable() {
             ByteBuffer bytes = checked();
             if (readLeases != 0) throw new IllegalStateException("native region has active read-only leases");
