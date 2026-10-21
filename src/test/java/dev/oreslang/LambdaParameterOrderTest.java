@@ -130,6 +130,31 @@ final class LambdaParameterOrderTest {
     }
 
     @Test
+    void nameFirstNonLexicalLambdaCannotCaptureAnOuterLocal() {
+        Ast.Program ast = Parser.parse("""
+                pub routine main(): void {
+                  const string secret = "hidden";
+                  const fnc bad = nlex |value: string| -> {
+                    return value + secret;
+                  };
+                  return;
+                }
+                """);
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(ast));
+    }
+
+    @Test
+    void nameFirstDuplicateLambdaParametersAreRejectedByTypeChecker() {
+        Ast.Program ast = Parser.parse("""
+                pub routine main(): void {
+                  const fnc bad = |value: string, value: string| -> value;
+                  return;
+                }
+                """);
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(ast));
+    }
+
+    @Test
     void shorthandRequiresLambdaAndImmutableBinding() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 pub routine main(): void { const fnc bad = 42; return; }
