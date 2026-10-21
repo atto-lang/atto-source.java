@@ -6,7 +6,7 @@ import hashlib
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 MODULE = Path(__file__).with_name("publish-private-ci-source.py")
 spec = importlib.util.spec_from_file_location("private_publisher", MODULE)
@@ -159,6 +159,148 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         destination.assert_called_once_with("trusted/ci", 246810)
         shell.assert_not_called()
         source.assert_not_called()
+
+    def test_github_api_classifies_ref_create_422_as_definite_rejection(self):
+        response = Mock(
+            returncode=1,
+            stdout="",
+            stderr="gh: Reference already exists (HTTP 422)\n",
+        )
+        with (
+            patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh"),
+            patch.dict(pub.os.environ, {"GH_TOKEN": "fixture"}, clear=True),
+            patch.object(pub, "run_bounded_gh", return_value=response),
+        ):
+            with self.assertRaises(pub.GitHubWriteRejected):
+                pub.gh_api(
+                    "repos/trusted/ci/git/refs",
+                    method="POST",
+                    payload={
+                        "ref": "refs/heads/ci/oreslang-test",
+                        "sha": "a" * 40,
+                    },
+                )
+            with self.assertRaisesRegex(pub.Denied, "request failed"):
+                pub.gh_api("repos/trusted/ci", method="GET")
+
+    def test_github_api_ref_create_does_not_mistake_error_text_for_http_422(self):
+        ambiguous = (
+            "HTTP 422 appeared in an unrelated response body",
+            "gh: Remote error contains HTTP 422 (HTTP 500)\n",
+            "gh: Validation Failed (HTTP 500)\nDetails: HTTP 422\n",
+            "gh: Validation Failed (HTTP 422) unexpected suffix\n",
+        )
+        with (
+            patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh"),
+            patch.dict(pub.os.environ, {"GH_TOKEN": "fixture"}, clear=True),
+        ):
+            for message in ambiguous:
+                with self.subTest(message=message):
+                    response = Mock(returncode=1, stdout="", stderr=message)
+                    with patch.object(pub, "run_bounded_gh", return_value=response):
+                        with self.assertRaisesRegex(
+                            pub.Denied, "request failed"
+                        ) as raised:
+                            pub.gh_api(
+                                "repos/trusted/ci/git/refs", method="POST",
+                                payload={
+                                    "ref": "refs/heads/ci/oreslang-test",
+                                    "sha": "a" * 40,
+                                },
+                            )
+                        self.assertNotIsInstance(
+                            raised.exception, pub.GitHubWriteRejected
+                        )
+
+    def test_github_api_bounds_both_error_streams_before_classification(self):
+        responses = (
+            Mock(
+                returncode=1,
+                stdout="x" * 129,
+                stderr="gh: Ref exists (HTTP 422)\n",
+            ),
+            Mock(returncode=1, stdout="", stderr="x" * 129),
+            Mock(
+                returncode=1,
+                stdout=None,
+                stderr="gh: Ref exists (HTTP 422)\n",
+            ),
+            Mock(returncode=1, stdout="", stderr=None),
+        )
+        with (
+            patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh"),
+            patch.object(pub, "MAX_GH_API_RESPONSE_CHARS", 128),
+            patch.dict(pub.os.environ, {"GH_TOKEN": "fixture"}, clear=True),
+        ):
+            for response in responses:
+                with self.subTest(
+                    stdout=response.stdout, stderr=response.stderr
+                ):
+                    with patch.object(
+                        pub, "run_bounded_gh", return_value=response
+                    ):
+                        with self.assertRaisesRegex(
+                            pub.Denied, "exceeds size limit"
+                        ) as raised:
+                            pub.gh_api(
+                                "repos/trusted/ci/git/refs", method="POST",
+                                payload={
+                                    "ref": "refs/heads/ci/oreslang-test",
+                                    "sha": "a" * 40,
+                                },
+                            )
+                        self.assertNotIsInstance(
+                            raised.exception, pub.GitHubWriteRejected
+                        )
+
+    def test_bounded_gh_real_os_output_limit_for_both_streams(self):
+        for fd in (1, 2):
+            with self.subTest(fd=fd), patch.object(
+                pub, "MAX_GH_API_RESPONSE_CHARS", 4096
+            ):
+                command = [
+                    sys.executable, "-I", "-B", "-c",
+                    f"import os; os.write({fd}, b'x'*16384)",
+                ]
+                with self.assertRaisesRegex(pub.Denied, "exceeds size limit"):
+                    pub.run_bounded_gh(
+                        command, env={"PATH": "/usr/bin:/bin"}, timeout=5
+                    )
+
+    def test_bounded_gh_real_process_reads_both_streams(self):
+        with patch.object(pub, "MAX_GH_API_RESPONSE_CHARS", 4096):
+            result = pub.run_bounded_gh(
+                [
+                    sys.executable, "-I", "-B", "-c",
+                    "import os; os.write(1,b'out'); os.write(2,b'err')",
+                ],
+                env={"PATH": "/usr/bin:/bin"}, timeout=5,
+            )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "out")
+        self.assertEqual(result.stderr, "err")
+
+    def test_bounded_gh_rejects_non_utf8_from_real_process(self):
+        with patch.object(pub, "MAX_GH_API_RESPONSE_CHARS", 4096):
+            with self.assertRaisesRegex(pub.Denied, "not UTF-8"):
+                pub.run_bounded_gh(
+                    [
+                        sys.executable, "-I", "-B", "-c",
+                        "import os; os.write(1, bytes([255]))",
+                    ],
+                    env={"PATH": "/usr/bin:/bin"}, timeout=5,
+                )
+
+    def test_bounded_gh_timeout_fails_closed(self):
+        with patch.object(pub, "MAX_GH_API_RESPONSE_CHARS", 4096):
+            with self.assertRaisesRegex(pub.Denied, "execution unavailable"):
+                pub.run_bounded_gh(
+                    [
+                        sys.executable, "-I", "-B", "-c",
+                        "import time; time.sleep(3)",
+                    ],
+                    env={"PATH": "/usr/bin:/bin"}, timeout=0.2,
+                )
 
     def test_gh_api_uses_root_owned_binary_and_isolated_token_environment(self):
         process = type("Result", (), {
