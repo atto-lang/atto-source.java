@@ -161,17 +161,21 @@ public final class OresEvalRootNode extends RootNode {
         return true;
     }
 
-    static void requireTrustedAsyncCollectionCarrier(Object value) {
+    static void requireTrustedTraversalCollectionCarrier(Object value, String operation) {
         if (!isTrustedTraversalCollectionCarrier(value)) {
             String kind = value instanceof List<?> ? "List"
                     : value instanceof Set<?> ? "Set"
                     : value instanceof Map<?, ?> ? "Map"
                     : "collection";
             throw new IllegalArgumentException(
-                    "value of type " + value.getClass().getName()
-                            + " cannot cross an async task boundary; untrusted host "
-                            + kind + " implementations are opaque");
+                    operation + " rejects untrusted host " + kind
+                            + " implementation " + value.getClass().getName()
+                            + " as opaque");
         }
+    }
+
+    static void requireTrustedAsyncCollectionCarrier(Object value) {
+        requireTrustedTraversalCollectionCarrier(value, "async task boundary");
     }
 
     private final Ast.Program program;
@@ -8821,7 +8825,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Iterable<?> iterableValues(Object value, Env env) {
-            if (value instanceof List<?> list) return list;
+            if (value instanceof List<?> list) {
+                requireTrustedTraversalCollectionCarrier(value, "synchronous iteration");
+                return list;
+            }
             if (value instanceof Object[] array) return List.of(array);
             if (value instanceof GeneratorRuntime.Generator<?> generator) return generator;
             if (value instanceof GeneratorRuntime.AsyncGenerator<?>) {
@@ -10117,6 +10124,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object destructureRestObject(Object value, Set<String> selectedMembers) {
             if (value instanceof Map<?, ?> map) {
+                requireTrustedTraversalCollectionCarrier(value, "object rest destructuring");
                 LinkedHashMap<String, Object> remainder = new LinkedHashMap<>();
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
                     if (!(entry.getKey() instanceof String key)) {
@@ -10149,6 +10157,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object destructureMember(Object value, String name) {
             if (value instanceof Map<?, ?> map) {
+                requireTrustedTraversalCollectionCarrier(value, "object destructuring");
                 if (!map.containsKey(name)) throw new IllegalArgumentException("object destructure missing member " + name);
                 Object member = map.get(name);
                 if (member == UNINITIALIZED_FIELD) {
@@ -10843,10 +10852,12 @@ public final class OresEvalRootNode extends RootNode {
                 return true;
             }
             if (value instanceof List<?> list) {
+                if (!isTrustedTraversalCollectionCarrier(value)) return false;
                 for (Object item : list) if (!runtimeSharedSafe(item, seen)) return false;
                 return true;
             }
             if (value instanceof Map<?, ?> map) {
+                if (!isTrustedTraversalCollectionCarrier(value)) return false;
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
                     if (!runtimeSharedSafe(entry.getKey(), seen) || !runtimeSharedSafe(entry.getValue(), seen)) return false;
                 }
@@ -11058,7 +11069,10 @@ public final class OresEvalRootNode extends RootNode {
         private Map<String,Object> gc(List<Object> args){requireZero(args,"actor.gc");return context.garbageCollector().collectCurrentActor().asMap();}
     }
     private static List<Object> expandArgumentSequence(Object value,String name){
-        if(value instanceof List<?> list)return new ArrayList<>(list);
+        if(value instanceof List<?> list){
+            requireTrustedTraversalCollectionCarrier(value,name);
+            return new ArrayList<>(list);
+        }
         if(value instanceof Object[] array)return new ArrayList<>(java.util.Arrays.asList(array));
         throw new IllegalArgumentException(name+" requires an array/list/tuple value");
     }
