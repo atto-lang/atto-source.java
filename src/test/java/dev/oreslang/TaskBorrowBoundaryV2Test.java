@@ -278,9 +278,10 @@ final class TaskBorrowBoundaryV2Test {
         // elaborate a borrowed value inside Option/Future/Channel/Result.
         var program = Parser.parse("pub fnc main(): void { return; }");
         var constructor = OwnershipChecker.class.getDeclaredConstructor(
-                dev.oreslang.ast.Ast.Program.class);
+                dev.oreslang.ast.Ast.Program.class,
+                java.util.Map.class);
         constructor.setAccessible(true);
-        var checker = constructor.newInstance(program);
+        var checker = constructor.newInstance(program, java.util.Map.of());
         var gate = OwnershipChecker.class.getDeclaredMethod(
                 "forbiddenTaskCapability", dev.oreslang.ast.Ast.TypeRef.class);
         gate.setAccessible(true);
@@ -307,9 +308,10 @@ final class TaskBorrowBoundaryV2Test {
         // independently scheduled Tasks.
         var program = Parser.parse("pub fnc main(): void { return; }");
         var constructor = OwnershipChecker.class.getDeclaredConstructor(
-                dev.oreslang.ast.Ast.Program.class);
+                dev.oreslang.ast.Ast.Program.class,
+                java.util.Map.class);
         constructor.setAccessible(true);
-        var checker = constructor.newInstance(program);
+        var checker = constructor.newInstance(program, java.util.Map.of());
         var gate = OwnershipChecker.class.getDeclaredMethod(
                 "forbiddenTaskCapability", dev.oreslang.ast.Ast.TypeRef.class);
         gate.setAccessible(true);
