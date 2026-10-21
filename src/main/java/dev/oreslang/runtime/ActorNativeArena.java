@@ -65,6 +65,7 @@ public final class ActorNativeArena implements AutoCloseable {
     private final IdentityHashMap<NativeValue, Long> issuedNativeOffsets = new IdentityHashMap<>();
     private final IdentityHashMap<NativeValue, Long> referenceOffsets = new IdentityHashMap<>();
     private final Map<Long, NativeValue> referencesByOffset = new HashMap<>();
+    private final Map<Long, Integer> referenceRefCounts = new HashMap<>();
     private final IdentityHashMap<NativeCapability, Long> capabilityIds = new IdentityHashMap<>();
     private final Map<Long, NativeCapability> capabilitiesById = new HashMap<>();
     private final Map<Long, Integer> capabilityRefCounts = new HashMap<>();
@@ -204,6 +205,7 @@ public final class ActorNativeArena implements AutoCloseable {
         return false;
     }
 
+    synchronized int nativeReferenceCount() { return referencesByOffset.size(); }
     synchronized int capabilityCount() { return capabilitiesById.size(); }
 
     public synchronized long committedBytes() { return committed; }
@@ -836,14 +838,34 @@ public final class ActorNativeArena implements AutoCloseable {
         // Publish only after validation/allocation succeeds; failed assignment
         // leaves the old slot intact. Capability registry references follow
         // slot publication and are dropped when the old handle is overwritten.
+        boolean newNativeReference =
+                tag == REFERENCE && (oldTag != REFERENCE || oldBits != bits);
         boolean newCapabilityReference =
                 tag == CAPABILITY && (oldTag != CAPABILITY || oldBits != bits);
+        if (newNativeReference) referenceRefCounts.merge(bits, 1, Math::addExact);
         if (newCapabilityReference) capabilityRefCounts.merge(bits, 1, Math::addExact);
         write(slot, 8, bits);
         write(slot, 16, length);
         write(slot, 0, tag);
+        if (oldTag == REFERENCE && (tag != REFERENCE || oldBits != bits)) {
+            releaseNativeReference(oldBits);
+        }
         if (oldTag == CAPABILITY && (tag != CAPABILITY || oldBits != bits)) {
             releaseCapabilityReference(oldBits);
+        }
+    }
+
+    private void releaseNativeReference(long address) {
+        Integer refs = referenceRefCounts.get(address);
+        if (refs == null || refs <= 0) {
+            throw new IllegalStateException("actor native reference accounting underflow");
+        }
+        if (refs == 1) {
+            referenceRefCounts.remove(address);
+            NativeValue value = referencesByOffset.remove(address);
+            if (value != null) referenceOffsets.remove(value);
+        } else {
+            referenceRefCounts.put(address, refs - 1);
         }
     }
 
@@ -936,6 +958,7 @@ public final class ActorNativeArena implements AutoCloseable {
         slabBases.clear();
         releases.clear();
         referencesByOffset.clear();
+        referenceRefCounts.clear();
         referenceOffsets.clear();
         capabilityRefCounts.clear();
         capabilitiesById.clear();
