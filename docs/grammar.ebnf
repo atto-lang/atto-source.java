@@ -131,10 +131,13 @@ type_return_spec= [ "=>" type_ref ] ;
 generic_params  = "<" IDENT { "," IDENT } ">" ;
 param_list      = param { "," param } ;
 param           = type_ref [ "mut" ] IDENT
-                | IDENT ":" type_ref [ "mut" ]  (* compatibility; formatter emits type-first *)
+                | IDENT ":" [ "structural" ] type_ref [ "mut" ]
                 | "structural" type_ref IDENT
                 | "@Structural" type_ref IDENT
                 | IDENT "structural" type_ref ;
+(* Anonymous inline struct{...}, record{...}, {...} parameter shapes
+   are readonly structural contracts even without "structural".
+   The modifier is accepted but redundant for those shapes. *)
 
 binding_decl    = named_inferred_binding
                 | { annotation } binding_kind
@@ -667,11 +670,15 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      case. Only an immediate '{' after '->' starts a lambda block, so prefixed
      expressions such as future struct{...}{...} literals remain unambiguous.
    - named class/interface types are nominal by default.
-   - structural Type name is the canonical opt-in for structural parameter
-     typing. @Structural, name structural Type, and @AllowStructural(name) remain
-     accepted compatibility spellings. Compatibility is directional: the
-     argument may have extra public members but must provide every required
-     public field and method with a compatible signature.
+   - structural Type name is the canonical opt-in for named structural
+     parameter typing. name: structural Type, @Structural Type name,
+     name structural Type, and @AllowStructural(name) remain accepted.
+     Anonymous inline struct{...}, record{...}, and {...} parameter shapes
+     automatically take readonly structural loan semantics; the structural
+     keyword is optional and redundant for those shapes. Generic wrappers
+     such as Option<struct{...}> are not implicitly structural parameters.
+     Compatibility is directional: a value may have extra public members but
+     must supply every required member with compatible field/method types.
    - structural is also callable declaration metadata on fnc, routine, class/actor
      methods, static fnc, and interface callable signatures. @structural is the
      equivalent annotation spelling. Both forms normalize to one AST boolean;
