@@ -18,6 +18,8 @@ public final class GenerationalReplyRegistryCheck {
         }
     }
     public static void main(String[] args) throws Exception {
+        deny(() -> new GenerationalReplyRegistry(65_537));
+        deny(() -> new GenerationalReplyRegistry(0));
         var registry = new GenerationalReplyRegistry(2048);
         var actor = registry.newActorEndpoint();
         var child = registry.newActorEndpoint();
