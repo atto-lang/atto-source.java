@@ -86,6 +86,8 @@ public final class TypeChecker {
     private final Set<String> importedValues = new HashSet<>();
     /** Both type-only and value imports occupy names short inference may not redefine. */
     private final Set<String> importedNames = new HashSet<>();
+    /** Exact compiler-owned alloc/json JsonValue type import for this unit. */
+    private boolean compilerJsonValueImported;
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
@@ -249,6 +251,9 @@ public final class TypeChecker {
 
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
+            if (ImportRules.isAllocJsonValueImport(imported)) {
+                compilerJsonValueImported = true;
+            }
             for (String name : ImportRules.exposedBindings(imported)) {
                 if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
                 importedNames.add(name);
@@ -4002,6 +4007,11 @@ public final class TypeChecker {
                     "indexing requires a Map, array/list, tuple, record/struct, or class instance field");
         }
         if (expr instanceof Ast.NewExpr created) {
+            if (created.type().name().equals("JsonValue")
+                    && compilerJsonValueImported) {
+                throw new IllegalArgumentException(
+                        "JsonValue is an opaque alloc/json value; construct it through Json.* APIs");
+            }
             if (created.type().name().equals("Map") && findClass("Map") == null) {
                 if (!created.arguments().isEmpty()) {
                     throw new IllegalArgumentException(
@@ -8773,7 +8783,7 @@ public final class TypeChecker {
                 Ast.TypeRef rawValue = ref.arguments().get(1);
                 if (!isDirectTypedMapKeyRef(rawKey) || !isDirectTypedMapValueRef(rawValue)) {
                     throw new IllegalArgumentException(
-                            "closed Map<K,V> v1 requires directly spelled reifiable key/value types; "
+                            "closed Map<K,V> requires directly spelled reifiable key/value types; "
                                     + "type aliases and generic wrappers are not accepted yet");
                 }
                 Type key = resolve(rawKey, generics, self);
@@ -8782,9 +8792,15 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "Map<K,V> key type must be String, Symbol, or String | Symbol");
                 }
+                boolean jsonValue = isCompilerJsonValueType(value);
+                if (jsonValue && key != Primitive.STRING) {
+                    throw new IllegalArgumentException(
+                            "Map<String, JsonValue> requires a String-only key domain");
+                }
                 if (!isSupportedTypedMapValue(value)) {
                     throw new IllegalArgumentException(
-                            "closed Map<K,V> v1 values must be int, string, bool, or Symbol");
+                            "closed Map<K,V> values must be int, string, bool, Symbol, "
+                                    + "or compiler-owned alloc/json JsonValue");
                 }
                 yield new Named("Map", List.of(key, value));
             }
@@ -9039,8 +9055,11 @@ public final class TypeChecker {
                 || isDirectTypedMapSymbolRef(a) && isDirectTypedMapStringRef(b);
     }
 
-    private static boolean isDirectTypedMapValueRef(Ast.TypeRef ref) {
+    private boolean isDirectTypedMapValueRef(Ast.TypeRef ref) {
         if (ref.inferArguments() || !ref.arguments().isEmpty()) return false;
+        if (compilerJsonValueImported && ref.name().equals("JsonValue")) {
+            return true;
+        }
         return Set.of(
                 "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
                 "int", "uint", "bigint", "string", "String", "bool", "Bool",
@@ -9071,8 +9090,17 @@ public final class TypeChecker {
         if (concrete == Primitive.INT
                 || concrete == Primitive.STRING
                 || concrete == Primitive.BOOL) return true;
+        if (isCompilerJsonValueType(concrete)) return true;
         return concrete instanceof Named named
                 && named.name().equals("$builtin$Symbol")
+                && named.arguments().isEmpty();
+    }
+
+    private boolean isCompilerJsonValueType(Type value) {
+        Type concrete = deref(value);
+        return compilerJsonValueImported
+                && concrete instanceof Named named
+                && named.name().equals("JsonValue")
                 && named.arguments().isEmpty();
     }
 
