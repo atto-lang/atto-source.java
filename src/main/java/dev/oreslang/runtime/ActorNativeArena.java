@@ -124,7 +124,8 @@ public final class ActorNativeArena implements AutoCloseable {
         }
         long slot = allocate(SLOT_BYTES);
         ValueCell cell = new ValueCell(slot, uninitialized);
-        issuedNativeOffsets.put(cell, slot);
+        // ValueCell is evaluator-private storage metadata, not a guest-storable
+        // NativeValue capability. Do not publish it into issuedNativeOffsets.
         storeValue(slot, initial, uninitialized);
         return cell;
     }
