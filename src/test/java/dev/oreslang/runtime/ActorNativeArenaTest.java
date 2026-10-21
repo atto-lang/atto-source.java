@@ -16,6 +16,23 @@ import static org.junit.jupiter.api.Assertions.*;
 @Timeout(30)
 final class ActorNativeArenaTest {
     @Test
+    void freshNativeFieldsPreserveUninitializedDistinctFromNull() {
+        AtomicLong charged = new AtomicLong();
+        Object marker = new Object();
+        try (ActorNativeArena arena = arena(16 * 1024, charged)) {
+            Map<String, Object> fields = arena.fields(List.of("left", "right"), marker);
+            assertSame(marker, fields.get("left"));
+            assertSame(marker, fields.get("right"));
+
+            fields.put("left", null);
+            assertNull(fields.get("left"));
+            assertSame(marker, fields.get("right"),
+                    "writing null to one field must not initialize a sibling slot");
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
     void nativeSlotsPreserveScalarTypesAndRejectManagedPayloadFallback() {
         AtomicLong charged = new AtomicLong();
         Object marker = new Object();
