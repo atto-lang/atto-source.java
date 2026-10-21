@@ -179,7 +179,9 @@ public final class BehaviorLayoutModel {
         int[][] aos, soa;
         int[][][] aosoa;
         Markings(int[][] rows, Layout destination, int tile) {
-            require(rows.length > 0 && rows.length <= 4096 && tile > 0 && tile <= 64, "invalid marking geometry");
+            require(rows != null && rows.length > 0 && rows.length <= 4096
+                    && tile > 0 && tile <= 64, "invalid marking geometry");
+            require(rows[0] != null, "null initial marking row");
             this.instances = rows.length; this.places = rows[0].length; this.tile = tile;
             require(places > 0 && places <= 256, "invalid place count");
             install(rows, destination);
@@ -189,7 +191,7 @@ public final class BehaviorLayoutModel {
             int[][] naos = null, nsoa = null;
             int[][][] ntiled = null;
             for (int[] row : rows) {
-                require(row.length == places, "place dimension mismatch");
+                require(row != null && row.length == places, "place dimension mismatch");
                 for (int value : row) require(value >= 0, "negative tokens");
             }
             switch (destination) {
@@ -254,11 +256,12 @@ public final class BehaviorLayoutModel {
             this.placeIds = Map.copyOf(ids);
             this.places = namedPlaces.size(); this.rules = List.copyOf(rules);
             require(invariants != null && invariants.length <= 256, "invalid invariant count");
-            this.invariants = Arrays.stream(invariants).map(int[]::clone).toArray(int[][]::new);
-            // Invariants must be validated even when the net has no transitions.
-            for (int[] invariant : this.invariants)
+            // Validate before cloning, otherwise a null row escapes as an
+            // unchecked NPE instead of the documented admission refusal.
+            for (int[] invariant : invariants)
                 require(invariant != null && invariant.length == places,
                         "bad invariant dimension");
+            this.invariants = Arrays.stream(invariants).map(int[]::clone).toArray(int[][]::new);
             Set<OresSymbol> names = new HashSet<>();
             for (Rule rule : rules) {
                 require(rule.name() != null && names.add(rule.name()), "duplicate/invalid net transition Symbol");
@@ -275,7 +278,13 @@ public final class BehaviorLayoutModel {
                 for (int[] invariant : this.invariants) {
                     require(invariant.length == places, "bad invariant dimension");
                     long sum = 0;
-                    for (int i = 0; i < places; i++) sum = Math.addExact(sum, Math.multiplyExact((long) invariant[i], delta[i]));
+                    for (int i = 0; i < places; i++) {
+                        try {
+                            sum = Math.addExact(sum, Math.multiplyExact((long) invariant[i], delta[i]));
+                        } catch (ArithmeticException overflow) {
+                            throw new IllegalArgumentException("P-invariant arithmetic overflow", overflow);
+                        }
+                    }
                     require(sum == 0, "P-invariant violated by transition");
                 }
             }
@@ -287,7 +296,8 @@ public final class BehaviorLayoutModel {
         }
         /** Returns null if disabled; computes a complete next marking before committing. */
         int[] fire(int[] current, Rule rule) {
-            require(current.length == places && rules.contains(rule), "bad transition request");
+            require(current != null && rule != null && current.length == places
+                    && rules.contains(rule), "bad transition request");
             for (int count : current) require(count >= 0, "invalid marking");
             for (Arc arc : rule.pre()) if (current[arc.place()] < arc.weight()) return null;
             long[] next = new long[places];
@@ -412,6 +422,18 @@ public final class BehaviorLayoutModel {
                 new int[][]{{1}}), "empty-rule net admitted wrong invariant dimension");
         rejects(() -> new Net(List.of(s("free"), s("held")), List.of(),
                 new int[][]{null}), "empty-rule net admitted null invariant row");
+        rejects(() -> new Markings(new int[][]{null}, Layout.AOS, 4),
+                "null first marking row should fail admission");
+        rejects(() -> new Markings(new int[][]{{1, 0}, null}, Layout.SOA, 4),
+                "null subsequent marking row should fail admission");
+        rejects(() -> net.fire(null, acquireA),
+                "null marking should fail admission");
+        rejects(() -> new Net(List.of(s("free"), s("held"), s("extra")),
+                List.of(new Rule(s("huge"), List.of(new Arc(0, Integer.MAX_VALUE),
+                        new Arc(1, Integer.MAX_VALUE), new Arc(2, Integer.MAX_VALUE)),
+                        List.of())),
+                new int[][]{{Integer.MAX_VALUE, Integer.MAX_VALUE, Integer.MAX_VALUE}}),
+                "overflowed P-invariant arithmetic should fail admission");
         Net overflow = new Net(List.of(s("free")), List.of(new Rule(s("over"), List.of(), List.of(new Arc(0, 1)))), new int[0][]);
         rejects(() -> overflow.fire(new int[]{Integer.MAX_VALUE}, overflow.rules.getFirst()), "token overflow accepted");
         ok(net.fire(new int[]{0, 1, 1, 0}, acquireA) == null, "disabled transition fired");
