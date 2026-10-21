@@ -121,3 +121,29 @@ New `TaskStreamReturnTest` exercises awaited `cpu task` stream return,
 retained buffered values, a `Future<Stream<int>>` handle, bounded producer
 capture, malformed payload denial, explicit Channel/Stream distinction,
 bare/borrowed stream denial, and runtime capacity refusal.
+
+### Stream Task completion runtime hardening (October 20)
+
+The scheduler-owned source Task retains the compiler-bound `checkedResultType()`
+for the exact `TaskExpr`. For `Stream<T>` results it verifies the actual
+runtime result is an `OresStream<?>` before completing the Task's Future,
+including normal/fallthrough completion. A `Channel<T>`, Java host object,
+non-stream value, or missing return cannot impersonate a promised Stream.
+Ordinary function return shaping independently validates `Stream<T>`.
+This runtime check supplements rather than replaces the compiler's payload
+Send/ownership proof.
+
+`Stream.new<T>(capacity)` delegates to the single tested
+`OresStream.fromGuestCapacity` runtime authority: valid signed integral
+guest representations are accepted only when exactly convertible into the
+bounded range `1..65536`; floating-point, fractional, truncated,
+oversized and nonnumeric host/forged-AST inputs are rejected.
+
+**Test boundary:** The production source repo has no approved private CI mirror
+destination and its official `main` is not protected. The draft mirror policy
+is not approved. Do not use the cross-organization tree-copy shortcut to
+bypass that policy. A local JDK 21 isolated compile of the exact current
+`OresStream.java` against a deliberately minimal `ChannelRuntime` stub
+passed 18 capacity/close assertions; this **does not validate production
+ChannelRuntime, Graal interpreter, Maven or source Task integration**.
+The checked-in JUnit tests still require real exact-head CI execution.
