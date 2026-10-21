@@ -60,19 +60,25 @@ final class ActorNativeArenaTest {
 
             Map<String, Object> object = arena.fields(List.of("value"), marker);
             object.put("value", 7L);
-            assertFalse(cell.trySet(object),
-                    "actor-object payload is already native; its lexical facade stays managed until scope-drop lowering");
-            assertEquals("native-local", cell.get(),
-                    "unsupported facade lowering must not corrupt the previous native local");
+            assertTrue(cell.trySet(object),
+                    "actor-native lexical references must persist as arena-issued offsets");
+            assertSame(object, cell.get());
+            assertEquals(1, arena.nativeReferenceCount());
 
             assertFalse(cell.trySet(List.of(1, 2, 3)),
-                    "managed-only collection fallback must be explicit");
-            assertEquals("native-local", cell.get());
+                    "managed-only collection fallback must remain explicit");
+            assertSame(object, cell.get(),
+                    "unsupported managed fallback must not corrupt the native lexical reference");
 
             Map<String, Object> foreign = foreignArena.fields(List.of("value"), marker);
             assertThrows(SecurityException.class, () -> cell.trySet(foreign),
-                    "a lexical slot must never downgrade a foreign arena reference to managed storage");
-            assertEquals("native-local", cell.get());
+                    "a lexical slot must never admit a foreign arena reference");
+            assertSame(object, cell.get());
+
+            assertTrue(cell.trySet("native-local-again"));
+            assertEquals("native-local-again", cell.get());
+            assertEquals(0, arena.nativeReferenceCount(),
+                    "overwriting the lexical native reference must release registry retention");
         }
         assertEquals(0, charged.get());
     }
