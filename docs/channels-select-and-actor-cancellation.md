@@ -19,9 +19,11 @@ guest-language API release or a native LLVM implementation.
   `SelectSet`. A rejected addition leaves the version and cached snapshot
   unchanged; an existing key may be replaced at capacity. At most one default
   arm may exist.
-- `SelectPlan` and `DynamicSelectPlan` are **not yet wired through all current
-  source type-checker, ownership and guest factory paths**. Their Java runtime
-  surface does not imply the source-language constructors work on mainline.
+- `SelectPlan.new` and `DynamicSelectPlan.new` guest constructor and
+  method paths, typed case-source validation, and affine ownership checks are
+  staged on the integration branch. They have **not passed a real source
+  compiler/GraalVM execution yet**. Stable keyed results are currently a Java
+  runtime API, not a fully specified guest-language result type.
 - Every `select` execution allocates new winner/cancellation and channel or
   Future subscriptions; plans share immutable *descriptors*, never live waiters.
   Future listener detach is performed outside the global channel coordinator.
@@ -51,7 +53,9 @@ guest-language API release or a native LLVM implementation.
 ### Verification and private-source CI gate
 
 Regression sources include `DynamicSelectPlanTest`,
-`DynamicSelectMainlineInteropTest` and `SelectLoopMainlineRegressionTest`.
+`DynamicSelectMainlineInteropTest`, `SelectLoopMainlineRegressionTest`,
+`SelectPlanMainlineLanguageTest`, `SelectPlanMainlineBorrowSafetyTest` and
+`SelectPlanMainlineActorBoundaryTest`.
 Added cases exercise versioned generations, mixed Future/channel fairness,
 duplicate Future alias priority, terminal failure, repeated cancellation,
 quota rejection, nested lexical binding, and RANDOM permutations.
