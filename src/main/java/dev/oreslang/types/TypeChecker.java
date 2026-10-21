@@ -2531,10 +2531,11 @@ public final class TypeChecker {
                             "record 'with' requires an owned readonly record value; borrowed records cannot be consumed");
                 }
                 if (!(left instanceof Record base)
-                        || !base.readOnly()
-                        || base.kind() != AggregateKind.RECORD) {
+                        || (base.kind() != AggregateKind.RECORD
+                            && base.kind() != AggregateKind.STRUCT)
+                        || (base.kind() == AggregateKind.RECORD && !base.readOnly())) {
                     throw new IllegalArgumentException(
-                            "record 'with' requires an actual readonly structural record, not a struct, class, Map, or structural contract view");
+                            "'with' requires an actual owned record or plain struct, not a class, Map, or structural contract view");
                 }
                 if (!(binary.right() instanceof Ast.ObjectExpr updates)
                         || !updates.plainRecord()) {
@@ -2555,8 +2556,8 @@ public final class TypeChecker {
                 }
                 return new Record(
                         members,
-                        true,
-                        AggregateKind.RECORD);
+                        base.kind() == AggregateKind.RECORD,
+                        base.kind());
             }
             if (binary.operator().equals("&&") || binary.operator().equals("||")) {
                 requireAssignable(left, Primitive.BOOL, "logical operand");
