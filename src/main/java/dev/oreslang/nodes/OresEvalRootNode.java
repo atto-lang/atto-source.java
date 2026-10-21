@@ -846,6 +846,37 @@ public final class OresEvalRootNode extends RootNode {
             return new TailCallable(this, callable);
         }
 
+        private Invocation actorHandleStateInvocation(
+                OresObject actorObject,
+                List<Object> args) {
+            if (args.size() != 1 || !(args.getFirst() instanceof Invokable callback)) {
+                throw new IllegalArgumentException(
+                        "self.handle_state expects exactly one inline state callback");
+            }
+            ActorStateLoanView view = ActorStateLoanView.open(actorObject);
+            return invokableInvocation(
+                    ignored -> {
+                        try {
+                            Object result = invoke(
+                                    invokableInvocation(
+                                            callback,
+                                            java.util.Collections.singletonList(view)));
+                            if (result instanceof OresFuture<?>) {
+                                throw new IllegalStateException(
+                                        "self.handle_state callback cannot suspend until suspension-safe state loans are implemented");
+                            }
+                            if (result != null) {
+                                throw new IllegalArgumentException(
+                                        "self.handle_state callback must return void");
+                            }
+                            return null;
+                        } finally {
+                            view.revoke();
+                        }
+                    },
+                    List.of());
+        }
+
         private Runnable actorEndCleanup(List<Object> args) {
             if (args.size() != 1) {
                 throw new IllegalArgumentException(
@@ -4677,6 +4708,11 @@ public final class OresEvalRootNode extends RootNode {
                             List.of());
                 }
 
+                if (object.klass.actorKind() != Ast.ActorKind.NONE
+                        && member.member().equals("handle_state")) {
+                    return object.owner.actorHandleStateInvocation(object, args);
+                }
+
                 Ast.MethodDecl method =
                         object.owner.findMethod(
                                 object.klass,
@@ -6370,6 +6406,11 @@ public final class OresEvalRootNode extends RootNode {
                                 List.of());
                     }
 
+                    if (object.klass.actorKind() != Ast.ActorKind.NONE
+                            && methodCall.member().equals("handle_state")) {
+                        return object.owner.actorHandleStateInvocation(object, args);
+                    }
+
                     Ast.MethodDecl method = object.owner.findMethod(
                             object.klass, CallableSelector.instance(methodCall.member(), args.size()));
                     if (method != null) {
@@ -6728,6 +6769,10 @@ public final class OresEvalRootNode extends RootNode {
                 if (assignment.target() instanceof Ast.MemberExpr target) {
                     Object receiver = eval(target.receiver(), env);
                     if (receiver instanceof OresMutex.Guard<?> guard) receiver = guard.value();
+                    if (receiver instanceof ActorStateLoanView loan) {
+                        loan.set(target.member(), value);
+                        return value;
+                    }
                     if (receiver instanceof OresObject object) {
                         if (!object.fields.containsKey(target.member())) {
                             throw new IllegalArgumentException("unknown field " + target.member());
@@ -7066,6 +7111,9 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name, Env env) {
+            if (receiver instanceof ActorStateLoanView loan) {
+                return loan.get(name);
+            }
             if (receiver instanceof String text) {
                 if (name.equals("split_literal")) {
                     return (Invokable) args -> {
@@ -9857,6 +9905,85 @@ public final class OresEvalRootNode extends RootNode {
                         "source actor type name cannot be blank");
             }
             Objects.requireNonNull(object, "object");
+        }
+    }
+
+    private static boolean isActorStateSchemaField(Ast.FieldDecl field) {
+        return field.annotations().stream()
+                .anyMatch(annotation -> annotation.name().equals("__actor_state_schema"));
+    }
+
+    private static final class ActorStateLoanView {
+        private final OresObject object;
+        private final Set<String> fields;
+        private boolean active = true;
+
+        private ActorStateLoanView(OresObject object, Set<String> fields) {
+            this.object = Objects.requireNonNull(object, "actor state object");
+            this.fields = Set.copyOf(fields);
+            if (this.fields.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "self.handle_state requires an actor with a state { ... } schema");
+            }
+        }
+
+        private static ActorStateLoanView open(OresObject object) {
+            LinkedHashSet<String> fields = new LinkedHashSet<>();
+            for (Ast.FieldDecl field : object.klass.fields()) {
+                if (isActorStateSchemaField(field)) fields.add(field.name());
+            }
+            return new ActorStateLoanView(object, fields);
+        }
+
+        private void requireActive() {
+            if (!active) {
+                throw new IllegalStateException(
+                        "actor state loan escaped its self.handle_state callback");
+            }
+        }
+
+        private Ast.FieldDecl requireField(String name) {
+            requireActive();
+            if (!fields.contains(name)) {
+                throw new IllegalArgumentException(
+                        "state loan exposes only declared state fields; unknown member " + name);
+            }
+            for (Ast.FieldDecl field : object.klass.fields()) {
+                if (field.name().equals(name) && isActorStateSchemaField(field)) {
+                    return field;
+                }
+            }
+            throw new IllegalStateException(
+                    "checked actor state field disappeared at runtime: " + name);
+        }
+
+        private Object get(String name) {
+            requireField(name);
+            Object value = object.fields.get(name);
+            if (value == Evaluator.UNINITIALIZED_FIELD) {
+                throw new IllegalArgumentException(
+                        "actor state field '" + object.klass.name() + "." + name
+                                + "' is read before initialization");
+            }
+            return value;
+        }
+
+        private void set(String name, Object value) {
+            Ast.FieldDecl field = requireField(name);
+            if (field.bindingKind() != Ast.BindingKind.LET) {
+                throw new IllegalArgumentException(
+                        "actor state field '" + object.klass.name() + "." + name
+                                + "' is immutable");
+            }
+            object.fields.put(name, value);
+        }
+
+        private void revoke() {
+            active = false;
+        }
+
+        @Override public String toString() {
+            return active ? "<actor-state-loan>" : "<revoked-actor-state-loan>";
         }
     }
 
