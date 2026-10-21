@@ -1,369 +1,218 @@
 package dev.oreslang.runtime;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
-import java.time.Duration;
-import java.util.List;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Executor;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
-
-import static org.junit.jupiter.api.Assertions.*;
-
 final class OresVMTest {
-
     @Test
-    void processVmDeclaresExactlyFourSchedulerDomainsWithoutExposingExecutors() {
-        OresVM vm = OresVM.process();
-        OresVM.SchedulerTopology topology = vm.schedulerTopology();
-
-        assertEquals(
-                List.of(
-                        OresVM.SchedulerDomain.CONTROL,
-                        OresVM.SchedulerDomain.SHARED_ACTOR,
-                        OresVM.SchedulerDomain.ISOACTOR,
-                        OresVM.SchedulerDomain.UNTRUSTED_ACTOR),
-                topology.domains());
-
-        assertTrue(topology.controlMinThreads() > 0);
-        assertTrue(topology.sharedActorMinThreads() > 0);
-        assertTrue(topology.isoactorMinThreads() > 0);
-        assertTrue(topology.untrustedActorMinThreads() > 0);
-        assertTrue(topology.controlMaxThreads() >= topology.controlMinThreads());
-
-        for (Method method : OresVM.class.getDeclaredMethods()) {
-            if (!Modifier.isPublic(method.getModifiers())) continue;
-            assertFalse(
-                    Executor.class.isAssignableFrom(method.getReturnType()),
-                    "public OresVM API must not expose raw executor authority: " + method);
-        }
-    }
-
-    @Test
-    void vmKernelTypeIsNotPublicAndContextDoesNotExposeIt() {
-        assertFalse(Modifier.isPublic(OresVM.class.getModifiers()),
-                "OresVM is a runtime kernel type, not a user/interop API");
-
-        for (Class<?> apiType : List.of(OresContext.class, ActorRuntime.class)) {
-            for (Method method : apiType.getMethods()) {
-                assertNotEquals(
-                        OresVM.class,
-                        method.getReturnType(),
-                        apiType.getSimpleName()
-                                + " must never hand guest/interop code the VM object: "
-                                + method);
-            }
-        }
-    }
-
-    @Test
-    void generationPublicApiDoesNotExposeRawGraalHandles() {
-        for (Method method : HotReloadManager.Generation.class.getMethods()) {
-            Class<?> returned = method.getReturnType();
-            assertNotEquals(org.graalvm.polyglot.Context.class, returned, method.toString());
-            assertNotEquals(org.graalvm.polyglot.Source.class, returned, method.toString());
-            assertNotEquals(org.graalvm.polyglot.Engine.class, returned, method.toString());
-            assertNotEquals(OresVM.class, returned, method.toString());
-            assertNotEquals(ActorRuntime.class, returned, method.toString());
-        }
-    }
-
-    @Test
-    void vmOwnsHotReloadManagersAndDedicatedShutdownClosesGenerations() {
-        ActorRuntime.DispatcherConfig config = ActorRuntime.DispatcherConfig.defaults();
-        OresVM vm = OresVM.dedicated(config);
-
-        HotReloadManager hot = vm.newHotReloadManager(
-                IsolatePolicy.developer(),
-                IsolatePolicy.developer(),
-                ExecutionProfile.serverJit(),
-                HotReloadManager.ExecutionDomain.TRUSTED_JIT);
-
-        assertEquals(1, vm.hotReloadManagerCount());
-
-        HotReloadManager.Generation generation = hot.loadAndStart(
-                "vm-owned.ores",
-                """
-                pub routine main() => void {
-                  return;
-                }
-                """);
-        assertEquals(HotReloadManager.GenerationState.ACTIVE, generation.state());
-        assertEquals(1, vm.generationBindingCount());
-
-        vm.shutdownNow();
-
-        assertTrue(vm.shutdown());
-        assertEquals(0, vm.hotReloadManagerCount());
-        assertEquals(0, vm.generationBindingCount(),
-                "VM shutdown must revoke every opaque generation binding");
-        assertTrue(generation.closed(),
-                "dedicated VM shutdown must retire contexts/generations it owns");
-        assertThrows(
-                IllegalStateException.class,
-                () -> hot.load("after-shutdown.ores", "pub routine main() => void { return; }"));
-    }
-
-    @Test
-    void replacingUnpinnedGenerationRevokesItsOpaqueBinding() {
-        OresVM vm = OresVM.dedicated(ActorRuntime.DispatcherConfig.defaults());
-        try (HotReloadManager hot = vm.newHotReloadManager(
-                IsolatePolicy.developer(),
-                IsolatePolicy.developer(),
-                ExecutionProfile.serverJit(),
-                HotReloadManager.ExecutionDomain.TRUSTED_JIT)) {
-
-            HotReloadManager.Generation first = hot.loadAndStart(
-                    "service.ores",
-                    "pub routine main() => void { return; }");
-            assertEquals(1, vm.generationBindingCount());
-
-            HotReloadManager.Generation second = hot.loadAndStart(
-                    "service.ores",
-                    """
-                    pub routine main() => void {
-                      val version = 2;
-                      return;
-                    }
-                    """);
-
-            assertTrue(first.closed());
-            assertTrue(second.active());
-            assertEquals(1, vm.generationBindingCount(),
-                    "only the active generation binding should remain");
-        } finally {
-            assertEquals(0, vm.generationBindingCount());
-            vm.shutdownNow();
-        }
-    }
-
-    @Test
-    void onlyUntrustedHotLoadDomainUsesSpawnedGraalIsolate() {
-        assertFalse(HotReloadManager.ExecutionDomain.TRUSTED_JIT.spawnedIsolate());
-        assertFalse(HotReloadManager.ExecutionDomain.TRUSTED_ISOACTOR_JIT.spawnedIsolate());
-        assertFalse(HotReloadManager.ExecutionDomain.AOT_INTERPRETED.spawnedIsolate());
-        assertTrue(HotReloadManager.ExecutionDomain.UNTRUSTED_JIT.spawnedIsolate());
-        assertTrue(HotReloadManager.ExecutionDomain.UNTRUSTED_JIT.untrusted());
-    }
-
-    @Test
-    void untrustedHotLoadDomainIsFailClosedAndMarkedForSpawnedIsolate() {
-        OresVM vm = OresVM.dedicated(ActorRuntime.DispatcherConfig.defaults());
-        try {
-            HotReloadManager hot = vm.newHotReloadManager(
-                    IsolatePolicy.developer(),
-                    IsolatePolicy.developer().withCapabilities(
-                            IsolatePolicy.Capability.FFI,
-                            IsolatePolicy.Capability.NATIVE,
-                            IsolatePolicy.Capability.REFLECTION,
-                            IsolatePolicy.Capability.THREAD_CREATE,
-                            IsolatePolicy.Capability.POLYGLOT),
-                    ExecutionProfile.serverJit(),
-                    HotReloadManager.ExecutionDomain.UNTRUSTED_JIT);
-            try {
-                assertTrue(hot.executionDomain().spawnedIsolate());
-                assertTrue(hot.executionDomain().untrusted());
-                assertTrue(hot.guestPolicy().adversarial());
-                assertTrue(hot.guestPolicy().capabilities().isEmpty(),
-                        "untrusted generations receive no ambient host authority");
-            } finally {
-                hot.close();
-            }
-            assertEquals(0, vm.hotReloadManagerCount());
-        } finally {
-            vm.shutdownNow();
-        }
-    }
-
-    @Test
-    void actorGenerationLeaseIsAcquiredAtBirthAndReleasedExactlyOnce() {
-        OresVM vm = OresVM.dedicated(ActorRuntime.DispatcherConfig.defaults());
-        AtomicInteger activeLeases = new AtomicInteger();
-        AtomicInteger releasedLeases = new AtomicInteger();
-
-        ActorRuntime runtime = ActorRuntime.attachToVm(
-                vm,
-                IsolatePolicy.developer(),
-                ActorRuntime.TurnExecutor.direct(),
-                () -> {
-                    activeLeases.incrementAndGet();
-                    AtomicBoolean released = new AtomicBoolean();
-                    return () -> {
-                        if (released.compareAndSet(false, true)) {
-                            activeLeases.decrementAndGet();
-                            releasedLeases.incrementAndGet();
-                        }
-                    };
-                },
-                ActorRuntime.RuntimePlacement.MAIN_GRAAL_ISOLATE);
-        try {
-            ActorRuntime.ActorRef<String> actor = runtime.spawnPrivate(
-                    IsolatePolicy.developer(),
-                    ignored -> (message, turn) -> { });
-
-            assertEquals(1, activeLeases.get());
-            actor.stop();
-            assertEquals(0, activeLeases.get());
-            assertEquals(1, releasedLeases.get());
-
-            runtime.close();
-            assertEquals(1, releasedLeases.get(),
-                    "runtime teardown must never release a finalized actor generation twice");
-        } finally {
-            runtime.close();
-            vm.shutdownNow();
-        }
-    }
-
-    @Test
-    void mainGraalIsolateRefusesDirectUntrustedActorExecution() {
-        OresVM vm = OresVM.dedicated(ActorRuntime.DispatcherConfig.defaults());
-        ActorRuntime runtime = ActorRuntime.attachToVm(
-                vm,
-                IsolatePolicy.developer(),
-                ActorRuntime.TurnExecutor.direct(),
-                () -> () -> { },
-                ActorRuntime.RuntimePlacement.MAIN_GRAAL_ISOLATE);
-        try {
-            SecurityException denied = assertThrows(
-                    SecurityException.class,
-                    () -> runtime.<String>spawnUntrusted(
-                            ignored -> (message, turn) -> { }));
-            assertTrue(denied.getMessage().contains("main Graal isolate"));
-        } finally {
-            runtime.close();
-            vm.shutdownNow();
-        }
-    }
-
-    @Test
-    void mailmanControlCarrierDoesNotConferSupervisorAuthority() throws Exception {
-        ActorRuntime.DispatcherConfig config = new ActorRuntime.DispatcherConfig(
-                1, 1, 1, 8,
-                TimeUnit.MILLISECONDS.toNanos(2),
-                TimeUnit.SECONDS.toNanos(1),
-                1,
-                64);
-
-        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
-            CountDownLatch attempted = new CountDownLatch(1);
-            AtomicReference<Throwable> denied = new AtomicReference<>();
-
-            ActorGroupConfig.GroupPolicy policy = new ActorGroupConfig.GroupPolicy(
-                    ActorRuntime.ActorKind.SHARED,
-                    0,
-                    4,
-                    32,
-                    32,
-                    ActorGroupConfig.RestartStrategy.ONE_FOR_ONE,
-                    3,
-                    Duration.ofSeconds(5),
-                    ActorGroupConfig.RestartPolicy.PERMANENT,
-                    null);
-
-            ActorGroupRef<String> group = runtime.defineActorGroup(
-                    ActorRuntime.ActorKind.SHARED,
-                    policy,
-                    new ActorMailman<>() {
-                        @Override
-                        public void receiveMail(
-                                ActorMail<String> mail,
-                                ActorGroupContext<String> ignored) {
-                            try {
-                                runtime.executeRootTask(() -> null);
-                            } catch (Throwable failure) {
-                                denied.set(failure);
-                            } finally {
-                                attempted.countDown();
-                            }
-                        }
-                    });
-
-            ActorRuntime.ActorRef<String> actor = runtime.spawnInGroup(
-                    group,
-                    ActorRuntime.ActorKind.SHARED,
-                    IsolatePolicy.developer(),
-                    ignored -> (message, turn) -> turn.emit(message));
-
-            actor.send("mail");
-
-            assertTrue(attempted.await(5, TimeUnit.SECONDS));
-            SecurityException failure = assertInstanceOf(
-                    SecurityException.class,
-                    denied.get());
-            assertTrue(failure.getMessage().contains("host/supervisor"));
-        }
-    }
-
-    @Test
-    void controlPlaneRunsRootAndMailmanOffSharedActorCarriers() throws Exception {
-        ActorRuntime.DispatcherConfig config = new ActorRuntime.DispatcherConfig(
-                1,
-                1,
-                1,
-                8,
-                TimeUnit.MILLISECONDS.toNanos(2),
-                TimeUnit.SECONDS.toNanos(1),
-                1,
-                64);
-
-        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
-            AtomicReference<String> rootThread = new AtomicReference<>();
-            runtime.executeRootTask(() -> {
-                rootThread.set(Thread.currentThread().getName());
-                return null;
+    void rootGuestAdmissionCanStayOnCallerAcrossPendingAwait() throws Exception {
+        var turns = new java.util.concurrent.LinkedBlockingQueue<Runnable>();
+        try (OresVM vm = OresVM.create(Runnable::run, turns::add)) {
+            Thread caller = Thread.currentThread();
+            OresFuture<Integer> source = new OresFuture<>();
+            var pc = new java.util.concurrent.atomic.AtomicInteger();
+            OresFuture<Integer> task = vm.rootScheduler().start(resume -> {
+                assertEquals(caller, Thread.currentThread());
+                assertEquals(vm.rootScheduler(), OresScheduler.current());
+                if (pc.getAndIncrement() == 0) return OresScheduler.await(source);
+                return OresScheduler.done((Integer) resume.value() + 1);
             });
-            assertNotNull(rootThread.get());
-            assertTrue(rootThread.get().contains("control-plane-dispatcher-"));
+            assertTrue(vm.controlCarrierCount() > 0);
+            assertEquals(1, vm.rootScheduler().parallelism());
+            turns.poll(5, TimeUnit.SECONDS).run();
+            assertTrue(!task.isDone());
+            Thread producer = Thread.ofPlatform().start(() -> source.completeFromRuntime(41));
+            producer.join();
+            turns.poll(5, TimeUnit.SECONDS).run();
+            assertEquals(42, task.get(5, TimeUnit.SECONDS));
+            assertEquals(2, pc.get());
+        }
+    }
 
-            CountDownLatch mailDelivered = new CountDownLatch(1);
-            AtomicReference<String> actorThread = new AtomicReference<>();
-            AtomicReference<String> mailmanThread = new AtomicReference<>();
+    @Test
+    void controlCarriersAreLiveBeforeFirstRootTaskTurn() throws Exception {
+        OresVM vm = OresVM.create(Runnable::run);
+        try {
+            assertTrue(vm.started());
+            assertEquals(
+                    vm.rootScheduler().parallelism(),
+                    vm.controlCarrierCount(),
+                    "all CONTROL carriers must be resident before root execution");
 
-            ActorGroupConfig.GroupPolicy policy = new ActorGroupConfig.GroupPolicy(
-                    ActorRuntime.ActorKind.SHARED,
-                    0,
-                    4,
-                    32,
-                    32,
-                    ActorGroupConfig.RestartStrategy.ONE_FOR_ONE,
-                    3,
-                    Duration.ofSeconds(5),
-                    ActorGroupConfig.RestartPolicy.PERMANENT,
-                    null);
-
-            ActorGroupRef<String> group = runtime.defineActorGroup(
-                    ActorRuntime.ActorKind.SHARED,
-                    policy,
-                    new ActorMailman<>() {
-                        @Override
-                        public void receiveMail(
-                                ActorMail<String> mail,
-                                ActorGroupContext<String> ignored) {
-                            actorThread.set(mail.message());
-                            mailmanThread.set(Thread.currentThread().getName());
-                            mailDelivered.countDown();
-                        }
+            OresFuture<String> first =
+                    vm.rootScheduler().start(resume -> {
+                        assertTrue(resume.initial());
+                        assertTrue(OresScheduler.isSchedulerCarrierThread());
+                        assertEquals(
+                                vm.rootScheduler(),
+                                OresScheduler.current());
+                        return OresScheduler.done(Thread.currentThread().getName());
                     });
 
-            ActorRuntime.ActorRef<String> actor = runtime.spawnInGroup(
-                    group,
-                    ActorRuntime.ActorKind.SHARED,
-                    IsolatePolicy.developer(),
-                    ignored -> (message, turn) ->
-                            turn.emit(Thread.currentThread().getName()));
+            String threadName = first.get(5, TimeUnit.SECONDS);
+            assertTrue(threadName.startsWith("ores-control-plane-"));
+        } finally {
+            vm.close();
+        }
+    }
 
-            actor.send("hello");
+    @Test
+    void closeFromRootCarrierFailsBeforeRevokingVmAndHostCanStillClose() throws Exception {
+        OresVM vm = OresVM.create(Runnable::run);
+        try {
+            OresFuture<Integer> first = vm.rootScheduler().start(resume -> {
+                IllegalStateException denied = org.junit.jupiter.api.Assertions.assertThrows(
+                        IllegalStateException.class, vm::close);
+                assertTrue(denied.getMessage().contains("outside actor, Mailman and scheduler"));
+                assertTrue(vm.started(),
+                        "failed self-close must never poison the live VM's STARTED state");
+                return OresScheduler.done(41);
+            });
+            assertEquals(41, first.get(5, TimeUnit.SECONDS));
+            assertTrue(vm.started());
 
-            assertTrue(mailDelivered.await(5, TimeUnit.SECONDS));
-            assertTrue(actorThread.get().contains("shared-actor-dispatcher-"));
-            assertTrue(mailmanThread.get().contains("control-plane-dispatcher-"));
-            assertNotEquals(actorThread.get(), mailmanThread.get());
+            OresFuture<Integer> next =
+                    vm.rootScheduler().start(resume -> OresScheduler.done(42));
+            assertEquals(42, next.get(5, TimeUnit.SECONDS),
+                    "a denied self-close must not revoke subsequent CONTROL turns");
+        } finally {
+            vm.close();
+        }
+        assertTrue(!vm.started(), "external teardown must complete normally");
+        vm.close(); // idempotent
+    }
+
+    @Test
+    void rootClosePreflightDoesNotWaitForVmMonitorHeldByAnotherThread() throws Exception {
+        OresVM vm = OresVM.create(Runnable::run);
+        var acquired = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        Thread holdingMonitor = Thread.ofPlatform().start(() -> {
+            synchronized (vm) {
+                acquired.countDown();
+                try {
+                    if (!release.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("test monitor-release timed out");
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(e);
+                }
+            }
+        });
+        try {
+            assertTrue(acquired.await(5, TimeUnit.SECONDS));
+            var task = vm.rootScheduler().start(resume -> {
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        IllegalStateException.class, vm::close);
+                return OresScheduler.done(9);
+            });
+            assertEquals(9, task.get(2, TimeUnit.SECONDS),
+                    "self-close rejection must run BEFORE waiting on VM monitor");
+        } finally {
+            release.countDown();
+            holdingMonitor.join(5000);
+            assertTrue(!holdingMonitor.isAlive());
+            vm.close();
+        }
+    }
+
+    @Test
+    void independentUserSchedulerCannotCloseVmWhileItsOwnTaskIsExecuting() throws Exception {
+        try (OresVM vm = OresVM.create(Runnable::run);
+             OresScheduler user = new OresScheduler(1)) {
+            OresFuture<Integer> attempted = user.startSync(() -> {
+                assertEquals(user, OresScheduler.current());
+                IllegalStateException denied = org.junit.jupiter.api.Assertions.assertThrows(
+                        IllegalStateException.class, vm::close);
+                assertTrue(denied.getMessage().contains("outside actor, Mailman and scheduler"));
+                return 87;
+            });
+            assertEquals(87, attempted.get(5, TimeUnit.SECONDS));
+            assertTrue(vm.started(), "foreign scheduler cannot poison VM lifecycle state");
+            assertEquals(88, vm.rootScheduler()
+                    .startSync(() -> 88).get(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void actorAndMailmanCallbacksCannotCloseTheOwningVm() throws Exception {
+        try (OresVM vm = OresVM.create(Runnable::run);
+             ActorRuntime runtime = new ActorRuntime(
+                     IsolatePolicy.developer(),
+                     new ActorRuntime.DispatcherConfig(1, 1, 8, 64),
+                     ActorRuntime.TurnExecutor.direct(),
+                     vm::executeControl)) {
+            var actorDenied = new java.util.concurrent.CountDownLatch(1);
+            var mailmanDenied = new java.util.concurrent.CountDownLatch(1);
+            var callbackFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability join = group.joinCapability();
+            group.<Integer>installMailman(8, (mail, context) -> {
+                try {
+                    org.junit.jupiter.api.Assertions.assertThrows(
+                            IllegalStateException.class, vm::close);
+                    assertTrue(vm.started());
+                    assertEquals(group.id(), context.groupId());
+                } catch (Throwable failure) {
+                    callbackFailure.compareAndSet(null, failure);
+                } finally {
+                    mailmanDenied.countDown();
+                }
+            });
+            ActorRuntime.ActorRef<Integer> actor = runtime.spawnShared(() -> (message, context) -> {
+                try {
+                    group.joinCurrent(join);
+                    org.junit.jupiter.api.Assertions.assertThrows(
+                            IllegalStateException.class, vm::close);
+                    assertTrue(vm.started());
+                    group.emit(message);
+                } catch (Throwable failure) {
+                    callbackFailure.compareAndSet(null, failure);
+                } finally {
+                    actorDenied.countDown();
+                }
+            });
+            actor.send(17);
+            assertTrue(actorDenied.await(5, TimeUnit.SECONDS));
+            assertTrue(mailmanDenied.await(5, TimeUnit.SECONDS));
+            org.junit.jupiter.api.Assertions.assertNull(callbackFailure.get(),
+                    "the actor and CONTROL Mailman must both reject VM close");
+            assertEquals(23, vm.rootScheduler().startSync(() -> 23)
+                    .get(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void startupIsIdempotentAndSchedulerDispatchIdsRemainFresh() throws Exception {
+        OresVM vm = OresVM.create(Runnable::run);
+        try {
+            OresFuture<Long> task = vm.rootScheduler().start(new OresScheduler.Task<>() {
+                private int pc;
+                @Override
+                public OresScheduler.Step<Long> resume(OresScheduler.Resume resume) {
+                    if (pc++ == 0) {
+                        long first = OresScheduler.currentDispatchId();
+                        return OresScheduler.await(OresFuture.completed(first));
+                    }
+                    long resumed = OresScheduler.currentDispatchId();
+                    assertNotEquals(0L, resumed);
+                    assertEquals(OresScheduler.currentTaskDomain(), OresScheduler.currentTaskDomain());
+                    return OresScheduler.done(resumed);
+                }
+            });
+
+            long dispatch = task.get(5, TimeUnit.SECONDS);
+            assertTrue(dispatch > 0L);
+            vm.startup();
+            vm.startup();
+            assertEquals(vm.rootScheduler().parallelism(), vm.controlCarrierCount());
+        } finally {
+            vm.close();
         }
     }
 }

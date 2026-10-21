@@ -22,25 +22,25 @@ final class CircularImportInitializationTest {
     Path tempDir;
 
     @Test
-    void twoFilesMayImportEachOtherAndLinkingDoesNotRunMagicInit() throws Exception {
+    void twoFilesMayImportEachOtherAndInitRunsOnlyAfterBothAreLinked() throws Exception {
         Path a = tempDir.resolve("a.ores");
         Path b = tempDir.resolve("b.ores");
 
         Files.writeString(a, """
                 import fnc {b_value} from "./b.ores";
 
-                pub fnc a_value() => String {
+                pub fnc a_value(): String {
                   return "A";
                 }
 
-                fnc init() => void {
+                fnc init(): void {
                   stdio.stdout.write("init-a:");
                   stdio.stdout.write(b_value());
                   stdio.stdout.write("|");
                   return;
                 }
 
-                pub routine main() => void {
+                pub routine main(): void {
                   stdio.stdout.write("main:");
                   stdio.stdout.write(a_value());
                   stdio.stdout.write(b_value());
@@ -51,11 +51,11 @@ final class CircularImportInitializationTest {
         Files.writeString(b, """
                 import fnc {a_value} from "./a.ores";
 
-                pub fnc b_value() => String {
+                pub fnc b_value(): String {
                   return "B";
                 }
 
-                fnc init() => void {
+                fnc init(): void {
                   stdio.stdout.write("init-b:");
                   stdio.stdout.write(a_value());
                   stdio.stdout.write("|");
@@ -72,7 +72,7 @@ final class CircularImportInitializationTest {
                 output,
                 error);
 
-        assertEquals("main:AB", output.toString(StandardCharsets.UTF_8));
+        assertEquals("init-a:B|init-b:A|main:AB", output.toString(StandardCharsets.UTF_8));
 
         List<List<String>> groups = build.initializationGroups();
         assertEquals(1, groups.size(), "the A<->B cycle should form one initialization barrier");
@@ -82,24 +82,24 @@ final class CircularImportInitializationTest {
     }
 
     @Test
-    void initIsAnOrdinaryFunctionName() {
+    void initHookHasAClosedLifecycleSignature() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                fnc init(value: int) -> int {
-                  return value;
-                }
-
-                pub fnc init_public() -> void {
-                  return;
-                }
-
-                pub routine main() -> void { return; }
+                fnc init(): void { return; }
+                pub routine main(): void { return; }
                 """)));
 
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                pub fnc init(value: int) -> int {
-                  return value;
-                }
-                """)));
+        IllegalArgumentException withArgs = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc init(int value): void { return; }
+                        """)));
+        assertTrue(withArgs.getMessage().contains("init hook"));
+
+        IllegalArgumentException publicInit = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc init(): void { return; }
+                        """)));
+        assertTrue(publicInit.getMessage().contains("init hook"));
     }
-
 }

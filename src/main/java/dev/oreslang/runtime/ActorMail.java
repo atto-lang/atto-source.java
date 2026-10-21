@@ -3,19 +3,21 @@ package dev.oreslang.runtime;
 import java.util.Objects;
 
 /**
- * One immutable actor -> group-outbox envelope.
+ * Immutable actor-to-group Mailman envelope.
  *
- * The originating ActorId is metadata only. Mailmen send back through
- * ActorGroupContext so all replies re-enter an actor's single inbox.
+ * The sender id is metadata only. Replies must re-enter actors through
+ * ActorGroupContext.send so actor mailbox serialization remains authoritative.
  */
 public record ActorMail<Out>(
         ActorRuntime.ActorId actor,
-        ActorGroupId group,
+        ActorRuntime.ActorGroupId group,
         long sequence,
         Out message) {
     public ActorMail {
         Objects.requireNonNull(actor, "actor");
         Objects.requireNonNull(group, "group");
-        if (sequence < 0) throw new IllegalArgumentException("sequence must be >= 0");
+        if (sequence < 0) {
+            throw new IllegalArgumentException("sequence must be >= 0");
+        }
     }
 }
