@@ -204,7 +204,7 @@ def gh_api(route, method="GET", payload=None):
         raise Denied("authenticated GitHub API request failed")
     data = strict_json_loads(p.stdout)
     reviews_route = re.fullmatch(
-        rf"repos/{re.escape(SOURCE_REPO)}/pulls/[1-9][0-9]{{0,9}}/reviews\\?per_page=100",
+        rf"repos/{re.escape(SOURCE_REPO)}/pulls/[1-9][0-9]{{0,9}}/reviews\?per_page=100",
         route,
     )
     if reviews_route is not None:
