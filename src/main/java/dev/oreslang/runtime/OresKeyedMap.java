@@ -81,6 +81,52 @@ public final class OresKeyedMap<K, V> {
     }
 
     /**
+     * Compiler/runtime-only result for fallible insertion of a move-only
+     * offered value.
+     *
+     * <p>On commit, ownership of the offered value has transferred into this
+     * Map and {@code rejectedValue}/{@code rejection} are null. On rejection,
+     * live storage is unchanged and {@code rejectedValue} is the exact offered
+     * object by identity so lowering can restore the source owner without
+     * reconstructing or copying a move-only value.</p>
+     */
+    public record OwnedPutAttempt<V>(
+            boolean committed,
+            V previous,
+            V rejectedValue,
+            RuntimeException rejection) {
+        public OwnedPutAttempt {
+            if (committed) {
+                if (rejectedValue != null || rejection != null) {
+                    throw new IllegalArgumentException(
+                            "committed owned put cannot carry rejected state");
+                }
+            } else {
+                if (previous != null) {
+                    throw new IllegalArgumentException(
+                            "rejected owned put cannot report a displaced value");
+                }
+                Objects.requireNonNull(rejectedValue, "rejected offered Map value");
+                Objects.requireNonNull(rejection, "owned put rejection");
+            }
+        }
+
+        public static <V> OwnedPutAttempt<V> committed(V previous) {
+            return new OwnedPutAttempt<>(true, previous, null, null);
+        }
+
+        public static <V> OwnedPutAttempt<V> rejected(
+                V offered,
+                RuntimeException rejection) {
+            return new OwnedPutAttempt<>(
+                    false,
+                    null,
+                    Objects.requireNonNull(offered, "offered Map value"),
+                    Objects.requireNonNull(rejection, "owned put rejection"));
+        }
+    }
+
+    /**
      * Runtime policy hook used by compiler-owned typed Map descriptors.
      *
      * <p>Validators must be deterministic and side-effect free. The container
@@ -360,6 +406,41 @@ public final class OresKeyedMap<K, V> {
         }
         synchronized (this) {
             return putUnderMonitor(key, value);
+        }
+    }
+
+    /**
+     * Internal lowering primitive for move-only values. Unlike {@link #put},
+     * preflight rejection is returned as data together with the exact offered
+     * value. Errors outside the runtime's ordinary checked/policy rejection
+     * surface (for example VM {@link Error}s) still propagate.
+     *
+     * <p>This method is not a guest Map member. Source-level lowering may use
+     * it only after proving direct owner authority and must commit the source
+     * ownership move only when {@link OwnedPutAttempt#committed()} is true.</p>
+     */
+    public OwnedPutAttempt<V> attemptOwnedPut(K key, V offered) {
+        Objects.requireNonNull(offered, "offered Map value");
+        if (valueDomain == ValueDomain.JSON) {
+            synchronized (JSON_GRAPH_ADMISSION_LOCK) {
+                synchronized (this) {
+                    return attemptOwnedPutUnderMonitor(key, offered);
+                }
+            }
+        }
+        synchronized (this) {
+            return attemptOwnedPutUnderMonitor(key, offered);
+        }
+    }
+
+    private OwnedPutAttempt<V> attemptOwnedPutUnderMonitor(K key, V offered) {
+        try {
+            return OwnedPutAttempt.committed(putUnderMonitor(key, offered));
+        } catch (RuntimeException rejection) {
+            // putUnderMonitor performs all fallible structural/domain/quota
+            // and policy checks before entries.put(), so an ordinary runtime
+            // rejection here has not modified live storage.
+            return OwnedPutAttempt.rejected(offered, rejection);
         }
     }
 
