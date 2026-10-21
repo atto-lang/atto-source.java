@@ -166,25 +166,6 @@ public sealed interface OresJsonValue
     }
 
     /**
-     * Encode one selected JSON root while holding the same graph-stability
-     * guard used by every JSON-domain Map mutation.
-     *
-     * <p>The complete root is revalidated and then traversed without releasing
-     * the guard, so nested aliases cannot race put/take/remove/clear between
-     * validation and encoding. Traversal dispatches only on compiler-owned
-     * runtime carriers and never invokes guest callbacks.</p>
-     */
-    public static String stringify(OresJsonValue root) {
-        OresJsonValue checked = Objects.requireNonNull(root, "JSON root");
-        return OresKeyedMap.withJsonGraphLock(() -> {
-            validateTree(checked, null);
-            StringBuilder encoded = new StringBuilder();
-            appendJson(encoded, checked);
-            return encoded.toString();
-        });
-    }
-
-    /**
      * The Map runtime calls this while holding the JSON graph-admission lock
      * and before publishing a write.
      */
@@ -202,89 +183,6 @@ public sealed interface OresJsonValue
             OresKeyedMap<?, ?> forbiddenDestination) {
         ValidationState state = new ValidationState(forbiddenDestination);
         state.visit(root, 0);
-    }
-
-    private static void appendJson(
-            StringBuilder encoded,
-            OresJsonValue value) {
-        if (value instanceof NullValue) {
-            encoded.append("null");
-            return;
-        }
-        if (value instanceof BoolValue bool) {
-            encoded.append(bool.value ? "true" : "false");
-            return;
-        }
-        if (value instanceof NumberValue number) {
-            encoded.append(number.value.toString());
-            return;
-        }
-        if (value instanceof StringValue string) {
-            appendJsonString(encoded, string.value);
-            return;
-        }
-        if (value instanceof ArrayValue array) {
-            encoded.append('[');
-            boolean first = true;
-            for (OresJsonValue element : array.values) {
-                if (!first) encoded.append(',');
-                first = false;
-                appendJson(encoded, element);
-            }
-            encoded.append(']');
-            return;
-        }
-        if (value instanceof ObjectValue object) {
-            encoded.append('{');
-            boolean first = true;
-            for (Map.Entry<String, OresJsonValue> field
-                    : object.fields.entrySnapshot()) {
-                if (!first) encoded.append(',');
-                first = false;
-                appendJsonString(encoded, field.getKey());
-                encoded.append(':');
-                appendJson(encoded, field.getValue());
-            }
-            encoded.append('}');
-            return;
-        }
-        throw new IllegalStateException(
-                "unknown compiler-owned JSON runtime variant");
-    }
-
-    private static void appendJsonString(
-            StringBuilder encoded,
-            String value) {
-        encoded.append('"');
-        for (int index = 0; index < value.length(); index++) {
-            char current = value.charAt(index);
-            switch (current) {
-                case '"' -> encoded.append("\\\"");
-                case '\\' -> encoded.append("\\\\");
-                case '\b' -> encoded.append("\\b");
-                case '\f' -> encoded.append("\\f");
-                case '\n' -> encoded.append("\\n");
-                case '\r' -> encoded.append("\\r");
-                case '\t' -> encoded.append("\\t");
-                default -> {
-                    if (current < 0x20) {
-                        encoded.append("\\u");
-                        appendHex4(encoded, current);
-                    } else {
-                        encoded.append(current);
-                    }
-                }
-            }
-        }
-        encoded.append('"');
-    }
-
-    private static void appendHex4(StringBuilder encoded, int value) {
-        final char[] hex = "0123456789ABCDEF".toCharArray();
-        encoded.append(hex[(value >>> 12) & 0xF]);
-        encoded.append(hex[(value >>> 8) & 0xF]);
-        encoded.append(hex[(value >>> 4) & 0xF]);
-        encoded.append(hex[value & 0xF]);
     }
 
     public static final class NullValue implements OresJsonValue {
