@@ -511,6 +511,10 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      branch introducer; deprecated "do" remains accepted for migration and may
      be mixed with "then" across branches. Canonical "elif" accepts "elseif"
      and single-fi "else if" as aliases. All forms lower to the same semantics.
+   - if_stmt is statement-only and never appears in expression. Branch bodies do
+     not synthesize values from their last expression statement. Use the ternary
+     conditional expression for value selection, or explicit return statements
+     inside a callable for multi-statement conditional return paths.
    - "loop" and "block" are contextual statement keywords: outside the
      statement-plus-"{" form they remain legal callable names/references.
    - Single- and double-quoted struct keys are equivalent static field names.
