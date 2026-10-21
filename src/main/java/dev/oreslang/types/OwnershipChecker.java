@@ -3892,14 +3892,7 @@ public final class OwnershipChecker {
         // ActorRef<T> is an explicit runtime-synchronized mailbox capability.
         // T is routing/protocol metadata, not embedded actor state.
         if (name.equals("ActorRef")) {
-            if (type.arguments().size() != 1) return none;
-            Ast.TypeRef target = type.arguments().getFirst();
-            if (target.isBorrow() || target.inferArguments()
-                    || !target.arguments().isEmpty()) return none;
-            Ast.ClassDecl actorTarget = findClass(target.name());
-            return actorTarget != null
-                    && actorTarget.actorKind() != Ast.ActorKind.NONE
-                    ? scalar : none;
+            return isVerifiedActorReference(type) ? scalar : none;
         }
 
         // Task-owned authority and actor-turn/foreign capabilities do not
@@ -4397,6 +4390,32 @@ public final class OwnershipChecker {
         return isCopyType(type) ? ValueKind.COPY : ValueKind.MOVE_ONLY;
     }
 
+    /**
+     * A mailbox handle's nominal type is Copy/Send only when the target is
+     * a linked or locally checked actor declaration, never merely because
+     * the identifier is spelled ActorRef. Used identically for the base
+     * ownership Copy classifier and the independent Task Send proof.
+     */
+    private boolean isVerifiedActorReference(Ast.TypeRef type) {
+        if (type == null || type.isBorrow()
+                || !type.name().equals("ActorRef")
+                || type.inferArguments()
+                || type.arguments().size() != 1
+                || findClass("ActorRef") != null) {
+            return false;
+        }
+        Ast.TypeRef target = type.arguments().getFirst();
+        if (target.isBorrow() || target.inferArguments()
+                || !target.arguments().isEmpty()
+                || target.isComplement() || target.isUnion()
+                || target.isTupleType() || target.isClosedAggregateType()) {
+            return false;
+        }
+        Ast.ClassDecl actorTarget = findClass(target.name());
+        return actorTarget != null
+                && actorTarget.actorKind() != Ast.ActorKind.NONE;
+    }
+
     private boolean isCopyType(Ast.TypeRef type) {
         if (type == null || type.isBorrow()) return false;
         if (type.isUnion()) return type.arguments().stream().allMatch(this::isCopyType);
@@ -4406,7 +4425,7 @@ public final class OwnershipChecker {
                     "f32","f64","float","decimal","complex64","complex128","complex",
                     "bool","Bool","string","String","void","SharedMutex",
                     "Channel","SelectCase","SelectSet","OptionUnwrapError" -> true;
-            case "ActorRef" -> type.arguments().size() == 1;
+            case "ActorRef" -> isVerifiedActorReference(type);
             case "Option" -> type.arguments().size() == 1 && isCopyType(type.arguments().getFirst());
             case "Result" -> type.arguments().size() == 2
                     && isCopyType(type.arguments().get(0))
