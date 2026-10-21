@@ -161,17 +161,21 @@ public final class OresEvalRootNode extends RootNode {
         return true;
     }
 
-    static void requireTrustedAsyncCollectionCarrier(Object value) {
+    static void requireTrustedTraversalCollectionCarrier(Object value, String operation) {
         if (!isTrustedTraversalCollectionCarrier(value)) {
             String kind = value instanceof List<?> ? "List"
                     : value instanceof Set<?> ? "Set"
                     : value instanceof Map<?, ?> ? "Map"
                     : "collection";
             throw new IllegalArgumentException(
-                    "value of type " + value.getClass().getName()
-                            + " cannot cross an async task boundary; untrusted host "
-                            + kind + " implementations are opaque");
+                    operation + " rejects untrusted host " + kind
+                            + " implementation " + value.getClass().getName()
+                            + " as opaque");
         }
+    }
+
+    static void requireTrustedAsyncCollectionCarrier(Object value) {
+        requireTrustedTraversalCollectionCarrier(value, "async task boundary");
     }
 
     private final Ast.Program program;
@@ -8822,10 +8826,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private Iterable<?> iterableValues(Object value, Env env) {
             if (value instanceof List<?> list) {
-                if (!isTrustedTraversalCollectionCarrier(value)) {
-                    throw new IllegalArgumentException(
-                            "value is an opaque host List and is not synchronously iterable");
-                }
+                requireTrustedTraversalCollectionCarrier(value, "synchronous iteration");
                 return list;
             }
             if (value instanceof Object[] array) return List.of(array);
@@ -9915,10 +9916,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object destructureRestObject(Object value, Set<String> selectedMembers) {
             if (value instanceof Map<?, ?> map) {
-                if (!isTrustedTraversalCollectionCarrier(value)) {
-                    throw new IllegalArgumentException(
-                            "object rest destructuring rejects opaque host Map values");
-                }
+                requireTrustedTraversalCollectionCarrier(value, "object rest destructuring");
                 LinkedHashMap<String, Object> remainder = new LinkedHashMap<>();
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
                     if (!(entry.getKey() instanceof String key)) {
@@ -9951,10 +9949,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object destructureMember(Object value, String name) {
             if (value instanceof Map<?, ?> map) {
-                if (!isTrustedTraversalCollectionCarrier(value)) {
-                    throw new IllegalArgumentException(
-                            "object destructuring rejects opaque host Map values");
-                }
+                requireTrustedTraversalCollectionCarrier(value, "object destructuring");
                 if (!map.containsKey(name)) throw new IllegalArgumentException("object destructure missing member " + name);
                 Object member = map.get(name);
                 if (member == UNINITIALIZED_FIELD) {
@@ -10867,9 +10862,7 @@ public final class OresEvalRootNode extends RootNode {
     }
     private static List<Object> expandArgumentSequence(Object value,String name){
         if(value instanceof List<?> list){
-            if(!isTrustedTraversalCollectionCarrier(value)){
-                throw new IllegalArgumentException(name+" rejects opaque host List values");
-            }
+            requireTrustedTraversalCollectionCarrier(value,name);
             return new ArrayList<>(list);
         }
         if(value instanceof Object[] array)return new ArrayList<>(java.util.Arrays.asList(array));
