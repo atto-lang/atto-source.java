@@ -5,6 +5,7 @@ import com.oracle.truffle.api.RootCallTarget;
 import com.oracle.truffle.api.TruffleLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.imports.ImportRules;
 import dev.oreslang.nodes.OresEvalRootNode;
 import dev.oreslang.nodes.OresInteropRootNode;
 import dev.oreslang.runtime.ActorRuntime;
@@ -179,6 +180,13 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         Ast.Program program = consumePrecheckedProgram(codeUnitId, text);
         if (program == null) {
             program = OresCompiler.parseAndTypeCheck(text);
+        }
+        for (Ast.ImportDecl imported : program.imports()) {
+            if (ImportRules.isJavaPath(imported.path())) {
+                throw new SecurityException(
+                        "guest Oreslang cannot import Java/FFI host classes: " + imported.path()
+                                + "; use a typed core/stdlib API");
+            }
         }
         RootCallTarget evaluator = new OresEvalRootNode(this, program, codeUnitId).getCallTarget();
         return new OresInteropRootNode(this, evaluator).getCallTarget();
