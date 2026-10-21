@@ -47,6 +47,15 @@ RULES = (
     Rule("src/main/java/dev/oreslang/nodes/OresEvalRootNode.java",
          r"\bexchange\.(?:bodyText|readChunk|writeBytes|respondBytes|respond|start|write|finish|abort)\s*\(",
          "stdlib must not drive legacy blocking HTTP exchange transport"),
+    Rule("src/main/java/dev/oreslang/types/TypeChecker.java",
+         r'case\s+"(?:read_text|write_text|write_text_atomic|append_text|list_dir|is_dir|is_symlink|exists|remove|mkdir_all|listen|get_text|post_text)"\s*(?:,|:|->)',
+         "typechecker must not advertise bare synchronous stdlib I/O names"),
+    Rule("src/main/java/dev/oreslang/types/TypeChecker.java",
+         r'member\(\)\.equals\("(?:print|println|read_line|write|log|logList)"\)',
+         "typechecker must not advertise bare synchronous stdio members"),
+    Rule("src/main/java/dev/oreslang/types/TypeChecker.java",
+         r'name\.name\(\)\.equals\("print"\)',
+         "global print must not remain an ambient blocking I/O builtin"),
 )
 
 def strip_line_comment(line: str) -> str:
