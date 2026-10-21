@@ -46,6 +46,36 @@ final class StructuredTaskScopeV2Test {
     }
 
     @Test
+    void unawaitedChildFailureEscapesStructuredScopeAfterDrain() throws Exception {
+        String program = """
+                pub async fnc main(): void {
+                  task scope {
+                    let Future<void> child = task {
+                      None.unwrap();
+                      return;
+                    };
+                  }
+                  stdio.stdout.write("unreachable");
+                  return;
+                }
+                """;
+        Source source = Source.newBuilder(
+                        OresLanguage.ID, program, "structured-task-failure-v2.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        Throwable failure;
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .build()) {
+            failure = assertThrows(Throwable.class, () -> context.eval(source));
+        }
+        assertNotNull(failure.getMessage());
+        assertTrue(failure.getMessage().contains("Option::unwrap"),
+                failure::getMessage);
+    }
+
+    @Test
     void structuredScopeExitMustBeDeclaredAsSuspension() {
         var failure = assertThrows(
                 IllegalArgumentException.class,
