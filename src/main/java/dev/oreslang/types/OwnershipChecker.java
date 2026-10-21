@@ -1518,25 +1518,6 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
-        if (isAllocJsonStringifyCall(call, scope)) {
-            if (call.typeArgumentsPresent()) {
-                throw error("Json.stringify does not accept call-site type arguments");
-            }
-            if (call.arguments().size() != 1
-                    || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
-                throw error(
-                        "Json.stringify expects exactly one Map<String, JsonValue>");
-            }
-            // Stringification is a scoped read: do not move the affine Map.
-            ValueInfo input = checkExpr(call.arguments().getFirst(), scope, false);
-            if (!isJsonObjectMapType(input.type)) {
-                throw error(
-                        "Json.stringify currently requires Map<String, JsonValue>");
-            }
-            return new ValueInfo(
-                    Ast.TypeRef.simple("String"), ValueKind.COPY, null);
-        }
-
         // A constructor owns an unpublished, incompletely initialized object.
         // Calling any instance method on self can transitively read absent
         // fields, publish the receiver or invoke suspension. No transitive
@@ -1570,6 +1551,26 @@ public final class OwnershipChecker {
                 }
             }
         }
+
+        if (isAllocJsonStringifyCall(call, scope)) {
+            if (call.typeArgumentsPresent()) {
+                throw error("Json.stringify does not accept call-site type arguments");
+            }
+            if (call.arguments().size() != 1
+                    || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
+                throw error(
+                        "Json.stringify expects exactly one Map<String, JsonValue>");
+            }
+            // Stringification is a scoped read: do not move the affine Map.
+            ValueInfo input = checkExpr(call.arguments().getFirst(), scope, false);
+            if (!isJsonObjectMapType(input.type)) {
+                throw error(
+                        "Json.stringify currently requires Map<String, JsonValue>");
+            }
+            return new ValueInfo(
+                    Ast.TypeRef.simple("String"), ValueKind.COPY, null);
+        }
+
         if (isBooleanIntrinsicCall(call, scope)) {
             for (Ast.Expr argument : call.arguments()) {
                 checkExpr(argument, scope, false);
