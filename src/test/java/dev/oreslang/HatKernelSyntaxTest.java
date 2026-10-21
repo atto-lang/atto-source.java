@@ -16,6 +16,8 @@ final class HatKernelSyntaxTest {
         var tokens = new Lexer("define pub kernel K as end").scan();
         assertTrue(tokens.stream().anyMatch(t ->
                 t.lexeme().equals("kernel") && t.type() == Token.Type.KERNEL));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("fnc bad(): void { val kernel = 1; return; }"));
 
         Ast.Program program = Parser.parse("""
                 define pub kernel VectorAdd as
