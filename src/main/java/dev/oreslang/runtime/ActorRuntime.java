@@ -1375,7 +1375,10 @@ public final class ActorRuntime implements AutoCloseable {
             }
             return replacement;
         } catch (RuntimeException | Error failure) {
-            permit.consumed.set(false);
+            // A restart permit authorizes exactly one admission attempt.
+            // Resource/group/parent admission failure is itself a supervisor
+            // failure decision; reusing the same permit would permit an
+            // unbounded retry loop outside restart-intensity accounting.
             throw failure;
         }
     }

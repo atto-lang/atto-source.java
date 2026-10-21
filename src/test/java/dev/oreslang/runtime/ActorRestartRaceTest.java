@@ -266,6 +266,10 @@ final class ActorRestartRaceTest {
                             || failure.getMessage().contains("lifecycle"),
                     failure::getMessage);
             assertThrows(
+                    IllegalStateException.class,
+                    () -> runtime.restartAfterFailure(permit),
+                    "failed restart admission must still consume one-shot authority");
+            assertThrows(
                     IllegalArgumentException.class,
                     () -> runtime.controlHandle(failed.id()),
                     "failed restart must not publish a replacement cell");
