@@ -1813,6 +1813,7 @@ public final class ActorRuntime implements AutoCloseable {
      * Neither guests nor arbitrary ActorId holders can obtain this endpoint. */
     GenerationalReplyRegistry.Endpoint bindActorReplyEndpoint(
             GenerationalReplyRegistry registry, ActorRef<?> actor) {
+        requireSupervisorContext("mint actor-incarnation reply endpoint");
         Objects.requireNonNull(registry, "reply registry");
         requireCallerRuntimeAffinity("bind actor reply endpoint");
         Objects.requireNonNull(actor, "actor");
