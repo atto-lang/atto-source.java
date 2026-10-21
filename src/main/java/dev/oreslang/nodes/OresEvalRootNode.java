@@ -231,7 +231,8 @@ public final class OresEvalRootNode extends RootNode {
             String path = imported.path();
             if (!(path.equals("alloc/json") || path.equals("alloc/json.ores"))) return false;
             return imported.names().size() == 1
-                    && imported.names().getFirst().equals("Json");
+                    && imported.names().getFirst().equals("Json")
+                    && ImportRules.localName(imported, "Json").equals("Json");
         }
 
         private void indexImports() {
