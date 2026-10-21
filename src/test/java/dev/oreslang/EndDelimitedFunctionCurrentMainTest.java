@@ -66,6 +66,46 @@ final class EndDelimitedFunctionCurrentMainTest {
     }
 
     @Test
+    void optionalSameLineAsIsSemanticsFree() {
+        var noSeparator = Parser.parse("""
+                fnc identity(int x) -> int
+                    return x
+                end
+                """);
+        var explicitAs = Parser.parse("""
+                fnc identity(int x) -> int as
+                    return x
+                end
+                """);
+        var compact = Parser.parse("fnc identity(int x) -> int as return x; end");
+
+        assertEquals(noSeparator, explicitAs);
+        assertEquals(noSeparator, compact);
+    }
+
+    @Test
+    void callableAsMustShareHeaderLineAndHeaderDoIsRetired() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc bad(int x) -> int
+                as
+                    return x
+                end
+                """));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("fnc bad(int x) -> int do return x; end"));
+    }
+
+    @Test
+    void completeHigherOrderReturnTypePrecedesOptionalAs() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                fnc callback() -> () => void as
+                    return || -> { return; };
+                end
+                """));
+    }
+
+    @Test
     void existingBracedFormsRemainAccepted() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc colon(int x): int {
@@ -170,18 +210,12 @@ final class EndDelimitedFunctionCurrentMainTest {
     }
 
     @Test
-    void tupleBoundIsRepresentationWideForBothSpellings() {
-        String slots64 = String.join(", ", Collections.nCopies(64, "int"));
+    void contextualTupleSpellingPreservesExistingArityPolicy() {
         String slots65 = String.join(", ", Collections.nCopies(65, "int"));
 
         assertDoesNotThrow(() -> Parser.parse(
-                "fnc a([" + slots64 + "] value): void { return; }"));
-        assertDoesNotThrow(() -> Parser.parse(
-                "fnc b(tuple (" + slots64 + ") value): void { return; }"));
-
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
                 "fnc a([" + slots65 + "] value): void { return; }"));
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+        assertDoesNotThrow(() -> Parser.parse(
                 "fnc b(tuple (" + slots65 + ") value): void { return; }"));
     }
 
