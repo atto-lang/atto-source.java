@@ -88,6 +88,60 @@ final class CpuTopology {
         return 3;
     }
 
+    /**
+     * Stable, allocation-free rendezvous score for one carrier slot.
+     *
+     * The previous first-local-match scan concentrated unrelated keys onto
+     * the first NUMA-local slot after a remote run of slots. Ranking *all*
+     * bounded eligible slots spreads stable keys without per-turn state or
+     * round-robin writes that could bounce an L1/L2 cache line.
+     */
+    private static long slotScore(int affinityKey, int slot) {
+        long value = ((long) affinityKey << 32) ^ Integer.toUnsignedLong(slot);
+        value ^= value >>> 33;
+        value *= 0xff51afd7ed558ccdL;
+        value ^= value >>> 33;
+        value *= 0xc4ceb9fe1a85ec53L;
+        return value ^ (value >>> 33);
+    }
+
+    /**
+     * Choose the best observed CPU target in a bounded scan. Same advertised
+     * logical CPU beats a shared qualified cache, which beats NUMA locality.
+     * Absent topology evidence, preserve the ordinary affinity hash.
+     *
+     * This is a SOFT scheduler hint, never a physical pin, page-placement
+     * proof, actor memory authority or GPU queue admission.
+     */
+    int preferredSlotForCpu(int affinityKey, int preferredCpu, int enabled,
+                            java.util.function.IntUnaryOperator cpuForSlot) {
+        Objects.requireNonNull(cpuForSlot, "cpuForSlot");
+        if (enabled < 1 || preferredCpu < UNKNOWN)
+            throw new IllegalArgumentException("invalid carrier/CPU bounds");
+        int fallback = Math.floorMod(affinityKey, enabled);
+        if (preferredCpu == UNKNOWN || enabled > MAX_DISCOVERED_CPUS)
+            return fallback;
+
+        int bestRank = 3;
+        long bestScore = 0;
+        int bestSlot = fallback;
+        for (int distance = 0;
+                distance < Math.min(enabled, MAX_NUMA_SLOT_PROBES);
+                distance++) {
+            int slot = (int) (((long) fallback + distance) % enabled);
+            int rank = localityRank(preferredCpu, cpuForSlot.applyAsInt(slot));
+            if (rank >= 3) continue;
+            long score = slotScore(affinityKey, slot);
+            if (rank < bestRank || (rank == bestRank
+                    && Long.compareUnsigned(score, bestScore) > 0)) {
+                bestRank = rank;
+                bestScore = score;
+                bestSlot = slot;
+            }
+        }
+        return bestSlot;
+    }
+
     /** Select a carrier with an observed target in the requested NUMA node.
      * Inspect at most 64 slots to keep worst-case Task admission bounded.
      * When no nearby eligible carrier is observed, use the stable hash.
@@ -103,14 +157,23 @@ final class CpuTopology {
         // pools. Never perform an unbounded NUMA topology scan on hot paths.
         if (preferredNuma == UNKNOWN || enabled > MAX_DISCOVERED_CPUS)
             return fallback;
+        int bestSlot = fallback;
+        long bestScore = 0;
+        boolean found = false;
         for (int distance = 0;
                 distance < Math.min(enabled, MAX_NUMA_SLOT_PROBES);
                 distance++) {
             int slot = (int) (((long) fallback + distance) % enabled);
             Location location = locations.get(cpuForSlot.applyAsInt(slot));
-            if (location != null && location.numa() == preferredNuma) return slot;
+            if (location == null || location.numa() != preferredNuma) continue;
+            long score = slotScore(affinityKey, slot);
+            if (!found || Long.compareUnsigned(score, bestScore) > 0) {
+                bestSlot = slot;
+                bestScore = score;
+                found = true;
+            }
         }
-        return fallback;
+        return bestSlot;
     }
 
     boolean hasKnownLocality(int cpu) {
