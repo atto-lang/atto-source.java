@@ -24,8 +24,8 @@ import java.util.Set;
  * - primitive immutable values are Copy;
  * - class/list/object/function values are move-only by default;
  * - by-value call/binding/return moves move-only values;
- * - &T permits shared immutable borrows;
- * - &mut T is exclusive and requires a mutable owner;
+ * - `borrow T` permits shared immutable borrows;
+ * - `borrow mut T` is exclusive and requires a mutable owner;
  * - Bar mut b makes an owned parameter mutable inside the callee;
  * - escaping closures own non-Copy captures and mutable captures;
  * - closures may not capture a borrow (pass it as a lambda parameter instead);
@@ -742,7 +742,7 @@ public final class OwnershipChecker {
                 throw error("actor self is a non-escapable mailbox capability; access its fields/methods inside the actor turn");
             }
             if (consuming && mutexCriticalSectionDepth > 0 && state.kind == ValueKind.MUT_BORROW) {
-                throw error("protected with_lock/recover state cannot be moved by value; use it through its &mut critical-section borrow");
+                throw error("protected with_lock/recover state cannot be moved by value; use it through its exclusive critical-section loan");
             }
             if (consuming && state.kind == ValueKind.MOVE_ONLY) move(state, name.name());
             boolean transferredBorrowLease = false;
@@ -1813,7 +1813,7 @@ public final class OwnershipChecker {
             }
             if (arg instanceof Ast.UnaryExpr unary && unary.operator().equals("&mut")) {
                 throw error(callable + " argument " + position
-                        + " is a read-only structural view; rt borrow mut is not permitted");
+                        + " is a read-only structural view; rt mut borrow is not permitted");
             }
             ValueInfo argument = checkExpr(arg, scope, false);
             if (isBorrowValue(argument) && argument.borrowSource == null) {
@@ -1832,7 +1832,7 @@ public final class OwnershipChecker {
             boolean mutable = param.type().mutableBorrow();
             if (arg instanceof Ast.UnaryExpr unary && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
                 if (mutable && !unary.operator().equals("&mut")) {
-                    throw error(callable + " argument " + position + " requires rt borrow mut");
+                    throw error(callable + " argument " + position + " requires rt mut borrow");
                 }
                 VarState owner = borrowOwner(unary.operand(), scope);
                 validateBorrow(owner, mutable);
@@ -2033,7 +2033,7 @@ public final class OwnershipChecker {
         if (value.borrowLease || isIncomingBorrow(source)) return value;
 
         if (value.kind == ValueKind.MUT_BORROW) {
-            throw error("cannot alias a mutable borrow; transfer the existing &mut binding instead");
+            throw error("cannot alias a mutable borrow; transfer the existing mutable-loan binding instead");
         }
         if (source.mutableBorrowed) {
             throw error("cannot retain immutable borrow while a mutable borrow is active");
