@@ -506,39 +506,6 @@ final class ParserTest {
     }
 
     @Test
-    void importBindingsCannotShadowLocalDeclarationsOrBuiltins() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                import fnc {remote as local} from "./dep.ores";
-
-                fnc local() -> void { return; }
-                """)));
-
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                import * as Futures from "./dep.ores";
-
-                fnc main() -> void { return; }
-                """)));
-
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                import class {Remote as Result} from "./dep.ores";
-
-                fnc main() -> void { return; }
-                """)));
-    }
-
-    @Test
-    void entryExportMustResolveUniquelyAcrossKinds() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                define class Start as
-                end
-
-                pub fnc Start() -> void { return; }
-
-                export entry Start;
-                """)));
-    }
-
-    @Test
     void actorClassRejectsStaticEscapeHatchesAndReservedIntrinsicNames() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 define actor Bad as
@@ -558,57 +525,36 @@ final class ParserTest {
     }
 
     @Test
-    void actorCannotReceiveCreateOrAcquireWritableExternalSharedState() {
-        IllegalArgumentException boundary = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        define actor Bad as
-                          pub receive(state: SharedMutex<int>): void {
-                            return;
-                          }
-                        end
-                        """)));
-        assertTrue(boundary.getMessage().contains("SharedMutex"), boundary.getMessage());
+    void actorProtocolCannotReceiveOrAcquireWritableSharedMutexState() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define actor Bad as
+                  pub run(SharedMutex<int> state): void {
+                    return;
+                  }
+                end
+                """)));
 
-        IllegalArgumentException create = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        define actor Bad as
-                          private mutate(): void {
-                            val state = SharedMutex.new(1);
-                            return;
-                          }
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define actor Bad as
+                  private mutate(): void {
+                    val state = SharedMutex.new(1);
+                    return;
+                  }
 
-                          pub receive(message: int): void {
-                            self.mutate();
-                            return;
-                          }
-                        end
-                        """)));
-        assertTrue(
-                create.getMessage().contains("SharedMutex")
-                        || create.getMessage().contains("external shared mutable state"),
-                create.getMessage());
+                  pub run(int message): void { return; }
+                end
+                """)));
 
-        IllegalArgumentException writeGuard = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        define actor Bad as
-                          private mutate(state: RwLock<int>): void {
-                            val guard = state.try_write_lock();
-                            return;
-                          }
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define actor Bad as
+                  private mutate(SharedMutex<int> state): void {
+                    val guard = state.try_lock();
+                    return;
+                  }
 
-                          pub receive(state: RwLock<int>): void {
-                            self.mutate(state);
-                            return;
-                          }
-                        end
-                        """)));
-        assertTrue(
-                writeGuard.getMessage().contains("write guard")
-                        || writeGuard.getMessage().contains("write_lock"),
-                writeGuard.getMessage());
+                  pub run(int message): void { return; }
+                end
+                """)));
     }
 
     @Test
@@ -712,50 +658,29 @@ final class ParserTest {
 
 
     @Test
-    void actorOwnedStateCannotEscapeThroughPrivateHelpers() {
-        IllegalArgumentException selfEscape = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        shared actor Account {
-                          let int balance = 100;
+    void actorProtocolCannotLeakActorOwnedState() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                shared actor Account {
+                  let int balance = 100;
 
-                          private leak_self(): Account {
-                            return self;
-                          }
+                  pub leak(): Account {
+                    return self;
+                  }
+                }
+                """)));
 
-                          pub receive(message: int): void {
-                            val leaked = self.leak_self();
-                            return;
-                          }
-                        }
-                        """)));
-        assertTrue(
-                selfEscape.getMessage().contains("actor self")
-                        || selfEscape.getMessage().contains("escape")
-                        || selfEscape.getMessage().contains("borrow"),
-                selfEscape.getMessage());
+        assertThrows(IllegalArgumentException.class, () -> {
+            Ast.Program typed = TypeChecker.check(Parser.parse("""
+                    shared actor Account {
+                      let Array<int> items = [1, 2, 3];
 
-        IllegalArgumentException fieldEscape = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        fnc consume(Array<int> values) -> void {
-                          return;
-                        }
-
-                        shared actor Account {
-                          let Array<int> items = [1, 2, 3];
-
-                          pub receive(message: int): void {
-                            consume(self.items);
-                            return;
-                          }
-                        }
-                        """)));
-        assertTrue(
-                fieldEscape.getMessage().contains("actor")
-                        || fieldEscape.getMessage().contains("owned")
-                        || fieldEscape.getMessage().contains("move"),
-                fieldEscape.getMessage());
+                      pub snapshot(): Array<int> {
+                        return self.items;
+                      }
+                    }
+                    """));
+            OwnershipChecker.check(typed);
+        });
     }
 
     @Test

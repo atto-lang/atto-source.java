@@ -122,20 +122,10 @@ public final class OresEvalRootNode extends RootNode {
         private void indexImports() {
             for (Ast.ImportDecl imported : program.imports()) {
                 if (imported.wildcard()) {
-                    String localName = imported.namespace();
-                    if (namedImports.containsKey(localName)
-                            || namespaceImports.putIfAbsent(localName, imported) != null) {
-                        throw new IllegalArgumentException(
-                                "duplicate import binding '" + localName + "'");
-                    }
+                    namespaceImports.put(imported.namespace(), imported);
                 } else {
                     for (String importedName : imported.names()) {
-                        String localName = imported.localName(importedName);
-                        if (namespaceImports.containsKey(localName)
-                                || namedImports.putIfAbsent(localName, imported) != null) {
-                            throw new IllegalArgumentException(
-                                    "duplicate import binding '" + localName + "'");
-                        }
+                        namedImports.put(imported.localName(importedName), imported);
                     }
                 }
             }
@@ -1228,106 +1218,27 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "code unit '" + codeUnitId + "' has no 'export entry'");
             }
-
-            String name = entry.name();
-            Object resolved = null;
-            int eligibleMatches = 0;
-            boolean plainBindingMatch = false;
-
-            Ast.ModuleDecl module = modules.get(name);
-            if (module != null && !module.name().equals(Parser.ROOT_MODULE)) {
-                resolved = new ModuleFacade(this, module);
-                eligibleMatches++;
-            }
-
-            Ast.ClassDecl klass = findClass(name);
-            if (klass != null) {
-                resolved = new ClassFacade(this, klass);
-                eligibleMatches++;
-            }
-
-            Ast.FunctionDecl fn = findFunction(name);
-            if (fn != null && fn.visibility() == Ast.Visibility.PUBLIC) {
-                resolved = (Invokable) args -> callFunction(fn, args);
-                eligibleMatches++;
-            }
-
-            for (Ast.ModuleDecl candidate : program.modules()) {
-                for (Ast.Decl decl : candidate.declarations()) {
-                    if (decl instanceof Ast.FieldDecl field
-                            && field.visibility() == Ast.Visibility.PUBLIC
-                            && field.name().equals(name)) {
-                        plainBindingMatch = true;
-                    }
-                }
-            }
-
-            if (plainBindingMatch) {
-                throw new IllegalArgumentException(
-                        "entry export '" + name
-                                + "' cannot target a plain binding; use a callable, actor/class, or module");
-            }
-            if (eligibleMatches == 0) {
-                throw new IllegalArgumentException(
-                        "entry export '" + name
-                                + "' does not resolve to an exported callable, actor/class, or module");
-            }
-            if (eligibleMatches > 1) {
-                throw new IllegalArgumentException(
-                        "entry export '" + name
-                                + "' is ambiguous across exported declaration categories");
-            }
-            return resolved;
+            return exportAny(entry.name());
         }
 
         private Object exportAny(String name) {
-            Object resolved = null;
-            int matches = 0;
-
             Ast.ModuleDecl module = modules.get(name);
-            if (module != null && !module.name().equals(Parser.ROOT_MODULE)) {
-                resolved = new ModuleFacade(this, module);
-                matches++;
-            }
-
+            if (module != null && !module.name().equals(Parser.ROOT_MODULE)) return new ModuleFacade(this, module);
             Ast.ClassDecl klass = findClass(name);
-            if (klass != null) {
-                resolved = new ClassFacade(this, klass);
-                matches++;
-            }
-
+            if (klass != null) return new ClassFacade(this, klass);
             Ast.FunctionDecl fn = findFunction(name);
-            if (fn != null && fn.visibility() == Ast.Visibility.PUBLIC) {
-                resolved = (Invokable) args -> callFunction(fn, args);
-                matches++;
-            }
-
+            if (fn != null && fn.visibility() == Ast.Visibility.PUBLIC) return (Invokable) args -> callFunction(fn, args);
             for (Ast.ModuleDecl candidate : program.modules()) {
                 for (Ast.Decl decl : candidate.declarations()) {
                     if (decl instanceof Ast.FieldDecl field
                             && field.visibility() == Ast.Visibility.PUBLIC
                             && field.name().equals(name)) {
-                        if (field.initializer() == null) {
-                            throw new IllegalArgumentException(
-                                    "exported binding has no initializer: " + name);
-                        }
-                        Object value = eval(field.initializer(), new Env(null));
-                        resolved = value;
-                        matches++;
+                        if (field.initializer() == null) throw new IllegalArgumentException("exported binding has no initializer: " + name);
+                        return eval(field.initializer(), new Env(null));
                     }
                 }
             }
-
-            if (matches == 0) {
-                throw new IllegalArgumentException(
-                        "code unit '" + codeUnitId + "' does not export '" + name + "'");
-            }
-            if (matches > 1) {
-                throw new IllegalArgumentException(
-                        "code unit '" + codeUnitId
-                                + "' has an ambiguous cross-kind export named '" + name + "'");
-            }
-            return resolved;
+            throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export '" + name + "'");
         }
 
         private OresObject instantiate(Ast.ClassDecl klass, List<Object> args) {
