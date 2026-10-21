@@ -72,11 +72,11 @@ final class ActorRequestDependencyGraph {
     synchronized Lease suspendUntilReply(ActorIdentity caller, ActorIdentity callee) {
         Objects.requireNonNull(caller, "caller");
         Objects.requireNonNull(callee, "callee");
-        if (activeEdges == maxEdges) {
-            throw new IllegalStateException("actor request dependency capacity exhausted");
-        }
         if (caller.equals(callee) || canReach(callee, caller)) {
             throw new CyclicRequestException("serial actor request/await dependency cycle");
+        }
+        if (activeEdges == maxEdges) {
+            throw new IllegalStateException("actor request dependency capacity exhausted");
         }
         edges.computeIfAbsent(caller, ignored -> new HashMap<>())
                 .merge(callee, 1, Integer::sum);
