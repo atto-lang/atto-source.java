@@ -106,6 +106,7 @@ public final class ActorRuntime implements AutoCloseable {
         classes.add(List.of(1, 2, 3).getClass());
         classes.add(Collections.emptyList().getClass());
         classes.add(Collections.singletonList(1).getClass());
+        classes.add(Collections.nCopies(1, 1).getClass());
         classes.add(Collections.unmodifiableList(new ArrayList<>()).getClass());
         return Set.copyOf(classes);
     }
