@@ -87,6 +87,35 @@ excluded from that classifier budget. **All non-marker suppressed failures**
 remain part of traversal, including cancellation/panic/fatal during cleanup.
 The regression test verifies both sides of the invariant.
 
+## Bounded diagnostic truncation behavior
+
+Java source boundary capture retains a maximum of **64 suppressed entries**.
+Once the 64th entry would be used by a source boundary, it is replaced with
+the stackless notice `ores source trace truncated: one or more source boundaries omitted`.
+At most 63 earlier source boundaries are preserved when no other suppressed
+entries exist. The notice is intentionally conservative: it signals an omitted
+boundary at the cap, not the exact omitted count. Existing non-marker
+suppressed failures remain intact and retain their classification (panic,
+cancellation, fatal, ordinary throw).
+
+A source trace that does not reach the limit must not show a truncation notice.
+The real Throwable remains the authoritative failure; source markers are
+diagnostic-only and excluded from `TrapFailurePolicy`'s classification-node
+budget.
+
+## Host-fatal emergency path
+
+Java source diagnostic capture is intentionally **best effort** for fatal JVM
+failures. `SourceBoundaryTrace.record` returns the **same** `VirtualMachineError`,
+`ThreadDeath`, or `LinkageError` without creating source markers or allocating
+additional diagnostic strings. This avoids multiplying allocation and
+stack-use failures during VM out-of-memory, stack overflow, or linkage faults.
+Such failures are terminal host conditions, not ordinary `throw` values.
+
+This emergency fast path does **not** suppress Oreslang guest panic source
+markers, which remain typed and non-trappable. The compiler must never treat a
+fatal host exception as an ordinary guest `throw` or convert it to `None`.
+
 ## Admission matrix
 
 Before shipping common guest stack traces on both backends:
