@@ -1170,12 +1170,20 @@ public final class ActorRuntime implements AutoCloseable {
             requireOwner();
             nativeRegion.writeDouble(Math.multiplyExact(element, Double.BYTES), value);
         }
+        ActorNativeArena.Region.ReadOnlyLease leaseReadOnly(int byteOffset, int byteLength) {
+            requireOwner();
+            return nativeRegion.leaseReadOnly(byteOffset, byteLength);
+        }
         private void release(boolean ownerTurn) {
             synchronized (cell.lifecycleLock) {
                 // Close/stop, backing detachment, and byte refund must have
                 // one lifecycle linearization point. In particular, finalizer
                 // and close must not both believe they own the same quota.
-                if (!revoked.compareAndSet(false, true)) return;
+                if (revoked.get()) return;
+                // An outstanding immutable borrow must fail the explicit close
+                // without revoking the shard or prematurely refunding its quota.
+                if (ownerTurn) nativeRegion.close();
+                revoked.set(true);
                 ActorShardColumns shard = attachedShard;
                 attachedShard = null;
                 if (shard != null) shard.revokeBackingFromLease();
@@ -1184,8 +1192,8 @@ public final class ActorRuntime implements AutoCloseable {
                 if (cell.shardReservedBytes < charged) {
                     throw new IllegalStateException("actor shard reservation underflow");
                 }
-                // Finalization revokes all native regions at the arena barrier.
-                if (ownerTurn) nativeRegion.close();
+                // On actor stop, physical quiescence revokes native regions
+                // through the arena. Explicit owner-close already released it.
                 cell.shardReservedBytes -= charged;
             }
         }
