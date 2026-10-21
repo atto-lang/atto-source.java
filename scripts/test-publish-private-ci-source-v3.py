@@ -2084,25 +2084,32 @@ class PrivateCiV3Test(unittest.TestCase):
             {"pull": False, "push": True},
         )
         for permissions in denied:
-            with self.subTest(permissions=permissions), (
-                patch.object(v3, "_gh_ref_request", return_value=response) as request,
-                patch.object(
-                    v3.legacy,
-                    "checked_repo",
-                    return_value={
-                        "id": 1323598177,
-                        "full_name": "trusted/ci",
-                        "private": True,
-                        "visibility": "private",
-                        "permissions": permissions,
-                    },
-                ),
-            ):
-                with self.assertRaisesRegex(v3.Denied, "ref read/write permission"):
-                    v3.live_ref_sha(
-                        "trusted/ci", "ci/authorized-" + COMMIT, 1323598177
-                    )
-                request.assert_not_called()
+            with self.subTest(permissions=permissions):
+                with (
+                    patch.object(
+                        v3, "_gh_ref_request", return_value=response
+                    ) as request,
+                    patch.object(
+                        v3.legacy,
+                        "checked_repo",
+                        return_value={
+                            "id": 1323598177,
+                            "full_name": "trusted/ci",
+                            "private": True,
+                            "visibility": "private",
+                            "permissions": permissions,
+                        },
+                    ),
+                ):
+                    with self.assertRaisesRegex(
+                        v3.Denied, "ref read/write permission"
+                    ):
+                        v3.live_ref_sha(
+                            "trusted/ci",
+                            "ci/authorized-" + COMMIT,
+                            1323598177,
+                        )
+                    request.assert_not_called()
 
     def test_create_handoff_ref_requires_explicit_ref_read_write_permission(self):
         with (
