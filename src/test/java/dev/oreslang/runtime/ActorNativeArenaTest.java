@@ -201,27 +201,39 @@ final class ActorNativeArenaTest {
             assertEquals(ActorNativeArena.TaskPhase.NEW, frame.phase());
             assertEquals(0, frame.resumeCount());
 
-            frame.beginResume(true);
+            frame.beginInitialResume();
             assertEquals(ActorNativeArena.TaskPhase.RUNNING, frame.phase());
             assertEquals(1, frame.resumeCount());
-            frame.awaiting();
+            long awaitTicket = frame.awaiting();
+            assertTrue(awaitTicket > 0);
             assertEquals(ActorNativeArena.TaskPhase.AWAITING, frame.phase());
+            assertThrows(IllegalStateException.class,
+                    () -> frame.beginResume(ActorNativeArena.SuspensionKind.COOPERATE, awaitTicket));
+            assertThrows(IllegalStateException.class,
+                    () -> frame.beginResume(ActorNativeArena.SuspensionKind.AWAIT, awaitTicket + 1));
 
-            frame.beginResume(false);
+            frame.beginResume(ActorNativeArena.SuspensionKind.AWAIT, awaitTicket);
             assertEquals(2, frame.resumeCount());
-            frame.cooperating();
+            long cooperateTicket = frame.cooperating();
+            assertTrue(cooperateTicket > awaitTicket);
             assertEquals(ActorNativeArena.TaskPhase.COOPERATING, frame.phase());
+            assertThrows(IllegalStateException.class,
+                    () -> frame.beginResume(ActorNativeArena.SuspensionKind.COOPERATE, awaitTicket));
 
-            frame.beginResume(false);
+            frame.beginResume(ActorNativeArena.SuspensionKind.COOPERATE, cooperateTicket);
             assertEquals(3, frame.resumeCount());
             frame.done();
             assertEquals(ActorNativeArena.TaskPhase.DONE, frame.phase());
-            assertThrows(IllegalStateException.class, () -> frame.beginResume(false));
+            assertThrows(IllegalStateException.class,
+                    () -> frame.beginResume(ActorNativeArena.SuspensionKind.COOPERATE, cooperateTicket));
 
             ActorNativeArena.TaskFrame failed = arena.taskFrame();
             assertNotEquals(address, failed.nativeOffset());
-            failed.beginResume(true);
+            failed.beginInitialResume();
+            long failedTicket = failed.awaiting();
             failed.failed();
+            assertThrows(IllegalStateException.class,
+                    () -> failed.beginResume(ActorNativeArena.SuspensionKind.AWAIT, failedTicket));
             assertEquals(ActorNativeArena.TaskPhase.FAILED, failed.phase());
         }
         assertEquals(0, charged.get());
