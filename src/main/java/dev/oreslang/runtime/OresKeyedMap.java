@@ -81,6 +81,76 @@ public final class OresKeyedMap<K, V> {
     }
 
     /**
+     * Ownership-preserving result for a fallible single-entry insertion.
+     *
+     * <p>A committed result owns only the displaced mapping state. The newly
+     * inserted candidate has transferred into the Map and is deliberately not
+     * exposed again. A rejected result owns the exact uncommitted candidate so
+     * compiler lowering can restore the source place (or return it in an error)
+     * before propagating the admission failure.</p>
+     *
+     * <p>The raw failure object is intentionally not exposed as data. After a
+     * rejected candidate has been restored, compiler/runtime code may call
+     * {@link #rethrowIfRejected()} to preserve the original admission error.</p>
+     */
+    public static final class PutAttempt<V> {
+        private final Lookup<V> previous;
+        private final V uncommittedValue;
+        private final RuntimeException failure;
+
+        private PutAttempt(
+                Lookup<V> previous,
+                V uncommittedValue,
+                RuntimeException failure) {
+            this.previous = previous;
+            this.uncommittedValue = uncommittedValue;
+            this.failure = failure;
+        }
+
+        private static <V> PutAttempt<V> committed(Lookup<V> previous) {
+            return new PutAttempt<>(
+                    Objects.requireNonNull(previous, "previous Map state"),
+                    null,
+                    null);
+        }
+
+        private static <V> PutAttempt<V> rejected(
+                V uncommittedValue,
+                RuntimeException failure) {
+            return new PutAttempt<>(
+                    null,
+                    Objects.requireNonNull(
+                            uncommittedValue,
+                            "rejected Map candidate"),
+                    Objects.requireNonNull(failure, "Map admission failure"));
+        }
+
+        public boolean committed() {
+            return failure == null;
+        }
+
+        public Lookup<V> previous() {
+            if (!committed()) {
+                throw new IllegalStateException(
+                        "rejected Map insertion has no committed previous-value result");
+            }
+            return previous;
+        }
+
+        public V uncommittedValue() {
+            if (committed()) {
+                throw new IllegalStateException(
+                        "committed Map insertion transferred the candidate into the Map");
+            }
+            return uncommittedValue;
+        }
+
+        public void rethrowIfRejected() {
+            if (!committed()) throw failure;
+        }
+    }
+
+    /**
      * Runtime policy hook used by compiler-owned typed Map descriptors.
      *
      * <p>Validators must be deterministic and side-effect free. The container
@@ -346,43 +416,89 @@ public final class OresKeyedMap<K, V> {
         return SymbolPropertyKeyCodec.encodedWireLength(key);
     }
 
+    /**
+     * Copy-safe convenience mutation used by the current scalar guest Map
+     * surface. Move-only compiler lowering must use {@link #tryPutOwned}
+     * instead so a rejected candidate remains recoverable.
+     */
     public V put(K key, V value) {
+        PutAttempt<V> attempt = tryPutOwned(key, value);
+        attempt.rethrowIfRejected();
+        Lookup<V> previous = attempt.previous();
+        return previous.present() ? previous.value() : null;
+    }
+
+    /**
+     * Attempt one insert/replace without losing ownership of a rejected value.
+     *
+     * <p>All domain, graph, quota, policy and staging work completes while the
+     * caller still conceptually owns {@code value}. The live Map is published
+     * only after those fallible operations succeed. On rejection the exact
+     * candidate is returned in {@link PutAttempt#uncommittedValue()} and the
+     * live mapping is unchanged.</p>
+     *
+     * <p>For JSON values the global graph-stability guard is acquired before
+     * the destination Map monitor, matching every other JSON-object mutation.
+     * No guest callback may run from validation or staging.</p>
+     */
+    public PutAttempt<V> tryPutOwned(K key, V value) {
+        // A null candidate has no valid guest ownership state to return.
+        Objects.requireNonNull(value, "map value");
         if (valueDomain == ValueDomain.JSON) {
-            // Lock order for recursive mutable JSON graphs is global graph
-            // admission first, destination Map second. This prevents two Maps
-            // from concurrently validating opposite edges and committing a
-            // cycle after both observed an acyclic pre-state.
             synchronized (JSON_GRAPH_ADMISSION_LOCK) {
                 synchronized (this) {
-                    return putUnderMonitor(key, value);
+                    return tryPutOwnedUnderMonitor(key, value);
                 }
             }
         }
         synchronized (this) {
-            return putUnderMonitor(key, value);
+            return tryPutOwnedUnderMonitor(key, value);
         }
     }
 
-    private V putUnderMonitor(K key, V value) {
-        rejectReentrantMutation();
-        checkKey(key);
-        checkValueDomain(value);
-        long addedBytes = 0L;
-        if (!entries.containsKey(key)) {
-            if (entries.size() >= MAX_ENTRIES) {
-                throw new IllegalArgumentException("typed Map exceeds maximum key count");
+    private PutAttempt<V> tryPutOwnedUnderMonitor(K key, V value) {
+        try {
+            rejectReentrantMutation();
+            checkKey(key);
+            checkValueDomain(value);
+
+            long addedBytes = 0L;
+            if (!entries.containsKey(key)) {
+                if (entries.size() >= MAX_ENTRIES) {
+                    throw new IllegalArgumentException(
+                            "typed Map exceeds maximum key count");
+                }
+                addedBytes = wireKeyBytes(key);
+                if (addedBytes
+                        > MAX_KEY_SET_WIRE_BYTES - storedKeyWireBytes) {
+                    throw new IllegalArgumentException(
+                            "typed Map exceeds aggregate key byte budget");
+                }
             }
-            addedBytes = wireKeyBytes(key);
-            if (addedBytes > MAX_KEY_SET_WIRE_BYTES - storedKeyWireBytes) {
-                throw new IllegalArgumentException("typed Map exceeds aggregate key byte budget");
-            }
+
+            // Stage every allocation/hash-table expansion before ownership can
+            // be considered committed. Key domains are restricted to immutable
+            // String/Symbol values, so staging cannot dispatch guest equality
+            // or hash callbacks.
+            LinkedHashMap<K, V> staged = new LinkedHashMap<>(entries);
+            V previous = staged.put(key, value);
+
+            // Compiler-owned policy hooks are the final fallible preflight.
+            // The live mapping is still untouched if they reject.
+            runEntryValidator(key, value);
+
+            // Publication is a pair of field/counter assignments after every
+            // expected RuntimeException-producing operation has completed.
+            // Fatal VM Errors are outside guest recovery/ownership semantics.
+            entries = staged;
+            storedKeyWireBytes += addedBytes;
+            return PutAttempt.committed(
+                    previous == null
+                            ? Lookup.missing()
+                            : Lookup.present(previous));
+        } catch (RuntimeException rejected) {
+            return PutAttempt.rejected(value, rejected);
         }
-        // Policy hooks are last in preflight: structurally impossible writes
-        // must not trigger validator callbacks.
-        runEntryValidator(key, value);
-        V previous = entries.put(key, value);
-        storedKeyWireBytes += addedBytes;
-        return previous;
     }
 
     /**
