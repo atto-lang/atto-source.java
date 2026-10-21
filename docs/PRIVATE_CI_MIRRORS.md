@@ -2,6 +2,14 @@
 
 Never mirror this repository's private source into public, internal, or unknown-visibility GitHub repositories. Even unreferenced Git blobs or trees can remain retrievable by SHA. Deleting/resetting branch refs does not prove deletion of Actions logs, artifacts, caches, PR refs, forks or dangling objects. Historical exposures require a confidential security incident response and GitHub Support purge review.
 
+## Incident-specific quarantine
+
+The historical carrier `zed-pkg-test/java-app` is permanently quarantined by
+policy. All publisher, shell-gate, and standalone mirror-admission paths must
+reject that owner/repo case-insensitively before credentials, metadata fetches,
+source traversal, Git writes, or workflow dispatch. A future allowlist or
+carrier-contract edit must not be able to reactivate it.
+
 ## Required fail-closed preflight
 
 Before any Git blob/tree creation, branch creation containing source, commit, artifact upload, log emission or workflow dispatch in a cross-repository CI carrier:
