@@ -205,12 +205,6 @@ public final class ActorNativeArena implements AutoCloseable {
     }
 
     /**
-     * Actor-owned list storage foundation. Public collection policy remains in
-     * Oreslang stdlib; this class owns only bounded native element storage.
-     * Size and chunk links are authoritative native words. Element payloads use
-     * the same tagged slots/reference provenance as actor object fields.
-     */
-    /**
      * Package-private issuance boundary for trusted core/stdlib runtime code.
      * Merely implementing the public NativeCapability interface or returning
      * this actor's arena must never grant authority to guest-native storage.
@@ -220,6 +214,12 @@ public final class ActorNativeArena implements AutoCloseable {
         issuedNativeCapabilities.put(Objects.requireNonNull(capability), Boolean.TRUE);
     }
 
+    /**
+     * Actor-owned list storage foundation. Public collection policy remains in
+     * Oreslang stdlib; this class owns only bounded native element storage.
+     * Size and chunk links are authoritative native words. Element payloads use
+     * the same tagged slots/reference provenance as actor object fields.
+     */
     public synchronized NativeList nativeList() {
         checkAccess();
         long header = allocate(LIST_HEADER_BYTES);
