@@ -72,7 +72,12 @@ final class OresKeyedMapNominalEntrySnapshotTest {
         assertEquals("x", entry.key());
         assertEquals(7, entry.value());
         assertEquals("OresEntry<opaque>", entry.toString());
-        assertFalse(entry instanceof java.util.Map.Entry<?, ?>,
+
+        // Keep the probe dynamically typed: OresEntry is final, so Java
+        // correctly rejects an impossible instanceof Map.Entry check when the
+        // static operand type is OresEntry.
+        Object opaqueEntry = entry;
+        assertFalse(opaqueEntry instanceof java.util.Map.Entry<?, ?>,
                 "guest Entry must never leak Java Map.Entry mutation APIs");
     }
 
