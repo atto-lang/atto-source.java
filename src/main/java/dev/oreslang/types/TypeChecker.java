@@ -3353,6 +3353,7 @@ public final class TypeChecker {
                             if (field != null) {
                                 requireClassMemberVisible(
                                         field.field().visibility(), field.owner(), "field", field.field().name());
+                                requireActorStateLoan(field);
                                 if (call.typeArgumentsPresent()) {
                                     throw new IllegalArgumentException(
                                             "function-valued field '" + member.member()
@@ -3783,6 +3784,7 @@ public final class TypeChecker {
                     if (field != null) {
                         requireClassMemberVisible(
                                 field.field().visibility(), field.owner(), "field", field.field().name());
+                        requireActorStateLoan(field);
                         Type pattern = classFieldType(field.owner(), field.field());
                         return substituteGenerics(pattern, classGenericBindings(field.owner(), field.ownerType()));
                     }
@@ -4878,6 +4880,7 @@ public final class TypeChecker {
             }
             requireClassMemberVisible(
                     field.field().visibility(), field.owner(), "field", field.field().name());
+            requireActorStateLoan(field);
             Type pattern = classFieldType(field.owner(), field.field());
             return substituteGenerics(
                     pattern,
@@ -5229,6 +5232,15 @@ public final class TypeChecker {
                 .anyMatch(annotation -> annotation.name().equals("__actor_state_schema"));
     }
 
+    private static void requireActorStateLoan(ResolvedField field) {
+        if (isActorStateSchemaField(field.field())) {
+            throw new IllegalArgumentException(
+                    "actor state field '" + field.owner().name() + "."
+                            + field.field().name()
+                            + "' is sealed; access requires verified critical handle_state(...) state loan");
+        }
+    }
+
     private Type memberType(Ast.MemberExpr member, Env env, Set<String> generics, Type self) {
         return memberType(member, env, generics, self, false);
     }
@@ -5269,12 +5281,7 @@ public final class TypeChecker {
                 if (field != null) {
                     requireClassMemberVisible(
                             field.field().visibility(), field.owner(), "field", field.field().name());
-                    if (isActorStateSchemaField(field.field())) {
-                        throw new IllegalArgumentException(
-                                "actor state field '" + field.owner().name() + "."
-                                        + field.field().name()
-                                        + "' is sealed; access requires verified critical handle_state(...) state loan");
-                    }
+                    requireActorStateLoan(field);
                     if (writing && field.field().bindingKind() != Ast.BindingKind.LET) {
                         // Preserve the pre-existing constructor assignment path
                         // for fields declared without an initializer. A field
