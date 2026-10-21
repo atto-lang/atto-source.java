@@ -3803,6 +3803,11 @@ public final class TypeChecker {
                     "await requires Future<T> or ActorRef<T>; got " + awaitedType);
         }
         if (expr instanceof Ast.ChannelOpExpr channelOp) {
+            if (synchronousCpuRegionDepth != 0
+                    && channelOp.mode() == Ast.WaitMode.BLOCKING) {
+                throw new IllegalArgumentException(
+                        "cpu { } cannot perform blocking channel I/O on a scheduler/actor carrier");
+            }
             Type element = channelElementType(
                     typeOf(channelOp.channel(), env, generics, self),
                     channelOp.operation() == Ast.ChannelOperation.READ ? "readch" : "writech");
@@ -3909,6 +3914,11 @@ public final class TypeChecker {
             }
         }
         if (expr instanceof Ast.DynamicSelectExpr selected) {
+            if (synchronousCpuRegionDepth != 0
+                    && selected.mode() == Ast.WaitMode.BLOCKING) {
+                throw new IllegalArgumentException(
+                        "cpu { } cannot block on select; use a Task/async continuation");
+            }
             // Dynamic select accepts a SelectSet directly or a runtime
             // list/map of SelectCase values. The exact case element type may
             // remain Unknown until collection generic constraints are richer.
