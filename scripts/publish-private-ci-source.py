@@ -31,6 +31,7 @@ BLOCKING_INCIDENT_REPO = "ores-truffle-oreslang/oreslang-platform-conformance"
 BLOCKING_INCIDENT_REPOSITORY_ID = 1413795502
 BLOCKING_INCIDENT_IDS = {22: 5832921751, 77: 5904679716}
 BLOCKING_INCIDENTS = (22, 77)
+QUARANTINED_DESTINATIONS = ("zed-pkg-test/java-app",)
 SOURCE_PROTECTED_BRANCH = "main"
 POLICY_PATH = ".github/private-ci-approved-repositories.txt"
 CODEOWNERS_PATH = ".github/CODEOWNERS"
@@ -167,6 +168,8 @@ def require_resolved_blocking_incidents():
 
 
 def require_preflight(repository, root):
+    if repository.casefold() in {item.casefold() for item in QUARANTINED_DESTINATIONS}:
+        raise Denied("destination is quarantined by private-source incident policy")
     require_resolved_blocking_incidents()
     guard = root / "scripts" / "check-private-ci-destination.sh"
     if guard.is_symlink() or not guard.is_file():
