@@ -4218,7 +4218,7 @@ public final class TypeChecker {
                 case "isolated" -> Primitive.BOOL;
                 // Handler dispatch retains the exchange beyond this call until
                 // actor admission and delivery. It is an ownership transfer,
-                // never a scoped &mut loan.
+                // never a scoped mutable loan.
                 case "dispatch" -> new Function(List.of(exchange), Primitive.VOID);
                 default -> throw new IllegalArgumentException("unknown HTTP handler member " + name);
             };
