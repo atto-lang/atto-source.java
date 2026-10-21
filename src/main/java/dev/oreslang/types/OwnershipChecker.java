@@ -730,7 +730,7 @@ public final class OwnershipChecker {
         if (readonlyRecord && storedType.isRecordType() && !storedType.isReadonlyRecordType()) {
             storedType = Ast.TypeRef.readonlyRecordType(storedType.recordMembers());
         }
-        // A nested &T must not become an apparently owned Option, Future,
+        // A nested borrowed value must not become an apparently owned Option, Future,
         // record, tuple or collection through a declared binding type.
         if (!storedType.isBorrow() && containsBorrowType(storedType)) {
             throw error("owned binding cannot contain a borrowed reference without container lifetime parameters");
@@ -886,7 +886,7 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.CastExpr cast) {
             ValueInfo source = checkExpr(cast.value(), scope, consuming);
-            // An optional/as cast must not launder &T into an apparently owned
+            // An optional/as cast must not launder a borrowed value into an apparently owned
             // Option<U> or U. A runtime class test cannot copy ownership.
             if (isBorrowValue(source) && !cast.targetType().isBorrow()) {
                 throw error("cast cannot turn a borrowed view into an owned value; use an explicit owned copy");
@@ -1647,7 +1647,7 @@ public final class OwnershipChecker {
     /**
      * An async call or generator can retain arguments after its caller's
      * lexical scope exits. A call-site borrow is not an owned Future lifetime:
-     * until scoped-join loans are modeled, fail closed for both explicit &T
+     * until scoped-join loans are modeled, fail closed for explicit borrowed values
      * and structural implicit-read parameters.
      */
     private void requireDeferredOwnedParameters(
@@ -3278,7 +3278,7 @@ public final class OwnershipChecker {
     }
 
     /**
-     * Track nested reference types, not just the top-level &T. An owned
+     * Track nested borrowed types, not just the top-level loan. An owned
      * container cannot erase a borrow's lexical lifetime. Identity tracking
      * prevents recursive type representations from looping indefinitely.
      */
