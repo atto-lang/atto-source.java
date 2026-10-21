@@ -173,6 +173,22 @@ final class CpuTaskLanguageTest {
                 """));
     }
 
+    @Test void taskLocalCanShadowUnrelatedParentFuture() throws Exception {
+        assertEquals("42|1", run("""
+                pub async fnc main(): void {
+                  let Future<int> value = task { return 1; };
+                  let Future<int> second = task {
+                    const int value = 41;
+                    return value + 1;
+                  };
+                  stdio.stdout.write(await second);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(await value);
+                  return;
+                }
+                """));
+    }
+
     @Test void taskCapturesTransitiveNestedTaskReferences() throws Exception {
         assertEquals("42", run("""
                 pub async fnc main(): void {
