@@ -59,6 +59,31 @@ final class ActorArenaAccessEvidenceTest {
     }
 
     @Test
+    void nativeTextPayloadsAreRecordedAsByteSpansWithoutGuestContents() {
+        ActorNativeArena arena = new ActorNativeArena(4096, () -> { }, bytes -> () -> { });
+        try (arena) {
+            arena.enableAccessEvidence(128);
+            var fields = arena.fields(java.util.List.of("label"), new Object());
+            assertNull(fields.put("label", "AB"));
+            assertEquals("AB", fields.get("label"));
+            assertEquals("AB", fields.put("label", "CD"));
+            assertEquals("CD", fields.get("label"));
+            var events = arena.accessEvidenceSnapshot();
+            assertTrue(events.completeBuffer());
+            assertTrue(events.scopeId() > 0);
+            /* Scalar slots only have 8-byte accesses. Width 4 proves both
+             * character writes and reads through the direct ByteBuffer path. */
+            long writes = events.accesses().stream()
+                    .filter(x -> x.width() == 4 && x.write()).count();
+            long reads = events.accesses().stream()
+                    .filter(x -> x.width() == 4 && !x.write()).count();
+            assertEquals(2, writes);
+            assertTrue(reads >= 2);
+            assertTrue(events.accesses().stream().allMatch(x -> x.offset() >= 0));
+        }
+    }
+
+    @Test
     void multipleArenaIdentitiesDoNotOverlapAndInvalidAccessesAreNotLogged() {
         var first = new ActorArenaAccessEvidence(2);
         var second = new ActorArenaAccessEvidence(2);
@@ -68,6 +93,9 @@ final class ActorArenaAccessEvidenceTest {
         first.record(16, 8, true);
         assertEquals(2, first.snapshot().accesses().size());
         assertEquals(1, first.snapshot().dropped());
+        assertFalse(first.snapshot().completeBuffer());
+        assertTrue(first.snapshot().scopeId() > 0);
+        assertNotEquals(first.snapshot().scopeId(), second.snapshot().scopeId());
         assertEquals(1, second.snapshot().accesses().size());
         assertEquals(0, second.snapshot().dropped());
         assertThrows(IllegalArgumentException.class, () -> first.record(-1, 8, true));
