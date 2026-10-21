@@ -1397,6 +1397,14 @@ public final class OwnershipChecker {
                     : Ast.TypeRef.recordType(members);
             return new ValueInfo(type, ValueKind.MOVE_ONLY, null);
         }
+        if (expr instanceof Ast.CpuRegionExpr cpu) {
+            // Eager inline execution shares the caller's ownership scope.
+            // Its return is region-local, while outer moves and loans remain
+            // visible to the parent after the region completes.
+            Ast.TypeRef result = cpu.checkedResultType();
+            checkBlock(cpu.body(), scope, result);
+            return new ValueInfo(result, kindOfType(result), null);
+        }
         if (expr instanceof Ast.TaskExpr task) {
             if (scope.descendantsNonLexical()) {
                 throw error("nb Task cannot capture a non-lexical/unknown execution scope");
