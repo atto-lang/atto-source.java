@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.ActorNativeArena;
 import dev.oreslang.runtime.IsolatePolicy;
+import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.OresScheduler;
 import org.junit.jupiter.api.Test;
 
@@ -87,6 +88,8 @@ final class ActorRuntimeTest {
             assertThrows(SecurityException.class, () -> shared.send(List.of("nested", nativeValue)));
             assertThrows(SecurityException.class, () -> runtime.shareReadonly(nativeValue));
             assertThrows(SecurityException.class, () -> ActorRuntime.freeze(nativeValue));
+            assertThrows(SecurityException.class, () -> OresMutex.shared(nativeValue));
+            assertThrows(SecurityException.class, () -> OresMutex.shared(List.of(nativeValue)));
         }
     }
 
