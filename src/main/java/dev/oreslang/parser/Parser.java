@@ -510,8 +510,6 @@ public final class Parser {
         Token.Type classTerminator = braceStyle ? RBRACE : END;
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
-        boolean stateSchemaSeen = false;
-        boolean legacyActorFieldSeen = false;
         Ast.ConstructorDecl constructor = null;
 
         while (!check(classTerminator) && !check(EOF)) {
@@ -744,6 +742,8 @@ public final class Parser {
         Token.Type terminator = braceStyle ? RBRACE : END;
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
+        boolean stateSchemaSeen = false;
+        boolean legacyActorFieldSeen = false;
 
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
