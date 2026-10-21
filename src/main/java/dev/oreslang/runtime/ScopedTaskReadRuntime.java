@@ -18,10 +18,41 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class ScopedTaskReadRuntime {
     private ScopedTaskReadRuntime() { }
 
-    private record AllocationKey(
-            String domain,
-            long allocationId,
-            long generation) { }
+    private static final class AllocationKey {
+        private final Ast.Program programIdentity;
+        private final String domain;
+        private final long allocationId;
+        private final long generation;
+
+        private AllocationKey(
+                Ast.Program programIdentity,
+                String domain,
+                long allocationId,
+                long generation) {
+            this.programIdentity =
+                    Objects.requireNonNull(programIdentity, "checked Program identity");
+            this.domain = Objects.requireNonNull(domain, "allocation domain");
+            this.allocationId = allocationId;
+            this.generation = generation;
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            return other instanceof AllocationKey that
+                    && programIdentity == that.programIdentity
+                    && domain.equals(that.domain)
+                    && allocationId == that.allocationId
+                    && generation == that.generation;
+        }
+
+        @Override
+        public int hashCode() {
+            int hash = System.identityHashCode(programIdentity);
+            hash = 31 * hash + domain.hashCode();
+            hash = 31 * hash + Long.hashCode(allocationId);
+            return 31 * hash + Long.hashCode(generation);
+        }
+    }
 
     private static final int WRITE_HELD = -1;
     private static final int POISONED = Integer.MIN_VALUE;
@@ -92,6 +123,7 @@ public final class ScopedTaskReadRuntime {
         ScopedTaskReadAuthority.AllocationIdentity allocation =
                 authority.allocation();
         AllocationKey key = new AllocationKey(
+                program,
                 allocation.domain(),
                 allocationId,
                 generation);
@@ -128,9 +160,11 @@ public final class ScopedTaskReadRuntime {
      * immediately after the check and race the write.
      */
     public static WriteLease acquireWrite(
+            Ast.Program program,
             ScopedTaskReadAuthority.AllocationIdentity allocation) {
+        Objects.requireNonNull(program, "checked Program");
         Objects.requireNonNull(allocation, "allocation");
-        AllocationKey key = key(allocation);
+        AllocationKey key = key(program, allocation);
         ACCESS.compute(key, (ignored, current) -> {
             if (current != null) {
                 if (current == WRITE_HELD) {
@@ -159,9 +193,11 @@ public final class ScopedTaskReadRuntime {
      * so reader admission and WRITE acquisition are linearized.
      */
     public static void requireWritable(
+            Ast.Program program,
             ScopedTaskReadAuthority.AllocationIdentity allocation) {
+        Objects.requireNonNull(program, "checked Program");
         Objects.requireNonNull(allocation, "allocation");
-        Integer state = ACCESS.get(key(allocation));
+        Integer state = ACCESS.get(key(program, allocation));
         if (state == null) return;
         if (state == WRITE_HELD) {
             throw new IllegalStateException(
@@ -180,8 +216,9 @@ public final class ScopedTaskReadRuntime {
     }
 
     static int activeReadersForTesting(
+            Ast.Program program,
             ScopedTaskReadAuthority.AllocationIdentity allocation) {
-        Integer state = ACCESS.get(key(allocation));
+        Integer state = ACCESS.get(key(program, allocation));
         return state != null && state > 0 ? state : 0;
     }
 
