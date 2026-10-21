@@ -4397,6 +4397,16 @@ public final class OwnershipChecker {
      * the identifier is spelled ActorRef. Used identically for the base
      * ownership Copy classifier and the independent Task Send proof.
      */
+    private boolean hasLocalTypeAliasNamed(String name) {
+        for (Ast.ModuleDecl module : checkedProgram.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.TypeAliasDecl alias
+                        && alias.name().equals(name)) return true;
+            }
+        }
+        return false;
+    }
+
     private boolean isVerifiedActorReference(Ast.TypeRef type) {
         if (type == null || type.isBorrow()
                 || !type.name().equals("ActorRef")
