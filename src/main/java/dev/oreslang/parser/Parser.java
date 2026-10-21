@@ -3384,7 +3384,7 @@ public final class Parser {
         }
         if (name.equals("borrow") && match(MUT)) {
             throw error(previous(),
-                    "legacy 'rt borrow mut' is invalid; use 'rt mut borrow'");
+                    "legacy borrow/mut ordering is invalid; use 'rt mut borrow'");
         }
         Ast.Expr argument;
         if (match(LPAREN)) {
