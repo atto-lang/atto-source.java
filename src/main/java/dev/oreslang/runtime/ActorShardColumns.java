@@ -155,7 +155,11 @@ public final class ActorShardColumns implements AutoCloseable {
             this.length = length;
         }
 
-        public int length() { return length; }
+        public int length() {
+            owner.requireOwner();
+            slice.length(); // validates revocation, borrow closure and actor identity
+            return length;
+        }
 
         public double read(int row) {
             owner.requireOwner();
