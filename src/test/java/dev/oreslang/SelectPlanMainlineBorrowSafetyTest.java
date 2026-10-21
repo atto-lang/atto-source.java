@@ -157,6 +157,51 @@ final class SelectPlanMainlineBorrowSafetyTest {
     }
 
     @Test
+    void readonlyBorrowCannotMutateDynamicSelectPlan() {
+        reject("""
+                fnc bad(): void {
+                  val Channel<int> ch = Channel.new<int>(1);
+                  val DynamicSelectPlan plan = DynamicSelectPlan.new();
+                  val &DynamicSelectPlan borrowed = rt borrow plan;
+                  borrowed.put("read", SelectCase.read(ch));
+                  return;
+                }
+                """, "cannot mutate DynamicSelectPlan.put through");
+        reject("""
+                fnc bad(): void {
+                  val DynamicSelectPlan plan = DynamicSelectPlan.new();
+                  val &DynamicSelectPlan borrowed = rt borrow plan;
+                  borrowed.remove("read");
+                  return;
+                }
+                """, "cannot mutate DynamicSelectPlan.remove through");
+    }
+
+    @Test
+    void readonlyBorrowCanReadDynamicPlanMetadata() {
+        accept("""
+                fnc good(): void {
+                  val DynamicSelectPlan plan = DynamicSelectPlan.new();
+                  val &DynamicSelectPlan borrowed = rt borrow plan;
+                  val int n = borrowed.size();
+                  val int v = borrowed.version();
+                  return;
+                }
+                """);
+    }
+
+    @Test
+    void borrowedSelectResultCannotTransferOwnedValue() {
+        reject("""
+                fnc bad(SelectResult result): void {
+                  val &SelectResult borrowed = rt borrow result;
+                  val payload = borrowed.value;
+                  return;
+                }
+                """, "SelectResult.value cannot be moved out of a borrowed result");
+    }
+
+    @Test
     void nestedOptionCannotDuplicateOwnedSelectCase() {
         reject("""
                 fnc bad(): void {
