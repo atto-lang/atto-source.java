@@ -267,7 +267,7 @@ public final class ActorStateContract {
         // manufacture an escaping value before typed snapshot lowering.
         // Unrelated owned rt copy expressions remain permitted.
         // The parser lowers both legacy '&s.field' and canonical
-        // 'rt borrow mut s.field' to UnaryExpr ("&" / "&mut").
+        // 'rt mut borrow s.field' to UnaryExpr ("&" / "&mut").
         // Checking only RuntimeCallExpr("borrow") would miss those paths.
         // A live state projection is not an owned value and cannot acquire
         // an additional escaping borrow, immutable or mutable.
