@@ -25,49 +25,72 @@ end
 Imports are explicit about what kind of symbol is entering the compilation unit:
 
 ```ores
-import module foo from "../xyz";
-import module {foo, bar} from "../xyz";
-import class {x} from '../xyz';
-import fnc * as funcs from '../xyz';
-import * as x from './xyz';
+import module Bar from "../xyz";
+import actor Foo from "../actors";
+import actor (Foo as F) from "../actors";
+import actor {Worker: W, Supervisor as S} from "../actors";
+import class {Config as ExternalConfig} from "../types";
+import fnc {solve as linear_solve} from "../solver";
+import fnc * as funcs from "../xyz";
+import * as x from "./xyz";
 ```
 
-Wildcard imports always require a namespace alias. This avoids silently injecting an unbounded set of names into the local scope. Import paths are part of the AST/compiler contract; filesystem/package resolution is a host build/bundling concern so strict isolates do not gain ambient filesystem access merely by using `import`.
+There are no JavaScript-style ordinary default exports. Named imports stay
+reviewable, and wildcard imports always require a namespace alias so an
+unbounded set of declarations is never silently injected into local scope.
+Both `as` and `:` are accepted inside selected-import lists as alias
+spellings.
 
-### Circular imports and file initialization
+Hot-loaded/plugin code has a deliberately separate single-entry ABI:
+
+```ores
+define actor Worker as
+  pub receive(m: Job): void {
+    // one mailbox turn
+    return;
+  }
+end
+
+export entry Worker;
+```
+
+A loader, or another compilation unit acting as a loader adapter, may resolve it
+without knowing the declaration's source name:
+
+```ores
+import entry as Plugin from "./worker";
+```
+
+A code unit has zero or one `export entry`. This is an explicit hot-load
+entrypoint, **not** a default export: it does not change normal named-import
+resolution and cannot be used to create multiple competing defaults.
+
+Import paths are part of the AST/compiler contract; filesystem/package
+resolution is a host build/bundling concern so strict isolates do not gain
+ambient filesystem access merely by using `import`.
+
+### Circular imports and explicit initialization
 
 Import cycles are legal. Oreslang does not reject a program merely because its
 file/module graph contains a cycle such as `a.ores -> b.ores -> a.ores`.
 
-The loader uses a staged lifecycle:
+The loader uses an inert staged link lifecycle:
 
 1. parse and statically validate the complete reachable source graph;
 2. resolve/link imports for every code unit;
 3. compute strongly connected components (SCCs) of the import graph;
 4. for each dependency-first SCC, verify that **all** members are linked;
-5. run each member's optional file init hook;
-6. after initialization, invoke the entry unit's `main`.
+5. invoke only the application/program/plugin entry explicitly selected by the host.
 
-A file init hook has the exact shape:
+There is currently **no implicit file/module/class `init` hook**. Importing or
+linking a code unit never executes user code merely because a function is named
+`init`. Initialization is ordinary explicit Oreslang code called by the
+application, supervisor, or selected entry point. A function named `init` is an
+ordinary callable and may have ordinary parameters/results subject to the normal
+function rules.
 
-```ores
-fnc init() => void {
-  // side effects are allowed here
-  return;
-}
-```
-
-It is private, synchronous, non-actor, non-generic, takes no parameters, and
-returns `void`. The hook runs at most once for that loaded code-unit
-generation. Inside a cycle, init hooks execute in deterministic normalized
-code-unit-id order, but code must rely only on the stronger barrier guarantee:
-**every peer in the cycle is already linked before any peer's init begins**.
-
-This means an init hook may call exported declarations from a cyclic peer
-without observing an "unloaded module" state. If application state requires a
-specific sequencing relationship *between* two init hooks in the same cycle,
-that relationship should be made explicit in application code rather than
-inferred from the import edges.
+This keeps import/linking deterministic, tree-shake friendly, and AOT friendly
+while still guaranteeing that cyclic peers are linked before cross-unit use.
 
 ## Module interfaces / OCaml-style module signatures
 
@@ -420,85 +443,191 @@ does not depend on a specific OS-thread implementation.
 
 ## Actors
 
-Oreslang uses an Akka-style dispatcher model: an actor is **not** a thread. Every actor owns one mailbox, and at most one mailbox turn for a given actor may execute at a time. Actors are multiplexed over bounded thread pools, so the carrier thread may change between turns.
+An Oreslang actor is a **compiler/runtime-enforced specialization of the class
+model**, not a second object system. `define actor Worker ...` and
+`define class Worker extends Actor ...` normalize to the same actor-class AST
+and runtime semantics.
 
-There are three actor execution domains:
-
-```ores
-pub actor fnc worker(int value) => int {
-  return value;
-}
-
-shared actor Account {
-  let int balance = 100;
-
-  pub fnc withdraw(int amount) => void {
-    self.balance = self.balance - amount;
-    return;
-  }
-}
-
-untrusted actor RequestSandbox {
-  pub fnc handle() => void {
-    // The host may bind this actor to one bounded HTTP exchange.
-    return;
-  }
-}
-```
-
-- an unqualified `actor` is **shared**; use `isoactor` for confined/private actor memory;
-- `shared actor` is a **shared-memory-capable** actor;
-- `untrusted actor` is a **memory-isolated adversarial sandbox** with a hard lifetime/fuel/capability budget;
-- private, shared, and untrusted actors are scheduled on **different dispatcher pools** for bulkheading;
-- compiler-generated/context-aware actor factories are capture-free for **both** actor kinds; mutable host state must enter through messages or explicit runtime-owned capabilities rather than Java closure capture;
-- trusted host embedding has separately named supervisor-only construction escape hatches, and adversarial policies reject them;
-- both kinds still process their own mailbox serially;
-- actor-owned `let` fields may mutate during a mailbox turn because that turn is the exclusive mutation capability for `self`;
-- no lock is required around ordinary actor-owned fields, including fields of a shared actor;
-- actor `self` and move-only state rooted at `self` cannot escape the mailbox turn by value or returned borrow; copy-like values such as integers, booleans, and strings may be returned normally;
-- synchronized shared memory requires the host-granted `SHARED_MEMORY` capability.
-
-Actor callables are entry points, not ordinary functions. They are invoked only
-with `spawn`:
+A persistent actor exposes a typed public method protocol:
 
 ```ores
-val pending = spawn worker(41);
+define class Worker extends Actor as
+  let int count = 0;
 
-// Available synchronously after identity reservation + spawn admission.
-stdio.println(pending.id);
+  constructor(initial: int) {
+    self.count = initial;
+  }
 
-// READY means the actor runtime has initialized the actor and its mailbox/control
-// endpoint. It does not mean worker() has finished.
-val ref = await pending.ready;
+  private normalized(value: int): int {
+    return value;
+  }
 
-// Equivalent readiness shorthand:
-val other_ref = await spawn worker(1);
+  pub add(value: int): void {
+    self.count = self.count + self.normalized(value);
+    return;
+  }
 
-// Completion is separate from readiness.
-val completed = await pending.done;
-
-// Actor functions additionally expose their returned value.
-val answer = await pending.result;
+  pub current(): int {
+    return self.count;
+  }
+end
 ```
 
-`spawn actor_fnc(...)` returns an `ActorSpawn<T>` ticket immediately after the
-runtime has reserved an `ActorId` and admitted the initial spawn/message. The
-fast path must not wait for actor behavior construction or actor-callable
-completion. `ActorSpawn<T>` exposes `id`, `ready: Future<ActorRef>`,
-and `done: Future<bool>`. `done` resolves to `true` only after normal actor
-callable completion and fails exceptionally on actor failure/cancellation.
-Any non-`void` actor callable—`fnc` or `routine`—additionally exposes
-`result: Future<T>`. A void actor callable has no result value and uses
-`done` when completion must be observed.
+Actor fields remain private actor-owned state. Private instance methods are
+ordinary direct `self` calls inside the actor turn. Public instance methods
+form the actor's source-level protocol.
 
-`await spawn actor_fnc(...)` awaits **READY only** and yields an `ActorRef`.
-It never waits for the actor function/routine to finish. The ready reference
-exposes stable actor identity/control metadata such as `id` and
-`is_alive()`. One-shot actor callables do **not** expose an application
-mailbox: they terminate after their invocation, so accepting queued messages
-would be misleading. Typed mailboxes belong to persistent actor behavior/receive
-semantics rather than this one-shot callable launch primitive. Ordinary
-`worker(...)` calls are compile errors when `worker` is declared `actor`.
+`Actor`, `IsoActor`, and `UntrustedActor` are compiler-intrinsic execution
+domain markers:
+
+- `actor` / `Actor` is the SHARED actor domain;
+- `isoactor` / `IsoActor` owns confined/private actor memory while trusted
+  code remains in the primary Graal isolate;
+- `untrusted actor` / `UntrustedActor` is the adversarial sandbox domain and
+  is the actor form that crosses into the subsequent/nested Graal isolate.
+
+These intrinsic bases define **execution/isolation domain only**. They do not
+take `<Message, Reply, Error>` protocol arguments. Protocol shape comes from
+the public methods and, when useful, implemented interfaces.
+
+### Typed protocol, one runtime-owned mailbox
+
+Public actor methods are not separate concurrent entrypoints. The compiler
+lowers the complete public method set into one hidden mailbox message
+union/dispatcher. OresVM owns the permanent mailbox/event loop and holds at most
+one execution lease for that actor.
+
+Outside code holds an `ActorRef<Worker>`:
+
+```ores
+val worker = spawn Worker(0);
+
+await worker.add(2);
+val value = await worker.current();
+```
+
+Conceptually:
+
+```text
+Worker.add(int): void
+ActorRef<Worker>.add(int): Future<void>
+
+Worker.current(): int
+ActorRef<Worker>.current(): Future<int>
+```
+
+The actor reference does not expose the mutable actor object or a public
+mailbox handle. There is no ambient raw source-level `send`/`receive` API for
+actor classes. If an actor explicitly declares a public method named `send` or
+`receive`, that name is an ordinary typed protocol endpoint and dispatches
+through the same hidden mailbox as every other protocol method. `id`,
+`is_alive`, and `mailbox` are reserved ActorRef control-member names.
+
+Protocol methods are currently monomorphic at method level so the generated
+message ABI remains closed and AOT-safe. Generic actor classes remain allowed.
+Protocol parameters cannot be `mut`, and every parameter and return type must
+pass actor-boundary sendability checks.
+
+An actor must not invoke its own `ActorRef<...>` protocol. Such a request would
+queue behind the currently executing serialized turn and can deadlock if
+awaited. Inside the actor, call `self.method(...)` directly; use `next_tick`
+or the actor's internal channel/scheduling primitives when work must
+intentionally occur on a later turn.
+
+An actor may implement a multi-method interface and callers may narrow a
+concrete reference:
+
+```ores
+define interface WorkerAPI
+  fnc add(value: int): void;
+  fnc current(): int;
+end
+
+val ActorRef<WorkerAPI> worker = spawn Worker(0);
+```
+
+This is also the preferred hot-loading boundary: the implementation may remain
+opaque behind the declared interface/ABI.
+
+Actor inheritance preserves the execution domain and protocol visibility. A
+child may inherit its entire protocol or add endpoints, but it may not narrow an
+inherited public endpoint to private.
+
+Actor classes do not support static functions. Put reusable non-actor code in
+ordinary top-level/module `fnc` declarations with their own checked effects.
+Actor restrictions propagate transitively through ordinary helpers called by
+actor code; a helper is not an effect escape hatch.
+
+External mutable state is read-only from actor code unless the runtime grants a
+narrow explicit capability. Source actors cannot create, receive, or acquire
+writable `SharedMutex<T>` state. Shared actors may use approved runtime-owned
+read capabilities such as `OresRwLock<T>`; private/untrusted actors cannot use
+those handles to cross their memory boundary.
+
+Callable declarations canonically use `: T` or `-> T` for return types.
+`=>` is reserved canonically for type-level callable signatures; historical
+callable-return `=> T` remains parser-compatible only during migration.
+
+Actor protocol methods are not first-class bound callbacks. `self.helper(...)`
+is a direct call during the active actor turn, while extracting
+`worker.add` as a bound callback is invalid; use an explicit closure if a
+callback is required.
+
+### Actor ownership/effects
+
+Actor isolation is **not** equivalent to `@Pure` and is not implemented by
+`nlex`. Actor methods are allowed to mutate their own state. The invariant is
+ownership-domain based:
+
+```text
+allowed:
+  read/write self-owned state
+  read/write fresh actor-turn local state
+  consume/copy/transfer admitted message values according to their type
+  send mailbox messages / emit group output
+  use explicitly granted runtime capabilities
+  read synchronized external state through an explicit read capability
+
+forbidden:
+  mutate arbitrary module/global mutable state
+  mutate caller-owned or another actor's object graph
+  leak self or a mutable self-rooted alias
+  retain a turn-scoped borrow across await
+  smuggle runtime/VM/scheduler implementation authority through actor data
+```
+
+Actor fields are private mailbox-owned state. `let` actor fields may mutate
+during the actor's exclusive turn without a lock. Public endpoint parameter and
+return types are checked at the actor boundary; unsafe borrows, guards, futures,
+and domain-incompatible shared-mutable capabilities are rejected.
+
+A constructor is runtime-only initialization, not a mailbox endpoint. Actor
+constructors are non-public, non-static, non-generic, non-suspending, return
+`void`, and may not leak `self`. Ordinary `new ActorClass(...)` is
+forbidden; actor identity/state must be created by the actor runtime.
+
+### References, factories, and launch
+
+Code outside an actor never receives the mutable actor object. A concrete actor
+spawn returns an `ActorRef<ActorClass>`. The reference grants identity/lifecycle
+operations plus the class/interface's typed protocol methods; each public method
+call is one bounded mailbox admission and returns a runtime-owned `Future<T>`
+for the logical method result.
+
+Generated/runtime actor factories remain useful as launch adapters for actor
+groups, configured factory catalogs, hot loading, and dependency injection.
+They execute under the target actor context and must be capture-safe. This
+runtime factory concept is distinct from source `actor fnc`/`actor routine`,
+which are one-shot spawned callables.
+
+The persistent actor ABI is therefore the actor identity plus its generated
+typed protocol dispatcher—not a raw class pointer and not a user-visible
+mailbox object.
+
+This model preserves ActorGroup/ActorMailman architecture: typed actor protocol
+calls enqueue bounded runtime-private messages; actors may additionally emit
+bounded group output; one logical serialized mailman consumes the group's
+outbox; supervisors remain responsible for lifecycle/restart policy.
 
 Private and untrusted actors do not accept explicitly shared mutable memory. Each private actor owns a **confined memory slice** identified by its actor id, independent of whichever dispatcher thread happens to execute a mailbox turn. Incoming messages are isolation-copied into that actor domain and charged against the destination slice before mailbox admission. Compiler-managed actor state allocations use the same slice.
 

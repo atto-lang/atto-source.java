@@ -52,6 +52,16 @@ public final class ActorFactoryCatalog {
         }
     }
 
+    /**
+     * Generation-scoped descriptor for a compiler-generated persistent actor
+     * constructor.
+     *
+     * <p>{@code inputType} names the actor mailbox message ABI consumed by the
+     * single source-level {@code receive(In): void} ingress. {@code outputType}
+     * describes the group's emitted-output contract when one exists. The ABI
+     * digest covers the receive message/reply/error contract, constructor,
+     * execution domain, and other generation-relevant actor ABI metadata.</p>
+     */
     public record Descriptor(
             FactoryKey key,
             ActorRuntime.ActorKind actorKind,
@@ -63,8 +73,8 @@ public final class ActorFactoryCatalog {
         public Descriptor {
             Objects.requireNonNull(key, "key");
             Objects.requireNonNull(actorKind, "actorKind");
-            inputType = requirePart(inputType, "actor factory input type");
-            outputType = requirePart(outputType, "actor factory output type");
+            inputType = requirePart(inputType, "actor mailbox input ABI type");
+            outputType = requirePart(outputType, "actor group output type");
             abiDigest = requirePart(abiDigest, "actor factory ABI digest");
             if (codeGeneration < 0) {
                 throw new IllegalArgumentException("codeGeneration must be >= 0");
