@@ -32,7 +32,20 @@ public final class TaskScope implements AutoCloseable {
 
     /** Atomically reserve a child slot or reject a sealed scope. */
     public <T> TaskHandle<T> startTask(OresScheduler.Task<T> task) {
+        return startTask(task, () -> { });
+    }
+
+    /**
+     * Runtime-only child admission with an exact physical-quiescence callback.
+     * The callback runs after TaskHandle.getDone() settles and before this
+     * scope retires the child's active slot. A callback failure is retained as
+     * a structured child failure and cannot make the scope appear successful.
+     */
+    <T> TaskHandle<T> startTask(
+            OresScheduler.Task<T> task,
+            Runnable onPhysicalQuiescence) {
         Objects.requireNonNull(task, "task");
+        Objects.requireNonNull(onPhysicalQuiescence, "onPhysicalQuiescence");
         synchronized (admissionLock) {
             if (sealed) {
                 throw new RejectedExecutionException("TaskScope is sealed");
@@ -67,7 +80,19 @@ public final class TaskScope implements AutoCloseable {
         // Any seal/cancel racing this interval sees active > 0 and waits for
         // childDone() after its actual scheduler quiescence.
         child.getDone().whenCompleteRuntime(
-                (outcome, failure) -> childDone(outcome, failure));
+                (outcome, failure) -> {
+                    Throwable completionFailure = failure;
+                    try {
+                        onPhysicalQuiescence.run();
+                    } catch (RuntimeException | Error retirementFailure) {
+                        if (completionFailure == null) {
+                            completionFailure = retirementFailure;
+                        } else if (completionFailure != retirementFailure) {
+                            completionFailure.addSuppressed(retirementFailure);
+                        }
+                    }
+                    childDone(outcome, completionFailure);
+                });
         return child;
     }
 
