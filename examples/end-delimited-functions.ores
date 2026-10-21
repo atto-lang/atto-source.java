@@ -6,7 +6,7 @@ fnc classify(int x) -> tuple (int, int, string)
     fi
 end
 
-fnc main() -> int as
+fnc main() -> int ::
     const result = classify(7)
     return result[0]
 end
