@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
+import dev.oreslang.types.OwnershipChecker;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
@@ -15,6 +16,107 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 final class TypedMapClosedSurfaceLanguageTest {
+    @Test
+    void ownershipCheckerRestoresTerminalIndexedMoveOnlyMapCandidateOnCatchEdge() {
+        String source = """
+                define class Payload as
+                end
+
+                pub fnc main(): void {
+                  val Map<string, Payload> values =
+                      new Map<string, Payload>();
+                  val Payload item = new Payload();
+
+                  try {
+                    values["x"] = item;
+                  } catch (err) {
+                    rt take item;
+                  }
+                  return;
+                }
+                """;
+
+        assertDoesNotThrow(() ->
+                OwnershipChecker.check(Parser.parse(source)));
+    }
+
+    @Test
+    void ownershipCheckerRestoresTerminalNamedPutCandidateOnCatchEdge() {
+        String source = """
+                define class Payload as
+                end
+
+                pub fnc main(): void {
+                  val Map<string, Payload> values =
+                      new Map<string, Payload>();
+                  val Payload item = new Payload();
+
+                  try {
+                    const Option<Payload> previous =
+                        values.put("x", item);
+                  } catch (err) {
+                    rt take item;
+                  }
+                  return;
+                }
+                """;
+
+        assertDoesNotThrow(() ->
+                OwnershipChecker.check(Parser.parse(source)));
+    }
+
+    @Test
+    void ownershipCheckerKeepsTerminalCandidateMovedAfterNormalTryExit() {
+        String source = """
+                define class Payload as
+                end
+
+                pub fnc main(): void {
+                  val Map<string, Payload> values =
+                      new Map<string, Payload>();
+                  val Payload item = new Payload();
+
+                  try {
+                    values["x"] = item;
+                  } catch (err) {
+                  }
+
+                  rt take item;
+                  return;
+                }
+                """;
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse(source)));
+    }
+
+    @Test
+    void ownershipCheckerDoesNotRestoreMoveWhenMapWriteIsNotTerminal() {
+        String source = """
+                define class Payload as
+                end
+
+                pub fnc main(): void {
+                  val Map<string, Payload> values =
+                      new Map<string, Payload>();
+                  val Payload item = new Payload();
+
+                  try {
+                    values["x"] = item;
+                    stdio.println("after commit");
+                  } catch (err) {
+                    rt take item;
+                  }
+                  return;
+                }
+                """;
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse(source)));
+    }
+
     @Test
     void stringAndNominalSymbolKeysExecuteWithoutCoercion() {
         String source = """
