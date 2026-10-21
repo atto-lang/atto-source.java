@@ -55,16 +55,27 @@ arena. At physical actor finalization, quiescence and native memory reclamation
 must happen after all entered turns and pending actor-scoped operations retire.
 
 The existing `OresScheduler.TaskRunner`, Future waiter registrations, and
-compiler-generated lexical environments are still JVM objects. Actor-owned
-`SourceTask` instances now also carry a compact 32-byte
+compiler-generated lexical-environment structure are still JVM objects.
+Actor-owned `SourceTask` instances carry a compact 40-byte
 `ActorNativeArena.TaskFrame` in the same actor-relative address space. That
 native header is the lifecycle authority for NEW/RUNNING/AWAITING/COOPERATING/
-DONE/FAILED transitions and a monotonic resume count; it is revoked with the
-arena. **Full native async frame lowering is not yet complete**: lexical local
-values, callback/cleanup metadata, runtime-capability handles, and lowered
-program counters must be separated and moved into typed native frame storage.
-These changes establish native continuation authority, not strict
-zero-managed-allocation execution.
+DONE/FAILED transitions, a monotonic resume count, and a monotonic suspension
+ticket bound to the exact AWAIT/COOPERATE reason. A managed continuation cannot
+resume an actor task unless its ticket and suspension kind match the live
+arena-owned frame; stale, duplicate, wrong-kind, and post-terminal resumes fail
+closed.
+
+Supported lexical binding payloads are now opportunistically lowered through
+`ActorNativeArena.ValueCell`: scalars, strings/numeric text, symbols, and
+arena-issued actor-native objects inherit the same owner/lifetime checks as
+`state {}`. The Java `Env`/`Slot` objects remain metadata, and unsupported
+collections/ADTs/callables explicitly fall back to managed storage until their
+native lowering exists. Reads may still materialize boxed/String evaluator
+values. **Full native async frame lowering is therefore not yet complete**:
+managed environment topology, collection/ADT payloads, callback/cleanup
+metadata, runtime-capability handles, and lowered program counters still need
+typed native representations. These changes establish native continuation and
+local-value authority, not strict zero-managed-allocation execution.
 
 ## Per-actor native linear address space (GraalVM/JNI)
 
