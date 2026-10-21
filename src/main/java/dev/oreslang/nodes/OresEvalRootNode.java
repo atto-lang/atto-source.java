@@ -4691,6 +4691,38 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        /**
+         * One commit primitive for both indexed and named Map writes.
+         *
+         * <p>The runtime result is linear. On rejection, recover the exact
+         * offered value before propagating the admission failure; on commit,
+         * consume the previous mapping exactly once. The Java evaluator does
+         * not erase the source slot at runtime—compile-time ownership remains
+         * authoritative—but this identity check guarantees the runtime did not
+         * substitute or lose the candidate on the exceptional edge.</p>
+         */
+        private Object commitAwareMapPut(
+                OresKeyedMap<Object, Object> map,
+                Object key,
+                Object value) {
+            OresKeyedMap.OwnedPutResult<Object> attempt =
+                    map.attemptOwnedPut(key, value);
+            if (!attempt.committed()) {
+                Object recovered = attempt.takeUncommittedValue();
+                if (recovered != value) {
+                    throw new IllegalStateException(
+                            "rejected Map put did not return the exact offered value");
+                }
+                attempt.rethrowAfterRecovery();
+                throw new IllegalStateException(
+                        "rejected Map put failed to propagate its admission error");
+            }
+
+            OresKeyedMap.Lookup<Object> previous =
+                    attempt.takePrevious();
+            return previous.present() ? previous.value() : null;
+        }
+
         private Invocation typedMapMutationInvocation(
                 String member,
                 OresKeyedMap<?, ?> rawMap,
@@ -4709,7 +4741,8 @@ public final class OresEvalRootNode extends RootNode {
                 if (member.equals("put")) {
                     // Typed Maps reject null values, so null unambiguously
                     // means this key was absent before the committed write.
-                    Object previous = map.put(key, args.get(1));
+                    Object previous =
+                            commitAwareMapPut(map, key, args.get(1));
                     return new OptionValue(previous != null, previous);
                 }
                 OresKeyedMap.Lookup<Object> removed = map.take(key);
@@ -5094,7 +5127,7 @@ public final class OresEvalRootNode extends RootNode {
                 @SuppressWarnings("unchecked")
                 OresKeyedMap<Object, Object> map =
                         (OresKeyedMap<Object, Object>) rawMap;
-                map.put(key, value);
+                commitAwareMapPut(map, key, value);
                 return value;
             }
             if (receiver instanceof MutableStructValue rawStruct) {
