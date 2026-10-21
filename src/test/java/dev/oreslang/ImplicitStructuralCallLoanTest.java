@@ -77,7 +77,7 @@ final class ImplicitStructuralCallLoanTest {
                 fnc inspect(struct{id: int} view, borrow mut Widget owner): void { return; }
                 fnc bad(): void {
                   let Widget owner = new Widget();
-                  inspect(owner, rt borrow mut owner);
+                  inspect(owner, rt mut borrow owner);
                 }
                 """);
     }
@@ -88,7 +88,7 @@ final class ImplicitStructuralCallLoanTest {
                 fnc inspect(borrow mut Widget owner, struct{id: int} view): void { return; }
                 fnc bad(): void {
                   let Widget owner = new Widget();
-                  inspect(rt borrow mut owner, owner);
+                  inspect(rt mut borrow owner, owner);
                 }
                 """);
     }
