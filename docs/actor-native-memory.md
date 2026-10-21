@@ -80,6 +80,12 @@ revokes all pages and refunds their native-byte reservations.
   count and shared actor quota. Existing offsets stay valid. Failed multi-page
   growth revokes its partial new pages and leaves the old length unchanged.
   `maxPages` is a logical upper bound, not a native memory reservation.
+* `fill(destination, length, value)` and
+  `copy(destination, source, length)` are native-offset operations using
+  actor-owned pages, no copied Java byte array, and memmove-safe overlapping
+  ranges. Both validate the full destination span and every page's borrow
+  status **before** modifying any bytes. `copy` also checks the full source
+  range. These are baseline scalar kernels, not vectorized bulk copies.
 * `leaseReadOnlyPage(pageIndex, offset, length)` borrows native page storage
   within the owning actor. It blocks all writes to that page while borrowed;
   a primitive write crossing two pages preflights both before mutating either.
