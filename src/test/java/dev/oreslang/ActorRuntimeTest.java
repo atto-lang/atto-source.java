@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.ActorNativeArena;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.OresScheduler;
 import org.junit.jupiter.api.Test;
@@ -68,6 +69,51 @@ final class ActorRuntimeTest {
     @Test
     void rejectsUnknownMutableHostObjects() {
         assertThrows(IllegalArgumentException.class, () -> ActorRuntime.freeze(new StringBuilder("mutable")));
+    }
+
+    @Test
+    void actorNativeValuesCannotCrossMailboxesOrReadonlySharingByReference() {
+        ActorNativeArena.NativeValue nativeValue = new ActorNativeArena.NativeValue() {
+            @Override public ActorNativeArena nativeArena() { return null; }
+            @Override public long nativeOffset() { return 17L; }
+        };
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var shared = runtime.<Object>spawnShared(() -> (message, context) -> { });
+            var isolated = runtime.<Object>spawnPrivate(() -> (message, context) -> { });
+
+            assertThrows(SecurityException.class, () -> shared.send(nativeValue));
+            assertThrows(SecurityException.class, () -> isolated.send(nativeValue));
+            assertThrows(SecurityException.class, () -> shared.send(List.of("nested", nativeValue)));
+            assertThrows(SecurityException.class, () -> runtime.shareReadonly(nativeValue));
+            assertThrows(SecurityException.class, () -> ActorRuntime.freeze(nativeValue));
+        }
+    }
+
+    @Test
+    void actorOutputCannotExportItsArenaRegionByReference() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch checked = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            var ref = runtime.<String>spawnShared(() -> (message, context) -> {
+                try {
+                    var region = ActorRuntime.currentNativeArena().region(16);
+                    assertThrows(
+                            SecurityException.class,
+                            () -> context.runtime().emitCurrentActorOutput(region));
+                } catch (Throwable problem) {
+                    failure.set(problem);
+                } finally {
+                    checked.countDown();
+                    context.self().stop();
+                }
+            });
+
+            ref.send("check");
+            assertTrue(checked.await(2, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
+        }
     }
 
     @Test
