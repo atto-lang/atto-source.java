@@ -20,8 +20,8 @@ final class TaskBorrowBoundaryV2Test {
         String source = java.nio.file.Files.readString(
                 java.nio.file.Path.of(
                         "src/test/java/dev/oreslang/TaskBorrowBoundaryV2Test.java"));
-        assertFalse(source.contains("rt mut borrow"),
-                "Task borrow regressions must use canonical 'rt mut borrow' spelling");
+        assertFalse(source.contains("rt borrow mut"),
+                "Task borrow regressions must reject legacy 'rt borrow mut' spelling");
         assertFalse(source.matches("(?s).*\\b(?:val|let|const)\\s+&(?:mut\\s+)?[A-Za-z_].*"),
                 "Task borrow regressions must not introduce pointer-style source borrows");
     }
@@ -54,6 +54,21 @@ final class TaskBorrowBoundaryV2Test {
             matched |= message.contains(fragment.toLowerCase());
         }
         assertTrue(matched, () -> "missing ownership diagnostic: " + failure.getMessage());
+    }
+
+    @Test
+    void legacyMutableBorrowOrderingIsRejected() {
+        var failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        pub fnc main(): void {
+                          let Box owner = new Box();
+                          val loan = rt borrow mut owner;
+                          return;
+                        }
+                        """));
+        assertTrue(failure.getMessage().contains("rt mut borrow"),
+                failure::getMessage);
     }
 
     @Test
