@@ -129,9 +129,22 @@ public final class VerifyEffectClosure {
                 EffectContracts.Effect.IO), List.of()));
         fullyResolved.add(EffectContracts.Callable.inferred("entry", Set.of(),
                 List.of(EffectContracts.Call.direct("callee"))));
-        require(fullyResolved.validateClosedWorld().get("entry").equals(
+        require(fullyResolved.validate().get("entry").equals(
                 Set.of(EffectContracts.Effect.IO)),
-                "trusted known targets remain analyzable");
+                "declared direct targets remain analyzable as hypotheses");
+        try {
+            fullyResolved.validateClosedWorld();
+            throw new AssertionError("caller-supplied direct call was accepted as compiler-proven");
+        } catch (IllegalArgumentException expected) {
+            require(expected.getMessage().contains("compiler-resolved provenance"),
+                    "direct call must carry a provenance-denial witness");
+        }
+        var zeroCallGraph = new EffectContracts.Graph();
+        zeroCallGraph.add(EffectContracts.Callable.inferred("known", Set.of(
+                EffectContracts.Effect.ALLOC), List.of()));
+        require(zeroCallGraph.validateClosedWorld().get("known").equals(
+                Set.of(EffectContracts.Effect.ALLOC)),
+                "call-free known-effect graph must remain valid");
         try {
             new EffectContracts.Graph().validateClosedWorld();
             throw new AssertionError("empty graph should not self-certify");
