@@ -2,6 +2,7 @@ package dev.oreslang.net;
 
 import dev.oreslang.OresLanguage;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.IsolatePolicy;
@@ -41,12 +42,12 @@ final class NativeNetworkingLanguageTest {
 
     @Test
     void oresProgramUsesJavaShapedSocketApiOverNativeTransport() throws Exception {
-        long listener = NativeSocketBridge.listen("127.0.0.1", 0, 16, true);
+        NativeSocketHandle listener = NativeSocketBridge.listenHandle("127.0.0.1", 0, 16, true);
         int port = NativeSocketBridge.localPort(listener);
         AtomicReference<Throwable> failure = new AtomicReference<>();
 
         Thread server = new Thread(() -> {
-            long client = -1;
+            NativeSocketHandle client = null;
             try {
                 client = NativeSocketBridge.accept(listener);
                 NativeSocketBridge.setSoTimeout(client, 3_000);
@@ -59,7 +60,7 @@ final class NativeNetworkingLanguageTest {
             } catch (Throwable error) {
                 failure.set(error);
             } finally {
-                if (client >= 0) {
+                if (client != null && client.isOpen()) {
                     try { NativeSocketBridge.close(client); } catch (Exception ignored) { }
                 }
             }
@@ -98,12 +99,12 @@ final class NativeNetworkingLanguageTest {
 
     @Test
     void oresHttpClientParsesStatusHeadersAndBodyWithoutJavaHttpClient() throws Exception {
-        long listener = NativeSocketBridge.listen("127.0.0.1", 0, 16, true);
+        NativeSocketHandle listener = NativeSocketBridge.listenHandle("127.0.0.1", 0, 16, true);
         int port = NativeSocketBridge.localPort(listener);
         AtomicReference<Throwable> failure = new AtomicReference<>();
 
         Thread server = new Thread(() -> {
-            long client = -1;
+            NativeSocketHandle client = null;
             try {
                 client = NativeSocketBridge.accept(listener);
                 NativeSocketBridge.setSoTimeout(client, 3_000);
@@ -119,7 +120,7 @@ final class NativeNetworkingLanguageTest {
             } catch (Throwable error) {
                 failure.set(error);
             } finally {
-                if (client >= 0) {
+                if (client != null && client.isOpen()) {
                     try { NativeSocketBridge.close(client); } catch (Exception ignored) { }
                 }
             }
@@ -157,7 +158,7 @@ final class NativeNetworkingLanguageTest {
 
     @Test
     void oresServerSocketAcceptsAndWritesOverNativeTransport() throws Exception {
-        long reservation = NativeSocketBridge.listen("127.0.0.1", 0, 16, true);
+        NativeSocketHandle reservation = NativeSocketBridge.listenHandle("127.0.0.1", 0, 16, true);
         int port = NativeSocketBridge.localPort(reservation);
         NativeSocketBridge.close(reservation);
 
@@ -191,7 +192,7 @@ final class NativeNetworkingLanguageTest {
         }, "oreslang-server-socket-language-test");
         guest.start();
 
-        long client = connectEventually("127.0.0.1", port, 3_000);
+        NativeSocketHandle client = connectEventually("127.0.0.1", port, 3_000);
         try {
             NativeSocketBridge.setSoTimeout(client, 3_000);
             writeAll(client, new byte[] {(byte) 'Q'});
@@ -211,12 +212,12 @@ final class NativeNetworkingLanguageTest {
 
     @Test
     void oresHttpPostSendsBodyAndDecodesChunkedResponse() throws Exception {
-        long listener = NativeSocketBridge.listen("127.0.0.1", 0, 16, true);
+        NativeSocketHandle listener = NativeSocketBridge.listenHandle("127.0.0.1", 0, 16, true);
         int port = NativeSocketBridge.localPort(listener);
         AtomicReference<Throwable> failure = new AtomicReference<>();
 
         Thread server = new Thread(() -> {
-            long client = -1;
+            NativeSocketHandle client = null;
             try {
                 client = NativeSocketBridge.accept(listener);
                 NativeSocketBridge.setSoTimeout(client, 3_000);
@@ -237,7 +238,7 @@ final class NativeNetworkingLanguageTest {
             } catch (Throwable error) {
                 failure.set(error);
             } finally {
-                if (client >= 0) {
+                if (client != null && client.isOpen()) {
                     try { NativeSocketBridge.close(client); } catch (Exception ignored) { }
                 }
             }
@@ -273,13 +274,13 @@ final class NativeNetworkingLanguageTest {
 
     @Test
     void oresHttpClientFollowsRedirectsWithJavaShapedPolicy() throws Exception {
-        long listener = NativeSocketBridge.listen("127.0.0.1", 0, 16, true);
+        NativeSocketHandle listener = NativeSocketBridge.listenHandle("127.0.0.1", 0, 16, true);
         int port = NativeSocketBridge.localPort(listener);
         AtomicReference<Throwable> failure = new AtomicReference<>();
 
         Thread server = new Thread(() -> {
             try {
-                long first = NativeSocketBridge.accept(listener);
+                NativeSocketHandle first = NativeSocketBridge.accept(listener);
                 try {
                     NativeSocketBridge.setSoTimeout(first, 3_000);
                     String firstHeaders = readHeadersText(first);
@@ -293,7 +294,7 @@ final class NativeNetworkingLanguageTest {
                     NativeSocketBridge.close(first);
                 }
 
-                long second = NativeSocketBridge.accept(listener);
+                NativeSocketHandle second = NativeSocketBridge.accept(listener);
                 try {
                     NativeSocketBridge.setSoTimeout(second, 3_000);
                     String secondHeaders = readHeadersText(second);
@@ -341,11 +342,101 @@ final class NativeNetworkingLanguageTest {
 
 
     @Test
+    void normalRedirectPolicyAllowsHttpCrossAuthorityWithoutLeakingCredentials() throws Exception {
+        NativeSocketHandle redirectListener = NativeSocketBridge.listenHandle("127.0.0.1", 0, 16, true);
+        NativeSocketHandle targetListener = NativeSocketBridge.listenHandle("127.0.0.1", 0, 16, true);
+        int redirectPort = NativeSocketBridge.localPort(redirectListener);
+        int targetPort = NativeSocketBridge.localPort(targetListener);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        Thread redirectServer = new Thread(() -> {
+            NativeSocketHandle client = null;
+            try {
+                client = NativeSocketBridge.accept(redirectListener);
+                NativeSocketBridge.setSoTimeout(client, 3_000);
+                String headers = readHeadersText(client);
+                assertTrue(headers.startsWith("GET /start HTTP/1.1"));
+                assertTrue(headers.toLowerCase().contains("authorization: bearer secret"));
+                String response = "HTTP/1.1 302 Found\r\n"
+                        + "Location: http://127.0.0.1:" + targetPort + "/final\r\n"
+                        + "Content-Length: 0\r\n"
+                        + "Connection: close\r\n\r\n";
+                writeAll(client, response.getBytes(StandardCharsets.ISO_8859_1));
+            } catch (Throwable error) {
+                failure.compareAndSet(null, error);
+            } finally {
+                if (client != null && client.isOpen()) {
+                    try { NativeSocketBridge.close(client); } catch (Exception ignored) { }
+                }
+            }
+        }, "oreslang-normal-redirect-source");
+        redirectServer.start();
+
+        Thread targetServer = new Thread(() -> {
+            NativeSocketHandle client = null;
+            try {
+                client = NativeSocketBridge.accept(targetListener);
+                NativeSocketBridge.setSoTimeout(client, 3_000);
+                String headers = readHeadersText(client);
+                assertTrue(headers.startsWith("GET /final HTTP/1.1"));
+                assertFalse(headers.toLowerCase().contains("authorization:"));
+                byte[] body = "normal-redirect-ok".getBytes(StandardCharsets.UTF_8);
+                String response = "HTTP/1.1 200 OK\r\n"
+                        + "Content-Length: " + body.length + "\r\n"
+                        + "Connection: close\r\n\r\n";
+                writeAll(client, response.getBytes(StandardCharsets.ISO_8859_1));
+                writeAll(client, body);
+            } catch (Throwable error) {
+                failure.compareAndSet(null, error);
+            } finally {
+                if (client != null && client.isOpen()) {
+                    try { NativeSocketBridge.close(client); } catch (Exception ignored) { }
+                }
+            }
+        }, "oreslang-normal-redirect-target");
+        targetServer.start();
+
+        String program = """
+                define module app
+                  pub fnc main() => void {
+                    val client = net.http.HttpClient.newBuilder()
+                        .followRedirects(net.http.HttpClient.Redirect.NORMAL)
+                        .build();
+                    val request = net.http.HttpRequest
+                        .newBuilder("http://127.0.0.1:%d/start")
+                        .header("Authorization", "Bearer secret")
+                        .GET()
+                        .build();
+                    val response = client.send(
+                        request,
+                        net.http.HttpResponse.BodyHandlers.ofString());
+                    stdio.println(response.statusCode());
+                    stdio.println(response.body());
+                    return;
+                  }
+                end
+                """.formatted(redirectPort);
+
+        String output = evaluate(program);
+        assertTrue(output.contains("200"));
+        assertTrue(output.contains("normal-redirect-ok"));
+
+        redirectServer.join(5_000);
+        targetServer.join(5_000);
+        NativeSocketBridge.close(redirectListener);
+        NativeSocketBridge.close(targetListener);
+        assertFalse(redirectServer.isAlive());
+        assertFalse(targetServer.isAlive());
+        if (failure.get() != null) fail("redirect servers failed", failure.get());
+    }
+
+
+    @Test
     void rejectsAmbiguousTransferEncodingAndContentLength() throws Exception {
-        long listener = NativeSocketBridge.listen("127.0.0.1", 0, 16, true);
+        NativeSocketHandle listener = NativeSocketBridge.listenHandle("127.0.0.1", 0, 16, true);
         int port = NativeSocketBridge.localPort(listener);
         Thread server = new Thread(() -> {
-            long client = -1;
+            NativeSocketHandle client = null;
             try {
                 client = NativeSocketBridge.accept(listener);
                 readHeadersText(client);
@@ -357,7 +448,7 @@ final class NativeNetworkingLanguageTest {
                 writeAll(client, response.getBytes(StandardCharsets.ISO_8859_1));
             } catch (Throwable ignored) {
             } finally {
-                if (client >= 0) try { NativeSocketBridge.close(client); } catch (Exception ignored) { }
+                if (client != null && client.isOpen()) try { NativeSocketBridge.close(client); } catch (Exception ignored) { }
             }
         }, "oreslang-http-ambiguous-framing-test");
         server.start();
@@ -381,17 +472,17 @@ final class NativeNetworkingLanguageTest {
 
     @Test
     void requestTimeoutAppliesToResponseReads() throws Exception {
-        long listener = NativeSocketBridge.listen("127.0.0.1", 0, 16, true);
+        NativeSocketHandle listener = NativeSocketBridge.listenHandle("127.0.0.1", 0, 16, true);
         int port = NativeSocketBridge.localPort(listener);
         Thread server = new Thread(() -> {
-            long client = -1;
+            NativeSocketHandle client = null;
             try {
                 client = NativeSocketBridge.accept(listener);
                 readHeadersText(client);
                 Thread.sleep(500);
             } catch (Throwable ignored) {
             } finally {
-                if (client >= 0) try { NativeSocketBridge.close(client); } catch (Exception ignored) { }
+                if (client != null && client.isOpen()) try { NativeSocketBridge.close(client); } catch (Exception ignored) { }
             }
         }, "oreslang-http-read-timeout-test");
         server.start();
@@ -415,6 +506,134 @@ final class NativeNetworkingLanguageTest {
 
 
     @Test
+    void adversarialNetworkCapabilityCannotUseRawSocketSurfaces() throws Exception {
+        IsolatePolicy contextPolicy = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.NETWORK);
+        IsolatePolicy adversarialActorPolicy = IsolatePolicy.strictFaas()
+                .withCapabilities(IsolatePolicy.Capability.NETWORK);
+
+        try (ActorRuntime runtime = new ActorRuntime(contextPolicy)) {
+            var ref = runtime.<String>spawnPrivate(
+                    adversarialActorPolicy,
+                    factoryContext -> (message, actorContext) ->
+                            NetworkAdmission.rejectAdversarial(
+                                    IsolatePolicy.developer()
+                                            .withCapabilities(IsolatePolicy.Capability.NETWORK),
+                                    ActorRuntime.currentActorPolicy(),
+                                    "test.raw-network"));
+
+            ref.send("check");
+            assertTrue(ref.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS));
+            Throwable failure = ref.failure().orElseThrow();
+            assertInstanceOf(SecurityException.class, failure);
+            assertTrue(failure.getMessage().contains("bounded stateless HTTP"), failure::getMessage);
+        }
+
+        String nativeBuiltin = java.nio.file.Files.readString(
+                java.nio.file.Path.of("src/main/java/dev/oreslang/net/NativeNetBuiltin.java"));
+        String publicNet = java.nio.file.Files.readString(
+                java.nio.file.Path.of("src/main/java/dev/oreslang/net/OresNet.java"));
+        assertTrue(nativeBuiltin.contains("NetworkAdmission.requireRawNetwork"));
+        assertTrue(publicNet.contains("NetworkAdmission.requireRawNetwork"));
+    }
+
+    @Test
+    void malformedChunkTrailerFailsClosed() throws Exception {
+        NativeSocketHandle listener = NativeSocketBridge.listenHandle("127.0.0.1", 0, 16, true);
+        int port = NativeSocketBridge.localPort(listener);
+        Thread server = new Thread(() -> {
+            NativeSocketHandle client = null;
+            try {
+                client = NativeSocketBridge.accept(listener);
+                NativeSocketBridge.setSoTimeout(client, 3_000);
+                readHeadersText(client);
+                String response = "HTTP/1.1 200 OK\r\n"
+                        + "Transfer-Encoding: chunked\r\n"
+                        + "Connection: close\r\n\r\n"
+                        + "1\r\nx\r\n"
+                        + "0\r\n"
+                        + "broken-trailer\r\n\r\n";
+                writeAll(client, response.getBytes(StandardCharsets.ISO_8859_1));
+            } catch (Throwable ignored) {
+            } finally {
+                if (client != null && client.isOpen()) {
+                    try { NativeSocketBridge.close(client); } catch (Exception ignored) { }
+                }
+            }
+        }, "oreslang-http-malformed-trailer-test");
+        server.start();
+
+        String program = """
+                define module app
+                  pub fnc main() => void {
+                    val request = net.http.HttpRequest.newBuilder("http://127.0.0.1:%d/").GET().build();
+                    net.http.HttpClient.newHttpClient().send(
+                        request, net.http.HttpResponse.BodyHandlers.ofString());
+                    return;
+                  }
+                end
+                """.formatted(port);
+
+        Exception error = assertThrows(Exception.class, () -> evaluate(program));
+        assertTrue(error.toString().contains("malformed chunk trailer"), error::toString);
+        NativeSocketBridge.close(listener);
+        server.join(5_000);
+    }
+
+    @Test
+    void patchRequestCarriesContentLength() throws Exception {
+        NativeSocketHandle listener = NativeSocketBridge.listenHandle("127.0.0.1", 0, 16, true);
+        int port = NativeSocketBridge.localPort(listener);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread server = new Thread(() -> {
+            NativeSocketHandle client = null;
+            try {
+                client = NativeSocketBridge.accept(listener);
+                NativeSocketBridge.setSoTimeout(client, 3_000);
+                String headers = readHeadersText(client);
+                assertTrue(headers.startsWith("PATCH /patch HTTP/1.1"));
+                assertEquals(3, headerInt(headers, "content-length"));
+                byte[] body = new byte[3];
+                readExactly(client, body);
+                assertEquals("abc", new String(body, StandardCharsets.UTF_8));
+                writeAll(client, ("HTTP/1.1 204 No Content\r\n"
+                        + "Content-Length: 0\r\n"
+                        + "Connection: close\r\n\r\n")
+                        .getBytes(StandardCharsets.ISO_8859_1));
+            } catch (Throwable error) {
+                failure.set(error);
+            } finally {
+                if (client != null && client.isOpen()) {
+                    try { NativeSocketBridge.close(client); } catch (Exception ignored) { }
+                }
+            }
+        }, "oreslang-http-patch-content-length-test");
+        server.start();
+
+        String program = """
+                define module app
+                  pub fnc main() => void {
+                    val builder = net.http.HttpRequest.newBuilder("http://127.0.0.1:%d/patch");
+                    val request = builder.method(
+                        "PATCH",
+                        net.http.HttpRequest.BodyPublishers.ofString("abc")
+                    ).build();
+                    val response = net.http.HttpClient.newHttpClient().send(
+                        request, net.http.HttpResponse.BodyHandlers.discarding());
+                    stdio.println(response.statusCode());
+                    return;
+                  }
+                end
+                """.formatted(port);
+
+        String output = evaluate(program);
+        assertTrue(output.contains("204"));
+        NativeSocketBridge.close(listener);
+        server.join(5_000);
+        if (failure.get() != null) fail("server failed", failure.get());
+    }
+
+    @Test
     void networkingImplementationKeepsProtocolEngineOutOfJava() throws Exception {
         String source = java.nio.file.Files.readString(
                 java.nio.file.Path.of("src/main/java/dev/oreslang/net/OresNet.java"));
@@ -429,7 +648,13 @@ final class NativeNetworkingLanguageTest {
         assertFalse(source.contains("encodeRequest(HttpRequestValue"),
                 "HTTP request serialization must move to native liboresnet");
         assertFalse(source.contains("resolveRedirect(String base"),
-                "redirect URI resolution must move to native liboresnet");
+                "redirect URI resolution must move to Oreslang stdlib");
+        assertFalse(source.contains("static ParsedUri parse(String raw)"),
+                "URI parsing must move to Oreslang stdlib");
+        assertFalse(source.contains("validateHeader(String name"),
+                "request-header validation must move to Oreslang stdlib");
+        assertFalse(source.contains("canonicalHeaderName(String name"),
+                "request-header canonicalization must move to Oreslang stdlib");
     }
 
 
@@ -453,11 +678,16 @@ final class NativeNetworkingLanguageTest {
                 java.nio.file.Path.of("stdlib/net/native.ores"));
         String http = java.nio.file.Files.readString(
                 java.nio.file.Path.of("stdlib/net/http.ores"));
+        String uri = java.nio.file.Files.readString(
+                java.nio.file.Path.of("stdlib/net/uri.ores"));
         assertTrue(nativeApi.contains("native_net."));
         assertFalse(nativeApi.contains("java:"));
         assertFalse(http.contains("java:"));
         assertFalse(http.contains("java.net"));
         assertFalse(http.contains("java.net.http"));
+        assertTrue(uri.contains("parse_absolute"));
+        assertFalse(uri.contains("java:"));
+        assertFalse(uri.contains("java.net"));
     }
 
     private static String evaluateWithoutNetwork(String program) throws Exception {
@@ -478,18 +708,23 @@ final class NativeNetworkingLanguageTest {
 
 
     @Test
-    void nativeNetRejectsOutOfBoundsGuestBufferRangesBeforeJni() throws Exception {
+    void nativeNetRejectsNumericFdAtCompileTime() {
         String program = """
                 define module app
                   pub fnc main() => void {
                     val bytes = [0, 0, 0, 0];
-                    native_net.read(0, bytes, 3, 2);
+                    native_net.read(0, bytes, 3, 1);
                     return;
                   }
                 end
                 """;
-        Exception error = assertThrows(Exception.class, () -> evaluateWithNetwork(program));
-        assertTrue(error.toString().contains("byte range is out of bounds"));
+        Exception error = assertThrows(
+                Exception.class,
+                () -> TypeChecker.check(Parser.parse(program)));
+        assertTrue(
+                error.toString().contains("NativeSocketHandle")
+                        || error.toString().contains("Borrow"),
+                error::toString);
     }
 
     @Test
@@ -516,33 +751,33 @@ final class NativeNetworkingLanguageTest {
         return output.toString(StandardCharsets.UTF_8);
     }
 
-    private static void readExactly(long fd, byte[] target) throws Exception {
+    private static void readExactly(NativeSocketHandle handle, byte[] target) throws Exception {
         int offset = 0;
         while (offset < target.length) {
-            int count = NativeSocketBridge.read(fd, target, offset, target.length - offset);
+            int count = NativeSocketBridge.read(handle, target, offset, target.length - offset);
             if (count < 0) throw new AssertionError("unexpected EOF");
             offset += count;
         }
     }
 
-    private static void writeAll(long fd, byte[] bytes) throws Exception {
+    private static void writeAll(NativeSocketHandle handle, byte[] bytes) throws Exception {
         int offset = 0;
         while (offset < bytes.length) {
-            int count = NativeSocketBridge.write(fd, bytes, offset, bytes.length - offset);
+            int count = NativeSocketBridge.write(handle, bytes, offset, bytes.length - offset);
             if (count <= 0) throw new AssertionError("native send returned " + count);
             offset += count;
         }
     }
 
-    private static void readHeaders(long fd) throws Exception {
-        readHeadersText(fd);
+    private static void readHeaders(NativeSocketHandle handle) throws Exception {
+        readHeadersText(handle);
     }
 
-    private static String readHeadersText(long fd) throws Exception {
+    private static String readHeadersText(NativeSocketHandle handle) throws Exception {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         byte[] one = new byte[1];
         while (bytes.size() < 64 * 1024) {
-            int count = NativeSocketBridge.read(fd, one, 0, 1);
+            int count = NativeSocketBridge.read(handle, one, 0, 1);
             if (count < 0) throw new AssertionError("EOF before request headers");
             bytes.write(one[0]);
             byte[] current = bytes.toByteArray();
@@ -568,11 +803,14 @@ final class NativeNetworkingLanguageTest {
         throw new AssertionError("missing HTTP header " + name);
     }
 
-    private static long connectEventually(String host, int port, int timeoutMillis) throws Exception {
+    private static NativeSocketHandle connectEventually(
+            String host,
+            int port,
+            int timeoutMillis) throws Exception {
         Exception last = null;
         for (int attempt = 0; attempt < 100; attempt++) {
             try {
-                return NativeSocketBridge.connect(host, port, timeoutMillis);
+                return NativeSocketBridge.connectHandle(host, port, timeoutMillis);
             } catch (Exception error) {
                 last = error;
                 Thread.sleep(20);

@@ -1,30 +1,539 @@
-import fnc * as nio from "./native.ores";
-
-// HTTP belongs to Oreslang, not Java.
+// HTTP wire/policy semantics belong in Oreslang.
 //
-// Keep this module deliberately within syntax/runtime features already
-// implemented by the compiler. Rich String parsing helpers can be layered in
-// Oreslang as the stdlib grows; they must not migrate back into Java.
-
+// Keep native_net protocol-free: it moves bytes and owns socket capabilities;
+// this module owns HTTP-specific decisions. These helpers are deliberately
+// side-effect free so the same rules can serve clients, servers, tests, and
+// future HTTP/2 or HTTP/3 frontends.
 define module http_wire
-  pub fnc is_redirect(Int status) => Bool {
+  pub fnc is_redirect(int status) => bool {
     return status == 301 || status == 302 || status == 303
         || status == 307 || status == 308;
   }
 
-  pub fnc default_port(String scheme) => Int {
-    if scheme == "http"
+  pub fnc supported_scheme(string scheme) => bool {
+    // HTTPS becomes true only when the native TLS transport is implemented.
+    // Never silently send plaintext to port 443.
+    return scheme == "http";
+  }
+
+  pub fnc default_port(string scheme) => int {
+    if scheme == "http"; do
       return 80;
     fi
-    if scheme == "https"
+    if scheme == "https"; do
       return 443;
     fi
-    raise "unsupported URI scheme";
+    // Fail closed until Result<T,E>/raise is available on this stack.
+    return 0;
+  }
+
+  pub fnc status_forbids_body(int status) => bool {
+    return status >= 100 && status < 200
+        || status == 204
+        || status == 304;
+  }
+
+  pub fnc method_forbids_response_body(string method) => bool {
+    return method == "HEAD";
+  }
+
+  pub fnc response_may_have_body(string method, int status) => bool {
+    return !method_forbids_response_body(method)
+        && !status_forbids_body(status);
   }
 
   pub fnc framing_is_ambiguous(
-      String transfer_encoding,
-      Array<String> content_lengths) => Bool {
-    return transfer_encoding != "" && content_lengths.length > 0;
+      string transfer_encoding,
+      int content_length_count) => bool {
+    return transfer_encoding != "" && content_length_count > 0;
+  }
+
+  pub fnc redirect_rewrites_to_get(int status, string method) => bool {
+    return status == 303
+        || (status == 301 && method == "POST")
+        || (status == 302 && method == "POST");
+  }
+
+  pub fnc redirect_preserves_method(int status) => bool {
+    return status == 307 || status == 308;
+  }
+
+  pub fnc sensitive_redirect_header(
+      string canonical_lower_name) => bool {
+    return canonical_lower_name == "authorization"
+        || canonical_lower_name == "proxy-authorization"
+        || canonical_lower_name == "cookie";
+  }
+
+  pub fnc redirect_policy_allows(
+      string policy,
+      bool secure_downgrade) => bool {
+    if policy == "NEVER"; do
+      return false;
+    fi
+    if policy == "NORMAL"; do
+      // NORMAL follows redirects except HTTPS -> HTTP downgrade. Cross-origin
+      // redirects remain allowed, but credentials are stripped separately.
+      return !secure_downgrade;
+    fi
+    if policy == "ALWAYS"; do
+      return true;
+    fi
+    // Unknown policy strings are never permissive.
+    return false;
+  }
+
+  pub fnc restricted_request_header(string canonical_lower_name) => bool {
+    return canonical_lower_name == "connection"
+        || canonical_lower_name == "content-length"
+        || canonical_lower_name == "expect"
+        || canonical_lower_name == "host"
+        || canonical_lower_name == "upgrade";
+  }
+
+  fnc header_name_char_valid(int code) => bool {
+    return (code >= 48 && code <= 57)
+        || (code >= 65 && code <= 90)
+        || (code >= 97 && code <= 122)
+        || code == 33
+        || code == 35
+        || code == 36
+        || code == 37
+        || code == 38
+        || code == 39
+        || code == 42
+        || code == 43
+        || code == 45
+        || code == 46
+        || code == 94
+        || code == 95
+        || code == 96
+        || code == 124
+        || code == 126;
+  }
+
+  fnc header_name_valid_from(
+      string name,
+      int index) => bool {
+    if index >= name.length; do
+      return true;
+    fi
+    if !header_name_char_valid(
+        name.char_code_at(index)); do
+      return false;
+    fi
+    return header_name_valid_from(
+        name,
+        index + 1);
+  }
+
+  fnc header_value_valid_from(
+      string value,
+      int index) => bool {
+    if index >= value.length; do
+      return true;
+    fi
+
+    val int code = value.char_code_at(index);
+    if code != 9
+        && (code < 32 || code == 127 || code > 255); do
+      return false;
+    fi
+    return header_value_valid_from(
+        value,
+        index + 1);
+  }
+
+  pub fnc canonical_request_header(
+      string name,
+      string value) => string {
+    if name.length == 0; do
+      fail("HTTP header name cannot be blank");
+    fi
+    if !header_name_valid_from(name, 0); do
+      fail("invalid HTTP request header name");
+    fi
+    if !header_value_valid_from(value, 0); do
+      fail("invalid HTTP request header value");
+    fi
+
+    val string canonical = name.lower_ascii();
+    if restricted_request_header(canonical); do
+      fail("restricted HTTP request header");
+    fi
+    return canonical;
+  }
+
+  pub fnc request_needs_content_length(
+      string method,
+      int body_length) => bool {
+    return body_length > 0
+        || method == "POST"
+        || method == "PUT"
+        || method == "PATCH";
+  }
+
+  pub fnc max_redirects() => int {
+    return 8;
+  }
+
+  pub fnc max_header_bytes() => int {
+    return 65536;
+  }
+
+  fnc fail(string message) => void {
+    None.expect(message);
+    return;
+  }
+
+  pub fnc resolve_redirect(
+      string base_scheme,
+      string base_host_header,
+      string base_path,
+      string location) => string {
+    if location.index_of("://", 0) >= 0; do
+      return location;
+    fi
+
+    val origin = base_scheme + "://" + base_host_header;
+    if location.starts_with("/"); do
+      return origin + location;
+    fi
+
+    val slash = base_path.last_index_of("/");
+    if slash < 0; do
+      return origin + "/" + location;
+    fi
+    return origin + base_path.slice(0, slash + 1) + location;
+  }
+
+  pub fnc same_authority(
+      string left_scheme,
+      string left_host,
+      int left_port,
+      string right_scheme,
+      string right_host,
+      int right_port) => bool {
+    return left_scheme == right_scheme
+        && left_host.lower_ascii() == right_host.lower_ascii()
+        && left_port == right_port;
+  }
+
+  fnc parse_decimal_from(
+      string value,
+      int index,
+      int parsed) => int {
+    if index >= value.length; do
+      return parsed;
+    fi
+
+    val int code = value.char_code_at(index);
+    if code < 48 || code > 57; do
+      return -1;
+    fi
+
+    val int digit = code - 48;
+    if parsed > 214748364
+        || (parsed == 214748364 && digit > 7); do
+      return -1;
+    fi
+    return parse_decimal_from(value, index + 1, parsed * 10 + digit);
+  }
+
+  fnc parse_decimal(string raw) => int {
+    val value = raw.trim_ascii();
+    if value.length == 0; do
+      return -1;
+    fi
+    return parse_decimal_from(value, 0, 0);
+  }
+
+  fnc parse_hex_from(
+      string value,
+      int index,
+      int parsed) => int {
+    if index >= value.length; do
+      return parsed;
+    fi
+
+    val int code = value.char_code_at(index);
+    let digit = -1;
+    if code >= 48 && code <= 57; do
+      digit = code - 48;
+    elseif code >= 65 && code <= 70; do
+      digit = code - 65 + 10;
+    elseif code >= 97 && code <= 102; do
+      digit = code - 97 + 10;
+    fi
+
+    if digit < 0; do
+      return -1;
+    fi
+    if parsed > 134217727
+        || (parsed == 134217727 && digit > 15); do
+      return -1;
+    fi
+    return parse_hex_from(value, index + 1, parsed * 16 + digit);
+  }
+
+  fnc parse_hex(string raw) => int {
+    val value = raw.trim_ascii();
+    if value.length == 0; do
+      return -1;
+    fi
+    return parse_hex_from(value, 0, 0);
+  }
+
+  fnc validate_chunk_trailers(
+      string text,
+      int offset) => void {
+    val int line_end = text.index_of("\r\n", offset);
+    if line_end < 0; do
+      fail("truncated chunk trailer section");
+      return;
+    fi
+
+    if line_end == offset; do
+      if line_end + 2 != text.length; do
+        fail("unexpected bytes after chunked response");
+      fi
+      return;
+    fi
+
+    val string trailer = text.slice(offset, line_end);
+    if trailer.index_of(":", 0) <= 0; do
+      fail("malformed chunk trailer");
+      return;
+    fi
+
+    validate_chunk_trailers(text, line_end + 2);
+    return;
+  }
+
+  fnc decode_chunked_into(
+      &Array<int> source,
+      string text,
+      int offset,
+      &mut Array<int> output) => void {
+    val int line_end = text.index_of("\r\n", offset);
+    if line_end < 0; do
+      fail("malformed chunked response");
+    fi
+
+    let string size_text = text.slice(offset, line_end);
+    val int semicolon = size_text.index_of(";", 0);
+    if semicolon >= 0; do
+      size_text = size_text.slice(0, semicolon);
+    fi
+
+    val int size = parse_hex(size_text);
+    if size < 0; do
+      fail("invalid chunk size");
+    fi
+
+    val int data_start = line_end + 2;
+    if size == 0; do
+      validate_chunk_trailers(text, data_start);
+      return;
+    fi
+
+    val int data_end = data_start + size;
+    if data_end + 2 > source.length; do
+      fail("truncated chunked response");
+    fi
+
+    if source[data_end] != 13 || source[data_end + 1] != 10; do
+      fail("malformed chunk terminator");
+    fi
+
+    for (let i = data_start; i < data_end; i = i + 1) {
+      output.push(source[i]);
+    }
+
+    decode_chunked_into(source, text, data_end + 2, output);
+    return;
+  }
+
+  fnc decode_chunked(&Array<int> source) => Array<int> {
+    val string text = source.to_latin1_string();
+    let Array<int> output = arr[];
+    decode_chunked_into(source, text, 0, &mut output);
+    return output;
+  }
+
+  pub fnc parse_response(
+      Array<int> wire,
+      string request_method) => {
+        status_code: int,
+        header_names: Array<string>,
+        header_values: Array<string>,
+        body: Array<int>
+      } {
+    val string text = wire.to_latin1_string();
+    val int header_end = text.index_of("\r\n\r\n", 0);
+    if header_end < 0; do
+      fail("malformed HTTP response: missing header terminator");
+    fi
+    if header_end > max_header_bytes(); do
+      fail("HTTP response headers exceed configured limit");
+    fi
+
+    val string head = text.slice(0, header_end);
+    val Array<string> lines = head.split("\r\n");
+    if lines.length == 0; do
+      fail("malformed HTTP response");
+    fi
+
+    val string status_line = lines[0];
+    if !status_line.starts_with("HTTP/"); do
+      fail("malformed HTTP status line");
+    fi
+
+    val int first_space = status_line.index_of(" ", 0);
+    if first_space < 0; do
+      fail("malformed HTTP status line");
+    fi
+    val int second_space = status_line.index_of(" ", first_space + 1);
+    let int status_end = status_line.length;
+    if second_space >= 0; do
+      status_end = second_space;
+    fi
+
+    val string status_text = status_line.slice(first_space + 1, status_end);
+    if status_text.length != 3; do
+      fail("malformed HTTP status code");
+    fi
+    val int status_code = parse_decimal(status_text);
+    if status_code < 100 || status_code > 599; do
+      fail("HTTP status code out of range");
+    fi
+    if status_code < 200; do
+      fail("informational HTTP responses require incremental response parsing");
+    fi
+
+    val Array<string> header_names = arr[];
+    val Array<string> header_values = arr[];
+    let string transfer_encoding = "";
+    let content_length_count = 0;
+    let string content_length = "";
+
+    for (let i = 1; i < lines.length; i = i + 1) {
+      val string line = lines[i];
+      val int colon = line.index_of(":", 0);
+      if colon <= 0; do
+        fail("malformed HTTP header");
+      fi
+
+      val string name = line.slice(0, colon).trim_ascii().lower_ascii();
+      val string value = line.slice(colon + 1, line.length).trim_ascii();
+      if name.length == 0; do
+        fail("malformed HTTP header");
+      fi
+
+      header_names.push(name);
+      header_values.push(value);
+
+      if name == "transfer-encoding"; do
+        if transfer_encoding != ""; do
+          fail("multiple Transfer-Encoding response headers are unsupported");
+        fi
+        transfer_encoding = value;
+      fi
+
+      if name == "content-length"; do
+        content_length_count = content_length_count + 1;
+        if content_length_count == 1; do
+          content_length = value.trim_ascii();
+        elseif content_length != value.trim_ascii(); do
+          fail("conflicting Content-Length response headers");
+        fi
+      fi
+    }
+
+    if framing_is_ambiguous(
+        transfer_encoding,
+        content_length_count); do
+      fail("ambiguous HTTP response framing: Transfer-Encoding with Content-Length");
+    fi
+
+    let Array<int> body = wire.slice(header_end + 4, wire.length);
+    if !response_may_have_body(request_method, status_code); do
+      body = wire.slice(0, 0);
+    elseif transfer_encoding != ""; do
+      val string normalized = transfer_encoding.trim_ascii().lower_ascii();
+      if normalized != "chunked"; do
+        fail("unsupported HTTP Transfer-Encoding");
+      fi
+      body = decode_chunked(&body);
+    elseif content_length_count > 0; do
+      val int expected = parse_decimal(content_length);
+      if expected < 0; do
+        fail("invalid Content-Length response header");
+      fi
+      if expected < body.length; do
+        body = body.slice(0, expected);
+      elseif expected > body.length; do
+        fail("truncated HTTP response body");
+      fi
+    fi
+
+    return obj{
+      status_code: status_code,
+      header_names: header_names,
+      header_values: header_values,
+      body: body
+    };
+  }
+
+  pub fnc serialize_request(
+      string method,
+      string request_target,
+      string host_header,
+      Array<string> header_names,
+      Array<string> header_values,
+      Array<int> body,
+      bool expect_continue) => Array<int> {
+    if header_names.length != header_values.length; do
+      fail("HTTP header name/value arrays must have equal length");
+    fi
+
+    let head = method + " " + request_target + " HTTP/1.1\r\n";
+    head = head + "Host: " + host_header + "\r\n";
+    head = head + "Connection: close\r\n";
+
+    let has_content_type = false;
+    for (let i = 0; i < header_names.length; i = i + 1) {
+      val name = header_names[i];
+      val value = header_values[i];
+      val lower = name.lower_ascii();
+
+      if lower == "content-type"; do
+        has_content_type = true;
+      fi
+
+      if lower != "host"
+          && lower != "content-length"
+          && lower != "connection"; do
+        head = head + name + ": " + value + "\r\n";
+      fi
+    }
+
+    if request_needs_content_length(method, body.length); do
+      head = head + "Content-Length: " + body.length.to_string() + "\r\n";
+      if !has_content_type; do
+        head = head + "Content-Type: application/octet-stream\r\n";
+      fi
+    fi
+
+    if expect_continue; do
+      head = head + "Expect: 100-continue\r\n";
+    fi
+
+    head = head + "\r\n";
+    val wire = head.to_latin1_bytes();
+    for (val byte of body) {
+      wire.push(byte);
+    }
+    return wire;
   }
 end
