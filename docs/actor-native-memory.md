@@ -291,3 +291,43 @@ is not optimized-JIT or Native Image evidence. The dedicated workflow runs the
 focused suite with the repository's pinned GraalVM setup. No allocation-free,
 zero-GC, hard-real-time or native-image compatibility claim is admitted by these
 tests.
+
+## Compact 32-bit actor-relative managed references (integration hardening)
+
+The actor-native tagged `REFERENCE` payload now uses an **unsigned 32-bit
+actor-relative word**, zero-extended into the existing 8-byte tagged-value
+cell. `0` is null; all nonzero words decode using
+`(unsigned(word) - 1) * 8`. This is the same 8-byte-aligned logical
+scheme as the LLVM compressed32 actor heap. The maximum encoded *starting
+offset* is 32 GiB minus 16 bytes; an 8-byte object at that address ends at
+32 GiB minus 8 bytes. Values outside this range fail closed, not truncate.
+
+This does **not yet reduce the 24-byte generic native tagged-value cell**
+to 20 or fewer bytes: the cell still provides a 64-bit payload to also hold
+arbitrary scalar values. Future typed field-layout/codegen passes must pack
+reference-only columns/fields as 4-byte words to realize the full footprint
+benefit, preserving alignment and mixed-width scalar storage.
+
+`ActorNativeArena` maintains the authoritative actor-local registry keyed
+by canonical 64-bit logical offsets. Stores encode only *after* validating
+arena issuance and owner; loads reject nonzero upper 32 bits and must resolve
+through the current live registry. The compressed word is not a capability.
+Cross-actor aliasing remains forbidden, even when separate arenas happen to
+encode their first allocation to the same 32-bit word. Actor offsets never
+recycle within an arena lifetime, avoiding stale-offset ABA.
+
+`ActorLinearMemory`'s page-local guest offset and the *canonical*
+actor-relative offset are distinct. Its 64-KiB pages can be physically
+noncontiguous and interleaved with small actor object slabs; compress the
+result of `actorOffset`, not the guest page number or the JNI/host pointer.
+The existing 4-GiB WASM-like guest page indexing limit is separate from
+the compressed actor offset encoding's roughly 32-GiB span. No 32-GiB native
+allocation or virtual reservation is needed.
+
+**Remaining integration gates:** packed typed field layouts, object-start
+and type metadata in the compiler, all arena allocations under the selected
+reference-width profile, native64 fallback for workloads exceeding compressed
+span, and Native Image/LLVM compiled-guest differential tests. Normal Java
+managed object references remain VM-owned and must not be confused with
+Oreslang-controlled actor-relative words. Host/core/stdlib may use native
+pointers internally; guest code never receives them.
