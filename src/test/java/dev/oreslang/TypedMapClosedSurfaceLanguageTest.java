@@ -145,6 +145,20 @@ final class TypedMapClosedSurfaceLanguageTest {
     }
 
     @Test
+    void compilerOwnedOwnedPutPrimitiveIsNotGuestVisible() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub fnc main(): void {
+                          val Map<string, int> values =
+                              new Map<string, int>();
+                          values.attemptOwnedPut("x", 1);
+                          return;
+                        }
+                        """));
+    }
+
+    @Test
     void closedMapTypeRequiresSupportedExplicitDomains() {
         for (String source : new String[] {
                 """
