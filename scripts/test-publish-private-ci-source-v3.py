@@ -55,6 +55,32 @@ def contract():
     }
 
 
+def protected_carrier_branch():
+    return {
+        "name": "main",
+        "protected": True,
+        "commit": {"sha": BASE},
+    }
+
+
+def protected_carrier_settings():
+    return {
+        "required_pull_request_reviews": {
+            "require_code_owner_reviews": True,
+            "dismiss_stale_reviews": True,
+            "required_approving_review_count": 1,
+            "bypass_pull_request_allowances": {
+                "users": [],
+                "teams": [],
+                "apps": [],
+            },
+        },
+        "enforce_admins": {"enabled": True},
+        "allow_force_pushes": {"enabled": False},
+        "allow_deletions": {"enabled": False},
+    }
+
+
 class PrivateCiV3Test(unittest.TestCase):
     def test_remote_protected_file_rejects_blob_sha_mismatch(self):
         raw = b"reviewed-bytes\n"
@@ -166,6 +192,10 @@ class PrivateCiV3Test(unittest.TestCase):
     def test_checked_destination_rejects_source_bearing_reviewed_base(self):
         carrier = contract()
         def api(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/branches/main":
+                return protected_carrier_branch()
+            if route == "repos/trusted/ci/branches/main/protection":
+                return protected_carrier_settings()
             if route == "repos/trusted/ci/git/ref/heads/main":
                 return {"object": {"sha": BASE}}
             if route == "repos/trusted/ci/git/commits/" + BASE:
@@ -198,6 +228,68 @@ class PrivateCiV3Test(unittest.TestCase):
             },
         ), patch.object(v3.legacy, "gh_api", side_effect=api):
             with self.assertRaisesRegex(v3.Denied, "not source-free"):
+                v3.checked_destination("trusted/ci", carrier)
+
+    def test_checked_destination_rejects_unprotected_carrier_main(self):
+        carrier = contract()
+        with (
+            patch.object(
+                v3.legacy,
+                "checked_repo",
+                return_value={
+                    "id": carrier["repository_id"],
+                    "private": True,
+                    "visibility": "private",
+                    "archived": False,
+                    "disabled": False,
+                    "fork": False,
+                    "default_branch": "main",
+                },
+            ),
+            patch.object(
+                v3.legacy,
+                "gh_api",
+                return_value={
+                    "name": "main",
+                    "protected": False,
+                    "commit": {"sha": BASE},
+                },
+            ),
+        ):
+            with self.assertRaisesRegex(v3.Denied, "carrier main is not protected"):
+                v3.checked_destination("trusted/ci", carrier)
+
+    def test_checked_destination_rejects_weak_carrier_review_controls(self):
+        carrier = contract()
+        def api(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/branches/main":
+                return protected_carrier_branch()
+            if route == "repos/trusted/ci/branches/main/protection":
+                weak = protected_carrier_settings()
+                weak["required_pull_request_reviews"][
+                    "require_code_owner_reviews"
+                ] = False
+                return weak
+            raise AssertionError(route)
+
+        with (
+            patch.object(
+                v3.legacy,
+                "checked_repo",
+                return_value={
+                    "id": carrier["repository_id"],
+                    "private": True,
+                    "visibility": "private",
+                    "archived": False,
+                    "disabled": False,
+                    "fork": False,
+                    "default_branch": "main",
+                },
+            ),
+            patch.object(v3.legacy, "gh_api", side_effect=api),
+        ):
+            with self.assertRaisesRegex(
+                    v3.Denied, "carrier main must enforce CODEOWNER"):
                 v3.checked_destination("trusted/ci", carrier)
 
     def test_verify_source_pr_requires_exact_open_head(self):
