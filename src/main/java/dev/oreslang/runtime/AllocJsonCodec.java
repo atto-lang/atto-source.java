@@ -12,7 +12,7 @@ import java.util.Objects;
  * growable output buffer and therefore belongs to the alloc/json tier.</p>
  */
 public final class AllocJsonCodec {
-    private static final int MAX_OUTPUT_CHARS = 16 * 1024 * 1024;
+    private static final long MAX_OUTPUT_BYTES = 16L * 1024 * 1024;
 
     private AllocJsonCodec() { }
 
@@ -42,6 +42,7 @@ public final class AllocJsonCodec {
     private static final class Encoder {
         private final StringBuilder out = new StringBuilder();
         private int nodes;
+        private long outputUtf8Bytes;
 
         private void node(int depth) {
             if (depth > OresJsonValue.MAX_GRAPH_DEPTH) {
@@ -54,19 +55,66 @@ public final class AllocJsonCodec {
             }
         }
 
-        private void append(char value) {
-            if (out.length() >= MAX_OUTPUT_CHARS) {
+        private void reserveUtf8Bytes(long additional) {
+            if (additional < 0
+                    || outputUtf8Bytes > MAX_OUTPUT_BYTES - additional) {
                 throw new IllegalArgumentException(
-                        "JSON output exceeds configured size limit");
+                        "JSON output exceeds configured UTF-8 byte limit");
             }
+            outputUtf8Bytes += additional;
+        }
+
+        private void append(char value) {
+            if (Character.isSurrogate(value)) {
+                throw new IllegalArgumentException(
+                        "internal JSON encoder cannot append a lone surrogate");
+            }
+            reserveUtf8Bytes(
+                    value <= 0x7f ? 1
+                            : value <= 0x7ff ? 2
+                            : 3);
             out.append(value);
         }
 
-        private void append(String value) {
-            if ((long) out.length() + value.length() > MAX_OUTPUT_CHARS) {
+        private void appendSurrogatePair(char high, char low) {
+            if (!Character.isHighSurrogate(high)
+                    || !Character.isLowSurrogate(low)) {
                 throw new IllegalArgumentException(
-                        "JSON output exceeds configured size limit");
+                        "internal JSON encoder received an invalid surrogate pair");
             }
+            reserveUtf8Bytes(4);
+            out.append(high).append(low);
+        }
+
+        private void append(String value) {
+            Objects.requireNonNull(value, "JSON output fragment");
+            long bytes = 0;
+            for (int i = 0; i < value.length(); i++) {
+                char current = value.charAt(i);
+                if (current <= 0x7f) {
+                    bytes += 1;
+                } else if (current <= 0x7ff) {
+                    bytes += 2;
+                } else if (Character.isHighSurrogate(current)) {
+                    if (i + 1 >= value.length()
+                            || !Character.isLowSurrogate(value.charAt(i + 1))) {
+                        throw new IllegalArgumentException(
+                                "JSON output fragment contains unpaired high surrogate");
+                    }
+                    bytes += 4;
+                    i++;
+                } else if (Character.isLowSurrogate(current)) {
+                    throw new IllegalArgumentException(
+                            "JSON output fragment contains unpaired low surrogate");
+                } else {
+                    bytes += 3;
+                }
+                if (bytes > MAX_OUTPUT_BYTES) {
+                    throw new IllegalArgumentException(
+                            "JSON output exceeds configured UTF-8 byte limit");
+                }
+            }
+            reserveUtf8Bytes(bytes);
             out.append(value);
         }
 
@@ -151,8 +199,9 @@ public final class AllocJsonCodec {
                                 throw new IllegalArgumentException(
                                         "JSON string contains unpaired high surrogate");
                             }
-                            append(c);
-                            append(value.charAt(++i));
+                            appendSurrogatePair(
+                                    c,
+                                    value.charAt(++i));
                         } else if (Character.isLowSurrogate(c)) {
                             throw new IllegalArgumentException(
                                     "JSON string contains unpaired low surrogate");
