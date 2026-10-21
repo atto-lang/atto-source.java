@@ -22,8 +22,8 @@ final class ActorUnaryMailboxRequestTest {
         try (ActorRuntime runtime = new ActorRuntime();
              var timer = Executors.newSingleThreadScheduledExecutor()) {
             var registry = new GenerationalReplyRegistry(16);
-            var caller = registry.newActorEndpoint();
-            var responder = registry.newActorEndpoint();
+            var caller = new AtomicReference<GenerationalReplyRegistry.Endpoint>();
+            var responder = new AtomicReference<GenerationalReplyRegistry.Endpoint>();
             var requestIssued = new CountDownLatch(1);
             var completion = new AtomicReference<OresFuture<String>>();
             var calleeLease = new AtomicReference<Boolean>();
@@ -36,10 +36,12 @@ final class ActorUnaryMailboxRequestTest {
             });
             var client = runtime.<String>spawn(() -> (message, ctx) -> {
                 completion.set(ActorReplySchedulerBridge.requestCurrentActor(
-                        runtime, registry, caller, responder,
+                        runtime, registry, caller.get(), responder.get(),
                         worker, "ping", String.class, Duration.ofSeconds(3), timer));
                 requestIssued.countDown();
             });
+            caller.set(runtime.bindActorReplyEndpoint(registry, client));
+            responder.set(runtime.bindActorReplyEndpoint(registry, worker));
             client.send("go");
             assertTrue(requestIssued.await(3, TimeUnit.SECONDS));
             assertEquals("pong", completion.get().get(3, TimeUnit.SECONDS));
@@ -54,9 +56,9 @@ final class ActorUnaryMailboxRequestTest {
         try (ActorRuntime runtime = new ActorRuntime();
              var timer = Executors.newSingleThreadScheduledExecutor()) {
             var registry = new GenerationalReplyRegistry(8);
-            var clientEndpoint = registry.newActorEndpoint();
-            var workerEndpoint = registry.newActorEndpoint();
-            var supervisorAppEndpoint = registry.newSupervisorApplicationEndpoint();
+            var clientEndpoint = new AtomicReference<GenerationalReplyRegistry.Endpoint>();
+            var workerEndpoint = new AtomicReference<GenerationalReplyRegistry.Endpoint>();
+            var supervisorAppEndpoint = new AtomicReference<GenerationalReplyRegistry.Endpoint>();
             var issuedByClient = new CountDownLatch(1);
             var issuedByService = new CountDownLatch(1);
             var actorResult = new AtomicReference<OresFuture<String>>();
@@ -71,8 +73,8 @@ final class ActorUnaryMailboxRequestTest {
                     assertTrue(ctx.replyCurrentCall("restricted-policy"));
                 } else if (message.equals("get-stats")) {
                     supervisorResult.set(ActorReplySchedulerBridge.requestCurrentSupervisorApplication(
-                            runtime, registry, supervisorAppEndpoint, serviceRef.get(),
-                            workerEndpoint, worker, "stats", String.class,
+                            runtime, registry, supervisorAppEndpoint.get(), serviceRef.get(),
+                            workerEndpoint.get(), worker, "stats", String.class,
                             Duration.ofSeconds(3), timer));
                     issuedByService.countDown();
                 }
@@ -82,21 +84,24 @@ final class ActorUnaryMailboxRequestTest {
             var client = runtime.<String>spawn(() -> (message, ctx) -> {
                 if (message.equals("ask-policy")) {
                     actorResult.set(ActorReplySchedulerBridge.requestCurrentActor(
-                            runtime, registry, clientEndpoint, supervisorAppEndpoint,
+                            runtime, registry, clientEndpoint.get(), supervisorAppEndpoint.get(),
                             supervisorService, "policy", String.class,
                             Duration.ofSeconds(3), timer));
                     issuedByClient.countDown();
                 } else {
                     try {
                         ActorReplySchedulerBridge.requestCurrentSupervisorApplication(
-                                runtime, registry, supervisorAppEndpoint,
-                                supervisorService, workerEndpoint, worker, "stats",
+                                runtime, registry, supervisorAppEndpoint.get(),
+                                supervisorService, workerEndpoint.get(), worker, "stats",
                                 String.class, Duration.ofSeconds(3), timer);
                     } catch (SecurityException expected) {
                         unauthorized.set(expected);
                     }
                 }
             });
+            clientEndpoint.set(runtime.bindActorReplyEndpoint(registry, client));
+            workerEndpoint.set(runtime.bindActorReplyEndpoint(registry, worker));
+            supervisorAppEndpoint.set(runtime.bindSupervisorApplicationReplyEndpoint(registry, supervisorService));
             client.send("ask-policy");
             assertTrue(issuedByClient.await(3, TimeUnit.SECONDS));
             assertEquals("restricted-policy", actorResult.get().get(3, TimeUnit.SECONDS));
@@ -119,8 +124,8 @@ final class ActorUnaryMailboxRequestTest {
         try (ActorRuntime runtime = new ActorRuntime();
              var timer = Executors.newSingleThreadScheduledExecutor()) {
             var registry = new GenerationalReplyRegistry(4);
-            var caller = registry.newActorEndpoint();
-            var callee = registry.newActorEndpoint();
+            var caller = new AtomicReference<GenerationalReplyRegistry.Endpoint>();
+            var callee = new AtomicReference<GenerationalReplyRegistry.Endpoint>();
             var issued = new CountDownLatch(1);
             var returned = new AtomicReference<OresFuture<String>>();
             var worker = runtime.<String>spawn(() -> (message, ctx) -> {
@@ -129,10 +134,12 @@ final class ActorUnaryMailboxRequestTest {
             });
             var client = runtime.<String>spawn(() -> (message, ctx) -> {
                 returned.set(ActorReplySchedulerBridge.requestCurrentActor(
-                        runtime, registry, caller, callee, worker, "work",
+                        runtime, registry, caller.get(), callee.get(), worker, "work",
                         String.class, Duration.ofSeconds(3), timer));
                 issued.countDown();
             });
+            caller.set(runtime.bindActorReplyEndpoint(registry, client));
+            callee.set(runtime.bindActorReplyEndpoint(registry, worker));
             client.send("request");
             assertTrue(issued.await(3, TimeUnit.SECONDS));
             assertThrows(java.util.concurrent.ExecutionException.class,
@@ -147,8 +154,8 @@ final class ActorUnaryMailboxRequestTest {
         try (ActorRuntime runtime = new ActorRuntime();
              var timer = Executors.newSingleThreadScheduledExecutor()) {
             var registry = new GenerationalReplyRegistry(2);
-            var caller = registry.newActorEndpoint();
-            var callee = registry.newActorEndpoint();
+            var caller = new AtomicReference<GenerationalReplyRegistry.Endpoint>();
+            var callee = new AtomicReference<GenerationalReplyRegistry.Endpoint>();
             var issued = new CountDownLatch(1);
             var future = new AtomicReference<OresFuture<String>>();
             var worker = runtime.<String>spawn(() -> (message, ctx) -> {
@@ -157,10 +164,12 @@ final class ActorUnaryMailboxRequestTest {
             });
             var client = runtime.<String>spawn(() -> (message, ctx) -> {
                 future.set(ActorReplySchedulerBridge.requestCurrentActor(
-                        runtime, registry, caller, callee, worker, "unanswered",
+                        runtime, registry, caller.get(), callee.get(), worker, "unanswered",
                         String.class, Duration.ofSeconds(3), timer));
                 issued.countDown();
             });
+            caller.set(runtime.bindActorReplyEndpoint(registry, client));
+            callee.set(runtime.bindActorReplyEndpoint(registry, worker));
             client.send("begin");
             assertTrue(issued.await(3, TimeUnit.SECONDS));
             assertThrows(java.util.concurrent.ExecutionException.class,
@@ -175,19 +184,21 @@ final class ActorUnaryMailboxRequestTest {
         try (ActorRuntime runtime = new ActorRuntime();
              var timer = Executors.newSingleThreadScheduledExecutor()) {
             var registry = new GenerationalReplyRegistry(2);
-            var caller = registry.newActorEndpoint();
-            var callee = registry.newActorEndpoint();
+            var caller = new AtomicReference<GenerationalReplyRegistry.Endpoint>();
+            var callee = new AtomicReference<GenerationalReplyRegistry.Endpoint>();
             var issued = new CountDownLatch(1);
             var future = new AtomicReference<OresFuture<String>>();
             var worker = runtime.<Object>spawn(() ->
                     (message, ctx) -> fail("invalid mutable host payload must not execute"));
             var client = runtime.<String>spawn(() -> (message, ctx) -> {
                 future.set(ActorReplySchedulerBridge.requestCurrentActor(
-                        runtime, registry, caller, callee, worker,
+                        runtime, registry, caller.get(), callee.get(), worker,
                         new StringBuilder("mutable host data"), String.class,
                         Duration.ofSeconds(3), timer));
                 issued.countDown();
             });
+            caller.set(runtime.bindActorReplyEndpoint(registry, client));
+            callee.set(runtime.bindActorReplyEndpoint(registry, worker));
             client.send("begin");
             assertTrue(issued.await(3, TimeUnit.SECONDS));
             assertThrows(java.util.concurrent.ExecutionException.class,
@@ -202,8 +213,8 @@ final class ActorUnaryMailboxRequestTest {
         try (ActorRuntime runtime = new ActorRuntime();
              var timer = Executors.newSingleThreadScheduledExecutor()) {
             var registry = new GenerationalReplyRegistry(2);
-            var caller = registry.newActorEndpoint();
-            var callee = registry.newActorEndpoint();
+            var caller = new AtomicReference<GenerationalReplyRegistry.Endpoint>();
+            var callee = new AtomicReference<GenerationalReplyRegistry.Endpoint>();
             var issued = new CountDownLatch(1);
             var future = new AtomicReference<OresFuture<String>>();
             var worker = runtime.<String>spawn(() -> (message, ctx) ->
@@ -211,10 +222,12 @@ final class ActorUnaryMailboxRequestTest {
                             () -> ctx.replyCurrentCall(42)));
             var client = runtime.<String>spawn(() -> (message, ctx) -> {
                 future.set(ActorReplySchedulerBridge.requestCurrentActor(
-                        runtime, registry, caller, callee, worker, "wrong-type",
+                        runtime, registry, caller.get(), callee.get(), worker, "wrong-type",
                         String.class, Duration.ofSeconds(3), timer));
                 issued.countDown();
             });
+            caller.set(runtime.bindActorReplyEndpoint(registry, client));
+            callee.set(runtime.bindActorReplyEndpoint(registry, worker));
             client.send("begin");
             assertTrue(issued.await(3, TimeUnit.SECONDS));
             assertThrows(java.util.concurrent.ExecutionException.class,
