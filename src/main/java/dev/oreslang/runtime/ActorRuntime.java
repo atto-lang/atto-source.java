@@ -83,6 +83,94 @@ public final class ActorRuntime implements AutoCloseable {
     private static final ThreadLocal<Boolean> ACTOR_GROUP_MAILMAN_CONTEXT_SEND =
             ThreadLocal.withInitial(() -> Boolean.FALSE);
 
+    /*
+     * Actor transport must never treat an arbitrary host collection
+     * implementation as an Oreslang value. Calling size()/iterator()/entrySet()
+     * on an attacker-controlled subclass would execute host callbacks before the
+     * message is rejected. Only exact runtime/JDK carriers emitted by the
+     * evaluator or by freeze/isolation are traversable.
+     */
+    private static final Set<Class<?>> TRUSTED_ACTOR_LIST_CLASSES =
+            trustedActorListClasses();
+    private static final Set<Class<?>> TRUSTED_ACTOR_SET_CLASSES =
+            trustedActorSetClasses();
+    private static final Set<Class<?>> TRUSTED_ACTOR_MAP_CLASSES =
+            trustedActorMapClasses();
+
+    private static Set<Class<?>> trustedActorListClasses() {
+        Set<Class<?>> classes = new java.util.HashSet<>();
+        classes.add(ArrayList.class);
+        classes.add(java.util.Arrays.asList(new Object[0]).getClass());
+        classes.add(List.of().getClass());
+        classes.add(List.of(1).getClass());
+        classes.add(List.of(1, 2, 3).getClass());
+        classes.add(Collections.emptyList().getClass());
+        classes.add(Collections.singletonList(1).getClass());
+        classes.add(Collections.unmodifiableList(new ArrayList<>()).getClass());
+        return Set.copyOf(classes);
+    }
+
+    private static Set<Class<?>> trustedActorSetClasses() {
+        Set<Class<?>> classes = new java.util.HashSet<>();
+        classes.add(java.util.HashSet.class);
+        classes.add(LinkedHashSet.class);
+        classes.add(Set.of().getClass());
+        classes.add(Set.of(1).getClass());
+        classes.add(Set.of(1, 2, 3).getClass());
+        classes.add(Collections.emptySet().getClass());
+        classes.add(Collections.singleton(1).getClass());
+        classes.add(Collections.unmodifiableSet(new LinkedHashSet<>()).getClass());
+        return Set.copyOf(classes);
+    }
+
+    private static Set<Class<?>> trustedActorMapClasses() {
+        Set<Class<?>> classes = new java.util.HashSet<>();
+        classes.add(java.util.HashMap.class);
+        classes.add(LinkedHashMap.class);
+        classes.add(Map.of().getClass());
+        classes.add(Map.of(1, 1).getClass());
+        classes.add(Map.of(1, 1, 2, 2).getClass());
+        classes.add(Collections.emptyMap().getClass());
+        classes.add(Collections.singletonMap(1, 1).getClass());
+        classes.add(Collections.unmodifiableMap(new LinkedHashMap<>()).getClass());
+        return Set.copyOf(classes);
+    }
+
+    private static boolean isEvaluatorOwnedGuestMapClass(Class<?> type) {
+        if (type == null
+                || type.getClassLoader() != ActorRuntime.class.getClassLoader()
+                || !java.lang.reflect.Modifier.isFinal(type.getModifiers())) {
+            return false;
+        }
+        String name = type.getName();
+        return name.equals("dev.oreslang.nodes.OresEvalRootNode$MutableStructValue")
+                || name.equals("dev.oreslang.nodes.OresEvalRootNode$ReadonlyRecordValue");
+    }
+
+    private static void requireTrustedCollectionCarrier(Object value) {
+        if (value instanceof List<?>
+                && !(value instanceof OresTuple)
+                && !TRUSTED_ACTOR_LIST_CLASSES.contains(value.getClass())) {
+            throw new IllegalArgumentException(
+                    "value of type " + value.getClass().getName()
+                            + " is not Sendable; untrusted host List implementations cannot cross actor boundaries");
+        }
+        if (value instanceof Set<?>
+                && !TRUSTED_ACTOR_SET_CLASSES.contains(value.getClass())) {
+            throw new IllegalArgumentException(
+                    "value of type " + value.getClass().getName()
+                            + " is not Sendable; untrusted host Set implementations cannot cross actor boundaries");
+        }
+        if (value instanceof Map<?, ?>
+                && !(value instanceof FrozenGuestMap)
+                && !TRUSTED_ACTOR_MAP_CLASSES.contains(value.getClass())
+                && !isEvaluatorOwnedGuestMapClass(value.getClass())) {
+            throw new IllegalArgumentException(
+                    "value of type " + value.getClass().getName()
+                            + " is not Sendable; untrusted host Map implementations cannot cross actor boundaries");
+        }
+    }
+
     private record ActorGroupMailmanExecution(
             ActorRuntime runtime,
             ActorGroupId groupId) { }
@@ -5747,6 +5835,7 @@ public final class ActorRuntime implements AutoCloseable {
             policyCeiling.require(IsolatePolicy.Capability.ACTOR_SHARE_READONLY, "shareReadonly");
         }
         rejectPrivateActorSharedMemoryAccess("shareReadonly");
+        validateMessageGraph(value);
         requireOwnedSharedHandles(value, new IdentityHashMap<>(), 0);
         Object frozen = freeze(value);
         rejectSharedMutableHandles(frozen, new IdentityHashMap<>(), 0);
@@ -5798,11 +5887,13 @@ public final class ActorRuntime implements AutoCloseable {
                 policyCeiling.require(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex host send");
             }
             target.policy.require(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex actor receive");
-            sharedMutex.inspectForTransport(payload ->
-                    requireSharedMutexPayloadSafe(
-                            payload,
-                            new IdentityHashMap<>(),
-                            depth + 1));
+            sharedMutex.inspectForTransport(payload -> {
+                validateMessageGraph(payload);
+                requireSharedMutexPayloadSafe(
+                        payload,
+                        new IdentityHashMap<>(),
+                        depth + 1);
+            });
             return;
         }
         if (value instanceof Shared<?> shared) {
@@ -6286,6 +6377,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
             return; // transport-specific validation produces the semantic error.
         }
+        requireTrustedCollectionCarrier(value);
         if (visiting.put(value, Boolean.TRUE) != null) {
             throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
         }
