@@ -16,7 +16,7 @@ chmod +x "$tmp/bin/gh"
 export PATH="$tmp/bin:$PATH"
 tab="$(printf '\t')"
 name=sonus-auris-test/clients-api-contract
-valid="${name}${tab}private${tab}true${tab}1323599063"
+valid="${name}${tab}private${tab}true${tab}1323599063${tab}false${tab}false"
 FAKE_GH_METADATA="$valid" bash "$tmp/scripts/check-private-ci-destination.sh" "$name" >/dev/null
 reject() {
   local value="$1"
@@ -25,9 +25,13 @@ reject() {
     exit 1
   fi
 }
-reject "${name}${tab}${tab}private${tab}true${tab}1323599063"
-reject "${name}${tab}private${tab}${tab}true${tab}1323599063"
+reject "${name}${tab}${tab}private${tab}true${tab}1323599063${tab}false${tab}false"
+reject "${name}${tab}private${tab}${tab}true${tab}1323599063${tab}false${tab}false"
 reject "${valid}${tab}"
 reject "${valid}${tab}extra"
 reject "${valid} "
+reject "${name}${tab}private${tab}true${tab}1323599063${tab}true${tab}false"
+reject "${name}${tab}private${tab}true${tab}1323599063${tab}false${tab}true"
+reject "${name}${tab}private${tab}true${tab}1323599063${tab}null${tab}false"
+reject "${name}${tab}private${tab}true${tab}1323599063${tab}false"
 printf 'PASS: exact four-field metadata parser\n'
