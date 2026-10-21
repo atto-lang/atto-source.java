@@ -344,6 +344,10 @@ public final class ReturnCleanupChecker {
             constructor.arguments().forEach(e -> expression(e, scope, inDefer, state));
         } else if (expr instanceof Ast.AwaitExpr awaited) {
             expression(awaited.expression(), scope, inDefer, state);
+        } else if (expr instanceof Ast.TaskExpr task) {
+            // Return/finally/defer rules inside a Task belong to that Task,
+            // never to the enclosing caller.
+            callable(task.body(), List.of(), scope);
         } else if (expr instanceof Ast.ChannelOpExpr channel) {
             expression(channel.channel(), scope, inDefer, state);
             expression(channel.value(), scope, inDefer, state);
