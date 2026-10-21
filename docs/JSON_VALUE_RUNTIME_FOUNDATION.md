@@ -1,11 +1,12 @@
 # JSON value runtime descriptor foundation
 
-This slice is infrastructure for the `alloc/json` contract in
+This slice implements the first source-facing `alloc/json` contract from
 `oreslang-common-source#111`. It does **not** make JSON a core language
-builtin. The stage-one source surface now exposes only the opaque
-compiler-owned `JsonValue` type and `Map<String, JsonValue>` allocation
-through the reserved `alloc/json` import; construction/parsing/codecs remain
-separate later slices.
+builtin. The source surface exposes the opaque compiler-owned `JsonValue`
+type, `Map<String, JsonValue>` allocation, compiler-owned construction
+factories, and a bounded stable stringify boundary through the reserved
+`alloc/json` import. Strict parsing and generated typed codecs remain later
+slices.
 
 ## Boundary
 
@@ -107,20 +108,32 @@ admits the opaque nominal `JsonValue` type and a fresh
 `Map<String, JsonValue>`. The runtime constructs that Map with
 `OresKeyedMap.ValueDomain.JSON`; Symbol or String|Symbol key domains reject.
 
-The following are **still unavailable** in this stage:
+Construction and stable externalization are now available only through the
+exact compiler-owned `Json` namespace:
 
 ```ores
-new JsonValue()
-Json.of(...)
-Json.decode<T>(...)
-Json.stringify(...)
+import class JsonValue from "alloc/json";
+import class Json from "alloc/json";
+
+val JsonValue scalar = Json.of("value");
+val JsonValue nothing = Json.null;
+val JsonValue list = Json.array([Json.of(1), Json.of(2)]);
+
+val Map<String, JsonValue> fields = new Map<String, JsonValue>();
+fields["name"] = Json.of("Ada");
+val String encoded = Json.stringify(fields);
+val JsonValue object = Json.object(fields);
 ```
 
-Actual `JsonValue` instances will be produced only by compiler/runtime-owned
-`Json.*` factories, parser/decoder paths or generated codecs. This prevents
-an allocator-backed type from becoming an ambient `core` builtin and prevents
-an ordinary guest class instance from impersonating the sealed runtime JSON
-carrier.
+`Json.of` currently admits bool, integer and String source scalars. Floating
+source values fail closed until the source runtime carries an exact decimal
+scalar; the runtime carrier itself already preserves exact `BigDecimal`
+numbers. `Json.array` and `Json.object` consume their owned containers,
+while `Json.stringify` is a non-consuming read.
+
+`new JsonValue()` and `new Json()` remain forbidden. Strict
+`Json.parse(...)`, `Json.decode<T>(...)`, and generated typed codecs are
+still unavailable.
 
 The runtime/evaluator half of commit-aware ownership transfer is now present.
 `OresKeyedMap.attemptOwnedPut` returns a linear internal result:
@@ -149,7 +162,13 @@ write remains conservative, as do top-level-defer/live-MutexGuard cases.
 Nested tries suppress recovery only for the innermost catch; every enclosing
 try still observes the committed move so a later outer failure cannot reuse it.
 
-Source `Map<String, JsonValue>` is now admitted only through the exact
-compiler-owned `alloc/json` import. The remaining source work is value
-construction and externalization: `Json.*` factories, strict parse/stringify,
-and generated typed codecs. Scalar Map domains remain unchanged.
+Source `Map<String, JsonValue>` is admitted only through the exact
+compiler-owned `alloc/json` import. `Json.stringify` revalidates the complete
+selected root and traverses it under the same private JSON graph-stability
+guard used by `put`, `putAll`, `take/remove`, and `clear`, so concurrent
+mutation cannot produce a torn encoding. Output is bounded by a UTF-8 byte
+quota and traversal invokes no guest callbacks.
+
+The remaining source work is strict parsing followed by generated typed codecs
+(record, struct, `Option<T>`/collections, then explicit class factories).
+Scalar Map domains remain unchanged.
