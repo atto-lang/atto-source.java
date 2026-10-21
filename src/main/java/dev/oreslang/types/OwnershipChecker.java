@@ -1325,7 +1325,8 @@ public final class OwnershipChecker {
             // Preserve the explicitly synchronized Channel<T> source-Task seam;
             // Future, guards and foreign/scheduler authority stay local.
             for (Capture capture : captured.values.values()) {
-                if (forbiddenTaskCapability(capture.source.type)) {
+                if (!capture.source.type.isBorrow()
+                        && forbiddenTaskCapability(capture.source.type)) {
                     throw error("independent task capture '" + capture.name
                             + "' contains a non-Send execution capability; "
                             + "pass owned values or an explicit Channel<T> instead");
@@ -3769,7 +3770,11 @@ public final class OwnershipChecker {
             Ast.TypeRef type,
             Set<Ast.ClassDecl> visitingClasses) {
         if (type == null) return true;
-        if (type.isBorrow()) return false; // dedicated borrow diagnostic below
+        // Nested borrow types are not Send-safe merely because an outer
+        // Option/Result/record/class is owned. A direct loan retains its
+        // dedicated lexical-borrow diagnostic at the caller; nested loans
+        // must be rejected here to prevent laundering through a container.
+        if (type.isBorrow()) return true;
         if (type.name().equals("$infer$")) return true;
 
         if (switch (type.name()) {
