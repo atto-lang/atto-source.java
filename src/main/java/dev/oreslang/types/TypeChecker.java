@@ -5278,6 +5278,17 @@ public final class TypeChecker {
             boolean returnPosition,
             String where) {
         if (returnPosition && type == Primitive.VOID) return;
+        // Stream is a compiler-owned bounded transport. Its coordinator owns
+        // the buffer independently of the producing Task's activation; allow
+        // only an exact, unshadowed Stream<T> with Send/data-only payload.
+        if (type instanceof Named stream
+                && stream.name().equals("Stream")
+                && stream.arguments().size() == 1
+                && isUnshadowedCompilerBuiltin("Stream")
+                && isSharedSafe(stream.arguments().getFirst(), new LinkedHashSet<>(), Map.of())
+                && isThreadSend(type)) {
+            return;
+        }
         // First prove transferable ownership independently from actor transport.
         // A class's nominal Send proof is deliberately restricted to the
         // existing transitively owned/data-only class analysis. Source-level
