@@ -1279,6 +1279,79 @@ public final class Ast {
         }
     }
 
+    public record JsonClassFactoryPlan(
+            String className,
+            String methodName,
+            TypeRef inputType) {
+        public JsonClassFactoryPlan {
+            java.util.Objects.requireNonNull(className, "JSON factory class");
+            java.util.Objects.requireNonNull(methodName, "JSON factory method");
+            java.util.Objects.requireNonNull(inputType, "JSON factory input");
+            if (className.isBlank() || methodName.isBlank()) {
+                throw new IllegalArgumentException(
+                        "JSON class factory names must be non-blank");
+            }
+        }
+    }
+
+    /** Identity-bound checked class-factory authority for Json.decode<T>. */
+    public static final class CheckedJsonClassFactory {
+        private CheckedJsonClassFactory() { }
+
+        private static final java.lang.ref.ReferenceQueue<CallExpr> CLEARED =
+                new java.lang.ref.ReferenceQueue<>();
+        private static final java.util.Map<IdentityKey, JsonClassFactoryPlan> PLANS =
+                new java.util.HashMap<>();
+
+        private static final class IdentityKey extends java.lang.ref.WeakReference<CallExpr> {
+            private final int hash;
+            private IdentityKey(
+                    CallExpr call, java.lang.ref.ReferenceQueue<CallExpr> queue) {
+                super(call, queue);
+                hash = System.identityHashCode(call);
+            }
+            @Override public int hashCode() { return hash; }
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof IdentityKey key)) return false;
+                CallExpr value = get();
+                return value != null && value == key.get();
+            }
+        }
+
+        private static void expunge() {
+            java.lang.ref.Reference<? extends CallExpr> collected;
+            while ((collected = CLEARED.poll()) != null) {
+                PLANS.remove(collected);
+            }
+        }
+
+        public static synchronized void record(
+                CallExpr call,
+                JsonClassFactoryPlan plan) {
+            java.util.Objects.requireNonNull(call, "JSON decode call");
+            java.util.Objects.requireNonNull(plan, "JSON class factory plan");
+            expunge();
+            IdentityKey key = new IdentityKey(call, CLEARED);
+            JsonClassFactoryPlan old = PLANS.putIfAbsent(key, plan);
+            if (old != null && !old.equals(plan)) {
+                throw new IllegalStateException(
+                        "same JSON decode call received inconsistent class factory plans");
+            }
+        }
+
+        public static synchronized JsonClassFactoryPlan lookup(CallExpr call) {
+            java.util.Objects.requireNonNull(call, "JSON decode call");
+            expunge();
+            return PLANS.get(new IdentityKey(call, null));
+        }
+
+        public static synchronized void copy(CallExpr source, CallExpr target) {
+            JsonClassFactoryPlan plan = lookup(source);
+            if (plan != null) record(target, plan);
+        }
+    }
+
     /**
      * Central preservation policy for checker-owned, identity-bound AST metadata.
      *
@@ -1311,6 +1384,14 @@ public final class Ast {
                 if (source instanceof CallExpr sourceCall
                         && target instanceof CallExpr targetCall) {
                     CheckedJsonDecodeTarget.copy(sourceCall, targetCall);
+                }
+            }
+        },
+        JSON_CLASS_FACTORY("CheckedJsonClassFactory") {
+            @Override void copy(Expr source, Expr target) {
+                if (source instanceof CallExpr sourceCall
+                        && target instanceof CallExpr targetCall) {
+                    CheckedJsonClassFactory.copy(sourceCall, targetCall);
                 }
             }
         };
