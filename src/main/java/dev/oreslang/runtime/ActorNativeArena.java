@@ -1,5 +1,7 @@
 package dev.oreslang.runtime;
 
+import java.lang.ref.ReferenceQueue;
+import java.lang.ref.WeakReference;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.math.BigInteger;
@@ -45,6 +47,72 @@ public final class ActorNativeArena implements AutoCloseable {
         Runnable reserve(int bytes);
     }
 
+    /**
+     * Weak keys with identity (not equals/hashCode) semantics. Native facades
+     * such as Fields may have structural Map equality, so WeakHashMap would be
+     * incorrect for provenance. Arena methods serialize access to this helper.
+     */
+    private static final class WeakIdentityMap<K, V> {
+        private final ReferenceQueue<K> queue = new ReferenceQueue<>();
+        private final HashMap<IdentityWeakReference<K>, V> values = new HashMap<>();
+
+        V get(K key) {
+            expunge();
+            return values.get(new IdentityWeakReference<>(key));
+        }
+
+        V put(K key, V value) {
+            expunge();
+            return values.put(new IdentityWeakReference<>(key, queue), value);
+        }
+
+        V putIfAbsent(K key, V value) {
+            expunge();
+            return values.putIfAbsent(new IdentityWeakReference<>(key, queue), value);
+        }
+
+        V remove(K key) {
+            expunge();
+            return values.remove(new IdentityWeakReference<>(key));
+        }
+
+        void clear() {
+            values.clear();
+            while (queue.poll() != null) { }
+        }
+
+        @SuppressWarnings("unchecked")
+        private void expunge() {
+            IdentityWeakReference<K> stale;
+            while ((stale = (IdentityWeakReference<K>) queue.poll()) != null) {
+                values.remove(stale);
+            }
+        }
+    }
+
+    private static final class IdentityWeakReference<T> extends WeakReference<T> {
+        private final int identityHash;
+
+        IdentityWeakReference(T value) {
+            super(Objects.requireNonNull(value));
+            identityHash = System.identityHashCode(value);
+        }
+
+        IdentityWeakReference(T value, ReferenceQueue<T> queue) {
+            super(Objects.requireNonNull(value), queue);
+            identityHash = System.identityHashCode(value);
+        }
+
+        @Override public int hashCode() { return identityHash; }
+
+        @Override public boolean equals(Object other) {
+            if (this == other) return true;
+            if (!(other instanceof IdentityWeakReference<?> reference)) return false;
+            Object value = get();
+            return value != null && value == reference.get();
+        }
+    }
+
     private static final int SLOT_BYTES = 24;
     private static final int TASK_FRAME_BYTES = 40;
     private static final long TASK_FRAME_MAGIC = 0x4f5245535441534bL; // "ORESTASK"
@@ -62,8 +130,8 @@ public final class ActorNativeArena implements AutoCloseable {
     private final ArrayList<Long> slabBases = new ArrayList<>();
     private final ArrayList<Runnable> releases = new ArrayList<>();
     /** Native object addresses may only be admitted after the arena issues their authority. */
-    private final IdentityHashMap<NativeValue, Long> issuedNativeOffsets = new IdentityHashMap<>();
-    private final IdentityHashMap<NativeValue, Long> referenceOffsets = new IdentityHashMap<>();
+    private final WeakIdentityMap<NativeValue, Long> issuedNativeOffsets = new WeakIdentityMap<>();
+    private final WeakIdentityMap<NativeValue, Long> referenceOffsets = new WeakIdentityMap<>();
     private final Map<Long, NativeValue> referencesByOffset = new HashMap<>();
     private final Map<Long, Integer> referenceRefCounts = new HashMap<>();
     private final IdentityHashMap<NativeCapability, Long> capabilityIds = new IdentityHashMap<>();
