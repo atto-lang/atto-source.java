@@ -180,7 +180,7 @@ public final class ScopedTaskReadRuntime {
                 allocation.generation());
     }
 
-    private static Lease register(AllocationKey key) {
+    private static ReadLease register(AllocationKey key) {
         Integer readers = ACCESS.compute(key, (ignored, current) -> {
             if (current != null && current == WRITE_HELD) {
                 throw new IllegalStateException(
