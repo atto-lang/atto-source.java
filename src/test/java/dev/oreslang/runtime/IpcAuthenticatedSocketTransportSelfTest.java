@@ -195,6 +195,34 @@ public final class IpcAuthenticatedSocketTransportSelfTest {
             check(!client.isClosed());
         }
 
+        // A bridge-claim failure AFTER the socket streams and lease have
+        // been prepared must not leak the socket or mutate the broker's key.
+        // The failed transport cannot publish any receipt correlation.
+        try (ServerSocket server = new ServerSocket(
+                    0, 16, InetAddress.getLoopbackAddress());
+             Socket client = new Socket(
+                     InetAddress.getLoopbackAddress(), server.getLocalPort());
+             Socket peer = server.accept()) {
+            var occupiedBridge = new IpcReceiptCompletionBridge(1);
+            occupiedBridge.claimPhysicalTransport(
+                    new Object(), configMessage, 13);
+            byte[] callerKey = key();
+            byte[] originalKey = callerKey.clone();
+            try {
+                new IpcAuthenticatedSocketTransport(
+                        client, occupiedBridge, configMessage, 13, 1,
+                        callerKey, connectionBinding,
+                        IpcAuthenticatedSocketTransportSelfTest::offCallerCleanup);
+                throw new AssertionError("duplicate physical bridge claim accepted");
+            } catch (IllegalStateException expected) {
+                check(expected.getMessage().contains("already bound"));
+            }
+            check(client.isClosed());
+            check(Arrays.equals(callerKey, originalKey));
+            check(occupiedBridge.counters().pending() == 0);
+            check(occupiedBridge.invariant());
+        }
+
         // Invalid close deadlines are side-effect free: validation occurs
         // before close intent or physical abort is submitted.
         try (ServerSocket server = new ServerSocket(0, 16, InetAddress.getLoopbackAddress());

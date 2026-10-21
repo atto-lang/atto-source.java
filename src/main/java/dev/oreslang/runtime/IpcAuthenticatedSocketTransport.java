@@ -124,24 +124,16 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
             }
             throw constructionFailure;
         }
-        try {
-            receipts.claimPhysicalTransport(
-                    physicalOwner, trustedEpoch, physicalGeneration);
-        } catch (RuntimeException | Error bindingFailure) {
-            Arrays.fill(privateMacKey, (byte) 0);
-            try {
-                socket.close();
-            } catch (IOException closeFailure) {
-                bindingFailure.addSuppressed(closeFailure);
-            }
-            throw bindingFailure;
-        }
+        // Prepare all remaining transport state BEFORE the irreversible
+        // bridge claim. Constructor failure must not strand a bridge that
+        // could otherwise have been reused by a valid physical session.
         this.macKey = privateMacKey;
         this.connectionBinding = privateConnectionBinding;
         this.physicalGeneration = physicalGeneration;
         this.input = socketInput;
         this.output = socketOutput;
-        this.sessionLease = new IpcTransportSessionLease(
+        try {
+            this.sessionLease = new IpcTransportSessionLease(
                 trustedEpoch,
                 physicalGeneration,
                 maxOutstandingWrites,
@@ -163,6 +155,19 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                     }
                 },
                 this.cleanupScheduler);
+            // Claim is the last potentially throwing construction action.
+            // No partially created lease becomes visible to callers.
+            receipts.claimPhysicalTransport(
+                    physicalOwner, trustedEpoch, physicalGeneration);
+        } catch (RuntimeException | Error constructionFailure) {
+            Arrays.fill(privateMacKey, (byte) 0);
+            try {
+                socket.close();
+            } catch (IOException closeFailure) {
+                constructionFailure.addSuppressed(closeFailure);
+            }
+            throw constructionFailure;
+        }
     }
 
     /**
