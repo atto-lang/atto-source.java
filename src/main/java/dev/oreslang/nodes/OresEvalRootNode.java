@@ -144,6 +144,12 @@ public final class OresEvalRootNode extends RootNode {
         return false;
     }
 
+    static boolean isRuntimeSharedSafe(Object value) {
+        return MutexFactory.runtimeSharedSafe(
+                value,
+                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()));
+    }
+
     static boolean isTrustedTraversalCollectionCarrier(Object value) {
         if (value instanceof List<?>) {
             return value instanceof OresTuple
@@ -10612,7 +10618,7 @@ public final class OresEvalRootNode extends RootNode {
             if (shared) {
                 context.requireCapability(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex.new");
                 Object value = args.getFirst();
-                if (!runtimeSharedSafe(value, java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()))) {
+                if (!OresEvalRootNode.isRuntimeSharedSafe(value)) {
                     throw new IllegalArgumentException(
                             "SharedMutex<T> runtime admission rejected non-shared-safe state");
                 }
@@ -10622,11 +10628,9 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private static boolean runtimeSharedSafe(Object value, Set<Object> seen) {
-            if (value == null || value instanceof String || value instanceof Boolean || value instanceof Character
-                    || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
-                    || value instanceof Float || value instanceof Double || value instanceof java.math.BigInteger
-                    || value instanceof java.math.BigDecimal || value instanceof Enum<?> || value instanceof java.util.UUID
-                    || value instanceof Complex || value instanceof ActorRuntime.ActorId || value instanceof ActorRuntime.ActorRef<?>) {
+            if (OresEvalRootNode.isTrustedAsyncScalar(value)
+                    || value instanceof ActorRuntime.ActorId
+                    || value instanceof ActorRuntime.ActorRef<?>) {
                 return true;
             }
 
