@@ -129,6 +129,12 @@ public final class OresTimers implements AutoCloseable {
         if (delayNanos < 0) throw new IllegalArgumentException("negative timer delay");
         Objects.requireNonNull(scheduler, "scheduler");
         Objects.requireNonNull(callback, "callback");
+        // Until actor-local CONTROL admission exists, do not turn a generic
+        // scheduler callback into a back door around actor single-writer turns.
+        if (ActorRuntime.inActorExecution() || ActorRuntime.inActorGroupMailmanExecution()) {
+            throw new IllegalStateException(
+                    "actor timer callbacks require actor-owned CONTROL admission");
+        }
         final TimerHandle handle = new TimerHandle(scheduler, callback);
         final OresFuture<Void> deadline;
         synchronized (admission) {
