@@ -15,18 +15,20 @@ final class OresKeyedMapCommitAwareTest {
                 map.tryPutOwned("key", first);
 
         assertTrue(inserted.committed());
-        assertFalse(inserted.previous().present());
+        assertFalse(inserted.takePrevious().present());
         assertSame(first, map.getRequired("key"));
-        assertThrows(IllegalStateException.class, inserted::uncommittedValue);
-        assertDoesNotThrow(inserted::rethrowIfRejected);
+        assertThrows(IllegalStateException.class, inserted::takeUncommittedValue);
+        assertDoesNotThrow(inserted::rethrowAfterRecovery);
 
         String second = new String("second");
         OresKeyedMap.PutAttempt<String> replaced =
                 map.tryPutOwned("key", second);
 
         assertTrue(replaced.committed());
-        assertTrue(replaced.previous().present());
-        assertSame(first, replaced.previous().value());
+        OresKeyedMap.Lookup<String> previous = replaced.takePrevious();
+        assertTrue(previous.present());
+        assertSame(first, previous.value());
+        assertThrows(IllegalStateException.class, replaced::takePrevious);
         assertSame(second, map.getRequired("key"));
     }
 
@@ -40,12 +42,17 @@ final class OresKeyedMapCommitAwareTest {
                 map.tryPutOwned("key", candidate);
 
         assertFalse(rejected.committed());
-        assertSame(candidate, rejected.uncommittedValue());
+        assertThrows(
+                IllegalStateException.class,
+                rejected::rethrowAfterRecovery,
+                "failure propagation must not discard an unrecovered move-only candidate");
+        assertSame(candidate, rejected.takeUncommittedValue());
+        assertThrows(IllegalStateException.class, rejected::takeUncommittedValue);
         assertTrue(map.isEmpty());
-        assertThrows(IllegalStateException.class, rejected::previous);
+        assertThrows(IllegalStateException.class, rejected::takePrevious);
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
-                rejected::rethrowIfRejected);
+                rejected::rethrowAfterRecovery);
         assertTrue(failure.getMessage().contains("value domain"),
                 failure.getMessage());
     }
