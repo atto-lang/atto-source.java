@@ -1,0 +1,10 @@
+{
+  "name": "@oreslang/aot-artifact-contract",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@typespec/compiler": "1.17.0",
+    "@typespec/json-schema": "1.17.0"
+  }
+}

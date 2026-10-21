@@ -85,6 +85,47 @@ final class MutexRuntimeTest {
     }
 
     @Test
+    void actorLocalMutexFencesStaleGuardsAcrossPhysicalDispatchSegments() throws Exception {
+        // Throughput=1 forces distinct physical dispatches for the messages,
+        // even when the runtime reuses the same JVM carrier thread.
+        var config = new ActorRuntime.DispatcherConfig(2, 2, 1);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            CountDownLatch checked = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+
+            var actor = runtime.<String>spawn(() -> {
+                var mutex = OresMutex.local(new int[]{9});
+                AtomicReference<OresMutex.Guard<int[]>> retained = new AtomicReference<>();
+                return (message, context) -> {
+                    try {
+                        if ("hold".equals(message)) {
+                            retained.set(mutex.lock());
+                        } else if ("check".equals(message)) {
+                            assertNotNull(retained.get());
+                            assertThrows(OresMutex.WrongMutexDomainException.class,
+                                    () -> retained.get().value());
+                            assertThrows(OresMutex.WrongMutexDomainException.class,
+                                    () -> retained.get().release());
+                            assertTrue(mutex.tryLock().isEmpty());
+                            assertThrows(OresMutex.MutexContendedException.class,
+                                    mutex::lock);
+                        }
+                    } catch (Throwable unexpected) {
+                        failure.compareAndSet(null, unexpected);
+                    } finally {
+                        if ("check".equals(message)) checked.countDown();
+                    }
+                };
+            });
+
+            actor.send("hold");
+            actor.send("check");
+            assertTrue(checked.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get(), "a later turn must not reuse a stale mutex guard");
+        }
+    }
+
+    @Test
     void actorLocalMutexPersistsAcrossMessagesInOneSemanticDomain() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch done = new CountDownLatch(1);
@@ -547,7 +588,62 @@ final class MutexRuntimeTest {
         assertEquals(3, mutex.withLock(value -> value[0]).intValue());
     }
 
-@Test
+    @Test
+    void asyncFastPathDoesNotBargeAfterReleaseToQueuedHostWaiter() throws Exception {
+        var mutex = OresMutex.shared(new int[]{0});
+        var initial = mutex.lock();
+
+        CountDownLatch blockingAttempted = new CountDownLatch(1);
+        CountDownLatch blockingAcquired = new CountDownLatch(1);
+        CountDownLatch releaseBlocking = new CountDownLatch(1);
+        AtomicReference<Throwable> blockingFailure = new AtomicReference<>();
+
+        Thread blocking = Thread.ofPlatform().start(() -> {
+            blockingAttempted.countDown();
+            try {
+                var guard = mutex.lock();
+                blockingAcquired.countDown();
+                releaseBlocking.await();
+                guard.release();
+            } catch (Throwable failure) {
+                blockingFailure.set(failure);
+            }
+        });
+
+        assertTrue(blockingAttempted.await(1, TimeUnit.SECONDS));
+
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        while (blocking.getState() != Thread.State.WAITING
+                && blocking.getState() != Thread.State.TIMED_WAITING
+                && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+        assertTrue(blocking.getState() == Thread.State.WAITING
+                        || blocking.getState() == Thread.State.TIMED_WAITING,
+                "blocking host waiter must be queued before release");
+
+        // No async waiter exists yet, so this release deliberately exposes the
+        // fair Semaphore permit to the already-queued blocking host waiter.
+        initial.release();
+
+        // Arrive only after the release. An untimed tryAcquire() may barge here
+        // before the awakened host thread runs; timed-zero fair acquisition may not.
+        var async = mutex.lockAsync();
+
+        assertTrue(blockingAcquired.await(2, TimeUnit.SECONDS),
+                "queued blocking waiter must retain its fair position after release");
+        assertFalse(async.isDone(),
+                "later async fast-path request must not steal the released permit");
+
+        releaseBlocking.countDown();
+        var asyncGuard = async.get(2, TimeUnit.SECONDS);
+        asyncGuard.release();
+
+        blocking.join();
+        assertNull(blockingFailure.get());
+    }
+
+    @Test
     void blockingAndAsyncWaitersBothMakeProgress() throws Exception {
         var mutex = OresMutex.shared(new int[]{0});
         var initial = mutex.lock();
@@ -669,8 +765,16 @@ final class MutexRuntimeTest {
 
             assertTrue(validationEntered.await(2, TimeUnit.SECONDS));
             allowFailure.countDown();
-            for (int i = 0; i < 500 && doomed.failure().isEmpty(); i++) Thread.yield();
-            assertTrue(doomed.failure().isPresent());
+            // Scheduling of the failed actor is asynchronous. A fixed 500
+            // Thread.yield() spin can finish before the dispatcher runs at all
+            // on a loaded CI machine. Wait for the actual failure event with
+            // a bounded monotonic deadline instead of asserting scheduling.
+            long untilFailure = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (doomed.failure().isEmpty() && System.nanoTime() < untilFailure) {
+                Thread.sleep(1);
+            }
+            assertTrue(doomed.failure().isPresent(),
+                    "failed actor admission must observe actual termination");
 
             releaseValidation.countDown();
             sender.join();
@@ -816,15 +920,19 @@ final class MutexRuntimeTest {
         });
 
         IllegalStateException closedObserved = null;
-        for (int i = 0; i < 500 && closedObserved == null; i++) {
+        long shutdownDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        while (closedObserved == null && System.nanoTime() < shutdownDeadline) {
             try {
                 target.send("probe");
-                Thread.yield();
             } catch (IllegalStateException failure) {
                 if (failure.getMessage().contains("actor runtime is closed")) {
                     closedObserved = failure;
                 }
             }
+            // A fixed number of yields can finish before the closer is ever
+            // scheduled, especially on a shared CI runner. Wait for the actual
+            // shutdown condition within a wall-clock bound instead.
+            if (closedObserved == null) Thread.sleep(1);
         }
         assertNotNull(closedObserved);
 
@@ -890,6 +998,108 @@ final class MutexRuntimeTest {
         }
     }
 
+
+
+    @Test
+    void actorTransportRejectsHostCreatedSharedMutexWithUnsafePayload() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var receiver = runtime.<OresMutex.Shared<Object>>spawnShared(
+                    () -> (message, context) -> { });
+
+            var nestedLocal = OresMutex.shared((Object) OresMutex.local(new int[]{1}));
+            IllegalArgumentException localError = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> receiver.send(nestedLocal));
+            assertTrue(localError.getMessage().contains("actor-local mutex state"));
+
+            var opaque = OresMutex.shared(new Object());
+            IllegalArgumentException opaqueError = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> receiver.send(opaque));
+            assertTrue(opaqueError.getMessage().contains("opaque host value"));
+        }
+    }
+
+    @Test
+    void actorTransportAcceptsRuntimeInspectableSharedState() throws Exception {
+        record SafeBox(int value) implements OresMutex.SharedState {
+            @Override public Iterable<?> sharedStateChildren() { return List.of(value); }
+        }
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch delivered = new CountDownLatch(1);
+            var receiver = runtime.<OresMutex.Shared<SafeBox>>spawnShared(
+                    () -> (message, context) -> {
+                        var guard = message.tryLock().orElseThrow();
+                        assertEquals(7, guard.value().value());
+                        guard.release();
+                        delivered.countDown();
+                    });
+
+            var shared = OresMutex.shared(new SafeBox(7));
+            assertDoesNotThrow(() -> receiver.send(shared));
+            assertTrue(delivered.await(2, TimeUnit.SECONDS));
+        }
+    }
+
+
+    @Test
+    void nestedSharedMutexPayloadsAreRejectedUntilRecursiveLockOrderingExists() {
+        record Box(OresMutex.Shared<int[]> inner) implements OresMutex.SharedState {
+            @Override public Iterable<?> sharedStateChildren() { return List.of(inner); }
+        }
+
+        var outer = OresMutex.shared(new Box(OresMutex.shared(new int[]{3})));
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var receiver = runtime.<OresMutex.Shared<Box>>spawnShared(
+                    () -> (message, context) -> { });
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> receiver.send(outer));
+            assertTrue(error.getMessage().contains("cannot contain another SharedMutex"));
+        }
+    }
+
+    @Test
+    void transportInspectionNeverBlocksOnALockedSharedMutex() {
+        var shared = OresMutex.shared(new int[]{1});
+        var guard = shared.lock();
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var receiver = runtime.<OresMutex.Shared<int[]>>spawnShared(
+                    () -> (message, context) -> { });
+
+            IllegalStateException busy = assertThrows(
+                    IllegalStateException.class,
+                    () -> receiver.send(shared));
+            assertTrue(busy.getMessage().contains("cannot be published while locked or contended"));
+
+            guard.release();
+            assertDoesNotThrow(() -> receiver.send(shared));
+        }
+    }
+
+    @Test
+    void cyclicRuntimeSharedStateIsRejectedAtTransportBoundary() {
+        final class CyclicBox implements OresMutex.SharedState {
+            private Object child;
+            @Override public Iterable<?> sharedStateChildren() { return List.of(child); }
+        }
+
+        CyclicBox box = new CyclicBox();
+        box.child = box;
+        var shared = OresMutex.shared(box);
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var receiver = runtime.<OresMutex.Shared<CyclicBox>>spawnShared(
+                    () -> (message, context) -> { });
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> receiver.send(shared));
+            assertTrue(error.getMessage().contains("cyclic SharedMutex payload"));
+        }
+    }
 
 
     @Test
