@@ -1,0 +1,64 @@
+// Oreslang HAT (Heterogeneous Accelerator Toolkit) core contracts.
+//
+// This module standardizes accelerator semantics only. Vendor implementations
+// (CUDA, ROCm/HIP, Metal, Vulkan, OpenCL, NPUs, etc.) remain userland/backend
+// plugins. No declaration in this module grants permission to bypass ownership,
+// actor isolation, effect checking, or completion-fence lifetime rules.
+
+define module hat as
+
+  define pub type DeviceId = String;
+  define pub type BackendName = String;
+  define pub type CapabilityName = String;
+  define pub type DispatchRange = int;
+
+  define pub interface CapabilitySet
+    fnc supports(CapabilityName capability) => bool;
+  end
+
+  define pub interface Fence
+    fnc done() => bool;
+  end
+
+  define pub interface HostBuffer<T>
+    fnc length() => int;
+  end
+
+  define pub interface DeviceView<T>
+    fnc length() => int;
+  end
+
+  define pub interface DeviceViewMut<T> extends DeviceView<T>
+    fnc length() => int;
+  end
+
+  define pub interface DeviceBuffer<T>
+    fnc length() => int;
+    fnc view() => DeviceView<T>;
+    fnc view_mut() => DeviceViewMut<T>;
+  end
+
+  define pub interface KernelHandle
+    fnc name() => String;
+  end
+
+  define pub interface Queue
+    fnc idle() => bool;
+    fnc dispatch(KernelHandle kernel, DispatchRange range) => Fence;
+  end
+
+  define pub interface Device
+    fnc id() => DeviceId;
+    fnc backend() => BackendName;
+    fnc capabilities() => CapabilitySet;
+    fnc queue() => Queue;
+    fnc upload<T>(HostBuffer<T> source) => DeviceBuffer<T>;
+  end
+
+  define pub interface BackendProvider
+    fnc name() => BackendName;
+    fnc device_count() => int;
+    fnc device(int index) => Device;
+  end
+
+end
