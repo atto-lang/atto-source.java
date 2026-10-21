@@ -6400,6 +6400,27 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object eval(Ast.Expr expr, Env env) {
+            if (expr instanceof Ast.CpuRegionExpr cpu) {
+                // Invariant: inline CPU regions never suspend the logical turn.
+                // Compiler and ownership evidence are required; a forged AST
+                // cannot bypass the region's result-type admission.
+                Ast.TypeRef resultType = cpu.checkedResultType();
+                if (cpu.body().stream().anyMatch(statement ->
+                        statementContainsPotentialSuspension(statement,
+                                java.util.Collections.newSetFromMap(new IdentityHashMap<>())))) {
+                    throw new IllegalStateException(
+                            "cpu { } cannot suspend an actor/scheduler carrier; use cpu task { }");
+                }
+                try {
+                    // The tail barrier prevents an inner region return from
+                    // turning into a tail-call of the enclosing Oreslang routine.
+                    executeBlock(cpu.body(), env, true);
+                } catch (ReturnSignal result) {
+                    return result.value;
+                }
+                if (resultType.name().equals("void")) return null;
+                throw new IllegalStateException("non-void cpu { } completed without returning");
+            }
             if (expr instanceof Ast.TaskExpr task) {
                 return startSourceBlockTask(task, env);
             }
