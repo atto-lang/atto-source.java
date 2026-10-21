@@ -1066,7 +1066,7 @@ class PrivateCiV3Test(unittest.TestCase):
         ]
         self.assertEqual(ref_posts, ["refs/heads/ci/oreslang-" + SOURCE_TREE])
 
-    def test_publish_rolls_back_payload_if_authorization_creation_fails(self):
+    def test_publish_rolls_back_payload_if_authorization_creation_raises_runtime_error(self):
         carrier = contract()
         blob_shas = []
 
@@ -1108,7 +1108,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 }
             if method == "POST" and route.endswith("/git/refs"):
                 if payload["ref"].startswith("refs/heads/ci/authorized-"):
-                    raise v3.Denied("authorization creation failed")
+                    raise RuntimeError("authorization creation failed")
                 return {"ref": payload["ref"], "object": {"sha": payload["sha"]}}
             raise AssertionError((method, route))
 
@@ -1156,7 +1156,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
             ):
-                with self.assertRaisesRegex(v3.Denied, "authorization creation failed"):
+                with self.assertRaisesRegex(RuntimeError, "authorization creation failed"):
                     v3.publish(
                         "trusted/ci", source, "4" * 40, 1482,
                         "ci/test-plans/java-pr1482.json", root,
