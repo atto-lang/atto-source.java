@@ -18,8 +18,8 @@ import java.util.Set;
 
 /**
  * Explicitly freed, actor-owned native storage for source object fields.
- * Native bytes contain tagged values and arena-local reference IDs, never Java
- * object pointers. Java facades and layout/reference metadata remain managed;
+ * Native bytes contain tagged values and actor-relative logical offsets, never
+ * Java object pointers or raw host addresses. Java facades and layout metadata remain managed;
  * this allocator does not claim process-wide zero GC. All accesses, including
  * close, are serialized so a region cannot be freed during an access.
  */
@@ -191,7 +191,20 @@ public final class ActorNativeArena implements AutoCloseable {
         public void awaiting() { transitionFromRunning(TaskPhase.AWAITING); }
         public void cooperating() { transitionFromRunning(TaskPhase.COOPERATING); }
         public void done() { transitionFromRunning(TaskPhase.DONE); }
-        public void failed() { transitionFromRunning(TaskPhase.FAILED); }
+
+        /**
+         * Failure is terminal from any live phase. This is deliberately more
+         * permissive than normal transitions so an exception raised after a
+         * suspension decision cannot mask the original failure with a phase error.
+         */
+        public void failed() {
+            synchronized (ActorNativeArena.this) {
+                checkFrame();
+                TaskPhase current = TaskPhase.fromCode(read(base, 8));
+                if (current == TaskPhase.DONE || current == TaskPhase.FAILED) return;
+                write(base, 8, TaskPhase.FAILED.code);
+            }
+        }
 
         private void transitionFromRunning(TaskPhase next) {
             synchronized (ActorNativeArena.this) {
