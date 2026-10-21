@@ -15,6 +15,7 @@ spec.loader.exec_module(pub)
 ORIGINAL_VERIFY_PROTECTED_ORIGIN = pub.verify_protected_origin
 ORIGINAL_VERIFY_EXACT_SOURCE_TREE = pub.verified_exact_source_tree
 ORIGINAL_REQUIRE_PREFLIGHT = pub.require_preflight
+ORIGINAL_REQUIRE_RESOLVED = pub.require_resolved_blocking_incidents
 A, B, C, D, E = ("a"*40, "b"*40, "c"*40, "d"*40, "e"*40)
 
 
@@ -34,6 +35,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.preflight = patch.object(pub, "require_preflight")
         self.preflight.start()
         self.addCleanup(self.preflight.stop)
+        # Other publisher tests exercise the downstream write path. The real
+        # incident API predicate is tested separately with identity fixtures.
+        self.incident_guard = patch.object(pub, "require_resolved_blocking_incidents")
+        self.incident_mock = self.incident_guard.start()
+        self.addCleanup(self.incident_guard.stop)
         # Existing isolated transfer/FS tests model the downstream publisher;
         # protected-source provenance gets independent real-guard tests below.
         self.origin_guard = patch.object(pub, "verify_protected_origin")
@@ -94,7 +100,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def test_blocking_p0_incidents_accept_only_completed_closure(self):
         with patch.object(pub, "gh_api", side_effect=self.incident_api()):
-            pub.require_resolved_blocking_incidents()
+            ORIGINAL_REQUIRE_RESOLVED()
 
     def test_blocking_p0_incidents_reject_open_issue(self):
         states = {
@@ -103,7 +109,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         }
         with patch.object(pub, "gh_api", side_effect=self.incident_api(states)):
             with self.assertRaisesRegex(pub.Denied, "#77 remains unresolved"):
-                pub.require_resolved_blocking_incidents()
+                ORIGINAL_REQUIRE_RESOLVED()
 
     def test_blocking_p0_incidents_reject_not_planned_closure(self):
         states = {
@@ -112,7 +118,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         }
         with patch.object(pub, "gh_api", side_effect=self.incident_api(states)):
             with self.assertRaisesRegex(pub.Denied, "#22 remains unresolved"):
-                pub.require_resolved_blocking_incidents()
+                ORIGINAL_REQUIRE_RESOLVED()
 
     def test_blocking_p0_incidents_reject_issue_identity_drift(self):
         ids = dict(pub.BLOCKING_INCIDENT_IDS)
@@ -122,7 +128,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             side_effect=self.incident_api(issue_ids=ids),
         ):
             with self.assertRaisesRegex(pub.Denied, "incident identity"):
-                pub.require_resolved_blocking_incidents()
+                ORIGINAL_REQUIRE_RESOLVED()
 
     def test_blocking_p0_incidents_reject_repository_identity_drift(self):
         with patch.object(
@@ -132,7 +138,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             ),
         ):
             with self.assertRaisesRegex(pub.Denied, "repository identity/state"):
-                pub.require_resolved_blocking_incidents()
+                ORIGINAL_REQUIRE_RESOLVED()
 
     def test_quarantined_incident_carrier_rejected_before_incident_or_local_guard(self):
         with (
@@ -207,6 +213,17 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def publish(self, repo="trusted/ci", branch="ci/oreslang-test"):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root, A)
+
+    def test_reopened_p0_blocks_legacy_write_before_git_object_creation(self):
+        self.incident_mock.side_effect = pub.Denied(
+            "blocking P0 incident #77 remains unresolved"
+        )
+        with self.assertRaisesRegex(pub.Denied, "#77 remains unresolved"):
+            self.publish()
+        self.incident_mock.assert_called_once_with()
+        self.assertFalse(
+            any(method == "POST" for method, _, _ in self.route_calls)
+        )
 
     def verified_origin_api(self, protected=True, policy=b"trusted/ci 246810\n",
                             codeowners=True, stale=True, admins=True,
