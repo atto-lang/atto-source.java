@@ -663,6 +663,24 @@ public final class ActorRuntime implements AutoCloseable {
                 : CarrierBackend.JVM_THREAD_POOL;
     }
 
+    /** Host-only snapshot of physical workers in each eagerly created actor pool. */
+    public record DispatcherWorkerCounts(int shared, int isolated, int untrusted) { }
+
+    public DispatcherWorkerCounts dispatcherWorkerCounts() {
+        requireSupervisorContext("inspect actor dispatcher worker counts");
+        return new DispatcherWorkerCounts(
+                liveDispatcherWorkers(sharedDispatcher),
+                liveDispatcherWorkers(privateDispatcher),
+                liveDispatcherWorkers(untrustedDispatcher));
+    }
+
+    private static int liveDispatcherWorkers(ExecutorService pool) {
+        if (pool instanceof ActorAffinityDispatcher lanes) return lanes.liveWorkerCount();
+        if (pool instanceof NativeCarrierExecutor nativePool) return nativePool.getLiveCarrierCount();
+        if (pool instanceof ThreadPoolExecutor javaPool) return javaPool.getPoolSize();
+        throw new IllegalStateException("unknown actor dispatcher type");
+    }
+
 
     /**
      * A Java memory quota or direct ByteBuffer does NOT provide an independent
