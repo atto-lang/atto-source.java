@@ -1278,6 +1278,29 @@ public final class OwnershipChecker {
             Ast.TypeRef constructedType = inferConstructedType(created, argumentTypes);
             return new ValueInfo(constructedType, ValueKind.MOVE_ONLY, null);
         }
+        if (expr instanceof Ast.TaskExpr task) {
+            if (task.domain() == Ast.ExecutionDomain.GPU) {
+                throw error("gpu task cannot pass ownership lowering without a physical GPU provider");
+            }
+            CaptureSet captured = new CaptureSet();
+            scanStatements(task.body(), Set.of(), scope, null, captured);
+            validateDeferredCaptures(captured);
+            Scope taskScope = deferredSelectArmScope(captured);
+            int savedLoopDepth = loopDepth;
+            boolean savedDiscard = discardingSelectReturn;
+            loopDepth = 0;
+            discardingSelectReturn = false;
+            try {
+                checkBlock(task.body(), taskScope, Ast.TypeRef.inferred());
+            } finally {
+                loopDepth = savedLoopDepth;
+                discardingSelectReturn = savedDiscard;
+                taskScope.close();
+            }
+            Ast.TypeRef result = new Ast.TypeRef(
+                    "Future", List.of(Ast.TypeRef.inferred()), false);
+            return new ValueInfo(result, kindOfType(result), null);
+        }
         if (expr instanceof Ast.AwaitExpr awaited) {
             checkSuspensionBorrows(scope, "await");
             ValueInfo awaitedValue = checkExpr(awaited.expression(), scope, consuming);
@@ -2781,6 +2804,9 @@ public final class OwnershipChecker {
             scanExpr(e.index(), locals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.NewExpr e) for (Ast.Expr arg : e.arguments()) scanExpr(arg, locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.AwaitExpr e) scanExpr(e.expression(), locals, outer, recursiveBinding, captures, false);
+        else if (expr instanceof Ast.TaskExpr e) {
+            scanStatements(e.body(), locals, outer, recursiveBinding, captures);
+        }
         else if (expr instanceof Ast.ChannelOpExpr e) {
             scanExpr(e.channel(), locals, outer, recursiveBinding, captures, false);
             if (e.value() != null) {
