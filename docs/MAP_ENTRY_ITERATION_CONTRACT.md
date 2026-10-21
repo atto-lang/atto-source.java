@@ -26,7 +26,7 @@ The snapshot detaches the **mapping**, not arbitrary mutable value graphs.
 
 Keys are already restricted to immutable String/Symbol domains. Values are retained as their current local references. Therefore the snapshot is suitable only for local guest-value iteration in this slice.
 
-It is **not** an actor, untrusted, serialization, or interop transport primitive. Any future transport must independently apply the established freeze/copy/share policy recursively to each Entry component.
+It is **not** an actor, untrusted, serialization, or interop transport primitive. In this runtime-only stack, `ActorRuntime.freeze(OresEntry)` remains fail-closed because #1668's Entry transport integration has not been semantically merged. Any future transport must independently apply the established freeze/copy/share policy recursively to each Entry component.
 
 ## Callback and quota behavior
 
