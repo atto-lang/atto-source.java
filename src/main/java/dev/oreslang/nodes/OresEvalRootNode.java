@@ -1412,7 +1412,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private OresFuture<Object> startSourceBlockTask(
-                List<Ast.Stmt> body,
+                Ast.TaskExpr taskExpr,
                 Env env) {
             if (ActorRuntime.inActorExecution()) {
                 // The type checker also rejects this today. Keep a runtime gate
@@ -1426,13 +1426,22 @@ public final class OresEvalRootNode extends RootNode {
                         "cannot launch task while holding a live MutexGuard");
             }
 
-            SourceTask task = new SourceTask(body, true);
-            // A Task starts immediately. Snapshot only names actually mentioned
-            // in its checked body (including nested deferred bodies), not every
-            // unrelated Future, socket, class instance, or other parent local.
-            // The syntactic inventory deliberately over-approximates captures.
-            Set<String> referenced = dev.oreslang.ast.TaskCaptureNames.referencedIn(body);
-            task.initialBlockEnv = env.detachedSnapshot(referenced, this::detachTaskCaptureValue);
+            // Execution authority comes from the exact TaskExpr admitted by
+            // OwnershipChecker after the whole program passed. Re-parsed or
+            // optimizer-cloned nodes have no admission and fail closed.
+            Set<String> admitted =
+                    Ast.CheckedTaskCaptures.require(taskExpr);
+            Set<String> syntactic =
+                    dev.oreslang.ast.TaskCaptureNames.referencedIn(
+                            taskExpr.body());
+            if (!syntactic.containsAll(admitted)) {
+                throw new IllegalStateException(
+                        "checked Task capture admission is inconsistent with its AST body");
+            }
+
+            SourceTask task = new SourceTask(taskExpr.body(), true);
+            task.initialBlockEnv =
+                    env.detachedSnapshot(admitted, this::detachTaskCaptureValue);
             OresScheduler current = OresScheduler.current();
             return (current != null
                     ? current
@@ -6992,7 +7001,7 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalStateException(
                             "gpu task has no physical device provider on this backend; no implicit CPU fallback");
                 }
-                return startSourceBlockTask(task.body(), env);
+                return startSourceBlockTask(task, env);
             }
             if (expr instanceof Ast.AwaitExpr awaited) {
                 Object value = eval(awaited.expression(), env);
