@@ -403,7 +403,12 @@ final class TaskBorrowBoundaryV2Test {
         // The missing class definition is NOT proof that a host/external
         // object is transferable. Only verified owned types can move across
         // independently scheduled Tasks.
-        var program = Parser.parse("pub fnc main(): void { return; }");
+        var program = Parser.parse("""
+                define actor Worker as
+                  receive(ActorMail<int> mail): void { return; }
+                end
+                pub fnc main(): void { return; }
+                """);
         var constructor = OwnershipChecker.class.getDeclaredConstructor(
                 dev.oreslang.ast.Ast.Program.class,
                 java.util.Map.class);
