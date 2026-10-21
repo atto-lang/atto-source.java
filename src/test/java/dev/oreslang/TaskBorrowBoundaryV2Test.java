@@ -108,6 +108,60 @@ final class TaskBorrowBoundaryV2Test {
     }
 
     @Test
+    void classicForBindingInitializerCannotHideBorrowedTaskCapture() {
+        rejectsWith("""
+                pub async fnc main(): void {
+                  let Box owner = new Box();
+                  val &Box loan = &owner;
+                  let Future<int> child = task {
+                    for (val &Box loopLoan = loan; false; ) {
+                      return loopLoan.value;
+                    }
+                    return 0;
+                  };
+                  await child;
+                  return;
+                }
+                """, "borrow", "deferred task");
+    }
+
+    @Test
+    void classicForBindingInitializerMovesOuterOwnerAtTaskSubmission() {
+        rejectsWith("""
+                pub async fnc main(): void {
+                  let Box owner = new Box();
+                  let Future<int> child = task {
+                    for (val Box loopOwner = owner; false; ) {
+                      return loopOwner.value;
+                    }
+                    return 0;
+                  };
+                  stdio.stdout.write(owner.value);
+                  await child;
+                  return;
+                }
+                """, "moved", "owner", "capture");
+    }
+
+    @Test
+    void classicForBindingShadowsOuterOwnerWithoutCapturingIt() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(BOX + """
+                pub async fnc main(): void {
+                  let Box owner = new Box();
+                  let Future<int> child = task {
+                    for (val Box owner = new Box(); false; ) {
+                      stdio.stdout.write(owner.value);
+                    }
+                    return 7;
+                  };
+                  stdio.stdout.write(owner.value);
+                  stdio.stdout.write(await child);
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void immutableCopyValueMayBeCapturedWithoutMovingParent() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 pub async fnc main(): void {
