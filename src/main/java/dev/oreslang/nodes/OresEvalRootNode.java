@@ -1559,7 +1559,10 @@ public final class OresEvalRootNode extends RootNode {
             OresScheduler scheduler =
                     current != null ? current : context.vm().rootScheduler();
             try {
-                OresFuture<Object> future = scheduler.start(task);
+                TaskScope structuredScope = env.structuredTaskScope();
+                OresFuture<Object> future = structuredScope != null
+                        ? structuredScope.startTask(task).result()
+                        : scheduler.start(task);
                 transfer.commit();
                 return future;
             } catch (RuntimeException | Error failure) {
