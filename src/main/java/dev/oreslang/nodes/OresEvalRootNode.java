@@ -8821,7 +8821,13 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Iterable<?> iterableValues(Object value, Env env) {
-            if (value instanceof List<?> list) return list;
+            if (value instanceof List<?> list) {
+                if (!isTrustedTraversalCollectionCarrier(value)) {
+                    throw new IllegalArgumentException(
+                            "value is an opaque host List and is not synchronously iterable");
+                }
+                return list;
+            }
             if (value instanceof Object[] array) return List.of(array);
             if (value instanceof GeneratorRuntime.Generator<?> generator) return generator;
             if (value instanceof GeneratorRuntime.AsyncGenerator<?>) {
@@ -9909,6 +9915,10 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object destructureRestObject(Object value, Set<String> selectedMembers) {
             if (value instanceof Map<?, ?> map) {
+                if (!isTrustedTraversalCollectionCarrier(value)) {
+                    throw new IllegalArgumentException(
+                            "object rest destructuring rejects opaque host Map values");
+                }
                 LinkedHashMap<String, Object> remainder = new LinkedHashMap<>();
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
                     if (!(entry.getKey() instanceof String key)) {
@@ -9941,6 +9951,10 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object destructureMember(Object value, String name) {
             if (value instanceof Map<?, ?> map) {
+                if (!isTrustedTraversalCollectionCarrier(value)) {
+                    throw new IllegalArgumentException(
+                            "object destructuring rejects opaque host Map values");
+                }
                 if (!map.containsKey(name)) throw new IllegalArgumentException("object destructure missing member " + name);
                 Object member = map.get(name);
                 if (member == UNINITIALIZED_FIELD) {
@@ -10635,10 +10649,12 @@ public final class OresEvalRootNode extends RootNode {
                 return true;
             }
             if (value instanceof List<?> list) {
+                if (!isTrustedTraversalCollectionCarrier(value)) return false;
                 for (Object item : list) if (!runtimeSharedSafe(item, seen)) return false;
                 return true;
             }
             if (value instanceof Map<?, ?> map) {
+                if (!isTrustedTraversalCollectionCarrier(value)) return false;
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
                     if (!runtimeSharedSafe(entry.getKey(), seen) || !runtimeSharedSafe(entry.getValue(), seen)) return false;
                 }
@@ -10850,7 +10866,12 @@ public final class OresEvalRootNode extends RootNode {
         private Map<String,Object> gc(List<Object> args){requireZero(args,"actor.gc");return context.garbageCollector().collectCurrentActor().asMap();}
     }
     private static List<Object> expandArgumentSequence(Object value,String name){
-        if(value instanceof List<?> list)return new ArrayList<>(list);
+        if(value instanceof List<?> list){
+            if(!isTrustedTraversalCollectionCarrier(value)){
+                throw new IllegalArgumentException(name+" rejects opaque host List values");
+            }
+            return new ArrayList<>(list);
+        }
         if(value instanceof Object[] array)return new ArrayList<>(java.util.Arrays.asList(array));
         throw new IllegalArgumentException(name+" requires an array/list/tuple value");
     }
