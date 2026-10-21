@@ -94,12 +94,12 @@ final class OresKeyedMapCommitAwareTest {
                 fields.tryPutOwned("self", self);
 
         assertFalse(rejected.committed());
-        assertSame(self, rejected.uncommittedValue());
+        assertSame(self, rejected.takeUncommittedValue());
         assertTrue(fields.isEmpty());
 
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
-                rejected::rethrowIfRejected);
+                rejected::rethrowAfterRecovery);
         assertTrue(failure.getMessage().contains("cyclic"),
                 failure.getMessage());
     }
