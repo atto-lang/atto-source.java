@@ -109,9 +109,83 @@ final class PlacedTaskLanguageTest {
     }
 
     @Test
-    void unloweredCpuGpuRegionsStillRejectFailClosed() {
+    void eagerCpuRegionExecutesInlineAndReturnsValue() throws Exception {
+        assertEquals("42", run("""
+                pub routine main(): void {
+                    let int value = cpu {
+                        val int first = 40;
+                        return first + 2;
+                    };
+                    stdio.stdout.write(value);
+                    return;
+                }
+                """));
+    }
+
+    @Test
+    void cpuRegionReturnDoesNotEscapeEnclosingRoutine() throws Exception {
+        assertEquals("12", run("""
+                fnc compute(): int {
+                    let int partial = cpu { return 7; };
+                    return partial + 5;
+                }
+                pub routine main(): void {
+                    stdio.stdout.write(compute());
+                    return;
+                }
+                """));
+    }
+
+    @Test
+    void eagerCpuRegionMayExecuteForEffectsWithoutReturn() throws Exception {
+        assertEquals("42", run("""
+                pub routine main(): void {
+                    cpu { stdio.stdout.write(42); };
+                    return;
+                }
+                """));
+    }
+
+    @Test
+    void eagerCpuRegionCannotReturnWrongTypeOrFallThrough() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub routine main(): void {
+                            let int value = cpu { return "not an int"; };
+                            return;
+                        }
+                        """));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub routine main(): void {
+                            let int value = cpu { val int local = 1; };
+                            return;
+                        }
+                        """));
+    }
+
+    @Test
+    void eagerCpuRegionRejectsAwaitAndExplicitCooperation() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub routine main(): void {
+                            let Task<int> work = task { return 42; };
+                            let int value = cpu { return await work; };
+                            return;
+                        }
+                        """));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub routine main(): void {
+                            cpu { rt cooperate; };
+                            return;
+                        }
+                        """));
+    }
+
+    @Test
+    void unloweredGpuAndQuantumRegionsStillRejectFailClosed() {
         for (String region : new String[] {
-                "cpu { return 1; }",
                 "gpu { return 1; }",
                 "nb cpu { return 1; }",
                 "nb gpu { return 1; }",
