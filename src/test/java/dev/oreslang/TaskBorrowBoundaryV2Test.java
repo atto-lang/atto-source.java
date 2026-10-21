@@ -15,6 +15,17 @@ import static org.junit.jupiter.api.Assertions.*;
  * v2 branch must never accidentally admit ordinary borrowed captures.
  */
 final class TaskBorrowBoundaryV2Test {
+    @Test
+    void canonicalTaskBorrowFixturesUseRtOwnershipSyntax() throws Exception {
+        String source = java.nio.file.Files.readString(
+                java.nio.file.Path.of(
+                        "src/test/java/dev/oreslang/TaskBorrowBoundaryV2Test.java"));
+        assertFalse(source.contains("rt mut borrow"),
+                "Task borrow regressions must use canonical 'rt borrow mut' spelling");
+        assertFalse(source.matches("(?s).*\\b(?:val|let|const)\\s+&(?:mut\\s+)?[A-Za-z_].*"),
+                "Task borrow regressions must not introduce pointer-style source borrows");
+    }
+
     private static final String BOX = """
             define class Box as
               pub let int value = 1;
@@ -63,7 +74,7 @@ final class TaskBorrowBoundaryV2Test {
         rejectsWith("""
                 pub async fnc main(): void {
                   let Box owner = new Box();
-                  val loan = rt mut borrow owner;
+                  val loan = rt borrow mut owner;
                   let Future<int> child = cpu task { return loan.value; };
                   await child;
                   return;
