@@ -5,8 +5,11 @@ on:
       - 'scripts/check-private-ci-destination.sh'
       - 'scripts/test-private-ci-destination.sh'
       - 'scripts/run-in-private-ci-destination.sh'
+      - 'scripts/ci_private_mirror_preflight.py'
+      - 'tests/test_ci_private_mirror_preflight.py'
       - 'scripts/publish-private-ci-source*.py'
       - '.github/private-ci-approved-repositories.txt'
+      - '.github/private-ci-carrier-contracts.json'
       - '.github/workflows/source-free-private-ci-gates.yml'
   workflow_dispatch:
 permissions:
@@ -27,12 +30,17 @@ jobs:
           from pathlib import Path
           path = Path('.github/private-ci-approved-repositories.txt')
           entries = [line.strip() for line in path.read_text().splitlines() if line.strip() and not line.lstrip().startswith('#')]
+          quarantine = {'zed-pkg-test/java-app'}
+          if any(entry.split()[0].casefold() in quarantine for entry in entries):
+              raise SystemExit('DENIED: quarantined incident carrier is present in allowlist')
           if entries:
               raise SystemExit('DENIED: active private-source destinations require separate independent authorization')
-          print('PASS: no active private-source destinations')
+          print('PASS: no active private-source destinations; quarantined carrier absent')
           PY
       - name: Reject unauthorized destinations without publishing
         run: bash scripts/test-private-ci-destination.sh
+      - name: Reject quarantined destinations in standalone private-mirror admission
+        run: python3 -m unittest tests.test_ci_private_mirror_preflight -v
       - name: Verify source-free publisher regression fixtures
         run: |
           python3 scripts/test-publish-private-ci-source.py
