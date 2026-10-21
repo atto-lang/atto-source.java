@@ -1,6 +1,8 @@
 package dev.oreslang;
 
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.TypeChecker;
+import dev.oreslang.types.OwnershipChecker;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -13,7 +15,7 @@ import static org.junit.jupiter.api.Assertions.*;
 final class CanonicalMutableBorrowParserTest {
     @Test
     void acceptsCanonicalMutableBorrowInCallArguments() {
-        assertDoesNotThrow(() -> Parser.parse("""
+        var parsed = assertDoesNotThrow(() -> Parser.parse("""
                 define class Widget as
                   pub let int id = 1;
                 end
@@ -23,6 +25,8 @@ final class CanonicalMutableBorrowParserTest {
                   return write(rt mut borrow owner);
                 }
                 """));
+        assertDoesNotThrow(() -> TypeChecker.check(parsed));
+        assertDoesNotThrow(() -> OwnershipChecker.check(parsed));
     }
 
     @Test
