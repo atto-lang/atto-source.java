@@ -3582,22 +3582,22 @@ public final class OwnershipChecker {
             if (source.kind == ValueKind.IMM_BORROW
                     || source.kind == ValueKind.MUT_BORROW
                     || source.type.isBorrow()) {
-                throw error("nb select continuation cannot capture borrowed value '"
+                throw error("deferred task/continuation cannot capture borrowed value '"
                         + capture.name
                         + "'; capture owned data or actor self instead");
             }
             if (containsMutexGuardType(source.type)) {
-                throw error("nb select continuation cannot capture guard-bearing value '"
+                throw error("deferred task/continuation cannot capture guard-bearing value '"
                         + capture.name + "'");
             }
 
             if (capture.write) {
                 if (!source.mutable && !source.rebindable) {
-                    throw error("nb select continuation cannot write read-only capture '"
+                    throw error("deferred task/continuation cannot write read-only capture '"
                             + capture.name + "'");
                 }
                 if (source.immutableBorrows > 0 || source.mutableBorrowed) {
-                    throw error("nb select continuation cannot capture '"
+                    throw error("deferred task/continuation cannot capture '"
                             + capture.name + "' mutably while borrowed");
                 }
                 move(source, capture.name);
