@@ -1552,6 +1552,10 @@ public final class Parser {
 
         List<Ast.TypeRef> args = new ArrayList<>();
         boolean infer = false;
+        if ((name.equals("Pointer") || name.equals("RawPointer")) && check(LT)) {
+            throw error(peek(),
+                    name + "<T> is not Oreslang source syntax; use explicit rt copy/share/take/borrow operations");
+        }
         if (match(LT)) {
             if (match(GT)) {
                 infer = true;
@@ -3401,6 +3405,12 @@ public final class Parser {
                 consume(RPAREN, "expected ')' after rt cooperate");
             }
             return new Ast.RuntimeCallExpr("cooperate", List.of());
+        }
+
+        if (name.equals("ref") || name.equals("deref") || name.equals("unref") || name.equals("raw")) {
+            throw error(operation,
+                    "pointer-style rt operation '" + name
+                            + "' is not valid Oreslang source; use rt copy/share/take/borrow or rt mut borrow");
         }
 
         if (!name.equals("copy") && !name.equals("take")
