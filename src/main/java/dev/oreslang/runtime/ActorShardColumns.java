@@ -135,47 +135,22 @@ public final class ActorShardColumns implements AutoCloseable {
             throw new IllegalArgumentException("requires distinct valid position/velocity fields");
         }
         if (!Double.isFinite(dt)) throw new IllegalArgumentException("nonfinite dt");
+
         switch (layout) {
-            case AOS -> {
-                int p = position;
-                int v = velocity;
-                for (int row = 0; row < rows; row++, p += fields, v += fields) {
-                    put(p, get(p) + get(v) * dt);
-                }
-            }
-            case SOA -> {
-                int p = position * rows;
-                int v = velocity * rows;
-                int end = p + rows;
-                while (p < end) {
-                    put(p, get(p) + get(v) * dt);
-                    p++;
-                    v++;
-                }
-            }
-            case SOAOS -> {
-                int stride = groupWidth;
-                int p = (position / groupWidth) * rows * groupWidth
-                        + position % groupWidth;
-                int v = (velocity / groupWidth) * rows * groupWidth
-                        + velocity % groupWidth;
-                for (int row = 0; row < rows; row++, p += stride, v += stride) {
-                    put(p, get(p) + get(v) * dt);
-                }
-            }
-            case AOSOA -> {
-                int tileStride = fields * lanes;
-                int tileBase = 0;
-                for (int rowBase = 0; rowBase < rows;
-                        rowBase += lanes, tileBase += tileStride) {
-                    int activeLanes = Math.min(lanes, rows - rowBase);
-                    int p = tileBase + position * lanes;
-                    int v = tileBase + velocity * lanes;
-                    for (int lane = 0; lane < activeLanes; lane++) {
-                        put(p + lane, get(p + lane) + get(v + lane) * dt);
-                    }
-                }
-            }
+            case AOS -> reservation.integrateDoubleStridedBlocks(
+                    position, velocity, rows, fields, rows, 0, dt);
+            case SOA -> reservation.integrateDoubleStridedBlocks(
+                    position * rows, velocity * rows,
+                    rows, 1, rows, 0, dt);
+            case SOAOS -> reservation.integrateDoubleStridedBlocks(
+                    (position / groupWidth) * rows * groupWidth
+                            + position % groupWidth,
+                    (velocity / groupWidth) * rows * groupWidth
+                            + velocity % groupWidth,
+                    rows, groupWidth, rows, 0, dt);
+            case AOSOA -> reservation.integrateDoubleStridedBlocks(
+                    position * lanes, velocity * lanes,
+                    rows, 1, lanes, fields * lanes, dt);
         }
     }
 
