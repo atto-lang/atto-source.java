@@ -331,6 +331,16 @@ final class ActorRestartRaceTest {
             assertEquals(Long.MAX_VALUE, last.generation());
             last.stop();
             last.getDone().get(3, TimeUnit.SECONDS);
+            long releaseDeadline =
+                    System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (runtime.reservedActorSlots() != 0
+                    && System.nanoTime() < releaseDeadline) {
+                Thread.sleep(1);
+            }
+            assertEquals(
+                    0,
+                    runtime.reservedActorSlots(),
+                    "generation exhaustion check requires released actor capacity");
 
             for (int i = 0; i < 2; i++) {
                 IllegalStateException exhausted = assertThrows(

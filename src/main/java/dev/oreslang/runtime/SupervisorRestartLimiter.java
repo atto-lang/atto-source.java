@@ -18,6 +18,8 @@ import java.util.function.LongSupplier;
  */
 public final class SupervisorRestartLimiter {
 
+    private static final int DEFAULT_MAX_TRACKED_ACTORS = 4_096;
+
     public enum Action { RESTART, ESCALATE }
 
     /**
@@ -85,13 +87,18 @@ public final class SupervisorRestartLimiter {
     private final SupervisorRestartPolicy policy;
     private final LongSupplier monotonicClock;
     private final Jitter jitter;
+    private final int maxTrackedActors;
     private final Map<ActorRuntime.ActorId, History> histories =
             new HashMap<>();
     private boolean clockObserved;
     private long lastClockNanos;
 
     public SupervisorRestartLimiter(SupervisorRestartPolicy policy) {
-        this(policy, System::nanoTime, Jitter.none());
+        this(
+                policy,
+                System::nanoTime,
+                Jitter.none(),
+                DEFAULT_MAX_TRACKED_ACTORS);
     }
 
     /**
@@ -102,10 +109,27 @@ public final class SupervisorRestartLimiter {
             SupervisorRestartPolicy policy,
             LongSupplier monotonicClock,
             Jitter jitter) {
+        this(
+                policy,
+                monotonicClock,
+                jitter,
+                DEFAULT_MAX_TRACKED_ACTORS);
+    }
+
+    public SupervisorRestartLimiter(
+            SupervisorRestartPolicy policy,
+            LongSupplier monotonicClock,
+            Jitter jitter,
+            int maxTrackedActors) {
         this.policy = Objects.requireNonNull(policy, "policy");
         this.monotonicClock =
                 Objects.requireNonNull(monotonicClock, "monotonicClock");
         this.jitter = Objects.requireNonNull(jitter, "jitter");
+        if (maxTrackedActors <= 0) {
+            throw new IllegalArgumentException(
+                    "maxTrackedActors must be positive");
+        }
+        this.maxTrackedActors = maxTrackedActors;
     }
 
     public SupervisorRestartPolicy policy() {
@@ -121,8 +145,20 @@ public final class SupervisorRestartLimiter {
             ActorRuntime.SupervisorControlEvent event) {
         Objects.requireNonNull(event, "event");
         long now = monotonicNow();
-        History history = histories.computeIfAbsent(
-                event.actorId(), ignored -> new History());
+        History history = histories.get(event.actorId());
+        if (history == null) {
+            if (histories.size() >= maxTrackedActors) {
+                return new Decision(
+                        Action.ESCALATE,
+                        Duration.ZERO,
+                        0,
+                        event.generation(),
+                        event.failureKind(),
+                        false);
+            }
+            history = new History();
+            histories.put(event.actorId(), history);
+        }
 
         if (event.generation() < history.stableGeneration
                 || event.generation() < history.lastFailureGeneration) {
@@ -193,12 +229,20 @@ public final class SupervisorRestartLimiter {
             throw new IllegalArgumentException(
                     "stable generation must be positive");
         }
-        History history = histories.computeIfAbsent(
-                actorId, ignored -> new History());
-        if (generation < history.lastFailureGeneration
+        History history = histories.get(actorId);
+        if (history == null) {
+            if (histories.size() >= maxTrackedActors) {
+                throw new IllegalStateException(
+                        "supervisor restart history capacity exhausted");
+            }
+            history = new History();
+            histories.put(actorId, history);
+        }
+        if ((history.lastFailureGeneration > 0
+                    && generation <= history.lastFailureGeneration)
                 || generation < history.stableGeneration) {
             throw new IllegalArgumentException(
-                    "stale generation cannot reset restart history");
+                    "stability reset requires a strictly newer generation");
         }
         history.restartTimes.clear();
         history.stableGeneration = generation;
@@ -207,6 +251,38 @@ public final class SupervisorRestartLimiter {
         if (history.lastFailureGeneration < generation) {
             history.lastDecision = null;
         }
+    }
+
+    /**
+     * Forget one quiescent logical actor after its final stable retirement.
+     * The caller must supply a generation not older than any failure/stability
+     * generation retained by this limiter; stale cleanup cannot erase a newer
+     * crash-loop budget.
+     */
+    public synchronized boolean forget(
+            ActorRuntime.ActorId actorId,
+            long generation) {
+        Objects.requireNonNull(actorId, "actorId");
+        if (generation <= 0) {
+            throw new IllegalArgumentException(
+                    "forgotten generation must be positive");
+        }
+        History history = histories.get(actorId);
+        if (history == null) return false;
+        if (generation < history.lastFailureGeneration
+                || generation < history.stableGeneration) {
+            throw new IllegalArgumentException(
+                    "stale generation cannot forget restart history");
+        }
+        return histories.remove(actorId, history);
+    }
+
+    public synchronized int trackedActors() {
+        return histories.size();
+    }
+
+    public int maxTrackedActors() {
+        return maxTrackedActors;
     }
 
     public synchronized Snapshot snapshot(ActorRuntime.ActorId actorId) {

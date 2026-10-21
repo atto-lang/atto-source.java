@@ -183,6 +183,81 @@ final class SupervisorRestartLimiterTest {
     }
 
     @Test
+    void restartHistoryCapacityFailsClosedWithoutEviction() {
+        AtomicLong clock = new AtomicLong();
+        SupervisorRestartLimiter limiter = new SupervisorRestartLimiter(
+                new SupervisorRestartPolicy(
+                        2,
+                        Duration.ofSeconds(60),
+                        Duration.ZERO,
+                        Duration.ZERO),
+                clock::get,
+                SupervisorRestartLimiter.Jitter.none(),
+                1);
+
+        ActorRuntime.ActorId first = ActorRuntime.ActorId.create();
+        ActorRuntime.ActorId second = ActorRuntime.ActorId.create();
+        assertEquals(
+                SupervisorRestartLimiter.Action.RESTART,
+                limiter.decide(event(first, 1)).action());
+        assertEquals(1, limiter.trackedActors());
+
+        SupervisorRestartLimiter.Decision denied =
+                limiter.decide(event(second, 1));
+        assertEquals(
+                SupervisorRestartLimiter.Action.ESCALATE,
+                denied.action());
+        assertEquals(1, limiter.trackedActors(),
+                "capacity exhaustion must not evict active restart history");
+
+        assertTrue(limiter.forget(first, 1));
+        assertEquals(0, limiter.trackedActors());
+        assertEquals(
+                SupervisorRestartLimiter.Action.RESTART,
+                limiter.decide(event(second, 1)).action());
+    }
+
+    @Test
+    void stabilityResetMustAdvancePastLastFailureGeneration() {
+        SupervisorRestartLimiter limiter = new SupervisorRestartLimiter(
+                new SupervisorRestartPolicy(
+                        2,
+                        Duration.ofSeconds(60),
+                        Duration.ZERO,
+                        Duration.ZERO),
+                () -> 0L,
+                SupervisorRestartLimiter.Jitter.none());
+        ActorRuntime.ActorId id = ActorRuntime.ActorId.create();
+        limiter.decide(event(id, 7));
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> limiter.resetAfterStability(id, 7));
+        limiter.resetAfterStability(id, 8);
+        assertEquals(0, limiter.snapshot(id).restartsInWindow());
+    }
+
+    @Test
+    void staleForgetCannotEraseNewerRestartHistory() {
+        SupervisorRestartLimiter limiter = new SupervisorRestartLimiter(
+                new SupervisorRestartPolicy(
+                        2,
+                        Duration.ofSeconds(60),
+                        Duration.ZERO,
+                        Duration.ZERO),
+                () -> 0L,
+                SupervisorRestartLimiter.Jitter.none());
+        ActorRuntime.ActorId id = ActorRuntime.ActorId.create();
+        limiter.decide(event(id, 9));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> limiter.forget(id, 8));
+        assertEquals(1, limiter.trackedActors());
+        assertTrue(limiter.forget(id, 9));
+        assertEquals(0, limiter.trackedActors());
+    }
+
+    @Test
     void zeroRestartPolicyEscalatesImmediately() {
         SupervisorRestartLimiter limiter = new SupervisorRestartLimiter(
                 new SupervisorRestartPolicy(
