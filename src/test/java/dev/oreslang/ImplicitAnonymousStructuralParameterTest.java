@@ -146,4 +146,18 @@ final class ImplicitAnonymousStructuralParameterTest {
                 """));
     }
 
+
+    @Test
+    void bareBraceAnonymousRecordFormsAreAlsoImplicitlyStructural() {
+        var typed = assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc implicit({id: int} row): int { return row.id; }
+                fnc redundant(row: structural {id: int}): int { return row.id; }
+                fnc run(): int {
+                    return implicit(record{id: 1, extra: true})
+                         + redundant(infer struct{id: 2, extra: true});
+                }
+                """)));
+        assertDoesNotThrow(() -> OwnershipChecker.check(typed));
+    }
+
 }
