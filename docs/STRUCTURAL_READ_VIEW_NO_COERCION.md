@@ -49,7 +49,7 @@ value** does not prove any record fields. `Types.isAssignable` now rejects
 this case before its other inference shortcuts; this guard also rejects union
 sources containing an unproven alternative when a record shape is required.
 
-Ownership note: these readonly field contracts are **owned values** unless the parameter carries explicit `structural`-view or `&T`/`&mut T` borrow provenance. Coercion-free projection does not imply borrowing.
+Ownership note: these readonly field contracts are **owned values** unless the parameter carries explicit `structural`-view or `borrow T`/`borrow mut T` provenance. Coercion-free projection does not imply borrowing.
 
 ### Container, borrow and first-class callable representation proof
 
