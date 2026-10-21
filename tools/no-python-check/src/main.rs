@@ -76,5 +76,8 @@ mod tests {
         assert!(forbidden_workflow_line("- uses: actions/setup-python@v5"));
         assert!(forbidden_workflow_line("- run: python3 -m pytest"));
         assert!(!forbidden_workflow_line("- run: cargo test"));
+        assert!(!forbidden_workflow_line("- name: Reject Python files and execution"));
+        assert!(!forbidden_workflow_line("name: Python policy"));
+        assert!(forbidden_workflow_line("- run: python3 -m pytest"));
     }
 }
