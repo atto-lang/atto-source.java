@@ -69,7 +69,7 @@ final class ActorNativeObjectAllocationTest {
     void actorMayUseSharedHelperCodeAndImmutableModuleData() throws Exception {
         String program = """
                 define module constants
-                  pub val int answer = 42;
+                  pub const int answer = 42;
                 end
 
                 fnc shared_helper(): int {
