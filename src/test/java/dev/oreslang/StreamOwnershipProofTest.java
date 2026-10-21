@@ -56,7 +56,7 @@ final class StreamOwnershipProofTest {
 
                     @Override
                     public boolean trustedIntrinsic(Types.Named type) {
-                        return java.util.Set.of("Stream", "Channel", "Option")
+                        return java.util.Set.of("Stream", "Channel", "Option", "Result")
                                 .contains(type.name());
                     }
                 };
@@ -69,7 +69,11 @@ final class StreamOwnershipProofTest {
                 new Types.Named("Option", List.of(innerStream)),
                 new Types.ListType(innerChannel),
                 new Types.Named("Option",
-                        List.of(new Types.ListType(innerStream)))
+                        List.of(new Types.ListType(innerStream))),
+                new Types.Named("Result", List.of(scalar, innerChannel)),
+                new Types.Tuple(List.of(scalar, innerStream)),
+                new Types.Record(java.util.Map.of("payload", innerChannel)),
+                new Types.Union(List.of(scalar, innerStream))
         };
         for (Types.Type payload : unsafe) {
             Types.Named outer = new Types.Named("Stream", List.of(payload));
@@ -79,6 +83,35 @@ final class StreamOwnershipProofTest {
         Types.Named dataOnly = new Types.Named("Stream", List.of(
                 new Types.Named("Option", List.of(scalar))));
         assertTrue(ThreadSafetyTraits.isOwnedSend(dataOnly, trustedTransport));
+        Types.Named nestedDataOnly = new Types.Named("Stream", List.of(
+                new Types.Named("Result", List.of(
+                        new Types.Record(java.util.Map.of("value", scalar)),
+                        new Types.Tuple(List.of(scalar, scalar))))));
+        assertTrue(ThreadSafetyTraits.isOwnedSend(nestedDataOnly, trustedTransport),
+                "ordinary nested values should retain a Send proof");
+    }
+
+    @Test
+    void excessivelyDeepStreamPayloadTypesFailClosed() {
+        ThreadSafetyTraits.NominalProof intrinsicOnly =
+                new ThreadSafetyTraits.NominalProof() {
+                    @Override
+                    public boolean has(Types.Named type, ThreadSafetyTraits.Trait trait) {
+                        return false;
+                    }
+
+                    @Override
+                    public boolean trustedIntrinsic(Types.Named type) {
+                        return java.util.Set.of("Stream", "Option").contains(type.name());
+                    }
+                };
+        Types.Type nested = Types.Primitive.INT;
+        for (int depth = 0; depth < 270; depth++) {
+            nested = new Types.Named("Option", List.of(nested));
+        }
+        assertFalse(ThreadSafetyTraits.isOwnedSend(
+                new Types.Named("Stream", List.of(nested)), intrinsicOnly),
+                "adversarial nesting must not bypass compiler proof budgets");
     }
 
     @Test
