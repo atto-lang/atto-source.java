@@ -635,6 +635,16 @@ class PrivateCiV3Test(unittest.TestCase):
                     return_value=(POLICY, carrier["repository_id"]),
                 ),
                 patch.object(
+                    v3.legacy,
+                    "checked_repo",
+                    return_value={
+                        "id": carrier["repository_id"],
+                        "full_name": "trusted/ci",
+                        "private": True,
+                        "visibility": "private",
+                    },
+                ),
+                patch.object(
                     v3, "authorized_main_sha",
                     return_value=PROTECTED,
                 ),
@@ -659,6 +669,13 @@ class PrivateCiV3Test(unittest.TestCase):
 
         def api(route, method="GET", payload=None):
             writes.append((method, route, payload))
+            if method == "GET" and route == "repos/trusted/ci":
+                return {
+                    "id": carrier["repository_id"],
+                    "full_name": "trusted/ci",
+                    "private": True,
+                    "visibility": "private",
+                }
             if method == "POST" and route.endswith("/git/blobs"):
                 data = base64.b64decode(payload["content"], validate=True)
                 blob_payloads.append(data)
@@ -858,6 +875,13 @@ class PrivateCiV3Test(unittest.TestCase):
         blob_shas = []
 
         def api(route, method="GET", payload=None):
+            if method == "GET" and route == "repos/trusted/ci":
+                return {
+                    "id": carrier["repository_id"],
+                    "full_name": "trusted/ci",
+                    "private": True,
+                    "visibility": "private",
+                }
             if method == "POST" and route.endswith("/git/blobs"):
                 data = base64.b64decode(payload["content"], validate=True)
                 sha = v3.git_blob_sha(data)
@@ -964,6 +988,13 @@ class PrivateCiV3Test(unittest.TestCase):
 
         def api(route, method="GET", payload=None):
             writes.append((method, route, payload))
+            if method == "GET" and route == "repos/trusted/ci":
+                return {
+                    "id": carrier["repository_id"],
+                    "full_name": "trusted/ci",
+                    "private": True,
+                    "visibility": "private",
+                }
             if method == "POST" and route.endswith("/git/blobs"):
                 data = base64.b64decode(payload["content"], validate=True)
                 sha = v3.git_blob_sha(data)
@@ -1071,6 +1102,13 @@ class PrivateCiV3Test(unittest.TestCase):
         blob_shas = []
 
         def api(route, method="GET", payload=None):
+            if method == "GET" and route == "repos/trusted/ci":
+                return {
+                    "id": carrier["repository_id"],
+                    "full_name": "trusted/ci",
+                    "private": True,
+                    "visibility": "private",
+                }
             if method == "POST" and route.endswith("/git/blobs"):
                 data = base64.b64decode(payload["content"], validate=True)
                 sha = v3.git_blob_sha(data)
@@ -1182,6 +1220,13 @@ class PrivateCiV3Test(unittest.TestCase):
         blob_shas = []
 
         def api(route, method="GET", payload=None):
+            if method == "GET" and route == "repos/trusted/ci":
+                return {
+                    "id": carrier["repository_id"],
+                    "full_name": "trusted/ci",
+                    "private": True,
+                    "visibility": "private",
+                }
             if method == "POST" and route.endswith("/git/blobs"):
                 data = base64.b64decode(payload["content"], validate=True)
                 sha = v3.git_blob_sha(data)
