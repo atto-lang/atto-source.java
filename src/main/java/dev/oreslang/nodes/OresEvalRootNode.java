@@ -4687,6 +4687,26 @@ public final class OresEvalRootNode extends RootNode {
 
             if (receiver instanceof OresObject object) {
                 if (object.klass.actorKind() != Ast.ActorKind.NONE
+                        && member.member().equals("handle_state")) {
+                    if (args.size() != 1
+                            || !(args.getFirst() instanceof Invokable callback)) {
+                        throw new IllegalArgumentException(
+                                "self.handle_state expects exactly one inline callable");
+                    }
+                    return object.owner.invokableInvocation(
+                            ignored ->
+                                    object.owner.withActorStateLoan(
+                                            object, callback),
+                            List.of());
+                }
+                if (object.klass.actorKind() != Ast.ActorKind.NONE
+                        && object.stateLoanActive
+                        && (member.member().equals("end")
+                            || member.member().equals("endWithCleanup"))) {
+                    throw new IllegalStateException(
+                            "actor cannot terminate while a state loan is active");
+                }
+                if (object.klass.actorKind() != Ast.ActorKind.NONE
                         && member.member().equals("end")) {
                     if (!args.isEmpty()) {
                         throw new IllegalArgumentException(
