@@ -78,6 +78,55 @@ final class ActorNativeArenaTest {
     }
 
     @Test
+    void nativeListUsesArenaSlotsAcrossChunksAndReleasesElementReferences() {
+        AtomicLong charged = new AtomicLong();
+        AtomicLong foreignCharged = new AtomicLong();
+        Object marker = new Object();
+        try (ActorNativeArena arena = arena(128 * 1024, charged);
+             ActorNativeArena foreignArena = arena(16 * 1024, foreignCharged)) {
+            ActorNativeArena.NativeList list = arena.nativeList();
+            assertEquals(0, list.size());
+            assertTrue(list.nativeOffset() >= 0);
+
+            for (int i = 0; i < 40; i++) list.add((long) i);
+            assertEquals(40, list.size());
+            for (int i = 0; i < 40; i++) assertEquals((long) i, list.get(i));
+            assertEquals(17L, list.set(17, 1700L));
+            assertEquals(1700L, list.get(17));
+            assertThrows(IndexOutOfBoundsException.class, () -> list.get(40));
+            assertThrows(UnsupportedOperationException.class, () -> list.add(1, 99L));
+
+            Map<String, Object> child = arena.fields(List.of("value"), marker);
+            child.put("value", 7L);
+            list.add(child);
+            assertEquals(1, arena.nativeReferenceCount());
+            assertSame(child, list.get(40));
+
+            Map<String, Object> foreign = foreignArena.fields(List.of("value"), marker);
+            assertThrows(SecurityException.class, () -> list.add(foreign));
+            assertEquals(41, list.size(), "failed append must not publish a list element");
+
+            Map<String, Object> holder = arena.fields(List.of("items"), marker);
+            holder.put("items", list);
+            assertEquals(2, arena.nativeReferenceCount(),
+                    "child element and list facade are distinct live native references");
+            assertSame(list, holder.get("items"));
+
+            list.clear();
+            assertEquals(0, list.size());
+            assertEquals(1, arena.nativeReferenceCount(),
+                    "clear must retire element references while preserving the holder->list reference");
+            holder.put("items", null);
+            assertEquals(0, arena.nativeReferenceCount());
+
+            list.add("reused-after-clear");
+            assertEquals("reused-after-clear", list.get(0));
+        }
+        assertEquals(0, charged.get());
+        assertEquals(0, foreignCharged.get());
+    }
+
+    @Test
     void nativeReferenceRegistryRetainsOnlyCurrentlyReferencedFacades() {
         AtomicLong charged = new AtomicLong();
         Object marker = new Object();
