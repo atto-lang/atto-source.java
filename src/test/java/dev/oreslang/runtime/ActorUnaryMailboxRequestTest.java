@@ -244,14 +244,19 @@ final class ActorUnaryMailboxRequestTest {
             var registry = new GenerationalReplyRegistry(4);
             var checked = new CountDownLatch(1);
             var denied = new AtomicReference<Throwable>();
+            var ownEndpoint = new AtomicReference<GenerationalReplyRegistry.Endpoint>();
+            var foreignEndpoint = new AtomicReference<GenerationalReplyRegistry.Endpoint>();
+            var targetEndpoint = new AtomicReference<GenerationalReplyRegistry.Endpoint>();
             var target = runtime.<String>spawn(() ->
                     (message, ctx) -> fail("forged request must not execute"));
             var other = runtime.<String>spawn(() -> (message, ctx) -> { });
             var caller = runtime.<String>spawn(() -> (message, ctx) -> {
                 try {
-                    var own = runtime.bindActorReplyEndpoint(registry, ctx.self());
-                    var foreign = runtime.bindActorReplyEndpoint(registry, other);
-                    var callee = runtime.bindActorReplyEndpoint(registry, target);
+                    var own = ownEndpoint.get();
+                    var foreign = foreignEndpoint.get();
+                    var callee = targetEndpoint.get();
+                    assertThrows(SecurityException.class, () ->
+                            runtime.bindActorReplyEndpoint(registry, ctx.self()));
                     assertThrows(SecurityException.class, () ->
                             ActorReplySchedulerBridge.requestCurrentActor(
                                     runtime, registry, foreign, callee, target, "work",
@@ -268,6 +273,9 @@ final class ActorUnaryMailboxRequestTest {
                     checked.countDown();
                 }
             });
+            ownEndpoint.set(runtime.bindActorReplyEndpoint(registry, caller));
+            foreignEndpoint.set(runtime.bindActorReplyEndpoint(registry, other));
+            targetEndpoint.set(runtime.bindActorReplyEndpoint(registry, target));
             caller.send("audit");
             assertTrue(checked.await(3, TimeUnit.SECONDS));
             assertNull(denied.get(), "actor must not be able to impersonate either endpoint");
