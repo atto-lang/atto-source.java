@@ -350,6 +350,8 @@ public final class ActorRuntime implements AutoCloseable {
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
     private final AtomicInteger actorCount = new AtomicInteger();
+    /** Bounded host/root pending unary calls, independent of destination mailbox. */
+    private final AtomicInteger rootPendingRequests = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicLong privateMemoryBytes = new AtomicLong();
     private final AtomicLong sharedMemoryBytes = new AtomicLong();
@@ -4223,9 +4225,45 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public <M> OresFuture<Object> request(ActorRef<M> ref, M message) {
         Objects.requireNonNull(ref, "actor reference");
+        requireCallerRuntimeAffinity("request actor");
+        ActorCell<?> origin = currentActor.get();
+        AtomicInteger budget = origin == null
+                ? rootPendingRequests : origin.pendingOutgoingRequests;
+        int capacity = origin == null
+                ? policyCeiling.maxMailboxMessages() : origin.policy.maxMailboxMessages();
+
+        // Reserve origin pending-call credit *before* preparing/publishing data.
+        // Destination mailbox limits remain independent; accepted work cannot
+        // borrow origin capacity. This budget is not guest actor state.
+        for (;;) {
+            int used = budget.get();
+            if (used >= capacity) {
+                throw new IllegalStateException(
+                        "actor caller pending request limit exceeded");
+            }
+            if (budget.compareAndSet(used, used + 1)) break;
+        }
         OresFuture<Object> reply = new OresFuture<>();
-        admitUserMessage(ref, message, reply);
-        return reply;
+        reply.whenCompleteRuntime((ignored, failure) -> budget.decrementAndGet());
+        try {
+            // Only actor-owned calls are cancelled by actor termination.
+            // Root callers remain owned by the runtime/recipient lifecycle.
+            if (origin != null && !ownFuture(origin, reply)) {
+                throw terminated(origin.ref);
+            }
+            admitUserMessage(ref, message, reply);
+            return reply;
+        } catch (RuntimeException | Error failure) {
+            // Every failed admission releases its origin credit. Cancel/failure
+            // cannot revive an actor or invoke a guest continuation inline.
+            reply.failFromRuntime(failure);
+            throw failure;
+        }
+    }
+
+    /** Runtime diagnostic: no guest-visible pending-call registry. */
+    int pendingRootRequestCount() {
+        return rootPendingRequests.get();
     }
 
     private <M> void admitUserMessage(ActorRef<M> ref, M message, OresFuture<Object> reply) {
@@ -5765,6 +5803,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorCell<?> parent;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
+        /** Bounded outstanding requests issued by this actor (caller-side). */
+        private final AtomicInteger pendingOutgoingRequests = new AtomicInteger();
         /** Reply authority belongs to this actor cell and is never guest-visible. */
         private final Set<OresFuture<Object>> pendingReplies = ConcurrentHashMap.newKeySet();
         /**
