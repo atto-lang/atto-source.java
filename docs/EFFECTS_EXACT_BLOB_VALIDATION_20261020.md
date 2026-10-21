@@ -88,3 +88,55 @@ should not be extended or treated as approved exact-source CI evidence.
 
 The preferred source CI tracker is
 `ores-truffle-oreslang/oreslang-source.java#963`.
+
+
+## Additional effect hardening and JDK21 revalidation (later 2026-10-20)
+
+New static audit corrections are included in the current draft:
+
+- Syntactic aggregate construction (list, tuple, object/record) carries
+  `ALLOC` unless verified lowerings establish otherwise.
+- String/large-number literals carry possible allocation; unknown synthetic
+  literal payloads carry `UNKNOWN_CALL` instead of gaining silent purity.
+- Structural, `nlex`, and generic callable declarations cannot be classified
+  effect-free without typed instantiation and capture proofs.
+- Async, suspending, and generator declarations conservatively include both
+  `SCHEDULER` and canonical `SUSPEND`.
+- Source analyzer AST-shape regressions added in
+  `SourceEffectAuditShapeTest.java`. The standalone JDK formal checker now
+  also executes `VerifyLatentEffectRows.java` for deferred IO/Future/Stream,
+  effect-row composition, and actor loan escape.
+
+**Executed locally with JDK 21, exact Git SHA-matched production sources:**
+
+| Production source | Git blob SHA |
+| --- | --- |
+| `EffectContracts.java` | `42aedab716c37110e96c6666a82cc098415975c0` |
+| `EffectAbiV1.java` | `dfbdea04b6a691189c4cc2868bf039400517d38d` |
+| `LatentEffectRows.java` | `ea7c0f757354056f3ad0f30050883af53c5b97d2` |
+| `SourceEffectAudit.java` | `818de2ac5e939cbe8f5831292dd7c42c10a47a03` |
+| `VerifyEffectClosure.java` | `c17720eb6c3ed789dd5b842c26765457118880b8` |
+| `VerifyLatentEffectRows.java` | `0ec4cae0ce9dc9973f844f943606e0f718d187ef` |
+
+The production graph, ABI, and latent descriptor classes compiled together.
+The **exact committed standalone oracles** passed:
+- **98,304** graph-closure root comparisons, plus negative controls for
+  trapped failures, unresolved callbacks, unknown FFI, closed-world denial,
+  and invalid native mask decoding.
+- **8,226** latent-effect assertions, including all 1,024 canonical ABI rows,
+  conversion/bind effects and capture-denial checks.
+
+The **exact production `SourceEffectAudit.java`** additionally compiled
+against small local `Ast`/`OresCompiler` interface stubs and passed
+**24** direct AST classification checks, including aggregate allocation,
+nested callback discovery, dynamic select, async/suspend, and unknown
+non-scalar literals. These stubs are **not** the real compiler or
+typechecker; this is not Maven/JUnit or source-to-HIR certification.
+`SourceEffectAuditShapeTest.java` in the actual repository still awaits
+execution against the production AST and parser in full CI.
+
+The source repository's private-CI destination allowlist remains empty.
+Do not copy full private Git trees to a public or unapproved carrier.
+The existing private GitHub Actions capacity probes failed or did not
+start, so **no full exact-tree CI success** is claimed. The new Java
+PR remains **draft**.
