@@ -450,26 +450,41 @@ public final class ActorNativeArena implements AutoCloseable {
     }
 
     private int slabIndex(long address) {
-        for (int i = slabBases.size() - 1; i >= 0; i--) {
-            long base = slabBases.get(i);
-            if (address >= base) {
-                long relative = address - base;
-                if (relative < slabs.get(i).capacity()) return i;
-                break;
+        // slabBases is monotonic even when region/page allocations create gaps.
+        // Find the greatest slab base <= address, then validate that address is
+        // actually within that slab rather than an intervening logical region.
+        int low = 0;
+        int high = slabBases.size() - 1;
+        int candidate = -1;
+        while (low <= high) {
+            int mid = (low + high) >>> 1;
+            long base = slabBases.get(mid);
+            if (base <= address) {
+                candidate = mid;
+                low = mid + 1;
+            } else {
+                high = mid - 1;
+            }
+        }
+        if (candidate >= 0) {
+            long relative = address - slabBases.get(candidate);
+            if (relative >= 0 && relative < slabs.get(candidate).capacity()) {
+                return candidate;
             }
         }
         throw new IllegalStateException("invalid actor-relative slab offset");
     }
-    private ByteBuffer slab(long address) { return slabs.get(slabIndex(address)); }
-    private int offset(long address) {
-        int index = slabIndex(address);
-        return Math.toIntExact(address - slabBases.get(index));
-    }
+
     private long read(long address, int relative) {
-        return slab(address).getLong(Math.addExact(offset(address), relative));
+        int index = slabIndex(address);
+        int local = Math.toIntExact(address - slabBases.get(index));
+        return slabs.get(index).getLong(Math.addExact(local, relative));
     }
+
     private void write(long address, int relative, long value) {
-        slab(address).putLong(Math.addExact(offset(address), relative), value);
+        int index = slabIndex(address);
+        int local = Math.toIntExact(address - slabBases.get(index));
+        slabs.get(index).putLong(Math.addExact(local, relative), value);
     }
 
     private long storeText(String value) {
@@ -479,8 +494,9 @@ public final class ActorNativeArena implements AutoCloseable {
     }
 
     private void overwriteText(long address, String value) {
-        ByteBuffer data = slab(address);
-        int start = offset(address);
+        int index = slabIndex(address);
+        ByteBuffer data = slabs.get(index);
+        int start = Math.toIntExact(address - slabBases.get(index));
         for (int i = 0; i < value.length(); i++) data.putChar(start + i * 2, value.charAt(i));
     }
 
@@ -491,8 +507,9 @@ public final class ActorNativeArena implements AutoCloseable {
 
     private String loadText(long address, int length) {
         char[] data = new char[length];
-        ByteBuffer source = slab(address);
-        int start = offset(address);
+        int index = slabIndex(address);
+        ByteBuffer source = slabs.get(index);
+        int start = Math.toIntExact(address - slabBases.get(index));
         for (int i = 0; i < length; i++) data[i] = source.getChar(start + i * 2);
         return new String(data);
     }
