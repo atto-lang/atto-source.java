@@ -282,6 +282,22 @@ must cover both normal and exceptional paths. `strict-no-gc` stays unavailable;
 native guest payloads alone do not eliminate runtime GC or establish hard
 real-time execution.
 
+## Standalone native ABI preflight
+
+Run `bash scripts/check-native-arena-abi.sh` from a POSIX shell with
+a JDK, a C compiler, and Linux JNI headers installed. The script compiles
+`src/main/c/oresarena.c` with warnings treated as errors, generates a
+temporary **source-free** Java JNI ABI probe in a private temporary directory,
+checks invalid sizes, allocation zeroing, independence, little-endian
+native word storage, and 1,000 explicit native-buffer allocations/releases.
+Temporary probe sources, classes, and shared-library objects are removed
+on exit.
+
+This can run without Maven or GraalVM and checks **only** the native
+allocator boundary. It does **not** prove actor ownership, memory lifetime
+under concurrent actor turns, native image compatibility, or zero-GC guest
+allocation. The full GraalVM JUnit suite remains the release gate.
+
 ## Validation for this change
 
 The focused native-storage, actor lifecycle, constructor, imported-class and
