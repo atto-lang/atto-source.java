@@ -1388,6 +1388,12 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalStateException(
                         "gpu task has no admitted device execution/fence backend; CPU fallback forbidden");
             }
+            if (task.executionDomain() == Ast.TaskExpr.ExecutionDomain.CPU
+                    && ActorRuntime.inActorExecution()) {
+                throw new IllegalStateException(
+                        "explicit cpu task offload from actors requires checked isolated capture "
+                        + "and a non-actor scheduler; no implicit actor-turn fallback");
+            }
             if (taskAdmissions == null) {
                 throw new IllegalStateException(
                         "source Task execution requires a joined compiler admission proof");
