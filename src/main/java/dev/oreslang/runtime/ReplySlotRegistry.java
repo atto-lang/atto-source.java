@@ -237,6 +237,31 @@ final class ReplySlotRegistry implements AutoCloseable {
         return failed;
     }
 
+    /**
+     * Bound a disconnected authenticated responder's pending requests to its
+     * original session, not just its reusable endpoint name. This never
+     * touches another peer/session and frees slots through normal Future
+     * settlement callbacks. A fresh incarnation may reserve immediately.
+     *
+     * Only a runtime-owned, authenticated session close callback can invoke
+     * this method. A guest-visible message cannot terminate another session.
+     */
+    synchronized int terminateResponder(
+            AuthenticatedPeer disconnected, Throwable reason) {
+        Objects.requireNonNull(disconnected, "disconnected");
+        Objects.requireNonNull(reason, "reason");
+        if (closed) return 0;
+        int affected = 0;
+        for (int i = 0; i < nextUnused; i++) {
+            Slot slot = slots[i];
+            if (slot != null && slot.future != null
+                    && disconnected.equals(slot.responder)) {
+                if (slot.future.failFromRuntime(reason)) affected++;
+            }
+        }
+        return affected;
+    }
+
     synchronized int pendingCount() { return active; }
     synchronized int highWaterMark() { return highWater; }
     synchronized int capacity() { return slots.length; }
