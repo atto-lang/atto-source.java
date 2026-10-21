@@ -9708,6 +9708,9 @@ public final class OresEvalRootNode extends RootNode {
         private final String lexicalModule;
         private final OresObject constructingObject;
         private final Map<String, Slot> slots = new HashMap<>();
+        // Logical structured scope follows the source continuation and captured
+        // child Env across carrier migration; it is never a ThreadLocal token.
+        private TaskScope structuredTaskScope;
         private Env(Env parent) {
             this(
                     parent,
@@ -9765,6 +9768,8 @@ public final class OresEvalRootNode extends RootNode {
             this.lexicalContainerClass = lexicalContainerClass;
             this.lexicalModule = lexicalModule;
             this.constructingObject = constructingObject;
+            this.structuredTaskScope =
+                    parent == null ? null : parent.structuredTaskScope;
         }
 
         private Env lexicalBoundaryOnly() {
@@ -9782,6 +9787,12 @@ public final class OresEvalRootNode extends RootNode {
             return lexicalModule != null && !Parser.ROOT_MODULE.equals(lexicalModule);
         }
         private boolean canInitialize(OresObject object) { return constructingObject == object; }
+        private Env withStructuredTaskScope(TaskScope scope) {
+            Env child = new Env(this);
+            child.structuredTaskScope = Objects.requireNonNull(scope, "structured Task scope");
+            return child;
+        }
+        private TaskScope structuredTaskScope() { return structuredTaskScope; }
         private void define(String name, Object value, Ast.BindingKind kind) {
             define(name, value, kind, null);
         }
@@ -9838,6 +9849,7 @@ public final class OresEvalRootNode extends RootNode {
                     accessClass,
                     null,
                     lexicalModule);
+            cp.structuredTaskScope = structuredTaskScope;
             cp.slots.putAll(slots);
             return cp;
         }
@@ -9958,6 +9970,7 @@ public final class OresEvalRootNode extends RootNode {
                     accessClass,
                     null,
                     lexicalModule);
+            cp.structuredTaskScope = structuredTaskScope;
 
             for (Map.Entry<String, Slot> entry : slots.entrySet()) {
                 Ast.TaskCaptureTransfer transfer =
