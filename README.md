@@ -22,7 +22,7 @@ The language is intentionally opinionated:
 - class-level `static fnc` functions separated from receiver methods;
 - first-class function aliases/types and block-only `|args| -> { ... }` lambdas;
 - lexical closures with persistent captured environments;
-- affine ownership, move checking, borrows, immutable-by-default parameters, and `Type mut name` owned-mutation syntax - see [ft borrow, ft copy, ft take, ft share]
+- affine ownership, move checking, borrows, immutable-by-default parameters, and `Type mut name` owned-mutation syntax; the canonical explicit ownership forms are `rt borrow`, `rt borrow mut`, `rt copy`, `rt take`, and `rt share`. Oreslang does not use `&` and `*` for pointer/reference/dereference operations (arithmetic multiplication remains valid).
 - hot reload creates a fresh versioned guest context/generation without requiring FFI or dynamic native libraries;
 - direct method calls reuse shared class method definitions; instance/actor methods are direct-call-only, and callbacks use explicit lambdas instead of implicit bound-method values;
 - multiple named modules may appear in one source file;
