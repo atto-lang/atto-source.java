@@ -3718,6 +3718,9 @@ public final class OwnershipChecker {
         if (concrete.name().equals("Map") && concrete.arguments().size() == 2) {
             return concrete.arguments().get(1);
         }
+        if (concrete.name().equals("JsonValue") && concrete.arguments().isEmpty()) {
+            return Ast.TypeRef.simple("JsonValue");
+        }
 
         Ast.ClassDecl klass = findClass(concrete.name());
         if (klass != null) {

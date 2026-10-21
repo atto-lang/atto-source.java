@@ -3892,6 +3892,17 @@ public final class TypeChecker {
             String constantKey = constantStringKey(indexed.index(), env);
             Env.Binding indexedOwner = indexed.receiver() instanceof Ast.NameExpr ownerName
                     ? env.lookup(ownerName.name()) : null;
+            if (receiver instanceof Named jsonValue
+                    && jsonValue.name().equals("JsonValue")
+                    && jsonValue.arguments().isEmpty()) {
+                if (!assignable(index, Primitive.STRING)
+                        && !assignable(index, Primitive.INT)) {
+                    throw new IllegalArgumentException(
+                            "JsonValue dynamic index must be String (object) or int (array), got "
+                                    + index);
+                }
+                return new Named("JsonValue", List.of());
+            }
             if (receiver instanceof Named map
                     && map.name().equals("Map") && map.arguments().size() == 2) {
                 requireAssignable(index, map.arguments().get(0), "Map key");
@@ -9071,6 +9082,20 @@ public final class TypeChecker {
         }
         if (expected instanceof Union target) {
             return target.options().stream().anyMatch(option -> assignable(actual, option));
+        }
+
+        // JsonValue is the checked dynamic JSON sum. Widening happens only
+        // from values the core codec can actually represent; arbitrary
+        // classes/capabilities/borrows never become dynamic JSON by accident.
+        if (expected instanceof Named jsonValue
+                && jsonValue.name().equals("JsonValue")
+                && jsonValue.arguments().isEmpty()) {
+            try {
+                requireJsonCodecType(actual, "JsonValue widening");
+                return true;
+            } catch (IllegalArgumentException unsupportedJsonValue) {
+                return false;
+            }
         }
 
         // Function compatibility is contravariant in parameters and covariant

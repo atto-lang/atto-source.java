@@ -107,6 +107,52 @@ final class CoreJsonAndStructuralUpdateTest {
     }
 
     @Test
+    void jsonValueWideningBuildsHeterogeneousDynamicObjects() throws Exception {
+        String program = """
+                pub fnc main(): void {
+                  val Map<String, JsonValue> object = new Map<String, JsonValue>();
+                  object["name"] = "Ada";
+                  object["count"] = 3;
+                  object["active"] = true;
+                  stdio.stdout.write(Json.encode(object));
+                  return;
+                }
+                """;
+
+        TypeChecker.check(Parser.parse(program));
+        assertEquals(
+                "{\"name\":\"Ada\",\"count\":3,\"active\":true}",
+                run(program, "json-value-map.ores"));
+    }
+
+    @Test
+    void parsedJsonValueSupportsCheckedDynamicObjectAndArrayReads() throws Exception {
+        String program = """
+                pub fnc main(): void {
+                  const JsonValue value =
+                    Json.parse("{\"user\":{\"name\":\"Ada\"},\"scores\":[10,20]}");
+                  stdio.stdout.write(value["user"]["name"]);
+                  stdio.stdout.write(value["scores"][1]);
+                  return;
+                }
+                """;
+
+        TypeChecker.check(Parser.parse(program));
+        assertEquals("Ada20", run(program, "json-value-index.ores"));
+    }
+
+    @Test
+    void jsonValueDynamicIndexRejectsNonStringNonIntegerKeys() {
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        fnc bad(): JsonValue {
+                          const JsonValue value = Json.parse("{\"x\":1}");
+                          return value[true];
+                        }
+                        """)));
+    }
+
+    @Test
     void jsonDecodeSupportsTypedDynamicObjectMaps() throws Exception {
         String program = """
                 pub fnc main(): void {
