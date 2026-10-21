@@ -1285,6 +1285,30 @@ final class ParserTest {
         assertTrue(failure.getMessage().contains("expected 'as' after class header"));
     }
 
+
+    @Test
+    void acceleratorExecutionDomainsRemainFailClosedAfterG2RuntimeIr() {
+        for (String domain : List.of("gpu", "cpu", "quantum")) {
+            String source = """
+                    pub fnc main(): int {
+                        return %s {
+                            return 1;
+                        };
+                    }
+                    """.formatted(domain);
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> Parser.parse(source),
+                    domain);
+            assertTrue(
+                    failure.getMessage().contains("execution domain '" + domain + "'"),
+                    failure::toString);
+            assertTrue(
+                    failure.getMessage().contains("no implicit CPU fallback"),
+                    failure::toString);
+        }
+    }
+
     private static List<List<String>> permutations(String... tokens) {
         List<List<String>> out = new ArrayList<>();
         permute(new ArrayList<>(List.of(tokens)), new ArrayList<>(), out);

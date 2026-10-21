@@ -50,11 +50,19 @@ final class ComputeAuthorityTest {
         assertThrows(IllegalStateException.class,
                 () -> ComputeAuthority.beginDownload(buffer, gpu, "actor:42", 0, 4));
 
+        assertThrows(IllegalStateException.class,
+                () -> ComputeAuthority.complete(buffer, upload, true));
+        ComputeAuthority.markSubmitted(buffer, upload);
+        assertThrows(IllegalStateException.class,
+                () -> ComputeAuthority.markSubmitted(buffer, upload));
+        assertThrows(IllegalStateException.class,
+                () -> ComputeAuthority.abortBeforeEnqueue(buffer, upload));
         ComputeAuthority.complete(buffer, upload, true);
         assertEquals(ComputeBufferHandle.State.IDLE, buffer.state());
 
         var download = ComputeAuthority.beginDownload(buffer, gpu, "actor:42", 16, 32);
         assertEquals(ComputeFenceHandle.Direction.DOWNLOAD, download.direction());
+        ComputeAuthority.markSubmitted(buffer, download);
         ComputeAuthority.complete(buffer, download, true);
     }
 
@@ -65,8 +73,10 @@ final class ComputeAuthorityTest {
                 gpu, 3, 128, 8, "u8", "actor:1");
 
         var first = ComputeAuthority.beginUpload(buffer, gpu, "actor:1", 0, 16);
+        ComputeAuthority.markSubmitted(buffer, first);
         ComputeAuthority.complete(buffer, first, true);
         var second = ComputeAuthority.beginUpload(buffer, gpu, "actor:1", 16, 16);
+        ComputeAuthority.markSubmitted(buffer, second);
 
         assertThrows(IllegalStateException.class,
                 () -> ComputeAuthority.complete(buffer, first, true));
@@ -81,6 +91,9 @@ final class ComputeAuthorityTest {
                 gpu, 9, 256, 16, "u8", "actor:1");
 
         var fence = ComputeAuthority.beginDownload(buffer, gpu, "actor:1", 0, 64);
+        assertThrows(IllegalStateException.class,
+                () -> ComputeAuthority.cancel(buffer, fence));
+        ComputeAuthority.markSubmitted(buffer, fence);
         ComputeAuthority.cancel(buffer, fence);
         assertEquals(ComputeBufferHandle.State.POISONED, buffer.state());
         assertThrows(IllegalStateException.class,
@@ -89,6 +102,8 @@ final class ComputeAuthorityTest {
         ComputeAuthority.acknowledgeCancelled(buffer, fence);
         ComputeAuthority.retire(buffer, gpu, "actor:1");
         assertEquals(ComputeBufferHandle.State.RETIRED, buffer.state());
+        assertThrows(IllegalStateException.class,
+                () -> ComputeAuthority.retire(buffer, gpu, "actor:1"));
         assertThrows(IllegalStateException.class,
                 () -> ComputeAuthority.beginUpload(buffer, gpu, "actor:1", 0, 1));
     }
@@ -110,8 +125,48 @@ final class ComputeAuthorityTest {
                 new Object());
 
         assertThrows(IllegalStateException.class,
+                () -> ComputeAuthority.markSubmitted(buffer, forged));
+        ComputeAuthority.markSubmitted(buffer, real);
+        assertThrows(IllegalStateException.class,
                 () -> ComputeAuthority.complete(buffer, forged, true));
         ComputeAuthority.complete(buffer, real, true);
+    }
+
+
+    @Test
+    void preEnqueueAbortRequiresExactReservedFenceAndRestoresIdle() {
+        var gpu = device("gpu0", 4);
+        var buffer = ComputeAuthority.<Byte>bindBuffer(
+                gpu, 8, 128, 8, "u8", "actor:1");
+
+        var reserved = ComputeAuthority.beginUpload(buffer, gpu, "actor:1", 8, 16);
+        assertEquals(ComputeBufferHandle.State.IN_FLIGHT, buffer.state());
+
+        var forged = new ComputeFenceHandle(
+                gpu,
+                reserved.allocationGeneration(),
+                reserved.sequence(),
+                reserved.direction(),
+                reserved.offset(),
+                reserved.length(),
+                new Object());
+        assertThrows(IllegalStateException.class,
+                () -> ComputeAuthority.abortBeforeEnqueue(buffer, forged));
+
+        ComputeAuthority.abortBeforeEnqueue(buffer, reserved);
+        assertEquals(ComputeBufferHandle.State.IDLE, buffer.state());
+
+        assertThrows(IllegalStateException.class,
+                () -> ComputeAuthority.abortBeforeEnqueue(buffer, reserved));
+        assertThrows(IllegalStateException.class,
+                () -> ComputeAuthority.complete(buffer, reserved, true));
+
+        var next = ComputeAuthority.beginUpload(buffer, gpu, "actor:1", 16, 16);
+        assertNotEquals(reserved.sequence(), next.sequence());
+        ComputeAuthority.markSubmitted(buffer, next);
+        assertThrows(IllegalStateException.class,
+                () -> ComputeAuthority.abortBeforeEnqueue(buffer, next));
+        ComputeAuthority.complete(buffer, next, true);
     }
 
     @Test
