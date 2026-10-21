@@ -33,8 +33,36 @@ public final class FsmTraceWitness {
         return new Decision(false, "unhandled", before, 0);
     }
 
+    private static void selfTest() {
+        State boundary = new State(1, LIMIT, 3);
+        Decision exhausted = step(boundary, 1);
+        if (exhausted.accepted || !exhausted.reason.equals("version-exhausted")
+                || exhausted.after != boundary || exhausted.effect != 0)
+            throw new AssertionError("u32 version exhaustion must be atomic/no-op");
+        Decision invalidTick = step(new State(1, 0, 9), 1);
+        if (invalidTick.accepted || !invalidTick.reason.equals("invalid-ticks"))
+            throw new AssertionError("invalid tick domain admitted");
+        Decision unknownState = step(new State(99, 0, 0), 0);
+        if (unknownState.accepted || !unknownState.reason.equals("invalid-state"))
+            throw new AssertionError("invalid state domain admitted");
+        Decision acceptedSelfEdge = step(new State(1, 8, 0), 1);
+        if (!acceptedSelfEdge.accepted || acceptedSelfEdge.effect != 2
+                || !acceptedSelfEdge.after.equals(new State(1, 9, 1)))
+            throw new AssertionError("accepted self-transition lost version/effect");
+        for (Runnable action : new Runnable[]{
+                () -> step(new State(0, LIMIT + 1, 0), 0),
+                () -> step(new State(0, 0, 0), -1),
+                () -> step(new State(-1, 0, 0), 0)}) {
+            boolean denied = false;
+            try { action.run(); }
+            catch (IllegalArgumentException expected) { denied = true; }
+            if (!denied) throw new AssertionError("invalid witness admission accepted");
+        }
+    }
+
     public static void main(String[] args) {
         if (args.length != 0) throw new IllegalArgumentException("no CLI inputs accepted");
+        selfTest();
         final int entities = 5;
         final int length = 2040;
         State[] current = new State[entities];
