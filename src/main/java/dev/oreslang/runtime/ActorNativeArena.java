@@ -35,6 +35,11 @@ public final class ActorNativeArena implements AutoCloseable {
         default long nativeOffset() { return -1L; }
     }
 
+    /** Privileged runtime resource stored as an opaque arena-local handle ID. */
+    public interface NativeCapability {
+        ActorNativeArena nativeArena();
+    }
+
     @FunctionalInterface
     interface Budget {
         Runnable reserve(int bytes);
@@ -47,7 +52,8 @@ public final class ActorNativeArena implements AutoCloseable {
     private static final long NULL = 0, UNINITIALIZED = 1, BOOLEAN = 2,
             BYTE = 3, SHORT = 4, INTEGER = 5, LONG = 6, FLOAT = 7, DOUBLE = 8,
             CHARACTER = 9, STRING = 10, REFERENCE = 11, BIG_INTEGER = 12,
-            BIG_DECIMAL = 13, PROCESS_SYMBOL = 14, STABLE_SYMBOL = 15;
+            BIG_DECIMAL = 13, PROCESS_SYMBOL = 14, STABLE_SYMBOL = 15,
+            CAPABILITY = 16;
 
     private final Runnable checkOwner;
     private final Budget budget;
@@ -59,6 +65,10 @@ public final class ActorNativeArena implements AutoCloseable {
     private final IdentityHashMap<NativeValue, Long> issuedNativeOffsets = new IdentityHashMap<>();
     private final IdentityHashMap<NativeValue, Long> referenceOffsets = new IdentityHashMap<>();
     private final Map<Long, NativeValue> referencesByOffset = new HashMap<>();
+    private final IdentityHashMap<NativeCapability, Long> capabilityIds = new IdentityHashMap<>();
+    private final Map<Long, NativeCapability> capabilitiesById = new HashMap<>();
+    private final Map<Long, Integer> capabilityRefCounts = new HashMap<>();
+    private long nextCapabilityId = 1L;
     private final Set<Region> regions = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     /** Monotonic actor-relative address allocator; retired addresses are never reused. */
     private long nextActorOffset;
@@ -193,6 +203,8 @@ public final class ActorNativeArena implements AutoCloseable {
         }
         return false;
     }
+
+    synchronized int capabilityCount() { return capabilitiesById.size(); }
 
     public synchronized long committedBytes() { return committed; }
     public synchronized long allocatedBytes() { return allocated; }
