@@ -56,11 +56,13 @@ public final class OwnershipChecker {
     /** Every active try records roots that may already be moved on its catch edge. */
     private final List<Set<VarState>> tryMoveObservers = new ArrayList<>();
     /**
-     * Successful fallible Map commits are normal-path moves, not moves on that
-     * operation's rejection edge. They stay pending until a later potentially
-     * throwing statement can enter the same catch after the commit.
+     * Staged proof context for one direct terminal commit-aware Map write in
+     * the current try body. Only this exact syntactic position may omit the
+     * innermost catch-edge move: there is no later try-body statement, and a
+     * top-level defer is forbidden for this proof because its cleanup runs
+     * after the commit but may still throw into the same catch.
      */
-    private final List<Set<VarState>> tryConditionalCommitMoves = new ArrayList<>();
+    private int terminalCommitAwareTryWriteDepth;
 
     private OwnershipChecker(Ast.Program program) {
         this(program, Map.of(), false);
@@ -398,12 +400,6 @@ public final class OwnershipChecker {
                 commitAwareMapWrites && stmt instanceof Ast.ExprStmt expression
                         ? commitAwareMapWrite(expression.expression(), scope)
                         : null;
-        if (commitAwareMapWrites
-                && !tryConditionalCommitMoves.isEmpty()
-                && (commitAwareWrite != null
-                    || statementMayRaiseAfterConditionalCommit(stmt))) {
-            promoteConditionalCommitMovesToCatchEdges();
-        }
         if (commitAwareWrite != null) {
             checkCommitAwareMapWrite(commitAwareWrite, scope);
             return;
@@ -602,18 +598,19 @@ public final class OwnershipChecker {
         if (stmt instanceof Ast.TryStmt attempted) {
             Map<VarState, StateSnapshot> entry = stateSnapshot(scope);
             // Catch can run after any throwing operation, including one after
-            // a move in a nested branch or in an expression. Tracking moves
-            // directly is safer than looking only at the try's final state.
+            // a move in a nested branch or in an expression. Ordinary moves
+            // therefore poison the catch edge. The sole staged exception is a
+            // direct terminal commit-aware Map write with no top-level defer:
+            // that operation's own admission rejection returns the candidate
+            // before throwing, and no later try-body cleanup/statement can
+            // observe a successful commit and then enter this same catch.
             Set<VarState> movedDuringTry =
                     java.util.Collections.newSetFromMap(new IdentityHashMap<>());
-            Set<VarState> conditionalCommits =
-                    java.util.Collections.newSetFromMap(new IdentityHashMap<>());
             tryMoveObservers.add(movedDuringTry);
-            tryConditionalCommitMoves.add(conditionalCommits);
             try {
-                checkBlock(attempted.body(), scope, returnType);
+                checkTryBodyWithTerminalCommitProof(
+                        attempted.body(), scope, returnType);
             } finally {
-                tryConditionalCommitMoves.removeLast();
                 tryMoveObservers.removeLast();
             }
             Map<VarState, StateSnapshot> normal = stateSnapshot(scope);
@@ -3572,13 +3569,16 @@ public final class OwnershipChecker {
      * catch-edge observer(s).
      */
     private void moveAfterFallibleMapCommit(VarState state, String name) {
-        moveInternal(state, name, true);
+        moveInternal(
+                state,
+                name,
+                terminalCommitAwareTryWriteDepth > 0);
     }
 
     private void moveInternal(
             VarState state,
             String name,
-            boolean conditionalCommit) {
+            boolean recoverableByInnermostCatch) {
         VarState root = ownershipRoot(state);
         requireUsable(root, name, false);
         if (root.immutableBorrows > 0 || root.mutableBorrowed) {
@@ -3609,14 +3609,18 @@ public final class OwnershipChecker {
                     moveInternal(
                             sourceRoot,
                             source.debugName,
-                            conditionalCommit);
+                            recoverableByInnermostCatch);
                 }
             }
         }
 
-        if (conditionalCommit && !tryConditionalCommitMoves.isEmpty()) {
-            for (Set<VarState> pending : tryConditionalCommitMoves) {
-                pending.add(root);
+        if (recoverableByInnermostCatch && !tryMoveObservers.isEmpty()) {
+            // The current operation may reject before commit and restore the
+            // candidate, so the innermost catch must see pre-write ownership.
+            // Outer catches remain conservative: after this inner try resumes,
+            // later outer work may throw after a successful commit.
+            for (int i = 0; i + 1 < tryMoveObservers.size(); i++) {
+                tryMoveObservers.get(i).add(root);
             }
         } else {
             for (Set<VarState> observer : tryMoveObservers) {
@@ -3732,42 +3736,50 @@ public final class OwnershipChecker {
                 write.candidateExpression().name());
     }
 
-    private void promoteConditionalCommitMovesToCatchEdges() {
-        int count = Math.min(
-                tryMoveObservers.size(),
-                tryConditionalCommitMoves.size());
-        for (int i = 0; i < count; i++) {
-            Set<VarState> pending = tryConditionalCommitMoves.get(i);
-            if (pending.isEmpty()) continue;
-            tryMoveObservers.get(i).addAll(pending);
-            pending.clear();
+    /**
+     * Check a try body while admitting catch-side ownership recovery only for
+     * one direct final commit-aware Map write and only when this lexical try
+     * body has no top-level defer. Nested blocks/branches never inherit this
+     * privilege.
+     */
+    private void checkTryBodyWithTerminalCommitProof(
+            List<Ast.Stmt> body,
+            Scope parent,
+            Ast.TypeRef returnType) {
+        Scope local = new Scope(parent);
+        boolean hasTopLevelDefer =
+                body.stream().anyMatch(Ast.DeferStmt.class::isInstance);
+        try {
+            for (int i = 0; i < body.size(); i++) {
+                Ast.Stmt statement = body.get(i);
+                boolean terminalCandidate =
+                        commitAwareMapWrites
+                                && !hasTopLevelDefer
+                                && i == body.size() - 1
+                                && isDirectCommitAwareMapWriteStatement(statement);
+                if (terminalCandidate) terminalCommitAwareTryWriteDepth++;
+                try {
+                    checkStatement(statement, local, returnType);
+                } finally {
+                    if (terminalCandidate) terminalCommitAwareTryWriteDepth--;
+                }
+            }
+        } finally {
+            local.close();
         }
     }
 
-    /**
-     * Keep the no-throw whitelist intentionally tiny. False positives merely
-     * make a catch edge conservatively treat a prior committed owner as moved;
-     * false negatives could resurrect an owner after a real post-commit throw.
-     */
-    private static boolean statementMayRaiseAfterConditionalCommit(
-            Ast.Stmt stmt) {
-        if (stmt instanceof Ast.BreakStmt
-                || stmt instanceof Ast.ContinueStmt) {
-            return false;
+    private static boolean isDirectCommitAwareMapWriteStatement(
+            Ast.Stmt statement) {
+        if (!(statement instanceof Ast.ExprStmt expression)) return false;
+        Ast.Expr value = expression.expression();
+        if (value instanceof Ast.AssignExpr assignment) {
+            return assignment.target() instanceof Ast.IndexExpr;
         }
-        if (stmt instanceof Ast.ReturnStmt returned
-                && returned.value() == null) {
-            return false;
-        }
-        if (stmt instanceof Ast.BindingStmt binding
-                && binding.initializer() instanceof Ast.LiteralExpr) {
-            return false;
-        }
-        if (stmt instanceof Ast.ExprStmt expression
-                && expression.expression() instanceof Ast.LiteralExpr) {
-            return false;
-        }
-        return true;
+        return value instanceof Ast.CallExpr call
+                && call.callee() instanceof Ast.MemberExpr member
+                && member.member().equals("put")
+                && call.arguments().size() == 2;
     }
 
     private VarState requireState(Scope scope, String name) {
