@@ -23,9 +23,9 @@ final class NativeChildProcessTest {
         Files.writeString(source, """
                 pub routine main(): void {
                   val handle = process.spawn("%s", "30");
-                  stdio.println(process.pid(handle) > 0);
-                  stdio.println(process.running(handle));
-                  stdio.println(process.stop(handle));
+                  stdio.println(process.pid(rt borrow handle) > 0);
+                  stdio.println(process.running(rt borrow handle));
+                  stdio.println(process.stop(rt borrow handle));
                   stdio.println(process.running(handle));
                   return;
                 }
