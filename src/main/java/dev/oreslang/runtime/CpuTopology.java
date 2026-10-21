@@ -44,8 +44,8 @@ final class CpuTopology {
                     || llcLevel < UNKNOWN || packageId < UNKNOWN
                     || l2 < UNKNOWN || coreId < UNKNOWN
                     || cacheLineBytes < UNKNOWN
-                    || ((llcLevel == UNKNOWN) != (packageId == UNKNOWN))
-                    || (llcLevel >= 0 && (llc < 0 || llcLevel < 2))
+                    || (llcLevel >= 0
+                        && (llc < 0 || packageId < 0 || llcLevel < 2))
                     || (l2 >= 0 && packageId < 0)
                     || (coreId >= 0 && packageId < 0)
                     || (cacheLineBytes != UNKNOWN
@@ -158,7 +158,8 @@ final class CpuTopology {
 
     /**
      * Choose the best observed CPU target in a bounded scan. Same advertised
-     * logical CPU beats a shared qualified cache, which beats NUMA locality.
+     * logical CPU beats same physical core, verified L2, qualified LLC, then
+     * NUMA locality.
      * Absent topology evidence, preserve the ordinary affinity hash.
      *
      * This is a SOFT scheduler hint, never a physical pin, page-placement
