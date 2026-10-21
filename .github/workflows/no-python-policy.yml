@@ -1,0 +1,17 @@
+name: Prohibit Python
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  prohibit-python:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust policy tests
+        run: cargo test --manifest-path tools/no-python-check/Cargo.toml --locked
+      - name: Reject Python files and execution
+        run: cargo run --manifest-path tools/no-python-check/Cargo.toml --locked -- .
