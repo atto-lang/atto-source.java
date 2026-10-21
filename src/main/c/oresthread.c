@@ -43,6 +43,8 @@ struct ores_carrier_pool {
     int shutdown;
     int attach_ready_count;
     int attach_failures;
+    int mutex_initialized;
+    int condition_initialized;
     pthread_mutex_t mutex;
     pthread_cond_t condition;
 };
@@ -54,7 +56,8 @@ static void throw_illegal_state(JNIEnv *env, const char *message) {
 
 static char *copy_thread_name(const char *prefix, int slot) {
     size_t prefix_len = strlen(prefix);
-    size_t size = prefix_len + 32;
+    if (prefix_len > SIZE_MAX - 32u) return NULL;
+    size_t size = prefix_len + 32u;
     char *name = (char *)calloc(size, 1);
     if (name == NULL) return NULL;
     snprintf(name, size, "%s%d", prefix, slot + 1);
@@ -127,8 +130,8 @@ static void free_pool(JNIEnv *env, ores_carrier_pool *pool) {
     }
     free(pool->args);
     free(pool->threads);
-    pthread_cond_destroy(&pool->condition);
-    pthread_mutex_destroy(&pool->mutex);
+    if (pool->condition_initialized) pthread_cond_destroy(&pool->condition);
+    if (pool->mutex_initialized) pthread_mutex_destroy(&pool->mutex);
     free(pool);
 }
 
@@ -150,8 +153,9 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCreate(
         throw_illegal_state(env, "invalid native carrier thread counts");
         return 0;
     }
-    if (stack_bytes < 262144) {
-        throw_illegal_state(env, "native carrier stack size must be at least 262144 bytes");
+    if (stack_bytes < 262144 || stack_bytes > 67108864) {
+        throw_illegal_state(
+                env, "native carrier stack size must be between 262144 and 67108864 bytes");
         return 0;
     }
 
@@ -162,8 +166,22 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCreate(
     }
     pool->max_threads = (int)max_threads;
     pool->desired_threads = (int)desired_threads;
-    pthread_mutex_init(&pool->mutex, NULL);
-    pthread_cond_init(&pool->condition, NULL);
+    int mutex_status = pthread_mutex_init(&pool->mutex, NULL);
+    if (mutex_status != 0) {
+        free(pool);
+        throw_illegal_state(env, "pthread_mutex_init failed for native carrier");
+        return 0;
+    }
+    pool->mutex_initialized = 1;
+    int condition_status = pthread_cond_init(&pool->condition, NULL);
+    if (condition_status != 0) {
+        pthread_mutex_destroy(&pool->mutex);
+        pool->mutex_initialized = 0;
+        free(pool);
+        throw_illegal_state(env, "pthread_cond_init failed for native carrier");
+        return 0;
+    }
+    pool->condition_initialized = 1;
 
     if ((*env)->GetJavaVM(env, &pool->jvm) != JNI_OK || pool->jvm == NULL) {
         free_pool(env, pool);

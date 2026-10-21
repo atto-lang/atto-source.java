@@ -336,3 +336,10 @@ is not optimized-JIT or Native Image evidence. The dedicated workflow runs the
 focused suite with the repository's pinned GraalVM setup. No allocation-free,
 zero-GC, hard-real-time or native-image compatibility claim is admitted by these
 tests.
+
+
+### Dense kernel critical-section amortization
+
+`ActorShardColumns.integrate` now lowers each complete AoS/SoA/AoSoA/SoAoS pass to one owner-authenticated `ActorNativeArena.Region` bulk operation. The region validates writability, finite scalar parameters, and the highest byte touched by every block **before** the first store, then keeps one arena critical section for the complete pass. This removes per-element actor-owner checks and monitor entry/exit from the dense loop while preserving the actor's single-flight execution authority and read-lease freeze semantics.
+
+The physical traversal remains layout-specific: AoS uses a record stride, SoA uses contiguous scalar columns, SoAoS uses the inner-group stride, and AoSoA uses contiguous lanes plus an explicit tail block. No raw `ByteBuffer` or native address escapes. This is a structural hot-path improvement, not a SIMD or cache-miss performance claim; optimized Graal/Native Image code generation and hardware counters still require exact-head execution evidence.

@@ -1219,6 +1219,21 @@ public final class ActorRuntime implements AutoCloseable {
             requireOwner();
             nativeRegion.writeDouble(Math.multiplyExact(element, Double.BYTES), value);
         }
+        void integrateDoubleStridedBlocks(
+                int positionBaseElement,
+                int velocityBaseElement,
+                int rows,
+                int rowStrideElements,
+                int blockRows,
+                int blockStrideElements,
+                double dt) {
+            // Authenticate the logical actor once at the lease boundary. Region
+            // then keeps one arena critical section for the entire dense kernel.
+            requireOwner();
+            nativeRegion.integrateDoubleStridedBlocks(
+                    positionBaseElement, velocityBaseElement, rows,
+                    rowStrideElements, blockRows, blockStrideElements, dt);
+        }
         ActorNativeArena.Region.ReadOnlyLease leaseReadOnly(int byteOffset, int byteLength) {
             requireOwner();
             return nativeRegion.leaseReadOnly(byteOffset, byteLength);
@@ -2237,9 +2252,8 @@ public final class ActorRuntime implements AutoCloseable {
                     cell.activeMail = null;
                     cell.lifecycleLock.notifyAll();
                 }
-                // The logical receive (rather than a physical carrier turn)
-                // has ended. Clear the scratch epoch only after its Future
-                // settled; a yield/await never resets message allocations.
+                // The logical receive, rather than a physical carrier turn,
+                // owns scratch. Await/yield never ends the message epoch.
                 cell.messageScratch.finishMessage();
                 if (failure != null) {
                     Throwable terminal = OresFuture.unwrap(failure);
@@ -7213,7 +7227,8 @@ public final class ActorRuntime implements AutoCloseable {
                         }
                     },
                     this::reserveNativeArena);
-            this.messageScratch = new ActorMessageScratch(this.nativeArena, policy.maxHeapBytes());
+            this.messageScratch = new ActorMessageScratch(
+                    this.nativeArena, policy.maxHeapBytes());
         }
 
         private Runnable reserveNativeArena(int bytes) {
