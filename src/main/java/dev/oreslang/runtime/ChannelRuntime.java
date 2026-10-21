@@ -601,6 +601,11 @@ public final class ChannelRuntime {
             return set.cases();
         }
 
+        /** Expose this immutable descriptor for source-level select from plan. */
+        public SelectSet selectSetSnapshot() {
+            return set;
+        }
+
         public OresFuture<SelectResult> selectAsync() {
             return set.selectAsync();
         }
