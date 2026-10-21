@@ -31,6 +31,12 @@ not evidence of memory isolation.
 
 ## What this branch implements
 
+- GraalVM actor execution has exactly three scheduler/thread-pool domains:
+  **shared**, **isolated** (the runtime `PRIVATE` actor kind), and **untrusted**.
+  All three pool objects are created eagerly with the `ActorRuntime`, but each
+  owns **zero physical worker threads at startup**. JVM workers and native
+  pthread carriers are created only when runnable actor work first reaches that
+  domain. The three domains never share a carrier pool.
 - Both ordinary user mail and the prioritized continuation lane use bounded
   `ChannelRuntime.Channel` transports. Control mail retains its independent quota;
   user traffic cannot consume continuation headroom. Termination drains both.
