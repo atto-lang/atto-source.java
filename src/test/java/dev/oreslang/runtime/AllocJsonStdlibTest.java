@@ -106,6 +106,23 @@ final class AllocJsonStdlibTest {
     }
 
     @Test
+    void aliasedAllocJsonImportDoesNotUnlockCanonicalJsonValueMapDomain() {
+        String source = """
+                import class JsonValue as J from "alloc/json";
+
+                fnc stage(J item): void {
+                  val Map<string, J> values =
+                      new Map<string, J>();
+                  return;
+                }
+                """;
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+    }
+
+    @Test
     void importedJsonValueIsOpaqueAndNotDirectlyConstructible() throws Exception {
         Path entry = temp.resolve("opaque.ores");
         Files.writeString(entry, """
