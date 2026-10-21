@@ -5396,6 +5396,13 @@ public final class ActorRuntime implements AutoCloseable {
             ActorRef<M> ref, M message,
             GenerationalReplyRegistry.Ticket<R> ticket,
             GenerationalReplyRegistry.Endpoint callee) {
+        Objects.requireNonNull(ref, "callee ref");
+        Objects.requireNonNull(ticket, "reply ticket");
+        Objects.requireNonNull(callee, "callee endpoint");
+        if (!ref.ownedBy(this) || ticket.state() != GenerationalReplyRegistry.State.PENDING
+                || callee.actor() != ref || !ticket.issuedForCallee(ref)) {
+            throw new SecurityException("reply ticket not issued to destination actor incarnation");
+        }
         sendInternal(ref, message, new CallBinding(ticket, callee));
     }
 
@@ -7862,6 +7869,10 @@ public final class ActorRuntime implements AutoCloseable {
                         // caller Future. No raw actor-private pointer may escape.
                         Object safe = isPrivateKind(kind) ? isolateCopy(value)
                                 : freezeForTransport(value);
+                        if (activeCall.callee().actor() != ref
+                                || !activeCall.ticket().issuedForCallee(ref)) {
+                            throw new SecurityException("reply-port callee actor incarnation mismatch");
+                        }
                         return activeCall.stage(safe);
                     }
                     @Override public Optional<SharedCodeImageStore.CodeImage> codeImage() {
