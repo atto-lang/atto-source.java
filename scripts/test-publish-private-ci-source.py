@@ -762,6 +762,20 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             outside.rmdir()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    def test_quarantined_incident_carrier_rejected_before_preflight_or_api(self):
+        with patch.object(pub, "require_preflight") as preflight:
+            with patch.object(pub, "gh_api") as api:
+                with self.assertRaisesRegex(pub.Denied, "quarantined"):
+                    pub.publish(
+                        "ZED-PKG-TEST/JAVA-APP",
+                        self.source,
+                        "ci/oreslang-test",
+                        self.root,
+                        A,
+                    )
+                preflight.assert_not_called()
+                api.assert_not_called()
+
     def test_denied_preflight_halts_before_api(self):
         with patch.object(pub, "require_preflight", side_effect=pub.Denied("not approved")):
             with self.assertRaisesRegex(pub.Denied, "not approved"):
