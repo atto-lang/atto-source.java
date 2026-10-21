@@ -108,6 +108,19 @@ final class TaskStreamReturnTest {
     }
 
     @Test
+    void sourceTaskCannotReturnDifferentStreamPayloadType() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub routine main(): void {
+                            let Task<Stream<string>> future = cpu task {
+                                return Stream.new<int>(1);
+                            };
+                            return;
+                        }
+                        """));
+    }
+
+    @Test
     void streamPayloadCannotBeFutureOrIteratorCapability() {
         for (String type : new String[] {"Future<int>", "Iterator<int>"}) {
             String source = "pub routine main(): void { "
