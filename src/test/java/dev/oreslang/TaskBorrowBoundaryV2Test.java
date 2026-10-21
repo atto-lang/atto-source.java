@@ -233,6 +233,19 @@ final class TaskBorrowBoundaryV2Test {
                   return child;
                 }
                 """, "non-Send", "capability");
+
+        rejectsRawWith("""
+                define class Envelope<T> as
+                  pub let T value;
+                end
+                pub fnc moveEnvelope(Envelope<Rc<int>> owner): Future<void> {
+                  let Future<void> child = task {
+                    val grabbed = owner;
+                    return;
+                  };
+                  return child;
+                }
+                """, "non-Send", "capability");
     }
 
     @Test
