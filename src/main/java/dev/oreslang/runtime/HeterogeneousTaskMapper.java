@@ -19,7 +19,7 @@ public final class HeterogeneousTaskMapper {
     public enum ProcessorKind { CPU, GPU }
     public enum PlacementHint { AUTO, CPU, GPU }
     public enum Privilege { READ, WRITE, DISCARD, REDUCE, ATOMIC }
-    public enum LayoutKind { AUTO, AOS, SOA, AOSOA, TILED }
+    public enum LayoutKind { AUTO, AOS, SOA, AOSOA, SOAOS, TILED }
 
     /**
      * Physical layout is an optimization contract, not part of logical Region<T>
@@ -45,6 +45,12 @@ public final class HeterogeneousTaskMapper {
                         throw new IllegalArgumentException("AOSOA requires a positive block size and no tile shape");
                     }
                 }
+                case SOAOS -> {
+                    if (blockSize <= 0 || !tileShape.isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "SOAOS requires a positive field-group width and no tile shape");
+                    }
+                }
                 case TILED -> {
                     if (blockSize != 0 || tileShape.isEmpty()) {
                         throw new IllegalArgumentException("TILED requires a non-empty tile shape and no block size");
@@ -57,6 +63,9 @@ public final class HeterogeneousTaskMapper {
         public static Layout aos() { return new Layout(LayoutKind.AOS, 0, List.of()); }
         public static Layout soa() { return new Layout(LayoutKind.SOA, 0, List.of()); }
         public static Layout aosoa(int blockSize) { return new Layout(LayoutKind.AOSOA, blockSize, List.of()); }
+        public static Layout soaos(int groupFields) {
+            return new Layout(LayoutKind.SOAOS, groupFields, List.of());
+        }
         public static Layout tiled(int... extents) {
             ArrayList<Integer> shape = new ArrayList<>(extents.length);
             for (int extent : extents) shape.add(extent);
