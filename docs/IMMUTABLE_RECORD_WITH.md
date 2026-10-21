@@ -1,4 +1,4 @@
-# Immutable structural-record `with` updates
+# Immutable record/struct `with` updates
 
 This Java/Graal slice implements the source semantics selected by the
 cross-backend JSON/record contract in `oreslang-common-source#111`.
@@ -19,20 +19,21 @@ mutation and it is not a method call.
 
 ## Type semantics
 
-The result is a new closed readonly structural record row:
+The result is a fresh closed structural aggregate. Records remain readonly records; plain structs remain plain structs:
 
 - fields missing from the update are retained;
 - an existing field is replaced and may receive a different static type;
 - a new field widens the result row;
 - update names are compile-time static and duplicate names are rejected;
-- structs, classes, Maps, borrowed records and readonly structural contract
-  projections are not valid bases.
+- plain structs are valid bases and may widen to a fresh struct shape;
+- classes, Maps, borrowed aggregates and readonly structural contract projections
+  are not valid bases.
 
 Runtime-computed keys belong to the typed Map surface instead.
 
 ## Ownership
 
-Current record containers are move-only. Therefore `base with {...}`
+Current record/struct containers are move-only. Therefore `base with {...}`
 **consumes `base`**. The implementation must not fake persistence by leaving
 two writable/owning aliases to nested move-only values.
 
@@ -46,7 +47,8 @@ The base is evaluated once. Update expressions are evaluated exactly once,
 left-to-right, including across `await`.
 
 The runtime never mutates the base or the update record. It builds a fresh
-`ReadonlyRecordValue` only after the complete RHS record has been constructed.
+`ReadonlyRecordValue` for record bases or `MutableStructValue` for struct bases
+only after the complete RHS record has been constructed.
 Therefore an update-expression failure cannot publish a partially updated
 record.
 
