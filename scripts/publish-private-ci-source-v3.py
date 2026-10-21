@@ -859,6 +859,9 @@ def authorize_write(root, repository, approved_policy, contract):
             or repo.get("fork") is not False
             or repo.get("default_branch") != "main"):
         raise Denied("carrier identity/state changed during transfer")
+    # Fail before any private Git-object write if authenticated repository
+    # authority was downgraded or masked since admission.
+    require_ref_permissions(repo)
 
 def _gh_ref_request(repository, ref_name, method):
     if not isinstance(ref_name, str) or not HANDOFF_REF.fullmatch(ref_name):
