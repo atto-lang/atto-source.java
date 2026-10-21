@@ -1821,7 +1821,7 @@ public final class OwnershipChecker {
             }
             if (arg instanceof Ast.UnaryExpr unary && unary.operator().equals("&mut")) {
                 throw error(callable + " argument " + position
-                        + " is a read-only structural view; rt borrow mut is not permitted");
+                        + " is a read-only structural view; rt mut borrow is not permitted");
             }
             ValueInfo argument = checkExpr(arg, scope, false);
             if (containsMutexGuardType(argument.type)
@@ -1835,7 +1835,7 @@ public final class OwnershipChecker {
             boolean mutable = param.type().mutableBorrow();
             if (arg instanceof Ast.UnaryExpr unary && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
                 if (mutable && !unary.operator().equals("&mut")) {
-                    throw error(callable + " argument " + position + " requires rt borrow mut");
+                    throw error(callable + " argument " + position + " requires rt mut borrow");
                 }
                 VarState owner = borrowOwner(unary.operand(), scope);
                 validateBorrow(owner, mutable);
