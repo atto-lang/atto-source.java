@@ -846,6 +846,56 @@ public final class OresEvalRootNode extends RootNode {
             return new TailCallable(this, callable);
         }
 
+        private Object withActorStateLoan(
+                OresObject object,
+                Invokable callback) {
+            if (object.klass.actorKind() == Ast.ActorKind.NONE) {
+                throw new IllegalStateException(
+                        "actor state loan requires an actor instance");
+            }
+            if (object.stateLoanActive) {
+                throw new IllegalStateException(
+                        "nested actor state loans are not supported in M1");
+            }
+
+            LinkedHashSet<String> stateFields = new LinkedHashSet<>();
+            for (Ast.FieldDecl field :
+                    object.owner.effectiveFields(
+                            object.klass, new LinkedHashSet<>())) {
+                boolean stateField = field.annotations().stream()
+                        .anyMatch(annotation ->
+                                annotation.name().equals("__actor_state_schema"));
+                if (stateField) {
+                    if (field.bindingKind() != Ast.BindingKind.LET) {
+                        throw new IllegalStateException(
+                                "self.handle_state M1 cannot project immutable actor state field '"
+                                        + field.name() + "'");
+                    }
+                    stateFields.add(field.name());
+                }
+            }
+            if (stateFields.isEmpty()) {
+                throw new IllegalStateException(
+                        "self.handle_state requires an actor state { ... } schema");
+            }
+
+            ActorStateLoanValue loan =
+                    new ActorStateLoanValue(object.fields, stateFields);
+            object.stateLoanActive = true;
+            try {
+                Object result = invoke(
+                        invokableInvocation(callback, List.of(loan)));
+                if (result != null) {
+                    throw new IllegalStateException(
+                            "self.handle_state callback must return void");
+                }
+                return null;
+            } finally {
+                loan.revoke();
+                object.stateLoanActive = false;
+            }
+        }
+
         private Runnable actorEndCleanup(List<Object> args) {
             if (args.size() != 1) {
                 throw new IllegalArgumentException(
@@ -6330,6 +6380,26 @@ public final class OresEvalRootNode extends RootNode {
 
                 if (receiver instanceof OresObject object) {
                     if (object.klass.actorKind() != Ast.ActorKind.NONE
+                            && methodCall.member().equals("handle_state")) {
+                        if (args.size() != 1
+                                || !(args.getFirst() instanceof Invokable callback)) {
+                            throw new IllegalArgumentException(
+                                    "self.handle_state expects exactly one inline callable");
+                        }
+                        return object.owner.invokableInvocation(
+                                ignored ->
+                                        object.owner.withActorStateLoan(
+                                                object, callback),
+                                List.of());
+                    }
+                    if (object.klass.actorKind() != Ast.ActorKind.NONE
+                            && object.stateLoanActive
+                            && (methodCall.member().equals("end")
+                                || methodCall.member().equals("endWithCleanup"))) {
+                        throw new IllegalStateException(
+                                "actor cannot terminate while a state loan is active");
+                    }
+                    if (object.klass.actorKind() != Ast.ActorKind.NONE
                             && methodCall.member().equals("end")) {
                         if (!args.isEmpty()) {
                             throw new IllegalArgumentException(
@@ -9821,10 +9891,90 @@ public final class OresEvalRootNode extends RootNode {
      * static binding/borrow checker decides whether a particular reference may write.
      */
     /** Runtime tag for closed mutable struct values; never conflated with generic maps. */
-    private static final class MutableStructValue
+    private static class MutableStructValue
             extends LinkedHashMap<String, Object> {
         private MutableStructValue(Map<String, Object> initial) {
             super(initial);
+        }
+    }
+
+    /**
+     * Ephemeral mutable projection over an actor's sealed state slots.
+     * This is a view, not a copy. Every operation checks the revocation bit;
+     * once handle_state exits, a stale closure/reference cannot observe or
+     * mutate actor state even if a compiler/ownership bug let it escape.
+     */
+    private static final class ActorStateLoanValue
+            extends MutableStructValue {
+        private final Map<String, Object> backing;
+        private final Set<String> allowed;
+        private boolean active = true;
+
+        private ActorStateLoanValue(
+                Map<String, Object> backing,
+                Set<String> allowed) {
+            super(Map.of());
+            this.backing = Objects.requireNonNull(backing, "backing");
+            this.allowed = Set.copyOf(allowed);
+        }
+
+        private void requireActive() {
+            if (!active) {
+                throw new IllegalStateException(
+                        "actor state loan is no longer active");
+            }
+        }
+
+        private void requireAllowed(Object key) {
+            if (!(key instanceof String name) || !allowed.contains(name)) {
+                throw new IllegalArgumentException(
+                        "actor state loan does not expose field '" + key + "'");
+            }
+        }
+
+        private void revoke() {
+            active = false;
+        }
+
+        @Override public boolean containsKey(Object key) {
+            requireActive();
+            return key instanceof String name
+                    && allowed.contains(name)
+                    && backing.containsKey(name);
+        }
+
+        @Override public Object get(Object key) {
+            requireActive();
+            requireAllowed(key);
+            return backing.get(key);
+        }
+
+        @Override public Object put(String key, Object value) {
+            requireActive();
+            requireAllowed(key);
+            if (!backing.containsKey(key)) {
+                throw new IllegalStateException(
+                        "actor state backing slot disappeared: " + key);
+            }
+            return backing.put(key, value);
+        }
+
+        @Override public Set<Map.Entry<String, Object>> entrySet() {
+            requireActive();
+            LinkedHashMap<String, Object> snapshot = new LinkedHashMap<>();
+            for (String key : allowed) {
+                if (!backing.containsKey(key)) {
+                    throw new IllegalStateException(
+                            "actor state backing slot disappeared: " + key);
+                }
+                snapshot.put(key, backing.get(key));
+            }
+            return java.util.Collections.unmodifiableMap(snapshot).entrySet();
+        }
+
+        @Override public int size() {
+            requireActive();
+            return allowed.size();
         }
     }
 
@@ -9864,6 +10014,7 @@ public final class OresEvalRootNode extends RootNode {
         private final Evaluator owner;
         private final Ast.ClassDecl klass;
         private final Map<String,Object> fields;
+        private boolean stateLoanActive;
         private OresObject(Evaluator owner, Ast.ClassDecl klass, Map<String,Object> fields) {
             this.owner = owner;
             this.klass = klass;
