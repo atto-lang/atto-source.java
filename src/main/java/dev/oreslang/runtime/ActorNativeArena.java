@@ -787,6 +787,19 @@ public final class ActorNativeArena implements AutoCloseable {
         return new String(data);
     }
 
+    /**
+     * Map.put needs the prior value only as an implementation return value.
+     * A moved/terminal capability must still be replaceable so its slot
+     * reference can be retired; ordinary reads continue to revalidate it.
+     */
+    private Object loadValueForOverwrite(long slot, Object uninitialized) {
+        long tag = read(slot, 0);
+        if (tag == CAPABILITY) {
+            return capabilitiesById.get(read(slot, 8));
+        }
+        return loadValue(slot, uninitialized);
+    }
+
     private Object loadValue(long slot, Object uninitialized) {
         long tag = read(slot, 0), bits = read(slot, 8);
         if (tag == NULL) return null;
@@ -989,7 +1002,7 @@ public final class ActorNativeArena implements AutoCloseable {
                 int index = names.indexOf(key);
                 if (index < 0) throw new IllegalArgumentException("unknown native field " + key);
                 long slot = slots + (long) index * SLOT_BYTES;
-                Object previous = loadValue(slot, uninitialized);
+                Object previous = loadValueForOverwrite(slot, uninitialized);
                 storeValue(slot, value, uninitialized);
                 return previous;
             }
