@@ -50,8 +50,13 @@ const int answer = values["answer"];
 ```
 
 Missing indexed reads fail at runtime rather than yielding host `null`.
-Nonthrowing lookup APIs will be added as explicit Map operations in a later
-slice.
+The closed read-only member surface is:
+
+- `map.size: int`;
+- `map.has(key): bool`;
+- `map.get(key): Option<V>`.
+
+`get` preserves absence explicitly and therefore does not flatten a future nested value domain. Mutating/consuming `take` and `remove` remain disabled until their runtime call lowering carries the same direct-owner proof used by indexed assignment.
 
 ## Ownership
 
@@ -103,9 +108,7 @@ operations and are not inferred from Java collection behavior.
 
 ## Deferred API
 
-The next closed-local additions may expose operations such as `has`,
-nonthrowing `get`, `take`, `remove`, `size` and deterministic entry
-iteration. They must preserve the same ownership and missing-value contracts.
+The next closed-local additions may expose owner-aware `take`, `remove` and deterministic entry iteration. They must preserve the same ownership and missing-value contracts; they must not mutate through a value-only bound-method closure.
 
 `Map.from_entries` remains gated on the nominal `Entry<K,V>` stack and the
 separate `MAP_FROM_ENTRIES_CONTRACT.md` design contract.
