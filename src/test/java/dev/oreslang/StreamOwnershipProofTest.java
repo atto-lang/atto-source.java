@@ -24,7 +24,7 @@ final class StreamOwnershipProofTest {
             };
 
     @Test
-    void trustedBounedStreamIsOwnedSendButNeverSync() {
+    void trustedBoundedStreamIsOwnedSendButNeverSync() {
         Types.Named stream = new Types.Named("Stream", List.of(Types.Primitive.INT));
         assertTrue(ThreadSafetyTraits.isOwnedSend(stream, TRUSTED));
         assertFalse(ThreadSafetyTraits.has(stream, ThreadSafetyTraits.Trait.SYNC, TRUSTED));
