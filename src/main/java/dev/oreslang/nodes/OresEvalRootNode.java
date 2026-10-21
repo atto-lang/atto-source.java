@@ -1427,7 +1427,12 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             SourceTask task = new SourceTask(body, true);
-            task.initialBlockEnv = env.detachedSnapshot(this::detachTaskCaptureValue);
+            // A Task starts immediately. Snapshot only names actually mentioned
+            // in its checked body (including nested deferred bodies), not every
+            // unrelated Future, socket, class instance, or other parent local.
+            // The syntactic inventory deliberately over-approximates captures.
+            Set<String> referenced = dev.oreslang.ast.TaskCaptureNames.referencedIn(body);
+            task.initialBlockEnv = env.detachedSnapshot(referenced, this::detachTaskCaptureValue);
             OresScheduler current = OresScheduler.current();
             return (current != null
                     ? current
@@ -9684,15 +9689,18 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Env detachedSnapshot(
+                Set<String> referencedNames,
                 java.util.function.Function<Object, Object> copier) {
+            Objects.requireNonNull(referencedNames, "Task referenced names");
             Objects.requireNonNull(copier, "task capture copier");
             Env cp = new Env(
-                    parent == null ? null : parent.detachedSnapshot(copier),
+                    parent == null ? null : parent.detachedSnapshot(referencedNames, copier),
                     descendantsNonLexical,
                     accessClass,
                     null,
                     lexicalModule);
             for (Map.Entry<String, Slot> entry : slots.entrySet()) {
+                if (!referencedNames.contains(entry.getKey())) continue;
                 Slot source = entry.getValue();
                 cp.slots.put(
                         entry.getKey(),
