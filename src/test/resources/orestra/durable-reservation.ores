@@ -1,0 +1,85 @@
+// Orestra durable M1 reservation transaction.
+// __WAL_PATH__ is replaced by the host test with a permission-scoped temp path.
+// The durable WAL append occurs before the in-memory state mutation/ack.
+define actor DurableReservationState as
+  state {
+    revision: int = 0;
+    capacity_cpu: int = 4;
+    reserved_cpu: int = 0;
+    leader_epoch: int = 7;
+  }
+
+  receive(ActorMail<String> mail): void {
+    if mail.value == "reserve-2"; then
+      self.handle_state(|s| -> {
+        if s.reserved_cpu <= s.capacity_cpu - 2; then
+          fs.append_text_durable(
+              "__WAL_PATH__",
+              "reserve|revision=1|cpu=2|epoch=7\n");
+          s.reserved_cpu = s.reserved_cpu + 2;
+          s.revision = s.revision + 1;
+          self.send("reserve-ok");
+        else
+          self.send("reserve-rejected");
+        fi
+      });
+    elif mail.value == "release-1"; then
+      self.handle_state(|s| -> {
+        if s.reserved_cpu >= 1; then
+          fs.append_text_durable(
+              "__WAL_PATH__",
+              "release|revision=2|cpu=1|epoch=7\n");
+          s.reserved_cpu = s.reserved_cpu - 1;
+          s.revision = s.revision + 1;
+          self.send("release-ok");
+        else
+          self.send("release-rejected");
+        fi
+      });
+    elif mail.value == "verify"; then
+      self.handle_state(|s| -> {
+        if s.revision == 2 && s.reserved_cpu == 1 &&
+           s.capacity_cpu == 4 && s.leader_epoch == 7; then
+          self.send("durable-state-ok");
+        else
+          self.send("durable-state-bad");
+        fi
+      });
+    elif mail.value == "shutdown"; then
+      self.end();
+    else
+      self.send("unknown");
+    fi
+    return;
+  }
+end
+
+pub async routine main(): void {
+  val state = spawn DurableReservationState();
+  await state.get_ready();
+
+  // Multiple message lifetimes are outstanding while the actor serializes
+  // durable commit + state mutation per turn.
+  state.send("reserve-2");
+  state.send("release-1");
+  state.send("verify");
+
+  val first = await state.outputs.next();
+  val first_output = first.value.unwrap();
+  stdio.stdout.write(first_output.value);
+  stdio.stdout.write("\n");
+
+  val second = await state.outputs.next();
+  val second_output = second.value.unwrap();
+  stdio.stdout.write(second_output.value);
+  stdio.stdout.write("\n");
+
+  val third = await state.outputs.next();
+  val third_output = third.value.unwrap();
+  stdio.stdout.write(third_output.value);
+  stdio.stdout.write("\n");
+
+  state.send("shutdown");
+  await state.get_done();
+  return;
+}
