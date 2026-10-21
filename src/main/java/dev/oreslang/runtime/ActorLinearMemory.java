@@ -165,6 +165,61 @@ public final class ActorLinearMemory {
         }
     }
 
+    /**
+     * Verify every destination page can be modified before changing a byte.
+     * This gives page-level read leases fail-closed all-or-nothing semantics
+     * for bulk operations, without allocating JVM temporary arrays.
+     */
+    private void requireWritableSpan(long offset, int length) {
+        checkRange(offset, length);
+        if (length == 0) return;
+        long firstPage = offset / PAGE_BYTES;
+        long lastPage = (offset + (long) length - 1) / PAGE_BYTES;
+        for (long i = firstPage; i <= lastPage; i++) {
+            pages.get((int) i).assertWritable();
+        }
+    }
+
+    /**
+     * Set an actor-owned byte range in place with no guest-buffer copy.
+     * An immutable borrow on any destination page rejects the whole operation.
+     */
+    public void fill(long destination, int length, byte value) {
+        synchronized (arena) {
+            requireWritableSpan(destination, length);
+            for (int i = 0; i < length; i++) {
+                long at = destination + i;
+                page(at).writeByte(inPage(at), value);
+            }
+        }
+    }
+
+    /**
+     * In-place memmove within this actor's private logical address space.
+     * Overlapping ranges are safe in either direction. All destination pages
+     * are checked for active immutable leases before any bytes are changed.
+     */
+    public void copy(long destination, long source, int length) {
+        synchronized (arena) {
+            checkRange(source, length);
+            requireWritableSpan(destination, length);
+            if (length == 0 || destination == source) return;
+            if (destination > source && destination < source + (long) length) {
+                for (int i = length - 1; i >= 0; i--) {
+                    long from = source + i;
+                    long to = destination + i;
+                    page(to).writeByte(inPage(to), page(from).readByte(inPage(from)));
+                }
+            } else {
+                for (int i = 0; i < length; i++) {
+                    long from = source + i;
+                    long to = destination + i;
+                    page(to).writeByte(inPage(to), page(from).readByte(inPage(from)));
+                }
+            }
+        }
+    }
+
     public double readDouble(long offset) {
         return Double.longBitsToDouble(readLong(offset));
     }
