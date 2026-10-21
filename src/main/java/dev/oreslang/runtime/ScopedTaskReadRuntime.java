@@ -26,6 +26,7 @@ public final class ScopedTaskReadRuntime {
             long generation) { }
 
     private static final int WRITE_HELD = -1;
+    private static final int POISONED = Integer.MIN_VALUE;
     private static final ConcurrentHashMap<AllocationKey, Integer> ACCESS =
             new ConcurrentHashMap<>();
 
@@ -89,6 +90,10 @@ public final class ScopedTaskReadRuntime {
                     throw new IllegalStateException(
                             "allocation already has live WRITE authority");
                 }
+                if (current == POISONED) {
+                    throw new IllegalStateException(
+                            "allocation Task access authority is poisoned");
+                }
                 if (current > 0) {
                     throw new IllegalStateException(
                             "allocation has live scoped Task READ authority");
@@ -115,6 +120,10 @@ public final class ScopedTaskReadRuntime {
             throw new IllegalStateException(
                     "allocation already has live WRITE authority");
         }
+        if (state == POISONED) {
+            throw new IllegalStateException(
+                    "allocation Task access authority is poisoned");
+        }
         if (state > 0) {
             throw new IllegalStateException(
                     "allocation has live scoped Task READ authority");
@@ -134,6 +143,16 @@ public final class ScopedTaskReadRuntime {
         return Integer.valueOf(WRITE_HELD).equals(ACCESS.get(key(allocation)));
     }
 
+    static boolean poisonedForTesting(
+            ScopedTaskReadAuthority.AllocationIdentity allocation) {
+        return Integer.valueOf(POISONED).equals(ACCESS.get(key(allocation)));
+    }
+
+    static void corruptLedgerEntryForTesting(
+            ScopedTaskReadAuthority.AllocationIdentity allocation) {
+        ACCESS.remove(key(allocation));
+    }
+
     private static AllocationKey key(
             ScopedTaskReadAuthority.AllocationIdentity allocation) {
         return new AllocationKey(
@@ -148,6 +167,10 @@ public final class ScopedTaskReadRuntime {
             if (current != null && current == WRITE_HELD) {
                 throw new IllegalStateException(
                         "cannot admit scoped Task READ while WRITE authority is live");
+            }
+            if (current != null && current == POISONED) {
+                throw new IllegalStateException(
+                        "cannot admit scoped Task READ on poisoned allocation authority");
             }
             int count = current == null ? 0 : current;
             if (count < 0) {
@@ -212,14 +235,22 @@ public final class ScopedTaskReadRuntime {
                 throw new IllegalStateException(
                         "scoped Task READ lease retired more than once at " + edge);
             }
-            ACCESS.compute(key, (ignored, counter) -> {
-                if (counter == null || counter <= 0) {
-                    throw new IllegalStateException(
-                            "scoped Task READ ledger entry missing/corrupt at " + edge);
-                }
-                int remaining = counter - 1;
-                return remaining == 0 ? null : remaining;
-            });
+            try {
+                ACCESS.compute(key, (ignored, counter) -> {
+                    if (counter == null || counter <= 0) {
+                        throw new IllegalStateException(
+                                "scoped Task READ ledger entry missing/corrupt at " + edge);
+                    }
+                    int remaining = counter - 1;
+                    return remaining == 0 ? null : remaining;
+                });
+            } catch (RuntimeException | Error failure) {
+                // Retirement failure must never make a missing/corrupt ledger
+                // look writable. Preserve a sticky poison until the owning
+                // runtime tears down the allocation/domain.
+                ACCESS.put(key, POISONED);
+                throw failure;
+            }
         }
     }
 }
