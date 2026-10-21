@@ -17,9 +17,9 @@
     },
     "streempilot-test/browser-studio-e2e": {
       "repository_id": 1323599136,
-      "base_sha": "f226767d868382b384d1a184a396deeb39b37435",
+      "base_sha": "7816748eba8df06ef3bdf2f2c1966c10b1cb4d1d",
       "workflow_path": ".github/workflows/oreslang-exact-tree-carrier.yml",
-      "workflow_blob_sha": "70c8511b1e68427bd9b472772d8d29343c369399",
+      "workflow_blob_sha": "cafd719b02aceb36bb350a2beba140e4779d01cc",
       "test_plans": {
         "ci/test-plans/java-pr1668.json": {
           "blob_sha": "989ec3a98ced37f525bd9a714ef6f2be62ee9014",
