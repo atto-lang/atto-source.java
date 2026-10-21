@@ -7230,8 +7230,14 @@ public final class OresEvalRootNode extends RootNode {
                     case "write_text_atomic" -> (Invokable) fs::writeTextAtomic;
                     case "write_text_atomic_durable" ->
                             (Invokable) fs::writeTextAtomicDurable;
+                    case "write_text_atomic_durable_checked" ->
+                            (Invokable) fs::writeTextAtomicDurableChecked;
                     case "append_text_durable" ->
                             (Invokable) fs::appendTextDurable;
+                    case "append_text_durable_checked" ->
+                            (Invokable) fs::appendTextDurableChecked;
+                    case "acquire_exclusive_lease" ->
+                            (Invokable) fs::acquireExclusiveLease;
                     case "write_text_async" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
@@ -10373,6 +10379,17 @@ public final class OresEvalRootNode extends RootNode {
                             "fs.write_text_atomic_durable value"));
             return null;
         }
+        private Object writeTextAtomicDurableChecked(List<Object> args) {
+            requireTwo(args, "fs.write_text_atomic_durable_checked");
+            return NativeIo.writeTextAtomicDurableChecked(
+                    context,
+                    requireString(
+                            args.get(0),
+                            "fs.write_text_atomic_durable_checked path"),
+                    requireString(
+                            args.get(1),
+                            "fs.write_text_atomic_durable_checked value"));
+        }
         private Object appendTextDurable(List<Object> args) {
             requireTwo(args, "fs.append_text_durable");
             NativeIo.appendTextDurable(
@@ -10384,6 +10401,22 @@ public final class OresEvalRootNode extends RootNode {
                             args.get(1),
                             "fs.append_text_durable value"));
             return null;
+        }
+        private Object appendTextDurableChecked(List<Object> args) {
+            requireTwo(args, "fs.append_text_durable_checked");
+            return NativeIo.appendTextDurableChecked(
+                    context,
+                    requireString(
+                            args.get(0),
+                            "fs.append_text_durable_checked path"),
+                    requireString(
+                            args.get(1),
+                            "fs.append_text_durable_checked value"));
+        }
+        private Object acquireExclusiveLease(List<Object> args) {
+            return NativeIo.acquireExclusiveLease(
+                    context,
+                    requireStringArg(args, "fs.acquire_exclusive_lease"));
         }
         private Object appendText(List<Object> args) {
             requireTwo(args, "fs.append_text");

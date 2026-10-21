@@ -8,8 +8,11 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -151,6 +154,92 @@ final class DurableNativeIoTest {
                 String.valueOf(failure));
         assertEquals("base\n", Files.readString(wal));
         assertEquals("base\n", Files.readString(alias));
+    }
+
+    @Test
+    void checkedDurableWritesExposeUncertainOutcomeWithoutPublishingSuccess()
+            throws Exception {
+        requireUnixDurabilityBackend();
+        Path wal = root.resolve("uncertain.wal");
+        String append = """
+                pub routine main(): void {
+                  const ok = fs.append_text_durable_checked("%s", "frame-1\\n");
+                  if !ok; do
+                    stdio.stdout.write("append-uncertain");
+                  fi
+                  return;
+                }
+                """.formatted(q(wal));
+
+        NativeIo.injectDurabilityFaultForTest("append-after-force");
+        try {
+            assertEquals("append-uncertain", run(append));
+        } finally {
+            NativeIo.clearDurabilityFaultForTest();
+        }
+        assertEquals("frame-1\n", Files.readString(wal),
+                "uncertain means durable bytes may already be visible");
+
+        Path checkpoint = root.resolve("uncertain-checkpoint");
+        String atomic = """
+                pub routine main(): void {
+                  const ok = fs.write_text_atomic_durable_checked("%s", "cp-1");
+                  if !ok; do
+                    stdio.stdout.write("atomic-uncertain");
+                  fi
+                  return;
+                }
+                """.formatted(q(checkpoint));
+
+        NativeIo.injectDurabilityFaultForTest("atomic-after-move");
+        try {
+            assertEquals("atomic-uncertain", run(atomic));
+        } finally {
+            NativeIo.clearDurabilityFaultForTest();
+        }
+        assertEquals("cp-1", Files.readString(checkpoint),
+                "atomic uncertainty after move may leave replacement visible");
+    }
+
+    @Test
+    void exclusiveLeaseIsContextLifetimeAndBlocksCompetingOwner()
+            throws Exception {
+        requireUnixDurabilityBackend();
+        Path lease = root.resolve("state.wal.lock");
+
+        String program = """
+                pub routine main(): void {
+                  const first = fs.acquire_exclusive_lease("%s");
+                  const second = fs.acquire_exclusive_lease("%s");
+                  if first && !second; do
+                    stdio.stdout.write("lease-held");
+                  fi
+                  return;
+                }
+                """.formatted(q(lease), q(lease));
+
+        assertEquals("lease-held", run(program));
+        assertEquals("lease-held", run(program),
+                "context close must release the kernel lease for restart");
+
+        try (FileChannel channel = FileChannel.open(
+                lease,
+                StandardOpenOption.CREATE,
+                StandardOpenOption.WRITE);
+             FileLock ignored = channel.lock()) {
+            String contended = """
+                    pub routine main(): void {
+                      if !fs.acquire_exclusive_lease("%s"); do
+                        stdio.stdout.write("lease-busy");
+                      fi
+                      return;
+                    }
+                    """.formatted(q(lease));
+            assertEquals("lease-busy", run(contended));
+        }
+
+        assertEquals("lease-held", run(program),
+                "lease must be acquirable after competing owner releases it");
     }
 
     @Test

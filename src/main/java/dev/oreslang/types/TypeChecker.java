@@ -5233,13 +5233,19 @@ public final class TypeChecker {
             Type booleanType = Primitive.BOOL;
             switch (name) {
                 case "list_dir": return new Function(List.of(string), new ListType(string));
-                case "is_dir", "is_symlink", "exists": return new Function(List.of(string), booleanType);
+                case "is_dir", "is_symlink", "exists",
+                        "acquire_exclusive_lease":
+                    return new Function(List.of(string), booleanType);
                 case "read_text": return new Function(List.of(string), string);
                 case "write_text", "write_text_atomic",
                         "write_text_atomic_durable", "append_text",
                         "append_text_durable":
                     return new Function(
                             List.of(string, string), Primitive.VOID);
+                case "write_text_atomic_durable_checked",
+                        "append_text_durable_checked":
+                    return new Function(
+                            List.of(string, string), booleanType);
                 case "remove", "mkdir_all": return new Function(List.of(string), Primitive.VOID);
                 default: break;
             }
