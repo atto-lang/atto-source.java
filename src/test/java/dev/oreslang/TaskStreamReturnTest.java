@@ -133,7 +133,10 @@ final class TaskStreamReturnTest {
 
     @Test
     void nestedTransportPayloadsDoNotAcquireAccidentalSendAuthority() {
-        for (String type : new String[] {"Stream<int>", "Channel<int>"}) {
+        for (String type : new String[] {
+                "Stream<int>", "Channel<int>",
+                "Option<Stream<int>>", "Result<int, Channel<int>>",
+                "List<Stream<int>>"}) {
             String source = "pub routine main(): void { "
                     + "let Stream<" + type + "> x = Stream.new<" + type + ">(1);"
                     + " return; }";
