@@ -244,7 +244,9 @@ public final class ThreadSafetyTraits {
                     && has(named.arguments().get(1), trait, nominalProof,
                             visiting, proven, steps, depth + 1);
         }
-        if (name.equals("Channel")) {
+        if (name.equals("Channel") || name.equals("Stream")) {
+            // Both are bounded, synchronized transport handles. Their Send
+            // proof never implies Sync, borrowing or actor-message transport.
             return trait == Trait.SEND && nominalProof.trustedIntrinsic(named)
                     && named.arguments().size() == 1
                     && has(named.arguments().getFirst(), Trait.SEND, nominalProof,
