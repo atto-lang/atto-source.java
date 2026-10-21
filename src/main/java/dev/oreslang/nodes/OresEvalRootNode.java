@@ -6400,6 +6400,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object eval(Ast.Expr expr, Env env) {
+            if (expr instanceof Ast.GpuRegionExpr) {
+                throw new IllegalStateException(
+                        "gpu { } has no admitted kernel launch backend; CPU fallback forbidden");
+            }
             if (expr instanceof Ast.CpuRegionExpr cpu) {
                 // Invariant: inline CPU regions never suspend the logical turn.
                 // Compiler and ownership evidence are required; a forged AST
