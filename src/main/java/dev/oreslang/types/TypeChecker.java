@@ -46,7 +46,7 @@ public final class TypeChecker {
             "Tuple", "FixedArray", "FixedList",
             "ActorId", "ActorKind", "ActorMail", "ActorOutput",
             "ActorOutputStream", "Option", "Result", "Mutex",
-            "SharedMutex", "Channel", "Future", "Task", "Fnc", "Function");
+            "SharedMutex", "Channel", "Stream", "Future", "Task", "Fnc", "Function");
 
     private record ResolvedMethod(Ast.ClassDecl owner, Named ownerType, Ast.MethodDecl method) { }
     private record ResolvedInterfaceFunction(
@@ -268,7 +268,7 @@ public final class TypeChecker {
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
-                "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future", "Task",
+                "Mutex", "SharedMutex", "Channel", "Stream", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future", "Task",
                 "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
@@ -2185,7 +2185,7 @@ public final class TypeChecker {
                 return new Named(name.name(), List.of());
             }
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")
-                    || name.name().equals("Channel") || name.name().equals("SelectCase") || name.name().equals("SelectSet")) return new Named("$" + name.name() + "Factory", List.of());
+                    || name.name().equals("Channel") || name.name().equals("Stream") || name.name().equals("SelectCase") || name.name().equals("SelectSet")) return new Named("$" + name.name() + "Factory", List.of());
             if (name.name().equals("Future")) return new Named("$FutureFactory", List.of());
             if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
                 return new Named("$BooleanOps", List.of());
@@ -2580,6 +2580,26 @@ public final class TypeChecker {
                     requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
+            }
+            if (call.callee() instanceof Ast.MemberExpr channelCall
+                    && channelCall.receiver() instanceof Ast.NameExpr factory
+                    && factory.name().equals("Stream")
+                    && channelCall.member().equals("new")
+                    && env.lookup("Stream") == null) {
+                if (!isUnshadowedCompilerBuiltin("Stream")) {
+                    throw new IllegalArgumentException(
+                            "Stream.new requires compiler-owned Stream<T> intrinsic");
+                }
+                if (!call.typeArgumentsPresent() || call.typeArguments().size() != 1
+                        || call.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "Stream.new<T>(capacity) requires one explicit payload type and capacity");
+                }
+                requireAssignable(typeOf(call.arguments().getFirst(), env, generics, self),
+                        Primitive.INT, "Stream.new capacity");
+                Type payload = resolve(call.typeArguments().getFirst(), generics, self);
+                validateStreamPayloadType(payload, "Stream.new<T>");
+                return new Named("Stream", List.of(payload));
             }
             if (call.callee() instanceof Ast.MemberExpr channelCall
                     && channelCall.receiver() instanceof Ast.NameExpr factory
@@ -3422,7 +3442,8 @@ public final class TypeChecker {
             // Channels are actor-local capabilities, but their lifecycle can
             // be controlled by the owning source code without Java interop.
             if (sumReceiver instanceof Named channelType
-                    && channelType.name().equals("Channel")
+                    && (channelType.name().equals("Channel")
+                        || channelType.name().equals("Stream"))
                     && channelType.arguments().size() == 1) {
                 return switch (member.member()) {
                     case "close" -> new Function(List.of(), Primitive.VOID);
@@ -4061,14 +4082,28 @@ public final class TypeChecker {
         channel = deref(channel);
         if (channel == Unknown.INSTANCE) return Unknown.INSTANCE;
         if (channel instanceof Named named
-                && named.name().equals("Channel")
+                && (named.name().equals("Channel") || named.name().equals("Stream"))
                 && named.arguments().size() == 1) {
             Type element = named.arguments().getFirst();
-            validateChannelPayloadType(element, where);
+            if (named.name().equals("Stream")) {
+                validateStreamPayloadType(element, where);
+            } else {
+                validateChannelPayloadType(element, where);
+            }
             return element;
         }
         throw new IllegalArgumentException(
                 where + " requires Channel<T>; got " + channel);
+    }
+
+    private void validateStreamPayloadType(Type element, String where) {
+        validateChannelPayloadType(element, where);
+        if (!isSharedSafe(element, new LinkedHashSet<>(), Map.of())
+                || !isThreadSend(element)) {
+            throw new IllegalArgumentException(
+                    where + " requires concrete owned Send data-only payloads; "
+                            + "borrows, nested stream capabilities, functions and host objects are forbidden");
+        }
     }
 
     private void validateChannelPayloadType(Type element, String where) {
@@ -5259,9 +5294,12 @@ public final class TypeChecker {
         // an actor/mailbox capability. Async tasks may receive the handle when
         // its payload is concrete, owned and task-safe. Actor boundaries retain
         // their stricter rule and continue to reject Channel<T> entirely.
-        if (type instanceof Named named && named.name().equals("Channel")
+        if (type instanceof Named named
+                && (named.name().equals("Channel") || named.name().equals("Stream"))
                 && named.arguments().size() == 1
-                && isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())) {
+                && isUnshadowedCompilerBuiltin(named.name())
+                && isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())
+                && isThreadSend(type)) {
             return;
         }
         if (type == Primitive.VOID
@@ -5314,7 +5352,7 @@ public final class TypeChecker {
 
         if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler")
                 || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
-                || named.name().equals("Channel") || named.name().equals("SelectCase")
+                || named.name().equals("Channel") || named.name().equals("Stream") || named.name().equals("SelectCase")
                 || named.name().equals("SelectSet") || named.name().equals("SelectResult")
                 || named.name().equals("Iterator") || named.name().equals("AsyncIterator")) {
             throw new IllegalArgumentException(
@@ -5551,7 +5589,7 @@ public final class TypeChecker {
                     @Override
                     public boolean trustedIntrinsic(Named named) {
                         if (!Set.of(
-                                "Option", "Result", "Channel",
+                                "Option", "Result", "Channel", "Stream",
                                 "OptionUnwrapError", "IteratorResult")
                                 .contains(named.name())) {
                             return false;
@@ -5565,8 +5603,9 @@ public final class TypeChecker {
 
     private void validateDetachedTaskType(Type type, String where) {
         if (type instanceof Named named
-                && named.name().equals("Channel")
+                && (named.name().equals("Channel") || named.name().equals("Stream"))
                 && named.arguments().size() == 1
+                && isUnshadowedCompilerBuiltin(named.name())
                 && isSharedSafe(
                         named.arguments().getFirst(),
                         new LinkedHashSet<>(),
@@ -8563,6 +8602,14 @@ public final class TypeChecker {
                     throw new IllegalArgumentException("Mutex<T> requires an owned value type; borrowed payload types are invalid");
                 }
                 yield new Named("Mutex", List.of(element));
+            }
+            case "Stream" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) {
+                    throw new IllegalArgumentException("Stream<T> requires exactly one explicit element type");
+                }
+                Type element = resolve(ref.arguments().getFirst(), generics, self);
+                validateStreamPayloadType(element, "Stream<T>");
+                yield new Named("Stream", List.of(element));
             }
             case "Channel" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) {
