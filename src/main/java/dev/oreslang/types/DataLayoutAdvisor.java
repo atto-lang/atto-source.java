@@ -130,14 +130,16 @@ public final class DataLayoutAdvisor {
                 && r.hints().groupFields() != null
                 && r.hints().cacheLineBytes() != null) {
             int group = r.hints().groupFields();
+            long[] groupBytes = new long[r.fieldBytes().size() / group];
+            for (int field = 0; field < r.fieldBytes().size(); field++) {
+                int groupIndex = field / group;
+                groupBytes[groupIndex] = Math.addExact(
+                        groupBytes[groupIndex], r.fieldBytes().get(field));
+            }
             long maxTouchedGroupBytes = 0;
             for (int field : r.accessedFields()) {
-                int start = (field / group) * group;
-                long bytes = 0;
-                for (int i = start; i < start + group; i++) {
-                    bytes = Math.addExact(bytes, r.fieldBytes().get(i));
-                }
-                maxTouchedGroupBytes = Math.max(maxTouchedGroupBytes, bytes);
+                maxTouchedGroupBytes = Math.max(
+                        maxTouchedGroupBytes, groupBytes[field / group]);
             }
             if (maxTouchedGroupBytes > r.hints().cacheLineBytes()) {
                 findings.add(new Finding("ORES-LAYOUT136",
