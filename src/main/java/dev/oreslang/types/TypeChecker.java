@@ -280,7 +280,9 @@ public final class TypeChecker {
         if (imported.kind() != Ast.ImportKind.MODULE || imported.wildcard()) return false;
         String path = imported.path();
         if (!(path.equals("alloc/json") || path.equals("alloc/json.ores"))) return false;
-        return imported.names().size() == 1 && imported.names().getFirst().equals("Json");
+        return imported.names().size() == 1
+                && imported.names().getFirst().equals("Json")
+                && ImportRules.localName(imported, "Json").equals("Json");
     }
 
     private void collect(Ast.Program program) {
@@ -9108,7 +9110,12 @@ public final class TypeChecker {
         return allocJsonImported
                 && !ref.inferArguments()
                 && ref.arguments().isEmpty()
-                && ref.name().equals("JsonValue");
+                && ref.name().equals("JsonValue")
+                && findClass("JsonValue") == null
+                && findInterface("JsonValue") == null
+                && findTypeAlias("JsonValue") == null
+                && !modules.containsKey("JsonValue")
+                && !importedNames.contains("JsonValue");
     }
 
     private static boolean isJsonValueType(Type type) {
