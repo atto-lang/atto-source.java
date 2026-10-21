@@ -1,11 +1,13 @@
 package dev.oreslang;
 
+import dev.oreslang.compiler.BuildOptions;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.hat.HatCpuReferenceExecutor;
 import dev.oreslang.hat.HatKernelIr;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -94,6 +96,20 @@ final class HatKernelCompilerTest {
                           fnc helper(int a): int { return a; }
                         end
                         """));
+    }
+
+    @Test
+    void libraryTreeShakingPreservesPublicKernelArtifacts() {
+        var build = OresCompiler.compileForBuild(ADD, BuildOptions.library(Map.of()));
+        assertTrue(build.retained("__root__.Add"));
+        assertEquals(1, build.program().modules().size());
+        var declarations = build.program().modules().getFirst().declarations();
+        assertEquals(1, declarations.size());
+        assertInstanceOf(dev.oreslang.ast.Ast.KernelDecl.class, declarations.getFirst());
+
+        var kernels = dev.oreslang.hat.HatKernelCompiler.compile(build.program());
+        assertEquals(1, kernels.size());
+        assertEquals(42L, HatCpuReferenceExecutor.execute(kernels.getFirst(), 20L, 22L));
     }
 
     @Test
