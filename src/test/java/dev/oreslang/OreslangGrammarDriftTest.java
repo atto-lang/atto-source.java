@@ -18,7 +18,7 @@ final class OreslangGrammarDriftTest {
     private static final String REVIEWED_PRODUCTIONS = """
             source namespace_decl import_decl import_spec import_kind import_names
             top_level_item annotated_module_decl module_member visibility callable_modifier method_modifier
-            callable_decl callable_kind actor_callable_decl actor_decl actor_body actor_member
+            callable_decl callable_kind kernel_decl kernel_member actor_callable_decl actor_decl actor_body actor_member
             final_actor_field_decl actor_method_decl class_decl class_member constructor_decl field_decl
             type_first_class_field_decl method_decl
             method_name callable_name method_head explicit_receiver static_function_decl contract_decl
