@@ -1,0 +1,91 @@
+package dev.oreslang;
+
+import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.parser.Parser;
+import dev.oreslang.types.OwnershipChecker;
+import dev.oreslang.types.TypeChecker;
+import org.junit.jupiter.api.Test;
+
+import java.util.Set;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+final class TaskCaptureAdmissionIdentityTest {
+    @Test
+    void completeOwnershipPassPublishesExactTaskCaptureProof() {
+        Ast.Program checked = OresCompiler.parseAndTypeCheck("""
+                pub async fnc main(): void {
+                  const int value = 41;
+                  let Future<int> child = task {
+                    return value + 1;
+                  };
+                  stdio.stdout.write(await child);
+                  return;
+                }
+                """);
+
+        Ast.TaskExpr task = firstTask(checked);
+        assertEquals(Set.of("value"), Ast.CheckedTaskCaptures.require(task));
+
+        Ast.TaskExpr clone =
+                new Ast.TaskExpr(task.domain(), task.body(), task.legacyNb());
+        assertThrows(
+                IllegalStateException.class,
+                () -> Ast.CheckedTaskCaptures.require(clone));
+
+        // Generic optimizer metadata transfer deliberately cannot mint Task
+        // execution authority. A transformed Task must pass ownership checking
+        // again as part of its resulting program.
+        Ast.copyCheckedMetadata(task, clone);
+        assertThrows(
+                IllegalStateException.class,
+                () -> Ast.CheckedTaskCaptures.require(clone));
+    }
+
+    @Test
+    void laterOwnershipFailurePreventsEarlierTaskAdmissionPublication() {
+        TypeChecker.TypeCheckResult typed =
+                TypeChecker.checkTypesWithDiagnostics(Parser.parse("""
+                        define class Box as
+                          pub let int value = 1;
+                        end
+                        pub async fnc main(): void {
+                          const int value = 7;
+                          let Future<int> child = task {
+                            return value;
+                          };
+                          let Box owner = new Box();
+                          let Box moved = owner;
+                          stdio.stdout.write(owner.value);
+                          return;
+                        }
+                        """));
+
+        Ast.TaskExpr task = firstTask(typed.program());
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(
+                        typed.program(), typed.shortInferredAliases()));
+        assertThrows(
+                IllegalStateException.class,
+                () -> Ast.CheckedTaskCaptures.require(task));
+    }
+
+    private static Ast.TaskExpr firstTask(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (!(declaration instanceof Ast.FunctionDecl function)) {
+                    continue;
+                }
+                for (Ast.Stmt statement : function.body()) {
+                    if (statement instanceof Ast.BindingStmt binding
+                            && binding.initializer() instanceof Ast.TaskExpr task) {
+                        return task;
+                    }
+                }
+            }
+        }
+        throw new AssertionError("expected TaskExpr in test program");
+    }
+}
