@@ -2,6 +2,7 @@ package dev.oreslang.types;
 
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.imports.ImportRules;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -102,21 +103,26 @@ public final class OwnershipChecker {
         }
         OwnershipChecker checker = new OwnershipChecker(program, validatedShortAliases);
         for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
-            String name = entry.getKey();
+            String localName = entry.getKey();
             Ast.ClassDecl declaration = entry.getValue();
-            if (name == null || declaration == null || !name.equals(declaration.name())
+            if (localName == null || declaration == null
                     || declaration.visibility() != Ast.Visibility.PUBLIC) {
-                throw new IllegalArgumentException("invalid linked ownership class: " + name);
+                throw new IllegalArgumentException(
+                        "invalid linked ownership class: " + localName);
             }
             boolean imported = program.imports().stream().anyMatch(use ->
-                    use.kind() == Ast.ImportKind.CLASS && !use.wildcard()
-                            && use.names().contains(name));
-            if (!imported || checker.classes.containsKey(name)
-                    || checker.ambiguousClasses.contains(name)) {
+                    use.kind() == Ast.ImportKind.CLASS
+                            && !use.wildcard()
+                            && use.names().contains(declaration.name())
+                            && ImportRules.localName(
+                                    use, declaration.name()).equals(localName));
+            if (!imported || checker.classes.containsKey(localName)
+                    || checker.ambiguousClasses.contains(localName)) {
                 throw new IllegalArgumentException(
-                        "linked ownership class was not uniquely imported: " + name);
+                        "linked ownership class was not uniquely imported as: "
+                                + localName);
             }
-            checker.classes.put(name, declaration);
+            checker.classes.put(localName, declaration);
         }
         checker.validate(program);
         return program;
