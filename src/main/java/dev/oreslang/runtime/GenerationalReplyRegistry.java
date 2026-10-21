@@ -181,7 +181,7 @@ public final class GenerationalReplyRegistry implements AutoCloseable {
         return endpoint;
     }
 
-    private void retireIfLive(Endpoint endpoint) {
+    void retireIfLive(Endpoint endpoint) {
         synchronized (this) {
             if (!liveEndpoints.containsKey(endpoint)) return;
         }
