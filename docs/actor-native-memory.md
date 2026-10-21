@@ -20,7 +20,9 @@ process-local memory, not the stable MessagePack/wire representation.
   constructors use arena-backed field maps inside actor execution. Ordinary
   construction outside an actor retains the existing managed representation.
 * Native slots contain scalar values, native string/numeric payloads, and
-  arena-local reference IDs. Nested native objects retain reference identity.
+  **actor-relative logical offsets** for nested native values. Offsets belong
+  to exactly one arena, are never raw host pointers, and are not recycled
+  during that actor lifetime. Nested native objects retain reference identity.
   No arbitrary Java object is accepted as a fallback field payload.
 * Each arena charges physical bytes before allocating, checks actor identity on
   access, and explicitly scrubs/frees native memory after physical actor/task
@@ -53,12 +55,16 @@ arena. At physical actor finalization, quiescence and native memory reclamation
 must happen after all entered turns and pending actor-scoped operations retire.
 
 The existing `OresScheduler.TaskRunner`, Future waiter registrations, and
-compiler-generated async frames are still JVM objects. **Native async frame
-lowering is not yet complete**: generated continuation program counters, local
-slots, reference IDs, and cleanup maps must eventually live in the owning
-actor's arena, with generation-fenced handles and safe terminal reclamation.
-These pool changes establish scheduling and initialization guarantees, not
-strict zero-managed-allocation execution.
+compiler-generated lexical environments are still JVM objects. Actor-owned
+`SourceTask` instances now also carry a compact 32-byte
+`ActorNativeArena.TaskFrame` in the same actor-relative address space. That
+native header is the lifecycle authority for NEW/RUNNING/AWAITING/COOPERATING/
+DONE/FAILED transitions and a monotonic resume count; it is revoked with the
+arena. **Full native async frame lowering is not yet complete**: lexical local
+values, callback/cleanup metadata, runtime-capability handles, and lowered
+program counters must be separated and moved into typed native frame storage.
+These changes establish native continuation authority, not strict
+zero-managed-allocation execution.
 
 ## Per-actor native linear address space (GraalVM/JNI)
 
@@ -90,11 +96,17 @@ revokes all pages and refunds their native-byte reservations.
   within the owning actor. It blocks all writes to that page while borrowed;
   a primitive write crossing two pages preflights both before mutating either.
   No cross-actor borrow/export, raw pointer or mutable `ByteBuffer` escapes.
-* Object fields, nested objects and variable-size strings remain in that
-  **same actor-owned arena's separate native slab allocator**, not yet in the
-  `ActorLinearMemory` logical offsets. Native dense shards currently use
-  `ActorNativeArena.Region` allocations. Unifying guest object/collection
-  allocation into a typed linear-memory allocator is the next lowering step.
+* Object fields, nested objects, continuation headers, native regions, and
+  `ActorLinearMemory` pages now draw addresses from **one monotonic
+  actor-relative logical offset authority** in `ActorNativeArena`. Compact
+  object/string/task allocations still use 4-KiB physical slabs and linear
+  guest pages remain independent 64-KiB physical regions, so tiny actors do not
+  pay a 64-KiB page per object. `ActorLinearMemory.actorOffset(...)` maps a
+  guest-page byte offset into this canonical actor address space. This unifies
+  ownership/address identity without pretending the host allocation is
+  contiguous. General object fields are not yet directly readable through the
+  public page-indexed `ActorLinearMemory.read*` API; typed compiler lowering
+  should target canonical actor offsets rather than raw native pointers.
 
 These are native guest payload guarantees on the existing JVM/JNI runtime; Java
 metadata, wrappers, reference tracking, scheduler state and evaluator frames
@@ -146,6 +158,33 @@ generation and execution owner. Its existing restriction on untrusted transfers
 is preserved. TCP/FD movement still needs a corresponding checked handle path;
 this patch does not assert that those adapters are implemented.
 
+## Guest code, surrounding code, and FFI authority
+
+Source-file/module proximity does not grant memory authority. Shared helper
+functions and immutable code metadata may be used by every actor, but allocation
+inside an actor resolves through `ActorRuntime.currentNativeArena()`, so a
+helper's `new Foo()` still belongs to the calling actor.
+
+While an actor is executing, access to a public module field is rejected when
+that binding is rebindable (`let`) or exposes a mutable referent. Compile-time
+module constants remain usable. The check is based on the active actor
+execution context, so it applies transitively when an actor calls an ordinary
+helper declared in the same file or another linked unit.
+
+Actor-native values are also forbidden from crossing mailboxes, output streams,
+readonly-sharing wrappers, `SyncCell`, or `SharedMutex` by reference. A
+future source serializer/move operation must produce an explicit detached copy
+or transfer capability; generic transport may never preserve an arena alias.
+
+Guest/user source has no FFI or Java-host escape hatch. `java:` imports,
+mixed `java { ... }` / `do java { ... }` source islands, and the guest
+`ffi.*` namespace are denied even when the host runtime carries legacy
+interop capabilities. `JAVA_INTEROP`, `JAVA_SOURCE_INTEROP`, and `FFI`
+are host/core/stdlib implementation authorities only. Core/stdlib native
+services should be exposed to guest code through typed Ores APIs and
+compiler/runtime intrinsics, never by handing guest code raw JNI/native
+addresses.
+
 ## Scoped native read leases and same-size payload reuse
 
 `ActorNativeArena.Region.leaseReadOnly(offset, length)` provides an owner-checked,
@@ -185,8 +224,11 @@ variable-sized allocations consume the bounded actor budget until actor exit.
 Compiler-generated drops/reuse are required for long-lived allocating actors.
 
 Next admission requirements are primitive/handle evaluator frames, native
-collections and ADTs, native async frames, compiler-generated lifetime/drop
-operations, and ownership-fenced I/O/shared-data handles. Heap-allocation evidence
+collections and ADTs, full lexical-local spill/restore into native continuation
+frames, compiler-generated lifetime/drop operations, and ownership-fenced
+I/O/shared-data handles. Runtime control objects such as Future/channel handles
+must be represented separately from guest frame data rather than blindly copied
+into the arena. Heap-allocation evidence
 must cover both normal and exceptional paths. `strict-no-gc` stays unavailable;
 native guest payloads alone do not eliminate runtime GC or establish hard
 real-time execution.
