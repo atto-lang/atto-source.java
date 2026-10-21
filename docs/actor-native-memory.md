@@ -232,9 +232,14 @@ is an executable lowering foundation, not the final specialized primitive IR.
 Unlowered guest payload kinds (collections, closures, ADTs and other complex
 values) fail when stored into a native actor field rather than silently becoming
 managed field payloads. Actor-local temporaries of those kinds still require
-lowering. Native field/string storage currently has region lifetime: repeated
-variable-sized allocations consume the bounded actor budget until actor exit.
-Compiler-generated drops/reuse are required for long-lived allocating actors.
+lowering. Supported lexical locals use arena-backed `ValueCell` storage, and
+async argument/result detachment of an `OresObject` from inside an actor now
+rebuilds the detached object's fields in the same actor arena instead of a Java
+`LinkedHashMap`. Nested unsupported payloads therefore fail the native store
+rather than silently escaping to managed object state. Native field/string
+storage still has actor-region lifetime: growth beyond retained capacity
+consumes the bounded actor budget until actor exit. Compiler-generated
+drops/reuse are required for long-lived allocating actors.
 
 Next admission requirements are primitive/handle evaluator frames, native
 collections and ADTs, full lexical-local spill/restore into native continuation
