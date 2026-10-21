@@ -1584,16 +1584,24 @@ public final class ActorRuntime implements AutoCloseable {
                         new ActorRequestDependencyGraph.ActorIdentity(
                                 requestedActor.value().toString(), 0));
             } catch (ActorRequestDependencyGraph.CyclicRequestException cycle) {
-                future.cancel(false);
-                synchronized (cell.lifecycleLock) {
-                    cell.sourceReceiveSuspended = false;
+                // A producer can settle between the pending check and graph
+                // admission. If completion won, this actor is no longer
+                // blocked; do not turn a successful reply into a false cycle.
+                if (!future.isDone() && future.cancel(false)) {
+                    synchronized (cell.lifecycleLock) {
+                        cell.sourceReceiveSuspended = false;
+                    }
+                    throw cycle;
                 }
-                throw cycle;
+                dependency = null;
             } catch (RuntimeException failure) {
-                synchronized (cell.lifecycleLock) {
-                    cell.sourceReceiveSuspended = false;
+                if (!future.isDone() && future.cancel(false)) {
+                    synchronized (cell.lifecycleLock) {
+                        cell.sourceReceiveSuspended = false;
+                    }
+                    throw failure;
                 }
-                throw failure;
+                dependency = null;
             }
         } else {
             dependency = null;
