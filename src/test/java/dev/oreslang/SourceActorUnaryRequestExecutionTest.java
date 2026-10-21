@@ -95,7 +95,7 @@ final class SourceActorUnaryRequestExecutionTest {
                 """;
         PolyglotException failure = assertThrows(PolyglotException.class,
                 () -> run(program, "source-actor-unary-nested-future.ores"));
-        assertTrue(failure.getMessage().contains("concrete response, not Future<T>"),
+        assertTrue(failure.getMessage().contains("ActorRef.request response cannot use Future across an actor boundary"),
                 failure.getMessage());
     }
 
