@@ -34,6 +34,7 @@ final class ActorShardColumnsTest {
                     assertEquals(0.25, lease.read(0), "failed close must preserve the lease");
                     lease.close();
                     lease.close();
+                    assertThrows(IllegalStateException.class, lease::length);
                     assertThrows(IllegalStateException.class, () -> lease.read(0));
                     shard.write(1, 1, 17);
                     assertEquals(17.0, shard.read(1, 1));
@@ -51,6 +52,7 @@ final class ActorShardColumnsTest {
             actor.send(1);
             assertTrue(done.await(5, TimeUnit.SECONDS));
             assertNull(failure.get());
+            assertThrows(SecurityException.class, retained.get()::length);
             assertThrows(SecurityException.class, () -> retained.get().read(0));
             actor.stop();
             assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
