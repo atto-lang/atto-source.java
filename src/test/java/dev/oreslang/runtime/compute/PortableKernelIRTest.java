@@ -119,6 +119,10 @@ final class PortableKernelIRTest {
         assertEquals(plan.byteLength(), artifact.requiredBytes());
         assertEquals(5, artifact.globalRows());
         assertEquals(2, artifact.globalFields());
+        assertEquals(1, artifact.artifactAbiVersion());
+        assertEquals(64, artifact.requiredAddressBits());
+        assertTrue(artifact.requiredFloat32());
+        assertTrue(artifact.requiredLittleEndian());
         assertTrue(artifact.deviceSource().startsWith("#pragma OPENCL FP_CONTRACT OFF\n"));
         assertTrue(artifact.deviceSource().contains("get_global_id(1)"));
         assertTrue(artifact.deviceSource().contains("dst[slot]"));
