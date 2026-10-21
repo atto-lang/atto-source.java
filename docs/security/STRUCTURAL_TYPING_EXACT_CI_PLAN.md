@@ -41,6 +41,11 @@ Security authorization remains tracked by issue #962.
    digest, replaced checkout, nested working directory, or changed tree
    fails closed; the expected SHA must be supplied by the independent
    reviewer-pinned source attestation, never read from the carrier itself.
+   The verifier additionally rejects missing/symlinked checkout roots,
+   staged/unstaged changes, ignored/untracked source files and Git index
+   assume-unchanged/skip-worktree flags; a matching committed tree alone is
+   insufficient to prove which bytes a compiler will read. Run it before
+   the first compilation or artifact/logging step.
 6. Do not print the source code, source files, tokens or binary artifacts
    into public logs. No source-tree transfer to public/internal repos.
 7. Recheck authorization during every write batch; treat revocation,
@@ -64,7 +69,11 @@ https://github.com/ores-otel-test/legacy-java-consumer/actions/runs/39681504483 
 The separate Rust nested-tree admission/verifier (real Git trees, synthetic
 altered-source and wrong-root cases) passed in private alternate-org CI
 https://github.com/ores-otel-test/legacy-java-consumer/actions/runs/39682065900 .
-Neither source-free test proves the Oreslang compiler or authorizes a transfer.
+Dirty, ignored, and untracked synthetic checkout denials passed in
+https://github.com/ores-otel-test/legacy-java-consumer/actions/runs/39683906454 ;
+assume-unchanged and skip-worktree bypass denials passed in
+https://github.com/ores-otel-test/legacy-java-consumer/actions/runs/39684151222 .
+These source-free tests prove neither the Oreslang compiler nor transfer approval.
 
 Use the reviewed JDK25/GraalVM runner toolchain. Run a Maven compile followed
 by the focused JUnit matrix, then the full Java/Truffle suite:
