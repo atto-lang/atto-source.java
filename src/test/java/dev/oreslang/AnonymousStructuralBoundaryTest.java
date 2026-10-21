@@ -25,18 +25,20 @@ final class AnonymousStructuralBoundaryTest {
         for (String shape : SHAPES) {
             String source = "async fnc invalid(" + shape
                     + "): int { return row.id; }";
+            var parsed = assertDoesNotThrow(() -> Parser.parse(source), source);
             assertThrows(IllegalArgumentException.class,
-                    () -> TypeChecker.check(Parser.parse(source)), source);
+                    () -> TypeChecker.check(parsed), source);
         }
     }
 
     @Test
     void allAnonymousSpellingsRejectMailboxBoundaries() {
         for (String shape : SHAPES) {
-            String source = "actor fnc invalid(" + shape
-                    + "): void { return; }";
+            String source = "define module app\\n actor fnc invalid(" + shape
+                    + "): void { return; }\\nend";
+            var parsed = assertDoesNotThrow(() -> Parser.parse(source), source);
             assertThrows(IllegalArgumentException.class,
-                    () -> TypeChecker.check(Parser.parse(source)), source);
+                    () -> TypeChecker.check(parsed), source);
         }
     }
 
@@ -45,8 +47,9 @@ final class AnonymousStructuralBoundaryTest {
         for (String shape : SHAPES) {
             String source = "fnc invalid(" + shape
                     + "): struct{id: int} { return row; }";
+            var parsed = assertDoesNotThrow(() -> Parser.parse(source), source);
             assertThrows(IllegalArgumentException.class,
-                    () -> TypeChecker.check(Parser.parse(source)), source);
+                    () -> TypeChecker.check(parsed), source);
         }
     }
 
