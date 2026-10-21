@@ -16,6 +16,30 @@ final class LinkedActorStateLoanTest {
     @TempDir Path temp;
 
     @Test
+    void handleStateCannotEscapeAsFirstClassMemberValue() throws Exception {
+        Path entry = temp.resolve("capture-state-loan.ores");
+        Files.writeString(entry, """
+                define actor CaptureStateActor as
+                  state {
+                    revision: int = 0;
+                  }
+
+                  receive(ActorMail<String> mail): void {
+                    const escaped = self.handle_state;
+                    return;
+                  }
+                end
+                """);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(entry));
+        assertTrue(failure.getMessage().contains(
+                "self.handle_state is a direct-call-only sealed state-loan intrinsic"),
+                failure.getMessage());
+    }
+
+    @Test
     void linkedActorCanUseImportedCallableInsideHandleStateLoan() throws Exception {
         Path src = temp.resolve("src");
         Path examples = temp.resolve("examples");
