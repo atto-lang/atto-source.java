@@ -22,7 +22,7 @@ final class SourceEffectAuditTest {
         assertEquals(Set.of(), report.functions().values().iterator().next());
     }
 
-    @Test void sameModuleDirectLookingCallIsStillUnresolvedWithoutHirProof() {
+    @Test void checkerResolvedSameModuleFunctionPropagatesPureEffectRow() {
         var report = SourceEffectAudit.inspect("""
                 pub fnc helper(): int {
                     return 42;
@@ -33,9 +33,8 @@ final class SourceEffectAuditTest {
                 }
                 """);
         assertEquals(2, report.functions().size());
-        assertTrue(report.functions().values().stream()
-                .anyMatch(effects -> effects.contains(EffectContracts.Effect.UNKNOWN_CALL)));
-        assertFalse(report.conservativelyEffectFree());
+        assertTrue(report.functions().values().stream().allMatch(Set::isEmpty));
+        assertTrue(report.conservativelyEffectFree());
     }
 
     @Test void syntacticArithmeticMustNotInventAResolvedOperatorProof() {
@@ -70,11 +69,27 @@ final class SourceEffectAuditTest {
                         """));
     }
 
-    @Test void compilerGateRejectsUnknownCallEvenWhenNamedAsKnownPureFunction() {
-        assertThrows(IllegalArgumentException.class,
-                () -> OresCompiler.requireConservativelyEffectFree("""
-                        pub fnc answer(): int { return 42; }
-                        pub fnc run(): int { return answer(); }
+    @Test void compilerGateAdmitsCheckedSameModuleDirectCallOnly() {
+        var report = OresCompiler.requireConservativelyEffectFree("""
+                pub fnc answer(): int { return 42; }
+                pub fnc run(): int { return answer(); }
+                """);
+        assertTrue(report.conservativelyEffectFree());
+        assertEquals(2, report.functions().size());
+    }
+
+    @Test void checkerResolvedDirectCallPropagatesUnknownOperatorEffect() {
+        var report = SourceEffectAudit.inspect("""
+                pub fnc helper(): int { return 40 + 2; }
+                pub fnc run(): int { return helper(); }
+                """);
+        assertEquals(2, report.functions().size());
+        assertTrue(report.functions().values().stream().allMatch(
+                row -> row.contains(EffectContracts.Effect.UNKNOWN_CALL)));
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.requireConservativelyEffectFree("""
+                        pub fnc helper(): int { return 40 + 2; }
+                        pub fnc run(): int { return helper(); }
                         """));
     }
 
