@@ -106,12 +106,11 @@ final class ActorNativeArenaTest {
             assertThrows(SecurityException.class, () -> fields.put("left", foreign));
             assertEquals(0, arena.capabilityCount());
 
-            ActorNativeArena.ValueCell local = arena.valueCell(capability, marker);
-            assertEquals(1, arena.capabilityCount());
-            assertSame(capability, local.get());
-            assertTrue(local.trySet(null));
+            assertThrows(IllegalArgumentException.class,
+                    () -> arena.valueCell(capability, marker),
+                    "lexical capabilities remain managed until native scope-drop lowering exists");
             assertEquals(0, arena.capabilityCount(),
-                    "lexical capability clear must release the control-plane handle");
+                    "rejected lexical lowering must not publish a capability handle");
         }
         assertEquals(0, charged.get());
         assertEquals(0, foreignCharged.get());
