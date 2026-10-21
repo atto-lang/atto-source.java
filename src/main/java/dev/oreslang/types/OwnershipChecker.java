@@ -863,8 +863,18 @@ public final class OwnershipChecker {
             scope.define(binding.name(), placeholder);
         }
 
+        CommitAwareMapWrite bindingCommit =
+                commitAwareMapWrite(binding.initializer(), scope);
+
         ValueInfo value;
-        if (binding.initializer() instanceof Ast.RuntimeCallExpr runtime
+        if (bindingCommit != null) {
+            if (bindingCommit.indexed()) {
+                throw error(
+                        "move-only Map indexed insertion cannot initialize a binding; "
+                                + "the transferred RHS cannot also become the assignment result");
+            }
+            value = checkCommitAwareMapWrite(bindingCommit, scope);
+        } else if (binding.initializer() instanceof Ast.RuntimeCallExpr runtime
                 && runtime.operation().equals("borrow")) {
             if (runtime.arguments().size() != 1) {
                 throw error("rt borrow expects exactly one argument");
@@ -3681,7 +3691,7 @@ public final class OwnershipChecker {
                 indexed);
     }
 
-    private void checkCommitAwareMapWrite(
+    private ValueInfo checkCommitAwareMapWrite(
             CommitAwareMapWrite write,
             Scope scope) {
         Ast.NameExpr mapName = (Ast.NameExpr) write.mapReceiver();
@@ -3718,6 +3728,26 @@ public final class OwnershipChecker {
         moveAfterFallibleMapCommit(
                 write.candidate(),
                 write.candidateExpression().name());
+
+        if (write.indexed()) {
+            // Indexed assignment of a move-only value is statement-only: the
+            // candidate has transferred into the Map and cannot also be
+            // returned as an aliasing assignment-expression value.
+            return new ValueInfo(
+                    Ast.TypeRef.simple("void"),
+                    ValueKind.COPY,
+                    null);
+        }
+
+        Ast.TypeRef previous =
+                new Ast.TypeRef(
+                        "Option",
+                        List.of(write.valueType()),
+                        false);
+        return new ValueInfo(
+                previous,
+                kindOfType(previous),
+                null);
     }
 
     private void promoteConditionalCommitMovesToCatchEdges() {
