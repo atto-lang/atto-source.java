@@ -19,6 +19,33 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class ActorRuntimeTest {
     @Test
+    void javaCarrierPoolsAreEagerButStartWithoutWorkers() throws Exception {
+        String previous = System.getProperty("ores.runtime.carriers");
+        System.setProperty("ores.runtime.carriers", "java");
+        try {
+            var config = new ActorRuntime.DispatcherConfig(1, 1, 8, 32);
+            try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+                assertEquals(new ActorRuntime.DispatcherWorkerCounts(0, 0, 0),
+                        runtime.dispatcherWorkerCounts());
+                CountDownLatch received = new CountDownLatch(1);
+                var ref = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                    received.countDown();
+                    context.self().stop();
+                });
+                ref.send(1);
+                assertTrue(received.await(5, TimeUnit.SECONDS));
+                assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS));
+                assertTrue(runtime.dispatcherWorkerCounts().shared() > 0);
+                assertEquals(0, runtime.dispatcherWorkerCounts().isolated());
+                assertEquals(0, runtime.dispatcherWorkerCounts().untrusted());
+            }
+        } finally {
+            if (previous == null) System.clearProperty("ores.runtime.carriers");
+            else System.setProperty("ores.runtime.carriers", previous);
+        }
+    }
+
+    @Test
     void freezesMessagesBeforeDelivery() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch received = new CountDownLatch(1);
