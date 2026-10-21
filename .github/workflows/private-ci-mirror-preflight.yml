@@ -5,6 +5,7 @@ on:
       - 'scripts/check-private-ci-destination.sh'
       - 'scripts/test-private-ci-destination.sh'
       - 'scripts/test-private-ci-destination-guard.sh'
+      - 'scripts/test-private-ci-metadata-columns.sh'
       - 'scripts/run-in-private-ci-destination.sh'
       - 'scripts/publish-private-ci-source.py'
       - 'scripts/test-publish-private-ci-source-v3.py'
@@ -21,6 +22,7 @@ on:
       - 'scripts/check-private-ci-destination.sh'
       - 'scripts/test-private-ci-destination.sh'
       - 'scripts/test-private-ci-destination-guard.sh'
+      - 'scripts/test-private-ci-metadata-columns.sh'
       - 'scripts/run-in-private-ci-destination.sh'
       - 'scripts/publish-private-ci-source.py'
       - 'scripts/publish-private-ci-source-v3.py'
@@ -49,6 +51,7 @@ jobs:
           python3 -m py_compile scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py scripts/publish-private-ci-source-v3.py scripts/test-publish-private-ci-source-v3.py
           bash scripts/test-private-ci-destination.sh
           bash scripts/test-private-ci-destination-guard.sh
+          bash scripts/test-private-ci-metadata-columns.sh
           bash -n tools/verify-exact-source-tree.sh tools/test-verify-exact-source-tree.sh
           bash tools/test-verify-exact-source-tree.sh
           for attempt in 1 2 3; do
