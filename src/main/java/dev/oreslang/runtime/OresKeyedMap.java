@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.function.Supplier;
 
 /**
  * Dedicated guest Map storage foundation. This is NOT a record/struct and does
@@ -36,6 +37,10 @@ public final class OresKeyedMap<K, V> {
     public static final int MAX_TEXT_KEY_BYTES = SymbolPropertyKeyCodec.MAX_TEXT_KEY_BYTES;
     public static final long MAX_KEY_SET_WIRE_BYTES =
             SymbolPropertyKeyCodec.MAX_KEY_SET_WIRE_BYTES;
+    // JSON graph-edge creation must serialize before taking any individual
+    // JSON Map monitor. Keep this lock private so host interop cannot stall
+    // guest JSON admission by synchronizing on a published runtime object.
+    private static final Object JSON_GRAPH_ADMISSION_LOCK = new Object();
 
     public enum KeyDomain {
         STRING, SYMBOL, STRING_OR_SYMBOL
@@ -46,7 +51,7 @@ public final class OresKeyedMap<K, V> {
      * protects dynamic/foreign callers. ANY is explicitly dynamic only.
      */
     public enum ValueDomain {
-        ANY, INT, STRING, SYMBOL, BOOL
+        ANY, INT, STRING, SYMBOL, BOOL, JSON
     }
 
     /**
@@ -182,6 +187,19 @@ public final class OresKeyedMap<K, V> {
     }
 
     /**
+     * Run compiler/runtime-owned JSON graph work while edge-creating writes are
+     * excluded. The lock object itself never escapes this class.
+     *
+     * <p>Callers must not invoke guest callbacks from the supplied action.</p>
+     */
+    static <T> T withJsonGraphLock(Supplier<T> action) {
+        Objects.requireNonNull(action, "JSON graph action");
+        synchronized (JSON_GRAPH_ADMISSION_LOCK) {
+            return action.get();
+        }
+    }
+
+    /**
      * Mutable typed Map storage is identity-bearing at the Java host boundary.
      *
      * <p>Guest Map equality, if exposed later, must be a checked Oreslang
@@ -276,6 +294,14 @@ public final class OresKeyedMap<K, V> {
 
     private void checkValueDomain(Object value) {
         Objects.requireNonNull(value, "map value");
+        if (valueDomain == ValueDomain.JSON) {
+            if (!(value instanceof OresJsonValue json)) {
+                throw new IllegalArgumentException(
+                        "value is incompatible with Map value domain JSON");
+            }
+            OresJsonValue.validateForMapInsertion(this, json);
+            return;
+        }
         boolean valid = switch (valueDomain) {
             case ANY -> true;
             case INT -> value instanceof Byte || value instanceof Short
@@ -284,6 +310,8 @@ public final class OresKeyedMap<K, V> {
             case STRING -> value instanceof String;
             case SYMBOL -> value instanceof OresSymbol;
             case BOOL -> value instanceof Boolean;
+            case JSON -> throw new IllegalStateException(
+                    "JSON value domain must use recursive descriptor validation");
         };
         if (!valid) {
             throw new IllegalArgumentException(
@@ -318,7 +346,24 @@ public final class OresKeyedMap<K, V> {
         return SymbolPropertyKeyCodec.encodedWireLength(key);
     }
 
-    public synchronized V put(K key, V value) {
+    public V put(K key, V value) {
+        if (valueDomain == ValueDomain.JSON) {
+            // Lock order for recursive mutable JSON graphs is global graph
+            // admission first, destination Map second. This prevents two Maps
+            // from concurrently validating opposite edges and committing a
+            // cycle after both observed an acyclic pre-state.
+            synchronized (JSON_GRAPH_ADMISSION_LOCK) {
+                synchronized (this) {
+                    return putUnderMonitor(key, value);
+                }
+            }
+        }
+        synchronized (this) {
+            return putUnderMonitor(key, value);
+        }
+    }
+
+    private V putUnderMonitor(K key, V value) {
         rejectReentrantMutation();
         checkKey(key);
         checkValueDomain(value);
@@ -346,7 +391,21 @@ public final class OresKeyedMap<K, V> {
      * copied to immutable pairs before validation so mutable source Map.Entry
      * objects cannot change after the validation pass.
      */
-    public synchronized void putAll(Map<? extends K, ? extends V> values) {
+    public void putAll(Map<? extends K, ? extends V> values) {
+        if (valueDomain == ValueDomain.JSON) {
+            synchronized (JSON_GRAPH_ADMISSION_LOCK) {
+                synchronized (this) {
+                    putAllUnderMonitor(values);
+                }
+            }
+            return;
+        }
+        synchronized (this) {
+            putAllUnderMonitor(values);
+        }
+    }
+
+    private void putAllUnderMonitor(Map<? extends K, ? extends V> values) {
         rejectReentrantMutation();
         Objects.requireNonNull(values, "map entries");
         bulkMutationActive = true;
