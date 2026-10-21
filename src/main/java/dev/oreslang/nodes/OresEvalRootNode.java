@@ -1108,6 +1108,7 @@ public final class OresEvalRootNode extends RootNode {
             private final Ast.MethodDecl method;
             private final OresObject receiver;
             private final List<Ast.Stmt> blockBody;
+            private final boolean blockAllowsValueReturn;
             private final List<?> arguments;
             private Env initialBlockEnv;
 
@@ -1121,6 +1122,7 @@ public final class OresEvalRootNode extends RootNode {
                 this.method = null;
                 this.receiver = null;
                 this.blockBody = null;
+                this.blockAllowsValueReturn = false;
                 this.arguments = List.copyOf(arguments);
             }
 
@@ -1132,15 +1134,19 @@ public final class OresEvalRootNode extends RootNode {
                 this.method = Objects.requireNonNull(method, "method");
                 this.receiver = receiver;
                 this.blockBody = null;
+                this.blockAllowsValueReturn = false;
                 this.arguments = List.copyOf(arguments);
             }
 
-            private SourceTask(List<Ast.Stmt> blockBody) {
+            private SourceTask(
+                    List<Ast.Stmt> blockBody,
+                    boolean blockAllowsValueReturn) {
                 this.function = null;
                 this.method = null;
                 this.receiver = null;
                 this.blockBody = List.copyOf(
                         Objects.requireNonNull(blockBody, "blockBody"));
+                this.blockAllowsValueReturn = blockAllowsValueReturn;
                 this.arguments = List.of();
             }
 
@@ -1337,11 +1343,11 @@ public final class OresEvalRootNode extends RootNode {
                     switch (flow.kind()) {
                         case NORMAL -> done(null);
                         case RETURN -> {
-                            if (flow.value() != null) {
+                            if (!blockAllowsValueReturn && flow.value() != null) {
                                 throw new IllegalStateException(
                                         "detached source continuation cannot return a value");
                             }
-                            done(null);
+                            done(flow.value());
                         }
                         case THROW -> throw sourceFailure(flow.failure());
                         case BREAK, CONTINUE ->
@@ -1408,15 +1414,34 @@ public final class OresEvalRootNode extends RootNode {
         private OresFuture<Object> startSourceBlockTask(
                 List<Ast.Stmt> body,
                 Env env) {
-            SourceTask task = new SourceTask(body);
-            if (!ActorRuntime.inActorExecution()) {
+            if (ActorRuntime.inActorExecution()) {
+                // The type checker also rejects this today. Keep a runtime gate
+                // for host-entered/untyped execution so actor self/state cannot
+                // silently cross into an independently scheduled task.
                 throw new IllegalStateException(
-                        "detached source block task requires actor execution");
+                        "task blocks cannot capture actor state until explicit actor-task capture authority is lowered");
             }
-            task.initialBlockEnv = env.snapshot();
-            OresFuture<Object> future = context.actors().startActorTask(task);
-            context.actors().ownCurrentActorFuture(future);
-            return future;
+            if (env.hasLiveMutexGuards()) {
+                throw new IllegalStateException(
+                        "cannot launch task while holding a live MutexGuard");
+            }
+
+            SourceTask task = new SourceTask(body, true);
+            task.initialBlockEnv = env.detachedSnapshot(this::detachTaskCaptureValue);
+            OresScheduler current = OresScheduler.current();
+            return (current != null
+                    ? current
+                    : context.vm().rootScheduler()).start(task);
+        }
+
+        private Object detachTaskCaptureValue(Object value) {
+            if (value instanceof ChannelRuntime.Channel<?>) {
+                // Channel<T> is the one synchronized local handle intentionally
+                // shared across source tasks. Type/ownership checking still
+                // validates its payload boundary.
+                return value;
+            }
+            return detachAsyncValue(value, new IdentityHashMap<>());
         }
 
         private OresFuture<Object> startSourceMethodTask(
@@ -6957,6 +6982,13 @@ public final class OresEvalRootNode extends RootNode {
                 List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
                 return owner.instantiate(klass, args, externalConstruction);
             }
+            if (expr instanceof Ast.TaskExpr task) {
+                if (task.domain() == Ast.ExecutionDomain.GPU) {
+                    throw new IllegalStateException(
+                            "gpu task has no physical device provider on this backend; no implicit CPU fallback");
+                }
+                return startSourceBlockTask(task.body(), env);
+            }
             if (expr instanceof Ast.AwaitExpr awaited) {
                 Object value = eval(awaited.expression(), env);
                 if (value instanceof ActorRuntime.ActorRef<?> actorRef) {
@@ -9648,6 +9680,27 @@ public final class OresEvalRootNode extends RootNode {
                     null,
                     lexicalModule);
             cp.slots.putAll(slots);
+            return cp;
+        }
+
+        private Env detachedSnapshot(
+                java.util.function.Function<Object, Object> copier) {
+            Objects.requireNonNull(copier, "task capture copier");
+            Env cp = new Env(
+                    parent == null ? null : parent.detachedSnapshot(copier),
+                    descendantsNonLexical,
+                    accessClass,
+                    null,
+                    lexicalModule);
+            for (Map.Entry<String, Slot> entry : slots.entrySet()) {
+                Slot source = entry.getValue();
+                cp.slots.put(
+                        entry.getKey(),
+                        new Slot(
+                                copier.apply(source.value),
+                                source.kind,
+                                source.staticClassView));
+            }
             return cp;
         }
         private boolean hasLiveMutexGuards() {
