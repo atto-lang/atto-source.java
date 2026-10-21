@@ -127,6 +127,47 @@ final class CpuTaskLanguageTest {
                 failure::getMessage);
     }
 
+    @Test void consecutivelySubmittedTasksDoNotClonePreviousFuture() throws Exception {
+        assertEquals("1|2", run("""
+                pub async fnc main(): void {
+                  let Future<int> first = task { return 1; };
+                  let Future<int> second = task { return 2; };
+                  stdio.stdout.write(await first);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(await second);
+                  return;
+                }
+                """));
+    }
+
+    @Test void taskCapturesTransitiveNestedTaskReferences() throws Exception {
+        assertEquals("42", run("""
+                pub async fnc main(): void {
+                  const int base = 40;
+                  let Future<int> outer = task {
+                    let Future<int> inner = task { return base + 2; };
+                    return await inner;
+                  };
+                  stdio.stdout.write(await outer);
+                  return;
+                }
+                """));
+    }
+
+    @Test void copiedScalarCaptureIsFrozenAtSubmission() throws Exception {
+        assertEquals("41|99", run("""
+                pub async fnc main(): void {
+                  let int value = 41;
+                  let Future<int> worker = task { return value; };
+                  value = 99;
+                  stdio.stdout.write(await worker);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(value);
+                  return;
+                }
+                """));
+    }
+
     @Test void gpuTaskIsRejectedInsteadOfExecutingOnCpu() {
         var failure = assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
