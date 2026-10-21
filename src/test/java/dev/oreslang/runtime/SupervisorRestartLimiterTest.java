@@ -276,6 +276,90 @@ final class SupervisorRestartLimiterTest {
     }
 
     @Test
+    void runtimePolicyEvaluationRequiresAuthoritativeRetainedControl() throws Exception {
+        AtomicLong clock = new AtomicLong();
+        SupervisorRestartLimiter limiter = new SupervisorRestartLimiter(
+                new SupervisorRestartPolicy(
+                        2,
+                        Duration.ofSeconds(60),
+                        Duration.ZERO,
+                        Duration.ZERO),
+                clock::get,
+                SupervisorRestartLimiter.Jitter.none());
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> failed = runtime.spawnShared(
+                    () -> (message, context) -> {
+                        throw new IllegalStateException("authoritative-only");
+                    });
+            failed.send("fail");
+            assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> failed.getDone().get(5, TimeUnit.SECONDS));
+
+            assertTrue(runtime.evaluateSupervisorRestartPolicy(
+                            limiter,
+                            failed.id(),
+                            failed.generation() + 1)
+                    .isEmpty());
+            assertEquals(0, limiter.trackedActors(),
+                    "fabricated generation must not consume restart history");
+
+            SupervisorRestartLimiter.Decision decision =
+                    runtime.evaluateSupervisorRestartPolicy(
+                                    limiter,
+                                    failed.id(),
+                                    failed.generation())
+                            .orElseThrow();
+            assertEquals(
+                    SupervisorRestartLimiter.Action.RESTART,
+                    decision.action());
+            assertEquals(1, limiter.trackedActors());
+
+            SupervisorRestartLimiter.Decision replay =
+                    runtime.evaluateSupervisorRestartPolicy(
+                                    limiter,
+                                    failed.id(),
+                                    failed.generation())
+                            .orElseThrow();
+            assertTrue(replay.repeatedObservation());
+            assertEquals(1, replay.restartsInWindow());
+
+            ActorRuntime.SupervisorRestartPermit permit = null;
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (permit == null && System.nanoTime() < deadline) {
+                permit = runtime.tryAcquireSupervisorRestartPermit(
+                                failed.id(), failed.generation())
+                        .orElse(null);
+                if (permit == null) Thread.sleep(1);
+            }
+            assertNotNull(permit);
+            assertTrue(runtime.evaluateSupervisorRestartPolicy(
+                            limiter,
+                            failed.id(),
+                            failed.generation())
+                    .isEmpty(),
+                    "consumed CONTROL must no longer be policy-evaluable");
+
+            ActorRuntime.ActorRef<String> replacement =
+                    runtime.restartAfterFailure(permit);
+            replacement.getReady().get(3, TimeUnit.SECONDS);
+            runtime.resetSupervisorRestartBudgetAfterStability(
+                    limiter, replacement);
+            assertEquals(0, limiter.snapshot(replacement.id()).restartsInWindow());
+
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> runtime.resetSupervisorRestartBudgetAfterStability(
+                            limiter, failed),
+                    "stale ref must not reset replacement restart budget");
+
+            replacement.stop();
+            replacement.getDone().get(3, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void backwardsClockFailsClosed() {
         AtomicLong clock = new AtomicLong(10);
         SupervisorRestartLimiter limiter = new SupervisorRestartLimiter(

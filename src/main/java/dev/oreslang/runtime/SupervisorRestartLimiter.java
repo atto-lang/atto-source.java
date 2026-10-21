@@ -141,7 +141,23 @@ public final class SupervisorRestartLimiter {
      * Re-observing the same retained CONTROL event is idempotent and does not
      * consume another restart slot.
      */
+    /**
+     * Low-level value-based decision surface retained for deterministic policy
+     * tests and embedders that own their own authoritative event source.
+     * ActorRuntime itself uses decideAuthoritative(), which is package-private
+     * and reached only after retained CONTROL lookup succeeds.
+     */
     public synchronized Decision decide(
+            ActorRuntime.SupervisorControlEvent event) {
+        return decideInternal(event);
+    }
+
+    synchronized Decision decideAuthoritative(
+            ActorRuntime.SupervisorControlEvent event) {
+        return decideInternal(event);
+    }
+
+    private Decision decideInternal(
             ActorRuntime.SupervisorControlEvent event) {
         Objects.requireNonNull(event, "event");
         long now = monotonicNow();
@@ -222,6 +238,18 @@ public final class SupervisorRestartLimiter {
      * A stale generation cannot reset a newer actor's restart budget.
      */
     public synchronized void resetAfterStability(
+            ActorRuntime.ActorId actorId,
+            long generation) {
+        resetAfterStabilityInternal(actorId, generation);
+    }
+
+    synchronized void resetAfterAuthoritativeStability(
+            ActorRuntime.ActorId actorId,
+            long generation) {
+        resetAfterStabilityInternal(actorId, generation);
+    }
+
+    private void resetAfterStabilityInternal(
             ActorRuntime.ActorId actorId,
             long generation) {
         Objects.requireNonNull(actorId, "actorId");

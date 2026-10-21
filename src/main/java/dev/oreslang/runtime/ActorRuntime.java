@@ -1288,6 +1288,60 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * Observe one exact retained supervisor CONTROL event. ActorId alone is not
+     * sufficient: policy decisions are incarnation-scoped and stale/fabricated
+     * generations must not consume a newer actor's restart budget.
+     */
+    public Optional<SupervisorControlEvent> peekSupervisorControlEvent(
+            ActorId actorId,
+            long generation) {
+        requireSupervisorContext("inspect an exact actor supervisor CONTROL failure");
+        Objects.requireNonNull(actorId, "actorId");
+        if (generation <= 0) {
+            throw new IllegalArgumentException(
+                    "supervisor CONTROL generation must be positive");
+        }
+        PendingSupervisorControl pending = pendingSupervisorControls.get(actorId);
+        return pending != null && pending.event.generation() == generation
+                ? Optional.of(pending.event)
+                : Optional.empty();
+    }
+
+    /**
+     * Evaluate restart policy only against the authoritative retained CONTROL
+     * event for this exact incarnation. This prevents a fabricated or stale
+     * SupervisorControlEvent value from consuming/resetting runtime recovery
+     * state for another generation.
+     */
+    public Optional<SupervisorRestartLimiter.Decision> evaluateSupervisorRestartPolicy(
+            SupervisorRestartLimiter limiter,
+            ActorId actorId,
+            long generation) {
+        requireSupervisorContext("evaluate actor supervisor restart policy");
+        Objects.requireNonNull(limiter, "limiter");
+        return peekSupervisorControlEvent(actorId, generation)
+                .map(limiter::decideAuthoritative);
+    }
+
+    /**
+     * Reset crash-loop accounting only for a currently live exact incarnation.
+     * A stale ActorRef cannot mark a same-id replacement stable.
+     */
+    public void resetSupervisorRestartBudgetAfterStability(
+            SupervisorRestartLimiter limiter,
+            ActorRef<?> stableActor) {
+        requireSupervisorContext("reset actor supervisor restart budget");
+        Objects.requireNonNull(limiter, "limiter");
+        Objects.requireNonNull(stableActor, "stableActor");
+        if (exactActorCell(stableActor) == null) {
+            throw new IllegalArgumentException(
+                    "stability reset requires an exact live actor incarnation");
+        }
+        limiter.resetAfterAuthoritativeStability(
+                stableActor.id(), stableActor.generation());
+    }
+
+    /**
      * Atomically consume a failed incarnation's retained supervisor CONTROL
      * event as restart authority, but only after physical/public lifecycle
      * retirement is complete. This is intentionally non-blocking.
