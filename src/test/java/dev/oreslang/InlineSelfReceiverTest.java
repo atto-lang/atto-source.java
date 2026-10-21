@@ -202,7 +202,7 @@ final class InlineSelfReceiverTest {
                         end
                         fnc bad(): int {
                           val Counter c = new Counter();
-                          return c.take_borrow(rt borrow mut c);
+                          return c.take_borrow(rt mut borrow c);
                         }
                         """)));
     }
