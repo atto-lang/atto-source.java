@@ -49,13 +49,21 @@ is **capacity evidence only**, not authorization to export private source.
 
 ## Tests on the exact approved source tree
 
+Before Maven, compile the zero-dependency `tools/ownership-syntax-audit.rs`
+with `rustc --edition=2021` and run its embedded tests. Run `--report`
+across the source tree until all unintended legacy syntax is removed; only
+then enable `--strict`. The tool was independently tested with synthetic
+fixtures in private alternate-org Actions run
+https://github.com/ores-otel-test/legacy-java-consumer/actions/runs/39670220806 .
+This does **not** test private Oreslang source or approve its transfer.
+
 Use the reviewed JDK25/GraalVM runner toolchain. Run a Maven compile followed
 by the focused JUnit matrix, then the full Java/Truffle suite:
 
 ```sh
 set -euo pipefail
 mvn -B -ntp -DskipTests package
-mvn -B -ntp -Dtest=AnonymousStructParameterOrderTest,ImplicitAnonymousStructuralParameterTest,AnonymousParamAstInvariantTest,ImplicitStructuralCallLoanTest,StructuralBorrowProvenanceTest,StructuralRetainedBorrowForwardingTest,StructuralTakeRejectionTest,AnonymousStructuralRuntimeParityTest,AnonymousStructuralBoundaryTest,CanonicalMutableBorrowParserTest,StructuralKeywordMatrixTest,StructuralTypingHardeningTest,CallArgumentBorrowExclusivityTest,InvocationMutableBorrowAliasTest test
+mvn -B -ntp -Dtest=AnonymousStructParameterOrderTest,ImplicitAnonymousStructuralParameterTest,AnonymousParamAstInvariantTest,ImplicitStructuralCallLoanTest,StructuralBorrowProvenanceTest,StructuralRetainedBorrowForwardingTest,StructuralMutableCapabilityTest,StructuralTakeRejectionTest,AnonymousStructuralRuntimeParityTest,AnonymousStructuralBoundaryTest,CanonicalMutableBorrowParserTest,StructuralKeywordMatrixTest,StructuralTypingHardeningTest,CallArgumentBorrowExclusivityTest,InvocationMutableBorrowAliasTest test
 mvn -B -ntp test
 ```
 
