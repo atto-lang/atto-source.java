@@ -9,7 +9,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.ExecutionException;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -22,6 +22,11 @@ import static org.junit.jupiter.api.Assertions.*;
  * runtime coordinator without relying on Graal bootstrap or private CI.
  */
 final class StreamConcurrencyTest {
+    private static void assertClosed(org.junit.jupiter.api.function.Executable action) {
+        CompletionException failure = assertThrows(CompletionException.class, action);
+        assertInstanceOf(ChannelRuntime.ChannelClosedException.class, failure.getCause());
+    }
+
     @Test
     void boundedBufferNeverSilentlyOverwritesAndDrainSurvivesClose() {
         OresStream<Integer> stream = new OresStream<>(2);
@@ -33,10 +38,8 @@ final class StreamConcurrencyTest {
         assertEquals(1, stream.channel().tryRead().orElseThrow());
         assertEquals(2, stream.channel().tryRead().orElseThrow());
         assertEquals(0, stream.channel().size());
-        assertThrows(ChannelRuntime.ChannelClosedException.class,
-                () -> stream.channel().readAsync().join());
-        assertThrows(ChannelRuntime.ChannelClosedException.class,
-                () -> stream.channel().writeAsync(4).join());
+        assertClosed(() -> stream.channel().readAsync().join());
+        assertClosed(() -> stream.channel().writeAsync(4).join());
     }
 
     @Test
@@ -62,7 +65,7 @@ final class StreamConcurrencyTest {
         assertFalse(blocked.isDone());
         assertTrue(stream.channel().pendingRegistrations() > 0);
         stream.close();
-        assertThrows(ChannelRuntime.ChannelClosedException.class, blocked::join);
+        assertClosed(blocked::join);
         assertEquals(0, stream.channel().pendingRegistrations());
         assertEquals(10, stream.channel().tryRead().orElseThrow());
     }
@@ -86,8 +89,11 @@ final class StreamConcurrencyTest {
                     for (;;) {
                         try {
                             received.add(stream.channel().readAsync().join());
-                        } catch (ChannelRuntime.ChannelClosedException closed) {
-                            return received;
+                        } catch (CompletionException closed) {
+                            if (closed.getCause() instanceof ChannelRuntime.ChannelClosedException) {
+                                return received;
+                            }
+                            throw closed;
                         }
                     }
                 }));
