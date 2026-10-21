@@ -2972,6 +2972,46 @@ public final class TypeChecker {
                             member.member()
                                     + " is a reserved actor lifecycle hook and cannot be called directly");
                 }
+                if (actorSelf && member.member().equals("handle_state")) {
+                    if (call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException(
+                                "self.handle_state does not accept call-site type arguments");
+                    }
+                    if (call.arguments().size() != 1
+                            || !(call.arguments().getFirst() instanceof Ast.LambdaExpr lambda)) {
+                        throw new IllegalArgumentException(
+                                "self.handle_state expects exactly one inline lexical lambda");
+                    }
+                    if (currentClassOwner == null
+                            || currentClassOwner.actorKind() == Ast.ActorKind.NONE) {
+                        throw new IllegalArgumentException(
+                                "self.handle_state is only available inside actor instance code");
+                    }
+                    Type stateLoan = actorStateLoanType(currentClassOwner);
+                    if (stateLoanLambdaHasForbiddenSuspensionOrEscape(lambda)) {
+                        throw new IllegalArgumentException(
+                                "self.handle_state callback cannot suspend, defer, select, use rt intrinsics, yield, or create a nested closure until suspension-safe state loans are implemented");
+                    }
+                    Function expectedStateCallback =
+                            new Function(
+                                    List.of(stateLoan),
+                                    List.of(false),
+                                    false,
+                                    Primitive.VOID);
+                    boolean previousMaySuspend = currentMaySuspend;
+                    currentMaySuspend = false;
+                    try {
+                        validateLambdaAgainstExpected(
+                                lambda,
+                                expectedStateCallback,
+                                env,
+                                generics,
+                                self);
+                    } finally {
+                        currentMaySuspend = previousMaySuspend;
+                    }
+                    return Primitive.VOID;
+                }
                 if (actorSelf
                         && (member.member().equals("send")
                             || member.member().equals("end")
@@ -5239,6 +5279,213 @@ public final class TypeChecker {
                             + field.field().name()
                             + "' is sealed; access requires verified critical handle_state(...) state loan");
         }
+    }
+
+    private Type actorStateLoanType(Ast.ClassDecl actor) {
+        LinkedHashMap<String, Type> members = new LinkedHashMap<>();
+        for (Ast.FieldDecl field : actor.fields()) {
+            if (!isActorStateSchemaField(field)) continue;
+            members.put(field.name(), classFieldType(actor, field));
+        }
+        if (members.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "self.handle_state requires an actor with a state { ... } schema");
+        }
+        return new Borrow(
+                new Record(members, false, AggregateKind.RECORD),
+                true);
+    }
+
+    private boolean stateLoanLambdaHasForbiddenSuspensionOrEscape(Ast.LambdaExpr lambda) {
+        if (lambda.expressionBody() != null) {
+            return stateLoanExprHasForbiddenSuspensionOrEscape(lambda.expressionBody());
+        }
+        return stateLoanBlockHasForbiddenSuspensionOrEscape(lambda.blockBody());
+    }
+
+    private boolean stateLoanBlockHasForbiddenSuspensionOrEscape(List<Ast.Stmt> body) {
+        for (Ast.Stmt stmt : body) {
+            if (stateLoanStmtHasForbiddenSuspensionOrEscape(stmt)) return true;
+        }
+        return false;
+    }
+
+    private boolean stateLoanStmtHasForbiddenSuspensionOrEscape(Ast.Stmt stmt) {
+        if (stmt instanceof Ast.BindingStmt binding) {
+            return stateLoanExprHasForbiddenSuspensionOrEscape(binding.initializer());
+        }
+        if (stmt instanceof Ast.DestructureStmt destructure) {
+            return stateLoanExprHasForbiddenSuspensionOrEscape(destructure.initializer());
+        }
+        if (stmt instanceof Ast.ReturnStmt returned) {
+            return returned.value() != null
+                    && stateLoanExprHasForbiddenSuspensionOrEscape(returned.value());
+        }
+        if (stmt instanceof Ast.YieldStmt) return true;
+        if (stmt instanceof Ast.ExprStmt expression) {
+            return stateLoanExprHasForbiddenSuspensionOrEscape(expression.expression());
+        }
+        if (stmt instanceof Ast.DeferStmt) return true;
+        if (stmt instanceof Ast.BlockStmt block) {
+            return stateLoanBlockHasForbiddenSuspensionOrEscape(block.body());
+        }
+        if (stmt instanceof Ast.BreakStmt || stmt instanceof Ast.ContinueStmt) return false;
+        if (stmt instanceof Ast.IfStmt conditional) {
+            for (Ast.IfBranch branch : conditional.branches()) {
+                if (stateLoanExprHasForbiddenSuspensionOrEscape(branch.condition())
+                        || stateLoanBlockHasForbiddenSuspensionOrEscape(branch.body())) {
+                    return true;
+                }
+            }
+            return stateLoanBlockHasForbiddenSuspensionOrEscape(conditional.elseBody());
+        }
+        if (stmt instanceof Ast.MatchStmt matched) {
+            if (stateLoanExprHasForbiddenSuspensionOrEscape(matched.subject())) return true;
+            for (Ast.MatchArm arm : matched.arms()) {
+                if ((arm.guard() != null
+                                && stateLoanExprHasForbiddenSuspensionOrEscape(arm.guard()))
+                        || stateLoanBlockHasForbiddenSuspensionOrEscape(arm.body())) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (stmt instanceof Ast.SwitchStmt switched) {
+            if (stateLoanExprHasForbiddenSuspensionOrEscape(switched.subject())) return true;
+            for (Ast.SwitchCase arm : switched.cases()) {
+                for (Ast.Expr constant : arm.constants()) {
+                    if (stateLoanExprHasForbiddenSuspensionOrEscape(constant)) return true;
+                }
+                if (stateLoanBlockHasForbiddenSuspensionOrEscape(arm.body())) return true;
+            }
+            return stateLoanBlockHasForbiddenSuspensionOrEscape(switched.defaultBody());
+        }
+        if (stmt instanceof Ast.TryStmt attempted) {
+            return stateLoanBlockHasForbiddenSuspensionOrEscape(attempted.body())
+                    || stateLoanBlockHasForbiddenSuspensionOrEscape(attempted.catchBody())
+                    || stateLoanBlockHasForbiddenSuspensionOrEscape(attempted.finallyBody());
+        }
+        if (stmt instanceof Ast.ForOfStmt loop) {
+            return loop.asyncIteration()
+                    || stateLoanExprHasForbiddenSuspensionOrEscape(loop.iterable())
+                    || stateLoanBlockHasForbiddenSuspensionOrEscape(loop.body());
+        }
+        if (stmt instanceof Ast.ForOfDestructureStmt loop) {
+            return loop.asyncIteration()
+                    || stateLoanExprHasForbiddenSuspensionOrEscape(loop.iterable())
+                    || stateLoanBlockHasForbiddenSuspensionOrEscape(loop.body());
+        }
+        if (stmt instanceof Ast.ForStmt loop) {
+            return (loop.initializer() != null
+                            && stateLoanStmtHasForbiddenSuspensionOrEscape(loop.initializer()))
+                    || (loop.condition() != null
+                            && stateLoanExprHasForbiddenSuspensionOrEscape(loop.condition()))
+                    || (loop.update() != null
+                            && stateLoanExprHasForbiddenSuspensionOrEscape(loop.update()))
+                    || stateLoanBlockHasForbiddenSuspensionOrEscape(loop.body());
+        }
+        if (stmt instanceof Ast.DoWhileStmt loop) {
+            return stateLoanBlockHasForbiddenSuspensionOrEscape(loop.body())
+                    || stateLoanExprHasForbiddenSuspensionOrEscape(loop.condition());
+        }
+        if (stmt instanceof Ast.LoopStmt loop) {
+            return stateLoanBlockHasForbiddenSuspensionOrEscape(loop.body());
+        }
+        if (stmt instanceof Ast.SelectStmt) return true;
+        return true;
+    }
+
+    private boolean stateLoanExprHasForbiddenSuspensionOrEscape(Ast.Expr expr) {
+        if (expr == null) return false;
+        if (expr instanceof Ast.AwaitExpr
+                || expr instanceof Ast.ChannelOpExpr
+                || expr instanceof Ast.DynamicSelectExpr
+                || expr instanceof Ast.RuntimeCallExpr
+                || expr instanceof Ast.LambdaExpr) {
+            return true;
+        }
+        if (expr instanceof Ast.LiteralExpr || expr instanceof Ast.NameExpr) return false;
+        if (expr instanceof Ast.BinaryExpr binary) {
+            return stateLoanExprHasForbiddenSuspensionOrEscape(binary.left())
+                    || stateLoanExprHasForbiddenSuspensionOrEscape(binary.right());
+        }
+        if (expr instanceof Ast.UnaryExpr unary) {
+            return stateLoanExprHasForbiddenSuspensionOrEscape(unary.operand());
+        }
+        if (expr instanceof Ast.AssignExpr assignment) {
+            return stateLoanExprHasForbiddenSuspensionOrEscape(assignment.target())
+                    || stateLoanExprHasForbiddenSuspensionOrEscape(assignment.value());
+        }
+        if (expr instanceof Ast.ConditionalExpr conditional) {
+            return stateLoanExprHasForbiddenSuspensionOrEscape(conditional.condition())
+                    || stateLoanExprHasForbiddenSuspensionOrEscape(conditional.whenTrue())
+                    || stateLoanExprHasForbiddenSuspensionOrEscape(conditional.whenFalse());
+        }
+        if (expr instanceof Ast.MatchExpr matched) {
+            if (stateLoanExprHasForbiddenSuspensionOrEscape(matched.subject())) return true;
+            for (Ast.MatchValueArm arm : matched.arms()) {
+                if ((arm.guard() != null
+                                && stateLoanExprHasForbiddenSuspensionOrEscape(arm.guard()))
+                        || stateLoanExprHasForbiddenSuspensionOrEscape(arm.value())) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (expr instanceof Ast.TypeTestExpr test) {
+            return stateLoanExprHasForbiddenSuspensionOrEscape(test.value());
+        }
+        if (expr instanceof Ast.PatternTestExpr test) {
+            return stateLoanExprHasForbiddenSuspensionOrEscape(test.value());
+        }
+        if (expr instanceof Ast.CastExpr cast) {
+            return stateLoanExprHasForbiddenSuspensionOrEscape(cast.value());
+        }
+        if (expr instanceof Ast.SpreadExpr spread) {
+            return stateLoanExprHasForbiddenSuspensionOrEscape(spread.expression());
+        }
+        if (expr instanceof Ast.CallExpr call) {
+            if (stateLoanExprHasForbiddenSuspensionOrEscape(call.callee())) return true;
+            for (Ast.Expr argument : call.arguments()) {
+                if (stateLoanExprHasForbiddenSuspensionOrEscape(argument)) return true;
+            }
+            return false;
+        }
+        if (expr instanceof Ast.MemberExpr member) {
+            return stateLoanExprHasForbiddenSuspensionOrEscape(member.receiver());
+        }
+        if (expr instanceof Ast.IndexExpr indexed) {
+            return stateLoanExprHasForbiddenSuspensionOrEscape(indexed.receiver())
+                    || stateLoanExprHasForbiddenSuspensionOrEscape(indexed.index());
+        }
+        if (expr instanceof Ast.NewExpr created) {
+            for (Ast.Expr argument : created.arguments()) {
+                if (stateLoanExprHasForbiddenSuspensionOrEscape(argument)) return true;
+            }
+            return false;
+        }
+        if (expr instanceof Ast.TrapExpr trapped) {
+            return stateLoanExprHasForbiddenSuspensionOrEscape(trapped.expression());
+        }
+        if (expr instanceof Ast.ListExpr list) {
+            for (Ast.Expr element : list.elements()) {
+                if (stateLoanExprHasForbiddenSuspensionOrEscape(element)) return true;
+            }
+            return false;
+        }
+        if (expr instanceof Ast.TupleExpr tuple) {
+            for (Ast.Expr element : tuple.elements()) {
+                if (stateLoanExprHasForbiddenSuspensionOrEscape(element)) return true;
+            }
+            return false;
+        }
+        if (expr instanceof Ast.ObjectExpr object) {
+            for (Ast.ObjectField field : object.fields()) {
+                if (stateLoanExprHasForbiddenSuspensionOrEscape(field.value())) return true;
+            }
+            return false;
+        }
+        return true;
     }
 
     private Type memberType(Ast.MemberExpr member, Env env, Set<String> generics, Type self) {
