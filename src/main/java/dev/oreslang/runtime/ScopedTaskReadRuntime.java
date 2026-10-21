@@ -102,6 +102,28 @@ public final class ScopedTaskReadRuntime {
     }
 
     /**
+     * Bind an already-proven READ lease to one exact structured child.
+     *
+     * <p>The TaskScope callback is a physical-quiescence edge derived from the
+     * exact TaskHandle. If child admission fails before publication, this
+     * method retires the lease on that proven pre-admission path.</p>
+     */
+    public static <T> TaskHandle<T> startInScope(
+            TaskScope scope,
+            OresScheduler.Task<T> task,
+            ReadLease lease) {
+        Objects.requireNonNull(scope, "structured Task scope");
+        Objects.requireNonNull(task, "task");
+        Objects.requireNonNull(lease, "scoped READ lease");
+        try {
+            return scope.startTask(task, lease::close);
+        } catch (RuntimeException | Error failure) {
+            lease.close();
+            throw failure;
+        }
+    }
+
+    /**
      * Atomically reserve parent/runtime WRITE authority for the exact
      * allocation generation. The returned lease MUST bracket the physical
      * write. A check-only API is insufficient because a reader could register
