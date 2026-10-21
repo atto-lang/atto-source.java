@@ -21,7 +21,7 @@ final class TaskBorrowBoundaryV2Test {
                 java.nio.file.Path.of(
                         "src/test/java/dev/oreslang/TaskBorrowBoundaryV2Test.java"));
         assertFalse(source.contains("rt mut borrow"),
-                "Task borrow regressions must use canonical 'rt borrow mut' spelling");
+                "Task borrow regressions must use canonical 'rt mut borrow' spelling");
         assertFalse(source.matches("(?s).*\\b(?:val|let|const)\\s+&(?:mut\\s+)?[A-Za-z_].*"),
                 "Task borrow regressions must not introduce pointer-style source borrows");
     }
@@ -74,7 +74,7 @@ final class TaskBorrowBoundaryV2Test {
         rejectsWith("""
                 pub async fnc main(): void {
                   let Box owner = new Box();
-                  val loan = rt borrow mut owner;
+                  val loan = rt mut borrow owner;
                   let Future<int> child = cpu task { return loan.value; };
                   await child;
                   return;
