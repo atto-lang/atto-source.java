@@ -593,4 +593,54 @@ final class TypedMapClosedSurfaceLanguageTest {
     }
 
 
+    @Test
+    void suspendableMapMembersPreserveOwnerAuthorityAndEvaluateKeysOnce() {
+        String source = """
+                async fnc key(string value): string {
+                  stdio.println(value);
+                  return value;
+                }
+
+                pub async fnc main(): void {
+                  val Map<string, int> values = new Map<string, int>();
+                  values["a"] = 10;
+                  values["b"] = 20;
+
+                  stdio.println(values.has(await key("a")));
+                  stdio.println(values.get(await key("a")).unwrap());
+                  stdio.println(values.take(await key("a")).unwrap());
+                  stdio.println(values.take(await key("a")).is_none());
+                  stdio.println(values.remove(await key("b")));
+                  stdio.println(values.remove(await key("b")));
+                  stdio.println(values.size);
+                  return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source program = assertDoesNotThrow(() ->
+                Source.newBuilder(
+                                OresLanguage.ID,
+                                source,
+                                "typed-map-suspendable-members.ores")
+                        .mimeType(OresLanguage.MIME_TYPE)
+                        .build());
+        assertDoesNotThrow(() -> {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false)
+                    .out(output)
+                    .build()) {
+                context.eval(program);
+            }
+        });
+
+        assertEquals(
+                "a\ntrue\na\n10\na\n10\na\ntrue\nb\ntrue\nb\nfalse\n0\n",
+                output.toString(StandardCharsets.UTF_8)
+                        .replace("\r\n", "\n"));
+    }
+
+
 }
