@@ -28,6 +28,12 @@ import java.util.Set;
 
 /** Static semantic pass run before Oreslang code is lowered/executed. */
 public final class TypeChecker {
+    private static final Set<String> RESERVED_RUNTIME_TYPE_NAMES = Set.of(
+            "Future",
+            "Awaitable",
+            "ActorSpawn",
+            "ActorRef");
+
     private record ResolvedMethod(Ast.ClassDecl owner, Named ownerType, Ast.MethodDecl method) { }
     private record ResolvedField(Ast.ClassDecl owner, Named ownerType, Ast.FieldDecl field) { }
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
@@ -71,7 +77,11 @@ public final class TypeChecker {
                 if (imported.names().isEmpty()) throw new IllegalArgumentException("named import must select at least one name");
                 for (String name : imported.names()) {
                     if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
-                    if (imported.kind() != Ast.ImportKind.CLASS) importedValues.add(name);
+                    if (imported.kind() == Ast.ImportKind.CLASS) {
+                        rejectReservedRuntimeTypeName(name, "imported class");
+                    } else {
+                        importedValues.add(name);
+                    }
                 }
             }
         }
@@ -85,15 +95,28 @@ public final class TypeChecker {
                     putQualified(functions, ambiguousFunctions, module.name(), fn.name(), fn, fn.kind() == Ast.CallableKind.ROUTINE ? "routine" : "function");
                     functionOwners.put(fn, module.name());
                 } else if (decl instanceof Ast.ClassDecl klass) {
+                    rejectReservedRuntimeTypeName(klass.name(), "class");
                     putQualified(classes, ambiguousClasses, module.name(), klass.name(), klass, "class");
                     classOwners.put(klass, module.name());
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
+                    rejectReservedRuntimeTypeName(iface.name(), "interface");
                     putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface, "interface");
                     interfaceOwners.put(iface, module.name());
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    rejectReservedRuntimeTypeName(alias.name(), "type alias");
                     putQualified(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias, "type alias");
                 }
             }
+        }
+    }
+
+    private static void rejectReservedRuntimeTypeName(
+            String name,
+            String declarationKind) {
+        if (RESERVED_RUNTIME_TYPE_NAMES.contains(name)) {
+            throw new IllegalArgumentException(
+                    declarationKind + " '" + name
+                            + "' conflicts with a compiler/runtime built-in type");
         }
     }
 
@@ -154,7 +177,8 @@ public final class TypeChecker {
             if (decl instanceof Ast.FunctionDecl fn && fn.visibility() == Ast.Visibility.PUBLIC
                     && fn.actorKind() == Ast.ActorKind.NONE) {
                 Type signature = callableContractType(
-                        fn.genericParameters(), fn.parameters(), fn.returnType(), Set.of(), null);
+                        fn.genericParameters(), fn.parameters(), fn.returnType(),
+                        fn.async(), Set.of(), null);
                 mergeMember(members, fn.name(), signature, "module " + module.name());
                 mergeMember(members,
                         methodContractKey(fn.name(), fn.parameters().size(), fn.genericParameters().size()),
@@ -172,7 +196,11 @@ public final class TypeChecker {
         Set<String> generics = uniqueGenerics(iface.genericParameters(), "interface " + iface.name());
         Set<String> memberKeys = new HashSet<>();
         for (Ast.TypeRef parentRef : iface.parents()) {
-            if (findInterface(parentRef.name()) == null) throw new IllegalArgumentException("unknown parent interface '" + parentRef.name() + "' for " + iface.name());
+            if (!parentRef.name().equals("Awaitable")
+                    && findInterface(parentRef.name()) == null) {
+                throw new IllegalArgumentException(
+                        "unknown parent interface '" + parentRef.name() + "' for " + iface.name());
+            }
             resolve(parentRef, generics, null);
         }
 
@@ -182,7 +210,15 @@ public final class TypeChecker {
                 if (!memberKeys.add(key)) throw new IllegalArgumentException("duplicate interface method '" + iface.name() + "." + fn.name() + "' with arity " + fn.parameters().size());
                 Set<String> all = new HashSet<>(generics);
                 for (String generic : fn.genericParameters()) {
-                    if (!all.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in interface " + iface.name() + "." + fn.name());
+                    rejectReservedGenericName(
+                            generic,
+                            "interface " + iface.name() + "." + fn.name());
+                    if (!all.add(generic)) {
+                        throw new IllegalArgumentException(
+                                "duplicate/shadowed generic '" + generic
+                                        + "' in interface " + iface.name()
+                                        + "." + fn.name());
+                    }
                 }
                 functionType(fn.parameters(), fn.returnType(), all, null);
             } else {
@@ -312,8 +348,13 @@ public final class TypeChecker {
             Set<String> generics = new HashSet<>();
             if (!method.isStatic()) generics.addAll(classGenerics);
             for (String generic : method.genericParameters()) {
+                rejectReservedGenericName(
+                        generic,
+                        "method " + klass.name() + "." + method.name());
                 if (classGenerics.contains(generic) || !generics.add(generic)) {
-                    throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in " + klass.name() + "." + method.name());
+                    throw new IllegalArgumentException(
+                            "duplicate/shadowed generic '" + generic
+                                    + "' in " + klass.name() + "." + method.name());
                 }
             }
 
@@ -360,10 +401,16 @@ public final class TypeChecker {
         Set<String> implemented = new HashSet<>();
         for (Ast.TypeRef interfaceRef : klass.interfaces()) {
             if (!implemented.add(interfaceRef.name())) throw new IllegalArgumentException("duplicate implemented interface '" + interfaceRef.name() + "' on " + klass.name());
-            Ast.InterfaceDecl iface = findInterface(interfaceRef.name());
-            if (iface == null) throw new IllegalArgumentException("unknown interface '" + interfaceRef.name() + "' implemented by " + klass.name());
             Type resolvedInterface = resolve(interfaceRef, classGenerics, self);
             if (!(resolvedInterface instanceof Named interfaceType)) throw new IllegalArgumentException("implemented interface must resolve to a named type");
+
+            if (interfaceType.name().equals("Awaitable")) {
+                validateAwaitableImplementation(klass, interfaceType);
+                continue;
+            }
+
+            Ast.InterfaceDecl iface = findInterface(interfaceRef.name());
+            if (iface == null) throw new IllegalArgumentException("unknown interface '" + interfaceRef.name() + "' implemented by " + klass.name());
             Record expectedTemplate = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
             Record expected = (Record) substituteGenerics(expectedTemplate,
                     genericBindings(iface.genericParameters(), interfaceType.arguments(), "interface " + iface.name()));
@@ -480,6 +527,10 @@ public final class TypeChecker {
             return Unknown.INSTANCE;
         }
         if (expr instanceof Ast.NameExpr name) {
+            if (name.name().equals("self") && self == null) {
+                throw new IllegalArgumentException(
+                        "'self' is only available inside an instance/actor method");
+            }
             Env.Binding local = env.lookup(name.name());
             if (local != null) return local.type();
             if (name.name().equals("stdio") || name.name().equals("process") || name.name().equals("actor")) return new Named(name.name(), List.of());
@@ -503,7 +554,12 @@ public final class TypeChecker {
                             "generic callable '" + fn.name()
                                     + "' must be specialized by a direct call; polymorphic function values are not supported yet");
                 }
-                return functionType(fn.parameters(), fn.returnType(), Set.of(), null);
+                return callableValueType(
+                        fn.parameters(),
+                        fn.returnType(),
+                        fn.async(),
+                        Set.of(),
+                        null);
             }
             throw new IllegalArgumentException("unknown name '" + name.name() + "'");
         }
@@ -590,15 +646,17 @@ public final class TypeChecker {
                     }
                     String label = "function " + functionName.name();
                     validateCallTypeArgumentMarker(call, target.genericParameters(), label);
-                    return checkGenericCallable(
-                            target.genericParameters(),
-                            target.parameters(),
-                            target.returnType(),
-                            call.arguments(),
-                            env, generics, self,
-                            null,
-                            explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
-                            label);
+                    return asyncCallResult(
+                            target.async(),
+                            checkGenericCallable(
+                                    target.genericParameters(),
+                                    target.parameters(),
+                                    target.returnType(),
+                                    call.arguments(),
+                                    env, generics, self,
+                                    null,
+                                    explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
+                                    label));
                 }
             }
             if (call.callee() instanceof Ast.MemberExpr qualifiedCall
@@ -614,15 +672,17 @@ public final class TypeChecker {
                     }
                     String label = "function " + namespace.name() + "." + qualifiedCall.member();
                     validateCallTypeArgumentMarker(call, target.genericParameters(), label);
-                    return checkGenericCallable(
-                            target.genericParameters(),
-                            target.parameters(),
-                            target.returnType(),
-                            call.arguments(),
-                            env, generics, self,
-                            null,
-                            explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
-                            label);
+                    return asyncCallResult(
+                            target.async(),
+                            checkGenericCallable(
+                                    target.genericParameters(),
+                                    target.parameters(),
+                                    target.returnType(),
+                                    call.arguments(),
+                                    env, generics, self,
+                                    null,
+                                    explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
+                                    label));
                 }
             }
             if (call.callee() instanceof Ast.MemberExpr futuresCall
@@ -683,6 +743,34 @@ public final class TypeChecker {
                 };
             }
             if (call.callee() instanceof Ast.MemberExpr member) {
+                if (member.receiver() instanceof Ast.NameExpr receiverName) {
+                    Env.Binding localReceiver = env.lookup(receiverName.name());
+                    if (localReceiver != null) {
+                        Type localType = deref(localReceiver.type());
+                        if (localType instanceof Named localNamed) {
+                            Ast.ClassDecl localClass = findClass(localNamed.name());
+                            if (localClass != null) {
+                                ResolvedMethod instanceTarget = findMethodTarget(
+                                        localClass,
+                                        localNamed,
+                                        member.member(),
+                                        call.arguments().size(),
+                                        new LinkedHashSet<>());
+                                Ast.MethodDecl staticTarget = findStaticFunction(
+                                        localClass,
+                                        member.member(),
+                                        call.arguments().size(),
+                                        new LinkedHashSet<>());
+                                if (instanceTarget == null && staticTarget != null) {
+                                    throw new IllegalArgumentException(
+                                            "static function '" + localClass.name() + "." + member.member()
+                                                    + "' must be invoked through the class namespace, not an instance");
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Type receiver = deref(typeOf(member.receiver(), env, generics, self));
                 if (receiver instanceof ClassNamespace classNamespace) {
                     Ast.ClassDecl klass = findClass(classNamespace.className());
@@ -692,15 +780,17 @@ public final class TypeChecker {
                     validateCallTypeArgumentMarker(call, fn.genericParameters(), "static function " + klass.name() + "." + fn.name());
                     List<String> callableGenerics = new ArrayList<>(fn.genericParameters());
                     String label = "static function " + klass.name() + "." + fn.name();
-                    return checkGenericCallable(
-                            callableGenerics,
-                            fn.parameters(),
-                            fn.returnType(),
-                            call.arguments(),
-                            env, generics, self,
-                            null,
-                            explicitGenericBindings(fn.genericParameters(), call.typeArguments(), generics, self, label),
-                            label);
+                    return asyncCallResult(
+                            fn.async(),
+                            checkGenericCallable(
+                                    callableGenerics,
+                                    fn.parameters(),
+                                    fn.returnType(),
+                                    call.arguments(),
+                                    env, generics, self,
+                                    null,
+                                    explicitGenericBindings(fn.genericParameters(), call.typeArguments(), generics, self, label),
+                                    label));
                 }
                 if (receiver instanceof Named named) {
                     if (named.name().equals("SharedMutex")
@@ -726,28 +816,87 @@ public final class TypeChecker {
                         validateMutexCallback(lambda, named.arguments().getFirst(), env, generics, self);
                         return Primitive.VOID;
                     }
-                    Ast.ClassDecl klass = findClass(named.name());
-                    if (klass != null) {
-                        ResolvedMethod target = findMethodTarget(klass, named, member.member(), call.arguments().size(), new LinkedHashSet<>());
-                        if (target == null) throw new IllegalArgumentException("no method '" + member.member() + "' with arity " + call.arguments().size() + " on " + named.name());
-                        Ast.MethodDecl method = target.method();
-                        Ast.ClassDecl owner = target.owner();
-                        Named ownerType = target.ownerType();
-                        validateCallTypeArgumentMarker(call, method.genericParameters(), "method " + owner.name() + "." + method.name());
-                        List<String> callableGenerics = new ArrayList<>(owner.genericParameters());
-                        callableGenerics.addAll(method.genericParameters());
-                        String label = "method " + owner.name() + "." + method.name();
-                        Map<String, Type> bindings = new HashMap<>(classGenericBindings(owner, ownerType));
-                        bindings.putAll(explicitGenericBindings(method.genericParameters(), call.typeArguments(), generics, self, label));
-                        return checkGenericCallable(
-                                callableGenerics,
-                                method.parameters(),
-                                method.returnType(),
-                                call.arguments(),
-                                env, generics, self,
-                                ownerType,
-                                bindings,
-                                label);
+                    Type builtinMutexCall = builtinMutexMember(named, member.member());
+                    if (builtinMutexCall instanceof Function builtinFunction) {
+                        if (call.typeArgumentsPresent()) {
+                            throw new IllegalArgumentException(
+                                    "mutex runtime methods do not accept call-site type arguments");
+                        }
+                        if (builtinFunction.parameters().size() != call.arguments().size()) {
+                            throw new IllegalArgumentException(
+                                    "call arity mismatch for " + member.member());
+                        }
+                        for (int i = 0; i < builtinFunction.parameters().size(); i++) {
+                            validateLambdaArgument(
+                                    call.arguments().get(i),
+                                    builtinFunction.parameters().get(i),
+                                    env,
+                                    generics,
+                                    self);
+                            requireAssignable(
+                                    typeOf(call.arguments().get(i), env, generics, self),
+                                    builtinFunction.parameters().get(i),
+                                    "argument " + (i + 1));
+                        }
+                        return builtinFunction.result();
+                    }
+
+                    Type directReceiver = unwrapMutexGuard(named);
+                    if (directReceiver instanceof Named directNamed) {
+                        Ast.ClassDecl klass = findClass(directNamed.name());
+                        if (klass != null) {
+                            ResolvedMethod target = findMethodTarget(
+                                    klass,
+                                    directNamed,
+                                    member.member(),
+                                    call.arguments().size(),
+                                    new LinkedHashSet<>());
+                            if (target != null) {
+                                Ast.MethodDecl method = target.method();
+                                Ast.ClassDecl owner = target.owner();
+                                Named ownerType = target.ownerType();
+                                validateCallTypeArgumentMarker(
+                                        call,
+                                        method.genericParameters(),
+                                        "method " + owner.name() + "." + method.name());
+                                List<String> callableGenerics =
+                                        new ArrayList<>(owner.genericParameters());
+                                callableGenerics.addAll(method.genericParameters());
+                                String label =
+                                        "method " + owner.name() + "." + method.name();
+                                Map<String, Type> bindings =
+                                        new HashMap<>(classGenericBindings(owner, ownerType));
+                                bindings.putAll(explicitGenericBindings(
+                                        method.genericParameters(),
+                                        call.typeArguments(),
+                                        generics,
+                                        self,
+                                        label));
+                                return asyncCallResult(
+                                        method.async(),
+                                        checkGenericCallable(
+                                                callableGenerics,
+                                                method.parameters(),
+                                                method.returnType(),
+                                                call.arguments(),
+                                                env,
+                                                generics,
+                                                self,
+                                                ownerType,
+                                                bindings,
+                                                label));
+                            }
+                            Ast.MethodDecl staticTarget = findStaticFunction(
+                                    klass,
+                                    member.member(),
+                                    call.arguments().size(),
+                                    new LinkedHashSet<>());
+                            if (staticTarget != null) {
+                                throw new IllegalArgumentException(
+                                        "static function '" + klass.name() + "." + member.member()
+                                                + "' must be invoked through the class namespace, not an instance");
+                            }
+                        }
                     }
                 }
             }
@@ -777,7 +926,12 @@ public final class TypeChecker {
                                 "generic callable '" + namespace.name() + "." + member.member()
                                         + "' must be specialized by a direct call; polymorphic function values are not supported yet");
                     }
-                    return functionType(moduleFunction.parameters(), moduleFunction.returnType(), Set.of(), null);
+                    return callableValueType(
+                            moduleFunction.parameters(),
+                            moduleFunction.returnType(),
+                            moduleFunction.async(),
+                            Set.of(),
+                            null);
                 }
                 Ast.ClassDecl memberClass = classes.get(namespace.name() + "." + member.member());
                 if (memberClass != null) return new ClassNamespace(qualifiedClassName(memberClass));
@@ -797,6 +951,8 @@ public final class TypeChecker {
             }
             Type futureMember = builtinFutureMember(sumReceiver, member.member());
             if (futureMember != null) return futureMember;
+            Type awaitableMember = builtinAwaitableMember(sumReceiver, member.member());
+            if (awaitableMember != null) return awaitableMember;
             Type actorHandleMember = builtinActorHandleMember(sumReceiver, member.member());
             if (actorHandleMember != null) return actorHandleMember;
             Type mutexMember = builtinMutexMember(receiver, member.member());
@@ -820,7 +976,12 @@ public final class TypeChecker {
                                 "generic static function '" + klass.name() + "." + fn.name()
                                         + "' must be specialized by a direct call; polymorphic function values are not supported yet");
                     }
-                    return functionType(fn.parameters(), fn.returnType(), Set.of(), null);
+                    return callableValueType(
+                            fn.parameters(),
+                            fn.returnType(),
+                            fn.async(),
+                            Set.of(),
+                            null);
                 }
                 if (functions.size() > 1) throw new IllegalArgumentException("overloaded static function '" + member.member() + "' must be called so arity can select the overload");
                 throw new IllegalArgumentException("unknown static member '" + member.member() + "' on " + klass.name());
@@ -840,21 +1001,21 @@ public final class TypeChecker {
                         return substituteGenerics(pattern, classGenericBindings(field.owner(), field.ownerType()));
                     }
                     List<Ast.MethodDecl> methods = findMethodsByName(klass, member.member(), new LinkedHashSet<>());
-                    if (methods.size() == 1) {
-                        Ast.MethodDecl method = methods.getFirst();
-                        if (!method.genericParameters().isEmpty()) {
-                            throw new IllegalArgumentException(
-                                    "generic method '" + klass.name() + "." + method.name()
-                                            + "' must be specialized by a direct call; polymorphic bound-method values are not supported yet");
-                        }
-                        ResolvedMethod target = findMethodTarget(klass, named, member.member(), method.arity(), new LinkedHashSet<>());
-                        if (target == null) throw new IllegalArgumentException("cannot resolve method owner for '" + member.member() + "'");
-                        Set<String> memberGenerics = new HashSet<>(target.owner().genericParameters());
-                        memberGenerics.addAll(method.genericParameters());
-                        Type signature = functionType(method.parameters(), method.returnType(), memberGenerics, target.ownerType());
-                        return substituteGenerics(signature, classGenericBindings(target.owner(), target.ownerType()));
+                    if (!methods.isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "instance method '" + klass.name() + "." + member.member()
+                                        + "' is not a first-class callback value; invoke it directly or wrap the call in an explicit fnc/lambda");
                     }
-                    if (methods.size() > 1) throw new IllegalArgumentException("overloaded method '" + member.member() + "' must be called so arity can select the overload");
+                    List<Ast.MethodDecl> staticFunctions =
+                            findStaticFunctionsByName(
+                                    klass,
+                                    member.member(),
+                                    new LinkedHashSet<>());
+                    if (!staticFunctions.isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "static function '" + klass.name() + "." + member.member()
+                                        + "' must be referenced through the class namespace, not an instance");
+                    }
                 }
             }
             return Unknown.INSTANCE;
@@ -955,15 +1116,7 @@ public final class TypeChecker {
             return new Named("ActorSpawn", List.of(result));
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
-            Type awaitedType = typeOf(awaited.expression(), env, generics, self);
-            if (awaitedType instanceof Named named && named.name().equals("Future") && named.arguments().size() == 1) {
-                return named.arguments().getFirst();
-            }
-            if (awaitedType instanceof Named named && named.name().equals("ActorSpawn")
-                    && named.arguments().size() == 1) {
-                return new Named("ActorRef", List.of());
-            }
-            return Unknown.INSTANCE;
+            return awaitPayload(typeOf(awaited.expression(), env, generics, self));
         }
         if (expr instanceof Ast.ListExpr list) {
             if (list.elements().isEmpty()) return new ListType(Unknown.INSTANCE);
@@ -1189,7 +1342,8 @@ public final class TypeChecker {
         }
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
-                || named.name().equals("Future") || named.name().equals("ActorSpawn")) {
+                || named.name().equals("Future") || named.name().equals("Awaitable")
+                || named.name().equals("ActorSpawn")) {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name() + " across an actor boundary");
         }
@@ -1259,7 +1413,8 @@ public final class TypeChecker {
         if (!(type instanceof Named named)) return false;
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
-                || named.name().equals("Future") || named.name().equals("ActorSpawn")
+                || named.name().equals("Future") || named.name().equals("Awaitable")
+                || named.name().equals("ActorSpawn")
                 || named.name().equals("SharedMutex")) return false;
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
         if (named.name().equals("Option")) {
@@ -1381,6 +1536,11 @@ public final class TypeChecker {
                 case "ready" -> new Named(
                         "Future",
                         List.of(new Named("ActorRef", List.of())));
+                case "getAwait" -> new Function(
+                        List.of(),
+                        new Named(
+                                "Future",
+                                List.of(new Named("ActorRef", List.of()))));
                 case "done" -> new Named("Future", List.of(Primitive.BOOL));
                 case "result" -> {
                     if (result == Primitive.VOID) {
@@ -1411,6 +1571,156 @@ public final class TypeChecker {
         return null;
     }
 
+    private void validateAwaitableImplementation(
+            Ast.ClassDecl klass,
+            Named awaitableType) {
+        if (awaitableType.arguments().size() != 1) {
+            throw new IllegalArgumentException("Awaitable<T> requires exactly one payload type");
+        }
+
+        Named concreteClass = nominalClassType(klass);
+        ResolvedMethod target = findMethodTarget(
+                klass,
+                concreteClass,
+                "getAwait",
+                0,
+                new LinkedHashSet<>());
+        if (target == null) {
+            throw new IllegalArgumentException(
+                    "class '" + klass.name()
+                            + "' implements Awaitable<T> but has no public instance getAwait() method");
+        }
+
+        Ast.MethodDecl method = target.method();
+        if (method.isStatic() || method.visibility() != Ast.Visibility.PUBLIC) {
+            throw new IllegalArgumentException(
+                    "Awaitable<T>.getAwait() must be a public instance method");
+        }
+        if (!method.genericParameters().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "Awaitable<T>.getAwait() cannot declare method type parameters");
+        }
+
+        Set<String> methodGenerics = new HashSet<>(target.owner().genericParameters());
+        Type declared = resolve(method.returnType(), methodGenerics, target.ownerType());
+        declared = substituteGenerics(
+                declared,
+                classGenericBindings(target.owner(), target.ownerType()));
+
+        Type payload = awaitableType.arguments().getFirst();
+        if (method.async()) {
+            if (!assignable(declared, payload) || !assignable(payload, declared)) {
+                throw new IllegalArgumentException(
+                        "async Awaitable<T>.getAwait() must declare result type "
+                                + payload + ", got " + declared);
+            }
+            return;
+        }
+
+        Type expectedFuture = new Named("Future", List.of(payload));
+        if (!assignable(declared, expectedFuture)
+                || !assignable(expectedFuture, declared)) {
+            throw new IllegalArgumentException(
+                    "synchronous Awaitable<T>.getAwait() must return "
+                            + expectedFuture + ", got " + declared);
+        }
+    }
+
+    private Type awaitPayload(Type type) {
+        type = deref(type);
+        if (type == Unknown.INSTANCE) return Unknown.INSTANCE;
+
+        if (type instanceof Named named) {
+            if (named.name().equals("Future") && named.arguments().size() == 1) {
+                return named.arguments().getFirst();
+            }
+            if (named.name().equals("ActorSpawn") && named.arguments().size() == 1) {
+                return new Named("ActorRef", List.of());
+            }
+            if (named.name().equals("Awaitable") && named.arguments().size() == 1) {
+                return named.arguments().getFirst();
+            }
+
+            Type payload = awaitablePayloadOrNull(named, new LinkedHashSet<>());
+            if (payload != null) return payload;
+        }
+
+        if (type instanceof Union union) {
+            Type payload = Unknown.INSTANCE;
+            for (Type option : union.options()) {
+                Type next = awaitPayload(option);
+                payload = payload == Unknown.INSTANCE
+                        ? next
+                        : Types.unionOf(payload, next);
+            }
+            return payload;
+        }
+
+        throw new IllegalArgumentException(
+                "await requires Future<T> or Awaitable<T>, found " + type);
+    }
+
+    private Type awaitablePayloadOrNull(
+            Named type,
+            Set<Named> seen) {
+        if (!seen.add(type)) return null;
+        if (type.name().equals("Awaitable") && type.arguments().size() == 1) {
+            return type.arguments().getFirst();
+        }
+        if (type.name().equals("Future") && type.arguments().size() == 1) {
+            return type.arguments().getFirst();
+        }
+        if (type.name().equals("ActorSpawn") && type.arguments().size() == 1) {
+            return new Named("ActorRef", List.of());
+        }
+
+        Ast.ClassDecl klass = findClass(type.name());
+        if (klass != null) {
+            for (Ast.TypeRef ifaceRef : klass.interfaces()) {
+                Named ifaceType = concreteClassReference(ifaceRef, klass, type);
+                Type payload = awaitablePayloadOrNull(ifaceType, seen);
+                if (payload != null) return payload;
+            }
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+                if (parent == null) continue;
+                Named parentType = concreteClassReference(parentRef, klass, type);
+                Type payload = awaitablePayloadOrNull(parentType, seen);
+                if (payload != null) return payload;
+            }
+            return null;
+        }
+
+        Ast.InterfaceDecl iface = findInterface(type.name());
+        if (iface != null) {
+            Map<String, Type> bindings = genericBindings(
+                    iface.genericParameters(),
+                    type.arguments(),
+                    "interface " + iface.name());
+            Set<String> generics = Set.copyOf(iface.genericParameters());
+            for (Ast.TypeRef parentRef : iface.parents()) {
+                Type pattern = resolve(parentRef, generics, null);
+                Type concrete = substituteGenerics(pattern, bindings);
+                if (!(concrete instanceof Named parentType)) continue;
+                Type payload = awaitablePayloadOrNull(parentType, seen);
+                if (payload != null) return payload;
+            }
+        }
+        return null;
+    }
+
+    private Type builtinAwaitableMember(Type receiver, String member) {
+        if (!(receiver instanceof Named named)
+                || !named.name().equals("Awaitable")
+                || named.arguments().size() != 1) {
+            return null;
+        }
+        if (!member.equals("getAwait")) return null;
+        return new Function(
+                List.of(),
+                new Named("Future", List.of(named.arguments().getFirst())));
+    }
+
     private Type builtinFutureMember(Type receiver, String member) {
         if (!(receiver instanceof Named named)
                 || !named.name().equals("Future")
@@ -1420,6 +1730,8 @@ public final class TypeChecker {
         return switch (member) {
             case "is_done", "is_cancelled", "cancel" ->
                     new Function(List.of(), Primitive.BOOL);
+            case "getAwait" ->
+                    new Function(List.of(), receiver);
             default -> null;
         };
     }
@@ -1587,7 +1899,8 @@ public final class TypeChecker {
             if (method.isStatic()) continue;
             mergeMember(members,
                     methodContractKey(method.name(), method.arity(), method.genericParameters().size()),
-                    callableContractType(method.genericParameters(), method.parameters(), method.returnType(), generics, self),
+                    callableContractType(method.genericParameters(), method.parameters(), method.returnType(),
+                            method.async(), generics, self),
                     "class " + klass.name());
         }
         stack.remove(klass);
@@ -1618,7 +1931,8 @@ public final class TypeChecker {
             if (!method.isStatic() && method.visibility() == Ast.Visibility.PUBLIC) {
                 mergeMember(members,
                         methodContractKey(method.name(), method.arity(), method.genericParameters().size()),
-                        callableContractType(method.genericParameters(), method.parameters(), method.returnType(), generics, self),
+                        callableContractType(method.genericParameters(), method.parameters(), method.returnType(),
+                                method.async(), generics, self),
                         "class " + klass.name());
             }
         }
@@ -1630,12 +1944,27 @@ public final class TypeChecker {
         if (!stack.add(iface)) throw new IllegalArgumentException("interface inheritance cycle involving '" + iface.name() + "'");
         Map<String, Type> members = new LinkedHashMap<>();
         for (Ast.TypeRef parentRef : iface.parents()) {
-            Ast.InterfaceDecl parent = findInterface(parentRef.name());
-            if (parent == null) throw new IllegalArgumentException("unknown parent interface '" + parentRef.name() + "' for " + iface.name());
             Type resolvedParent = resolve(parentRef, generics, null);
             if (!(resolvedParent instanceof Named parentType)) {
                 throw new IllegalArgumentException("parent interface must resolve to a named type");
             }
+
+            if (parentType.name().equals("Awaitable")) {
+                if (parentType.arguments().size() != 1) {
+                    throw new IllegalArgumentException("Awaitable<T> requires exactly one payload type");
+                }
+                mergeMember(
+                        members,
+                        methodContractKey("getAwait", 0, 0),
+                        new Function(
+                                List.of(),
+                                new Named("Future", List.of(parentType.arguments().getFirst()))),
+                        "interface inheritance of " + iface.name());
+                continue;
+            }
+
+            Ast.InterfaceDecl parent = findInterface(parentRef.name());
+            if (parent == null) throw new IllegalArgumentException("unknown parent interface '" + parentRef.name() + "' for " + iface.name());
             Map<String, Type> parentBindings = genericBindings(parent.genericParameters(), parentType.arguments(),
                     "interface " + parent.name());
             for (Map.Entry<String, Type> inherited : interfaceShape(parent, Set.copyOf(parent.genericParameters()), stack).members().entrySet()) {
@@ -1858,6 +2187,26 @@ public final class TypeChecker {
         members.put(name, type);
     }
 
+    private Type asyncCallResult(boolean async, Type result) {
+        return async
+                ? new Named("Future", List.of(result))
+                : result;
+    }
+
+    private Function callableValueType(
+            List<Ast.Param> params,
+            Ast.TypeRef returns,
+            boolean async,
+            Set<String> generics,
+            Type self) {
+        Function raw = functionType(params, returns, generics, self);
+        return async
+                ? new Function(
+                        raw.parameters(),
+                        new Named("Future", List.of(raw.result())))
+                : raw;
+    }
+
     private Function functionType(List<Ast.Param> params, Ast.TypeRef returns, Set<String> generics, Type self) {
         return new Function(params.stream().map(p -> resolveParam(p, generics, self)).toList(), resolve(returns, generics, self));
     }
@@ -1868,9 +2217,30 @@ public final class TypeChecker {
             Ast.TypeRef returns,
             Set<String> ownerGenerics,
             Type self) {
+        return callableContractType(
+                callableGenerics,
+                params,
+                returns,
+                false,
+                ownerGenerics,
+                self);
+    }
+
+    private Function callableContractType(
+            List<String> callableGenerics,
+            List<Ast.Param> params,
+            Ast.TypeRef returns,
+            boolean async,
+            Set<String> ownerGenerics,
+            Type self) {
         Set<String> all = new HashSet<>(ownerGenerics);
         all.addAll(callableGenerics);
         Function raw = functionType(params, returns, all, self);
+        if (async) {
+            raw = new Function(
+                    raw.parameters(),
+                    new Named("Future", List.of(raw.result())));
+        }
         if (callableGenerics.isEmpty()) return raw;
 
         Map<String, Type> canonical = new HashMap<>();
@@ -2280,8 +2650,11 @@ public final class TypeChecker {
             case "Future" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Future requires exactly one explicit type argument");
                 Type element = resolve(ref.arguments().getFirst(), generics, self);
-                if (element == Primitive.VOID) throw new IllegalArgumentException("Future<void> is invalid");
                 yield new Named("Future", List.of(element));
+            }
+            case "Awaitable" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Awaitable requires exactly one explicit type argument");
+                yield new Named("Awaitable", List.of(resolve(ref.arguments().getFirst(), generics, self)));
             }
             case "SharedMutex" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("SharedMutex requires exactly one explicit type argument");
@@ -2369,6 +2742,15 @@ public final class TypeChecker {
         }
 
         if (actual instanceof Named actualNamed && expected instanceof Named expectedNamed) {
+            if (expectedNamed.name().equals("Awaitable")
+                    && expectedNamed.arguments().size() == 1) {
+                Type payload = awaitablePayloadOrNull(actualNamed, new LinkedHashSet<>());
+                if (payload != null) {
+                    Type expectedPayload = expectedNamed.arguments().getFirst();
+                    return assignable(payload, expectedPayload)
+                            && assignable(expectedPayload, payload);
+                }
+            }
             if (findClass(actualNamed.name()) != null) {
                 if (findClass(expectedNamed.name()) != null
                         && classTypeExtends(actualNamed, expectedNamed, new LinkedHashSet<>())) {
@@ -2484,8 +2866,24 @@ public final class TypeChecker {
 
     private Set<String> uniqueGenerics(List<String> names, String owner) {
         Set<String> result = new HashSet<>();
-        for (String name : names) if (!result.add(name)) throw new IllegalArgumentException("duplicate generic '" + name + "' in " + owner);
+        for (String name : names) {
+            rejectReservedGenericName(name, owner);
+            if (!result.add(name)) {
+                throw new IllegalArgumentException(
+                        "duplicate generic '" + name + "' in " + owner);
+            }
+        }
         return result;
+    }
+
+    private static void rejectReservedGenericName(
+            String name,
+            String owner) {
+        if (RESERVED_RUNTIME_TYPE_NAMES.contains(name)) {
+            throw new IllegalArgumentException(
+                    "generic '" + name + "' in " + owner
+                            + " conflicts with a compiler/runtime built-in type");
+        }
     }
 
     private boolean constant(Ast.Expr expr) {

@@ -390,6 +390,39 @@ execution domain that created it. `await future` is the only operation that
 extracts the future's result; Oreslang does not expose a blocking
 `Future.get()` / `join()` equivalent.
 
+`Awaitable<T>` is the nominal protocol behind `await`. A custom type opts in
+explicitly by implementing/extending `Awaitable<T>` and exposing exactly one
+projection hook named `getAwait()`:
+
+```ores
+define class ReadyValue implements Awaitable<int> as
+  pub val Future<int> future;
+
+  pub getAwait() => Future<int> {
+    return self.future;
+  }
+end
+```
+
+The hook may also be async:
+
+```ores
+define class DeferredValue implements Awaitable<int> as
+  pub async getAwait() => int {
+    // The async method call itself produces Future<int>.
+    return 42;
+  }
+end
+```
+
+For `await value`, Oreslang evaluates `value` exactly once, invokes
+`getAwait()` at most once, obtains one `Future<T>`, then suspends on that
+Future. There is no reflective field search or magic “future” field convention.
+`Future<T>` itself implements `Awaitable<T>` by returning itself from
+`getAwait()`. Even when the projected Future is already settled, `await`
+still yields through the owning scheduler before resumption; guest continuation
+code never resumes inline on the producer/completion thread.
+
 The built-in `Futures` control-flow facade provides:
 
 ```ores
@@ -405,6 +438,23 @@ val responses = await Futures.all([first, second]);
 - cancellation is cooperative with the host operation. A sandbox resource
   permit is not considered free merely because guest code requested
   cancellation; the underlying host operation must actually finish.
+
+Ordinary `async fnc` work is scheduled as a logical task on OresVM's
+dedicated **ROOT_TASK** carrier domain. It does not create an OS/JVM thread,
+does not run on the CONTROL or actor pools, and may resume on a different
+ROOT_TASK carrier after `await`. Future/timer/I/O completion threads only make
+the captured continuation runnable; they never execute guest continuation code
+inline. Even an already-settled Future still crosses this scheduler boundary.
+
+The linked multi-file launcher currently fails closed on `async main`. A
+launcher-owned Graal Context must remain alive for the complete logical lifetime
+of main, including every suspended continuation. The recursive evaluator also
+fails closed if a synchronous main reaches source `await` while running on
+ROOT_TASK. Until structured Context/CPS lifecycle lowering owns that lifetime
+end-to-end, a linked-program main must remain synchronous and non-suspending;
+embedders that need to drive asynchronous work must keep the Context/runtime
+lifecycle open from the host side rather than letting main launch work that can
+outlive its Context.
 
 For actor code, `await` is a **suspension point, never a carrier-thread
 blocking point**. Compiler backends must lower an incomplete actor await to a

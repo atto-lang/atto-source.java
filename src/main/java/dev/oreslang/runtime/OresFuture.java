@@ -29,12 +29,16 @@ import java.util.function.Supplier;
  * Future. Guest code may observe state, await, or request cancellation, but it
  * cannot forge a value/failure.</p>
  */
-public final class OresFuture<T> implements Future<T> {
+public final class OresFuture<T> implements Future<T>, OresAwaitable<T> {
     private static final Object PENDING = new Object();
 
     private record Success<T>(T value) { }
     private record Failure(Throwable failure) { }
     private record Cancelled(CancellationException failure) { }
+
+    interface RuntimeWaiterRegistration {
+        boolean cancel();
+    }
 
     private static final class Waiter<T> {
         private final BiConsumer<? super T, ? super Throwable> callback;
@@ -45,7 +49,7 @@ public final class OresFuture<T> implements Future<T> {
         }
     }
 
-    private final Runnable cancelHook;
+    private final AtomicReference<Runnable> cancelHook;
     private final AtomicBoolean cancelHookRun = new AtomicBoolean();
     private final AtomicReference<Object> state = new AtomicReference<>(PENDING);
     private final ConcurrentLinkedQueue<Waiter<T>> waiters = new ConcurrentLinkedQueue<>();
@@ -55,7 +59,8 @@ public final class OresFuture<T> implements Future<T> {
     }
 
     OresFuture(Runnable cancelHook) {
-        this.cancelHook = Objects.requireNonNull(cancelHook, "cancelHook");
+        this.cancelHook = new AtomicReference<>(
+                Objects.requireNonNull(cancelHook, "cancelHook"));
     }
 
     public static <T> OresFuture<T> completed(T value) {
@@ -88,8 +93,20 @@ public final class OresFuture<T> implements Future<T> {
         stage.whenComplete((value, failure) -> {
             if (failure == null) {
                 result.completeFromRuntime(value);
+                return;
+            }
+
+            Throwable terminal = unwrap(failure);
+            if (stage instanceof Future<?> cancellable
+                    && cancellable.isCancelled()) {
+                CancellationException cancellation =
+                        terminal instanceof CancellationException existing
+                                ? existing
+                                : new CancellationException("host Future was cancelled");
+                if (cancellation != terminal) cancellation.initCause(terminal);
+                result.cancelFromRuntime(cancellation);
             } else {
-                result.failFromRuntime(unwrap(failure));
+                result.failFromRuntime(terminal);
             }
         });
         return result;
@@ -101,6 +118,10 @@ public final class OresFuture<T> implements Future<T> {
 
     boolean failFromRuntime(Throwable failure) {
         return settle(new Failure(Objects.requireNonNull(failure, "failure")));
+    }
+
+    boolean cancelFromRuntime(CancellationException failure) {
+        return settle(new Cancelled(Objects.requireNonNull(failure, "failure")));
     }
 
     /**
@@ -115,14 +136,15 @@ public final class OresFuture<T> implements Future<T> {
      * Futures used as reactive sources, where many subscriptions may observe the
      * same already-completed producer.</p>
      */
-    void whenCompleteRuntime(BiConsumer<? super T, ? super Throwable> callback) {
+    RuntimeWaiterRegistration whenCompleteRuntime(
+            BiConsumer<? super T, ? super Throwable> callback) {
         Objects.requireNonNull(callback, "callback");
         Waiter<T> waiter = new Waiter<>(callback);
 
         Object observed = state.get();
         if (observed != PENDING) {
             notifyWaiter(waiter, observed);
-            return;
+            return () -> false;
         }
 
         waiters.add(waiter);
@@ -135,23 +157,47 @@ public final class OresFuture<T> implements Future<T> {
             waiters.remove(waiter);
             notifyWaiter(waiter, observed);
         }
+
+        return () -> cancelRuntimeWaiter(waiter);
+    }
+
+    @Override
+    public OresFuture<T> getAwait() {
+        return this;
     }
 
     @Override
     public boolean cancel(boolean mayInterruptIfRunning) {
         CancellationException cancelled =
                 new CancellationException("OresFuture was cancelled");
-        if (!settle(new Cancelled(cancelled))) return false;
+        Runnable hook = cancelHook.get();
+        Error fatal = null;
+        boolean won;
 
-        if (cancelHookRun.compareAndSet(false, true)) {
+        try {
+            won = settle(new Cancelled(cancelled));
+        } catch (VirtualMachineError | ThreadDeath | LinkageError waiterFatal) {
+            // settle() publishes the terminal state before waiter delivery.
+            // Cancellation cleanup must still run even when one runtime waiter
+            // reports a VM-fatal condition.
+            won = true;
+            fatal = waiterFatal;
+        }
+        if (!won) return false;
+
+        if (hook != null && cancelHookRun.compareAndSet(false, true)) {
             try {
-                cancelHook.run();
+                hook.run();
+            } catch (VirtualMachineError | ThreadDeath | LinkageError hookFatal) {
+                if (fatal == null) fatal = hookFatal;
+                else fatal.addSuppressed(hookFatal);
             } catch (RuntimeException | Error ignored) {
-                // Cancellation state is already authoritative. A host
-                // cancellation hook cannot roll it back or poison waiter
-                // delivery.
+                // Cancellation state is already authoritative. An ordinary
+                // host cancellation-hook failure cannot roll it back.
             }
         }
+
+        if (fatal != null) throw fatal;
         return true;
     }
 
@@ -176,6 +222,7 @@ public final class OresFuture<T> implements Future<T> {
 
     @Override
     public T get() throws InterruptedException, ExecutionException {
+        rejectCarrierBlocking("Future.get");
         Object observed = awaitState(0L, null);
         return reportGet(observed);
     }
@@ -185,6 +232,7 @@ public final class OresFuture<T> implements Future<T> {
             throws InterruptedException, ExecutionException, TimeoutException {
         Objects.requireNonNull(unit, "unit");
         if (timeout < 0) throw new IllegalArgumentException("timeout must be non-negative");
+        rejectCarrierBlocking("Future.get(timeout)");
         Object observed = awaitState(timeout, unit);
         if (observed == PENDING) {
             throw new TimeoutException("OresFuture did not complete before timeout");
@@ -197,6 +245,7 @@ public final class OresFuture<T> implements Future<T> {
      * scheduler suspension ABI rather than calling join on a carrier.
      */
     public T join() {
+        rejectCarrierBlocking("Future.join");
         Object observed = state.get();
         boolean interrupted = false;
         if (observed == PENDING) {
@@ -222,21 +271,54 @@ public final class OresFuture<T> implements Future<T> {
      * receive the returned stage.
      */
     CompletionStage<T> asCompletionStage() {
+        AtomicReference<RuntimeWaiterRegistration> registrationRef =
+                new AtomicReference<>();
         CompletableFuture<T> bridge = new CompletableFuture<>();
-        whenCompleteRuntime((value, failure) -> {
-            if (failure == null) bridge.complete(value);
-            else bridge.completeExceptionally(failure);
+
+        bridge.whenComplete((ignoredValue, ignoredFailure) -> {
+            RuntimeWaiterRegistration registration =
+                    registrationRef.getAndSet(null);
+            if (registration != null) registration.cancel();
         });
+
+        RuntimeWaiterRegistration registration =
+                whenCompleteRuntime((value, failure) -> {
+                    if (failure == null) bridge.complete(value);
+                    else bridge.completeExceptionally(failure);
+                });
+        registrationRef.set(registration);
+
+        if (bridge.isDone()) {
+            registration.cancel();
+            registrationRef.compareAndSet(registration, null);
+        }
         return bridge;
     }
 
     private boolean settle(Object terminal) {
         if (!state.compareAndSet(PENDING, terminal)) return false;
 
+        // No terminal Future retains producer/task cancellation authority.
+        // public cancel() snapshots the hook before settlement when it is the
+        // winning terminal transition.
+        cancelHook.set(null);
+
+        Error fatal = null;
         Waiter<T> waiter;
         while ((waiter = waiters.poll()) != null) {
-            notifyWaiter(waiter, terminal);
+            try {
+                notifyWaiter(waiter, terminal);
+            } catch (VirtualMachineError | ThreadDeath | LinkageError waiterFatal) {
+                if (fatal == null) fatal = waiterFatal;
+            }
         }
+        if (fatal != null) throw fatal;
+        return true;
+    }
+
+    private boolean cancelRuntimeWaiter(Waiter<T> waiter) {
+        if (!waiter.claimed.compareAndSet(false, true)) return false;
+        waiters.remove(waiter);
         return true;
     }
 
@@ -253,10 +335,19 @@ public final class OresFuture<T> implements Future<T> {
             } else {
                 throw new IllegalStateException("attempted to notify waiter from pending Future");
             }
+        } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+            throw fatal;
         } catch (RuntimeException | Error ignored) {
-            // Runtime waiter failures must not stop delivery to other waiters or
-            // mutate the settled Future. Scheduler plumbing owns its own
-            // failure path.
+            // Ordinary runtime waiter failures must not mutate the settled
+            // Future. VM-fatal errors are deliberately never swallowed.
+        }
+    }
+
+    private static void rejectCarrierBlocking(String operation) {
+        if (ActorRuntime.isOresCarrierThread()) {
+            throw new IllegalStateException(
+                    operation
+                            + " cannot block an OresVM carrier; use await/continuation suspension");
         }
     }
 
@@ -265,14 +356,22 @@ public final class OresFuture<T> implements Future<T> {
         if (observed != PENDING) return observed;
 
         java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
-        whenCompleteRuntime((value, failure) -> done.countDown());
+        RuntimeWaiterRegistration registration =
+                whenCompleteRuntime((value, failure) -> done.countDown());
 
-        if (unit == null) {
-            done.await();
-        } else if (!done.await(timeout, unit)) {
-            return state.get() == PENDING ? PENDING : state.get();
+        try {
+            if (unit == null) {
+                done.await();
+            } else if (!done.await(timeout, unit)) {
+                return state.get();
+            }
+            return state.get();
+        } finally {
+            // Timed-out and interrupted host observers must not remain rooted
+            // in a Future that may never settle. If completion already claimed
+            // the waiter, cancel() is a harmless no-op.
+            registration.cancel();
         }
-        return state.get();
     }
 
     @SuppressWarnings("unchecked")

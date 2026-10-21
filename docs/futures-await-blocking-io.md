@@ -1,9 +1,11 @@
 # Futures, await, blocking I/O, and scheduler suspension
 
-Status: runtime Future/suspension ABI implemented on top of the OresVM four-domain
-scheduler. Source-frame lowering for arbitrary nested `await` expressions is a
-compiler follow-up and must target this ABI; the recursive evaluator fails closed
-inside actor turns rather than blocking or inline-resuming a carrier.
+Status: runtime Future/suspension ABI implemented on top of the OresVM five-domain
+scheduler. Actors already suspend through captured continuations. Root/main tasks
+now have the same runtime state-machine substrate on a dedicated ROOT_TASK carrier
+pool. Source-frame lowering for arbitrary nested `await` expressions remains the
+compiler follow-up; the recursive evaluator fails closed inside actor or root turns
+rather than blocking, joining, or inline-resuming a carrier.
 
 ## Rule: ordinary execution does not implicitly yield
 
@@ -36,6 +38,49 @@ val bytes = await pending;
 
 Calling an async operation is not itself a scheduling boundary.
 
+## Virtual-thread-like logical task model
+
+Oreslang tasks are conceptually closer to **Java virtual threads / structured
+tasks** than to bare Go goroutines in one important respect: a spawned async
+operation has an awaitable completion object.
+
+```ores
+pub async fnc calculate(int value) : int {
+    return value * 2;
+}
+
+pub async fnc main() : void {
+    val pending = calculate(21);
+    val answer = await pending;
+    print(answer);
+}
+```
+
+The intended lowering is:
+
+```text
+async fnc call
+    -> create logical Ores task
+    -> return Future<T> immediately
+    -> execute task on owning scheduler domain
+    -> await suspends that logical task
+    -> Future completion makes its continuation runnable
+```
+
+The logical task is **not** a Java platform thread and does not permanently own
+a carrier. It may execute on carrier A, suspend, and resume on carrier B. That is
+the property Oreslang borrows from virtual threads: blocking-looking source
+semantics without pinning a scarce carrier.
+
+This is deliberately unlike a bare goroutine handle: Oreslang async work has a
+first-class `Future<T>` result that can be awaited, cancelled, composed, and
+used for structured lifetime management.
+
+Actors use the same suspension substrate with stronger mailbox/ownership rules.
+An `ActorRef` exposes an awaitable `done()` lifecycle Future, while one-shot
+actor callables expose `ready()`, `done()`, and `result()` Futures. Guest
+code must await those Futures; synchronous actor termination joins are host-only.
+
 ## OresFuture is not CompletableFuture
 
 `Future<T>` is represented by the runtime-owned `OresFuture<T>`.
@@ -57,6 +102,99 @@ continuation. It must not execute Oreslang guest code.
 Host `CompletionStage` values are compatibility inputs only. They are
 immediately normalized into an OresFuture before they participate in Oreslang
 suspension.
+
+## Awaitable<T> protocol
+
+`await` is defined over a compiler-known nominal protocol rather than over a
+magic field name or arbitrary reflection.
+
+Conceptually, the built-in contract is:
+
+```ores
+define interface Awaitable<T> {
+  fnc getAwait() => Future<T>;
+}
+```
+
+`Future<T>` itself implements `Awaitable<T>`; its `getAwait()` projection
+returns the same Future. Runtime handles may also implement the protocol. For
+example, `ActorSpawn<R>` projects its readiness Future so `await spawn`
+continues to mean "wait until the actor identity is ready."
+
+A user type may compute the projected Future instead of storing it in a fixed
+field:
+
+```ores
+define class DeferredReply implements Awaitable<Response> as
+  private val Request request;
+
+  pub getAwait() => Future<Response> {
+    return self.request.response_future();
+  }
+end
+```
+
+The hook may itself be `async`:
+
+```ores
+define class LazyReply implements Awaitable<Response> as
+  pub async getAwait() => Response {
+    val headers = await load_headers();
+    return await load_body(headers);
+  }
+end
+```
+
+An `async getAwait() : T` has the same effective projection type as a
+synchronous `getAwait() : Future<T>`, because calling any async callable
+produces `Future<T>`.
+
+The lowering of `await value` is exactly:
+
+```text
+evaluate value exactly once
+        |
+        +-- Future<T> ----------------------+
+        |                                   |
+        +-- Awaitable<T>                    |
+              |                             |
+              +-- invoke getAwait() once    |
+                      |                     |
+                      +---- Future<T> -------+
+                                            |
+                                            v
+                              capture continuation
+                                            |
+                                            v
+                                  suspend on Future
+```
+
+Important invariants:
+
+- `getAwait()` is invoked at most once for one evaluation of an `await`
+  expression; resumption never invokes it again.
+- The synchronous form must return `Future<T>`; the async form declares
+  `T` and its call result is `Future<T>`.
+- `getAwait()` may lazily construct the Future.
+- A null/non-Future projection is a runtime contract violation.
+- The compiler rejects `await` on values that are neither `Future<T>` nor
+  nominally `Awaitable<T>`.
+- Oreslang never scans fields looking for a Future and never uses reflection to
+  guess what should be awaited.
+- Interfaces may extend `Awaitable<T>`, allowing framework-specific task
+  handles to add richer APIs without changing `await` semantics.
+- Cancellation/error identity comes from the projected Future.
+- AOT lowering can resolve the projection statically; no dynamic plugin lookup
+  is required.
+
+The recursive reference evaluator now schedules ordinary async callables,
+including `async getAwait()`, as real logical ROOT_TASK executions and returns
+their Ores Future. A non-suspending async hook therefore works end-to-end today.
+
+If the async hook itself reaches a nested source `await` while running on an
+Ores carrier, that nested suspension still fails closed until general
+stackless/CPS source-frame lowering can preserve the evaluator frame. The
+scheduler/Future ABI underneath is already the same one that lowerer targets.
 
 ## Await
 
@@ -97,9 +235,13 @@ restore frame and continue after await
 `await` is a scheduling boundary even when the Future was already settled.
 The continuation is enqueued for a later turn instead of being resumed inline.
 
-For actors, the current runtime target is
-`ActorContext.suspendOn(OresFuture, ActorContinuation)`. The existing host
-`CompletionStage` overload is only an adapter and normalizes to OresFuture.
+For actors, the runtime target is
+`ActorContext.suspendOn(OresFuture, ActorContinuation)`. For root/main tasks,
+the runtime target is `ActorRuntime.suspendCurrentRootOn(OresFuture,
+RootContinuation)`. Both paths capture state before suspension and both enqueue
+the continuation for a later turn; neither resumes guest code on the producer
+thread. The existing host `CompletionStage` actor overload is only an adapter
+and normalizes to OresFuture.
 
 A suspended actor remains logically inside the same mailbox turn:
 
@@ -140,7 +282,11 @@ return carrier to OresVM
 resume when operation completes
 ```
 
-It must never mean "park this Ores actor carrier in a host blocking call."
+It must never mean "park this OresVM carrier in a host blocking call."
+
+As a defense-in-depth rule, host-style `OresFuture.get()` and `join()` reject
+calls from every OresVM carrier. Host/embedder threads may use those APIs; guest
+execution must use scheduler suspension.
 
 Native async readiness should be preferred for sockets, pipes, timers, and other
 reactor-friendly operations.
@@ -173,19 +319,27 @@ Cancellation is a request, not proof that host work stopped. Admission for a
 running uncooperative Java blocking call remains charged until its worker
 actually exits.
 
-## Four scheduler domains
+## Five scheduler domains
 
 Continuation wakeup preserves the task's owning domain:
 
 ```text
 OresVM
 ├── CONTROL
-│   ├── supervisor/root work
-│   └── ActorGroup mailmen
+│   ├── supervisors
+│   ├── ActorGroup mailmen
+│   └── VM maintenance
+├── ROOT_TASK
+│   ├── main
+│   └── ordinary async Ores tasks
 ├── SHARED_ACTOR
 ├── ISOACTOR
 └── UNTRUSTED_ACTOR
 ```
+
+ROOT_TASK is physically separate from CONTROL so application async work cannot
+consume supervisor/mailman carrier capacity. A root continuation may resume on a
+different ROOT_TASK carrier than the one on which it suspended.
 
 I/O reactors, timer drivers, completion threads, Java virtual threads used for
 blocking interop, and native blocking workers are runtime service threads. They
@@ -213,12 +367,13 @@ suspension unless their ownership/lifetime representation explicitly permits it.
 
 ## Current lowering boundary
 
-The actor scheduler, OresFuture, timer path, and blocking bridge provide the
-runtime substrate. The recursive reference evaluator cannot safely preserve an
-arbitrary Java call stack across an actor `await`.
+The actor scheduler, root-task scheduler, OresFuture, timer path, and blocking
+bridge provide the runtime substrate. The recursive reference evaluator cannot
+safely preserve an arbitrary Java call stack across an actor or root/main
+`await`.
 
 Until the stackless/CPS source-frame transformation lands, source `await`
-encountered inside an actor turn fails closed instead of:
+encountered inside an actor or root turn fails closed instead of:
 
 - blocking the carrier;
 - using `join()`;
