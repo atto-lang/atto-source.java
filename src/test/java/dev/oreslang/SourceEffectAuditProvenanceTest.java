@@ -36,7 +36,8 @@ final class SourceEffectAuditProvenanceTest {
     @Test void malformedUtf16CannotCollapseToReplacementByteDigest() throws Exception {
         var method = SourceEffectAudit.class.getDeclaredMethod("sourceDigest", String.class);
         method.setAccessible(true);
-        for (String malformed : new String[]{"\\uD800", "\\uDC00", "a\\uD800b"}) {
+        for (String malformed : new String[]{String.valueOf((char) 0xD800),
+                String.valueOf((char) 0xDC00), "a" + (char) 0xD800 + "b"}) {
             var error = assertThrows(java.lang.reflect.InvocationTargetException.class,
                     () -> method.invoke(null, malformed));
             assertInstanceOf(IllegalArgumentException.class, error.getCause());
