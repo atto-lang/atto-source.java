@@ -2302,7 +2302,26 @@ public final class OwnershipChecker {
                                 + (parameterIndex + 1));
                     }
                 }
-                checkArgument(argument, param, scope, callable, parameterIndex + 1);
+                VarState resultBorrowOwner = checkArgument(
+                        argument, param, scope, callable, parameterIndex + 1);
+                if (structuralLoan && resultBorrowOwner != null) {
+                    // For expression-produced borrows, syntax alone may not
+                    // identify the owner. Recover the exact proven provenance
+                    // from the checked expression and retain its lease too.
+                    VarState recoveredRoot = ownershipRoot(resultBorrowOwner);
+                    if (loanOwner != null && ownershipRoot(loanOwner) != recoveredRoot) {
+                        throw error(callable + " argument " + (parameterIndex + 1)
+                                + " has inconsistent structural borrow provenance");
+                    }
+                    if (loanOwner == null) {
+                        loanOwner = recoveredRoot;
+                        Boolean previous = invocationLoans.get(loanOwner);
+                        if (previous != null && previous) {
+                            throw error(callable + " has overlapping mutable borrow arguments at position "
+                                    + (parameterIndex + 1));
+                        }
+                    }
+                }
                 if (loanOwner != null) {
                     // Borrowed arguments remain live until the call completes,
                     // including forwarded incoming &mut parameters. Their
@@ -2375,7 +2394,7 @@ public final class OwnershipChecker {
         return place == null ? null : ownershipRoot(borrowPlace(place, scope).owner());
     }
 
-    private void checkArgument(
+    private VarState checkArgument(
             Ast.Expr arg,
             Ast.Param param,
             Scope scope,
@@ -2404,12 +2423,16 @@ public final class OwnershipChecker {
                 throw error(callable + " argument " + position
                         + " has no proven borrow provenance for a structural parameter");
             }
+            if (argument.borrowSource != null && isActorConfinedBorrow(argument.borrowSource)) {
+                throw error(callable + " argument " + position
+                        + " cannot expose actor-owned borrow through a structural view");
+            }
             if (containsMutexGuardType(argument.type)
                     || (mutexCriticalSectionDepth > 0 && argument.type.isBorrow())) {
                 throw error(callable + " argument " + position
                         + " cannot consume protected mutex state through a structural by-value parameter");
             }
-            return;
+            return argument.borrowSource;
         }
         if (param.type().isBorrow()) {
             boolean mutable = param.type().mutableBorrow();
@@ -2425,7 +2448,7 @@ public final class OwnershipChecker {
                 if (isActorConfinedBorrow(place.owner())) {
                     throw error("actor self borrow cannot cross an ordinary callable boundary");
                 }
-                return;
+                return null;
             }
             if (arg instanceof Ast.NameExpr name) {
                 VarState state = requireState(scope, name.name());
@@ -2439,7 +2462,7 @@ public final class OwnershipChecker {
                 if (!mutable && state.kind != ValueKind.IMM_BORROW && state.kind != ValueKind.MUT_BORROW) {
                     throw error(callable + " argument " + position + " requires borrowed value; pass rt borrow " + name.name());
                 }
-                return;
+                return null;
             }
             throw error(callable + " argument " + position + " must be an explicit borrow");
         }
@@ -2447,6 +2470,7 @@ public final class OwnershipChecker {
         if (containsMutexGuardType(argument.type)) {
             throw error(callable + " argument " + position + " cannot consume a guard-bearing value");
         }
+        return null;
     }
 
     private void checkAssignmentTarget(Ast.Expr target, Scope scope) {
