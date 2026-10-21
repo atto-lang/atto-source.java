@@ -88,6 +88,22 @@ public final class OresScheduler implements AutoCloseable {
         return timer;
     }
 
+    /**
+     * Runtime-control deadline hook. The callback may only enqueue/retire VM
+     * control work; it must never execute guest code on the timer carrier.
+     */
+    static ScheduledFuture<?> scheduleRuntimeControlWake(
+            Runnable callback,
+            long delayNanos) {
+        Objects.requireNonNull(callback, "callback");
+        if (delayNanos < 0) {
+            throw new IllegalArgumentException(
+                    "runtime control wake delay cannot be negative");
+        }
+        return WALL_DEADLINES.schedule(
+                callback, delayNanos, TimeUnit.NANOSECONDS);
+    }
+
     @FunctionalInterface
     interface TurnExecutor {
         void execute(Runnable turn);

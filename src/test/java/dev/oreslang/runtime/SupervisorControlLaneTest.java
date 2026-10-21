@@ -187,6 +187,88 @@ final class SupervisorControlLaneTest {
     }
 
     @Test
+    void restartBackoffWakesAutomaticallyWithoutReenteringGuestHandler()
+            throws Exception {
+        AtomicReference<ActorRuntime.ActorRef<String>> child =
+                new AtomicReference<>();
+        AtomicInteger handlerCalls = new AtomicInteger();
+        CountDownLatch firstControl = new CountDownLatch(1);
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> supervisor = runtime.spawnShared(context -> {
+                context.installSupervisorControlHandler(
+                        new ActorRuntime.SupervisorControlHandler() {
+                            @Override
+                            public ActorRuntime.SupervisorControlDirective onPanic(
+                                    ActorRuntime.SupervisorControlContext control,
+                                    ActorRuntime.SupervisorControlEvent event) {
+                                handlerCalls.incrementAndGet();
+                                firstControl.countDown();
+                                return ActorRuntime.SupervisorControlDirective.RESTART;
+                            }
+                        },
+                        new SupervisorRestartLimiter(new SupervisorRestartPolicy(
+                                2,
+                                Duration.ofMinutes(1),
+                                Duration.ofMillis(75),
+                                Duration.ofMillis(75))));
+                return (message, turn) -> {
+                    if (!"spawn".equals(message)) return;
+                    ActorRuntime.ActorRef<String> created = runtime.spawn(
+                            ActorRuntime.ActorKind.SHARED,
+                            dev(),
+                            childContext -> (childMessage, ignored) -> {
+                                throw new ActorFailure.Panic("backoff");
+                            });
+                    child.set(created);
+                    created.send("fail");
+                };
+            });
+
+            supervisor.getReady().get(3, TimeUnit.SECONDS);
+            supervisor.send("spawn");
+            assertTrue(firstControl.await(5, TimeUnit.SECONDS));
+
+            ActorRuntime.ActorRef<String> failed = child.get();
+            assertNotNull(failed);
+            assertThrows(
+                    ExecutionException.class,
+                    () -> failed.getDone().get(5, TimeUnit.SECONDS));
+
+            assertEquals(1, handlerCalls.get());
+            assertFalse(runtime.redispatchSupervisorControlEvent(
+                            failed.id(), failed.generation()),
+                    "manual redispatch must not bypass an armed backoff");
+
+            ActorRuntime.ActorControlHandle replacement = null;
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (replacement == null && System.nanoTime() < deadline) {
+                try {
+                    ActorRuntime.ActorControlHandle candidate =
+                            runtime.controlHandle(failed.id());
+                    if (candidate.generation() > failed.generation()) {
+                        replacement = candidate;
+                    }
+                } catch (IllegalArgumentException ignored) {
+                    // Failed incarnation is already physically gone; wait for
+                    // the runtime-owned backoff wake to publish the replacement.
+                }
+                if (replacement == null) Thread.sleep(1);
+            }
+
+            assertNotNull(replacement, "backoff timer did not restart actor");
+            assertEquals(1, handlerCalls.get(),
+                    "timer wake must resume the stored directive, not guest code");
+            assertEquals(0, runtime.supervisorControlBacklog());
+
+            replacement.stop();
+            assertTrue(replacement.awaitTermination(3, TimeUnit.SECONDS));
+            supervisor.stop();
+            supervisor.getDone().get(3, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void throwingSupervisorHandlerFailsParentButRetainsChildControl()
             throws Exception {
         AtomicReference<ActorRuntime.ActorRef<String>> child = new AtomicReference<>();

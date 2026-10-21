@@ -27,6 +27,7 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -1055,7 +1056,10 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorCell<?> cell;
         private final ActorRef<?> supervisorRef;
         private final AtomicBoolean deliveryQueued = new AtomicBoolean();
+        private final AtomicReference<ScheduledFuture<?>> backoffWake =
+                new AtomicReference<>();
         private volatile long restartNotBeforeNanos;
+        private volatile SupervisorControlDirective deferredDirective;
 
         private PendingSupervisorControl(
                 SupervisorControlEvent event,
@@ -1481,6 +1485,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (!pendingSupervisorControls.remove(actorId, pending)) {
                 continue;
             }
+            cancelSupervisorBackoffWake(pending);
             if (!cell.supervisorControlPending.compareAndSet(true, false)) {
                 lifecyclePublicationFailures.incrementAndGet();
                 pendingSupervisorControls.putIfAbsent(actorId, pending);
@@ -1593,6 +1598,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (!pendingSupervisorControls.remove(actorId, pending)) {
                 continue;
             }
+            cancelSupervisorBackoffWake(pending);
 
             if (!pending.cell.supervisorControlPending.compareAndSet(true, false)) {
                 lifecyclePublicationFailures.incrementAndGet();
@@ -1629,9 +1635,9 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
-     * Re-attempt exact-parent CONTROL delivery for a retained event. This is
-     * nonblocking and generation-bound; it is used after explicit RETAIN or
-     * after the caller's backoff timer has expired.
+     * Re-attempt exact-parent CONTROL delivery for an explicitly retained
+     * event. This is nonblocking and generation-bound. Restart-policy backoff
+     * uses a runtime-owned timer and does not require host redispatch.
      */
     public boolean redispatchSupervisorControlEvent(
             ActorId actorId,
@@ -6651,7 +6657,57 @@ public final class ActorRuntime implements AutoCloseable {
         lifecycleObserverDispatcher.execute(isolated);
     }
 
+    private void cancelSupervisorBackoffWake(PendingSupervisorControl pending) {
+        ScheduledFuture<?> wake = pending.backoffWake.getAndSet(null);
+        if (wake != null) wake.cancel(false);
+        pending.restartNotBeforeNanos = 0L;
+        pending.deferredDirective = null;
+    }
+
+    private void armSupervisorBackoffWake(
+            PendingSupervisorControl pending,
+            long dueNanos) {
+        if (closed.get()
+                || pendingSupervisorControls.get(pending.event.actorId()) != pending) {
+            return;
+        }
+        long delay = Math.max(0L, dueNanos - System.nanoTime());
+        ScheduledFuture<?> wake = OresScheduler.scheduleRuntimeControlWake(
+                () -> {
+                    pending.backoffWake.set(null);
+                    if (closed.get()
+                            || pendingSupervisorControls.get(
+                                            pending.event.actorId()) != pending) {
+                        return;
+                    }
+                    long due = pending.restartNotBeforeNanos;
+                    if (due != 0L && System.nanoTime() - due < 0L) {
+                        armSupervisorBackoffWake(pending, due);
+                        return;
+                    }
+                    enqueueSupervisorControl(pending);
+                },
+                delay);
+        if (!pending.backoffWake.compareAndSet(null, wake)) {
+            wake.cancel(false);
+            throw new IllegalStateException(
+                    "supervisor CONTROL backoff wake already armed for "
+                            + pending.event.actorId() + "#"
+                            + pending.event.generation());
+        }
+        if (closed.get()
+                || pendingSupervisorControls.get(pending.event.actorId()) != pending) {
+            cancelSupervisorBackoffWake(pending);
+        }
+    }
+
     private boolean enqueueSupervisorControl(PendingSupervisorControl pending) {
+        long due = pending.restartNotBeforeNanos;
+        if (pending.deferredDirective != null
+                && due != 0L
+                && System.nanoTime() - due < 0L) {
+            return false;
+        }
         ActorRef<?> supervisorRef = pending.supervisorRef;
         if (supervisorRef == null || closed.get()) return false;
         ActorCell<?> supervisor = exactActorCell(supervisorRef);
@@ -6726,40 +6782,52 @@ public final class ActorRuntime implements AutoCloseable {
                 supervisor.executionDomain);
         CURRENT_SUPERVISOR_CONTROL.set(execution);
         try {
-            SupervisorRestartLimiter.Decision policyDecision =
-                    supervisor.supervisorRestartLimiter == null
-                            ? null
-                            : supervisor.supervisorRestartLimiter.decideAuthoritative(
-                                    pending.event);
-            SupervisorControlContext context =
-                    new SupervisorControlContext(
-                            supervisor.ref,
-                            pending.event,
-                            policyDecision);
-
-            SupervisorControlDirective directive = switch (pending.event.failureKind()) {
-                case THROW -> handler.onThrow(context, pending.event);
-                case RAISE -> handler.onRaise(context, pending.event);
-                case PANIC -> handler.onPanic(context, pending.event);
-                case RUNTIME_FAILURE -> handler.onRuntimeFailure(context, pending.event);
-                case NONE -> throw new IllegalStateException(
-                        "NONE cannot enter supervisor CONTROL lane");
-            };
-            directive = Objects.requireNonNull(
-                    directive, "supervisor CONTROL handler returned null directive");
-
-            if (policyDecision != null
-                    && policyDecision.action() == SupervisorRestartLimiter.Action.ESCALATE
-                    && directive == SupervisorControlDirective.RESTART) {
-                directive = SupervisorControlDirective.ESCALATE;
-            }
-
-            if (directive == SupervisorControlDirective.RESTART
-                    && policyDecision != null
-                    && !policyDecision.backoff().isZero()) {
-                long now = System.nanoTime();
+            SupervisorControlDirective directive =
+                    pending.deferredDirective;
+            if (directive != null) {
                 long due = pending.restartNotBeforeNanos;
-                if (due == 0L) {
+                if (due != 0L && System.nanoTime() - due < 0L) {
+                    return;
+                }
+                // The guest handler already selected this exact directive on
+                // the original CONTROL turn. Never run guest code twice merely
+                // because a timer elapsed.
+                pending.deferredDirective = null;
+                pending.restartNotBeforeNanos = 0L;
+            } else {
+                SupervisorRestartLimiter.Decision policyDecision =
+                        supervisor.supervisorRestartLimiter == null
+                                ? null
+                                : supervisor.supervisorRestartLimiter.decideAuthoritative(
+                                        pending.event);
+                SupervisorControlContext context =
+                        new SupervisorControlContext(
+                                supervisor.ref,
+                                pending.event,
+                                policyDecision);
+
+                directive = switch (pending.event.failureKind()) {
+                    case THROW -> handler.onThrow(context, pending.event);
+                    case RAISE -> handler.onRaise(context, pending.event);
+                    case PANIC -> handler.onPanic(context, pending.event);
+                    case RUNTIME_FAILURE -> handler.onRuntimeFailure(context, pending.event);
+                    case NONE -> throw new IllegalStateException(
+                            "NONE cannot enter supervisor CONTROL lane");
+                };
+                directive = Objects.requireNonNull(
+                        directive, "supervisor CONTROL handler returned null directive");
+
+                if (policyDecision != null
+                        && policyDecision.action()
+                                == SupervisorRestartLimiter.Action.ESCALATE
+                        && directive == SupervisorControlDirective.RESTART) {
+                    directive = SupervisorControlDirective.ESCALATE;
+                }
+
+                if (directive == SupervisorControlDirective.RESTART
+                        && policyDecision != null
+                        && !policyDecision.backoff().isZero()) {
+                    long now = System.nanoTime();
                     long delay = policyDecision.backoff().toNanos();
                     long candidate;
                     try {
@@ -6768,9 +6836,9 @@ public final class ActorRuntime implements AutoCloseable {
                         candidate = Long.MAX_VALUE;
                     }
                     pending.restartNotBeforeNanos = candidate;
-                    directive = SupervisorControlDirective.RETAIN;
-                } else if (now - due < 0L) {
-                    directive = SupervisorControlDirective.RETAIN;
+                    pending.deferredDirective = SupervisorControlDirective.RESTART;
+                    armSupervisorBackoffWake(pending, candidate);
+                    return;
                 }
             }
 
@@ -8709,6 +8777,12 @@ public final class ActorRuntime implements AutoCloseable {
         synchronized (runtimeLifecycleLock) {
             firstClose = closed.compareAndSet(false, true);
             snapshot = List.copyOf(actors.values());
+        }
+        if (firstClose) {
+            for (PendingSupervisorControl pending :
+                    List.copyOf(pendingSupervisorControls.values())) {
+                cancelSupervisorBackoffWake(pending);
+            }
         }
         for (ActorCell<?> cell : snapshot) cell.stop();
         if (firstClose && physicalTurnGate != null) physicalTurnGate.close();
