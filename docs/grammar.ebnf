@@ -148,8 +148,8 @@ named_inferred_literal
                 = "infer" "<" IDENT ">" (
                     "struct" "{" [ struct_value_field { "," struct_value_field } ] "}"
                   | "record" "{" [ struct_value_field { "," struct_value_field } ] "}"
-                  | "tuple" ( "{" expression { "," expression } "}"
-                            | "(" expression { "," expression } ")" ) ) ;
+                  | "tuple" ( "{" expression { "," expression } [ "," ] "}"
+                            | "(" expression { "," expression } [ "," ] ")" ) ) ;
 (* The first type IDENT of named_inferred_binding must equal the IDENT after infer<...>.
    Named inference captures a lexical compile-time type alias; it does not create a
    runtime type object. infer struct captures an exact closed struct shape. Record
@@ -232,9 +232,16 @@ match_arm       = ( pattern | "else" ) [ "when" expression ] "->" block ;
    "structural" remains contextual and is consumed only where grammar requires it. *)
 pattern         = "_"
                 | literal
+                | tuple_pattern
                 | IDENT
                 | IDENT "(" [ pattern { "," pattern } ] ")"
                 | "is" type_ref [ IDENT ] ;
+tuple_pattern   = "tuple" "{" [ pattern { "," pattern } [ "," ] ] "}"
+                | "(" ")"
+                | "(" pattern "," [ pattern { "," pattern } [ "," ] ] ")" ;
+(* Explicit tuple patterns use braces; compact singleton patterns require
+   a comma: (x,) is a tuple pattern, whereas (x) is not. Neither bracket
+   arrays nor nominal Entry values are implicitly tuple patterns. *)
 
 switch_stmt     = [ "do" ] "switch" expression [ ";" ]
                   { switch_case } [ switch_default ] "end" ;
@@ -343,9 +350,12 @@ typed_legacy_lambda
                 = "(" [ param_list ] ")" "->" lambda_body ;
 lambda_body     = block | expression ;
 
-tuple_literal   = "tuple" "{" [ argument_list ] "}"
-                | "(" expression "," expression { "," expression } ")" ;
-(* tuple {...} is the explicit tuple literal. tuple(...) is not tuple syntax:
+tuple_literal   = "tuple" "{" [ expression { "," expression } [ "," ] ] "}"
+                | "(" ")"
+                | "(" expression "," [ expression { "," expression } [ "," ] ] ")" ;
+(* tuple {...} is the explicit tuple literal; () is the empty tuple.
+   A single parenthesized expression (x) is grouping, not a tuple;
+   (x,) is the one-element tuple. tuple(...) is not tuple syntax:
    it is parsed as an ordinary call. A user-declared callable named tuple wins;
    otherwise the compatibility builtin callable constructs a tuple so existing
    source keeps working during migration. The parenthesized infer<T> tuple(...)
