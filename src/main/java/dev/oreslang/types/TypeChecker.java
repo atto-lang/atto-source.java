@@ -4280,8 +4280,21 @@ public final class TypeChecker {
                 if (lambda.expressionBody() != null) {
                     result = typeOf(lambda.expressionBody(), lambdaEnv, generics, self);
                 } else {
-                    checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
-                    result = Unknown.INSTANCE;
+                    // A one-expression return block has an unambiguous result
+                    // type. Infer it without inventing a return type for more
+                    // complex control flow, and still check the complete block.
+                    // This preserves source-level |args| -> { return expr; }
+                    // as a callable whose result can be used in typed code.
+                    if (lambda.blockBody().size() == 1
+                            && lambda.blockBody().getFirst() instanceof Ast.ReturnStmt returned
+                            && returned.value() != null) {
+                        Type inferredReturn = typeOf(returned.value(), lambdaEnv, generics, self);
+                        checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, inferredReturn, self);
+                        result = inferredReturn;
+                    } else {
+                        checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
+                        result = Unknown.INSTANCE;
+                    }
                 }
             } finally {
                 // Lambda bodies are checked now but execute later. Never let
