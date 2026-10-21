@@ -552,6 +552,9 @@ public final class ActorRuntime implements AutoCloseable {
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
         this.turnExecutor = Objects.requireNonNull(turnExecutor);
         this.controlDispatcher = Objects.requireNonNull(controlDispatcher);
+        ActorCpuAffinityConfig.requireDistinctHardCpuCapacity(
+                dispatcherConfig.privateParallelism(),
+                dispatcherConfig.sharedParallelism());
         ExecutorService privatePool = null;
         ExecutorService sharedPool = null;
         ExecutorService untrustedPool;
