@@ -7262,21 +7262,14 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof HttpFacade http) {
                 return switch (name) {
-                    case "handler" -> (Invokable) args -> {
-                        String type = requireStringArg(args, "http.handler");
-                        Ast.ClassDecl declaration = requireLocalActorClass(type);
-                        ActorRuntime.ActorKind kind = switch (declaration.actorKind()) {
-                            case SHARED -> ActorRuntime.ActorKind.SHARED;
-                            case PRIVATE -> ActorRuntime.ActorKind.PRIVATE;
-                            default -> throw new IllegalArgumentException("HTTP handler must be shared or isolated actor");
-                        };
-                        return context.http().handler(this, type, kind);
-                    };
+                    case "handler" -> (Invokable) args ->
+                            strictNonblockingIoRejected("http.handler");
                     case "listen" -> (Invokable) args ->
                             strictNonblockingIoRejected("http.listen");
                     case "listen_async" -> (Invokable) args ->
                             strictNonblockingIoFuture("http.listen_async");
-                    case "claim" -> (Invokable) args -> context.http().claim(requireStringArg(args, "http.claim"));
+                    case "claim" -> (Invokable) args ->
+                            strictNonblockingIoRejected("http.claim");
                     case "response_empty" -> (Invokable) args -> {
                         if (args.size() != 1 || !(args.get(0) instanceof Number status) || !isIntegral(status))
                             throw new IllegalArgumentException("http.response_empty requires one integral status");
