@@ -7811,6 +7811,25 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 throw new IllegalArgumentException("unknown member " + object.klass.name() + "." + name);
             }
+            if (receiver instanceof OresKeyedMap<?, ?> map) {
+                return switch (name) {
+                    case "size" -> (long) map.size();
+                    case "has" -> (Invokable) args -> {
+                        requireOne(args, "Map.has");
+                        return map.containsKey(args.getFirst());
+                    };
+                    case "get" -> (Invokable) args -> {
+                        requireOne(args, "Map.get");
+                        OresKeyedMap.Lookup<?> found = map.lookup(args.getFirst());
+                        return new OptionValue(found.present(), found.value());
+                    };
+                    case "take", "remove" -> throw new SecurityException(
+                            "Map." + name
+                                    + " is not exposed until owner-aware mutating member lowering is implemented");
+                    default -> throw new IllegalArgumentException(
+                            "unknown Map member " + name);
+                };
+            }
             if (receiver instanceof List<?> rawList) {
                 return switch (name) {
                     case "size" -> (long) rawList.size();
