@@ -410,17 +410,20 @@ final class TrustedOpenClProvider {
                 }
                 throw failure;
             }
+
             if (pair != null) {
                 try {
                     ComputeAuthority.abortPairBeforeEnqueue(input, output, pair);
                 } catch (RuntimeException abortFailure) {
                     failure.addSuppressed(abortFailure);
+                    synchronized (this) {
+                        quarantineLatched = true;
+                    }
                 }
             }
-            boolean released = releasePhysicalQuietly(inputPhysical, outputPhysical, failure);
-            if (released) {
-                lease.release();
-            }
+
+            cleanupPreEnqueuePhysical(
+                    lease, inputPhysical, outputPhysical, failure);
             prepared.releaseOperation();
             throw failure;
         }
@@ -649,28 +652,84 @@ final class TrustedOpenClProvider {
         }
     }
 
-    private boolean releasePhysicalQuietly(
+    void retryPreEnqueueCleanup() {
+        List<PreEnqueueRecovery> snapshot;
+        synchronized (this) {
+            snapshot = List.copyOf(preEnqueueRecoveries);
+        }
+
+        RuntimeException firstFailure = null;
+        for (PreEnqueueRecovery recovery : snapshot) {
+            synchronized (recovery) {
+                try {
+                    if (recovery.input != null) {
+                        driver.releaseBuffer(recovery.input);
+                        recovery.input = null;
+                    }
+                } catch (RuntimeException failure) {
+                    if (firstFailure == null) firstFailure = failure;
+                    else firstFailure.addSuppressed(failure);
+                }
+
+                try {
+                    if (recovery.output != null) {
+                        driver.releaseBuffer(recovery.output);
+                        recovery.output = null;
+                    }
+                } catch (RuntimeException failure) {
+                    if (firstFailure == null) firstFailure = failure;
+                    else firstFailure.addSuppressed(failure);
+                }
+
+                if (recovery.input == null && recovery.output == null) {
+                    recovery.lease.release();
+                    synchronized (this) {
+                        preEnqueueRecoveries.remove(recovery);
+                    }
+                }
+            }
+        }
+
+        if (firstFailure != null) {
+            throw firstFailure;
+        }
+    }
+
+    private void cleanupPreEnqueuePhysical(
+            Lease lease,
             PhysicalBuffer input,
             PhysicalBuffer output,
             Throwable original) {
-        boolean released = true;
-        if (input != null) {
+        PhysicalBuffer failedInput = input;
+        PhysicalBuffer failedOutput = output;
+
+        if (failedInput != null) {
             try {
-                driver.releaseBuffer(input);
+                driver.releaseBuffer(failedInput);
+                failedInput = null;
             } catch (RuntimeException failure) {
                 original.addSuppressed(failure);
-                released = false;
             }
         }
-        if (output != null) {
+
+        if (failedOutput != null) {
             try {
-                driver.releaseBuffer(output);
+                driver.releaseBuffer(failedOutput);
+                failedOutput = null;
             } catch (RuntimeException failure) {
                 original.addSuppressed(failure);
-                released = false;
             }
         }
-        return released;
+
+        if (failedInput == null && failedOutput == null) {
+            lease.release();
+            return;
+        }
+
+        synchronized (this) {
+            preEnqueueRecoveries.add(
+                    new PreEnqueueRecovery(lease, failedInput, failedOutput));
+        }
     }
 
     private Lease reserve(
@@ -686,7 +745,8 @@ final class TrustedOpenClProvider {
                     || resident > limits.residentBytes() - residentBytes
                     || pinned > limits.pinnedHostBytes() - pinnedHostBytes
                     || events > limits.outstandingEvents() - outstandingEvents
-                    || queues > limits.queueSlots() - queueSlots) {
+                    || queues > limits.queueSlots() - queueSlots
+                    || queues > queueAuthority.maximumInFlight() - queueSlots) {
                 throw new IllegalStateException("compute provider quota exhausted");
             }
             residentBytes += resident;
@@ -709,6 +769,32 @@ final class TrustedOpenClProvider {
                     || queueSlots < 0) {
                 throw new IllegalStateException("compute provider quota accounting underflow");
             }
+        }
+    }
+
+    private void validateTarget(GpuTarget target) {
+        if (target.addressBits() != deviceProfile.addressBits()
+                || target.maximumBufferBytes() > deviceProfile.maximumBufferBytes()
+                || target.maximumRows() > deviceProfile.maximumRows()
+                || (target.float32() && !deviceProfile.float32())) {
+            throw new IllegalArgumentException(
+                    "requested GPU target exceeds authenticated device profile");
+        }
+    }
+
+    private void validateArtifact(OpenClArtifact artifact) {
+        if (artifact.artifactAbiVersion() != 1
+                || artifact.requiredAddressBits() != deviceProfile.addressBits()
+                || (artifact.requiredFloat32() && !deviceProfile.float32())
+                || (artifact.requiredLittleEndian() && !deviceProfile.littleEndian())
+                || artifact.requiredBytes() <= 0
+                || artifact.requiredBytes() > deviceProfile.maximumBufferBytes()
+                || artifact.globalRows() <= 0
+                || artifact.globalRows() > deviceProfile.maximumRows()
+                || artifact.globalFields() <= 0
+                || artifact.globalFields() > deviceProfile.maximumFields()) {
+            throw new IllegalArgumentException(
+                    "OpenCL artifact ABI is incompatible with authenticated device");
         }
     }
 
