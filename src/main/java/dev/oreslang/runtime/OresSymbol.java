@@ -1,95 +1,503 @@
 package dev.oreslang.runtime;
 
-import java.nio.charset.StandardCharsets;
-import java.text.Normalizer;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.regex.Pattern;
 
 /**
- * Immutable, nominal guest Symbol. Equality is logical (kind and NFC name),
- * never a VM handle, process-local interning slot or memory address.
+ * Immutable Symbol identity.
  *
- * This value deliberately does not intern untrusted strings in a global table.
- * Admission of userland Symbols to untrusted actors is a separate, scoped policy.
+ * <p>Oreslang deliberately has three identity domains:</p>
+ * <ul>
+ *   <li>LOCAL: canonical only inside one actor and reclaimed with that actor.</li>
+ *   <li>PROCESS: strongly interned for the trusted OS-process lifetime.</li>
+ *   <li>STABLE: UUID identity whose equality/wire identity survives process restart.</li>
+ * </ul>
+ *
+ * <p>No Symbol is a permission to share mutable heap state. Process/stable symbols
+ * cross trusted actor heaps as immutable values. Local symbols are non-Send. An
+ * adversarial/untrusted isolate is never admitted to any Symbol domain.</p>
  */
 public final class OresSymbol {
-    public enum Kind { PROCESS, STABLE }
+    public enum Scope { LOCAL, PROCESS, STABLE }
 
-    private static final Set<String> PUBLIC_CORE_V1 =
-            Set.of("ready", "error", "Symbol.iterator");
+    public static final int MAX_KEY_LENGTH = 256;
+    public static final int MAX_PROCESS_SYMBOLS = 65_536;
+    /**
+     * Dynamic Symbol.process(...) calls may not consume the whole process table.
+     * The remainder is reserved for compiler-known :literal protocol tags so
+     * trusted hot-loaded code cannot be starved by earlier dynamic interning.
+     */
+    public static final int MAX_DYNAMIC_PROCESS_SYMBOLS = 57_344;
+    public static final int RESERVED_LITERAL_PROCESS_SYMBOLS =
+            MAX_PROCESS_SYMBOLS - MAX_DYNAMIC_PROCESS_SYMBOLS;
+    public static final int MAX_STABLE_SYMBOLS = 65_536;
+    public static final int MAX_LOCAL_SYMBOLS_PER_ACTOR = 4_096;
+    public static final int MAX_LITERAL_NAME_LENGTH = 128;
 
-    private final Kind kind;
-    private final String name;
+    /** Backward-compatible name for the process-table bound. */
+    public static final int MAX_LIVE_SYMBOLS = MAX_PROCESS_SYMBOLS;
 
-    private OresSymbol(Kind kind, String name) {
-        this.kind = Objects.requireNonNull(kind, "kind");
-        this.name = normalizeAndValidate(name);
+    private static final Pattern IDENTIFIER = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
+    private static final Object PROCESS_INSERT_LOCK = new Object();
+    private static final Object STABLE_INSERT_LOCK = new Object();
+    private static final Object LOCAL_REGISTRY_KEY = new Object();
+    private static final UUID PROCESS_DOMAIN = UUID.randomUUID();
+    private static final ConcurrentHashMap<String, OresSymbol> PROCESS_SYMBOLS = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<UUID, OresSymbol> STABLE_SYMBOLS = new ConcurrentHashMap<>();
+    private static final AtomicLong NEXT_PROCESS_ID = new AtomicLong(1L);
+    private static final AtomicLong NEXT_STABLE_ID = new AtomicLong(1L);
+    private static int dynamicProcessSymbols;
+
+    private final Scope scope;
+    private final String key;
+    private final long id;
+    private final UUID domain;
+
+    private OresSymbol(Scope scope, String key, long id, UUID domain) {
+        this.scope = Objects.requireNonNull(scope);
+        this.key = Objects.requireNonNull(key);
+        this.id = id;
+        this.domain = Objects.requireNonNull(domain);
     }
 
-    public static OresSymbol process(String name) {
-        return new OresSymbol(Kind.PROCESS, name);
+    /**
+     * Compatibility entry point. Explicit APIs should prefer process(...).
+     */
+    public static OresSymbol of(String key) {
+        return process(key);
     }
 
-    public static OresSymbol stable(String canonicalUuid) {
-        String checked = normalizeAndValidate(canonicalUuid);
-        try {
-            if (!UUID.fromString(checked).toString().equals(checked)) {
-                throw new IllegalArgumentException("stable Symbol UUID is not canonical");
+    /**
+     * Compatibility entry point. Explicit APIs should prefer process(...).
+     */
+    public static OresSymbol of(String key, IsolatePolicy policy) {
+        return process(key, policy);
+    }
+
+    /** Strongly canonical process-lifetime identity for trusted execution. */
+    public static OresSymbol process(String key) {
+        return process(key, IsolatePolicy.developer());
+    }
+
+    public static OresSymbol process(String key, IsolatePolicy policy) {
+        requireTrusted(policy, "Symbol.process");
+        return internProcess(key, false);
+    }
+
+    /**
+     * Compiler/runtime entry point for a statically known :literal.
+     *
+     * Dynamic callers intentionally cannot consume the reserved literal slice
+     * of the process table. Existing dynamic symbols are still reused so
+     * :ready and Symbol.process("ready") are exactly the same identity.
+     */
+    public static OresSymbol processLiteral(String key, IsolatePolicy policy) {
+        requireTrusted(policy, "Symbol literal");
+        return internProcess(validateLiteralName(key), true);
+    }
+
+    /**
+     * Atomically admit all compiler/source literals for a successfully checked
+     * code unit. Capacity is preflighted under the insertion lock, so a failed
+     * code load cannot leave a partially installed permanent identity set.
+     */
+    public static void registerProcessLiterals(
+            Collection<String> keys,
+            IsolatePolicy policy) {
+        Objects.requireNonNull(keys, "keys");
+        requireTrusted(policy, "source Symbol literal registration");
+
+        LinkedHashSet<String> literals = new LinkedHashSet<>();
+        for (String key : keys) literals.add(validateLiteralName(key));
+        if (literals.isEmpty()) return;
+
+        synchronized (PROCESS_INSERT_LOCK) {
+            int missing = 0;
+            for (String literal : literals) {
+                if (!PROCESS_SYMBOLS.containsKey(literal)) missing++;
             }
-        } catch (IllegalArgumentException failure) {
-            throw new IllegalArgumentException("stable Symbol requires canonical lowercase UUID", failure);
+            if (missing > MAX_PROCESS_SYMBOLS - PROCESS_SYMBOLS.size()) {
+                throw new IllegalStateException(
+                        "process Symbol table lacks capacity for " + missing
+                                + " new source literal(s); limit=" + MAX_PROCESS_SYMBOLS);
+            }
+            long nextReservedId = reserveMonotonicIds(
+                    NEXT_PROCESS_ID,
+                    missing,
+                    "process Symbol");
+            for (String literal : literals) {
+                if (PROCESS_SYMBOLS.containsKey(literal)) continue;
+                PROCESS_SYMBOLS.put(
+                        literal,
+                        new OresSymbol(
+                                Scope.PROCESS,
+                                literal,
+                                nextReservedId++,
+                                PROCESS_DOMAIN));
+            }
         }
-        return new OresSymbol(Kind.STABLE, checked);
     }
 
-    public Kind kind() { return kind; }
-    public String name() { return name; }
-
-    /** Temporary sealed core allowlist; not a tenant-scoped export mechanism. */
-    public boolean publicToUntrustedCoreV1() {
-        return kind == Kind.PROCESS && PUBLIC_CORE_V1.contains(name);
+    /** Built-in protocol identity. Currently Symbol.iterator is defined. */
+    public static OresSymbol wellKnown(String name, IsolatePolicy policy) {
+        requireTrusted(policy, "well-known Symbol");
+        String validated = validateLiteralName(name);
+        return switch (validated) {
+            case "iterator" -> internProcess("Symbol.iterator", true);
+            default -> throw new IllegalArgumentException(
+                    "unknown well-known Symbol." + validated);
+        };
     }
 
-    public static String normalizeAndValidate(String input) {
-        Objects.requireNonNull(input, "Symbol name");
-        String value = Normalizer.normalize(input, Normalizer.Form.NFC);
-        if (value.isEmpty() || value.getBytes(StandardCharsets.UTF_8).length > 256) {
-            throw new IllegalArgumentException("Symbol name requires 1..256 UTF-8 bytes");
+    private static OresSymbol internProcess(String key, boolean compilerLiteral) {
+        String normalized = validateKey(key);
+        OresSymbol existing = PROCESS_SYMBOLS.get(normalized);
+        if (existing != null) return existing;
+
+        // Misses are rare compared with protocol-tag reads. Serialize only
+        // insertion/capacity reservation so the common canonical lookup stays
+        // monitor-free across actor carrier threads.
+        synchronized (PROCESS_INSERT_LOCK) {
+            existing = PROCESS_SYMBOLS.get(normalized);
+            if (existing != null) return existing;
+            if (PROCESS_SYMBOLS.size() >= MAX_PROCESS_SYMBOLS) {
+                throw new IllegalStateException(
+                        "process Symbol table limit exceeded: " + MAX_PROCESS_SYMBOLS
+                                + "; use actor-local/string data for unbounded dynamic values");
+            }
+            if (!compilerLiteral && dynamicProcessSymbols >= MAX_DYNAMIC_PROCESS_SYMBOLS) {
+                throw new IllegalStateException(
+                        "dynamic process Symbol table limit exceeded: " + MAX_DYNAMIC_PROCESS_SYMBOLS
+                                + "; " + RESERVED_LITERAL_PROCESS_SYMBOLS
+                                + " slots are reserved for compiler-known :literals");
+            }
+            OresSymbol created = new OresSymbol(
+                    Scope.PROCESS, normalized, nextProcessId(), PROCESS_DOMAIN);
+            PROCESS_SYMBOLS.put(normalized, created);
+            if (!compilerLiteral) dynamicProcessSymbols++;
+            return created;
         }
-        for (int i = 0; i < value.length();) {
-            char c = value.charAt(i);
-            if (Character.isSurrogate(c)) {
-                if (!Character.isHighSurrogate(c) || i + 1 == value.length()
-                        || !Character.isLowSurrogate(value.charAt(i + 1))) {
-                    throw new IllegalArgumentException("unpaired UTF-16 surrogate in Symbol");
+    }
+
+    /**
+     * Persistence-safe UUID identity. Stable equality is the UUID itself; the
+     * process-local id is only a fast/debug handle and is never serialized.
+     */
+    public static OresSymbol stable(String uuidKey) {
+        return stable(uuidKey, IsolatePolicy.developer());
+    }
+
+    public static OresSymbol stable(String uuidKey, IsolatePolicy policy) {
+        requireTrusted(policy, "Symbol.stable");
+        UUID stableId = validateStableKey(uuidKey);
+        OresSymbol existing = STABLE_SYMBOLS.get(stableId);
+        if (existing != null) return existing;
+
+        synchronized (STABLE_INSERT_LOCK) {
+            existing = STABLE_SYMBOLS.get(stableId);
+            if (existing != null) return existing;
+            if (STABLE_SYMBOLS.size() >= MAX_STABLE_SYMBOLS) {
+                throw new IllegalStateException(
+                        "stable Symbol table limit exceeded: " + MAX_STABLE_SYMBOLS);
+            }
+            String canonical = stableId.toString();
+            OresSymbol created = new OresSymbol(
+                    Scope.STABLE, canonical, nextStableId(), stableId);
+            STABLE_SYMBOLS.put(stableId, created);
+            return created;
+        }
+    }
+
+    /**
+     * Actor-owned identity. Same-key values are canonical only within the current
+     * actor and the whole local table dies with the actor cell.
+     */
+    public static OresSymbol local(
+            String key,
+            ActorRuntime runtime,
+            IsolatePolicy policy) {
+        requireTrusted(policy, "Symbol.local");
+        Objects.requireNonNull(runtime, "runtime");
+        String normalized = validateKey(key);
+        if (ActorRuntime.currentActorRuntime() != runtime) {
+            throw new IllegalStateException(
+                    "Symbol.local(...) must use the currently executing actor runtime");
+        }
+        ActorRuntime.ActorId actorId = runtime.currentActorId();
+        if (actorId == null) {
+            throw new IllegalStateException(
+                    "Symbol.local(...) is only valid while executing an actor");
+        }
+
+        LocalRegistry registry = runtime.currentActorLocal(
+                LOCAL_REGISTRY_KEY,
+                () -> new LocalRegistry(actorId));
+        if (registry == null || !registry.actorId.equals(actorId)) {
+            throw new IllegalStateException("actor-local Symbol registry is unavailable");
+        }
+        OresSymbol existing = registry.symbols.get(normalized);
+        if (existing != null) return existing;
+        if (registry.symbols.size() >= MAX_LOCAL_SYMBOLS_PER_ACTOR) {
+            throw new IllegalStateException(
+                    "actor-local Symbol limit exceeded: " + MAX_LOCAL_SYMBOLS_PER_ACTOR);
+        }
+        OresSymbol created = new OresSymbol(
+                Scope.LOCAL, normalized, registry.nextId(), actorId.value());
+        registry.symbols.put(normalized, created);
+        return created;
+    }
+
+    public Scope scope() {
+        return scope;
+    }
+
+    public String key() {
+        return key;
+    }
+
+    /** Process-local monotonic handle. Never serialize this value. */
+    public long id() {
+        return id;
+    }
+
+    /** Identity-domain id; useful for diagnostics, never as a wire format. */
+    public UUID domainId() {
+        return domain;
+    }
+
+    /** Compatibility/readability alias for identifier-style protocol tags. */
+    public String name() {
+        return key;
+    }
+
+    public boolean sendable() {
+        return scope != Scope.LOCAL;
+    }
+
+    public boolean processStable() {
+        return scope == Scope.PROCESS || scope == Scope.STABLE;
+    }
+
+    public Wire toWire() {
+        if (scope == Scope.LOCAL) {
+            throw new IllegalStateException(
+                    "actor-local Symbols are not serializable or Sendable");
+        }
+        return new Wire(scope, key);
+    }
+
+    /**
+     * Safe wire decode: resolve only identities already admitted to this
+     * process. This deliberately does not intern attacker-controlled wire text.
+     */
+    public static OresSymbol fromWire(Wire wire, IsolatePolicy policy) {
+        Objects.requireNonNull(wire, "wire");
+        requireTrusted(policy, "Symbol wire decode");
+        OresSymbol known = switch (wire.scope()) {
+            case PROCESS -> PROCESS_SYMBOLS.get(validateKey(wire.key()));
+            case STABLE -> STABLE_SYMBOLS.get(validateStableKey(wire.key()));
+            case LOCAL -> throw new IllegalArgumentException(
+                    "actor-local Symbol wire values are forbidden");
+        };
+        if (known == null) {
+            throw new IllegalArgumentException(
+                    "unknown " + wire.scope().name().toLowerCase(Locale.ROOT)
+                            + " Symbol wire key; pre-register it or use fromTrustedWire(...) "
+                            + "only for authenticated/trusted symbol dictionaries");
+        }
+        return known;
+    }
+
+    /**
+     * Explicitly trusted wire admission. This may create a permanent bounded
+     * PROCESS/STABLE registry entry and therefore must never be used directly
+     * on unauthenticated or attacker-controlled text.
+     */
+    public static OresSymbol fromTrustedWire(Wire wire, IsolatePolicy policy) {
+        Objects.requireNonNull(wire, "wire");
+        requireTrusted(policy, "trusted Symbol wire decode");
+        return switch (wire.scope()) {
+            case PROCESS -> process(wire.key(), policy);
+            case STABLE -> stable(wire.key(), policy);
+            case LOCAL -> throw new IllegalArgumentException(
+                    "actor-local Symbol wire values are forbidden");
+        };
+    }
+
+    public static int processRegistryEntries() {
+        return PROCESS_SYMBOLS.size();
+    }
+
+    public static int stableRegistryEntries() {
+        return STABLE_SYMBOLS.size();
+    }
+
+    public static int liveRegistryEntries() {
+        return Math.addExact(PROCESS_SYMBOLS.size(), STABLE_SYMBOLS.size());
+    }
+
+    private static long nextProcessId() {
+        return nextMonotonicId(NEXT_PROCESS_ID, "process Symbol");
+    }
+
+    private static long nextStableId() {
+        return nextMonotonicId(NEXT_STABLE_ID, "stable Symbol");
+    }
+
+    private static long nextMonotonicId(AtomicLong counter, String domain) {
+        return reserveMonotonicIds(counter, 1, domain);
+    }
+
+    private static long reserveMonotonicIds(
+            AtomicLong counter,
+            int count,
+            String domain) {
+        if (count < 0) throw new IllegalArgumentException("id reservation count cannot be negative");
+        if (count == 0) return counter.get();
+        while (true) {
+            long current = counter.get();
+            if (current <= 0 || current > Long.MAX_VALUE - count) {
+                throw new IllegalStateException(domain + " id space exhausted");
+            }
+            long next = current + count;
+            if (counter.compareAndSet(current, next)) return current;
+        }
+    }
+
+    private static void requireTrusted(IsolatePolicy policy, String api) {
+        Objects.requireNonNull(policy, "policy");
+        IsolatePolicy actorPolicy = ActorRuntime.currentActorPolicy();
+        if (policy.adversarial() || (actorPolicy != null && actorPolicy.adversarial())) {
+            throw new SecurityException(
+                    "Symbols are unavailable to adversarial/untrusted isolates: " + api);
+        }
+    }
+
+    private static String validateLiteralName(String raw) {
+        String literal = validateKey(raw);
+        if (literal.length() > MAX_LITERAL_NAME_LENGTH || !IDENTIFIER.matcher(literal).matches()) {
+            throw new IllegalArgumentException(
+                    "Symbol literal key must be an identifier of at most "
+                            + MAX_LITERAL_NAME_LENGTH + " characters");
+        }
+        return literal;
+    }
+
+    private static String validateKey(String key) {
+        Objects.requireNonNull(key, "symbol key");
+        if (key.isBlank()) throw new IllegalArgumentException("symbol key cannot be blank");
+        if (key.length() > MAX_KEY_LENGTH) {
+            throw new IllegalArgumentException(
+                    "symbol key exceeds " + MAX_KEY_LENGTH + " characters");
+        }
+        for (int i = 0; i < key.length(); i++) {
+            char c = key.charAt(i);
+            if (Character.isHighSurrogate(c)) {
+                if (i + 1 >= key.length() || !Character.isLowSurrogate(key.charAt(i + 1))) {
+                    throw new IllegalArgumentException(
+                            "symbol key cannot contain unpaired surrogate characters");
                 }
+                i++;
+                continue;
             }
-            int codepoint = value.codePointAt(i);
-            if (codepoint < 0x20 || (codepoint >= 0x7f && codepoint <= 0x9f)
-                    || Character.getType(codepoint) == Character.FORMAT
-                    || codepoint == 0x061c || codepoint == 0x200e || codepoint == 0x200f
-                    || (codepoint >= 0x202a && codepoint <= 0x202e)
-                    || (codepoint >= 0x2066 && codepoint <= 0x2069)) {
-                throw new IllegalArgumentException("control or bidi character in Symbol");
+            if (Character.isLowSurrogate(c)) {
+                throw new IllegalArgumentException(
+                        "symbol key cannot contain unpaired surrogate characters");
             }
-            i += Character.charCount(codepoint);
+            if (Character.isISOControl(c)) {
+                throw new IllegalArgumentException(
+                        "symbol key cannot contain control characters");
+            }
         }
-        return value;
+        return key;
     }
 
-    @Override public boolean equals(Object other) {
-        return other instanceof OresSymbol symbol
-                && kind == symbol.kind && name.equals(symbol.name);
+    private static UUID validateStableKey(String key) {
+        String validated = validateKey(key);
+        if (validated.length() != 36) {
+            throw new IllegalArgumentException(
+                    "stable Symbol key must be a canonical UUID");
+        }
+        final UUID uuid;
+        try {
+            uuid = UUID.fromString(validated);
+        } catch (IllegalArgumentException invalid) {
+            throw new IllegalArgumentException(
+                    "stable Symbol key must be a canonical UUID", invalid);
+        }
+        String canonical = uuid.toString();
+        if (!canonical.equals(validated.toLowerCase(Locale.ROOT))) {
+            throw new IllegalArgumentException(
+                    "stable Symbol key must be a canonical UUID");
+        }
+        return uuid;
     }
 
-    @Override public int hashCode() {
-        return Objects.hash(kind, name);
+    private static String escaped(String value) {
+        return value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
-    @Override public String toString() {
-        if (kind == Kind.STABLE) return "Symbol.stable(\"" + name + "\")";
-        if (name.matches("[A-Za-z_][A-Za-z0-9_]*")) return "#" + name;
-        return "#\"" + name.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+    @Override
+    public boolean equals(Object other) {
+        if (!(other instanceof OresSymbol symbol) || symbol.scope != scope) return false;
+        if (scope == Scope.STABLE) return domain.equals(symbol.domain);
+        return id == symbol.id && domain.equals(symbol.domain);
+    }
+
+    @Override
+    public int hashCode() {
+        if (scope == Scope.STABLE) return Objects.hash(scope, domain);
+        return Objects.hash(scope, domain, id);
+    }
+
+    @Override
+    public String toString() {
+        return switch (scope) {
+            case PROCESS -> key.equals("Symbol.iterator")
+                    ? key
+                    : IDENTIFIER.matcher(key).matches()
+                            ? ":" + key
+                            : "Symbol.process(\"" + escaped(key) + "\")";
+            case STABLE -> "Symbol.stable(\"" + escaped(key) + "\")";
+            case LOCAL -> "Symbol.local(\"" + escaped(key) + "\")";
+        };
+    }
+
+    public record Wire(Scope scope, String key) {
+        public Wire {
+            Objects.requireNonNull(scope, "scope");
+            if (scope == Scope.LOCAL) {
+                throw new IllegalArgumentException(
+                        "actor-local Symbol wire values are forbidden");
+            }
+            key = scope == Scope.STABLE
+                    ? validateStableKey(key).toString()
+                    : validateKey(key);
+        }
+    }
+
+    private static final class LocalRegistry {
+        private final ActorRuntime.ActorId actorId;
+        private final Map<String, OresSymbol> symbols = new HashMap<>();
+        private long nextLocalId = 1L;
+
+        private LocalRegistry(ActorRuntime.ActorId actorId) {
+            this.actorId = Objects.requireNonNull(actorId);
+        }
+
+        private long nextId() {
+            if (nextLocalId <= 0 || nextLocalId == Long.MAX_VALUE) {
+                throw new IllegalStateException("actor-local Symbol id space exhausted");
+            }
+            return nextLocalId++;
+        }
     }
 }
