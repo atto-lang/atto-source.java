@@ -100,9 +100,12 @@ public final class PortableLibrarySources {
         Tier tier = requireTier(importPath);
         String relative = canonicalRelativePath(importPath, tier);
         if (!packagedSourcePaths(tier).contains(relative)) {
+            String label = tier == Tier.STD
+                    ? "core-library"
+                    : "alloc-library";
             throw new IllegalArgumentException(
-                    "unknown Oreslang " + tier.importPrefix()
-                            + " library module: " + importPath);
+                    "unknown Oreslang " + label
+                            + " module: " + importPath);
         }
 
         String resource = tier.resourcePrefix() + relative;
