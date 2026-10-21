@@ -140,3 +140,47 @@ Do not copy full private Git trees to a public or unapproved carrier.
 The existing private GitHub Actions capacity probes failed or did not
 start, so **no full exact-tree CI success** is claimed. The new Java
 PR remains **draft**.
+
+
+## Round 5: enforce source-report identity and deny unproven direct call certificates
+
+Previous exact-blob Java/LLVM model results above are valid for their
+*listed earlier blob SHAs only*. The new provenance edits change
+`EffectContracts.java` and `SourceEffectAudit.java`, so none of the
+earlier exact-blob execution results can be represented as passing on the
+new PR head without re-executing the corresponding tests.
+
+This round changes the security boundary deliberately:
+
+- `SourceEffectAudit.Report` is now a final class with a **private**
+  constructor and immutable contents. A report obtained via
+  `SourceEffectAudit.inspect(source)` carries SHA-256 of the exact source
+  that completed parsing, typing and ownership checking. An internal
+  AST-only inspection is explicitly *not* a source-attested report.
+- The digest encoder rejects malformed UTF-16 (including lone surrogate
+  code units) instead of silently substituting UTF-8 replacement bytes.
+  A stand-alone Java 21 smoke of the exact digest method logic passed
+  8 local checks on valid/invalid encoding cases. This **does not**
+  prove compilation or execution of the full current production file.
+- `EffectContracts.Graph.validateClosedWorld()` now **rejects
+  caller-supplied `DIRECT` edges and self-declared trap-handler facts**
+  because the actual typed-HIR callsite/handler proof producer does not
+  exist yet. `infer()` and `validate()` continue to analyze such edges
+  as *hypotheses* for formal testing. A public graph with no direct edges
+  may pass this model gate, but that still is not a runtime authorization
+  capability or a compiler-derived effect certificate.
+- The standalone closure oracle and JUnit tests were updated to
+  distinguish model-only direct-edge propagation from proven closed-world
+  admission; additional JUnit tests check non-forgeable reports and exact
+  text fingerprints, including malformed Unicode denial.
+
+**Pending gates**: re-run the updated production blobs under JDK21+ and
+the new JUnit tests on the full compiler, then exact-tree Maven/JDK25,
+Native Image, native LLVM guest conformance. Local source-org Actions
+runs `39525247018` (synthetic runner smoke) and `39525247019`
+(fast-ci) failed before useful execution; the GitHub job responses
+contain no executed test steps. Private CI destination approval
+policy remains empty.
+
+Provenance/HIR implementation and accept/reject conformance matrix are
+tracked in [Java issue #1793](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/1793).
