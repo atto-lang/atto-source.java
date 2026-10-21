@@ -270,6 +270,38 @@ final class TaskBorrowBoundaryV2Test {
     }
 
     @Test
+    void unknownNominalTaskCaptureCannotAssumeSendWithoutLinkedLayout() throws Exception {
+        // The missing class definition is NOT proof that a host/external
+        // object is transferable. Only verified owned types can move across
+        // independently scheduled Tasks.
+        var program = Parser.parse("pub fnc main(): void { return; }");
+        var constructor = OwnershipChecker.class.getDeclaredConstructor(
+                dev.oreslang.ast.Ast.Program.class);
+        constructor.setAccessible(true);
+        var checker = constructor.newInstance(program);
+        var gate = OwnershipChecker.class.getDeclaredMethod(
+                "forbiddenTaskCapability", dev.oreslang.ast.Ast.TypeRef.class);
+        gate.setAccessible(true);
+
+        var unknown = dev.oreslang.ast.Ast.TypeRef.simple("ForeignRuntimeHandle");
+        assertTrue((Boolean) gate.invoke(checker, unknown),
+                "unlinked nominal has no Send proof");
+        assertTrue((Boolean) gate.invoke(checker,
+                new dev.oreslang.ast.Ast.TypeRef(
+                        "Option", java.util.List.of(unknown), false)),
+                "generic wrappers must propagate missing Send proof");
+        assertFalse((Boolean) gate.invoke(checker,
+                dev.oreslang.ast.Ast.TypeRef.simple("int")),
+                "primitive Copy/Send capture should remain supported");
+        assertFalse((Boolean) gate.invoke(checker,
+                new dev.oreslang.ast.Ast.TypeRef(
+                        "ActorRef",
+                        java.util.List.of(dev.oreslang.ast.Ast.TypeRef.simple("Worker")),
+                        false)),
+                "ActorRef protocol name does not embed an actor instance");
+    }
+
+    @Test
     void canonicalRtCopyAndRtShareScalarsRemainSafeInTasks() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 pub async fnc main(): void {
