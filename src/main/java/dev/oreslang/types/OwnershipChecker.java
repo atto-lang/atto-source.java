@@ -2173,8 +2173,8 @@ public final class OwnershipChecker {
                 || !isCompilerJsonFactoryName(member.receiver(), scope)) {
             return null;
         }
-        if (call.typeArgumentsPresent()) {
-            throw error("compiler-owned Json factories do not accept type arguments");
+        if (call.typeArgumentsPresent() && !member.member().equals("decode")) {
+            throw error("only Json.decode<T> accepts compiler-owned Json type arguments");
         }
 
         Ast.TypeRef jsonValue = Ast.TypeRef.simple("JsonValue");
@@ -2211,6 +2211,18 @@ public final class OwnershipChecker {
                 }
                 checkExpr(call.arguments().getFirst(), scope, false);
                 return new ValueInfo(jsonValue, ValueKind.MOVE_ONLY, null);
+            }
+            case "decode" -> {
+                if (!call.typeArgumentsPresent()
+                        || call.typeArguments().size() != 1) {
+                    throw error("Json.decode<T> requires exactly one explicit target type");
+                }
+                if (call.arguments().size() != 1) {
+                    throw error("Json.decode<T> expects exactly one String argument");
+                }
+                checkExpr(call.arguments().getFirst(), scope, false);
+                Ast.TypeRef target = call.typeArguments().getFirst();
+                return new ValueInfo(target, kindOfType(target), null);
             }
             case "stringify" -> {
                 if (call.arguments().size() != 1) {
