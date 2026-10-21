@@ -138,7 +138,7 @@ The safety contract is nonetheless strict:
 1. A `Ref<T>` or `WeakRef<T>` captured in an actor source continuation
    remains confined to its original actor execution domain. Resume after
    `await` or cooperation must re-enter that domain before any access.
-2. An ordinary lexical `&T` or `&mut T` borrow cannot cross a suspension
+2. An ordinary lexical `borrow T` or `borrow mut T` loan cannot cross a suspension
    point today. `OwnershipChecker.checkSuspensionBorrows` deliberately
    rejects it; the actor runtime's implicit `self` borrow is the only
    special mailbox-owned exception.
