@@ -76,6 +76,48 @@ final class ActorNativeArenaTest {
     }
 
     @Test
+    void nativeCapabilityHandlesAreOpaqueArenaLocalAndReferenceCounted() {
+        AtomicLong charged = new AtomicLong();
+        AtomicLong foreignCharged = new AtomicLong();
+        Object marker = new Object();
+        try (ActorNativeArena arena = arena(16 * 1024, charged);
+             ActorNativeArena foreignArena = arena(16 * 1024, foreignCharged)) {
+            Map<String, Object> fields = arena.fields(List.of("left", "right"), marker);
+            ActorNativeArena.NativeCapability capability = () -> arena;
+            ActorNativeArena.NativeCapability foreign = () -> foreignArena;
+
+            assertEquals(0, arena.capabilityCount());
+            fields.put("left", capability);
+            assertEquals(1, arena.capabilityCount());
+            assertSame(capability, fields.get("left"));
+
+            fields.put("right", capability);
+            assertEquals(1, arena.capabilityCount(),
+                    "two slots may share one opaque capability identity");
+            assertSame(capability, fields.get("right"));
+
+            fields.put("left", null);
+            assertEquals(1, arena.capabilityCount(),
+                    "remaining slot must keep the capability live");
+            fields.put("right", null);
+            assertEquals(0, arena.capabilityCount(),
+                    "last native slot overwrite must retire the handle registry entry");
+
+            assertThrows(SecurityException.class, () -> fields.put("left", foreign));
+            assertEquals(0, arena.capabilityCount());
+
+            ActorNativeArena.ValueCell local = arena.valueCell(capability, marker);
+            assertEquals(1, arena.capabilityCount());
+            assertSame(capability, local.get());
+            assertTrue(local.trySet(null));
+            assertEquals(0, arena.capabilityCount(),
+                    "lexical capability clear must release the control-plane handle");
+        }
+        assertEquals(0, charged.get());
+        assertEquals(0, foreignCharged.get());
+    }
+
+    @Test
     void referencesStayInTheirArenaAndCyclesDoNotPreventReclamation() {
         AtomicLong charged = new AtomicLong();
         ActorNativeArena first = arena(8192, charged);
