@@ -34,7 +34,7 @@ final class ScopedTaskReadAuthorityV2Test {
                                 0, 16,
                                 ScopedTaskReadAuthority.RangeUnit.BYTES,
                                 true)),
-                new AutoTraitRules.Capabilities(true, true, false));
+                Types.Primitive.INT);
 
         assertEquals(2, authority.projections().size());
         assertDoesNotThrow(() -> authority.require(
@@ -59,7 +59,7 @@ final class ScopedTaskReadAuthorityV2Test {
                 IllegalArgumentException.class,
                 () -> ScopedTaskReadAuthority.prove(
                         program, task, epoch, root, List.of(),
-                        new AutoTraitRules.Capabilities(true, false, false)));
+                        new Types.Named("RefCell", List.of(Types.Primitive.INT))));
         assertTrue(failure.getMessage().contains("Sync"), failure::getMessage);
 
         assertThrows(IllegalArgumentException.class,
@@ -86,7 +86,7 @@ final class ScopedTaskReadAuthorityV2Test {
                 "PROCESS", "root", 13, 5, true);
         var authority = ScopedTaskReadAuthority.prove(
                 program, task, epoch, root, List.of(),
-                new AutoTraitRules.Capabilities(true, true, true));
+                Types.Primitive.INT);
 
         assertThrows(IllegalArgumentException.class,
                 () -> authority.require(program, task, epoch, 13, 6));
