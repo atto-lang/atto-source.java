@@ -1,0 +1,33 @@
+// Oreslang Heterogeneous Accelerator Toolkit (HAT) portable host contract.
+//
+// This module intentionally contains backend-neutral policy only. Device handles,
+// buffers, queues, fences and kernel values are compiler/runtime-owned opaque
+// capabilities; vendor backends live outside the standard library.
+//
+// v0 is fail-closed: source kernel execution remains disabled until typed kernel
+// IR, ownership/effect admission and explicit backend lowering are enabled.
+
+define module hat as
+
+  // Version of the source-visible HAT contract.
+  pub fnc abi_version(): int {
+    return 1;
+  }
+
+  // Oreslang HAT never silently substitutes host execution for a requested
+  // accelerator backend.
+  pub fnc allows_implicit_cpu_fallback(): bool {
+    return false;
+  }
+
+  // Crossing host/device ownership domains requires an explicit transfer.
+  pub fnc requires_explicit_transfer(): bool {
+    return true;
+  }
+
+  // In-flight buffer loans remain live until a verified completion fence.
+  pub fnc requires_completion_fence(): bool {
+    return true;
+  }
+
+end
