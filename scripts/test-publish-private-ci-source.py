@@ -56,6 +56,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         states = states or {
             22: ("closed", "completed"),
             77: ("closed", "completed"),
+            127: ("closed", "completed"),
         }
         repository_id = (
             pub.BLOCKING_INCIDENT_REPOSITORY_ID
@@ -111,6 +112,16 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "#77 remains unresolved"):
                 ORIGINAL_REQUIRE_RESOLVED()
 
+    def test_blocking_p0_incidents_reject_open_issue_127(self):
+        states = {
+            22: ("closed", "completed"),
+            77: ("closed", "completed"),
+            127: ("open", None),
+        }
+        with patch.object(pub, "gh_api", side_effect=self.incident_api(states)):
+            with self.assertRaisesRegex(pub.Denied, "#127 remains unresolved"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
     def test_blocking_p0_incidents_reject_not_planned_closure(self):
         states = {
             22: ("closed", "not_planned"),
@@ -123,6 +134,16 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def test_blocking_p0_incidents_reject_issue_identity_drift(self):
         ids = dict(pub.BLOCKING_INCIDENT_IDS)
         ids[22] += 1
+        with patch.object(
+            pub, "gh_api",
+            side_effect=self.incident_api(issue_ids=ids),
+        ):
+            with self.assertRaisesRegex(pub.Denied, "incident identity"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_issue_127_identity_drift(self):
+        ids = dict(pub.BLOCKING_INCIDENT_IDS)
+        ids[127] += 1
         with patch.object(
             pub, "gh_api",
             side_effect=self.incident_api(issue_ids=ids),
