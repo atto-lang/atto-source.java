@@ -1567,6 +1567,9 @@ public final class TypeChecker {
 
     private void rejectUnimportedClassNamespace(Ast.ClassDecl target) {
         if (!insideActorLexicalBoundary() || lexicalClassOrigin == target) return;
+        // Linked signatures are installed in classes for member/type checking,
+        // but remain explicit cross-unit dependencies, not same-file siblings.
+        if (linkedClassAliases.containsKey(target)) return;
         throw new IllegalArgumentException(
                 "actor '" + lexicalClassOrigin.name()
                         + "' cannot implicitly access sibling "
@@ -1581,6 +1584,7 @@ public final class TypeChecker {
         Ast.ClassDecl localClass = findClass(name);
         if (localClass != null) {
             if (localClass == lexicalClassOrigin || isExplicitActorParent(localClass)) return;
+            if (linkedClassAliases.containsKey(localClass)) return;
             throw new IllegalArgumentException(
                     "actor '" + lexicalClassOrigin.name()
                             + "' cannot use same-file type '" + name

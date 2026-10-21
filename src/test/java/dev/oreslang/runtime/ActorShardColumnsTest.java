@@ -11,6 +11,36 @@ import org.junit.jupiter.api.Timeout;
 @Timeout(20)
 final class ActorShardColumnsTest {
     @Test
+    void groupedSoaosKeepsEveryRowAndFieldDistinct() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var finished = new CountDownLatch(1);
+            var failure = new AtomicReference<Throwable>();
+            var actor = runtime.<Integer>spawnSharedTrusted(ctx -> (message, turn) -> {
+                try (var shard = new ActorShardColumns(ActorShardColumns.Layout.SOAOS, 9, 4, 1, 2)) {
+                    for (int row = 0; row < 9; row++) {
+                        for (int field = 0; field < 4; field++) shard.write(row, field, row * 10 + field);
+                    }
+                    for (int row = 0; row < 9; row++) {
+                        for (int field = 0; field < 4; field++) assertEquals(row * 10 + field, shard.read(row, field));
+                    }
+                    assertThrows(IllegalArgumentException.class,
+                            () -> new ActorShardColumns(ActorShardColumns.Layout.SOAOS, 9, 4, 1, 3));
+                } catch (Throwable problem) {
+                    failure.set(problem);
+                } finally {
+                    finished.countDown();
+                }
+            });
+            actor.send(1);
+            assertTrue(finished.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0, runtime.actorMemoryBytes());
+        }
+    }
+
+    @Test
     void allLayoutsComputeSameResultsAcrossActorTurnAndWorkerChanges() throws Exception {
         for (ActorShardColumns.Layout layout : ActorShardColumns.Layout.values()) {
             try (ActorRuntime runtime = new ActorRuntime()) {
@@ -65,11 +95,8 @@ final class ActorShardColumnsTest {
                 for (int i = 0; i < 65; i++) assertEquals(4.0 * i, copy[i]);
                 actor.stop();
                 assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
-                java.lang.reflect.Field storageField =
-                        ActorShardColumns.class.getDeclaredField("storage");
-                storageField.setAccessible(true);
-                assertNull(storageField.get(confined.get()),
-                        "actor finalization must detach shared backing before quota refund");
+                assertTrue(confined.get().nativeBackingReleased(),
+                        "actor finalization must explicitly free native shard backing");
                 assertThrows(SecurityException.class,
                         () -> confined.get().integrate(0, 1, 1));
             }

@@ -18,6 +18,7 @@ import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.HttpResponseDraft;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.ActorNativeArena;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
@@ -550,7 +551,7 @@ public final class OresEvalRootNode extends RootNode {
 
             List<Ast.FieldDecl> classFields =
                     effectiveFields(klass, new LinkedHashSet<>());
-            LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+            Map<String, Object> fields = objectFields(classFields);
             for (Ast.FieldDecl field : classFields) {
                 fields.put(field.name(), UNINITIALIZED_FIELD);
             }
@@ -8342,7 +8343,7 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalArgumentException(
                             "too many constructor arguments for " + klass.name());
                 }
-                LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+                Map<String, Object> fields = objectFields(classFields);
                 OresObject object = new OresObject(this, klass, fields);
                 for (int i = 0; i < classFields.size(); i++) {
                     Ast.FieldDecl field = classFields.get(i);
@@ -8388,7 +8389,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             List<Ast.FieldDecl> classFields = effectiveFields(klass, new LinkedHashSet<>());
-            LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+            Map<String, Object> fields = objectFields(classFields);
             for (Ast.FieldDecl field : classFields) {
                 fields.put(field.name(), UNINITIALIZED_FIELD);
             }
@@ -8463,6 +8464,12 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
             return object;
+        }
+
+        private Map<String, Object> objectFields(List<Ast.FieldDecl> fields) {
+            ActorNativeArena arena = ActorRuntime.currentNativeArena();
+            return arena == null ? new LinkedHashMap<>()
+                    : arena.fields(fields.stream().map(Ast.FieldDecl::name).toList(), UNINITIALIZED_FIELD);
         }
 
         private static String normalizeUnitId(String id) {
@@ -9948,7 +9955,7 @@ public final class OresEvalRootNode extends RootNode {
         }
     }
 
-    private static final class OresObject implements OresMutex.SharedState {
+    private static final class OresObject implements OresMutex.SharedState, ActorNativeArena.NativeValue {
         private final Evaluator owner;
         private final Ast.ClassDecl klass;
         private final Map<String,Object> fields;
@@ -9958,6 +9965,10 @@ public final class OresEvalRootNode extends RootNode {
             this.fields = fields;
         }
         @Override public Iterable<?> sharedStateChildren(){return fields.values();}
+        @Override public ActorNativeArena nativeArena() {
+            return fields instanceof ActorNativeArena.NativeValue nativeFields
+                    ? nativeFields.nativeArena() : null;
+        }
         @Override public String toString() { return CycleSafeDisplay.render(this); }
     }
 

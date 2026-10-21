@@ -31,11 +31,8 @@ final class ActorShardColumnCopyTest {
                     assertThrows(IndexOutOfBoundsException.class,
                             () -> shard.copyColumnInto(2, dest, 0));
                     shard.close();
-                    java.lang.reflect.Field storage =
-                            ActorShardColumns.class.getDeclaredField("storage");
-                    storage.setAccessible(true);
-                    assertNull(storage.get(shard),
-                            "closed shared shard must detach its charged JVM backing array");
+                    assertTrue(shard.nativeBackingReleased(),
+                            "closed shard must free its native backing before refund");
                     shard.close(); // idempotent budget release
                     assertThrows(IllegalStateException.class,
                             () -> shard.copyColumnInto(1, dest, 0));

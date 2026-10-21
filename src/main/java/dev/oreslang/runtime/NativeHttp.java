@@ -435,12 +435,21 @@ public final class NativeHttp implements AutoCloseable {
     }
 
     /** A generation-bound capability; moving invalidates every alias of the sender wrapper. */
-    public final class Exchange {
+    public final class Exchange implements ActorNativeArena.NativeValue {
         private final State state;
         private final Object owner;
         private final long generation;
         private Exchange(State state, Object owner, long generation) {
             this.state = state; this.owner = owner; this.generation = generation;
+        }
+        /** Host transport stays on the control plane; guest slots store a checked handle ID. */
+        @Override public ActorNativeArena nativeArena() {
+            synchronized (state) {
+                checkOwner();
+                ActorNativeArena arena = ActorRuntime.currentNativeArena();
+                if (arena == null) throw new SecurityException("HTTP actor handle requires actor ownership");
+                return arena;
+            }
         }
         private void checkOwner() {
             if (state.terminal) throw new IllegalStateException("HTTP exchange is closed");

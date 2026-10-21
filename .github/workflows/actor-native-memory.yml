@@ -1,0 +1,36 @@
+name: Actor native memory
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/**'
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/c/**'
+      - 'src/test/java/**'
+      - 'scripts/build-native-thread.sh'
+      - '.github/workflows/actor-native-memory.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  native-storage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Exercise native storage and source allocation
+        run: >-
+          mvn -B -ntp
+          -Dtest=ActorNativeArenaTest,ActorNativeObjectAllocationTest,ActorShardColumnsTest,ActorShardColumnCopyTest,ActorShardSnapshotLeaseTest,ActorShardStopRaceTest,ActorAsyncFinalizationBarrierTest,ActorPhysicalTurnGateTest,SourceActorSpawnExecutionTest,ClassConstructorHardeningTest,ActorDeclarationLexicalBoundaryTest
+          test

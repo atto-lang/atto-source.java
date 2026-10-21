@@ -154,6 +154,17 @@ public final class ActorRuntime implements AutoCloseable {
         return current == null ? null : current.kind();
     }
 
+    /** Source allocation target; actor identity, never carrier identity, selects storage. */
+    public static ActorNativeArena currentNativeArena() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        if (current == null) return null;
+        ActorCell<?> cell = current.runtime().currentActor.get();
+        if (cell == null || !cell.ref.id().equals(current.actorId())) {
+            throw new IllegalStateException("actor allocation has no physical actor turn");
+        }
+        return cell.nativeArena;
+    }
+
     public static Optional<ActorId> currentActorId() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
         return current == null ? Optional.empty() : Optional.of(current.actorId());
@@ -1113,23 +1124,24 @@ public final class ActorRuntime implements AutoCloseable {
 
     /**
      * Host-only shard reservation tied to one actor's physical lifetime.
-     * PRIVATE backing is the existing owner-checked direct memory block.
-     * SHARED backing is an ordinary Java array charged to the aggregate
-     * runtime heap limit. No raw direct buffer or cross-actor permit escapes.
+     * Every backing is native memory in the owning actor arena. Actor kind
+     * selects accounting, never whether guest data falls back to a Java array.
+     * No raw direct buffer or cross-actor permit escapes.
      */
     final class ActorShardLease implements AutoCloseable {
         private final ActorCell<?> cell;
-        private final PrivateMemoryBlock privateBlock;
-        private final long sharedBytes;
+        private final ActorNativeArena.Region nativeRegion;
+        private final long bytes;
         private final AtomicBoolean revoked = new AtomicBoolean();
         private ActorShardColumns attachedShard;
 
-        private ActorShardLease(ActorCell<?> cell, PrivateMemoryBlock block, long bytes) {
+        private ActorShardLease(ActorCell<?> cell, ActorNativeArena.Region region, long bytes) {
             this.cell = cell;
-            this.privateBlock = block;
-            this.sharedBytes = block == null ? bytes : 0L;
+            this.nativeRegion = region;
+            this.bytes = bytes;
         }
-        boolean privateBacking() { return privateBlock != null; }
+        boolean privateBacking() { return isPrivateKind(cell.kind); }
+        boolean nativeBackingReleased() { return nativeRegion.closed(); }
         void attach(ActorShardColumns shard) {
             synchronized (cell.lifecycleLock) {
                 requireOwner();
@@ -1152,11 +1164,11 @@ public final class ActorRuntime implements AutoCloseable {
         }
         double read(int element) {
             requireOwner();
-            return privateBlock.readDouble(Math.multiplyExact(element, Double.BYTES));
+            return nativeRegion.readDouble(Math.multiplyExact(element, Double.BYTES));
         }
         void write(int element, double value) {
             requireOwner();
-            privateBlock.writeDouble(Math.multiplyExact(element, Double.BYTES), value);
+            nativeRegion.writeDouble(Math.multiplyExact(element, Double.BYTES), value);
         }
         private void release(boolean ownerTurn) {
             synchronized (cell.lifecycleLock) {
@@ -1168,20 +1180,12 @@ public final class ActorRuntime implements AutoCloseable {
                 attachedShard = null;
                 if (shard != null) shard.revokeBackingFromLease();
                 cell.shardLeases.remove(this);
-                final long charged = privateBlock != null
-                        ? privateBlock.capacity() : sharedBytes;
+                final long charged = bytes;
                 if (cell.shardReservedBytes < charged) {
                     throw new IllegalStateException("actor shard reservation underflow");
                 }
-                if (privateBlock != null) {
-                    // On finalization, ActorMemorySlice.close() revokes all
-                    // remaining blocks while still holding lifecycleLock.
-                    if (ownerTurn) privateBlock.close();
-                } else {
-                    // Only release the shared quota after its backing array
-                    // has been scrubbed and detached from the shard.
-                    releaseSharedRuntimeBytes(sharedBytes);
-                }
+                // Finalization revokes all native regions at the arena barrier.
+                if (ownerTurn) nativeRegion.close();
                 cell.shardReservedBytes -= charged;
             }
         }
@@ -1213,13 +1217,8 @@ public final class ActorRuntime implements AutoCloseable {
             if (total > cell.policy.maxHeapBytes()) {
                 throw new IllegalStateException("per-actor shard heap limit exceeded");
             }
-            PrivateMemoryBlock block = null;
-            if (cell.memorySlice != null) {
-                block = cell.memorySlice.allocatePrivateBytes(bytes);
-            } else {
-                reserveSharedRuntimeBytes(bytes, "shared actor shard");
-            }
-            ActorShardLease lease = new ActorShardLease(cell, block, bytes);
+            ActorNativeArena.Region region = cell.nativeArena.region(bytes);
+            ActorShardLease lease = new ActorShardLease(cell, region, bytes);
             cell.shardReservedBytes = total;
             cell.shardLeases.add(lease);
             return lease;
@@ -7007,6 +7006,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final ChannelRuntime.Channel<ActorOutputEnvelope> outputChannel;
         private final ActorOutputStream<Object> outputStream;
         private final ActorMemorySlice memorySlice;
+        /** Every actor kind has separate source-object storage, including SHARED. */
+        private final ActorNativeArena nativeArena;
+        private long nativeArenaBytes;
         private final Set<ActorShardLease> shardLeases = ConcurrentHashMap.newKeySet();
         private final Set<ActorShardSnapshotLease> shardSnapshotLeases = ConcurrentHashMap.newKeySet();
         /** Guarded by lifecycleLock; private and shared shard bytes both counted. */
@@ -7109,6 +7111,38 @@ public final class ActorRuntime implements AutoCloseable {
             this.memorySlice = isPrivateKind(kind)
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
                     : null;
+            this.nativeArena = new ActorNativeArena(
+                    policy.maxHeapBytes(),
+                    () -> {
+                        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+                        if (current == null || current.runtime() != ActorRuntime.this
+                                || !current.actorId().equals(ref.id())) {
+                            throw new SecurityException("actor arena access requires its owning actor turn");
+                        }
+                    },
+                    this::reserveNativeArena);
+        }
+
+        private Runnable reserveNativeArena(int bytes) {
+            if (memorySlice != null) {
+                MemoryReservation reservation = memorySlice.reserve(bytes, "actor native objects");
+                return reservation::close;
+            }
+            synchronized (lifecycleLock) {
+                if (finalized || closed.get()) throw new IllegalStateException("actor allocation after shutdown");
+                long next = Math.addExact(nativeArenaBytes, bytes);
+                if (next > policy.maxHeapBytes() - sharedMailboxBytes.get() - outputBytes.get()) {
+                    throw new IllegalStateException("actor native object memory limit exceeded");
+                }
+                reserveSharedRuntimeBytes(bytes, "actor native objects");
+                nativeArenaBytes = next;
+            }
+            return () -> {
+                synchronized (lifecycleLock) {
+                    nativeArenaBytes -= bytes;
+                    releaseSharedRuntimeBytes(bytes);
+                }
+            };
         }
 
         private long nextStaticSelectTicket(Object selectSite) {
@@ -7380,6 +7414,7 @@ public final class ActorRuntime implements AutoCloseable {
                 snapshot.revokeFromActorStop();
             }
             shardSnapshotLeases.clear();
+            nativeArena.close();
             if (memorySlice != null) memorySlice.close();
             try {
                 actorExitHook.accept(executionDomain);
@@ -7476,6 +7511,7 @@ public final class ActorRuntime implements AutoCloseable {
                                 0L,
                                 policy.maxHeapBytes()
                                         - sharedMailboxBytes.get()
+                                        - nativeArenaBytes
                                         - current);
                 if (bytes > actorAvailable) {
                     throw new IllegalStateException(
@@ -7519,7 +7555,7 @@ public final class ActorRuntime implements AutoCloseable {
                 } catch (ArithmeticException overflow) {
                     throw new IllegalStateException("shared actor mailbox memory accounting overflow");
                 }
-                if (next > policy.maxHeapBytes()) {
+                if (next > policy.maxHeapBytes() - nativeArenaBytes - outputBytes.get()) {
                     throw new IllegalStateException("shared actor mailbox memory limit exceeded for " + ref.id()
                             + ": requested=" + bytes + " used=" + current + " limit=" + policy.maxHeapBytes());
                 }

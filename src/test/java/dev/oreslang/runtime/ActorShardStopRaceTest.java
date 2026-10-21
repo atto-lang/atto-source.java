@@ -2,7 +2,6 @@ package dev.oreslang.runtime;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import java.lang.reflect.Field;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -18,8 +17,6 @@ import org.junit.jupiter.api.Timeout;
 final class ActorShardStopRaceTest {
     @Test
     void inFlightCloseAndConcurrentStopDoNotLeaveRetainedBacking() throws Exception {
-        Field backing = ActorShardColumns.class.getDeclaredField("storage");
-        backing.setAccessible(true);
         for (int trial = 0; trial < 30; trial++) {
             try (ActorRuntime runtime = new ActorRuntime()) {
                 CountDownLatch began = new CountDownLatch(1);
@@ -59,8 +56,8 @@ final class ActorShardStopRaceTest {
                     assertNull(failure.get(), "in-flight close must complete safely");
                     ActorShardColumns shard = retained.get();
                     assertNotNull(shard);
-                    assertNull(backing.get(shard),
-                            "retained shard cannot pin refunded JVM backing after stop");
+                    assertTrue(shard.nativeBackingReleased(),
+                            "retained shard cannot access freed native backing after stop");
                     assertEquals(0, runtime.sharedMemoryBytes(),
                             "no stale shared shard reservation after actor termination");
                 } finally {

@@ -5,14 +5,14 @@ import java.util.Objects;
 /**
  * Trusted host substrate for an actor-owned, fixed-size homogeneous ECS shard.
  *
- * <p>One physical layout is authoritative: AoS, SoA, or AoSoA. Allocation
+ * <p>One physical layout is authoritative: AoS, SoA, AoSoA, or grouped SoAoS. Allocation
  * and every operation require the same logical actor turn, not the same OS
  * carrier thread. Values never cross actor boundaries as mutable references:
  * snapshotColumn returns a copy. No guest lowering or scoped Task permit is
  * implied by this host-only type.</p>
  */
 public final class ActorShardColumns implements AutoCloseable {
-    public enum Layout { AOS, SOA, AOSOA }
+    public enum Layout { AOS, SOA, AOSOA, SOAOS }
     private static final int MAX_BYTES = 16 * 1024 * 1024;
 
     private final ActorRuntime.ActorId owner;
@@ -20,8 +20,7 @@ public final class ActorShardColumns implements AutoCloseable {
     private final int rows;
     private final int fields;
     private final int lanes;
-    // Detached on explicit close; runtime-owned lease revokes physical access.
-    private double[] storage;
+    private final int groupWidth;
     private final ActorRuntime.ActorShardLease reservation;
 
     /**
@@ -29,6 +28,11 @@ public final class ActorShardColumns implements AutoCloseable {
      * two lane count; AoS and SoA use lanes=1.
      */
     public ActorShardColumns(Layout layout, int rows, int fields, int lanes) {
+        this(layout, rows, fields, lanes, 1);
+    }
+
+    /** SoAoS stores consecutive fixed-width field groups as dense row arrays. */
+    public ActorShardColumns(Layout layout, int rows, int fields, int lanes, int groupWidth) {
         this.owner = ActorRuntime.currentActorId().orElseThrow(() ->
                 new SecurityException("shard creation requires an executing actor"));
         this.layout = Objects.requireNonNull(layout, "layout");
@@ -39,6 +43,11 @@ public final class ActorShardColumns implements AutoCloseable {
                 || (layout != Layout.AOSOA && lanes != 1)) {
             throw new IllegalArgumentException("invalid shard lane count");
         }
+        if (groupWidth <= 0 || groupWidth > fields || fields % groupWidth != 0
+                || (layout != Layout.SOAOS && groupWidth != 1)) {
+            throw new IllegalArgumentException("SoAoS group width must divide field count");
+        }
+        this.groupWidth = groupWidth;
         this.rows = rows;
         this.fields = fields;
         this.lanes = lanes;
@@ -55,15 +64,7 @@ public final class ActorShardColumns implements AutoCloseable {
             throw new SecurityException("shard allocation requires an owning runtime");
         }
         ActorRuntime.ActorShardLease allocated = runtime.reserveActorShard(bytes);
-        double[] heap = null;
-        try {
-            if (!allocated.privateBacking()) heap = new double[(int) elements];
-        } catch (RuntimeException | Error failure) {
-            allocated.close();
-            throw failure;
-        }
         this.reservation = allocated;
-        this.storage = heap;
         try {
             allocated.attach(this);
         } catch (RuntimeException | Error failure) {
@@ -77,6 +78,7 @@ public final class ActorShardColumns implements AutoCloseable {
         return reservation.ownedBy(runtime, actor);
     }
     boolean isPrivateBacked() { return reservation.privateBacking(); }
+    boolean nativeBackingReleased() { return reservation.nativeBackingReleased(); }
 
     public Layout layout() { return layout; }
     public int rows() { return rows; }
@@ -84,42 +86,16 @@ public final class ActorShardColumns implements AutoCloseable {
     public int lanes() { return lanes; }
 
     /**
-     * Called by the owning lease before returning its allocation budget.
-     * Also runs on actor-stop finalization, without any active actor turn.
-     * Must not publish or retain the old mutable backing reference.
+     * Lease revocation marks the shard inaccessible before native release.
      */
     void revokeBackingFromLease() {
-        double[] old = storage;
-        if (old != null) {
-            java.util.Arrays.fill(old, 0.0);
-            storage = null;
-        }
+        // All data belongs to the native region; the lease/arena revokes it.
     }
 
-    private void requireOwner() {
-        reservation.requireOwner();
-    }
-
-    private double get(int index) {
-        return reservation.privateBacking() ? reservation.read(index) : storage[index];
-    }
-
-    private void put(int index, double value) {
-        if (reservation.privateBacking()) reservation.write(index, value);
-        else storage[index] = value;
-    }
-
-    @Override public void close() {
-        // Explicit close is owner-only. Zero and detach shared backing before
-        // the lease returns its byte reservation. Repeated owner close remains
-        // safe; post-close data access is rejected by the lease.
-        if (storage != null) {
-            reservation.requireOwner();
-            java.util.Arrays.fill(storage, 0.0);
-            storage = null;
-        }
-        reservation.close();
-    }
+    private void requireOwner() { reservation.requireOwner(); }
+    private double get(int index) { return reservation.read(index); }
+    private void put(int index, double value) { reservation.write(index, value); }
+    @Override public void close() { reservation.close(); }
 
     private int offset(int row, int field) {
         if (row < 0 || row >= rows || field < 0 || field >= fields) {
@@ -128,6 +104,8 @@ public final class ActorShardColumns implements AutoCloseable {
         return switch (layout) {
             case AOS -> row * fields + field;
             case SOA -> field * rows + row;
+            case SOAOS -> (field / groupWidth) * rows * groupWidth
+                    + row * groupWidth + field % groupWidth;
             case AOSOA -> ((row / lanes) * fields + field) * lanes + row % lanes;
         };
     }
