@@ -23,11 +23,16 @@ public final class GenerationalReplyRegistry implements AutoCloseable {
     public static final class Endpoint {
         private final Role role;
         private final Object runtime;
-        private Endpoint(Role role, Object runtime) {
+        // Null only for legacy standalone host-registry unit checks. A real
+        // ActorRuntime request path MUST use an incarnation-bound endpoint.
+        private final ActorRuntime.ActorRef<?> actor;
+        private Endpoint(Role role, Object runtime, ActorRuntime.ActorRef<?> actor) {
             this.role = Objects.requireNonNull(role);
             this.runtime = Objects.requireNonNull(runtime);
+            this.actor = actor;
         }
         public Role role() { return role; }
+        ActorRuntime.ActorRef<?> actor() { return actor; }
     }
 
     /** The host-only permit. No guest can mint or complete it by integer ID. */
@@ -108,6 +113,9 @@ public final class GenerationalReplyRegistry implements AutoCloseable {
     private static final long MAX_GENERATION = 0xffff_ffffL;
     private final Object runtime = new Object();
     private final IdentityHashMap<Endpoint, Boolean> liveEndpoints = new IdentityHashMap<>();
+    /** One role-bound endpoint per physical ActorRef incarnation, never per request. */
+    private final IdentityHashMap<ActorRuntime.ActorRef<?>, Endpoint> boundActors =
+            new IdentityHashMap<>();
     private final Ticket<?>[] slots;
     private final long[] generations;
     private final int[] next;
@@ -132,9 +140,49 @@ public final class GenerationalReplyRegistry implements AutoCloseable {
     }
     private Endpoint mint(Role role) {
         if (closed) throw new IllegalStateException("reply registry closed");
-        Endpoint endpoint = new Endpoint(role, runtime);
+        Endpoint endpoint = new Endpoint(role, runtime, null);
         liveEndpoints.put(endpoint, Boolean.TRUE);
         return endpoint;
+    }
+
+    /**
+     * ActorRuntime-only enrollment after proving ownership of the exact
+     * ActorRef object. Neither a guest-visible UUID nor an ActorId is sufficient.
+     * A supervisor APPLICATION role requires explicit host enrollment.
+     */
+    Endpoint bindActor(ActorRuntime.ActorRef<?> actor, Role role) {
+        Objects.requireNonNull(actor, "actor incarnation");
+        Objects.requireNonNull(role, "endpoint role");
+        final Endpoint endpoint;
+        synchronized (this) {
+            if (closed) throw new IllegalStateException("reply registry closed");
+            if (!actor.isAlive()) throw new IllegalStateException("actor already stopped");
+            Endpoint existing = boundActors.get(actor);
+            if (existing != null) {
+                if (existing.role != role || !liveEndpoints.containsKey(existing)) {
+                    throw new SecurityException("actor already enrolled under another reply role");
+                }
+                return existing;
+            }
+            endpoint = new Endpoint(role, runtime, actor);
+            boundActors.put(actor, endpoint);
+            liveEndpoints.put(endpoint, Boolean.TRUE);
+        }
+        // Subscribe after releasing registry monitor. Registration may invoke
+        // synchronously if the actor finalized between mint and subscription.
+        actor.done().whenCompleteRuntime((ignored, failure) -> retireIfLive(endpoint));
+        return endpoint;
+    }
+
+    private void retireIfLive(Endpoint endpoint) {
+        synchronized (this) {
+            if (!liveEndpoints.containsKey(endpoint)) return;
+        }
+        try {
+            retire(endpoint);
+        } catch (SecurityException alreadyRetired) {
+            // A racing explicit retirement/registry close won.
+        }
     }
 
     /** Caller-owned slot reservation precedes payload copy or mailbox enqueue. */
@@ -147,6 +195,10 @@ public final class GenerationalReplyRegistry implements AutoCloseable {
             throw new SecurityException("foreign or retired runtime endpoint");
         }
         if (caller == callee) throw new IllegalArgumentException("self-call would deadlock");
+        if ((caller.actor != null && !caller.actor.isAlive())
+                || (callee.actor != null && !callee.actor.isAlive())) {
+            throw new IllegalStateException("actor endpoint incarnation is stopped");
+        }
         if (replyType == Void.TYPE || replyType == Void.class) {
             throw new IllegalArgumentException("unary reply must have a value");
         }
@@ -192,6 +244,7 @@ public final class GenerationalReplyRegistry implements AutoCloseable {
             if (liveEndpoints.remove(endpoint) == null) {
                 throw new SecurityException("unknown or retired endpoint");
             }
+            if (endpoint.actor != null) boundActors.remove(endpoint.actor);
             for (int i = 0; i < slots.length; ++i) {
                 Ticket<?> ticket = slots[i];
                 if (ticket != null && (ticket.caller == endpoint || ticket.callee == endpoint)) {
@@ -214,6 +267,7 @@ public final class GenerationalReplyRegistry implements AutoCloseable {
             if (closed) return;
             closed = true;
             liveEndpoints.clear();
+            boundActors.clear();
             for (int i = 0; i < slots.length; ++i) {
                 Ticket<?> ticket = slots[i];
                 if (ticket != null) {
