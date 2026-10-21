@@ -578,7 +578,6 @@ def checked_destination(repository, contract):
                          "carrier main ref invalid")
     if base_sha != contract["base_sha"]:
         raise Denied("carrier main advanced beyond reviewed protected base")
-    require_destination_main_governance(repository, base_sha)
     commit = legacy.gh_api(f"repos/{repository}/git/commits/{base_sha}")
     if commit.get("sha") != base_sha:
         raise Denied("carrier base commit mismatch")
@@ -597,6 +596,8 @@ def checked_destination(repository, contract):
                 or isinstance(path, str) and path.startswith(legacy.PREFIX + "/")
                 or path == RECEIPT_PATH):
             raise Denied("reviewed carrier base is not source-free")
+
+    require_destination_main_governance(repository, base_sha)
 
     workflow = legacy.gh_api(
         f"repos/{repository}/contents/{contract['workflow_path']}?ref={base_sha}"
