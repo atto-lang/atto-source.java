@@ -360,8 +360,14 @@ public final class TypeChecker {
                     else if (decl instanceof Ast.ClassDecl klass) checkClass(module.name(), klass);
                     else if (decl instanceof Ast.InterfaceDecl iface) checkInterface(iface);
                     else if (decl instanceof Ast.TypeAliasDecl alias) {
-                        Set<String> aliasGenerics = uniqueGenerics(alias.genericParameters(), "type alias " + alias.name());
-                        resolve(alias.target(), aliasGenerics, null);
+                        Set<String> aliasGenerics = uniqueGenerics(
+                                alias.genericParameters(), "type alias " + alias.name());
+                        Type aliasTarget = resolve(alias.target(), aliasGenerics, null);
+                        if (containsTypedMapType(aliasTarget)) {
+                            throw new IllegalArgumentException(
+                                    "type aliases containing Map<K,V> are disabled in the closed v1 surface; "
+                                            + "spell Map<K,V> directly so runtime ownership/domain metadata cannot be erased");
+                        }
                     }
                     else if (decl instanceof Ast.FieldDecl field) checkModuleBinding(field);
                 }
@@ -8718,8 +8724,15 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "Map<K,V> requires exactly two explicit type arguments");
                 }
-                Type key = resolve(ref.arguments().get(0), generics, self);
-                Type value = resolve(ref.arguments().get(1), generics, self);
+                Ast.TypeRef rawKey = ref.arguments().get(0);
+                Ast.TypeRef rawValue = ref.arguments().get(1);
+                if (!isDirectTypedMapKeyRef(rawKey) || !isDirectTypedMapValueRef(rawValue)) {
+                    throw new IllegalArgumentException(
+                            "closed Map<K,V> v1 requires directly spelled reifiable key/value types; "
+                                    + "type aliases and generic wrappers are not accepted yet");
+                }
+                Type key = resolve(rawKey, generics, self);
+                Type value = resolve(rawValue, generics, self);
                 if (!isSupportedTypedMapKey(key)) {
                     throw new IllegalArgumentException(
                             "Map<K,V> key type must be String, Symbol, or String | Symbol");
@@ -8958,6 +8971,35 @@ public final class TypeChecker {
             throw new IllegalArgumentException("expected Map<K,V> type");
         }
         return named.arguments().get(1);
+    }
+
+    private static boolean isDirectTypedMapStringRef(Ast.TypeRef ref) {
+        return !ref.inferArguments()
+                && ref.arguments().isEmpty()
+                && (ref.name().equals("string") || ref.name().equals("String"));
+    }
+
+    private static boolean isDirectTypedMapSymbolRef(Ast.TypeRef ref) {
+        return !ref.inferArguments()
+                && ref.arguments().isEmpty()
+                && ref.name().equals("Symbol");
+    }
+
+    private static boolean isDirectTypedMapKeyRef(Ast.TypeRef ref) {
+        if (isDirectTypedMapStringRef(ref) || isDirectTypedMapSymbolRef(ref)) return true;
+        if (!ref.isUnion() || ref.arguments().size() != 2) return false;
+        Ast.TypeRef a = ref.arguments().get(0);
+        Ast.TypeRef b = ref.arguments().get(1);
+        return isDirectTypedMapStringRef(a) && isDirectTypedMapSymbolRef(b)
+                || isDirectTypedMapSymbolRef(a) && isDirectTypedMapStringRef(b);
+    }
+
+    private static boolean isDirectTypedMapValueRef(Ast.TypeRef ref) {
+        if (ref.inferArguments() || !ref.arguments().isEmpty()) return false;
+        return Set.of(
+                "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
+                "int", "uint", "bigint", "string", "String", "bool", "Bool",
+                "Symbol").contains(ref.name());
     }
 
     private boolean isSupportedTypedMapKey(Type key) {
