@@ -2,6 +2,7 @@ package dev.oreslang.compiler;
 
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.hat.HatKernelCompiler;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import dev.oreslang.types.OwnershipChecker;
@@ -122,6 +123,7 @@ public final class IncrementalCompiler {
                     checked = analysis.program();
                     OwnershipChecker.checkWithImportedClasses(
                             checked, linked.classes(), analysis.shortInferredAliases());
+                    HatKernelCompiler.validate(checked);
                 } catch (IllegalArgumentException invalid) {
                     throw new IllegalArgumentException(
                             "Oreslang source unit '" + id + "': " + invalid.getMessage(), invalid);
@@ -228,6 +230,17 @@ public final class IncrementalCompiler {
     }
 
     private static void appendAbi(StringBuilder abi, Ast.Decl decl) {
+        if (decl instanceof Ast.KernelDecl kernel) {
+            if (kernel.visibility() != Ast.Visibility.PUBLIC) return;
+            abi.append("pub kernel ").append(kernel.name()).append('\n');
+            for (Ast.FunctionDecl entry : kernel.entries()) {
+                abi.append(" kernel-entry ").append(entry.name());
+                appendGenericSpecs(abi, entry.genericSpecs());
+                appendParams(abi, entry.parameters());
+                abi.append("=>").append(typeRef(entry.returnType())).append('\n');
+            }
+            return;
+        }
         if (decl instanceof Ast.FunctionDecl fn) {
             if (fn.visibility() != Ast.Visibility.PUBLIC) return;
             abi.append(fn.actorKind()).append(' ');
