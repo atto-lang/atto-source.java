@@ -352,6 +352,15 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicInteger actorCount = new AtomicInteger();
     /** Bounded host/root pending unary calls, independent of destination mailbox. */
     private final AtomicInteger rootPendingRequests = new AtomicInteger();
+    /**
+     * Host-runtime correlation for actor-originated request Futures only.
+     * Entries are not guest state or remote reply authority; every terminal
+     * path removes its mapping. Plain sends and root callers add no edges.
+     */
+    private final Map<OresFuture<?>, ActorId> actorRequestDestinations =
+            new ConcurrentHashMap<>();
+    private final ActorRequestDependencyGraph serialRequestDependencies =
+            new ActorRequestDependencyGraph(100_000);
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicLong privateMemoryBytes = new AtomicLong();
     private final AtomicLong sharedMemoryBytes = new AtomicLong();
@@ -1561,7 +1570,40 @@ public final class ActorRuntime implements AutoCloseable {
             cell.sourceReceiveSuspended = true;
         }
 
+        // A direct ActorRef.request Future blocks progress only once the
+        // current source receive suspends its serial mailbox. Requests made
+        // without suspension (and unrelated Futures) never enter the graph.
+        // Cycle rejection cancels the already-published outbound request.
+        final ActorRequestDependencyGraph.Lease dependency;
+        ActorId requestedActor = actorRequestDestinations.get(future);
+        if (requestedActor != null && !future.isDone()) {
+            try {
+                dependency = serialRequestDependencies.suspendUntilReply(
+                        new ActorRequestDependencyGraph.ActorIdentity(
+                                cell.ref.id().value().toString(), 0),
+                        new ActorRequestDependencyGraph.ActorIdentity(
+                                requestedActor.value().toString(), 0));
+            } catch (ActorRequestDependencyGraph.CyclicRequestException cycle) {
+                future.cancel(false);
+                synchronized (cell.lifecycleLock) {
+                    cell.sourceReceiveSuspended = false;
+                }
+                throw cycle;
+            } catch (RuntimeException failure) {
+                synchronized (cell.lifecycleLock) {
+                    cell.sourceReceiveSuspended = false;
+                }
+                throw failure;
+            }
+        } else {
+            dependency = null;
+        }
+
         future.whenCompleteRuntime((value, failure) -> {
+            // Release as soon as the producer settles, including cancellation,
+            // timeout, and actor teardown; continuations still run on their
+            // original actor lane and never inline here.
+            if (dependency != null) dependency.close();
             if (!enqueueContinuation(cell.ref.id(), () -> {
                 synchronized (cell.lifecycleLock) {
                     cell.sourceReceiveSuspended = false;
@@ -4244,7 +4286,13 @@ public final class ActorRuntime implements AutoCloseable {
             if (budget.compareAndSet(used, used + 1)) break;
         }
         OresFuture<Object> reply = new OresFuture<>();
-        reply.whenCompleteRuntime((ignored, failure) -> budget.decrementAndGet());
+        if (origin != null) {
+            actorRequestDestinations.put(reply, ref.id());
+        }
+        reply.whenCompleteRuntime((ignored, failure) -> {
+            budget.decrementAndGet();
+            if (origin != null) actorRequestDestinations.remove(reply);
+        });
         try {
             // Only actor-owned calls are cancelled by actor termination.
             // Root callers remain owned by the runtime/recipient lifecycle.
@@ -4259,6 +4307,11 @@ public final class ActorRuntime implements AutoCloseable {
             reply.failFromRuntime(failure);
             throw failure;
         }
+    }
+
+    /** Host-only visibility for exact-source scheduler/lifetime tests. */
+    int activeSerialRequestDependencyCount() {
+        return serialRequestDependencies.activeCount();
     }
 
     /** Runtime diagnostic: no guest-visible pending-call registry. */
