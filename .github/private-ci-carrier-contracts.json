@@ -17,9 +17,9 @@
     },
     "sonus-auris-test/clients-api-contract": {
       "repository_id": 1323599063,
-      "base_sha": "9da87badba222036d9e45db8ffba70517f7a0b93",
+      "base_sha": "4b6e1c9dee7a170d48720b7195ec34eb0c401209",
       "workflow_path": ".github/workflows/oreslang-exact-tree-carrier.yml",
-      "workflow_blob_sha": "ce11c13cd6d8211778940ed70590441a354e9988",
+      "workflow_blob_sha": "728a9bd39b3e57aa9c7ab0922e07fa5c7cce26a2",
       "test_plans": {
         "ci/test-plans/java-pr1746.json": {
           "blob_sha": "da6413fcc2fa64ebb3cf602fb4a2b9063a250074",
