@@ -65,15 +65,18 @@ resume an actor task unless its ticket and suspension kind match the live
 arena-owned frame; stale, duplicate, wrong-kind, and post-terminal resumes fail
 closed.
 
-Supported lexical binding payloads are now opportunistically lowered through
-`ActorNativeArena.ValueCell`: scalars, strings/numeric text, symbols, and
-arena-issued actor-native objects inherit the same owner/lifetime checks as
-`state {}`. The Java `Env`/`Slot` objects remain metadata, and unsupported
-collections/ADTs/callables explicitly fall back to managed storage until their
-native lowering exists. Privileged `NativeCapability` values deliberately stay
-out of lexical `ValueCell` storage until compiler-generated scope-drop lowering
-can retire their handle references at lexical exit. Reads may still materialize
-boxed/String evaluator values.
+Supported lexical scalar payloads are opportunistically lowered through
+`ActorNativeArena.ValueCell`: primitive values, strings/numeric text and symbols
+inherit the same actor owner/lifetime checks as `state {}`. Actor-object locals
+keep a managed, non-authoritative facade while their actual object fields remain
+native in the actor arena; this avoids pinning facades in task-local native slots
+until captured-scope/drop lifetime lowering exists. Collections/ADTs/callables
+also remain explicit managed local fallbacks. Privileged `NativeCapability`
+values deliberately stay out of lexical `ValueCell` storage until compiler-
+generated scope-drop lowering can retire their handle references at lexical
+exit. Foreign-arena native objects/capabilities are still rejected rather than
+downgraded to managed aliases. Reads may still materialize boxed/String evaluator
+values.
 
 Native facade provenance uses weak identity keys rather than structural equality
 or strong actor-lifetime references. A separate reference-counted lookup retains
