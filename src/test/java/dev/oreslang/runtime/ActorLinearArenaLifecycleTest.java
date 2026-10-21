@@ -22,11 +22,13 @@ final class ActorLinearArenaLifecycleTest {
                 assertTrue(slice.usedBytes() >= 1024);
 
                 for (int i = 0; i < 1_000; i++) {
-                    long handle = arena.allocate(16, 8);
+                    int mark = arena.cleanupMark();
+                    long handle = arena.allocateOwned(16, 8);
                     assertNotEquals(ActorLinearArena.INVALID_HANDLE, handle);
                     assertTrue(arena.putLong(handle, 0, i));
                     assertEquals(i, arena.getLong(handle, 0));
-                    assertTrue(arena.remove(handle));
+                    assertTrue(arena.cleanupTo(mark),
+                            "compiler-style lexical cleanup must reclaim the owner");
                 }
                 assertEquals(0, arena.liveAllocations());
                 assertEquals(0, arena.usedBytes());
