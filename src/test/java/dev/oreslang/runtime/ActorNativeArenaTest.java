@@ -270,6 +270,9 @@ final class ActorNativeArenaTest {
                 return arena;
             };
 
+            assertThrows(SecurityException.class, () -> fields.put("request", capability),
+                    "same-arena claim is not sufficient without trusted issuance");
+            arena.issueNativeCapability(capability);
             fields.put("request", capability);
             assertEquals(1, arena.capabilityCount());
             assertSame(capability, fields.get("request"));
@@ -299,6 +302,13 @@ final class ActorNativeArenaTest {
             ActorNativeArena.NativeCapability foreign = () -> foreignArena;
 
             assertEquals(0, arena.capabilityCount());
+            assertThrows(SecurityException.class, () -> fields.put("left", capability),
+                    "unissued, host-implemented capability must not mint an actor handle");
+            assertThrows(SecurityException.class,
+                    () -> arena.canStorePersistentValue(capability, marker),
+                    "preflight must reject unissued capabilities, not just slot publication");
+            assertEquals(0, arena.capabilityCount());
+            arena.issueNativeCapability(capability);
             fields.put("left", capability);
             assertEquals(1, arena.capabilityCount());
             assertSame(capability, fields.get("left"));
@@ -316,6 +326,11 @@ final class ActorNativeArenaTest {
                     "last native slot overwrite must retire the handle registry entry");
 
             assertThrows(SecurityException.class, () -> fields.put("left", foreign));
+            assertEquals(0, arena.capabilityCount());
+            // Even a malicious host wrapper claiming the correct arena needs
+            // an explicit issuance by the trusted core.
+            ActorNativeArena.NativeCapability forged = () -> arena;
+            assertThrows(SecurityException.class, () -> fields.put("left", forged));
             assertEquals(0, arena.capabilityCount());
 
             assertThrows(IllegalArgumentException.class,
