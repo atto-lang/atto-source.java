@@ -41,26 +41,31 @@ public final class Parser {
     }
 
     public Ast.Program parseProgram() {
-        // Fail closed for the entire compilation unit, including declarations,
-        // expressions and nested blocks. Until a typed host/device execution
-        // graph exists, interpreting these markers as CPU expressions or
-        // silently skipping their bodies would violate placement semantics.
-        // A token preflight also covers paths not reached by the normal parser.
+        // CPU/GPU Task v2 has a real source AST. Keep unsupported synchronous
+        // execution regions and quantum fail-closed, but allow canonical task
+        // forms (plus legacy nb aliases) to reach typed lowering. GPU task is
+        // deliberately rejected later until a physical device provider exists.
         for (int i = 0; i < tokens.size(); i++) {
             Token token = tokens.get(i);
-            if (token.type() == GPU || token.type() == CPU || token.type() == QUANTUM) {
-                throw error(token, "execution domain '" + token.lexeme()
-                        + "' requires typed effect/ownership checking and explicit backend lowering;"
-                        + " nested cpu/gpu blocks are not yet enabled; no implicit CPU fallback");
+            if (token.type() == QUANTUM) {
+                throw error(token, "quantum execution requires explicit backend lowering; no implicit CPU fallback");
             }
-            boolean nextIsBlock = i + 1 < tokens.size() && tokens.get(i + 1).type() == LBRACE;
-            if (nextIsBlock && token.type() == IDENT && token.lexeme().equals("task")) {
-                throw error(token, "execution task requires scheduler-aware typed lowering;"
-                        + " task submission must not run inline or wait for await; no implicit CPU fallback");
-            }
-            if (nextIsBlock && token.type() == NB) {
-                throw error(token, "legacy 'nb { ... }' task form requires scheduler-aware typed lowering;"
-                        + " canonical spelling is 'task { ... }'; no implicit CPU fallback");
+            if (token.type() == CPU || token.type() == GPU) {
+                boolean canonicalTask =
+                        i + 2 < tokens.size()
+                                && tokens.get(i + 1).type() == IDENT
+                                && tokens.get(i + 1).lexeme().equals("task")
+                                && tokens.get(i + 2).type() == LBRACE;
+                boolean legacyNbTask =
+                        i > 0 && tokens.get(i - 1).type() == NB
+                                && i + 1 < tokens.size()
+                                && tokens.get(i + 1).type() == LBRACE;
+                if (!canonicalTask && !legacyNbTask) {
+                    throw error(token, "synchronous execution domain '" + token.lexeme()
+                            + " { ... }' is reserved but not production-lowered yet;"
+                            + " use '" + token.lexeme() + " task { ... }' for asynchronous work;"
+                            + " no implicit CPU fallback");
+                }
             }
         }
         String namespace = null;
@@ -3284,12 +3289,42 @@ public final class Parser {
             return new Ast.UnaryExpr(mutable ? "&mut" : "&", parseUnary());
         }
         if (match(AWAIT)) return new Ast.AwaitExpr(parseUnary());
+
+        // task is contextual: task(...) and identifiers named task remain legal.
+        if (check(IDENT) && peek().lexeme().equals("task") && checkNext(LBRACE)) {
+            advance();
+            return new Ast.TaskExpr(Ast.ExecutionDomain.CPU, parseBlock(), false);
+        }
+        if (match(CPU, GPU)) {
+            Token domainToken = previous();
+            Ast.ExecutionDomain domain = domainToken.type() == CPU
+                    ? Ast.ExecutionDomain.CPU : Ast.ExecutionDomain.GPU;
+            if (!matchContextualKeyword("task")) {
+                throw error(domainToken,
+                        "synchronous " + domainToken.lexeme()
+                                + " { ... } lowering is not enabled yet; use "
+                                + domainToken.lexeme() + " task { ... }");
+            }
+            return new Ast.TaskExpr(domain, parseBlock(), false);
+        }
+
         // Expression-level trap is a typed Option boundary; the declaration
         // modifier "trap fnc" remains a distinct grammar production.
         if (match(TRAP)) return new Ast.TrapExpr(parseUnary());
         if (match(RT)) return parseRuntimeExpression();
 
         if (match(NB)) {
+            if (check(LBRACE)) {
+                return new Ast.TaskExpr(Ast.ExecutionDomain.CPU, parseBlock(), true);
+            }
+            if (match(CPU, GPU)) {
+                Ast.ExecutionDomain domain = previous().type() == CPU
+                        ? Ast.ExecutionDomain.CPU : Ast.ExecutionDomain.GPU;
+                if (!check(LBRACE)) {
+                    throw error(peek(), "legacy 'nb cpu/gpu' task form requires a block");
+                }
+                return new Ast.TaskExpr(domain, parseBlock(), true);
+            }
             if (match(CB)) {
                 if (!match(WRITECH)) {
                     throw error(previous(), "'nb cb' must prefix writech");
