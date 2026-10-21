@@ -6678,7 +6678,7 @@ public final class TypeChecker {
         if (!parameter.structural() || !(actual instanceof Borrow borrowed)) return actual;
         if (borrowed.mutable()) {
             throw new IllegalArgumentException("argument " + position
-                    + " is a read-only structural view; rt borrow mut is not permitted");
+                    + " is a read-only structural view; rt mut borrow is not permitted");
         }
         return borrowed.target();
     }
