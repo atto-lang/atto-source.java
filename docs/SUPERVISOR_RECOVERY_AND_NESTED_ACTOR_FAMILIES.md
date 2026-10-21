@@ -151,10 +151,17 @@ supervisor callback lowering:
 - **No unbounded crash loops.** Every supervisor has an explicit
   `maxRestarts` within a monotonic `restartWindow`. Exhaustion escalates one
   typed CONTROL failure to the parent; it never keeps respawning indefinitely.
+  Restart-history storage is itself bounded; a full history table fails closed
+  to escalation and never evicts a live crash-loop budget to make room.
 - **Backoff is bounded and deterministic by default.** Repeated failures use an
   explicit min/max exponential backoff (or an application-provided policy).
   Random jitter is opt-in and must come from an injected/replayable source so
   tests and deterministic replay are not hostage to ambient randomness.
+- **Restart authority is one-shot.** Acquiring a restart permit consumes the
+  retained failed-incarnation CONTROL authority, and the first actual admission
+  attempt consumes that permit even when parent/group/resource admission fails.
+  The same failed incarnation cannot be retried in a synchronous loop outside
+  restart-intensity accounting.
 - **Restart means a new incarnation.** A replacement actor gets a new
   generation/incarnation identity. The old `ActorRef` remains terminal
   forever and cannot silently retarget to the replacement. Stale messages and

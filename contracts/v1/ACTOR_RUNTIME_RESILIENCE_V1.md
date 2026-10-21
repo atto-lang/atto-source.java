@@ -163,6 +163,12 @@ reserve diagnostic capacity and then die before publishing the record.
 
 - ActorRef identity is generation-bound.
 - Restart is an explicit supervisor policy, never hidden ordinary-failure behavior.
+- Restart policy state is bounded across logical actors. Capacity exhaustion
+  fails closed to escalation rather than forgetting an existing actor's
+  restart-window history.
+- A generation-bound restart permit is one-shot at admission: an attempted
+  replacement that fails parent/group/resource admission consumes the permit
+  and must escalate or await a new supervisor decision rather than busy-retry.
 - Mail accepted by a failed incarnation is not implicitly replayed into a new
   incarnation. Durable replay requires an explicit protocol.
 - Lifecycle fencing prevents admission after sealing/stopping.
