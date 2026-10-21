@@ -413,7 +413,8 @@ borrow_type     = "&" [ "mut" ] type_atom ;
 tuple_type      = "[" [ type_ref { "," type_ref } ] "]"
                 | "tuple" "(" [ type_ref { "," type_ref } ] ")" ;
 (* Both spellings normalize to the same finite tuple TypeRef and therefore
-   share the same arity and type semantics. *)
+   share the same arity and type semantics. The canonical tuple TypeRef
+   constructor rejects arity greater than 64, including compiler-generated AST. *)
 record_type     = "{" [ record_type_field { "," record_type_field } ] "}" ;
 record_type_field
                 = ( IDENT | STRING_LITERAL ) ":" type_ref ;
