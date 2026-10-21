@@ -3863,6 +3863,7 @@ public final class OwnershipChecker {
         }
 
         String name = type.name();
+        if (hasLocalTypeAliasNamed(name)) return none;
         Ast.ClassDecl declaredClass = findClass(name);
         if (declaredClass != null && java.util.Set.of(
                 "ActorRef", "Future", "Channel", "SharedMutex",
