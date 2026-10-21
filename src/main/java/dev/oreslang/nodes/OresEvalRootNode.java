@@ -10326,7 +10326,7 @@ public final class OresEvalRootNode extends RootNode {
                 return true;
             }
 
-            if (value instanceof ActorNativeArena.NativeValue
+            if ((value instanceof ActorNativeArena.NativeValue || value instanceof ActorNativeArena.NativeCapability)
                     || value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>
                     || value instanceof CompletionStage<?> || value instanceof Invokable
                     || value instanceof HostClassFacade || value instanceof HostObjectFacade) {
