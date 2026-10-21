@@ -3543,6 +3543,14 @@ public final class TypeChecker {
             return fn.result();
         }
         if (expr instanceof Ast.MemberExpr member) {
+            if (currentActorKind != Ast.ActorKind.NONE
+                    && member.receiver() instanceof Ast.NameExpr selfName
+                    && selfName.name().equals("self")
+                    && member.member().equals("handle_state")) {
+                throw new IllegalArgumentException(
+                        "self.handle_state is a direct-call-only sealed state-loan intrinsic; "
+                                + "invoke it with one inline lambda");
+            }
             if (member.receiver() instanceof Ast.NameExpr namespace
                     && namespace.name().equals("BooleanOps")
                     && !modules.containsKey("BooleanOps")
