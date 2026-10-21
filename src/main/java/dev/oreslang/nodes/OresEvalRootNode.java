@@ -4945,6 +4945,23 @@ public final class OresEvalRootNode extends RootNode {
                                     (OresKeyedMap<String, OresJsonValue>) map;
                             yield OresJsonValue.object(jsonMap);
                         }
+                        case "stringify" -> {
+                            requireOne(args, "Json.stringify");
+                            Object raw = args.getFirst();
+                            if (raw instanceof OresJsonValue json) {
+                                yield OresJsonValue.stringify(json);
+                            }
+                            if (raw instanceof OresKeyedMap<?, ?> map
+                                    && map.keyDomain() == OresKeyedMap.KeyDomain.STRING
+                                    && map.valueDomain() == OresKeyedMap.ValueDomain.JSON) {
+                                @SuppressWarnings("unchecked")
+                                OresKeyedMap<String, OresJsonValue> jsonMap =
+                                        (OresKeyedMap<String, OresJsonValue>) map;
+                                yield OresJsonValue.stringify(jsonMap);
+                            }
+                            throw new IllegalArgumentException(
+                                    "Json.stringify requires JsonValue or Map<String, JsonValue>");
+                        }
                         case "null" -> throw new IllegalArgumentException(
                                 "Json.null is a value, not a function");
                         default -> throw new IllegalArgumentException(
@@ -8067,7 +8084,8 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof ClassFacade klass) {
                 if (isCompilerJsonFactoryFacade(klass)) {
                     if (name.equals("null")) return OresJsonValue.nullValue();
-                    if (name.equals("of") || name.equals("array") || name.equals("object")) {
+                    if (name.equals("of") || name.equals("array")
+                            || name.equals("object") || name.equals("stringify")) {
                         throw new IllegalArgumentException(
                                 "Json." + name
                                         + " is direct-call-only; invoke it instead of extracting a callable value");
