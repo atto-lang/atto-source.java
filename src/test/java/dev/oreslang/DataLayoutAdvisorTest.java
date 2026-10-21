@@ -69,6 +69,17 @@ final class DataLayoutAdvisorTest {
                 new Hints(null, null, null, null, null, 2, 48));
     }
 
+    @Test void maximumBoundedSoaosMetadataUsesOnePassGroupAccounting() {
+        var fields = java.util.Collections.nCopies(16_384, 8);
+        var accessed = java.util.stream.IntStream.range(0, 16_384)
+                .boxed().toList();
+        var region = new Region("ecs.max", Layout.SOAOS, 100_000,
+                fields, accessed, true, true, true, false, false,
+                true, false,
+                new Hints(null, null, null, null, null, 16_384, 64));
+        assertTrue(has(region, "ORES-LAYOUT136"));
+    }
+
     @Test void rejectsMalformedEvidenceAndCopiesCallerCollections() {
         assertThrows(IllegalArgumentException.class, () -> new Region(
                 "s", Layout.AOS, 128, List.of(4, 4), List.of(0, 0),
