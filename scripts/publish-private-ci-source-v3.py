@@ -951,6 +951,68 @@ def require_exact_ref(repository, ref_name, expected_sha, expected_repository_id
         raise Denied("carrier ref does not point to exact handoff commit")
 
 
+def require_handoff_refs_absent(
+        repository, branch, authorization, expected_repository_id):
+    """Reject stale deterministic handoff refs before either ref can activate.
+
+    Both names are content-addressed and reused by retries. Proving them absent
+    before publication prevents a stale authorization ref from making a newly
+    created payload branch executable and gives rollback a clean ownership
+    baseline.
+    """
+    for ref_name in (branch, authorization):
+        if live_ref_sha(repository, ref_name, expected_repository_id) is not None:
+            raise Denied("carrier handoff ref already exists before publication")
+
+
+def create_handoff_ref(repository, ref_name, commit_sha, expected_repository_id):
+    """Create an exact ref and report whether this invocation owns it.
+
+    A successful exact GitHub create response proves ownership. If the create
+    outcome is ambiguous, re-read the live ref. An exact observed ref may be
+    adopted for idempotent progress, but is deliberately returned as unowned so
+    rollback cannot delete a concurrently-created identical ref.
+    """
+    commit_sha = valid_sha(commit_sha, "invalid handoff commit SHA")
+    if not isinstance(ref_name, str) or not HANDOFF_REF.fullmatch(ref_name):
+        raise Denied("handoff ref target is invalid")
+
+    # Recheck immediately before POST. The earlier two-ref absence proof closes
+    # stale authorization; this per-ref check narrows the collision window.
+    if live_ref_sha(repository, ref_name, expected_repository_id) is not None:
+        raise Denied("carrier handoff ref already exists before creation")
+
+    try:
+        payload = legacy.gh_api(
+            f"repos/{repository}/git/refs", method="POST",
+            payload={"ref": "refs/heads/" + ref_name, "sha": commit_sha},
+        )
+    except Denied as exc:
+        actual = live_ref_sha(repository, ref_name, expected_repository_id)
+        if actual == commit_sha:
+            return False
+        if actual is not None:
+            raise Denied(
+                "carrier ref collision after ambiguous creation"
+            ) from exc
+        raise
+
+    if (isinstance(payload, dict)
+            and payload.get("ref") == "refs/heads/" + ref_name
+            and isinstance(payload.get("object"), dict)
+            and payload["object"].get("sha") == commit_sha):
+        return True
+
+    # A malformed/mismatched create response is not ownership proof. Resolve
+    # only the desired live state and never authorize later rollback of it.
+    actual = live_ref_sha(repository, ref_name, expected_repository_id)
+    if actual == commit_sha:
+        return False
+    if actual is not None:
+        raise Denied("carrier ref collision after ambiguous creation")
+    raise Denied("carrier did not confirm exact ref creation")
+
+
 def delete_exact_ref(repository, ref_name, expected_sha, expected_repository_id):
     expected_sha = valid_sha(expected_sha, "invalid rollback commit SHA")
     actual = live_ref_sha(repository, ref_name, expected_repository_id)
@@ -1320,22 +1382,25 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         raise Denied("source repository identity changed before publication")
 
     # Create the source-bearing branch first. The carrier workflow fails closed
-    # while it waits for the exact authorization ref below. Treat a create call
-    # as potentially successful before it returns: transport ambiguity must not
-    # strand a source-bearing ref.
+    # while it waits for the exact authorization ref below. Both deterministic
+    # names must be absent before the payload appears: a stale authorization ref
+    # would otherwise make a newly-created payload executable immediately.
     authorization = "ci/authorized-" + commit_sha
-    payload_attempted = False
-    authorization_attempted = False
+    require_handoff_refs_absent(
+        repository, branch, authorization, contract["repository_id"]
+    )
+
+    # Roll back only refs whose successful create response proves ownership.
+    # An exact ref observed after an ambiguous create is safe to adopt, but must
+    # never be deleted by this invocation because a concurrent publisher may
+    # own it.
+    payload_owned = False
+    authorization_owned = False
     try:
         auth()
-        payload_attempted = True
-        created = legacy.gh_api(
-            f"repos/{repository}/git/refs", method="POST",
-            payload={"ref": "refs/heads/" + branch, "sha": commit_sha},
+        payload_owned = create_handoff_ref(
+            repository, branch, commit_sha, contract["repository_id"]
         )
-        if (created.get("ref") != "refs/heads/" + branch
-                or created.get("object", {}).get("sha") not in (None, commit_sha)):
-            raise Denied("carrier did not confirm exact-tree CI branch creation")
         require_exact_ref(
             repository, branch, commit_sha, contract["repository_id"]
         )
@@ -1359,14 +1424,9 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
             raise Denied("source repository identity changed before authorization")
 
         auth()
-        authorization_attempted = True
-        approved = legacy.gh_api(
-            f"repos/{repository}/git/refs", method="POST",
-            payload={"ref": "refs/heads/" + authorization, "sha": commit_sha},
+        authorization_owned = create_handoff_ref(
+            repository, authorization, commit_sha, contract["repository_id"]
         )
-        if (approved.get("ref") != "refs/heads/" + authorization
-                or approved.get("object", {}).get("sha") not in (None, commit_sha)):
-            raise Denied("carrier did not confirm dispatcher authorization ref")
 
         # Do not trust create responses alone. Re-read both live refs before
         # reporting a successful handoff.
@@ -1376,29 +1436,29 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         require_exact_ref(
             repository, authorization, commit_sha, contract["repository_id"]
         )
-    except Denied as exc:
+    except BaseException:
         rollback_error = None
-        if authorization_attempted:
+        if authorization_owned:
             try:
                 delete_exact_ref(
                     repository, authorization, commit_sha,
                     contract["repository_id"],
                 )
-            except Denied as rollback_exc:
+            except BaseException as rollback_exc:
                 rollback_error = rollback_exc
-        if payload_attempted:
+        if payload_owned:
             try:
                 delete_exact_ref(
                     repository, branch, commit_sha,
                     contract["repository_id"],
                 )
-            except Denied as rollback_exc:
+            except BaseException as rollback_exc:
                 rollback_error = rollback_error or rollback_exc
         if rollback_error is not None:
             raise Denied(
                 "private CI handoff failed and carrier ref rollback was incomplete"
             ) from rollback_error
-        raise exc
+        raise
 
     return {
         "commit": commit_sha,
