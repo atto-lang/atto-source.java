@@ -1188,6 +1188,15 @@ public final class OwnershipChecker {
             return checkCall(call, scope);
         }
         if (expr instanceof Ast.MemberExpr member) {
+            if (member.member().equals("value")) {
+                Ast.TypeRef valueType = receiverType(member.receiver(), scope);
+                if (valueType != null && valueType.name().equals("SelectResult")) {
+                    // A result may own a move-only channel payload. A repeated
+                    // projection would copy it without a second message.
+                    checkExpr(member.receiver(), scope, true);
+                    return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+                }
+            }
             if (member.receiver() instanceof Ast.NameExpr receiverName) {
                 VarState receiverState = scope.lookup(receiverName.name());
                 if (receiverState != null && isScopedMutexReceiver(receiverState)) {
@@ -1482,6 +1491,100 @@ public final class OwnershipChecker {
             }
             Ast.TypeRef mutexType = new Ast.TypeRef(factory.name(), List.of(owned.type), false);
             return new ValueInfo(mutexType, factory.name().equals("SharedMutex") ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
+        }
+
+        // Reusable select descriptors are affine. A retained WRITE case
+        // must not transmit one move-only payload twice; no descriptor may
+        // capture a lexical borrow that can expire before the next selection.
+        if (call.callee() instanceof Ast.MemberExpr selectFactory
+                && selectFactory.receiver() instanceof Ast.NameExpr factoryName
+                && factoryName.name().equals("SelectCase")) {
+            String method = selectFactory.member();
+            if (method.equals("read") || method.equals("write")
+                    || method.equals("future")) {
+                if (call.arguments().isEmpty()) {
+                    throw error("SelectCase." + method + " requires an operand");
+                }
+                ValueInfo source = checkExpr(call.arguments().getFirst(),
+                        scope, method.equals("future"));
+                if (isBorrowValue(source) || retainsBorrowedType(source.type)) {
+                    throw error("SelectCase." + method
+                            + " cannot retain a borrowed channel, Future or source");
+                }
+                if (method.equals("write") && call.arguments().size() >= 2) {
+                    ValueInfo payload = checkExpr(call.arguments().get(1), scope, false);
+                    if (isBorrowValue(payload) || retainsBorrowedType(payload.type)) {
+                        throw error("SelectCase.write cannot retain a borrowed payload");
+                    }
+                    if (containsMutexGuardType(payload.type)) {
+                        throw error("SelectCase.write cannot retain MutexGuard state");
+                    }
+                    if (payload.kind != ValueKind.COPY) {
+                        throw error("reusable SelectCase.write requires a Copy payload; "
+                                + "use one-shot writech for move-only values");
+                    }
+                }
+                return new ValueInfo(Ast.TypeRef.simple("SelectCase"),
+                        ValueKind.MOVE_ONLY, null);
+            }
+            // TypeChecker validates the default constructor and other arities.
+            return new ValueInfo(Ast.TypeRef.simple("SelectCase"),
+                    ValueKind.MOVE_ONLY, null);
+        }
+
+        if (call.callee() instanceof Ast.MemberExpr selectFactory
+                && selectFactory.receiver() instanceof Ast.NameExpr factoryName
+                && (factoryName.name().equals("SelectSet")
+                        || factoryName.name().equals("SelectPlan"))
+                && selectFactory.member().equals("new")
+                && !call.arguments().isEmpty()) {
+            ValueInfo cases = checkExpr(call.arguments().getFirst(), scope, true);
+            if (isBorrowValue(cases) || retainsBorrowedType(cases.type)) {
+                throw error(factoryName.name()
+                        + ".new cannot retain a borrowed case collection");
+            }
+            if (containsMutexGuardType(cases.type)) {
+                throw error(factoryName.name() + ".new cannot retain MutexGuard state");
+            }
+            return new ValueInfo(Ast.TypeRef.simple(factoryName.name()),
+                    ValueKind.MOVE_ONLY, null);
+        }
+
+        if (call.callee() instanceof Ast.MemberExpr selectFactory
+                && selectFactory.receiver() instanceof Ast.NameExpr factoryName
+                && factoryName.name().equals("DynamicSelectPlan")
+                && selectFactory.member().equals("new")) {
+            // TypeChecker enforces the zero-argument constructor.
+            return new ValueInfo(Ast.TypeRef.simple("DynamicSelectPlan"),
+                    ValueKind.MOVE_ONLY, null);
+        }
+
+        if (call.callee() instanceof Ast.MemberExpr dynamicMethod
+                && (dynamicMethod.member().equals("put")
+                        || dynamicMethod.member().equals("remove")
+                        || dynamicMethod.member().equals("size")
+                        || dynamicMethod.member().equals("version"))) {
+            Ast.TypeRef receiverType = receiverType(dynamicMethod.receiver(), scope);
+            if (receiverType != null
+                    && receiverType.name().equals("DynamicSelectPlan")) {
+                checkExpr(dynamicMethod.receiver(), scope, false);
+                if (!call.arguments().isEmpty()) {
+                    checkExpr(call.arguments().getFirst(), scope, false);
+                }
+                if (dynamicMethod.member().equals("put")
+                        && call.arguments().size() > 1) {
+                    ValueInfo value = checkExpr(call.arguments().get(1), scope, true);
+                    if (isBorrowValue(value) || retainsBorrowedType(value.type)) {
+                        throw error("DynamicSelectPlan.put cannot retain a borrowed case");
+                    }
+                }
+                Ast.TypeRef result = switch (dynamicMethod.member()) {
+                    case "put" -> Ast.TypeRef.simple("void");
+                    case "remove" -> Ast.TypeRef.simple("bool");
+                    default -> Ast.TypeRef.simple("int");
+                };
+                return new ValueInfo(result, kindOfType(result), null);
+            }
         }
 
         if (call.callee() instanceof Ast.NameExpr name
@@ -3880,6 +3983,17 @@ public final class OwnershipChecker {
         return Ast.TypeRef.union(List.of(left, right));
     }
 
+    private boolean retainsBorrowedType(Ast.TypeRef type) {
+        if (type == null) return false;
+        if (type.isBorrow()) return true;
+        if (type.arguments().stream().anyMatch(this::retainsBorrowedType)) {
+            return true;
+        }
+        return type.isClosedAggregateType()
+                && type.aggregateMembers().values().stream()
+                        .anyMatch(this::retainsBorrowedType);
+    }
+
     private ValueKind kindOfType(Ast.TypeRef type) {
         if (type == null) return ValueKind.MOVE_ONLY;
         if (type.isBorrow()) return type.mutableBorrow() ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW;
@@ -3894,7 +4008,7 @@ public final class OwnershipChecker {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
                     "bool","Bool","string","String","void","SharedMutex",
-                    "Channel","SelectCase","SelectSet","OptionUnwrapError" -> true;
+                    "Channel","OptionUnwrapError" -> true;
             case "Option" -> type.arguments().size() == 1 && isCopyType(type.arguments().getFirst());
             case "Result" -> type.arguments().size() == 2
                     && isCopyType(type.arguments().get(0))
