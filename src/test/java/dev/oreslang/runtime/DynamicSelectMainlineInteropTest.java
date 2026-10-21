@@ -14,6 +14,61 @@ import java.util.concurrent.CancellationException;
 final class DynamicSelectMainlineInteropTest {
 
     @Test
+    void channelOnlyPendingRendezvousNeedsNoFutureListener() {
+        var rendezvous = new ChannelRuntime.Channel<Integer>(0);
+        var other = new ChannelRuntime.Channel<Integer>(0);
+        var plan = new ChannelRuntime.DynamicSelectPlan<String>();
+        plan.put("rendezvous", ChannelRuntime.read(rendezvous));
+        plan.put("other", ChannelRuntime.read(other));
+
+        for (int i = 0; i < 128; i++) {
+            var pending = plan.selectKeyedAsync(ChannelRuntime.SelectPolicy.FAIR);
+            assertFalse(pending.isDone(), "no value should be available before rendezvous");
+            assertTrue(rendezvous.tryWrite(i),
+                    "the coordinator must still wake a pending channel-only selection");
+            var selected = pending.join();
+            assertEquals("rendezvous", selected.key());
+            assertEquals(i, selected.selection().value());
+            assertFalse(other.tryWrite(i),
+                    "loser registrations must be detached after winner publication");
+        }
+    }
+
+    @Test
+    void channelOnlyCancellationReleasesAllRendezvousArms() {
+        var a = new ChannelRuntime.Channel<Integer>(0);
+        var b = new ChannelRuntime.Channel<Integer>(0);
+        var set = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.read(a), ChannelRuntime.read(b));
+        for (int i = 0; i < 128; i++) {
+            var pending = set.selectAsync(ChannelRuntime.SelectPolicy.FAIR);
+            assertFalse(pending.isDone());
+            assertTrue(pending.cancel(false));
+            assertThrows(CancellationException.class, pending::join);
+            assertFalse(a.tryWrite(i));
+            assertFalse(b.tryWrite(i));
+        }
+    }
+
+    @Test
+    void mixedPendingFutureAndChannelArmsRetainFutureWakeupAndDetachLoser() {
+        var producer = new OresFuture<Integer>();
+        var channel = new ChannelRuntime.Channel<Integer>(0);
+        var plan = new ChannelRuntime.DynamicSelectPlan<String>();
+        plan.put("future", ChannelRuntime.await(producer));
+        plan.put("channel", ChannelRuntime.read(channel));
+
+        var pending = plan.selectKeyedAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+        assertFalse(pending.isDone());
+        assertTrue(channel.tryWrite(54));
+        assertEquals("channel", pending.join().key());
+        assertFalse(producer.isCancelled(),
+                "losing select must not transfer cancellation to the producer");
+        assertTrue(producer.completeFromRuntime(55),
+                "a losing Future must retain its producer's settlement authority");
+    }
+
+    @Test
     void typedFutureCaseAndBufferedChannelRemainSelectableInOnePlan() {
         var inbox = new ChannelRuntime.Channel<Integer>(2);
         var plan = new ChannelRuntime.DynamicSelectPlan<String>();
