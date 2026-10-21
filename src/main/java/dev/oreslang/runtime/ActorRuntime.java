@@ -5939,10 +5939,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // Otherwise generation exhaustion leaks the reserved actor slot.
                 ActorId id = fixedActorId == null
                         ? ActorId.create() : fixedActorId;
-                long generation = nextActorGeneration.getAndIncrement();
-                if (generation <= 0) {
-                    throw new IllegalStateException("actor generation sequence exhausted");
-                }
+                long generation = allocateActorGeneration();
                 ActorRef<M> ref = new ActorRef<>(id, kind, generation);
                 cell = new ActorCell<>(
                         ref,
@@ -6326,6 +6323,23 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
         return completion;
+    }
+
+    /**
+     * Allocate one positive incarnation generation without ever wrapping back
+     * into the valid domain. Zero is a permanent exhausted sentinel.
+     */
+    private long allocateActorGeneration() {
+        for (;;) {
+            long current = nextActorGeneration.get();
+            if (current <= 0) {
+                throw new IllegalStateException("actor generation sequence exhausted");
+            }
+            long next = current == Long.MAX_VALUE ? 0L : current + 1L;
+            if (nextActorGeneration.compareAndSet(current, next)) {
+                return current;
+            }
+        }
     }
 
     private void reserveActorSlot() {
