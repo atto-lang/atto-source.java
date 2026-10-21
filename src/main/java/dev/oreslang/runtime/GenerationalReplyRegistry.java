@@ -116,7 +116,7 @@ public final class GenerationalReplyRegistry implements AutoCloseable {
     private boolean closed;
 
     public GenerationalReplyRegistry(int capacity) {
-        if (capacity <= 0 || capacity == Integer.MAX_VALUE) {
+        if (capacity <= 0 || capacity > 65_536) {
             throw new IllegalArgumentException("reply capacity must be positive and bounded");
         }
         slots = new Ticket<?>[capacity];
