@@ -1860,7 +1860,7 @@ public final class OwnershipChecker {
                         && scope.lookup(receiverName.name()) != null) {
                     // The implicit mutable receiver is the first live exclusive
                     // argument, even though it is not in call.arguments().
-                    // Otherwise q.method(rt borrow mut q) aliases a writable
+                    // Otherwise q.method(rt mut borrow q) aliases a writable
                     // receiver within one invocation.
                     VarState receiver = requireState(scope, receiverName.name());
                     beginPersistentBorrow(receiver, true);
@@ -2333,7 +2333,7 @@ public final class OwnershipChecker {
             boolean mutable = param.type().mutableBorrow();
             if (arg instanceof Ast.UnaryExpr unary && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
                 if (mutable && !unary.operator().equals("&mut")) {
-                    throw error(callable + " argument " + position + " requires rt borrow mut");
+                    throw error(callable + " argument " + position + " requires rt mut borrow");
                 }
                 BorrowPlace place = borrowPlace(unary.operand(), scope);
                 if (mutable && !(unary.operand() instanceof Ast.NameExpr)) {
