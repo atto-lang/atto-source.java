@@ -71,6 +71,17 @@ final class LambdaParameterOrderTest {
     }
 
     @Test
+    void singleNameFirstParameterLeavesClosingPipeForTheLambda() {
+        Ast.Program ast = Parser.parse("""
+                pub routine main(): void {
+                  const fnc foo = |bar: string| -> { return bar; };
+                  return;
+                }
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(ast));
+    }
+
+    @Test
     void shorthandRequiresLambdaAndImmutableBinding() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 pub routine main(): void { const fnc bad = 42; return; }
