@@ -59,6 +59,24 @@ Stealing must never cross PRIVATE/SHARED/UNTRUSTED/CONTROL boundaries.
 5. Attribute CPU budgets to actors/source tasks across `await` and
    `rt cooperate`. Untrusted continuations must not refill logical quotas.
 
+### GPU reservation substrate
+
+This draft now includes a package-private `GpuDeviceBroker` reservation ledger.
+It atomically accounts both **per-device** memory/in-flight limits and a
+**lifecycle-owner** in-flight limit. Device drain/loss immediately stops new
+reservations; existing leases remain charged until their provider operation is
+physically quiescent. Owner close similarly stops new reservations without
+fabricating completion of live GPU work. Broker shutdown rejects while any
+lease is live.
+
+The broker deliberately does **not** make `GPU_PREFERRED` or `GPU_REQUIRED`
+admissible yet. A broker lease is capacity accounting, not a driver queue,
+device handle, command submission, buffer ownership proof or fence. Provider
+integration must atomically bind the broker lease to the typed buffer/fence
+RESERVED -> ENQUEUED -> terminal state machine and release the lease only
+after authenticated completion/cancellation quiescence. Until that path exists,
+`ActorGroupPlacementPolicy.requireSupported()` continues to reject GPU policy.
+
 ### GPU implementation follow-up
 
 1. GPU affinity selects compute tasks/kernels only. Ordinary actor mailbox
