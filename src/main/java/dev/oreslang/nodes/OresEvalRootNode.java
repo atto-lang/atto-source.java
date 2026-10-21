@@ -4707,9 +4707,24 @@ public final class OresEvalRootNode extends RootNode {
                     (OresKeyedMap<Object, Object>) rawMap;
             return invokableInvocation(ignored -> {
                 if (member.equals("put")) {
-                    // Typed Maps reject null values, so null unambiguously
-                    // means this key was absent before the committed write.
-                    Object previous = map.put(key, args.get(1));
+                    Object offered = args.get(1);
+                    if (map.valueDomain() == OresKeyedMap.ValueDomain.JSON) {
+                        OresKeyedMap.OwnedPutAttempt<Object> attempt =
+                                map.attemptOwnedPut(key, offered);
+                        if (!attempt.committed()) {
+                            Object recovered = attempt.takeRejectedValue();
+                            if (recovered != offered) {
+                                throw new IllegalStateException(
+                                        "owned Map rollback returned a different value identity");
+                            }
+                            throw attempt.rejection();
+                        }
+                        Object previous = attempt.takePrevious();
+                        return new OptionValue(previous != null, previous);
+                    }
+                    // Scalar typed Maps reject null values, so null
+                    // unambiguously means this key was absent.
+                    Object previous = map.put(key, offered);
                     return new OptionValue(previous != null, previous);
                 }
                 OresKeyedMap.Lookup<Object> removed = map.take(key);
@@ -5094,6 +5109,27 @@ public final class OresEvalRootNode extends RootNode {
                 @SuppressWarnings("unchecked")
                 OresKeyedMap<Object, Object> map =
                         (OresKeyedMap<Object, Object>) rawMap;
+                if (map.valueDomain() == OresKeyedMap.ValueDomain.JSON) {
+                    OresKeyedMap.OwnedPutAttempt<Object> attempt =
+                            map.attemptOwnedPut(key, value);
+                    if (!attempt.committed()) {
+                        // Recover the exact offered move-only value before the
+                        // admission failure is rethrown. The lexical runtime
+                        // slot still owns the same object; taking it here
+                        // discharges the one-shot rollback token so lowering
+                        // cannot duplicate the candidate.
+                        Object recovered = attempt.takeRejectedValue();
+                        if (recovered != value) {
+                            throw new IllegalStateException(
+                                    "owned Map rollback returned a different value identity");
+                        }
+                        throw attempt.rejection();
+                    }
+                    // Indexed assignment discards any displaced value. Consume
+                    // the linear token exactly once before returning the RHS.
+                    attempt.takePrevious();
+                    return value;
+                }
                 map.put(key, value);
                 return value;
             }
