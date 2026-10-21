@@ -604,6 +604,49 @@ final class ParserTest {
     }
 
     @Test
+    void ifIsStatementOnlyAndValueSelectionUsesTernaryOrExplicitReturns() {
+        assertFalse(Ast.Expr.class.isAssignableFrom(Ast.IfStmt.class));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc choose(bool condition): int {
+                  const y = if condition then
+                    1;
+                  else
+                    2;
+                  fi;
+                  return y;
+                }
+                """));
+
+        IllegalArgumentException implicitBranchValues = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc choose(bool condition): int {
+                          if condition then
+                            1;
+                          else
+                            2;
+                          fi
+                        }
+                        """)));
+        assertTrue(implicitBranchValues.getMessage().contains("must explicitly return on every path"));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc choose(bool condition): int {
+                  if condition then
+                    return 1;
+                  else
+                    return 2;
+                  fi
+                }
+
+                fnc choose_expression(bool condition): int {
+                  return condition ? 1 : 2;
+                }
+                """)));
+    }
+
+    @Test
     void legacyIfDoAndElseifRemainAcceptedForMigration() {
         assertDoesNotThrow(() -> Parser.parse("""
                 define module app as
