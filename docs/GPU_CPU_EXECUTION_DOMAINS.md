@@ -125,7 +125,7 @@ remain reserved and fail closed at parse time, and there is no source `kernel`
 lowering yet. The CPU reference provider is never an implicit fallback for a
 GPU request and is not hard-realtime evidence.
 
-LLVM/native owns the first OpenCL C lowering for this subset. Generated OpenCL
+Java/Graal and LLVM/native now both lower this subset to the same OpenCL C artifact. Generated OpenCL
 source is an artifact only; real device execution still requires an
 authenticated provider, physical buffer provenance, queue admission, a
 submitted-state witness, device-event completion evidence, and verified
