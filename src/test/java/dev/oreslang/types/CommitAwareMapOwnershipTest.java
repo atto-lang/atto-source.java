@@ -128,6 +128,34 @@ final class CommitAwareMapOwnershipTest {
     }
 
     @Test
+    void candidateIsStillMovedAfterTryBecauseCommitMayHaveSucceeded() {
+        String source = """
+                define class Payload as
+                end
+
+                pub fnc main(): void {
+                  val Map<string, Payload> values =
+                      new Map<string, Payload>();
+                  val Payload item = new Payload();
+
+                  try {
+                    values.put("x", item);
+                  } catch (err) {
+                    const int ignored = 1;
+                  }
+
+                  val Payload invalid = item;
+                  return;
+                }
+                """;
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.checkWithCommitAwareMapWritesForTesting(
+                        Parser.parse(source)));
+    }
+
+    @Test
     void moveOnlyIndexedInsertionUsesSameCatchEdgeRule() {
         String source = """
                 define class Payload as
