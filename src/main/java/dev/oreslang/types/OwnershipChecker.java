@@ -4433,6 +4433,13 @@ public final class OwnershipChecker {
         if (type == null || type.isBorrow()) return false;
         if (type.isUnion()) return type.arguments().stream().allMatch(this::isCopyType);
         if (type.isTupleType()) return type.arguments().stream().allMatch(this::isCopyType);
+        if (hasLocalTypeAliasNamed(type.name())) return false;
+        // Same spelling is not enough to bestow a runtime wrapper's Copy
+        // semantics on a locally declared nominal class.
+        if (findClass(type.name()) != null
+                && java.util.Set.of("ActorRef", "Channel", "SharedMutex",
+                        "Option", "Result", "SelectCase", "SelectSet")
+                        .contains(type.name())) return false;
         return switch (type.name()) {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
