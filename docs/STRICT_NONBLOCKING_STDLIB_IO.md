@@ -19,33 +19,35 @@ another backend with the same no-thread-parking contract. If a target cannot
 provide a compliant primitive for filesystem, DNS, console, pipe, TCP, HTTP, or
 another I/O operation, that operation must fail closed as unsupported.
 
-## Java audit result at introduction
+## Java strict-boundary state
 
-The current Java/Graal backend is **not yet compliant**. The release gate
-`tools/strict-nonblocking-io-audit.py` intentionally rejects the existing
-blocking/worker-offloaded paths, including:
+The Java/Graal branch now treats the legacy blocking host adapters as
+**quarantined migration code, not a stdlib backend**. Source-visible FS/TCP/HTTP
+and terminal operations fail closed (async forms return failed Futures) until a
+strict readiness/completion provider is installed. `stdlib/testing.ores` is
+pure and no longer writes to stdout.
 
-- synchronous `java.nio.file.Files` operations;
-- synchronous `HttpClient.send`;
-- `java.net.Socket` connect/read/write;
-- JDK `HttpServer` response streams;
-- blocking stdin/stdout adapters;
-- `AsyncNativeIo` virtual-thread worker offload;
-- source-visible bare synchronous FS/TCP/HTTP I/O entries.
+The release gate `tools/strict-nonblocking-io-audit.py` checks that stdlib
+dispatch cannot reach legacy `NativeIo`, worker-offloaded `AsyncNativeIo`,
+blocking stdin/stdout, blocking socket methods, or the legacy JDK HttpServer
+listener. `tools/stdlib-boundary-audit` separately rejects bare synchronous I/O
+calls from packaged `.ores` modules.
 
-This document must not be used to claim completion while that audit reports a
-nonzero violation count.
+Legacy runtime classes still contain blocking APIs and must not be presented as
+strict providers. Completion is not achieved until those adapters are replaced
+and the disabled stdlib operations are backed by real nonblocking providers.
 
 ## Migration order
 
-1. Replace worker-offloaded network/TCP/HTTP paths with completion-driven
-   transports.
+1. Replace quarantined worker-offloaded network/TCP/HTTP adapters with
+   completion-driven transports, then reconnect only those verified providers
+   to the stdlib surface.
 2. Add a target-specific nonblocking filesystem provider; do not substitute a
    thread pool for missing kernel async support.
-3. Replace terminal/stdin/stdout paths with a nonblocking descriptor/reactor
-   provider or reject them on targets that cannot provide one.
-4. Remove bare synchronous stdlib I/O entrypoints. `*_blocking`, if retained,
-   must lower to implicit continuation suspension over the same async provider.
+3. Add nonblocking terminal/stdin/stdout descriptor/reactor providers on
+   supported targets; keep operations unsupported elsewhere.
+4. Implement canonical `*_blocking` lowering, if retained, as implicit
+   continuation suspension over the exact same async provider.
 5. Require the strict audit plus single-carrier progress, cancellation,
    timeout, backpressure, close, EOF, and stale-completion tests before release.
 
