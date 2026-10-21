@@ -49,6 +49,8 @@ public final class OwnershipChecker {
     private boolean currentAsyncGenerator;
     /** Every active try records outer roots transferred anywhere inside its body. */
     private final List<Set<VarState>> tryMoveObservers = new ArrayList<>();
+    /** Exact compiler-owned alloc/json JsonValue type import for this unit. */
+    private final boolean compilerJsonValueImported;
     /**
      * One narrowly proven terminal Map insertion may move normally while
      * excluding only that exact transfer from the enclosing catch observer.
@@ -65,6 +67,8 @@ public final class OwnershipChecker {
         // Preserve AST declaration identity: equality-based maps can merge
         // separate bindings with identical syntax in different scopes.
         this.validatedShortAliases = new IdentityHashMap<>(validatedShortAliases);
+        this.compilerJsonValueImported = program.imports().stream()
+                .anyMatch(ImportRules::isAllocJsonValueImport);
         index(program);
     }
 
@@ -4231,8 +4235,8 @@ public final class OwnershipChecker {
         if (type == null || type.isBorrow() || !type.arguments().isEmpty()) {
             return false;
         }
-        return type.name().equals("JsonValue")
-                && findClass("JsonValue") == null;
+        return compilerJsonValueImported
+                && type.name().equals("JsonValue");
     }
 
     private static boolean isTypedMapType(Ast.TypeRef type) {
