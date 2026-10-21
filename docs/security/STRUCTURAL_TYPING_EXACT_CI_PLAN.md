@@ -62,7 +62,7 @@ mvn -B -ntp test
 Specific checks: both declaration orders; redundant keyword; record/struct
 and named-interface matching; exact vs readonly width matching; class field
 visibility; nested readonly fields; invalid numeric field coercion; malformed
-and duplicate declarations; AST-generated params; `rt borrow mut` syntax;
+and duplicate declarations; AST-generated params; `rt mut borrow` syntax;
 implicit loan reservation against `rt take` and mutable reborrow; safe
 concurrent shared reads and release after call; provenance of borrowed
 return values; generics, lambda captures, actor/async bans.
