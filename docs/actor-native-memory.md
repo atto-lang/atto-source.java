@@ -32,6 +32,42 @@ process-local memory, not the stable MessagePack/wire representation.
   Replacing that allocator with stable FFM requires a deliberate JDK 22+ baseline
   change, not reflective access or preview APIs in this patch.
 
+## Per-actor native linear address space (GraalVM/JNI)
+
+Every logical actor already owns one `ActorNativeArena` in its `ActorCell`,
+independent of carrier threads and distinct from the other actors in the same
+trusted or pooled untrusted GraalVM isolate. `ActorRuntime.currentActorLinearMemory(initialPages, maxPages)`
+now resolves **one lazily backed `ActorLinearMemory` per actor arena**.
+The same native guest address space survives turns and carrier migration;
+foreign actors and host code cannot read or write it. Physical actor shutdown
+revokes all pages and refunds their native-byte reservations.
+
+* Guest addresses are unsigned-like, bounds-checked **logical byte offsets**
+  `[0, size)` with 64-KiB pages, little-endian primitive access and no exported
+  raw pointer. Each page is an independent zero-filled native allocation from
+  the actor arena's JNI allocator; host virtual addresses are not necessarily
+  contiguous. This is WASM-style linear addressing, **not** a claim of one
+  contiguous host allocation or an extra isolate per actor.
+* Growth commits additional full native pages within the caller's maximum page
+  count and shared actor quota. Existing offsets stay valid. Failed multi-page
+  growth revokes its partial new pages and leaves the old length unchanged.
+  `maxPages` is a logical upper bound, not a native memory reservation.
+* `leaseReadOnlyPage(pageIndex, offset, length)` borrows native page storage
+  within the owning actor. It blocks all writes to that page while borrowed;
+  a primitive write crossing two pages preflights both before mutating either.
+  No cross-actor borrow/export, raw pointer or mutable `ByteBuffer` escapes.
+* Object fields, nested objects and variable-size strings remain in that
+  **same actor-owned arena's separate native slab allocator**, not yet in the
+  `ActorLinearMemory` logical offsets. Native dense shards currently use
+  `ActorNativeArena.Region` allocations. Unifying guest object/collection
+  allocation into a typed linear-memory allocator is the next lowering step.
+
+These are native guest payload guarantees on the existing JVM/JNI runtime; Java
+metadata, wrappers, reference tracking, scheduler state and evaluator frames
+still live on the managed heap. Neither hard realtime nor strict zero-managed-
+allocation is enabled. Native Image compilation and optimized Truffle/Graal
+execution require their own CI execution evidence.
+
 ## Data-oriented layouts
 
 One physical layout is authoritative per dense store. There are no synchronized
