@@ -412,4 +412,102 @@ final class TrustedOpenClProviderTest {
         provider.poll(operation);
         prepared.close();
     }
+    @Test
+    void queueAuthorityAndArtifactAbiCannotBeForgedByMatchingMetadata() {
+        var f = fixture();
+        var driver = new FakeDriver();
+        long bytes = f.plan.byteLength();
+
+        var foreignDevice =
+                ComputeAuthority.issueDevice("opencl", "gpu0", 1, "tenant-a");
+        var foreignQueue =
+                ComputeAuthority.issueQueue(foreignDevice, 9, 21, 4);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new TrustedOpenClProvider(
+                        driver,
+                        new TrustedOpenClProvider.Limits(
+                                bytes * 4, bytes * 4, 4, 4),
+                        f.device,
+                        foreignQueue,
+                        new TrustedOpenClProvider.DeviceProfile(
+                                64, bytes * 2, 100, 16, true, true)));
+
+        var queue = ComputeAuthority.issueQueue(f.device, 9, 21, 4);
+        var wrongEndian = new TrustedOpenClProvider(
+                driver,
+                new TrustedOpenClProvider.Limits(
+                        bytes * 4, bytes * 4, 4, 4),
+                f.device,
+                queue,
+                new TrustedOpenClProvider.DeviceProfile(
+                        64, bytes * 2, 100, 16, true, false));
+        assertThrows(IllegalArgumentException.class,
+                () -> wrongEndian.prepare(f.kernel, target(f)));
+
+        var tooFewFields = new TrustedOpenClProvider(
+                driver,
+                new TrustedOpenClProvider.Limits(
+                        bytes * 4, bytes * 4, 4, 4),
+                f.device,
+                queue,
+                new TrustedOpenClProvider.DeviceProfile(
+                        64, bytes * 2, 100, 1, true, true));
+        assertThrows(IllegalArgumentException.class,
+                () -> tooFewFields.prepare(f.kernel, target(f)));
+    }
+
+    @Test
+    void preEnqueuePhysicalReleaseFailureRetainsQuotaAndRecoveryAuthority() {
+        var f = fixture();
+        var driver = new FakeDriver();
+        driver.failUpload = true;
+        driver.failReleaseBufferOnce = true;
+
+        var provider = provider(driver, f);
+        var prepared = provider.prepare(f.kernel, target(f));
+
+        assertThrows(IllegalStateException.class,
+                () -> provider.begin(
+                        prepared, f.input, f.output, "actor:1", f.hostInput));
+        assertEquals(ComputeBufferHandle.State.IDLE, f.input.state());
+        assertEquals(ComputeBufferHandle.State.IDLE, f.output.state());
+        assertTrue(provider.usage().residentBytes() > 0);
+
+        assertThrows(IllegalStateException.class,
+                () -> provider.begin(
+                        prepared, f.input, f.output, "actor:1", f.hostInput));
+
+        provider.retryPreEnqueueCleanup();
+        assertEquals(
+                new TrustedOpenClProvider.Usage(0, 0, 0, 0),
+                provider.usage());
+
+        driver.failUpload = false;
+        var operation = provider.begin(
+                prepared, f.input, f.output, "actor:1", f.hostInput);
+        provider.poll(operation);
+        provider.poll(operation);
+        provider.poll(operation);
+        prepared.close();
+    }
+
+    @Test
+    void preparedProgramReleaseFailureIsRetryableAndDoesNotDropAuthority() {
+        var f = fixture();
+        var driver = new FakeDriver();
+        var provider = provider(driver, f);
+        var prepared = provider.prepare(f.kernel, target(f));
+
+        driver.failReleaseProgramOnce = true;
+        assertThrows(IllegalStateException.class, prepared::close);
+        assertDoesNotThrow(prepared::artifact);
+        assertEquals(0, driver.releasedPrograms);
+
+        prepared.close();
+        assertEquals(1, driver.releasedPrograms);
+        assertThrows(IllegalStateException.class, prepared::artifact);
+    }
+
+
 }
