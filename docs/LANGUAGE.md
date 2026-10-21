@@ -150,9 +150,20 @@ fnc log_once() -> void
 end
 ```
 
-The keyword-delimited form requires `-> ReturnType`, and its first body token
-starts on a later source line. Indentation is presentation only; `fi` and
-`end` own the structure. Class instance methods, class `static fnc`
+The keyword-delimited form requires `-> ReturnType`. Without an explicit
+body separator, its first body token starts on a later source line. An optional
+semantics-free `as` may appear immediately after the complete return type on
+the same physical source line:
+
+```ores
+fnc identity(int x) -> int as return x; end
+```
+
+A next-line `as` is not a header separator, and callable-header `do` is
+retired: every `do` belongs to executable body syntax such as `do select`
+or `do match`. The complete recursive return type is parsed before optional
+`as`, including function-valued returns. Indentation is presentation only;
+`fi` and `end` own structure. Class instance methods, class `static fnc`
 implementations, and actor callables remain brace-bodied.
 
 ```ores
@@ -216,7 +227,7 @@ fnc named(): {foo: int, bar: string} {
 }
 ```
 
-The `type` marker inside `Array<type intOrBoolOrString>` is accepted as an explicit alias marker; `Array<intOrBoolOrString>` is equivalent. A finite tuple type records exact arity and the type of each position even though the interpreter represents the value with a JVM `List`. The contextual spelling `tuple (T1, T2, ...)` normalizes to the same finite tuple TypeRef as bare `[T1, T2, ...]`; both therefore share the same 64-element representation-wide bound. A record type names required members; extra members remain compatible with the structural type system.
+The `type` marker inside `Array<type intOrBoolOrString>` is accepted as an explicit alias marker; `Array<intOrBoolOrString>` is equivalent. A finite tuple type records exact arity and the type of each position even though the interpreter represents the value with a JVM `List`. The contextual spelling `tuple (T1, T2, ...)` normalizes to the same finite tuple TypeRef as bare `[T1, T2, ...]` and introduces no spelling-specific arity limit; both use the existing finite-tuple policy. A record type names required members; extra members remain compatible with the structural type system.
 
 ## Collection shapes and named type metadata
 
