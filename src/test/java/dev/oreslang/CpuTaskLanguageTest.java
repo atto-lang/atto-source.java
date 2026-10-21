@@ -140,6 +140,22 @@ final class CpuTaskLanguageTest {
                 """));
     }
 
+    @Test void shadowedParentFutureDoesNotLeakIntoChildSnapshot() throws Exception {
+        assertEquals("42|1", run("""
+                pub async fnc main(): void {
+                  let Future<int> value = task { return 1; };
+                  block {
+                    const int value = 41;
+                    let Future<int> second = task { return value + 1; };
+                    stdio.stdout.write(await second);
+                  }
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(await value);
+                  return;
+                }
+                """));
+    }
+
     @Test void taskCapturesTransitiveNestedTaskReferences() throws Exception {
         assertEquals("42", run("""
                 pub async fnc main(): void {
