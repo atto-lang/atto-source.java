@@ -22,8 +22,12 @@ it must not accidentally mix unrelated siblings' visited actors.
 
 Each hop carries only the actor's function symbol and source site,
 not message arguments, message bodies, private state, capabilities,
-credentials, or physical Java thread identities. Existing source
-sanitization applies in text and JSON.
+credentials, or physical Java thread identities. Actor logical source identifiers reject inputs greater than 4,096
+UTF-16 units before expensive path/URL operations. Absolute filesystem paths
+and source URLs are rendered as source basenames (or `<remote-source>` if a
+URL has no path); relative source paths remain readable. Oversized identifiers
+render `<source-id-too-long>`, never a credential-bearing prefix. Existing
+control-character escaping applies consistently to text and JSON diagnostics.
 
 ## Machine-readable format
 
