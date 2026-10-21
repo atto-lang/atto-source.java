@@ -251,11 +251,17 @@ is an executable lowering foundation, not the final specialized primitive IR.
 Unlowered guest payload kinds (collections, closures, ADTs and other complex
 values) fail when stored into a native actor field rather than silently becoming
 managed field payloads. Actor-local temporaries of those kinds still require
-lowering. Supported lexical locals use arena-backed `ValueCell` storage, and
-async argument/result detachment of an `OresObject` from inside an actor now
-rebuilds the detached object's fields in the same actor arena instead of a Java
-`LinkedHashMap`. Nested unsupported payloads therefore fail the native store
-rather than silently escaping to managed object state. Native field/string
+lowering. Supported lexical locals use arena-backed `ValueCell` storage. Arena-issued
+`NativeValue` references (including actor objects and native lists) are persisted
+in those lexical cells as actor-relative offsets rather than retained as the
+authoritative Java payload; foreign/forged arena references still fail closed.
+After the first `SourceTask` resume binds arguments/`self` into `Env`, the task
+clears its original Java argument list and receiver root so an async suspension
+does not keep duplicate guest roots outside the arena. Async argument/result
+detachment of an `OresObject` from inside an actor also rebuilds the detached
+object's fields in the same actor arena instead of a Java `LinkedHashMap`.
+Nested unsupported payloads therefore fail the native store rather than silently
+escaping to managed object state. Native field/string
 storage still has actor-region lifetime: growth beyond retained capacity
 consumes the bounded actor budget until actor exit. Compiler-generated
 drops/reuse are required for long-lived allocating actors.
