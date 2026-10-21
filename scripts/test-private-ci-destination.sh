@@ -14,14 +14,19 @@ printf '# Approved for this isolated test only\ntrusted/ci 246810\n' > "$policy"
 cat > "$work/gh" <<'MOCK'
 #!/usr/bin/env bash
 [[ "${GH_HOST:-}" == github.com ]] || exit 2
-[[ "${1:-}" == api && "${2:-}" == repos/trusted/ci ]] || exit 2
+[[ "${1:-}" == api ]] || exit 2
+case "${2:-}" in
+  repos/trusted/ci|repos/zed-pkg-test/java-app|repos/ZED-PKG-TEST/JAVA-APP) ;;
+  *) exit 2 ;;
+esac
 if [[ " $* " == *" --method POST "* || "${2:-}" == *"/git/"* ]]; then
   printf 'unexpected-write\n' >> "$MOCK_EXEC_LOG"
   exit 98
 fi
 [[ "${3:-}" == --jq ]] || exit 2
 [[ "${MOCK_API_FAILURE:-false}" != true ]] || exit 4
-printf '%s\t%s\t%s\t%s%s\n' "${MOCK_NAME:-trusted/ci}" "${MOCK_VISIBILITY:-private}" "${MOCK_PRIVATE_FLAG:-true}" "${MOCK_REPOSITORY_ID:-246810}" "${MOCK_EXTRA_LINE:-}"
+if [[ -n "${MOCK_API_TRACE:-}" ]]; then printf '%s\n' "$2" >> "$MOCK_API_TRACE"; fi
+printf '%s\t%s\t%s\t%s%s\n' "${MOCK_NAME:-${2#repos/}}" "${MOCK_VISIBILITY:-private}" "${MOCK_PRIVATE_FLAG:-true}" "${MOCK_REPOSITORY_ID:-246810}" "${MOCK_EXTRA_LINE:-}"
 MOCK
 mkdir -p "$work/fixture/source"
 printf 'pub fnc main(): int { return 42; }\n' > "$work/fixture/source/main.ores"
@@ -44,6 +49,18 @@ expect_wrapper_reject() {
   grep -q 'PRIVATE_CI_DESTINATION_REJECTED' "$work/out"
 }
 expect_ok trusted/ci
+# Reject the quarantined carrier before API reads, even if mis-allowlisted.
+printf 'trusted/ci 246810\nzed-pkg-test/java-app 999999\n' > "$policy"
+export MOCK_REPOSITORY_ID=999999 MOCK_API_TRACE="$work/quarantine-api-calls"
+rm -f "$MOCK_API_TRACE"
+expect_fail zed-pkg-test/java-app
+expect_fail ZED-PKG-TEST/JAVA-APP
+if [[ -e "$MOCK_API_TRACE" ]]; then
+  echo 'Quarantined carrier reached GitHub API' >&2
+  exit 1
+fi
+unset MOCK_API_TRACE MOCK_REPOSITORY_ID
+printf 'trusted/ci 246810\n' > "$policy"
 export MOCK_REPOSITORY_ID=246811
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
