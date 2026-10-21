@@ -120,7 +120,7 @@ final class ActorSpawnLanguageTest {
                           return;
                         }
                         """)));
-        assertTrue(failure.getMessage().contains("unknown ActorRef member 'mailbox'"));
+        assertTrue(failure.getMessage().contains("not an application mailbox"));
     }
 
     @Test
@@ -222,13 +222,7 @@ final class ActorSpawnLanguageTest {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        shared actor Target {
-                          pub receive(int message) => void {
-                            return;
-                          }
-                        }
-
-                        pub untrusted actor fnc probe(ActorRef<Target> target) => bool {
+                        pub untrusted actor fnc probe(ActorRef target) => bool {
                           return target.is_alive();
                         }
                         """)));
