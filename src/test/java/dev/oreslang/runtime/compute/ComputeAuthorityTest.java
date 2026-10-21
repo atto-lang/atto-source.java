@@ -90,6 +90,8 @@ final class ComputeAuthorityTest {
         ComputeAuthority.retire(buffer, gpu, "actor:1");
         assertEquals(ComputeBufferHandle.State.RETIRED, buffer.state());
         assertThrows(IllegalStateException.class,
+                () -> ComputeAuthority.retire(buffer, gpu, "actor:1"));
+        assertThrows(IllegalStateException.class,
                 () -> ComputeAuthority.beginUpload(buffer, gpu, "actor:1", 0, 1));
     }
 
