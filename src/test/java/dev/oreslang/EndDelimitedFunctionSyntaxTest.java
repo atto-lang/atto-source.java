@@ -1,5 +1,6 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
@@ -470,17 +471,24 @@ final class EndDelimitedFunctionSyntaxTest {
     }
 
     @Test
-    void largeTupleArityIsSharedAcrossBothSpellings() {
+    void tupleArityLimitIsSharedAcrossBothSpellings() {
+        String sixtyFour = String.join(", ", Collections.nCopies(64, "int"));
         String sixtyFive = String.join(", ", Collections.nCopies(65, "int"));
 
         var explicit = Parser.parse(
-                "fnc identity(tuple (" + sixtyFive + ") value) -> tuple (" + sixtyFive
+                "fnc identity(tuple (" + sixtyFour + ") value) -> tuple (" + sixtyFour
                         + ") { return value; }");
         var existing = Parser.parse(
-                "fnc identity([" + sixtyFive + "] value) -> [" + sixtyFive
+                "fnc identity([" + sixtyFour + "] value) -> [" + sixtyFour
                         + "] { return value; }");
 
         assertEquals(existing, explicit);
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                "fnc identity(tuple (" + sixtyFive + ") value) -> int { return 1; }"));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                "fnc identity([" + sixtyFive + "] value) -> int { return 1; }"));
+        assertThrows(IllegalArgumentException.class, () -> Ast.TypeRef.tupleType(
+                Collections.nCopies(65, Ast.TypeRef.simple("int"))));
     }
 
     @Test
