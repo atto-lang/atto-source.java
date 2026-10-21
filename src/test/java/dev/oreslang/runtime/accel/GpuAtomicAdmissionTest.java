@@ -29,6 +29,10 @@ final class GpuAtomicAdmissionTest {
         assertThrows(IllegalStateException.class, input::take);
         assertThrows(IllegalStateException.class, output::take);
         assertThrows(IllegalStateException.class, () -> input.beginCommand(tickets.input()));
+        assertThrows(IllegalStateException.class,
+                () -> GpuBufferFence.completePair(input, output, tickets, true),
+                "reservation is not device-completion evidence");
+        GpuBufferFence.markPairEnqueued(input, output, tickets);
         GpuBufferFence.completePair(input, output, tickets, true);
         assertEquals(GpuBufferFence.Status.IDLE, input.status());
         assertEquals(GpuBufferFence.Status.IDLE, output.status());
@@ -41,6 +45,7 @@ final class GpuAtomicAdmissionTest {
         var unrelated = owner(5, "tenant", "device", 64);
         var outsiderTicket = unrelated.beginCommand(unrelated.identity());
         var tickets = GpuBufferFence.claimPair(input, output, 64);
+        GpuBufferFence.markPairEnqueued(input, output, tickets);
         assertEquals(outsiderTicket.generation(), tickets.inputTicket().generation());
         assertEquals(outsiderTicket.sequence(), tickets.inputTicket().sequence());
         assertThrows(IllegalStateException.class,
@@ -80,6 +85,7 @@ final class GpuAtomicAdmissionTest {
                 () -> GpuBufferFence.claimPair(input, output, 32));
         assertEquals(GpuBufferFence.Status.IDLE, input.status());
         var tickets = GpuBufferFence.claimPair(input, successor, 32);
+        GpuBufferFence.markPairEnqueued(input, successor, tickets);
         GpuBufferFence.cancelPair(input, successor, tickets);
         assertThrows(IllegalStateException.class, successor::take);
         assertThrows(IllegalStateException.class,
@@ -114,8 +120,10 @@ final class GpuAtomicAdmissionTest {
             var won = winnerTicket.get();
             assertNotNull(won);
             if (won.input().allocationGeneration() == 1) {
+                GpuBufferFence.markPairEnqueued(a, b, won);
                 GpuBufferFence.completePair(a, b, won, true);
             } else {
+                GpuBufferFence.markPairEnqueued(b, a, won);
                 GpuBufferFence.completePair(b, a, won, true);
             }
         }
@@ -179,6 +187,7 @@ final class GpuAtomicAdmissionTest {
             if (claimed.get() != null) {
                 assertEquals(GpuBufferFence.Status.IN_FLIGHT, input.status());
                 assertEquals(GpuBufferFence.Status.IN_FLIGHT, output.status());
+                GpuBufferFence.markPairEnqueued(input, output, claimed.get());
                 GpuBufferFence.completePair(input, output, claimed.get(), true);
             } else {
                 assertEquals(GpuBufferFence.Status.IDLE, input.status());
@@ -203,6 +212,7 @@ final class GpuAtomicAdmissionTest {
         assertEquals(plan.byteLength(), claimed.binding().bytesPerBuffer());
         assertEquals(GpuBufferFence.Status.IN_FLIGHT, src.status());
         assertEquals(GpuBufferFence.Status.IN_FLIGHT, dst.status());
+        GpuBufferFence.markPairEnqueued(src, dst, claimed.tickets());
         GpuBufferFence.completePair(src, dst, claimed.tickets(), true);
     }
     @Test
@@ -210,9 +220,11 @@ final class GpuAtomicAdmissionTest {
         var source = owner(201, "tenant", "gpu", 64);
         var destination = owner(202, "tenant", "gpu", 64);
         var pair = GpuBufferFence.claimPair(source, destination, 64);
+        GpuBufferFence.markPairEnqueued(source, destination, pair);
         var otherInput = owner(201, "tenant", "gpu", 64);
         var otherOutput = owner(202, "tenant", "gpu", 64);
         var otherPair = GpuBufferFence.claimPair(otherInput, otherOutput, 64);
+        GpuBufferFence.markPairEnqueued(otherInput, otherOutput, otherPair);
         var swapped = new GpuBufferFence.PairTickets(
                 pair.input(), otherPair.inputTicket(),
                 pair.output(), pair.outputTicket());
@@ -233,6 +245,7 @@ final class GpuAtomicAdmissionTest {
         var source = owner(301, "tenant", "gpu", 64);
         var destination = owner(302, "tenant", "gpu", 64);
         var pair = GpuBufferFence.claimPair(source, destination, 64);
+        GpuBufferFence.markPairEnqueued(source, destination, pair);
         GpuBufferFence.cancelPair(source, destination, pair);
         assertEquals(GpuBufferFence.Status.POISONED, source.status());
         assertEquals(GpuBufferFence.Status.POISONED, destination.status());
@@ -254,10 +267,38 @@ final class GpuAtomicAdmissionTest {
     }
 
     @Test
+    void preEnqueueAbortIsAtomicAndTicketsNeverBecomeReusable() {
+        var source = owner(501, "tenant", "gpu", 64);
+        var destination = owner(502, "tenant", "gpu", 64);
+        var first = GpuBufferFence.claimPair(source, destination, 64);
+
+        assertThrows(IllegalStateException.class,
+                () -> GpuBufferFence.completePair(source, destination, first, true));
+        assertThrows(IllegalStateException.class,
+                () -> GpuBufferFence.cancelPair(source, destination, first));
+        GpuBufferFence.abortPairBeforeEnqueue(source, destination, first);
+        assertEquals(GpuBufferFence.Status.IDLE, source.status());
+        assertEquals(GpuBufferFence.Status.IDLE, destination.status());
+        assertThrows(IllegalStateException.class,
+                () -> GpuBufferFence.abortPairBeforeEnqueue(source, destination, first));
+
+        var second = GpuBufferFence.claimPair(source, destination, 64);
+        assertTrue(second.inputTicket().sequence() > first.inputTicket().sequence());
+        assertTrue(second.outputTicket().sequence() > first.outputTicket().sequence());
+        GpuBufferFence.markPairEnqueued(source, destination, second);
+        assertThrows(IllegalStateException.class,
+                () -> GpuBufferFence.abortPairBeforeEnqueue(source, destination, second));
+        assertThrows(IllegalStateException.class,
+                () -> GpuBufferFence.completePair(source, destination, first, true));
+        GpuBufferFence.completePair(source, destination, second, true);
+    }
+
+    @Test
     void pairedCompletionRejectsAlreadyHalfCompletedBufferWithoutChangingOther() {
         var source = owner(401, "tenant", "gpu", 64);
         var destination = owner(402, "tenant", "gpu", 64);
         var pair = GpuBufferFence.claimPair(source, destination, 64);
+        GpuBufferFence.markPairEnqueued(source, destination, pair);
         assertThrows(IllegalStateException.class,
                 () -> source.complete(pair.inputTicket(), true));
         assertThrows(IllegalStateException.class,
