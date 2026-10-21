@@ -1397,6 +1397,9 @@ public final class OwnershipChecker {
                     : Ast.TypeRef.recordType(members);
             return new ValueInfo(type, ValueKind.MOVE_ONLY, null);
         }
+        if (expr instanceof Ast.GpuRegionExpr) {
+            throw error("gpu { } requires device ownership and kernel admission; no CPU fallback");
+        }
         if (expr instanceof Ast.CpuRegionExpr cpu) {
             // Eager inline execution shares the caller's ownership scope.
             // Its return is region-local, while outer moves and loans remain
