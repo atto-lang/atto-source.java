@@ -140,8 +140,10 @@ public final class ActorShardColumns implements AutoCloseable {
 
     /**
      * A zero-copy, owner-scoped read lease of a contiguous SoA column.
-     * The entire underlying native region becomes immutable until all leases
-     * are closed. This is not an inter-actor pointer or a transferable borrow.
+     * Only this column's bytes become immutable until its lease is closed:
+     * writes to disjoint SoA columns remain permitted. Closing the shard while
+     * any read lease exists is forbidden. No raw pointer or cross-actor borrow
+     * can escape through this API.
      */
     public static final class ReadOnlyColumnLease implements AutoCloseable {
         private final ActorRuntime.ActorShardLease owner;
