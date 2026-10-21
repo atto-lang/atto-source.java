@@ -4490,6 +4490,45 @@ public final class OresEvalRootNode extends RootNode {
                                 continuation.accept(t, null, failure);
                                 return;
                             }
+                            if (isTypedMapMutator(member, receiver)) {
+                                try {
+                                    // Match synchronous lowering: authority is
+                                    // proven before any key argument can run or
+                                    // suspend. The exact runtime Map object must
+                                    // still be the named owner's slot value.
+                                    requireTypedMapMutationAuthority(
+                                            member,
+                                            (OresKeyedMap<?, ?>) receiver,
+                                            env);
+                                } catch (RuntimeException | Error authorityFailure) {
+                                    continuation.accept(t, null, authorityFailure);
+                                    return;
+                                }
+                                evalSuspendableArguments(
+                                        t,
+                                        call.arguments(),
+                                        env,
+                                        (t2, values, failure2) -> {
+                                            if (failure2 != null) {
+                                                continuation.accept(t2, null, failure2);
+                                                return;
+                                            }
+                                            try {
+                                                completeSourceInvocation(
+                                                        t2,
+                                                        typedMapMutationInvocation(
+                                                                member.member(),
+                                                                (OresKeyedMap<?, ?>) receiver,
+                                                                values),
+                                                        false,
+                                                        env,
+                                                        continuation);
+                                            } catch (RuntimeException | Error failure3) {
+                                                continuation.accept(t2, null, failure3);
+                                            }
+                                        });
+                                return;
+                            }
                             evalSuspendableArguments(
                                     t,
                                     call.arguments(),
@@ -4621,6 +4660,47 @@ public final class OresEvalRootNode extends RootNode {
                 // guest source calls. Their consumers explicitly await them.
                 case INVOKABLE -> true;
             };
+        }
+
+        private static boolean isTypedMapMutator(
+                Ast.MemberExpr member,
+                Object receiver) {
+            return receiver instanceof OresKeyedMap<?, ?>
+                    && (member.member().equals("take")
+                            || member.member().equals("remove"));
+        }
+
+        private void requireTypedMapMutationAuthority(
+                Ast.MemberExpr member,
+                OresKeyedMap<?, ?> map,
+                Env env) {
+            if (!(member.receiver() instanceof Ast.NameExpr owner)
+                    || env == null
+                    || !env.canWriteMap(owner.name(), map)) {
+                throw new SecurityException(
+                        "Map." + member.member()
+                                + " requires a directly owned mutable local binding");
+            }
+        }
+
+        private Invocation typedMapMutationInvocation(
+                String member,
+                OresKeyedMap<?, ?> rawMap,
+                List<Object> args) {
+            if (args.size() != 1) {
+                throw new IllegalArgumentException(
+                        "Map." + member + " expects exactly 1 argument");
+            }
+            Object key = args.getFirst();
+            @SuppressWarnings("unchecked")
+            OresKeyedMap<Object, Object> map =
+                    (OresKeyedMap<Object, Object>) rawMap;
+            return invokableInvocation(ignored -> {
+                OresKeyedMap.Lookup<Object> removed = map.take(key);
+                return member.equals("take")
+                        ? new OptionValue(removed.present(), removed.value())
+                        : removed.present();
+            }, List.of());
         }
 
         private Invocation prepareInvocationEvaluated(
@@ -6424,35 +6504,18 @@ public final class OresEvalRootNode extends RootNode {
             if (call.callee() instanceof Ast.MemberExpr methodCall) {
                 Object receiver = eval(methodCall.receiver(), env);
 
-                if (receiver instanceof OresKeyedMap<?, ?> rawMap
-                        && (methodCall.member().equals("take")
-                                || methodCall.member().equals("remove"))) {
+                if (isTypedMapMutator(methodCall, receiver)) {
                     // Prove mutation authority before evaluating a possibly
                     // effectful key expression. Runtime backstops must not run
                     // attacker-controlled argument effects and reject only
                     // afterwards.
-                    if (!(methodCall.receiver() instanceof Ast.NameExpr owner)
-                            || !env.canWriteMap(owner.name(), rawMap)) {
-                        throw new SecurityException(
-                                "Map." + methodCall.member()
-                                        + " requires a directly owned mutable local binding");
-                    }
+                    requireTypedMapMutationAuthority(
+                            methodCall, (OresKeyedMap<?, ?>) receiver, env);
                     List<Object> args = evaluateArguments(call.arguments(), env);
-                    if (args.size() != 1) {
-                        throw new IllegalArgumentException(
-                                "Map." + methodCall.member() + " expects exactly 1 argument");
-                    }
-                    Object key = args.getFirst();
-                    @SuppressWarnings("unchecked")
-                    OresKeyedMap<Object, Object> map =
-                            (OresKeyedMap<Object, Object>) rawMap;
-                    return invokableInvocation(values -> {
-                        OresKeyedMap.Lookup<Object> removed = map.take(key);
-                        if (methodCall.member().equals("take")) {
-                            return new OptionValue(removed.present(), removed.value());
-                        }
-                        return removed.present();
-                    }, List.of());
+                    return typedMapMutationInvocation(
+                            methodCall.member(),
+                            (OresKeyedMap<?, ?>) receiver,
+                            args);
                 }
 
                 List<Object> args = evaluateArguments(call.arguments(), env);
