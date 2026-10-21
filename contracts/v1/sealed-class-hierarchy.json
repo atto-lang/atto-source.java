@@ -1,0 +1,274 @@
+{
+  "schema": "oreslang.contracts.sealed-class-hierarchy.v1",
+  "version": 1,
+  "status": "prospective-not-executable",
+  "sourceOfTruth": "docs/SEALED_CLASS_HIERARCHIES_V1.md",
+  "updated": "2026-10-15",
+  "instructions": "These fixtures are prospective compiler acceptance targets, not currently passing executable tests. Match expected diagnostics semantically, not by exact text. Backend case SCL-034 remains reject until native feature readiness; others target eventual Java/LLVM parity.",
+  "cases": [
+    {
+      "id": "SCL-001",
+      "phase": "typecheck",
+      "expected": "accept",
+      "description": "plain classes remain extensible",
+      "source": "define class Base as end\ndefine class Child extends Base as end"
+    },
+    {
+      "id": "SCL-002",
+      "phase": "typecheck",
+      "expected": "accept",
+      "description": "final class without superclass",
+      "source": "define final class Leaf as end"
+    },
+    {
+      "id": "SCL-003",
+      "phase": "typecheck",
+      "expected": "accept",
+      "description": "sealed with final child",
+      "source": "define sealed class Root permits Leaf as end\ndefine final class Leaf extends Root as end"
+    },
+    {
+      "id": "SCL-004",
+      "phase": "typecheck",
+      "expected": "accept",
+      "description": "sealed with non-sealed child and open grandchild",
+      "source": "define sealed class Root permits Open as end\ndefine non-sealed class Open extends Root as end\ndefine class FutureChild extends Open as end"
+    },
+    {
+      "id": "SCL-005",
+      "phase": "typecheck",
+      "expected": "accept",
+      "description": "recursively sealed hierarchy",
+      "source": "define abstract sealed class Root permits Middle as end\ndefine abstract sealed class Middle extends Root permits Leaf as end\ndefine final class Leaf extends Middle as end"
+    },
+    {
+      "id": "SCL-006",
+      "phase": "typecheck",
+      "expected": "accept",
+      "description": "abstract non-sealed child",
+      "source": "define sealed class Root permits Open as end\ndefine abstract non-sealed class Open extends Root as end\ndefine class Child extends Open as end"
+    },
+    {
+      "id": "SCL-007",
+      "phase": "typecheck",
+      "expected": "reject",
+      "description": "cannot extend final",
+      "source": "define final class Closed as end\ndefine class Intruder extends Closed as end",
+      "diagnosticContains": "final"
+    },
+    {
+      "id": "SCL-008",
+      "phase": "typecheck",
+      "expected": "reject",
+      "description": "sealed direct subclass must appear in permits",
+      "source": "define sealed class Root permits Allowed as end\ndefine final class Allowed extends Root as end\ndefine final class Intruder extends Root as end",
+      "diagnosticContains": "permits"
+    },
+    {
+      "id": "SCL-009",
+      "phase": "typecheck",
+      "expected": "reject",
+      "description": "listed child must actually extend the sealed parent",
+      "source": "define sealed class Root permits Unrelated as end\ndefine final class Unrelated as end",
+      "diagnosticContains": "direct"
+    },
+    {
+      "id": "SCL-010",
+      "phase": "typecheck",
+      "expected": "reject",
+      "description": "permits must resolve",
+      "source": "define sealed class Root permits Missing as end",
+      "diagnosticContains": "unknown"
+    },
+    {
+      "id": "SCL-011",
+      "phase": "typecheck",
+      "expected": "reject",
+      "description": "duplicate permitted subclass",
+      "source": "define sealed class Root permits Leaf, Leaf as end\ndefine final class Leaf extends Root as end",
+      "diagnosticContains": "duplicate"
+    },
+    {
+      "id": "SCL-012",
+      "phase": "typecheck",
+      "expected": "reject",
+      "description": "sealed parent cannot list itself",
+      "source": "define sealed class Root permits Root as end",
+      "diagnosticContains": "self"
+    },
+    {
+      "id": "SCL-013",
+      "phase": "typecheck",
+      "expected": "reject",
+      "description": "indirect descendants are not direct permits",
+      "source": "define sealed class Root permits Branch, Leaf as end\ndefine non-sealed class Branch extends Root as end\ndefine final class Leaf extends Branch as end",
+      "diagnosticContains": "direct"
+    },
+    {
+      "id": "SCL-014",
+      "phase": "typecheck",
+      "expected": "reject",
+      "description": "unclassified child of sealed must choose class policy",
+      "source": "define sealed class Root permits Child as end\ndefine class Child extends Root as end",
+      "diagnosticContains": "final"
+    },
+    {
+      "id": "SCL-015",
+      "phase": "typecheck",
+      "expected": "reject",
+      "description": "non-sealed only directly under sealed",
+      "source": "define class Root as end\ndefine non-sealed class Child extends Root as end",
+      "diagnosticContains": "sealed"
+    },
+    {
+      "id": "SCL-016",
+      "phase": "parse",
+      "expected": "reject",
+      "description": "sealed and final are mutually exclusive",
+      "source": "define sealed final class C permits D as end\ndefine final class D extends C as end",
+      "diagnosticContains": "conflicting"
+    },
+    {
+      "id": "SCL-017",
+      "phase": "parse",
+      "expected": "reject",
+      "description": "sealed and non-sealed are mutually exclusive",
+      "source": "define sealed non-sealed class C permits D as end\ndefine final class D extends C as end",
+      "diagnosticContains": "conflicting"
+    },
+    {
+      "id": "SCL-018",
+      "phase": "parse",
+      "expected": "reject",
+      "description": "abstract and final are mutually exclusive",
+      "source": "define abstract final class C as end",
+      "diagnosticContains": "abstract"
+    },
+    {
+      "id": "SCL-019",
+      "phase": "parse",
+      "expected": "reject",
+      "description": "sealed requires explicit nonempty permits",
+      "source": "define sealed class Root as end",
+      "diagnosticContains": "permits"
+    },
+    {
+      "id": "SCL-020",
+      "phase": "parse",
+      "expected": "reject",
+      "description": "unhyphenated nonsealed is not canonical",
+      "source": "define nonsealed class Child as end",
+      "diagnosticContains": "non-sealed"
+    },
+    {
+      "id": "SCL-021",
+      "phase": "typecheck",
+      "expected": "reject",
+      "description": "single sealed parent with inheritance cycle",
+      "source": "define sealed class A permits B as end\ndefine sealed class B extends A permits A as end",
+      "diagnosticContains": "cycle"
+    },
+    {
+      "id": "SCL-022",
+      "phase": "typecheck",
+      "expected": "reject",
+      "description": "simple alias cannot forge authorized nominal subclass",
+      "source": "define sealed class Root permits Leaf as end\ndefine class Other extends Root as end\ndefine type Leaf = Other",
+      "diagnosticContains": "nominal"
+    },
+    {
+      "id": "SCL-023",
+      "phase": "typecheck",
+      "expected": "reject",
+      "description": "permits declaration with no sealed modifier",
+      "source": "define class Root permits Leaf as end\ndefine final class Leaf extends Root as end",
+      "diagnosticContains": "sealed"
+    },
+    {
+      "id": "SCL-024",
+      "phase": "typecheck",
+      "expected": "reject",
+      "description": "non-sealed cannot have permits clause",
+      "source": "define sealed class Root permits Child as end\ndefine non-sealed class Child extends Root permits Grandchild as end\ndefine class Grandchild extends Child as end",
+      "diagnosticContains": "permits"
+    },
+    {
+      "id": "SCL-025",
+      "phase": "typecheck",
+      "expected": "reject",
+      "description": "final class cannot declare permits",
+      "source": "define final class Root permits Child as end\ndefine class Child extends Root as end",
+      "diagnosticContains": "permits"
+    },
+    {
+      "id": "SCL-026",
+      "phase": "typecheck",
+      "expected": "accept",
+      "description": "unrelated final field modifier stays independent",
+      "source": "define final class Box as\n  final int value: 42;\nend"
+    },
+    {
+      "id": "SCL-027",
+      "phase": "import-link",
+      "expected": "reject",
+      "description": "external undeclared subclass cannot bypass permits via import",
+      "source": "// Two-module integration fixture: importing a nominal sealed parent must not allow a new unlisted descendant.",
+      "diagnosticContains": "authorization"
+    },
+    {
+      "id": "SCL-028",
+      "phase": "import-link",
+      "expected": "reject",
+      "description": "stale module generation with changed permits fingerprint fails",
+      "source": "// Two-generation integration fixture: a stale permitted-subclasses ABI is rejected before execution.",
+      "diagnosticContains": "generation"
+    },
+    {
+      "id": "SCL-029",
+      "phase": "runtime",
+      "expected": "reject",
+      "description": "host-crafted class descriptor cannot bypass final/sealed policy",
+      "source": "// Runtime-admission fixture: forged or name-only guest class ancestry cannot bypass compiler identity.",
+      "diagnosticContains": "identity"
+    },
+    {
+      "id": "SCL-030",
+      "phase": "exhaustiveness",
+      "expected": "accept",
+      "description": "closed final descendants can prove total type coverage",
+      "source": "// Match fixture: return match closedShape over FinalA / FinalB; no fallback when closure is proven."
+    },
+    {
+      "id": "SCL-031",
+      "phase": "exhaustiveness",
+      "expected": "reject",
+      "description": "non-sealed descendant keeps match coverage open",
+      "source": "// Match fixture: return match shape over known concrete descendants only; require covering branch or wildcard.",
+      "diagnosticContains": "exhaustive"
+    },
+    {
+      "id": "SCL-032",
+      "phase": "exhaustiveness",
+      "expected": "reject",
+      "description": "guarded arm does not prove class coverage",
+      "source": "// Match fixture: guarded subtype pattern without unguarded coverage cannot prove totality.",
+      "diagnosticContains": "exhaustive"
+    },
+    {
+      "id": "SCL-033",
+      "phase": "parser",
+      "expected": "reject",
+      "description": "sealed actor hierarchy not silently conflated with sealed class support",
+      "source": "define sealed actor Worker permits Child as end",
+      "diagnosticContains": "actor"
+    },
+    {
+      "id": "SCL-034",
+      "phase": "backend",
+      "expected": "reject",
+      "description": "LLVM fail-closed until native hierarchical class lowering",
+      "source": "define sealed class Root permits Leaf as end\ndefine final class Leaf extends Root as end",
+      "diagnosticContains": "unsupported"
+    }
+  ]
+}

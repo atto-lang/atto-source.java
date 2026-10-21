@@ -1,0 +1,78 @@
+name: Graal conformance contract
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Test AI smoke evidence admission (no compiler claims)
+        run: python3 scripts/test_ai_conformance_smoke.py
+      - name: Schema validator
+        run: python3 -m pip install --break-system-packages 'jsonschema>=4.20,<5'
+      - name: Verify conformance runner failure handling
+        run: |
+          python3 contracts/v1/test_runner.py -v
+          python3 contracts/v1/semantics/test_runner.py -v
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Compile TypeSpec contracts
+        run: npm --prefix contracts/v1 install --no-audit --no-fund && npm --prefix contracts/v1 run build && ./contracts/v1/node_modules/.bin/tsp compile contracts/v1/semantics && ./contracts/v1/node_modules/.bin/tsp compile contracts/v1/semantics/traces
+      - name: Verify metamorphic generator and adversarial actor trace contracts
+        run: |
+          python3 contracts/v1/semantics/metamorphic.py --self-test --count 64
+          python3 contracts/v1/semantics/test_metamorphic.py -v
+          python3 contracts/v1/semantics/traces/validate.py --schema-only
+          python3 contracts/v1/semantics/traces/test_trace.py -v
+      - name: Validate fixture registry
+        run: |
+          python3 contracts/v1/run.py --validate
+          python3 contracts/v1/semantics/run.py --validate
+      - name: Compile Java compiler and resolve runtime dependencies
+        run: |
+          mvn -B -ntp -DskipTests package
+          mvn -B -ntp -q dependency:build-classpath -Dmdep.outputFile=target/conformance-classpath.txt
+      - name: Validate Java compiler admission
+        run: python3 contracts/v1/run.py --backend graal --command 'python3 contracts/v1/java_probe.py {source}' --report target/conformance-graal.json
+      - name: Real Java compiler AI smoke (source acceptance, rejection, native guest exit)
+        run: |
+          python3 scripts/ai-conformance-smoke.py \
+            --backend java \
+            --compiler "$(command -v python3)" \
+            --java-probe "$(realpath contracts/v1/java_probe.py)" \
+            --source-sha "${{ github.sha }}" \
+            --report target/ai-conformance-graal.json
+      - name: Validate Java borrow and semantic diagnostic cases
+        run: python3 contracts/v1/semantics/run.py --backend graal --command 'python3 contracts/v1/java_probe.py {source}' --run-command 'python3 contracts/v1/java_probe.py {source} --execute' --revision "${{ github.sha }}" --report target/semantics-graal.json
+      - name: Verify real shared actor mailbox trace against the contract
+        run: |
+          mvn -B -ntp -Dores.runtime.carriers=native -Dtest=ActorTraceContractIntegrationTest test
+          python3 contracts/v1/semantics/traces/validate.py target/actor-trace-graal.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: graal-conformance-report
+          path: |
+            target/conformance-graal.json
+            target/semantics-graal.json
+            target/ai-conformance-graal.json
+            target/actor-trace-graal.json
+          if-no-files-found: ignore
