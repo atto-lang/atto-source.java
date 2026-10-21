@@ -88,7 +88,7 @@ class NativeHttpTest {
               stdio.println(server.port);
               val request = await server.accept();
               val completion = request.completion;
-              http.handler("Owner").dispatch(rt borrow mut request);
+              http.handler("Owner").dispatch(rt mut borrow request);
               try { request.completion; } catch (err) { stdio.println("moved-observer-rejected"); }
               val int status = await completion;
               stdio.println(status);
@@ -169,7 +169,7 @@ class NativeHttpTest {
               worker.send(a.move_to_reusable(worker));
               val b = await server.accept();
               val doneB = b.completion;
-              http.handler("MultiRequest").dispatch_to(rt borrow mut b, worker);
+              http.handler("MultiRequest").dispatch_to(rt mut borrow b, worker);
               stdio.println(await doneA);
               stdio.println(await doneB);
               stdio.println(server.active);
