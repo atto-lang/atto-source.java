@@ -44,6 +44,10 @@ public final class OwnershipChecker {
     private final Set<String> ambiguousClasses = new HashSet<>();
     /** Only bindings admitted as new short aliases by the type checker. */
     private final Map<Ast.BindingStmt, String> validatedShortAliases;
+    /** Exact immutable Program identity checked by this ownership pass. */
+    private final Ast.Program checkedProgram;
+    /** Monotonic epoch published only if this whole ownership pass succeeds. */
+    private final long taskCheckEpoch;
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
@@ -67,6 +71,9 @@ public final class OwnershipChecker {
             Ast.Program program, Map<Ast.BindingStmt, String> validatedShortAliases) {
         // Preserve AST declaration identity: equality-based maps can merge
         // separate bindings with identical syntax in different scopes.
+        this.checkedProgram =
+                java.util.Objects.requireNonNull(program, "ownership program");
+        this.taskCheckEpoch = Ast.CheckedTaskCaptures.newCheckEpoch();
         this.validatedShortAliases = new IdentityHashMap<>(validatedShortAliases);
         index(program);
     }
@@ -120,10 +127,10 @@ public final class OwnershipChecker {
     }
 
     private void publishTaskAdmissions() {
-        for (Map.Entry<Ast.TaskExpr, Map<String, Ast.TaskCaptureTransfer>> entry
-                : pendingTaskCaptures.entrySet()) {
-            Ast.CheckedTaskCaptures.record(entry.getKey(), entry.getValue());
-        }
+        Ast.CheckedTaskCaptures.publish(
+                checkedProgram,
+                taskCheckEpoch,
+                pendingTaskCaptures);
     }
 
     private void index(Ast.Program program) {
