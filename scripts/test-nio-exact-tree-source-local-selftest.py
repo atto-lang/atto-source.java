@@ -35,6 +35,8 @@ elif name == 'mvn':
             if not any('NioReadinessGroupTest' in s for s in args): sys.exit(99)
             if not any('OresFuturesTest' in s for s in args): sys.exit(99)
             if os.environ.get('NIO_TEST_FAIL') == 'test': sys.exit(89)
+            if os.environ.get('NIO_TEST_FAIL') == 'mutate-targeted':
+                with open('README.md', 'a') as f: print('TARGETED_MUTATION', file=f)
         elif step == 'verify':
             if os.environ.get('NIO_TEST_FAIL') == 'verify': sys.exit(90)
             if os.environ.get('NIO_TEST_FAIL') == 'mutate':
@@ -104,7 +106,9 @@ def scenario(name, code, setup=None, *, aot=False):
             (repo / 'target').mkdir()
             (repo / 'target/stale.class').write_text('stale build')
         elif setup == 'wrong-jdk': env['NIO_TEST_JDK'] = '21'
-        elif setup in ('clean', 'test', 'verify', 'mutate', 'future-targeted'): env['NIO_TEST_FAIL'] = setup
+        elif setup in ('clean', 'test', 'verify', 'mutate', 'future-targeted',
+                            'mutate-targeted'):
+            env['NIO_TEST_FAIL'] = setup
         if aot: cmd.append('--native-aot')
         result = invoke(cmd, repo, env, check=False)
         assert result.returncode == code, (name, result.returncode, result.stderr)
@@ -116,10 +120,12 @@ def scenario(name, code, setup=None, *, aot=False):
             body = receipt.read_text()
             assert f'exit_code={code}\n' in body, (name, body)
             assert ('result=PASS' in body) == (code == 0), name
-            if setup in ('clean', 'test', 'verify', 'mutate', 'future-targeted'):
+            if setup in ('clean', 'test', 'verify', 'mutate', 'future-targeted',
+                         'mutate-targeted'):
                 stage = dict(clean='clean-stale-build', test='targeted-junit',
                              verify='full-maven-verify', mutate='postflight-source-identity',
-                             **{'future-targeted': 'full-report-audit'})[setup]
+                             **{'future-targeted': 'full-report-audit',
+                                'mutate-targeted': 'targeted-source-identity'})[setup]
                 assert f'stage={stage}\n' in body, (name, body)
         trace = root / 'trace'
         calls = [row.split()[0] for row in trace.read_text().splitlines()] if trace.exists() else []
@@ -131,6 +137,9 @@ def scenario(name, code, setup=None, *, aot=False):
         if setup in ('wrong-commit', 'wrong-tree', 'dirty', 'target-symlink',
                      'receipt-symlink', 'wrong-jdk'):
             assert not calls, (name, 'Maven ran before gate admission')
+        if setup == 'mutate-targeted':
+            assert calls == ['clean', 'test'], (
+                name, 'full verify ran after targeted source mutation', calls)
         print(f'PASS {name} (exit={code})')
 
 
@@ -145,6 +154,7 @@ if __name__ == '__main__':
              ('wrong-jdk', 69, 'wrong-jdk', False),
              ('clean-failure', 88, 'clean', False),
              ('targeted-failure', 89, 'test', False),
+             ('targeted-source-mutation', 77, 'mutate-targeted', False),
              ('verify-failure', 90, 'verify', False),
              ('future-dated-targeted-reports', 76, 'future-targeted', False),
              ('postflight-mutation', 77, 'mutate', False)]
