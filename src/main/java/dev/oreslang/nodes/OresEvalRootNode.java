@@ -5007,6 +5007,11 @@ public final class OresEvalRootNode extends RootNode {
                 return value;
             }
             if (receiver instanceof OresKeyedMap<?, ?> map) {
+                if (map.valueDomain() == OresKeyedMap.ValueDomain.JSON) {
+                    throw new IllegalArgumentException(
+                            "Map<String, JsonValue> indexed reads are disabled until "
+                                    + "move-only borrow/snapshot semantics are implemented");
+                }
                 return map.getRequired(index);
             }
             if (receiver instanceof Map<?, ?> map) {
