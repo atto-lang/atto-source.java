@@ -178,6 +178,114 @@ final class AllocJsonStdlibTest {
     }
 
     @Test
+    void sourceJsonFactoriesConstructAndInsertMoveOnlyValues() throws Exception {
+        Path entry = temp.resolve("constructors.ores");
+        Files.writeString(entry, """
+                import class JsonValue from "alloc/json";
+                import class Json from "alloc/json";
+
+                pub routine main(): void {
+                  val Map<string, JsonValue> values =
+                      new Map<string, JsonValue>();
+                  val JsonValue name = Json.of("Ada");
+                  values["name"] = name;
+                  values.put("enabled", Json.of(true));
+                  values.put("count", Json.of(7));
+                  values.put("missing", Json.null);
+                  stdio.println(values.size());
+                  return;
+                }
+                """);
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                entry,
+                IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(),
+                out,
+                new ByteArrayOutputStream());
+
+        assertEquals("4", out.toString(StandardCharsets.UTF_8).trim());
+    }
+
+    @Test
+    void sourceJsonArrayAndObjectConstructorsAreOwnedAndTyped() throws Exception {
+        Path entry = temp.resolve("aggregate-constructors.ores");
+        Files.writeString(entry, """
+                import class JsonValue from "alloc/json";
+                import class Json from "alloc/json";
+
+                pub routine main(): void {
+                  val List<JsonValue> items = [
+                    Json.of("a"),
+                    Json.of(2),
+                    Json.null
+                  ];
+                  val JsonValue array = Json.array(items);
+
+                  val Map<string, JsonValue> fields =
+                      new Map<string, JsonValue>();
+                  fields["items"] = array;
+                  val JsonValue object = Json.object(fields);
+
+                  val Map<string, JsonValue> envelope =
+                      new Map<string, JsonValue>();
+                  envelope["payload"] = object;
+                  stdio.println(envelope.size());
+                  return;
+                }
+                """);
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                entry,
+                IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(),
+                out,
+                new ByteArrayOutputStream());
+
+        assertEquals("1", out.toString(StandardCharsets.UTF_8).trim());
+    }
+
+    @Test
+    void jsonFactoryAliasDoesNotAcquireCompilerAuthority() throws Exception {
+        Path entry = temp.resolve("factory-alias.ores");
+        Files.writeString(entry, """
+                import class JsonValue from "alloc/json";
+                import class Json as J from "alloc/json";
+
+                pub routine main(): void {
+                  val JsonValue value = J.of("no");
+                  return;
+                }
+                """);
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(entry));
+    }
+
+    @Test
+    void jsonFloatFactoryFailsClosedUntilExactDecimalCarrierExists() throws Exception {
+        Path entry = temp.resolve("float-fail-closed.ores");
+        Files.writeString(entry, """
+                import class JsonValue from "alloc/json";
+                import class Json from "alloc/json";
+
+                pub routine main(): void {
+                  val JsonValue value = Json.of(1.25);
+                  return;
+                }
+                """);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(entry));
+        assertTrue(failure.getMessage().contains("exact decimal"),
+                failure.getMessage());
+    }
+
+    @Test
     void unknownAllocModuleFailsClosedBeforeProjectResolution() throws Exception {
         Path project = temp.resolve("unknown");
         Files.createDirectories(project.resolve("alloc"));
