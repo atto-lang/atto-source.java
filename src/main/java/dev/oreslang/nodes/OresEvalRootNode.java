@@ -8001,11 +8001,18 @@ public final class OresEvalRootNode extends RootNode {
                         requireOne(args, "Map.has");
                         return map.containsKey(args.getFirst());
                     };
-                    case "get" -> (Invokable) args -> {
-                        requireOne(args, "Map.get");
-                        OresKeyedMap.Lookup<?> found = map.lookup(args.getFirst());
-                        return new OptionValue(found.present(), found.value());
-                    };
+                    case "get" -> {
+                        if (map.valueDomain() == OresKeyedMap.ValueDomain.JSON) {
+                            throw new IllegalArgumentException(
+                                    "Map<String, JsonValue>.get is disabled until "
+                                            + "move-only borrow/snapshot semantics are implemented");
+                        }
+                        yield (Invokable) args -> {
+                            requireOne(args, "Map.get");
+                            OresKeyedMap.Lookup<?> found = map.lookup(args.getFirst());
+                            return new OptionValue(found.present(), found.value());
+                        };
+                    }
                     case "put", "take", "remove" -> throw new SecurityException(
                             "Map." + name
                                     + " is direct-call-only because mutation authority belongs to the owning binding");
