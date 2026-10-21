@@ -3760,84 +3760,242 @@ public final class OwnershipChecker {
      * MOVE rather than duplicating cancellation/consumer authority.
      */
     private boolean forbiddenTaskCapability(Ast.TypeRef type) {
-        return forbiddenTaskCapability(
+        return !taskCaptureCapabilities(
                 type,
                 java.util.Collections.newSetFromMap(
-                        new IdentityHashMap<>()));
+                        new IdentityHashMap<>())).send();
     }
 
-    private boolean forbiddenTaskCapability(
+    /**
+     * Task-specific adapter over the language's canonical Send/Sync/Share
+     * lattice. This keeps ownership capture admission aligned with
+     * AutoTraitRules without weakening the stricter generic async-callable
+     * boundary policy in TypeChecker.
+     *
+     * <p>Two runtime-owned handles intentionally differ from the closed
+     * TypeAutoTraits table here:
+     * <ul>
+     *   <li>Future&lt;T&gt; is affine and may MOVE between Tasks when T is
+     *       itself task-Send (Future&lt;void&gt; carries no payload).</li>
+     *   <li>Channel&lt;T&gt; is an explicitly synchronized Copy handle and may
+     *       cross Tasks when T is task-Send.</li>
+     * </ul>
+     * Unknown nominal/generic provenance fails closed.
+     */
+    private AutoTraitRules.Capabilities taskCaptureCapabilities(
             Ast.TypeRef type,
             Set<Ast.ClassDecl> visitingClasses) {
-        if (type == null) return true;
-        // Nested borrow types are not Send-safe merely because an outer
-        // Option/Result/record/class is owned. A direct loan retains its
-        // dedicated lexical-borrow diagnostic at the caller; nested loans
-        // must be rejected here to prevent laundering through a container.
-        if (type.isBorrow()) return true;
-        if (type.name().equals("$infer$")) return true;
+        AutoTraitRules.Capabilities none =
+                new AutoTraitRules.Capabilities(false, false, false);
+        AutoTraitRules.Capabilities scalar =
+                AutoTraitRules.infer(AutoTraitRules.TypeModel.scalar());
 
-        // ActorRef<T> is an explicit, runtime-synchronized mailbox capability.
-        // T names the actor protocol/target; it is not embedded actor state and
-        // therefore must not inherit the actor class's confinement.
-        if (type.name().equals("ActorRef")) {
-            return type.arguments().size() != 1;
+        if (type == null || type.isBorrow() || type.inferArguments()
+                || type.name().equals("$infer$")
+                || type.isComplement()
+                || type.isSequenceShape()
+                || type.isRepeatExact()
+                || type.isRepeatMany()
+                || type.isNamedParameter()) {
+            return none;
         }
 
-        if (switch (type.name()) {
+        if (type.isStringLiteral() || type.isIntLiteral()
+                || type.isBoolLiteral()) {
+            return scalar;
+        }
+
+        if (type.isUnion() || type.isTupleType()) {
+            boolean send = true;
+            boolean sync = true;
+            boolean share = true;
+            for (Ast.TypeRef member : type.arguments()) {
+                AutoTraitRules.Capabilities child =
+                        taskCaptureCapabilities(member, visitingClasses);
+                send &= child.send();
+                sync &= child.sync();
+                share &= child.share();
+            }
+            return new AutoTraitRules.Capabilities(send, sync, share);
+        }
+
+        if (type.isClosedAggregateType()) {
+            boolean send = true;
+            boolean sync = true;
+            boolean share = true;
+            for (Ast.TypeRef member : type.aggregateMembers().values()) {
+                AutoTraitRules.Capabilities child =
+                        taskCaptureCapabilities(member, visitingClasses);
+                send &= child.send();
+                sync &= child.sync();
+                share &= child.share();
+            }
+            boolean immutable = type.isReadonlyRecordType();
+            return new AutoTraitRules.Capabilities(
+                    send,
+                    immutable && sync,
+                    immutable && share);
+        }
+
+        String name = type.name();
+
+        if (switch (name) {
+            case "i8", "i16", "i32", "i64",
+                    "u8", "u16", "u32", "u64",
+                    "int", "uint", "bigint",
+                    "f32", "f64", "float", "decimal",
+                    "complex64", "complex128", "complex",
+                    "bool", "Bool", "string", "String",
+                    "Symbol", "$builtin$Symbol",
+                    "ActorId", "ActorKind",
+                    "OptionUnwrapError" -> true;
+            default -> false;
+        }) {
+            return type.arguments().isEmpty() ? scalar : none;
+        }
+
+        if (name.equals("void") || name.equals("null")) {
+            return none;
+        }
+
+        // ActorRef<T> is an explicit runtime-synchronized mailbox capability.
+        // T is routing/protocol metadata, not embedded actor state.
+        if (name.equals("ActorRef")) {
+            return type.arguments().size() == 1 ? scalar : none;
+        }
+
+        // Task-owned authority and actor-turn/foreign capabilities do not
+        // become Send merely by being wrapped in an owned binding.
+        if (switch (name) {
             case "Task", "TaskHandle", "TaskScope",
-                    "Mutex", "MutexGuard", "Rc", "RefCell",
+                    "MutexGuard",
                     "Fnc", "Function",
                     "ActorMail", "ActorOutput", "ActorOutputStream",
                     "TcpConnection", "HttpExchange", "HttpServer",
                     "HttpHandler", "HttpResponse", "HttpResponseDraft",
-                    "SelectCase", "SelectSet", "SelectResult" -> true;
+                    "SelectCase", "SelectSet", "SelectResult",
+                    "Iterator", "AsyncIterator" -> true;
             default -> false;
-        }) return true;
-
-        if (type.isClosedAggregateType()) {
-            for (Ast.TypeRef member : type.aggregateMembers().values()) {
-                if (forbiddenTaskCapability(member, visitingClasses)) {
-                    return true;
-                }
-            }
-            return false;
+        }) {
+            return none;
         }
 
-        for (Ast.TypeRef arg : type.arguments()) {
-            if (forbiddenTaskCapability(arg, visitingClasses)) return true;
+        if (name.equals("Option") || name.equals("IteratorResult")) {
+            return type.arguments().size() == 1
+                    ? taskCaptureCapabilities(
+                            type.arguments().getFirst(), visitingClasses)
+                    : none;
+        }
+        if (name.equals("Result")) {
+            if (type.arguments().size() != 2) return none;
+            AutoTraitRules.Capabilities left =
+                    taskCaptureCapabilities(
+                            type.arguments().get(0), visitingClasses);
+            AutoTraitRules.Capabilities right =
+                    taskCaptureCapabilities(
+                            type.arguments().get(1), visitingClasses);
+            return new AutoTraitRules.Capabilities(
+                    left.send() && right.send(),
+                    left.sync() && right.sync(),
+                    left.share() && right.share());
         }
 
-        Ast.ClassDecl klass = findClass(type.name());
-        if (klass == null) {
-            // An unresolved/imported/foreign nominal has no linked field
-            // layout from which to derive Send. Never infer safety merely
-            // because the class is absent from the local registry.
-            //
-            // Only explicit compiler-owned primitive/structural shapes and
-            // audited owning/synchronized generic wrappers may pass here;
-            // the generic arguments have already been checked recursively.
-            if (isCopyType(type) || type.isTupleType() || type.isUnion()) {
-                return false;
-            }
-            return switch (type.name()) {
-                case "Option", "Result", "Future", "Channel",
-                        "Box", "Arc", "Weak",
-                        "Array", "List", "Vector", "FixedArray",
-                        "FixedList", "Slice", "IteratorResult" -> false;
-                default -> true;
-            };
+        if (name.equals("Future")) {
+            if (type.arguments().size() != 1) return none;
+            Ast.TypeRef payload = type.arguments().getFirst();
+            boolean payloadSend = payload.name().equals("void")
+                    || taskCaptureCapabilities(
+                            payload, visitingClasses).send();
+            return new AutoTraitRules.Capabilities(
+                    payloadSend, false, false);
         }
-        if (klass.actorKind() != Ast.ActorKind.NONE) {
-            // Actor instances/state are mailbox-confined. A Send-safe ActorRef
-            // is a distinct runtime capability and must not be inferred from
-            // the actor class object itself.
-            return true;
+
+        if (name.equals("Channel")) {
+            if (type.arguments().size() != 1) return none;
+            AutoTraitRules.Capabilities payload =
+                    taskCaptureCapabilities(
+                            type.arguments().getFirst(), visitingClasses);
+            return payload.send()
+                    ? new AutoTraitRules.Capabilities(true, true, true)
+                    : none;
         }
+
+        if (name.equals("SharedMutex")) {
+            if (type.arguments().size() != 1) return none;
+            AutoTraitRules.Capabilities payload =
+                    taskCaptureCapabilities(
+                            type.arguments().getFirst(), visitingClasses);
+            return payload.send()
+                    ? new AutoTraitRules.Capabilities(true, true, true)
+                    : none;
+        }
+
+        // User classes with builtin-looking names follow their declared class
+        // layout where TypeChecker permits that shadowing (Box/Arc/etc.).
+        Ast.ClassDecl declaredClass = findClass(name);
+
+        AutoTraitRules.Kind wrapperKind = switch (name) {
+            case "Box" -> AutoTraitRules.Kind.BOX;
+            case "Arc" -> AutoTraitRules.Kind.ARC;
+            case "Weak" -> AutoTraitRules.Kind.WEAK;
+            case "Rc" -> AutoTraitRules.Kind.RC;
+            case "RefCell" -> AutoTraitRules.Kind.REFCELL;
+            case "Mutex" -> AutoTraitRules.Kind.MUTEX;
+            case "RwLock" -> AutoTraitRules.Kind.RWLOCK;
+            default -> null;
+        };
+        if (wrapperKind != null && declaredClass == null) {
+            if (type.arguments().size() != 1) return none;
+            AutoTraitRules.Capabilities child =
+                    taskCaptureCapabilities(
+                            type.arguments().getFirst(), visitingClasses);
+            AutoTraitRules.TypeModel childModel =
+                    autoTraitModel(child);
+            boolean shareableDomain =
+                    wrapperKind == AutoTraitRules.Kind.ARC
+                            || wrapperKind == AutoTraitRules.Kind.WEAK;
+            return AutoTraitRules.infer(
+                    AutoTraitRules.TypeModel.wrapped(
+                            wrapperKind,
+                            childModel,
+                            shareableDomain));
+        }
+
+        if (switch (name) {
+            case "Array", "List", "Vector",
+                    "Slice", "FixedArray", "FixedList" -> true;
+            default -> false;
+        }) {
+            if (type.arguments().size() != 1) return none;
+            AutoTraitRules.Capabilities element =
+                    taskCaptureCapabilities(
+                            type.arguments().getFirst(), visitingClasses);
+            // Mutable sequence ownership may move when elements are Send, but
+            // the sequence itself is not implicitly Sync/Share.
+            return new AutoTraitRules.Capabilities(
+                    element.send(), false, false);
+        }
+
+        Ast.ClassDecl klass = declaredClass;
+        if (klass == null || klass.actorKind() != Ast.ActorKind.NONE) {
+            // Includes unresolved generic parameters (for example T), opaque
+            // imported/foreign nominals without linked layout, and actor
+            // instances. All require explicit provenance before Task transfer.
+            return none;
+        }
+
         if (!visitingClasses.add(klass)) {
-            return false;
+            // Recursive nominal ownership does not by itself introduce a
+            // non-Send capability; concrete outgoing fields are checked at the
+            // first visit. Nominal classes are not inferred Sync/Share.
+            return new AutoTraitRules.Capabilities(true, false, false);
         }
         try {
+            if (type.arguments().size()
+                    != klass.genericParameters().size()) {
+                return none;
+            }
+
             for (ResolvedField field : effectiveFieldTargets(
                     klass, type, new LinkedHashSet<>())) {
                 Ast.TypeRef fieldType = substituteType(
@@ -3845,14 +4003,37 @@ public final class OwnershipChecker {
                         genericBindings(
                                 field.owner().genericParameters(),
                                 field.ownerType().arguments()));
-                if (forbiddenTaskCapability(fieldType, visitingClasses)) {
-                    return true;
+                if (!taskCaptureCapabilities(
+                        fieldType, visitingClasses).send()) {
+                    return none;
                 }
             }
-            return false;
+            return new AutoTraitRules.Capabilities(true, false, false);
         } finally {
             visitingClasses.remove(klass);
         }
+    }
+
+    private static AutoTraitRules.TypeModel autoTraitModel(
+            AutoTraitRules.Capabilities capabilities) {
+        java.util.EnumSet<AutoTraitRules.AutoTrait> denied =
+                java.util.EnumSet.noneOf(
+                        AutoTraitRules.AutoTrait.class);
+        if (!capabilities.send()) {
+            denied.add(AutoTraitRules.AutoTrait.SEND);
+        }
+        if (!capabilities.sync()) {
+            denied.add(AutoTraitRules.AutoTrait.SYNC);
+        }
+        if (!capabilities.share()) {
+            denied.add(AutoTraitRules.AutoTrait.SHARE);
+        }
+        return new AutoTraitRules.TypeModel(
+                AutoTraitRules.Kind.NOMINAL,
+                List.of(),
+                Set.of(),
+                capabilities.share(),
+                denied);
     }
 
     private void validateDeferredCaptures(CaptureSet union) {
