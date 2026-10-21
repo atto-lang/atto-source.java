@@ -1429,33 +1429,22 @@ public final class OresEvalRootNode extends RootNode {
             // Execution authority comes from the exact TaskExpr admitted by
             // OwnershipChecker after the whole program passed. Re-parsed or
             // optimizer-cloned nodes have no admission and fail closed.
-            Set<String> admitted =
+            Map<String, Ast.TaskCaptureTransfer> admitted =
                     Ast.CheckedTaskCaptures.require(taskExpr);
             Set<String> syntactic =
                     dev.oreslang.ast.TaskCaptureNames.referencedIn(
                             taskExpr.body());
-            if (!syntactic.containsAll(admitted)) {
+            if (!syntactic.containsAll(admitted.keySet())) {
                 throw new IllegalStateException(
                         "checked Task capture admission is inconsistent with its AST body");
             }
 
             SourceTask task = new SourceTask(taskExpr.body(), true);
-            task.initialBlockEnv =
-                    env.detachedSnapshot(admitted, this::detachTaskCaptureValue);
+            task.initialBlockEnv = env.detachedTaskSnapshot(admitted);
             OresScheduler current = OresScheduler.current();
             return (current != null
                     ? current
                     : context.vm().rootScheduler()).start(task);
-        }
-
-        private Object detachTaskCaptureValue(Object value) {
-            if (value instanceof ChannelRuntime.Channel<?>) {
-                // Channel<T> is the one synchronized local handle intentionally
-                // shared across source tasks. Type/ownership checking still
-                // validates its payload boundary.
-                return value;
-            }
-            return detachAsyncValue(value, new IdentityHashMap<>());
         }
 
         private OresFuture<Object> startSourceMethodTask(
