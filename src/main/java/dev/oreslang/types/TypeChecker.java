@@ -2244,7 +2244,8 @@ public final class TypeChecker {
                     || name.name().equals("network")
                     || name.name().equals("net")
                     || name.name().equals("http")
-                    || name.name().equals("env")) {
+                    || name.name().equals("env")
+                    || name.name().equals("crypto")) {
                 return new Named(name.name(), List.of());
             }
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")
@@ -5249,6 +5250,11 @@ public final class TypeChecker {
                         new Named("Option", List.of(Primitive.STRING)));
                 case "has": return new Function(List.of(Primitive.STRING), Primitive.BOOL);
                 default: break;
+            }
+        }
+        if (named.name().equals("crypto")) {
+            if (name.equals("sha256")) {
+                return new Function(List.of(Primitive.STRING), Primitive.STRING);
             }
         }
         Type result;
