@@ -43,6 +43,36 @@ final class StreamConcurrencyTest {
     }
 
     @Test
+    void producerFailureCloseDrainsCommittedBufferAndPreservesCause() {
+        OresStream<Integer> stream = new OresStream<>(1);
+        IllegalStateException producerFailure = new IllegalStateException("producer failed");
+        assertTrue(stream.channel().tryWrite(71));
+        stream.close(producerFailure);
+        assertEquals(71, stream.channel().readAsync().join().intValue());
+        CompletionException failure = assertThrows(
+                CompletionException.class, () -> stream.channel().readAsync().join());
+        assertInstanceOf(ChannelRuntime.ChannelClosedException.class, failure.getCause());
+        assertSame(producerFailure, failure.getCause().getCause());
+        stream.close(); // idempotent: the first close must retain failure authority
+        CompletionException second = assertThrows(
+                CompletionException.class, () -> stream.channel().readAsync().join());
+        assertSame(producerFailure, second.getCause().getCause());
+    }
+
+    @Test
+    void producerFailureWakesPendingReaderWithOriginalCause() {
+        OresStream<Integer> stream = new OresStream<>(1);
+        OresFuture<Integer> reader = stream.channel().readAsync();
+        assertFalse(reader.isDone());
+        IllegalArgumentException cause = new IllegalArgumentException("producer aborted");
+        stream.close(cause);
+        CompletionException failure = assertThrows(CompletionException.class, reader::join);
+        assertInstanceOf(ChannelRuntime.ChannelClosedException.class, failure.getCause());
+        assertSame(cause, failure.getCause().getCause());
+        assertEquals(0, stream.channel().pendingRegistrations());
+    }
+
+    @Test
     void cancellingPendingReaderReleasesRegistrationWithoutClosingStream() {
         OresStream<Integer> stream = new OresStream<>(1);
         OresFuture<Integer> reader = stream.channel().readAsync();
