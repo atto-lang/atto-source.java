@@ -21,10 +21,12 @@ import java.util.ArrayDeque;
 import java.util.List;
 
 /**
- * Trusted native host-I/O implementations for Oreslang.
+ * Legacy blocking host-I/O implementations retained for migration/reference tests.
  *
- * <p>Every operation checks permissions immediately before touching the host.
- * Guest code never receives Java IO/HTTP/socket objects.</p>
+ * <p>These methods are intentionally quarantined from the strict stdlib surface.
+ * Permission checks remain defense-in-depth, but synchronous Files/Socket/HTTP
+ * calls here are not a compliant stdlib backend. New stdlib code must use a
+ * readiness/completion provider or fail closed when one is unavailable.</p>
  */
 public final class NativeIo {
     private NativeIo() { }
