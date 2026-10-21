@@ -34,7 +34,7 @@ public final class Ast {
         public Program(List<ModuleDecl> modules) { this(null, List.of(), modules); }
     }
 
-    public enum ImportKind { MODULE, ACTOR, CLASS, FUNCTION, INTERFACE, CONTRACT, TRAIT, STRUCT, TYPE, TYPES, ALL }
+    public enum ImportKind { MODULE, ACTOR, CLASS, FUNCTION, KERNEL, INTERFACE, CONTRACT, TRAIT, STRUCT, TYPE, TYPES, ALL }
 
     public record ImportDecl(
             ImportKind kind,
@@ -55,7 +55,24 @@ public final class Ast {
         public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) { this(name, annotations, List.of(), declarations); }
     }
 
-    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
+    public sealed interface Decl permits FunctionDecl, KernelDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
+
+    /**
+     * Backend-neutral HAT kernel declaration. Parsing/IR support is deliberately
+     * separate from executable admission: the compiler must not lower a kernel
+     * until device effects, ownership loans, and backend capabilities are checked.
+     */
+    public record KernelDecl(
+            String name,
+            Visibility visibility,
+            List<Annotation> annotations,
+            List<FunctionDecl> functions) implements Decl {
+        public KernelDecl {
+            if (name == null || name.isBlank()) throw new IllegalArgumentException("kernel name cannot be blank");
+            annotations = List.copyOf(annotations);
+            functions = List.copyOf(functions);
+        }
+    }
 
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }
