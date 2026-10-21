@@ -13,7 +13,12 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 
-/** HTTP/1.1 transport. Guest code sees revocable exchange capabilities, never sockets. */
+/** Legacy JDK HTTP/1.1 transport retained for migration/reference tests.
+ *
+ * <p>It uses JDK stream I/O and virtual-thread worker offload, so it is quarantined
+ * from the strict stdlib surface. Guest-facing strict HTTP must use a verified
+ * readiness/completion transport instead.</p>
+ */
 public final class NativeHttp implements AutoCloseable {
     private final OresContext context;
     private final Set<Server> servers = ConcurrentHashMap.newKeySet();
