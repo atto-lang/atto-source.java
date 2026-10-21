@@ -95,15 +95,46 @@ public final class ScopedTaskReadAuthority {
             AllocationIdentity allocation,
             List<Projection> projections,
             Types.Type referentType) {
-        Objects.requireNonNull(program, "checked Program");
-        Objects.requireNonNull(task, "checked TaskExpr");
+        ScopedTaskReadAuthority frozen =
+                freezeForOwnershipCheck(
+                        program,
+                        task,
+                        ownershipEpoch,
+                        allocation,
+                        projections,
+                        referentType);
+        // Public proof construction is executable-authority construction:
+        // require the exact successful Task-v2 admission before returning.
+        Ast.CheckedTaskCaptures.require(program, task, ownershipEpoch);
+        return frozen;
+    }
+
+    /**
+     * Freeze the compiler-side READ proof while the ownership pass is still
+     * staging Task admissions.
+     *
+     * <p>This method intentionally does not grant execution authority. The
+     * returned object becomes usable only when {@link #require} observes the
+     * exact same Program/Task/epoch in CheckedTaskCaptures after successful
+     * whole-program publication. Failed/superseded checks therefore leave the
+     * frozen proof inert.</p>
+     */
+    static ScopedTaskReadAuthority freezeForOwnershipCheck(
+            Ast.Program program,
+            Ast.TaskExpr task,
+            long ownershipEpoch,
+            AllocationIdentity allocation,
+            List<Projection> projections,
+            Types.Type referentType) {
+        Objects.requireNonNull(program, "ownership Program");
+        Objects.requireNonNull(task, "TaskExpr");
         Objects.requireNonNull(allocation, "allocation identity");
         Objects.requireNonNull(projections, "READ projections");
         Objects.requireNonNull(referentType, "referent type");
-
-        // Bind this proof to the exact successfully ownership-checked Task-v2
-        // boundary. Reparsed/cloned/stale Tasks cannot inherit READ authority.
-        Ast.CheckedTaskCaptures.require(program, task, ownershipEpoch);
+        if (ownershipEpoch <= 0) {
+            throw new IllegalArgumentException(
+                    "scoped Task READ ownership epoch must be positive");
+        }
 
         if (task.domain() != Ast.ExecutionDomain.CPU) {
             throw new IllegalArgumentException(
