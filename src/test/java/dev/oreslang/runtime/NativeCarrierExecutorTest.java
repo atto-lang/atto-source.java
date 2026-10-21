@@ -13,6 +13,26 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 final class NativeCarrierExecutorTest {
 
     @Test
+    void constructionAndUnusedShutdownNeverCreatePthreads() {
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
+        NativeCarrierExecutor executor =
+                new NativeCarrierExecutor(1, 2, 64, "ores-native-cold-");
+        assertEquals(0, executor.getLiveCarrierCount(),
+                "eager pool initialization must not start any carrier");
+        assertEquals(0, executor.getLargestPoolSize());
+        executor.setCorePoolSize(2);
+        assertEquals(0, executor.getLiveCarrierCount(),
+                "changing a cold pool's parallelism must not start carriers");
+        executor.shutdownNow();
+        assertEquals(0, executor.getLiveCarrierCount());
+        assertTrue(executor.isTerminated());
+        assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                () -> executor.execute(() -> {}));
+    }
+
+
+    @Test
     void manyLogicalTurnsMultiplexOntoOnePthreadCarrier() throws Exception {
         String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
         assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
