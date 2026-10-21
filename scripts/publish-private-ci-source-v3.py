@@ -177,7 +177,8 @@ def parse_contract(raw, repository, source_pr, test_plan):
         raise Denied("destination absent from protected carrier contract")
     if set(carrier) != {
         "repository_id", "base_sha", "workflow_path",
-        "workflow_blob_sha", "test_plans"
+        "workflow_blob_sha", "codeowners_path",
+        "codeowners_blob_sha", "test_plans"
     }:
         raise Denied("carrier contract fields are not exact")
     repo_id = carrier.get("repository_id")
@@ -189,6 +190,12 @@ def parse_contract(raw, repository, source_pr, test_plan):
     )
     workflow_blob = valid_sha(
         carrier.get("workflow_blob_sha"), "carrier workflow blob invalid"
+    )
+    codeowners_path = carrier.get("codeowners_path")
+    if codeowners_path != ".github/CODEOWNERS":
+        raise Denied("carrier CODEOWNERS path invalid")
+    codeowners_blob = valid_sha(
+        carrier.get("codeowners_blob_sha"), "carrier CODEOWNERS blob invalid"
     )
     plans = carrier.get("test_plans")
     if not isinstance(plans, dict):
@@ -210,6 +217,8 @@ def parse_contract(raw, repository, source_pr, test_plan):
         "base_sha": base_sha,
         "workflow_path": workflow_path,
         "workflow_blob_sha": workflow_blob,
+        "codeowners_path": codeowners_path,
+        "codeowners_blob_sha": codeowners_blob,
         "test_plan_path": plan_path,
         "test_plan_blob_sha": plan_blob,
     }
@@ -244,7 +253,7 @@ def checked_contract(root, repository, source_pr, test_plan, main_sha):
     return parse_contract(remote, repository, source_pr, test_plan)
 
 
-def verify_protected_carrier(repository, expected_base_sha):
+def verify_protected_carrier(repository, contract):
     """Require the destination main branch to enforce the reviewed carrier base.
 
     Pinning a carrier SHA is necessary but not sufficient: without branch
@@ -253,7 +262,7 @@ def verify_protected_carrier(repository, expected_base_sha):
     review guarantees before any private source bytes are copied.
     """
     expected_base_sha = valid_sha(
-        expected_base_sha, "carrier protected base SHA invalid"
+        contract.get("base_sha"), "carrier protected base SHA invalid"
     )
     branch = legacy.gh_api(f"repos/{repository}/branches/main")
     if (branch.get("name") != "main"
@@ -289,6 +298,15 @@ def verify_protected_carrier(repository, expected_base_sha):
                        or bypasses.get(category)
                        for category in ("users", "teams", "apps"))):
             raise Denied("carrier main has PR review bypass allowances")
+
+    codeowners_path = contract.get("codeowners_path")
+    codeowners = legacy.gh_api(
+        f"repos/{repository}/contents/{codeowners_path}?ref={expected_base_sha}"
+    )
+    if (codeowners.get("path") != codeowners_path
+            or codeowners.get("type") != "file"
+            or codeowners.get("sha") != contract.get("codeowners_blob_sha")):
+        raise Denied("carrier CODEOWNERS differs from protected contract")
     return expected_base_sha
 
 
@@ -300,7 +318,7 @@ def checked_destination(repository, contract):
             or repo.get("fork") is not False
             or repo.get("default_branch") != "main"):
         raise Denied("carrier identity/state differs from protected contract")
-    verify_protected_carrier(repository, contract["base_sha"])
+    verify_protected_carrier(repository, contract)
     ref = legacy.gh_api(f"repos/{repository}/git/ref/heads/main")
     base_sha = valid_sha(ref.get("object", {}).get("sha"),
                          "carrier main ref invalid")
