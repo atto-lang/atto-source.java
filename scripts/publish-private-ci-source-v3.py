@@ -1192,7 +1192,7 @@ def verify_published_root_and_commit(
 
 
 
-def publish(repository, source, source_commit, source_pr, test_plan, trusted_root, now=None):
+def _publish_impl(repository, source, source_commit, source_pr, test_plan, trusted_root, now, retention_state):
     if not legacy.NAME.fullmatch(repository):
         raise Denied("invalid destination repository")
     source_commit = valid_sha(source_commit, "invalid source commit")
@@ -1239,12 +1239,19 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     def auth():
         authorize_write(trusted_root, repository, approved_policy, contract)
 
+    def private_object_write(route, payload):
+        # GitHub exposes no deletion API for loose blobs/trees/commits. Mark the
+        # retention boundary before the request: a timeout or malformed reply
+        # cannot prove that the remote write did not occur.
+        retention_state["attempted"] = True
+        return legacy.gh_api(route, method="POST", payload=payload)
+
     elements = []
     for rel, data, mode in files:
         auth()
-        blob = legacy.gh_api(
-            f"repos/{repository}/git/blobs", method="POST",
-            payload={
+        blob = private_object_write(
+            f"repos/{repository}/git/blobs",
+            {
                 "content": base64.b64encode(data).decode("ascii"),
                 "encoding": "base64",
             },
@@ -1257,9 +1264,9 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         })
 
     auth()
-    isolated = legacy.gh_api(
-        f"repos/{repository}/git/trees", method="POST",
-        payload={"tree": elements},
+    isolated = private_object_write(
+        f"repos/{repository}/git/trees",
+        {"tree": elements},
     )
     isolated_sha = valid_sha(
         isolated.get("sha"), "uploaded source tree SHA invalid"
@@ -1302,9 +1309,9 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     receipt_digest = canonical_digest(receipt)
 
     auth()
-    receipt_blob = legacy.gh_api(
-        f"repos/{repository}/git/blobs", method="POST",
-        payload={
+    receipt_blob = private_object_write(
+        f"repos/{repository}/git/blobs",
+        {
             "content": base64.b64encode(receipt_bytes).decode("ascii"),
             "encoding": "base64",
         },
@@ -1316,9 +1323,9 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         raise Denied("uploaded receipt digest mismatch")
 
     auth()
-    root_tree = legacy.gh_api(
-        f"repos/{repository}/git/trees", method="POST",
-        payload={
+    root_tree = private_object_write(
+        f"repos/{repository}/git/trees",
+        {
             "base_tree": base_tree,
             "tree": [
                 {
@@ -1347,9 +1354,9 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         f"connector-authorized source-repository "
         f"{legacy.SOURCE_REPO} id {source_repo_id}"
     )
-    commit = legacy.gh_api(
-        f"repos/{repository}/git/commits", method="POST",
-        payload={
+    commit = private_object_write(
+        f"repos/{repository}/git/commits",
+        {
             "message": commit_message,
             "tree": root_tree_sha,
             "parents": [contract["base_sha"]],
@@ -1471,6 +1478,31 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     }
 
 
+
+def publish(repository, source, source_commit, source_pr, test_plan,
+            trusted_root, now=None):
+    retention_state = {"attempted": False}
+    try:
+        return _publish_impl(
+            repository, source, source_commit, source_pr, test_plan,
+            trusted_root, now, retention_state,
+        )
+    except BaseException as exc:
+        if retention_state["attempted"]:
+            try:
+                setattr(exc, "_ores_private_ci_retention_incident", True)
+            except BaseException:
+                pass
+            try:
+                exc.add_note(
+                    "PRIVATE_CI_RETENTION_INCIDENT: private Git object upload "
+                    "was attempted before failure; quarantine the carrier and "
+                    "follow the reviewed retention/purge procedure before reuse"
+                )
+            except (AttributeError, TypeError):
+                pass
+        raise
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("repository", help="approved private carrier owner/repo")
@@ -1489,9 +1521,19 @@ def main(argv=None):
             args.test_plan,
             root,
         )
-    except (Denied, OSError, ValueError) as exc:
-        print("PRIVATE_CI_DESTINATION_REJECTED: " + str(exc), file=sys.stderr)
-        return 1
+    except BaseException as exc:
+        if getattr(exc, "_ores_private_ci_retention_incident", False):
+            print(
+                "PRIVATE_CI_RETENTION_INCIDENT: transfer failed after private "
+                "Git object upload was attempted; quarantine the carrier and "
+                "complete reviewed retention/purge handling before reuse",
+                file=sys.stderr,
+            )
+            return 2
+        if isinstance(exc, (Denied, OSError, ValueError)):
+            print("PRIVATE_CI_DESTINATION_REJECTED: " + str(exc), file=sys.stderr)
+            return 1
+        raise
     print(
         "PRIVATE_CI_V3_CREATED: "
         + " ".join(f"{key}={value}" for key, value in result.items())
