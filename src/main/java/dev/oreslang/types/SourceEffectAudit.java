@@ -79,9 +79,20 @@ public final class SourceEffectAudit {
 
     private static String sourceDigest(String source) {
         try {
+            // String#getBytes(UTF_8) silently substitutes malformed UTF-16.
+            // Two different source strings could then have the same digest.
+            // Fail closed instead of minting a misleading source identity.
+            var utf8 = java.nio.charset.StandardCharsets.UTF_8.newEncoder()
+                    .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                    .encode(java.nio.CharBuffer.wrap(source));
+            byte[] exact = new byte[utf8.remaining()];
+            utf8.get(exact);
             byte[] hash = java.security.MessageDigest.getInstance("SHA-256")
-                    .digest(source.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    .digest(exact);
             return java.util.HexFormat.of().formatHex(hash);
+        } catch (java.nio.charset.CharacterCodingException malformed) {
+            throw new IllegalArgumentException("source contains invalid UTF-16", malformed);
         } catch (java.security.NoSuchAlgorithmException unavailable) {
             throw new IllegalStateException("mandatory SHA-256 digest unavailable", unavailable);
         }
