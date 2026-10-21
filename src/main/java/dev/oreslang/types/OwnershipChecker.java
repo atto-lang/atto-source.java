@@ -1487,6 +1487,25 @@ public final class OwnershipChecker {
         }
         if (call.callee() instanceof Ast.MemberExpr factoryCall
                 && factoryCall.receiver() instanceof Ast.NameExpr factory
+                && factory.name().equals("Stream")
+                && factoryCall.member().equals("new")
+                && scope.lookup("Stream") == null) {
+            // The type checker proves this is a compiler-owned intrinsic and
+            // that its payload is concrete Send data, not an arbitrary class
+            // constructor or thread-affine object. Preserve its exact type
+            // through the independent ownership/capture pass.
+            for (Ast.Expr argument : call.arguments()) {
+                checkExpr(argument, scope, false);
+            }
+            if (!call.typeArgumentsPresent() || call.typeArguments().size() != 1) {
+                throw error("Stream.new<T> requires an explicit payload type");
+            }
+            Ast.TypeRef streamType =
+                    new Ast.TypeRef("Stream", call.typeArguments(), false);
+            return new ValueInfo(streamType, ValueKind.COPY, null);
+        }
+        if (call.callee() instanceof Ast.MemberExpr factoryCall
+                && factoryCall.receiver() instanceof Ast.NameExpr factory
                 && (factory.name().equals("Mutex") || factory.name().equals("SharedMutex"))
                 && factoryCall.member().equals("new")
                 && call.arguments().size() == 1) {
