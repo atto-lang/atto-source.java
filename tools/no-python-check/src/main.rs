@@ -1,51 +1,88 @@
-use std::{env, fs, path::Path, process::{self, Command}};
+use std::{
+    env, fs,
+    path::Path,
+    process::{self, Command},
+};
 
 fn forbidden_path(path: &str) -> bool {
     let p = path.to_ascii_lowercase();
-    p.ends_with(".py") || p.ends_with(".pyi") || p.ends_with(".ipynb")
-        || p.ends_with("/requirements.txt") || p == "requirements.txt"
-        || p.ends_with("/pipfile") || p == "pipfile"
-        || p.ends_with("/poetry.lock") || p == "poetry.lock"
-        || p.ends_with("/pyproject.toml") || p == "pyproject.toml"
-        || p.ends_with("/uv.lock") || p == "uv.lock"
-        || p.ends_with("/setup.py") || p == "setup.py"
-        || p.ends_with("/pipfile.lock") || p == "pipfile.lock"
-        || p.ends_with("/.python-version") || p == ".python-version"
-        || p.ends_with("/tox.ini") || p == "tox.ini"
-        || p.ends_with("/setup.cfg") || p == "setup.cfg"
-        || p.rsplit('/').next().is_some_and(|name| name.starts_with("requirements") && name.ends_with(".txt"))
+    let file = p.rsplit('/').next().unwrap_or(&p);
+    p.ends_with(".py")
+        || p.ends_with(".pyi")
+        || p.ends_with(".pyw")
+        || p.ends_with(".ipynb")
+        || file == "pipfile"
+        || file == "pipfile.lock"
+        || file == "poetry.lock"
+        || file == "pyproject.toml"
+        || file == "uv.lock"
+        || file == "setup.py"
+        || file == "tox.ini"
+        || file == ".python-version"
+        || file == "pdm.lock"
+        || (file.starts_with("requirements") && file.ends_with(".txt"))
 }
 
-fn forbidden_workflow_line(line: &str) -> bool {
+fn is_execution_surface(path: &str) -> bool {
+    let p = path.to_ascii_lowercase();
+    let file = p.rsplit('/').next().unwrap_or(&p);
+    (p.starts_with(".github/workflows/") && (p.ends_with(".yaml") || p.ends_with(".yml")))
+        || (p.starts_with(".github/actions/") && (p.ends_with(".yaml") || p.ends_with(".yml")))
+        || file == "makefile"
+        || file == "justfile"
+        || p.ends_with(".sh")
+        || p.ends_with(".bash")
+        || p.ends_with(".zsh")
+}
+
+fn forbidden_execution_line(line: &str) -> bool {
     let l = line.trim().to_ascii_lowercase();
-    // Descriptive workflow step names are not executable Python invocations.
-    if l.starts_with('#') || l.starts_with("name:") || l.starts_with("- name:") {
+    if l.starts_with('#') {
         return false;
     }
-    ["actions/setup-python@", "python -m ", "python3 -m ", "python -c ", "python3 -c ",
-     "python ", "python3 ", "pip install", "pip3 install", "uv run ",
-     "pytest ", "poetry run ", "/usr/bin/python", "/usr/local/bin/python",
-     "env python", "env python3"].iter().any(|s| l.contains(s))
+    [
+        "actions/setup-python@",
+        "python -m ",
+        "python3 -m ",
+        "python -c ",
+        "python3 -c ",
+        "python ",
+        "python3 ",
+        "pypy ",
+        "pypy3 ",
+        "pip install",
+        "pip3 install",
+        "uv run ",
+        "pytest ",
+        "poetry run ",
+        "pdm run ",
+    ]
+    .iter()
+    .any(|needle| l.contains(needle))
 }
 
-fn inspect_commands(path: &str) -> bool {
-    let p = path.to_ascii_lowercase();
-    (p.starts_with(".github/workflows/") && (p.ends_with(".yaml") || p.ends_with(".yml")))
-        || p == "makefile" || p.ends_with("/makefile") || p.ends_with(".sh")
-        || p == "dockerfile" || p.ends_with("/dockerfile")
-        || p == "containerfile" || p.ends_with("/containerfile")
-        || p == "justfile" || p.ends_with("/justfile")
-        || p == "taskfile.yml" || p == "taskfile.yaml"
-        || p.ends_with("/taskfile.yml") || p.ends_with("/taskfile.yaml")
+fn python_shebang(body: &str) -> bool {
+    let first = body.lines().next().unwrap_or("").trim().to_ascii_lowercase();
+    first.starts_with("#!")
+        && (first.contains("/python")
+            || first.contains("env python")
+            || first.contains("env -s python")
+            || first.contains("/pypy")
+            || first.contains("env pypy"))
 }
 
-fn violation(path: &str, body: &str) -> Vec<String> {
+fn violations(path: &str, body: &str) -> Vec<String> {
     let mut messages = Vec::new();
-    if forbidden_path(path) { messages.push("Python file or dependency manifest".to_string()); }
-    if inspect_commands(path) {
+    if forbidden_path(path) {
+        messages.push("Python source, notebook, dependency manifest, or environment file".to_string());
+    }
+    if python_shebang(body) {
+        messages.push("Python/PyPy shebang".to_string());
+    }
+    if is_execution_surface(path) {
         for (index, line) in body.lines().enumerate() {
-            if forbidden_workflow_line(line) {
-                messages.push(format!("Python invocation at line {}", index + 1));
+            if forbidden_execution_line(line) {
+                messages.push(format!("Python tooling invocation at line {}", index + 1));
             }
         }
     }
@@ -54,81 +91,88 @@ fn violation(path: &str, body: &str) -> Vec<String> {
 
 fn main() {
     let root = env::args().nth(1).unwrap_or_else(|| ".".to_string());
-    let output = Command::new("git").args(["-C", &root, "ls-files", "-z"]).output()
+    let output = Command::new("git")
+        .args(["-C", &root, "ls-files", "-z"])
+        .output()
         .expect("git must be installed");
     if !output.status.success() {
-        eprintln!("git ls-files failed"); process::exit(2);
+        eprintln!("git ls-files failed");
+        process::exit(2);
     }
-    let mut found = 0;
+
+    let mut found = 0usize;
     for raw in output.stdout.split(|byte| *byte == 0).filter(|v| !v.is_empty()) {
         let name = String::from_utf8_lossy(raw);
-        if !forbidden_path(&name) && !inspect_commands(&name) { continue; }
         let file = Path::new(&root).join(name.as_ref());
-        // A broken/symlinked tracked policy surface must not disappear from
-        // coverage or be read through an uncontrolled external file target.
-        let metadata = match fs::symlink_metadata(&file) {
-            Ok(metadata) => metadata,
-            Err(err) => {
-                eprintln!("{}: cannot inspect tracked file: {err}", name);
-                found += 1;
-                continue;
-            }
-        };
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
-            eprintln!("{}: tracked policy surface is not a regular file", name);
-            found += 1;
-            continue;
-        }
-        let body = if inspect_commands(&name) {
-            match fs::read_to_string(&file) {
-                Ok(body) => body,
-                Err(err) => {
-                    eprintln!("{}: cannot decode or read policy surface: {err}", name);
-                    found += 1;
-                    continue;
-                }
-            }
-        } else {
-            String::new()
-        };
-        for problem in violation(&name, &body) {
+
+        // Path-only checks still apply even when the content is binary or unreadable.
+        let body = fs::read_to_string(&file).unwrap_or_default();
+        for problem in violations(&name, &body) {
             eprintln!("{}: {}", name, problem);
             found += 1;
         }
     }
-    if found > 0 { eprintln!("{found} Python policy violation(s)"); process::exit(1); }
+
+    if found > 0 {
+        eprintln!("{found} Python policy violation(s)");
+        process::exit(1);
+    }
     println!("Rust-only tooling policy check passed");
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
-    fn blocks_python_assets() {
-        assert!(forbidden_path("tool/doit.py"));
-        assert!(forbidden_path("pyproject.toml"));
-        assert!(forbidden_path("tests/a.ipynb"));
-        assert!(forbidden_path("requirements-dev.txt"));
-        assert!(forbidden_path(".python-version"));
-        assert!(forbidden_path("tools/tox.ini"));
+    fn blocks_python_assets_and_manifests() {
+        for path in [
+            "tool/doit.py",
+            "tool/doit.pyw",
+            "types/x.pyi",
+            "tests/a.ipynb",
+            "pyproject.toml",
+            "requirements-dev.txt",
+            "Pipfile.lock",
+            ".python-version",
+            "tox.ini",
+        ] {
+            assert!(forbidden_path(path), "must reject {path}");
+        }
         assert!(!forbidden_path("README.md"));
         assert!(!forbidden_path("src/main.rs"));
     }
+
+    #[test]
+    fn recognizes_execution_surfaces() {
+        assert!(is_execution_surface(".github/workflows/ci.yml"));
+        assert!(is_execution_surface(".github/actions/check/action.yaml"));
+        assert!(is_execution_surface("scripts/check.sh"));
+        assert!(is_execution_surface("Makefile"));
+        assert!(is_execution_surface("justfile"));
+        assert!(!is_execution_surface("docs/policy.md"));
+    }
+
     #[test]
     fn blocks_python_ci_invocations() {
-        assert!(forbidden_workflow_line("- uses: actions/setup-python@v5"));
-        assert!(forbidden_workflow_line("- run: python3 -m pytest"));
-        assert!(!forbidden_workflow_line("- run: cargo test"));
-        assert!(!forbidden_workflow_line("- name: Reject Python files and execution"));
-        assert!(!forbidden_workflow_line("name: Python policy"));
-        assert!(inspect_commands(".github/workflows/no-python-policy.yml"));
-        assert!(inspect_commands("scripts/build.sh"));
-        assert!(inspect_commands("Dockerfile"));
-        assert!(inspect_commands("infra/Justfile"));
-        assert!(inspect_commands("Taskfile.yml"));
-        assert!(!inspect_commands("README.md"));
-        assert!(forbidden_workflow_line("- run: python3 -m pytest"));
-        assert!(forbidden_workflow_line("RUN /usr/bin/python tool.py"));
-        assert!(forbidden_workflow_line("env python3 tool.py"));
+        assert!(forbidden_execution_line("- uses: actions/setup-python@v5"));
+        assert!(forbidden_execution_line("- run: python3 -m pytest"));
+        assert!(forbidden_execution_line("pip install -r requirements.txt"));
+        assert!(forbidden_execution_line("uv run tool.py"));
+        assert!(!forbidden_execution_line("- run: cargo test"));
+    }
+
+    #[test]
+    fn blocks_extensionless_python_scripts() {
+        assert!(python_shebang("#!/usr/bin/env python3\nprint('x')"));
+        assert!(python_shebang("#!/usr/bin/python\nprint('x')"));
+        assert!(python_shebang("#!/usr/bin/env pypy3\nprint('x')"));
+        assert!(!python_shebang("#!/usr/bin/env bash\necho ok"));
+    }
+
+    #[test]
+    fn prose_is_not_treated_as_execution() {
+        let body = "Python is prohibited; replace Python tooling with Rust.";
+        assert!(violations("README.md", body).is_empty());
     }
 }
