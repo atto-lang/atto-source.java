@@ -1102,6 +1102,11 @@ public final class OresEvalRootNode extends RootNode {
             // task, never to the carrier thread or a per-resume stack.
             private final SourceCooperationQuantum cooperationQuantum =
                     new SourceCooperationQuantum();
+            /**
+             * Actor tasks carry their authoritative lifecycle in native actor
+             * memory. Root/non-actor tasks intentionally have no actor frame.
+             */
+            private final ActorNativeArena.TaskFrame nativeFrame;
 
             private SourceValueCont pendingLoopContinuation;
             private Env pendingLoopGuardEnv;
@@ -1123,6 +1128,7 @@ public final class OresEvalRootNode extends RootNode {
                 this.receiver = null;
                 this.blockBody = null;
                 this.arguments = List.copyOf(arguments);
+                this.nativeFrame = currentActorTaskFrame();
             }
 
             private SourceTask(
@@ -1134,6 +1140,7 @@ public final class OresEvalRootNode extends RootNode {
                 this.receiver = receiver;
                 this.blockBody = null;
                 this.arguments = List.copyOf(arguments);
+                this.nativeFrame = currentActorTaskFrame();
             }
 
             private SourceTask(List<Ast.Stmt> blockBody) {
@@ -1143,12 +1150,19 @@ public final class OresEvalRootNode extends RootNode {
                 this.blockBody = List.copyOf(
                         Objects.requireNonNull(blockBody, "blockBody"));
                 this.arguments = List.of();
+                this.nativeFrame = currentActorTaskFrame();
+            }
+
+            private ActorNativeArena.TaskFrame currentActorTaskFrame() {
+                ActorNativeArena arena = ActorRuntime.currentNativeArena();
+                return arena == null ? null : arena.taskFrame();
             }
 
             @Override
             public OresScheduler.Step<Object> resume(
                     OresScheduler.Resume resume)
                     throws Exception {
+                if (nativeFrame != null) nativeFrame.beginResume(resume.initial());
                 try {
                     return resumeSource(resume);
                 } catch (RuntimeException failure) {
@@ -1161,8 +1175,10 @@ public final class OresEvalRootNode extends RootNode {
                     // or resumed continuation wraps the original exception.
                     if (function != null && function.trapped()
                             && isTrappableFailure(failure)) {
+                        if (nativeFrame != null) nativeFrame.done();
                         return OresScheduler.done(new OptionValue(false, null));
                     }
+                    if (nativeFrame != null) nativeFrame.failed();
                     throw dev.oreslang.runtime.SourceBoundaryTrace.record(failure, codeUnitId,
                             function != null ? function.name() : method != null ? method.name() : "<block>",
                             resume.initial() ? "source task" : "resumed source task");
@@ -1309,6 +1325,7 @@ public final class OresEvalRootNode extends RootNode {
                             "source continuation attempted two terminal steps in one turn");
                 }
                 awaitingContinuation = continuation;
+                if (nativeFrame != null) nativeFrame.awaiting();
                 nextStep = OresScheduler.await(future);
             }
 
@@ -1319,6 +1336,7 @@ public final class OresEvalRootNode extends RootNode {
                             "source continuation attempted two terminal steps in one turn");
                 }
                 awaitingContinuation = continuation;
+                if (nativeFrame != null) nativeFrame.cooperating();
                 nextStep = OresScheduler.cooperate();
                 cooperationQuantum.recordedCooperate();
             }
@@ -1328,6 +1346,7 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalStateException(
                             "source continuation attempted two terminal steps in one turn");
                 }
+                if (nativeFrame != null) nativeFrame.done();
                 nextStep = OresScheduler.done(value);
             }
 
