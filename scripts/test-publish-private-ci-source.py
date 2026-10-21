@@ -134,6 +134,18 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "repository identity/state"):
                 pub.require_resolved_blocking_incidents()
 
+    def test_quarantined_incident_carrier_rejected_before_incident_or_local_guard(self):
+        with (
+            patch.object(pub, "require_resolved_blocking_incidents") as incidents,
+            patch.object(pub.subprocess, "run") as run,
+            patch.object(pub, "gh_api") as api,
+        ):
+            with self.assertRaisesRegex(pub.Denied, "quarantined"):
+                ORIGINAL_REQUIRE_PREFLIGHT("zed-pkg-test/java-app", self.root)
+            incidents.assert_not_called()
+            run.assert_not_called()
+            api.assert_not_called()
+
     def test_preflight_checks_blocking_incidents_before_local_guard(self):
         with (
             patch.object(
