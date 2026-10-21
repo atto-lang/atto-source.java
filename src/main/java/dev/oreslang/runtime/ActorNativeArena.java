@@ -87,6 +87,10 @@ public final class ActorNativeArena implements AutoCloseable {
      */
     public synchronized ActorLinearMemory linearMemory(int initialPages, int maxPages) {
         checkAccess();
+        if (initialPages < 0 || maxPages < 0 || maxPages > ActorLinearMemory.MAX_PAGES
+                || initialPages > maxPages) {
+            throw new IllegalArgumentException("invalid actor linear memory initial/maximum pages");
+        }
         if (linearMemory == null) {
             ActorLinearMemory created = new ActorLinearMemory(this, maxPages);
             created.grow(initialPages);
@@ -197,7 +201,13 @@ public final class ActorNativeArena implements AutoCloseable {
                 this.length = length;
             }
 
-            public int length() { return length; }
+            public int length() {
+                synchronized (ActorNativeArena.this) {
+                    if (released) throw new IllegalStateException("read-only lease is closed");
+                    Region.this.checked();
+                    return length;
+                }
+            }
 
             private ByteBuffer readChecked(int relative, int width) {
                 if (released) throw new IllegalStateException("read-only lease is closed");
