@@ -56,9 +56,13 @@ public final class RegionLocalitySmoke {
                 new CpuTopology.Location(13, CpuTopology.UNKNOWN, CpuTopology.UNKNOWN));
         int[] cpus = {10, 11, 12, 13};
         IntUnaryOperator lookup = slot -> cpus[slot];
-        check(map.preferredSlotForNuma(0, 1, 4, lookup) == 1,
-                "nearest eligible NUMA slot");
-        check(map.preferredSlotForNuma(2, 1, 4, lookup) == 2,
+        int chosenLocal = map.preferredSlotForNuma(0, 1, 4, lookup);
+        check(chosenLocal == 1 || chosenLocal == 2,
+                "NUMA placement must select a node-local carrier");
+        check(map.preferredSlotForNuma(0, 1, 4, lookup) == chosenLocal,
+                "same affinity key must remain sticky");
+        check(map.preferredSlotForNuma(2, 1, 4, lookup) == 2
+                        || map.preferredSlotForNuma(2, 1, 4, lookup) == 1,
                 "stable preferred slot within NUMA");
         check(map.preferredSlotForNuma(-1, CpuTopology.UNKNOWN, 4, lookup) == 3,
                 "no NUMA information preserves hash");
@@ -99,6 +103,40 @@ public final class RegionLocalitySmoke {
                 && scans.get() == 0,
                 "a pool larger than the discovery cap must hash directly");
 
+        // CPU affinity is advisory: rank advertised targets, never grant
+        // native pthread, arena, actor state or GPU device authority.
+        check(map.preferredSlotForCpu(0, 10, cpus.length, lookup) == 0,
+                "exact preferred CPU target takes precedence");
+        int nearCpu = map.preferredSlotForCpu(0, 12, cpus.length, lookup);
+        check(nearCpu == 2, "same preferred CPU is best when observable");
+        check(map.preferredSlotForCpu(3, CpuTopology.UNKNOWN, 4, lookup) == 3,
+                "unknown target preserves stable affinity hash");
+        rejected(() -> map.preferredSlotForCpu(0, -2, 4, lookup),
+                "invalid CPU locality hint");
+        java.util.concurrent.atomic.AtomicInteger cpuScans =
+                new java.util.concurrent.atomic.AtomicInteger();
+        IntUnaryOperator boundedCpuLookup = slot -> {
+            check(cpuScans.incrementAndGet() <= 64,
+                    "CPU hint performed an unbounded topology scan");
+            return slot == 63 ? 10 : 11;
+        };
+        check(map.preferredSlotForCpu(0, 10, 8192, boundedCpuLookup) == 63,
+                "last bounded CPU target must be reachable");
+
+        int[] localHits = new int[8];
+        CpuTopology localBias = CpuTopology.of(
+                new CpuTopology.Location(100, -1, 0),
+                new CpuTopology.Location(101, -1, 1));
+        IntUnaryOperator splitCpus = slot -> slot < 8 ? 100 : 101;
+        for (int key = 0; key < 4096; key++) {
+            int slot = localBias.preferredSlotForNuma(key, 0, 64, splitCpus);
+            check(slot >= 0 && slot < 8, "NUMA choice left local set");
+            localHits[slot]++;
+        }
+        for (int count : localHits)
+            check(count > 300 && count < 800,
+                    "NUMA boundary hotspot under stable per-key load");
+
         Random rnd = new Random(0x21baff17);
         for (int trial = 0; trial < 10_000; trial++) {
             int enabled = 1 + rnd.nextInt(64);
@@ -114,19 +152,24 @@ public final class RegionLocalitySmoke {
             CpuTopology sampled = CpuTopology.of(
                     locations.values().toArray(new CpuTopology.Location[0]));
             int preferred = Math.floorMod(affinity, enabled);
-            int expected = preferred;
-            if (node >= 0) {
-                for (int step = 0; step < enabled; step++) {
-                    int candidate = (int) (((long) preferred + step) % enabled);
-                    if (locations.get(targets[candidate]).numa() == node) {
-                        expected = candidate;
-                        break;
-                    }
-                }
+            boolean haveLocal = false;
+            for (int slot = 0; slot < enabled; slot++) {
+                if (locations.get(targets[slot]).numa() == node
+                        && node >= 0) haveLocal = true;
             }
             int actual = sampled.preferredSlotForNuma(
                     affinity, node, enabled, i -> targets[i]);
-            check(actual == expected, "NUMA choice diverged from oracle: " + trial);
+            check(actual >= 0 && actual < enabled, "invalid slot: " + trial);
+            check(actual == sampled.preferredSlotForNuma(
+                    affinity, node, enabled, i -> targets[i]),
+                    "sticky choice not deterministic: " + trial);
+            if (haveLocal) {
+                check(locations.get(targets[actual]).numa() == node,
+                        "non-local choice despite eligible carrier: " + trial);
+            } else {
+                check(actual == preferred,
+                        "no locality evidence must preserve original hash: " + trial);
+            }
         }
         System.out.println("REGION_LOCALITY_SMOKE_PASS 10000 NUMA selections");
     }
