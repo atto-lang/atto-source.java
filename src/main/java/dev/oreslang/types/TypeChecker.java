@@ -90,6 +90,10 @@ public final class TypeChecker {
     private boolean compilerJsonValueImported;
     /** Exact compiler-owned alloc/json Json construction namespace import. */
     private boolean compilerJsonFactoryImported;
+    /** All local bindings selecting the opaque alloc/json JsonValue class, aliases included. */
+    private final Set<String> opaqueAllocJsonValueBindings = new HashSet<>();
+    /** All local bindings selecting the compiler-owned Json namespace, aliases included. */
+    private final Set<String> opaqueAllocJsonFactoryBindings = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
@@ -181,23 +185,28 @@ public final class TypeChecker {
         checker.validateImports(program);
         checker.collect(program);
         for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
-            String name = entry.getKey();
+            String localName = entry.getKey();
             Ast.ClassDecl declaration = entry.getValue();
-            if (name == null || declaration == null || !name.equals(declaration.name())
+            if (localName == null || declaration == null
                     || declaration.visibility() != Ast.Visibility.PUBLIC) {
-                throw new IllegalArgumentException("invalid linked public class: " + name);
+                throw new IllegalArgumentException(
+                        "invalid linked public class: " + localName);
             }
             boolean imported = program.imports().stream().anyMatch(use ->
-                    use.kind() == Ast.ImportKind.CLASS && !use.wildcard()
-                            && use.names().contains(name));
-            if (!imported || checker.classes.containsKey(name)
-                    || checker.ambiguousClasses.contains(name)) {
+                    use.kind() == Ast.ImportKind.CLASS
+                            && !use.wildcard()
+                            && use.names().contains(declaration.name())
+                            && ImportRules.localName(
+                                    use, declaration.name()).equals(localName));
+            if (!imported || checker.classes.containsKey(localName)
+                    || checker.ambiguousClasses.contains(localName)) {
                 throw new IllegalArgumentException(
-                        "linked public class was not uniquely imported: " + name);
+                        "linked public class was not uniquely imported as: "
+                                + localName);
             }
-            checker.classes.put(name, declaration);
+            checker.classes.put(localName, declaration);
             Map<String, Ast.TypeAliasDecl> aliases =
-                    linkedAliases.getOrDefault(name, Map.of());
+                    linkedAliases.getOrDefault(localName, Map.of());
             for (Map.Entry<String, Ast.TypeAliasDecl> alias : aliases.entrySet()) {
                 if (alias.getKey() == null || alias.getValue() == null
                         || !alias.getKey().equals(alias.getValue().name())) {
@@ -258,6 +267,14 @@ public final class TypeChecker {
             }
             if (ImportRules.isAllocJsonFactoryImport(imported)) {
                 compilerJsonFactoryImported = true;
+            }
+            if (ImportRules.isAllocJsonValueSelection(imported)) {
+                opaqueAllocJsonValueBindings.add(
+                        ImportRules.localName(imported, "JsonValue"));
+            }
+            if (ImportRules.isAllocJsonFactorySelection(imported)) {
+                opaqueAllocJsonFactoryBindings.add(
+                        ImportRules.localName(imported, "Json"));
             }
             for (String name : ImportRules.exposedBindings(imported)) {
                 if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
@@ -4030,13 +4047,13 @@ public final class TypeChecker {
                     "indexing requires a Map, array/list, tuple, record/struct, or class instance field");
         }
         if (expr instanceof Ast.NewExpr created) {
-            if (created.type().name().equals("JsonValue")
-                    && compilerJsonValueImported) {
+            if (opaqueAllocJsonValueBindings.contains(
+                    created.type().name())) {
                 throw new IllegalArgumentException(
                         "JsonValue is an opaque alloc/json value; construct it through Json.* APIs");
             }
-            if (created.type().name().equals("Json")
-                    && compilerJsonFactoryImported) {
+            if (opaqueAllocJsonFactoryBindings.contains(
+                    created.type().name())) {
                 throw new IllegalArgumentException(
                         "Json is a compiler-owned construction namespace and cannot be instantiated");
             }
