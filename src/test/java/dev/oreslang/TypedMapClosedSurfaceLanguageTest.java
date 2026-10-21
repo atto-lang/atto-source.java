@@ -401,4 +401,65 @@ final class TypedMapClosedSurfaceLanguageTest {
     }
 
 
+    @Test
+    void aliasesCannotEraseRuntimeMapDescriptors() {
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheck("""
+                        type Key = string;
+                        pub fnc main(): void {
+                          val Map<Key, int> values = new Map<Key, int>();
+                          return;
+                        }
+                        """));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheck("""
+                        type Value = int;
+                        pub fnc main(): void {
+                          val Map<string, Value> values =
+                              new Map<string, Value>();
+                          return;
+                        }
+                        """));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheck("""
+                        type LocalMap = Map<string, int>;
+                        pub fnc main(): void {
+                          val LocalMap values = new Map<string, int>();
+                          return;
+                        }
+                        """));
+    }
+
+    @Test
+    void lexicalClosureSnapshotCannotSilentlyRetainUncapturedMap() {
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheck("""
+                        pub fnc main(): void {
+                          val Map<string, int> values =
+                              new Map<string, int>();
+                          const callback = || -> {
+                            return 7;
+                          };
+                          stdio.println(callback());
+                          return;
+                        }
+                        """));
+
+        assertDoesNotThrow(() ->
+                OresCompiler.parseAndTypeCheck("""
+                        pub fnc main(): void {
+                          val Map<string, int> values =
+                              new Map<string, int>();
+                          const callback = nlex || -> {
+                            return 7;
+                          };
+                          stdio.println(callback());
+                          return;
+                        }
+                        """));
+    }
+
+
 }
