@@ -1,0 +1,9 @@
+// Allocator-backed JSON library boundary.
+//
+// This module deliberately exports no source API yet. Landing the reserved
+// alloc/json module separately from JsonValue/Json.* lowering keeps the
+// allocator tier explicit: importing this module must never make JSON an
+// ambient core builtin. The following stacked compiler slice will bind the
+// generated/static codec surface to this exact packaged module identity.
+define module json as
+end
