@@ -9,7 +9,9 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Duration;
+import java.util.HexFormat;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -35,7 +37,11 @@ final class OrestraBootstrapNativeHttpTest {
         String program;
         try (InputStream input = getClass().getResourceAsStream("/orestra/native-bootstrap.ores")) {
             assertNotNull(input, "mirrored Orestra source missing");
-            program = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+            byte[] programBytes = input.readAllBytes();
+            assertEquals("4b3ea92ec1bf4edd335e04c5d927a4c4c43ed603",
+                    gitBlobSha(programBytes),
+                    "embedded bootstrap source drifted from reviewed Orestra Git blob");
+            program = new String(programBytes, StandardCharsets.UTF_8);
         }
         assertTrue(program.contains("define actor StateBootstrap as"));
         assertTrue(program.contains("define actor SchedulerBootstrap as"));
@@ -97,6 +103,13 @@ final class OrestraBootstrapNativeHttpTest {
                 exercise.cancel(true);
             }
         }
+    }
+
+    private static String gitBlobSha(byte[] content) throws Exception {
+        MessageDigest sha1 = MessageDigest.getInstance("SHA-1");
+        sha1.update(("blob " + content.length + "\0").getBytes(StandardCharsets.US_ASCII));
+        sha1.update(content);
+        return HexFormat.of().formatHex(sha1.digest());
     }
 
     private static void assertReply(HttpClient client, int port, String method, String path,
