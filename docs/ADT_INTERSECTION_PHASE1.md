@@ -7,7 +7,7 @@ general class/trait/method intersections or LLVM lowering.
 
 - `A | B` remains a type union. `A & B` is an intersection **in type
   position** and binds more tightly than `|`. Parentheses override precedence.
-- Leading `&T` / `&mut T` still denotes a borrow; the new infix operator
+- `borrow T` / `borrow mut T` denotes borrowed types; leading `&T` / `&mut T` is not Oreslang borrow syntax; the new infix operator
   does not create, release or weaken an ownership loan.
 - `Ast.TypeRef.intersection` flattens nested intersections, deduplicates and
   canonicalizes operand order. The parser represents the intersection until the
