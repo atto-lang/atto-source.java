@@ -875,7 +875,7 @@ public final class Ast {
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
-            ListExpr, TupleExpr, ObjectExpr, LambdaExpr, TaskExpr { }
+            ListExpr, TupleExpr, ObjectExpr, LambdaExpr, TaskExpr, CpuRegionExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
@@ -1160,6 +1160,37 @@ public final class Ast {
         }
         public boolean inferredStruct() { return kind == ObjectKind.INFERRED_STRUCT; }
         public boolean explicitStruct() { return kind == ObjectKind.EXPLICIT_STRUCT; }
+    }
+
+    /**
+     * Eager host-CPU execution region. Unlike TaskExpr, this executes inline
+     * and returns the block's explicit value without creating a Future.
+     * The compiler binds its checked result type before ownership/runtime use.
+     */
+    public static final class CpuRegionExpr implements Expr {
+        private final List<Stmt> body;
+        private volatile TypeRef checkedResultType;
+
+        public CpuRegionExpr(List<Stmt> body) {
+            this.body = List.copyOf(body);
+        }
+        public List<Stmt> body() { return body; }
+
+        public synchronized void bindResultType(TypeRef result) {
+            java.util.Objects.requireNonNull(result, "CPU region result");
+            if (checkedResultType != null && !checkedResultType.equals(result)) {
+                throw new IllegalStateException("CPU region result changed after checking");
+            }
+            checkedResultType = result;
+        }
+
+        public TypeRef checkedResultType() {
+            TypeRef type = checkedResultType;
+            if (type == null) {
+                throw new IllegalStateException("CPU region requires checked result type");
+            }
+            return type;
+        }
     }
 
     /**
