@@ -10,8 +10,8 @@ an independent tracing heap collector and cannot repair an invalid borrow.
 
 - `rt borrow` is accepted at borrowed argument positions, including imported
   methods. The canonical `rt mut borrow` expression and `borrow mut T` type
-  use the existing exclusive-borrow checks. The reversed `rt borrow mut`
-  expression is rejected rather than retained as a parser alias.
+  use the existing exclusive-borrow checks. The reversed legacy order
+  is rejected rather than retained as a parser alias.
 - Parentheses group expressions. Explicit `tuple (...)` constructs a product,
   including zero/singleton products. Immediate tuple unpacking creates lexical
   borrow leases; storing borrowed references in an owned tuple still fails closed.
