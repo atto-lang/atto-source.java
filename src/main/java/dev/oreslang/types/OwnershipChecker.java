@@ -45,9 +45,10 @@ public final class OwnershipChecker {
     /** Only bindings admitted as new short aliases by the type checker. */
     private final Map<Ast.BindingStmt, String> validatedShortAliases;
     /**
-     * Staged compiler gate for move-only Map insertion. The normal compiler
-     * path leaves this false until alloc/json makes recursive JsonValue source
-     * types executable.
+     * Commit-edge analysis is always enabled in the ownership pass. The public
+     * TypeChecker still gates recursive move-only Map value domains, so this
+     * changes no currently legal source program while making the ownership
+     * contract ready before alloc/json widens the type surface.
      */
     private final boolean commitAwareMapWrites;
     private int mutexCriticalSectionDepth;
@@ -63,12 +64,12 @@ public final class OwnershipChecker {
     private final List<Set<VarState>> tryConditionalCommitMoves = new ArrayList<>();
 
     private OwnershipChecker(Ast.Program program) {
-        this(program, Map.of(), false);
+        this(program, Map.of(), true);
     }
 
     private OwnershipChecker(
             Ast.Program program, Map<Ast.BindingStmt, String> validatedShortAliases) {
-        this(program, validatedShortAliases, false);
+        this(program, validatedShortAliases, true);
     }
 
     private OwnershipChecker(
@@ -80,19 +81,6 @@ public final class OwnershipChecker {
         this.validatedShortAliases = new IdentityHashMap<>(validatedShortAliases);
         this.commitAwareMapWrites = commitAwareMapWrites;
         index(program);
-    }
-
-    /**
-     * Staging entrypoint used by compiler ownership conformance tests before
-     * the public typechecker admits recursive move-only Map value domains.
-     * This does not make any new source spelling executable.
-     */
-    static Ast.Program checkWithCommitAwareMapWritesForTesting(
-            Ast.Program program) {
-        OwnershipChecker checker =
-                new OwnershipChecker(program, Map.of(), true);
-        checker.validate(program);
-        return program;
     }
 
     public static Ast.Program check(Ast.Program program) {
