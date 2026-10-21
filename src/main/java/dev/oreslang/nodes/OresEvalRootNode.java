@@ -7227,6 +7227,8 @@ public final class OresEvalRootNode extends RootNode {
                     };
                     case "write_text" -> (Invokable) fs::writeText;
                     case "write_text_atomic" -> (Invokable) fs::writeTextAtomic;
+                    case "write_text_durable_atomic" ->
+                            (Invokable) fs::writeTextDurableAtomic;
                     case "write_text_async" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
@@ -10348,6 +10350,18 @@ public final class OresEvalRootNode extends RootNode {
                     context,
                     requireString(args.get(0), "fs.write_text_atomic path"),
                     requireString(args.get(1), "fs.write_text_atomic value"));
+            return null;
+        }
+        private Object writeTextDurableAtomic(List<Object> args) {
+            requireTwo(args, "fs.write_text_durable_atomic");
+            NativeIo.writeTextDurableAtomic(
+                    context,
+                    requireString(
+                            args.get(0),
+                            "fs.write_text_durable_atomic path"),
+                    requireString(
+                            args.get(1),
+                            "fs.write_text_durable_atomic value"));
             return null;
         }
         private Object appendText(List<Object> args) {
