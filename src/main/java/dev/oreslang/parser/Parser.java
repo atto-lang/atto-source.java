@@ -1841,6 +1841,18 @@ public final class Parser {
             return new Ast.ForStmt(null, new Ast.LiteralExpr(true), null, turn);
         }
         if (match(IF)) return parseIf();
+        if ((check(NB)
+                || (check(IDENT) && peek().lexeme().equals("task")))
+                && current + 2 < tokens.size()
+                && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 1).lexeme().equals("scope")
+                && tokens.get(current + 2).type() == LBRACE) {
+            advance(); // nb or contextual task
+            advance(); // contextual scope
+            Ast.Stmt scoped = new Ast.TaskScopeStmt(parseBlock());
+            match(SEMICOLON);
+            return scoped;
+        }
         if (check(DO) && checkNext(LBRACE)) {
             advance();
             return parseDoWhile();
