@@ -551,6 +551,13 @@ public final class TreeShaker {
         }
 
         private Ast.Decl rewriteDeclaration(String module, Ast.Decl declaration) {
+            if (declaration instanceof Ast.KernelDecl kernel) {
+                List<Ast.FunctionDecl> entries = new ArrayList<>();
+                for (Ast.FunctionDecl entry : kernel.entries()) {
+                    entries.add((Ast.FunctionDecl) rewriteDeclaration(module, entry));
+                }
+                return new Ast.KernelDecl(kernel.name(), kernel.visibility(), entries);
+            }
             if (declaration instanceof Ast.FunctionDecl function) {
                 LinkedHashMap<String, Object> locals = new LinkedHashMap<>();
                 for (Ast.Param parameter : function.parameters()) locals.put(parameter.name(), UNKNOWN);
@@ -1060,6 +1067,9 @@ public final class TreeShaker {
         }
 
         private boolean isPublicApi(Ast.Decl declaration) {
+            if (declaration instanceof Ast.KernelDecl kernel) {
+                return kernel.visibility() == Ast.Visibility.PUBLIC;
+            }
             if (declaration instanceof Ast.FunctionDecl fn) {
                 return fn.visibility() == Ast.Visibility.PUBLIC;
             }
@@ -1134,6 +1144,18 @@ public final class TreeShaker {
         }
 
         private void scanDeclaration(String module, Ast.Decl declaration) {
+            if (declaration instanceof Ast.KernelDecl kernel) {
+                for (Ast.FunctionDecl entry : kernel.entries()) {
+                    scanType(entry.returnType());
+                    for (Ast.Param parameter : entry.parameters()) scanType(parameter.type());
+                    for (Ast.GenericParameter spec : entry.genericSpecs()) scanType(spec.defaultType());
+                    for (Ast.Annotation annotation : entry.annotations()) scanAnnotation(annotation);
+                    LinkedHashSet<String> locals = new LinkedHashSet<>();
+                    for (Ast.Param parameter : entry.parameters()) locals.add(parameter.name());
+                    scanStatements(module, entry.body(), locals);
+                }
+                return;
+            }
             if (declaration instanceof Ast.FunctionDecl function) {
                 scanType(function.returnType());
                 for (Ast.Param parameter : function.parameters()) scanType(parameter.type());
@@ -1529,6 +1551,7 @@ public final class TreeShaker {
         }
 
         private static String declarationName(Ast.Decl declaration) {
+            if (declaration instanceof Ast.KernelDecl kernel) return kernel.name();
             if (declaration instanceof Ast.FunctionDecl function) return function.name();
             if (declaration instanceof Ast.ClassDecl klass) return klass.name();
             if (declaration instanceof Ast.InterfaceDecl iface) return iface.name();
