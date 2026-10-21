@@ -38,7 +38,7 @@ final class CanonicalMutableBorrowParserTest {
                 fnc write(borrow mut Widget item): int { return item.id; }
                 fnc bad(): int {
                   let Widget owner = new Widget();
-                  return write(rt borrow mut owner);
+                  return write(rt borrow mut owner); // ORESLANG_EXPECT_INVALID_LEGACY_BORROW
                 }
                 """));
     }
