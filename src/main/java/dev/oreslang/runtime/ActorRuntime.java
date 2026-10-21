@@ -1823,7 +1823,16 @@ public final class ActorRuntime implements AutoCloseable {
         if (cell == null || cell.ref != actor || cell.stopped.get()) {
             throw new SecurityException("reply endpoint requires a live exact actor incarnation");
         }
-        return registry.bindActor(actor, GenerationalReplyRegistry.Role.ACTOR);
+        synchronized (cell.lifecycleLock) {
+            if (cell.stopped.get() || cell.finalized || cell.sealing) {
+                throw new SecurityException("actor is stopping or has sealed reply admission");
+            }
+            GenerationalReplyRegistry.Endpoint endpoint =
+                    registry.bindActor(actor, GenerationalReplyRegistry.Role.ACTOR);
+            cell.replyEndpointRevokers.putIfAbsent(
+                    endpoint, () -> registry.retireIfLive(endpoint));
+            return endpoint;
+        }
     }
 
     /** Explicit trusted-host enrollment of a supervisor APPLICATION service.
@@ -1840,7 +1849,16 @@ public final class ActorRuntime implements AutoCloseable {
         if (cell == null || cell.ref != service || cell.stopped.get()) {
             throw new SecurityException("supervisor service requires a live exact actor incarnation");
         }
-        return registry.bindActor(service, GenerationalReplyRegistry.Role.SUPERVISOR_APPLICATION);
+        synchronized (cell.lifecycleLock) {
+            if (cell.stopped.get() || cell.finalized || cell.sealing) {
+                throw new SecurityException("supervisor application service is stopping");
+            }
+            GenerationalReplyRegistry.Endpoint endpoint = registry.bindActor(
+                    service, GenerationalReplyRegistry.Role.SUPERVISOR_APPLICATION);
+            cell.replyEndpointRevokers.putIfAbsent(
+                    endpoint, () -> registry.retireIfLive(endpoint));
+            return endpoint;
+        }
     }
 
     /** VM/runtime continuation-only identity; not a guest-accessible handle. */
@@ -7108,6 +7126,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorCell<?> parent;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
+        /** VM-only revokers: detached at stop and executed OUTSIDE lifecycleLock. */
+        private final IdentityHashMap<GenerationalReplyRegistry.Endpoint, Runnable>
+                replyEndpointRevokers = new IdentityHashMap<>();
         /**
          * Mutable scheduler metadata belongs to this actor, never to the shared
          * AST/evaluator. Keys are immutable shared code-site identities.
@@ -8103,6 +8124,7 @@ public final class ActorRuntime implements AutoCloseable {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
             List<DrainWaiter> failedDrainWaiters;
+            List<Runnable> replyRevokers;
             synchronized (lifecycleLock) {
                 if (finalized) return;
                 if (recordCause && cause != null) {
@@ -8110,6 +8132,8 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 stopped.set(true);
                 sealing = true;
+                replyRevokers = List.copyOf(replyEndpointRevokers.values());
+                replyEndpointRevokers.clear();
                 // Detach pending observers under the actor monitor. Settling an
                 // OresFuture invokes runtime callbacks inline, so never settle
                 // one while holding lifecycleLock.
@@ -8125,6 +8149,10 @@ public final class ActorRuntime implements AutoCloseable {
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
             }
+
+            // Registry retirement may synchronously settle future observers.
+            // Never invoke it under the actor lifecycle monitor.
+            for (Runnable retireEndpoint : replyRevokers) retireEndpoint.run();
 
             // Runtime Future callbacks can take other actor/lifecycle locks.
             // Publish failure only after teardown has released lifecycleLock.
