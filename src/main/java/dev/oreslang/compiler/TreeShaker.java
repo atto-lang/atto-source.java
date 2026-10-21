@@ -196,7 +196,8 @@ public final class TreeShaker {
             if (expression == null) return false;
             if (expression instanceof Ast.LambdaExpr
                     || expression instanceof Ast.TaskExpr
-                    || expression instanceof Ast.CpuRegionExpr) return true;
+                    || expression instanceof Ast.CpuRegionExpr
+                    || expression instanceof Ast.GpuRegionExpr) return true;
             if (expression instanceof Ast.TypeTestExpr test) return containsLambda(test.value());
             if (expression instanceof Ast.PatternTestExpr test) return containsLambda(test.value());
             if (expression instanceof Ast.CastExpr cast) return containsLambda(cast.value());
@@ -391,6 +392,9 @@ public final class TreeShaker {
                             substitute(field.value(), substitutions, shadowed)));
                 }
                 return new Ast.ObjectExpr(fields, object.kind(), object.declaredFields());
+            }
+            if (expression instanceof Ast.GpuRegionExpr gpu) {
+                return gpu; // explicit denied device region, never substitute on CPU
             }
             if (expression instanceof Ast.CpuRegionExpr cpu) {
                 // Keep the type-checked region identity; its body is an
@@ -1005,6 +1009,9 @@ public final class TreeShaker {
                 }
                 return new Ast.ObjectExpr(fields, object.kind(), object.declaredFields());
             }
+            if (expression instanceof Ast.GpuRegionExpr gpu) {
+                return gpu; // no fallback or scalar rewrite of unlowered GPU work
+            }
             if (expression instanceof Ast.CpuRegionExpr cpu) {
                 return cpu; // checked eager-region identity and effects survive DCE
             }
@@ -1399,6 +1406,8 @@ public final class TreeShaker {
                 for (Ast.ObjectField field : object.fields()) {
                     scanExpression(module, field.value(), locals);
                 }
+            } else if (expression instanceof Ast.GpuRegionExpr gpu) {
+                scanStatements(module, gpu.body(), new LinkedHashSet<>(locals));
             } else if (expression instanceof Ast.CpuRegionExpr cpu) {
                 scanStatements(module, cpu.body(), new LinkedHashSet<>(locals));
             } else if (expression instanceof Ast.TaskExpr task) {
