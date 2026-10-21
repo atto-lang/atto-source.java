@@ -682,6 +682,43 @@ final class ActorNativeArenaTest {
         }
     }
 
+    @Test
+    void nativeLexicalScopeDropRetiresSlotAndReleasesRegistryReferences() {
+        AtomicLong charged = new AtomicLong();
+        Object marker = new Object();
+        try (ActorNativeArena arena = arena(64 * 1024, charged)) {
+            var list = arena.nativeList();
+            var first = arena.valueCell(list, marker);
+            var second = arena.valueCell(list, marker);
+            assertEquals(1, arena.nativeReferenceCount(),
+                    "two references to one native payload share one registry entry");
+            assertSame(list, first.get());
+            assertSame(list, second.get());
+
+            first.close();
+            first.close(); // idempotent within the actor owner
+            assertEquals(1, arena.nativeReferenceCount(),
+                    "retiring one borrower cannot invalidate a second live reference");
+            assertSame(list, second.get());
+            assertThrows(IllegalStateException.class, first::get);
+            assertThrows(IllegalStateException.class, first::nativeOffset);
+            assertThrows(IllegalStateException.class, () -> first.trySet(42L));
+
+            second.close();
+            assertEquals(0, arena.nativeReferenceCount(),
+                    "the final lexical slot drop must release its facade root");
+
+            var text = arena.valueCell("temporary", marker);
+            text.close();
+            assertThrows(IllegalStateException.class, text::get);
+            assertThrows(IllegalStateException.class, () -> text.trySet("reused"));
+            // The owning actor arena still holds its slab until physical
+            // actor teardown; this API does not claim per-slot byte refunds.
+            assertTrue(charged.get() > 0);
+        }
+        assertEquals(0, charged.get());
+    }
+
     private static ActorNativeArena arena(long limit, AtomicLong charged) {
         return new ActorNativeArena(limit, () -> {}, bytes -> {
             charged.addAndGet(bytes);
