@@ -1,6 +1,6 @@
 # Supervisor recovery contexts and nested actor families (v1 contract)
 
-**Status (2026-10-11): shared design target, NOT a claim of executable guest `throw/raise/panic/recover` or native source-level supervision.** The JVM branch adds a first runtime implementation of inherited *managed lifecycle ownership* for nested spawned actors. The LLVM branch has a host-only ActorGroup and must still lower source spawn, await and supervisor CONTROL callbacks. Keep these gates separate.
+**Status (2026-10-21): Java/Graal now has a first executable source-lowering vertical slice for `define supervisor actor`, synchronous checked `on_throw/on_raise/on_panic(ChildFailure): void` handlers, and source `throw/raise/panic` terminal effects. `recover`, source-declared restart-policy syntax, suspended supervisor handlers and supervisor application RPC remain gated. LLVM has typed host/runtime CONTROL substrate but still lacks source-level nested child spawn + terminal-effect/supervisor lowering. Keep these gates separate.**
 
 ## v1: flat supervision for recursive spawn
 
@@ -35,8 +35,8 @@ Each *admitted actor message invocation* and each *admitted supervisor callback*
 - True `panic`, cancellation, process exit and host-fatal failures cannot be consumed by `recover`. Cleanup defers still run under bounded cleanup/failure-priority rules. Child terminal panic reaches its supervisor only as a typed CONTROL event.
 - After a successful `recover`, execution does not jump back into the throwing function or re-execute the failed `await`; normal function exit/unwinding completes.
 - A detached task, another actor message, or child actor has its own execution context. A future can explicitly *deliver a failure value* to an awaiter and the awaiter can throw a **new local** exception; its recover scope does not rewind the remote execution.
-- Supervisor `on_panic(childFailure)` is a fresh **supervisor-owned invocation** scheduled on S's exclusive logical lane. It can recover failures of its own nested awaits, but not the child's original terminal panic. If the supervisor panics, cleanup runs and a typed CONTROL event goes to S's parent; no inline parent callback from a failed child carrier.
-- Supervisor CONTROL is priority/reserved, but cannot interrupt existing supervisor user code or execute reentrantly. A suspended supervisor callback may yield the physical carrier and later resume under single-flight admission.
+- Supervisor `on_panic(childFailure)` is a fresh **supervisor-owned invocation** scheduled on S's exclusive logical lane. It cannot recover or rewind the child's original terminal panic. If the supervisor itself fails, cleanup runs and its own typed terminal CONTROL is retained/escalated; there is no inline parent callback from a failed child carrier.
+- Supervisor CONTROL is priority/reserved, but cannot interrupt existing supervisor user code or execute reentrantly. The current Java source slice deliberately requires synchronous handlers; future suspension lowering must preserve this same single-flight invocation across carrier migration rather than introducing parallel supervisor execution.
 
 ## v1 nested spawn example (illustrative; not a claim of parsed guest syntax)
 
@@ -107,12 +107,15 @@ CONTROL retention primitive**, separate from the diagnostic journal:
 - diagnostic-journal saturation or diagnostic producer contention is
   independent and cannot erase the retained CONTROL event.
 
-This is deliberately one layer below source callbacks. It does **not** yet
-claim executable guest `on_panic/on_raise/on_throw` lowering or automatic
-restart policy. The next integration step is to route these retained events
-through the owning supervisor's reserved serialized CONTROL lane and only then
-acknowledge/release the reservation after that supervisor invocation has been
-admitted.
+Java now routes these retained events through the exact owning supervisor
+incarnation's reserved serialized CONTROL lane and lowers checked source
+`on_throw/on_raise/on_panic` handlers onto that lane. The privileged
+`ChildFailure` value is revocable after the CONTROL turn and can choose one of
+`restart/acknowledge/retain/escalate`; the hidden handlers are not ordinary
+actor methods. Runtime restart backoff uses a nonblocking timer wake and resumes
+the stored directive without re-running guest handler side effects. Source
+syntax for configuring restart intensity/backoff policy remains a separate
+integration gate.
 
 ### Continuation-vs-user-mail fairness
 
@@ -139,13 +142,14 @@ parent user turn is blocked, active-failure vs queued-tail accounting, and a
 
 ## Normative OTP restart policy requirements
 
-The source-level OTP supervisor remains an integration gate, but its restart
-semantics are constrained now so implementation cannot silently inherit common
-actor-system failure modes. The JVM integration additionally exposes a
-host-side `SupervisorRestartPolicy` + `SupervisorRestartLimiter` primitive for
-deterministic intensity/backoff decisions over retained generation-bound
-CONTROL events. It does **not** auto-restart actors or claim source-level
-supervisor callback lowering:
+The Java source-level supervisor CONTROL vertical slice is now implemented,
+while the richer OTP strategy/configuration surface remains an integration
+gate. The JVM runtime exposes `SupervisorRestartPolicy` +
+`SupervisorRestartLimiter` for deterministic intensity/backoff decisions over
+retained generation-bound CONTROL events. A source handler may select
+`failure.restart()`; when a limiter supplies nonzero backoff, the runtime arms
+one nonblocking timer and later resumes the stored restart directive without
+re-entering guest code:
 
 
 - **No unbounded crash loops.** Every supervisor has an explicit
@@ -206,8 +210,8 @@ pretend that an in-memory mailbox became a durable transaction log.
 9. Restart storms are bounded: hit the restart-intensity ceiling, verify deterministic backoff, one escalation, no busy-loop, and no replacement after escalation.
 10. Restart creates a new generation; stale refs/messages/CONTROL cannot target the replacement, and a crashing in-flight message is never implicitly replayed.
 11. `one_for_one`, `rest_for_one`, and `one_for_all` preserve deterministic dependency order and readiness barriers under concurrent child failure.
-12. Verify against the **exact source Git tree** in CI. When out of org Actions budget, mirror exact tree/blobs to a funded test org, using no private cross-org checkout secrets.
+12. Verify against the **exact source Git tree** in CI. Cross-organization private-source mirroring is permitted only after the protected source/destination/snapshot ledgers, independent policy approvals and platform-conformance resume conditions explicitly authorize that transfer; funded Actions capacity alone is never authorization.
 
 ## Integration boundary
 
-The present JVM `ActorGroup` is a **cooperation domain plus explicitly managed-worker registry**, not itself a supervisor process or dispatcher. The new inherited-ownership behavior concerns that managed-worker registry only; a real supervisor scheduler/CONTROL callback integration remains a release gate. The LLVM `NativeActorGroup` is a host-side lifecycle authority; it does not yet execute guest spawn expressions or guest recovery frames. Do not conflate tested host primitives or docs with compiler-level parity.
+The present JVM `ActorGroup` is a **cooperation domain plus explicitly managed-worker registry**, not itself the supervisor. Java supervisor actors now use a distinct reserved CONTROL lane on the supervisor actor's existing single-flight scheduler lane; ActorGroup membership/lifecycle ownership remains independent. The LLVM `NativeActorGroup` and typed native CONTROL substrate are host/runtime authorities only: the restricted LLVM source frontend still lacks nested source child spawn and guest supervisor-handler lowering. Do not conflate Java source progress, native host primitives, or source-free contract probes with cross-backend compiler parity.

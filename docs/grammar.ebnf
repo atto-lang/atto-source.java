@@ -50,16 +50,27 @@ actor_callable_decl
                   ( "(" [ param_list ] ")" return_spec block
                   | "=" "|" [ param_list ] "|" "->" [ type_ref ] block ) ;
 
-actor_decl      = visibility [ "shared" ] "actor" IDENT [ generic_params ]
+actor_decl      = visibility { actor_modifier } "actor" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
                   [ ( "implements" | "impl" ) type_ref { "," type_ref } ]
                   actor_body ;
+actor_modifier  = "shared" | "untrusted" | "supervisor" ;
+(* supervisor is a role, not an actor-memory kind. A supervisor actor is still
+   subject to the ordinary shared/private/untrusted actor-kind rules. *)
 actor_body      = "{" { actor_member } "}"
                 | { actor_member } "end" ;
 actor_member    = field_decl
                 | final_actor_field_decl
                 | actor_method_decl
                 | static_function_decl ;
+supervisor_control_handler
+                = "private" supervisor_handler_name
+                  "(" "ChildFailure" IDENT ")" ":" "void" block ;
+supervisor_handler_name
+                = "on_throw" | "on_raise" | "on_panic" ;
+(* A supervisor actor must define all three checked handlers exactly once.
+   They are compiler/runtime CONTROL entrypoints, not ordinary callable actor
+   methods and cannot be extracted, sent to, reflected, or invoked by user code. *)
 final_actor_field_decl = { annotation } visibility "final" IDENT ":" type_ref [ "=" expression ] stmt_terminator ;
 actor_method_decl
                 = { annotation } visibility { callable_modifier } [ "fnc" | "method" ] method_name [ generic_params ]
@@ -176,6 +187,7 @@ block           = "{" { statement } "}" ;
 statement       = binding_decl
                 | destructure_stmt
                 | return_stmt
+                | terminal_effect_stmt
                 | block_stmt
                 | break_stmt
                 | continue_stmt
@@ -191,6 +203,10 @@ statement       = binding_decl
                 | expression stmt_terminator ;
 
 return_stmt     = "return" [ expression ] stmt_terminator ;
+terminal_effect_stmt
+                = ( "throw" | "raise" | "panic" ) expression stmt_terminator ;
+(* Current Java/Graal source lowering requires a string diagnostic value.
+   recover remains a separate gated feature. *)
 defer_stmt      = "defer" expression stmt_terminator ;
 block_stmt      = "block" block ;
 break_stmt      = "break" stmt_terminator ;

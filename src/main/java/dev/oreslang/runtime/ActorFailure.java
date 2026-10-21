@@ -26,8 +26,8 @@ public final class ActorFailure {
 
     /**
      * Explicit recoverable source throw that escaped every ordinary handler.
-     * Source lowering is intentionally not enabled merely by defining this
-     * runtime identity.
+     * Java/Graal source lowering emits this signal for source `throw`;
+     * ordinary catch/recover semantics remain independently checked/gated.
      */
     public static final class Thrown extends RuntimeException implements Signal {
         private static final long serialVersionUID = 1L;
@@ -40,8 +40,8 @@ public final class ActorFailure {
     }
 
     /**
-     * Explicit source raise. Ordinary guest catch/trap must not consume this;
-     * only the language's recovery boundary may do so once lowering exists.
+     * Explicit source raise. Java/Graal source lowering emits this signal for
+     * source `raise`; ordinary guest catch/trap must not consume it.
      */
     public static final class Raised extends RuntimeException implements Signal {
         private static final long serialVersionUID = 1L;
