@@ -13,7 +13,10 @@ fn forbidden_path(path: &str) -> bool {
 
 fn forbidden_workflow_line(line: &str) -> bool {
     let l = line.trim().to_ascii_lowercase();
-    if l.starts_with('#') { return false; }
+    // Descriptive workflow step names are not executable Python invocations.
+    if l.starts_with('#') || l.starts_with("name:") || l.starts_with("- name:") {
+        return false;
+    }
     ["actions/setup-python@", "python -m ", "python3 -m ", "python -c ", "python3 -c ",
      "python ", "python3 ", "pip install", "pip3 install", "uv run ",
      "pytest ", "poetry run "].iter().any(|s| l.contains(s))
