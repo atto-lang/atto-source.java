@@ -5375,18 +5375,32 @@ public final class OresEvalRootNode extends RootNode {
                     return new OresObject(object.owner, object.klass, fields);
                 }
                 if (value instanceof ReadonlyRecordValue readonly) {
-                    LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+                    ActorNativeArena arena = ActorRuntime.currentNativeArena();
+                    Map<String, Object> fields = arena == null
+                            ? new LinkedHashMap<>()
+                            : arena.fields(
+                                    readonly.keySet().stream().toList(),
+                                    UNINITIALIZED_FIELD);
                     for (Map.Entry<String, Object> entry : readonly.entrySet()) {
                         fields.put(entry.getKey(), detachAsyncValue(entry.getValue(), visiting));
                     }
-                    return new ReadonlyRecordValue(fields);
+                    return fields instanceof ActorNativeArena.NativeValue
+                            ? new NativeReadonlyRecordValue(fields)
+                            : new ReadonlyRecordValue(fields);
                 }
                 if (value instanceof MutableStructValue mutableStruct) {
-                    LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+                    ActorNativeArena arena = ActorRuntime.currentNativeArena();
+                    Map<String, Object> fields = arena == null
+                            ? new LinkedHashMap<>()
+                            : arena.fields(
+                                    mutableStruct.keySet().stream().toList(),
+                                    UNINITIALIZED_FIELD);
                     for (Map.Entry<String, Object> entry : mutableStruct.entrySet()) {
                         fields.put(entry.getKey(), detachAsyncValue(entry.getValue(), visiting));
                     }
-                    return new MutableStructValue(fields);
+                    return fields instanceof ActorNativeArena.NativeValue
+                            ? new NativeMutableStructValue(fields)
+                            : new MutableStructValue(fields);
                 }
                 if (value instanceof OptionValue option) {
                     return option.present()
