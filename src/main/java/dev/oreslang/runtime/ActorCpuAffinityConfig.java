@@ -46,6 +46,30 @@ final class ActorCpuAffinityConfig {
         return cpus[index];
     }
 
+    /**
+     * Hard affinity requires one distinct configured logical CPU for every
+     * dedicated actor carrier across PRIVATE, SHARED and UNTRUSTED domains.
+     * Wrapping lane offsets onto an already-pinned CPU would create guaranteed
+     * run-queue contention while pretending to provide hard placement.
+     */
+    static void requireDistinctHardCpuCapacity(
+            int privateWorkers, int sharedWorkers) {
+        if (privateWorkers < 1 || sharedWorkers < 1) {
+            throw new IllegalArgumentException("actor worker counts must be positive");
+        }
+        if (!mode().equals("cpu")) return;
+        int[] cpus = configuredCpus();
+        long required = Math.addExact(
+                Math.multiplyExact((long) privateWorkers, 2L),
+                (long) sharedWorkers);
+        if (required > cpus.length) {
+            throw new IllegalArgumentException(
+                    "hard CPU affinity requires " + required
+                            + " distinct configured CPUs for PRIVATE+SHARED+UNTRUSTED carriers; got "
+                            + cpus.length);
+        }
+    }
+
     static int budgetCpuCount(int availableLogicalCpus) {
         if (availableLogicalCpus < 1) throw new IllegalArgumentException("available CPUs must be positive");
         int[] hard = configuredCpus();
