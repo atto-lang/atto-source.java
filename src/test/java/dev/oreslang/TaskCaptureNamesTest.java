@@ -53,6 +53,42 @@ final class TaskCaptureNamesTest {
     }
 
     @Test
+    void lexicalLocalsAndLambdaParametersAreNotParentCaptures() {
+        Ast.BindingStmt local = new Ast.BindingStmt(
+                Ast.BindingKind.CONST, null, "value",
+                new Ast.LiteralExpr(41L));
+        Ast.LambdaExpr lambda = new Ast.LambdaExpr(
+                List.of(new Ast.Param(Ast.TypeRef.simple("int"), "argument")),
+                new Ast.NameExpr("argument"), null);
+        assertEquals(Set.of(), TaskCaptureNames.referencedIn(List.of(
+                local,
+                new Ast.ExprStmt(new Ast.NameExpr("value")),
+                new Ast.ExprStmt(lambda))));
+    }
+
+    @Test
+    void nestedTaskCanReadOuterTaskLocalWithoutCapturingCallerSlot() {
+        Ast.BindingStmt local = new Ast.BindingStmt(
+                Ast.BindingKind.CONST, null, "local",
+                new Ast.LiteralExpr(41L));
+        Ast.TaskExpr nested = new Ast.TaskExpr(
+                Ast.ExecutionDomain.CPU,
+                List.of(new Ast.ReturnStmt(new Ast.NameExpr("local"))));
+        assertEquals(Set.of(), TaskCaptureNames.referencedIn(List.of(
+                local, new Ast.ExprStmt(nested))));
+    }
+
+    @Test
+    void referenceBeforeLocalDeclarationIsConservativelyCaptured() {
+        assertEquals(Set.of("possibleOuter"), TaskCaptureNames.referencedIn(
+                List.of(
+                        new Ast.ExprStmt(new Ast.NameExpr("possibleOuter")),
+                        new Ast.BindingStmt(Ast.BindingKind.CONST,
+                                null, "possibleOuter", new Ast.LiteralExpr(42L)),
+                        new Ast.ExprStmt(new Ast.NameExpr("possibleOuter")))));
+    }
+
+    @Test
     void nestedTaskNameInventoryDoesNotRequireStartingTheChild() {
         // A capture inventory cannot run task code, schedule work, or await.
         Ast.TaskExpr nested = new Ast.TaskExpr(Ast.ExecutionDomain.GPU,
