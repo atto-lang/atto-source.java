@@ -23,6 +23,7 @@ import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
 import dev.oreslang.runtime.Awaitable;
 import dev.oreslang.runtime.OresScheduler;
+import dev.oreslang.runtime.TaskScope;
 import dev.oreslang.runtime.SourceCooperationQuantum;
 import dev.oreslang.runtime.OresFutures;
 import dev.oreslang.runtime.SharedCodeImageStore;
@@ -1756,6 +1757,10 @@ public final class OresEvalRootNode extends RootNode {
                 return block.body().stream().anyMatch(
                         nested -> statementContainsPotentialSuspension(nested, seen));
             }
+            if (stmt instanceof Ast.TaskScopeStmt) {
+                // Scope exit always waits for physical child quiescence.
+                return true;
+            }
             if (stmt instanceof Ast.IfStmt conditional) {
                 return conditional.branches().stream().anyMatch(
                                 branch ->
@@ -2026,6 +2031,8 @@ public final class OresEvalRootNode extends RootNode {
                     || stmt instanceof Ast.ForOfDestructureStmt) return true;
             if (stmt instanceof Ast.BlockStmt block)
                 return block.body().stream().anyMatch(this::containsSourceLoop);
+            if (stmt instanceof Ast.TaskScopeStmt scope)
+                return scope.body().stream().anyMatch(this::containsSourceLoop);
             if (stmt instanceof Ast.IfStmt conditional)
                 return conditional.branches().stream().anyMatch(
                         branch -> branch.body().stream().anyMatch(this::containsSourceLoop))
@@ -5818,6 +5825,11 @@ public final class OresEvalRootNode extends RootNode {
                         env,
                         inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
                 return;
+            }
+            if (stmt instanceof Ast.TaskScopeStmt) {
+                throw new IllegalStateException(
+                        "structured Task scope reached synchronous source execution; "
+                                + "suspension scan/lowering invariant violated");
             }
             if (stmt instanceof Ast.BreakStmt) throw new BreakSignal();
             if (stmt instanceof Ast.ContinueStmt) throw new ContinueSignal();
