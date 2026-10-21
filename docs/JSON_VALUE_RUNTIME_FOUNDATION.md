@@ -54,6 +54,11 @@ perform validation and traversal in one guarded operation or traverse a
 validated immutable snapshot. Guest callbacks are forbidden while the guard is
 held.
 
+All JSON-domain object mutations—including `put`, `putAll`, `take`,
+`remove`, and `clear`—use the same global-guard-before-Map-monitor order.
+Only edge creation needs cycle admission, but removals must also participate so
+a guarded encoder/freeze/transport traversal observes one stable root graph.
+
 The graph lock is private to `OresKeyedMap`; it is not published through the
 JSON value API or host interop. Non-JSON Map mutations retain the existing
 per-instance synchronization and do not use this lock.
