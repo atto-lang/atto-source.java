@@ -1005,9 +1005,11 @@ public final class Parser {
         rejectCallableStructuralAnnotation(annotations, "module bindings");
         Ast.BindingKind kind = parseBindingKind();
         boolean mutableReferent = parseReferentMutability(kind);
+        boolean fncBinding = match(FNC);
         Ast.TypeRef type = null;
         String name;
-        if (check(IDENT) && checkNext(EQUAL)) name = advance().lexeme();
+        if (fncBinding) name = consume(IDENT, "expected fnc binding name").lexeme();
+        else if (check(IDENT) && checkNext(EQUAL)) name = advance().lexeme();
         else {
             type = parseTypeRef();
             name = consume(IDENT, "expected binding name").lexeme();
@@ -1015,6 +1017,9 @@ public final class Parser {
         if (type != null) type = applyTypeMetadataAnnotations(type, annotations, false);
         consume(EQUAL, "module bindings require an initializer");
         Ast.Expr initializer = parseExpression();
+        if (fncBinding && !(initializer instanceof Ast.LambdaExpr)) {
+            throw error(previous(), "const fnc binding requires a lambda initializer");
+        }
         consumeExpressionStatementTerminator(initializer, "module binding should end with ';'");
         return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer, mutableReferent);
     }
@@ -2429,9 +2434,12 @@ public final class Parser {
     private Ast.BindingStmt parseBindingStatement(List<Ast.Annotation> annotations) {
         Ast.BindingKind kind = parseBindingKind();
         boolean mutableReferent = parseReferentMutability(kind);
+        boolean fncBinding = match(FNC);
         Ast.TypeRef type = null;
         String name;
-        if (check(IDENT) && checkNext(COLON)) {
+        if (fncBinding) {
+            name = consume(IDENT, "expected fnc binding name").lexeme();
+        } else if (check(IDENT) && checkNext(COLON)) {
             name = advance().lexeme();
             consume(COLON, "expected ':' after binding name");
             type = parseTypeRef();
@@ -2480,6 +2488,9 @@ public final class Parser {
             }
         } else {
             initializer = parseExpression();
+        }
+        if (fncBinding && !(initializer instanceof Ast.LambdaExpr)) {
+            throw error(previous(), "const fnc binding requires a lambda initializer");
         }
         consumeExpressionStatementTerminator(initializer, "binding should end with ';'");
         return new Ast.BindingStmt(kind, type, name, initializer, mutableReferent, inferredTypeName);
