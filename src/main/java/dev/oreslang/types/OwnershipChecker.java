@@ -1987,7 +1987,9 @@ public final class OwnershipChecker {
         Ast.TypeRef valueType = receiver.arguments().get(1);
         switch (member.member()) {
             case "put" -> {
-                if (arguments.size() != 2) return null;
+                if (arguments.size() != 2) {
+                    throw error("Map.put expects 2 arguments, got " + arguments.size());
+                }
                 checkExpr(member.receiver(), scope, false);
                 checkExpr(arguments.get(0), scope, false);
                 ValueInfo value =
@@ -2000,7 +2002,9 @@ public final class OwnershipChecker {
                 return new ValueInfo(result, kindOfType(result), null);
             }
             case "take" -> {
-                if (arguments.size() != 1) return null;
+                if (arguments.size() != 1) {
+                    throw error("Map.take expects 1 argument, got " + arguments.size());
+                }
                 checkExpr(member.receiver(), scope, false);
                 checkExpr(arguments.getFirst(), scope, false);
                 Ast.TypeRef result =
@@ -2008,7 +2012,9 @@ public final class OwnershipChecker {
                 return new ValueInfo(result, kindOfType(result), null);
             }
             case "remove" -> {
-                if (arguments.size() != 1) return null;
+                if (arguments.size() != 1) {
+                    throw error("Map.remove expects 1 argument, got " + arguments.size());
+                }
                 checkExpr(member.receiver(), scope, false);
                 checkExpr(arguments.getFirst(), scope, false);
                 return new ValueInfo(
@@ -2098,11 +2104,20 @@ public final class OwnershipChecker {
         VarState sourceRoot = ownershipRoot(sourceState);
         VarState mapRoot = ownershipRoot(mapState);
         if (sourceRoot == mapRoot
+                || sourceState != sourceRoot
+                || mapState != mapRoot
+                || sourceState.aliasSource != null
+                || sourceState.borrowSource != null
+                || mapState.aliasSource != null
+                || mapState.borrowSource != null
                 || sourceRoot.kind != ValueKind.MOVE_ONLY
                 || sourceRoot.origin != Origin.LOCAL
+                || mapRoot.origin != Origin.LOCAL
                 || !sourceRoot.aggregateSources.isEmpty()
+                || !mapRoot.aggregateSources.isEmpty()
                 || !sourceRoot.type.equals(mapValueType)
-                || !tryEntry.containsKey(sourceRoot)) {
+                || !tryEntry.containsKey(sourceRoot)
+                || !tryEntry.containsKey(mapRoot)) {
             return null;
         }
         return new RecoverableOwnedMapMove(value, sourceRoot);
