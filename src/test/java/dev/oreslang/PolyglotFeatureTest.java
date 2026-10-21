@@ -13,25 +13,24 @@ final class PolyglotFeatureTest {
     @Test
     void executesNamespacesCollectionsAssignmentAndInheritedMethods() throws Exception {
         String program = """
-
                 define module math
-                  pub fnc add(int a, int b): int { return a + b; }
+                  pub fnc add(int a, int b) => int { return a + b; }
                 end
 
                 define module model
-                  define class A as
-                    pub value(): int { return 7; }
+                  define class A
+                    pub value() => int { return 7; }
                   end
-                  define class B extends A as
+                  define class B extends A
                   end
                 end
 
                 define module app
-                  pub fnc main(): void {
+                  pub fnc main() => void {
                     let answer = math.add(1, 2);
                     answer = answer + 4;
                     val values = arr[answer, 9];
-                    const person = infer struct{name: "ores"};
+                    val person = obj{name: "ores"};
                     val inherited = new B();
                     stdio.println(values[0]);
                     stdio.println(person.name);
@@ -57,23 +56,33 @@ final class PolyglotFeatureTest {
         assertTrue(text.contains("7"));
         assertTrue(text.contains("ores"));
     }
-
-@Test
-    void executesRepeatedUnderscoreDestructureDiscards() throws Exception {
+    @Test
+    void executesStructMethodsAndValueEquality() throws Exception {
         String program = """
                 define module app
-                  pub fnc main(): void {
-                    [const foo, _, let bar] = (1, 200, 3);
-                    [const z, _, let y] = (4, 500, 6);
-                    [_, _, const tail] = (700, 800, 9);
-                    stdio.println(foo + bar + z + y + tail);
+                  struct Point {
+                    int x;
+                    int y;
+
+                    pub sum() => int {
+                      return self.x + self.y;
+                    }
+                  }
+
+                  pub fnc main() => void {
+                    val a = Point { x = 2, y = 3 };
+                    val b = Point { x = 2, y = 3 };
+                    val c = Point { x = 2, y = 4 };
+                    stdio.println(a == b);
+                    stdio.println(a == c);
+                    stdio.println(a.sum());
                     return;
                   }
                 end
                 """;
 
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        Source source = Source.newBuilder(OresLanguage.ID, program, "destructure-discard.ores")
+        Source source = Source.newBuilder(OresLanguage.ID, program, "structs.ores")
                 .mimeType(OresLanguage.MIME_TYPE)
                 .build();
 
@@ -84,7 +93,9 @@ final class PolyglotFeatureTest {
             context.eval(source);
         }
 
-        assertTrue(output.toString(StandardCharsets.UTF_8).contains("23"));
+        String text = output.toString(StandardCharsets.UTF_8);
+        assertTrue(text.contains("true"));
+        assertTrue(text.contains("false"));
+        assertTrue(text.contains("5"));
     }
-
 }
