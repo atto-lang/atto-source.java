@@ -302,6 +302,7 @@ public final class Parser {
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
         Ast.ActorKind actorKind = intrinsicActorKind(parents);
+        List<Ast.TypeRef> actorProtocolTypes = intrinsicActorProtocolTypes(parents);
 
         if (actorKind != Ast.ActorKind.NONE) {
             if (isAbstract) throw error(previous(), "actor classes cannot be abstract");
@@ -348,8 +349,11 @@ public final class Parser {
             methods.add(method);
         }
         consume(END, "expected 'end' to close class " + name);
+        if (actorKind != Ast.ActorKind.NONE) {
+            validateActorReceiveContract(name, methods, parents, actorProtocolTypes);
+        }
         return new Ast.ClassDecl(
-                name, isAbstract, actorKind, generics, parents, interfaces, fields, methods);
+                name, isAbstract, actorKind, generics, parents, interfaces, fields, methods, actorProtocolTypes);
     }
 
     private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind) {
@@ -360,6 +364,7 @@ public final class Parser {
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
 
         Ast.ActorKind inheritedMarker = intrinsicActorKind(parents);
+        List<Ast.TypeRef> actorProtocolTypes = intrinsicActorProtocolTypes(parents);
 
         if (inheritedMarker != Ast.ActorKind.NONE && inheritedMarker != actorKind) {
             throw error(previous(), "actor base marker conflicts with the actor declaration's execution domain");
@@ -405,8 +410,9 @@ public final class Parser {
         consume(terminator, braceStyle
                 ? "expected '}' to close actor " + name
                 : "expected 'end' to close actor " + name);
+        validateActorReceiveContract(name, methods, parents, actorProtocolTypes);
         return new Ast.ClassDecl(
-                name, false, actorKind, generics, parents, interfaces, fields, methods);
+                name, false, actorKind, generics, parents, interfaces, fields, methods, actorProtocolTypes);
     }
 
     private Ast.ActorKind intrinsicActorKind(List<Ast.TypeRef> parents) {
@@ -428,12 +434,31 @@ public final class Parser {
         return result;
     }
 
+    private List<Ast.TypeRef> intrinsicActorProtocolTypes(List<Ast.TypeRef> parents) {
+        List<Ast.TypeRef> protocol = List.of();
+        for (Ast.TypeRef parent : parents) {
+            if (!isIntrinsicActorBase(parent)) continue;
+            validateIntrinsicActorBaseArguments(parent);
+            if (!parent.arguments().isEmpty()) {
+                if (!protocol.isEmpty()) {
+                    throw error(previous(),
+                            "an actor class may declare only one Actor<Message, Reply, Error> contract");
+                }
+                protocol = parent.arguments();
+            }
+        }
+        return protocol;
+    }
+
     private void validateIntrinsicActorBaseArguments(Ast.TypeRef parent) {
-        if (parent.inferArguments() || !parent.arguments().isEmpty()) {
+        if (parent.inferArguments()) {
+            throw error(previous(),
+                    parent.name() + " does not support inferred <> protocol arguments");
+        }
+        if (!parent.arguments().isEmpty() && parent.arguments().size() != 3) {
             throw error(previous(),
                     parent.name()
-                            + " is a compiler-intrinsic execution-domain base and does not take protocol type arguments; "
-                            + "declare the actor protocol with public methods and/or an interface");
+                            + " accepts either no type arguments or exactly <Message, Reply, Error>");
         }
     }
 
@@ -472,21 +497,65 @@ public final class Parser {
         }
 
         if (method.visibility() != Ast.Visibility.PUBLIC) return;
-
-        // Public actor methods are the typed source-level protocol. The
-        // compiler/runtime lowers all of them onto one hidden mailbox
-        // dispatcher; no user-visible method name is privileged.
-        if (!method.genericParameters().isEmpty()) {
+        if (!method.name().equals("receive")) {
             throw error(previous(),
-                    "public actor protocol methods cannot declare method generic parameters");
+                    "actor public surface is mailbox-only; only receive(message): void may be public");
+        }
+        if (!method.genericParameters().isEmpty()) {
+            throw error(previous(), "actor receive method cannot declare method generic parameters");
         }
         if (method.explicitReceiverType() != null) {
-            throw error(previous(),
-                    "public actor protocol methods use the implicit self receiver");
+            throw error(previous(), "actor receive method uses the implicit self receiver");
         }
-        if (method.parameters().stream().anyMatch(Ast.Param::mutable)) {
+        if (method.parameters().size() != 1) {
+            throw error(previous(), "actor receive method must accept exactly one message parameter");
+        }
+        if (method.parameters().getFirst().mutable()) {
             throw error(previous(),
-                    "public actor protocol parameters cannot be 'mut'; mutable authority cannot cross the actor mailbox boundary");
+                    "actor receive message cannot be 'mut'; mutable authority cannot cross the mailbox boundary");
+        }
+        if (!sameType(method.returnType(), Ast.TypeRef.simple("void"))) {
+            throw error(previous(),
+                    "actor receive method returns void; replies/errors use explicit response capabilities");
+        }
+    }
+
+    private void validateActorReceiveContract(
+            String actorName,
+            List<Ast.MethodDecl> methods,
+            List<Ast.TypeRef> nonIntrinsicParents,
+            List<Ast.TypeRef> actorProtocolTypes) {
+        List<Ast.MethodDecl> receives = methods.stream()
+                .filter(method -> !method.isStatic()
+                        && method.visibility() == Ast.Visibility.PUBLIC
+                        && method.name().equals("receive"))
+                .toList();
+        if (receives.size() > 1) {
+            throw error(previous(),
+                    "actor '" + actorName + "' may declare only one public receive(message): void ingress");
+        }
+        long otherPublic = methods.stream()
+                .filter(method -> !method.isStatic()
+                        && method.visibility() == Ast.Visibility.PUBLIC
+                        && !method.name().equals("receive")
+                        && !method.name().equals("constructor"))
+                .count();
+        if (otherPublic != 0) {
+            throw error(previous(),
+                    "actor '" + actorName + "' may expose only receive(message): void");
+        }
+        if (receives.isEmpty()) {
+            if (nonIntrinsicParents.isEmpty()) {
+                throw error(previous(),
+                        "actor '" + actorName + "' must declare one public receive(message): void ingress");
+            }
+            return;
+        }
+        if (actorProtocolTypes.size() == 3
+                && !sameType(receives.getFirst().parameters().getFirst().type(), actorProtocolTypes.getFirst())) {
+            throw error(previous(),
+                    "actor '" + actorName
+                            + "' receive message type must match Actor<Message, Reply, Error>'s Message type");
         }
     }
 

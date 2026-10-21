@@ -270,24 +270,22 @@ public final class OresEvalRootNode extends RootNode {
                     .map(context.actors()::prepareSourceSharedActorInput)
                     .toList();
 
-            return context.actors().spawnSourceSharedProtocolActor(actorContext -> {
+            return context.actors().spawnSourceSharedActor(actorContext -> {
                 OresObject actor = instantiateActorState(klass, prepared);
-                return (methodName, arguments, turnContext) -> {
-                    Ast.MethodDecl endpoint = findMethod(
-                            klass,
-                            methodName,
-                            arguments.size(),
-                            new LinkedHashSet<>());
-                    if (endpoint == null
-                            || endpoint.isStatic()
-                            || endpoint.visibility() != Ast.Visibility.PUBLIC
-                            || endpoint.name().equals("constructor")) {
-                        throw new IllegalArgumentException(
-                                "actor class '" + klass.name()
-                                        + "' has no public protocol method '"
-                                        + methodName + "' with arity " + arguments.size());
-                    }
-                    return callMethod(actor, endpoint, arguments);
+                Ast.MethodDecl receive = findMethod(
+                        klass,
+                        "receive",
+                        1,
+                        new LinkedHashSet<>());
+                if (receive == null
+                        || receive.isStatic()
+                        || receive.visibility() != Ast.Visibility.PUBLIC) {
+                    throw new IllegalArgumentException(
+                            "actor class '" + klass.name()
+                                    + "' has no effective public receive(message) ingress");
+                }
+                return (message, turnContext) -> {
+                    callMethod(actor, receive, List.of(message));
                 };
             });
         }
@@ -574,20 +572,30 @@ public final class OresEvalRootNode extends RootNode {
                         return klass.owner().invokeStaticFunction(klass.klass(), methodCall.member(), args);
                     }
                     if (receiver instanceof ActorRuntime.ActorRef<?> ref) {
+                        List<Object> args = call.arguments().stream().map(arg -> eval(arg, env)).toList();
                         return switch (methodCall.member()) {
-                            case "id" -> throw new IllegalArgumentException(
-                                    "ActorRef.id is a value, not a callable");
+                            case "send" -> {
+                                if (args.size() != 1) {
+                                    throw new IllegalArgumentException(
+                                            "ActorRef.send expects exactly one message");
+                                }
+                                @SuppressWarnings("unchecked")
+                                ActorRuntime.ActorRef<Object> typed =
+                                        (ActorRuntime.ActorRef<Object>) ref;
+                                typed.send(args.getFirst());
+                                yield null;
+                            }
                             case "is_alive" -> {
-                                requireZero(args, "ActorRef.is_alive");
+                                if (!args.isEmpty()) {
+                                    throw new IllegalArgumentException(
+                                            "ActorRef.is_alive expects no arguments");
+                                }
                                 yield ref.isAlive();
                             }
-                            case "send", "receive", "mailbox" -> throw new IllegalArgumentException(
-                                    "raw ActorRef mailbox operations are runtime-private; "
-                                            + "invoke a declared typed actor protocol method instead");
-                            default -> context.actors().invokeSourceProtocol(
-                                    ref,
-                                    methodCall.member(),
-                                    args);
+                            case "receive", "mailbox" -> throw new IllegalArgumentException(
+                                    "actor receive/mailbox is runtime-owned; use ActorRef.send(message)");
+                            default -> throw new IllegalArgumentException(
+                                    "unknown ActorRef operation '" + methodCall.member() + "'");
                         };
                     }
                     Object callee = member(receiver, methodCall.member());
@@ -1623,17 +1631,8 @@ public final class OresEvalRootNode extends RootNode {
                 return map.get(name);
             }
             if (value instanceof OresObject object) {
-                if (!object.fields.containsKey(name)) {
-                    throw new IllegalArgumentException(
-                            "object destructure missing field " + name);
-                }
-                Object field = object.fields.get(name);
-                if (field == UninitializedActorField.INSTANCE) {
-                    throw new IllegalStateException(
-                            "actor/class field '" + object.klass.name() + "." + name
-                                    + "' was destructured before initialization");
-                }
-                return field;
+                if (!object.fields.containsKey(name)) throw new IllegalArgumentException("object destructure missing field " + name);
+                return object.fields.get(name);
             }
             throw new IllegalArgumentException("value is not object-destructurable");
         }

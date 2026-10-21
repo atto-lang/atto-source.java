@@ -20,9 +20,6 @@ A persistent actor is a class with an `ActorKind`:
 - `isoactor` / `extends IsoActor` -> PRIVATE
 - `untrusted actor` / `extends UntrustedActor` -> UNTRUSTED
 
-The intrinsic bases define execution/isolation domain only. They do not carry a
-second `Actor<Message, Reply, Error>` protocol.
-
 ```ores
 define actor Counter as
   let int value = 0;
@@ -31,88 +28,50 @@ define actor Counter as
     self.value = initial;
   }
 
-  private normalized(delta: int): int {
-    return delta;
-  }
-
-  pub add(delta: int): void {
-    self.value = self.value + self.normalized(delta);
+  pub receive(delta: int): void {
+    self.value = self.value + delta;
     return;
   }
 
-  pub current(): int {
+  private current(): int {
     return self.value;
   }
 end
 ```
 
-Public instance methods form the typed source protocol. Private methods are
-direct `self` calls inside the active actor turn.
+A persistent actor has exactly one effective public
+`receive(Message): void` ingress. Private methods are direct `self` calls
+inside the actor turn. The runtime owns the permanent mailbox loop.
 
-There is still exactly one runtime mailbox. The compiler lowers the complete
-public method set into one hidden tagged request/reply dispatcher. A source
-method named `receive` has no special privilege.
+`Actor<Message, Reply, Error>` may carry explicit hot-load/wire ABI metadata.
+`Message` is the mailbox input; `Reply` and `Error` describe explicit
+response-channel payloads and never become public actor methods.
 
-Conceptually:
+## 2. ActorRef is an enqueue capability, not RPC
 
-```text
-Counter.add(int): void
-Counter.current(): int
-
-      lowers to
-
-hidden CounterProtocol =
-    Add(int, Reply<void>)
-  | Current(Reply<int>)
-```
-
-## 2. ActorRef is typed protocol authority
-
-External code receives `ActorRef<Counter>` or an interface-narrowed
+External code receives `ActorRef<Counter>` or a compatible receive-only
 `ActorRef<CounterAPI>`.
 
 ```ores
 val counter = spawn Counter(40);
-
-await counter.add(2);
-val value = await counter.current();
+counter.send(2);
 ```
 
-The source projection is:
-
-```text
-Counter.add(int): void
-ActorRef<Counter>.add(int): Future<void>
-
-Counter.current(): int
-ActorRef<Counter>.current(): Future<int>
-```
-
-Raw `send`, `receive`, and mailbox access are runtime-private actor-class
-operations. Guest code invokes declared typed protocol methods only.
-
-Protocol methods are not first-class bound callback objects. Use an explicit
-closure when callback behavior is desired so capture/lifetime/suspension remain
-visible to the compiler.
+`send` performs bounded mailbox admission and is type-checked against the
+effective receive parameter. It does not expose actor state, call `receive`
+directly, or synthesize arbitrary method-name requests.
 
 ## 3. Inheritance and protocol interfaces
 
-Actor inheritance preserves execution/isolation domain and protocol visibility.
-A child may inherit its entire public protocol and may add endpoints, but it
-cannot narrow an inherited public endpoint to private.
+Actor inheritance preserves execution/isolation domain and exactly one effective
+public receive ingress. A child may inherit `receive`, or override it
+compatibly; it may not add another public endpoint or narrow inherited public
+`receive` to private.
 
-For abstraction and hot loading, an actor may implement a multi-method
-interface:
-
-```ores
-define interface CounterAPI
-  fnc add(delta: int): void;
-  fnc current(): int;
-end
-```
-
-`ActorRef<Counter>` may narrow to a compatible `ActorRef<CounterAPI>`. The
-interface is an ABI boundary, not a way to expose the mutable actor object.
+For abstraction and hot loading, an actor may implement an interface only when
+the interface's effective public shape is exactly `receive(Message): void`.
+`ActorRef<Concrete>` may narrow to a compatible receive-only
+`ActorRef<Interface>`.
 
 ## 4. Boundary rules
 
@@ -176,7 +135,7 @@ descriptor/factory that:
 5. publishes READY only after initialization succeeds.
 
 The SHARED reference evaluator uses the privileged
-`spawnSourceSharedProtocolActor` lowering path. PRIVATE and UNTRUSTED source
+`spawnSourceSharedActor` lowering path. PRIVATE and UNTRUSTED source
 actor classes require their isolation-aware OresVM lowering and must not be
 silently routed through the shared evaluator.
 
@@ -354,7 +313,7 @@ pinned to their birth generation until drained/terminated.
 Compiler/type system:
 
 - actor classes are persistent; actor fnc/routine callables remain one-shot;
-- at least one effective public actor protocol endpoint exists;
+- exactly one effective public `receive(Message): void` exists;
 - inherited endpoints count and cannot be narrowed to private;
 - actors may implement multi-method protocol interfaces;
 - `ActorRef<Concrete>` may narrow to a compatible `ActorRef<Interface>`;
