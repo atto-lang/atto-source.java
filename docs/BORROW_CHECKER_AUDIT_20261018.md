@@ -9,7 +9,7 @@ an argument to mutably borrow or move its containing owner; a projected exclusiv
 receiver allowed an overlapping mutable borrow. For example:
 
 ```ores
-return holder.item.read(mutate(rt borrow mut holder));
+return holder.item.read(mutate(rt mut borrow holder));
 ```
 
 The receiver now acquires a shared/exclusive root loan before checking arguments
@@ -32,7 +32,7 @@ LLVM compiles and executes native binaries. Rejected programs must produce
 borrow diagnostics, not merely fail parsing. Keep the two copies byte-identical.
 
 Canonical `rt borrow` now also unwraps an existing borrow type when reborrowing,
-matching `rt borrow mut` and retaining the same root provenance. Previously the
+matching `rt mut borrow` and retaining the same root provenance. Previously the
 shared spelling produced `Borrow<Borrow<T>>` and incorrectly rejected valid
 forwarding calls. Retained reborrow tests cover execution and move/escape rejection.
 
@@ -53,7 +53,7 @@ only to their recorded source commits, not automatically to this head.
 ## Returned-loan receiver follow-up
 
 A second negative control reproduced an unsound admission through a returned
-borrow: `identity(rt borrow holder.item).read(mutate(rt borrow mut holder))`.
+borrow: `identity(rt borrow holder.item).read(mutate(rt mut borrow holder))`.
 Call-return loans have no call-site root/lifetime summary today. Their use as
 implicit receivers previously bypassed the explicit-borrow argument gate.
 Method, field and index receivers now reject a borrow with unknown provenance;
