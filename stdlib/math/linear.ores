@@ -1,0 +1,32 @@
+// Oreslang-native high-level dense linear-algebra helpers.
+//
+// Matrix storage and primitive kernels are VM intrinsics; composition stays in
+// Oreslang source so Java/native backends are accelerators, not semantic owners.
+
+pub fnc matmul(Matrix<float> left, Matrix<float> right) => Matrix<float> {
+  return left @ right;
+}
+
+pub fnc cmatmul(Matrix<complex> left, Matrix<complex> right) => Matrix<complex> {
+  return left @ right;
+}
+
+pub fnc solve(Matrix<float> a, Matrix<float> rhs) => Matrix<float> {
+  return a.solve(rhs);
+}
+
+pub fnc csolve(Matrix<complex> a, Matrix<complex> rhs) => Matrix<complex> {
+  return a.solve(rhs);
+}
+
+pub fnc inverse(Matrix<float> a) => Matrix<float> {
+  return a.inverse();
+}
+
+pub fnc cinverse(Matrix<complex> a) => Matrix<complex> {
+  return a.inverse();
+}
+
+pub fnc hermitian(Matrix<complex> a) => Matrix<complex> {
+  return a.hermitian();
+}
