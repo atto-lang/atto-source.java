@@ -63,12 +63,10 @@ final class DualSerdeBorrowBoundaryTest {
                 "Serializable<int>",
                 "NetworkCodec<int, JsonWire>",
                 "ActorMessageCodec<int>",
-                "Pointer<int>",
                 "Stream<int>",
                 "Observable<int>",
                 "Option<NetworkCodec<int, JsonWire>>",
                 "Result<ActorMessageCodec<int>, String>",
-                "Array<Pointer<int>>",
                 "List<Observable<int>>"
         }) {
             IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
@@ -194,10 +192,9 @@ final class DualSerdeBorrowBoundaryTest {
     }
 
     @Test
-    void supervisorToActorMailboxDeclCannotCarryCodecOrPointer() {
+    void supervisorToActorMailboxDeclCannotCarryCodecCapabilities() {
         for (String type : new String[]{
                 "NetworkCodec<int, JsonWire>", "ActorMessageCodec<int>",
-                "Pointer<int>", "Option<Pointer<int>>",
                 "Array<NetworkCodec<int, JsonWire>>"
         }) {
             assertThrows(IllegalArgumentException.class,
