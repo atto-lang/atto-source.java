@@ -2761,10 +2761,37 @@ public final class OwnershipChecker {
                 loop.add(s.bindingName());
                 scanStatements(s.body(), loop, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.ForStmt s) {
-                if (s.initializer() instanceof Ast.ExprStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
-                if (s.condition() != null) scanExpr(s.condition(), blockLocals, outer, recursiveBinding, captures, false);
-                if (s.update() != null) scanExpr(s.update(), blockLocals, outer, recursiveBinding, captures, false);
-                scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
+                // A classic for-loop initializer may declare a loop-local
+                // binding. Its initializer executes in the enclosing scope and
+                // can therefore capture/move an outer Task value, while the
+                // declared name itself shadows any outer binding for the
+                // condition, update and body.
+                Set<String> loop = new HashSet<>(blockLocals);
+                if (s.initializer() instanceof Ast.BindingStmt binding) {
+                    scanExpr(
+                            binding.initializer(),
+                            blockLocals,
+                            outer,
+                            recursiveBinding,
+                            captures,
+                            false);
+                    loop.add(binding.name());
+                } else if (s.initializer() instanceof Ast.ExprStmt e) {
+                    scanExpr(
+                            e.expression(),
+                            blockLocals,
+                            outer,
+                            recursiveBinding,
+                            captures,
+                            false);
+                }
+                if (s.condition() != null) {
+                    scanExpr(s.condition(), loop, outer, recursiveBinding, captures, false);
+                }
+                if (s.update() != null) {
+                    scanExpr(s.update(), loop, outer, recursiveBinding, captures, false);
+                }
+                scanStatements(s.body(), loop, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.DoWhileStmt s) {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
                 scanExpr(s.condition(), blockLocals, outer, recursiveBinding, captures, false);
