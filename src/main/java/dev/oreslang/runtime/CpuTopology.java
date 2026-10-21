@@ -183,6 +183,10 @@ final class CpuTopology {
             if (level > bestLevel) {
                 bestLevel = level;
                 bestId = id;
+            } else if (level == bestLevel && bestId >= 0 && id != bestId) {
+                // Multiple conflicting identities for the same highest cache
+                // level are ambiguous evidence, not a locality proof.
+                return CacheLevel.unknown();
             }
         }
         return new CacheLevel(bestId, bestLevel);
@@ -195,7 +199,12 @@ final class CpuTopology {
             for (Path node : nodes) {
                 if (examined++ >= MAX_NUMA_DIRECTORY_ENTRIES) return UNKNOWN;
                 int parsed = parseNumericSuffix(node.getFileName().toString(), "node");
-                if (parsed >= 0 && (result == UNKNOWN || parsed < result)) result = parsed;
+                if (parsed < 0) continue;
+                if (result != UNKNOWN && parsed != result) {
+                    // A logical CPU cannot prove residence in two NUMA nodes.
+                    return UNKNOWN;
+                }
+                result = parsed;
             }
             return result;
         } catch (IOException | SecurityException ignored) {
