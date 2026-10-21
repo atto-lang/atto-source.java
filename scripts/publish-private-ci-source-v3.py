@@ -587,7 +587,8 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         f"ci: exact private Oreslang tree {source_commit} tree {source_tree}\n"
         f"carrier-base {contract['base_sha']} tree {base_tree}\n"
         f"connector-authorized source-repository "
-        f"{legacy.SOURCE_REPO} id {source_repo_id}"
+        f"{legacy.SOURCE_REPO} id {source_repo_id}\n"
+        f"Oreslang-CI-Receipt-SHA256: {receipt_digest}"
     )
     commit = legacy.gh_api(
         f"repos/{repository}/git/commits", method="POST",

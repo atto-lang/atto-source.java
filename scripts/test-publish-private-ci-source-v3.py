@@ -390,7 +390,13 @@ class PrivateCiV3Test(unittest.TestCase):
                 + v3.legacy.SOURCE_REPO
                 + " id "
                 + str(v3.SOURCE_REPOSITORY_ID)
+                + "\nOreslang-CI-Receipt-SHA256: "
+                + digest
             ),
+        )
+        self.assertIn(
+            "Oreslang-CI-Receipt-SHA256: " + digest,
+            commit_payload["message"].splitlines(),
         )
         refs = [
             payload["ref"]
