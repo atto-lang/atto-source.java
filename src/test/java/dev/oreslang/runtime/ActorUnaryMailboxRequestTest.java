@@ -143,6 +143,88 @@ final class ActorUnaryMailboxRequestTest {
     }
 
     @Test
+    void unansweredCallFailsAndDoesNotLeakPendingSlot() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             var timer = Executors.newSingleThreadScheduledExecutor()) {
+            var registry = new GenerationalReplyRegistry(2);
+            var caller = registry.newActorEndpoint();
+            var callee = registry.newActorEndpoint();
+            var issued = new CountDownLatch(1);
+            var future = new AtomicReference<OresFuture<String>>();
+            var worker = runtime.<String>spawn(() -> (message, ctx) -> {
+                assertEquals("unanswered", message);
+                // Return without replying: an unanswered call must fail.
+            });
+            var client = runtime.<String>spawn(() -> (message, ctx) -> {
+                future.set(ActorReplySchedulerBridge.requestCurrentActor(
+                        runtime, registry, caller, callee, worker, "unanswered",
+                        String.class, Duration.ofSeconds(3), timer));
+                issued.countDown();
+            });
+            client.send("begin");
+            assertTrue(issued.await(3, TimeUnit.SECONDS));
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> future.get().get(3, TimeUnit.SECONDS));
+            assertEquals(0, registry.pendingCount());
+            registry.close();
+        }
+    }
+
+    @Test
+    void failedMailboxAdmissionFailsReservedFutureAndReclaimsSlot() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             var timer = Executors.newSingleThreadScheduledExecutor()) {
+            var registry = new GenerationalReplyRegistry(2);
+            var caller = registry.newActorEndpoint();
+            var callee = registry.newActorEndpoint();
+            var issued = new CountDownLatch(1);
+            var future = new AtomicReference<OresFuture<String>>();
+            var worker = runtime.<Object>spawn(() ->
+                    (message, ctx) -> fail("invalid mutable host payload must not execute"));
+            var client = runtime.<String>spawn(() -> (message, ctx) -> {
+                future.set(ActorReplySchedulerBridge.requestCurrentActor(
+                        runtime, registry, caller, callee, worker,
+                        new StringBuilder("mutable host data"), String.class,
+                        Duration.ofSeconds(3), timer));
+                issued.countDown();
+            });
+            client.send("begin");
+            assertTrue(issued.await(3, TimeUnit.SECONDS));
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> future.get().get(3, TimeUnit.SECONDS));
+            assertEquals(0, registry.pendingCount());
+            registry.close();
+        }
+    }
+
+    @Test
+    void wrongResponseTypeCannotSettleUnarySlot() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             var timer = Executors.newSingleThreadScheduledExecutor()) {
+            var registry = new GenerationalReplyRegistry(2);
+            var caller = registry.newActorEndpoint();
+            var callee = registry.newActorEndpoint();
+            var issued = new CountDownLatch(1);
+            var future = new AtomicReference<OresFuture<String>>();
+            var worker = runtime.<String>spawn(() -> (message, ctx) ->
+                    assertThrows(IllegalArgumentException.class,
+                            () -> ctx.replyCurrentCall(42)));
+            var client = runtime.<String>spawn(() -> (message, ctx) -> {
+                future.set(ActorReplySchedulerBridge.requestCurrentActor(
+                        runtime, registry, caller, callee, worker, "wrong-type",
+                        String.class, Duration.ofSeconds(3), timer));
+                issued.countDown();
+            });
+            client.send("begin");
+            assertTrue(issued.await(3, TimeUnit.SECONDS));
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> future.get().get(3, TimeUnit.SECONDS));
+            assertEquals(0, registry.pendingCount());
+            registry.close();
+        }
+    }
+
+    @Test
     void ordinarySendHasNoForgedReplyCapability() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var received = new CountDownLatch(1);
