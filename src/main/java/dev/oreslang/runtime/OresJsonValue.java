@@ -165,6 +165,13 @@ public sealed interface OresJsonValue
         });
     }
 
+    /** Encode a dynamic JSON object Map without transferring its ownership. */
+    public static String stringify(
+            OresKeyedMap<String, OresJsonValue> fields) {
+        return stringify(new ObjectValue(
+                Objects.requireNonNull(fields, "JSON object fields")));
+    }
+
     /**
      * The Map runtime calls this while holding the JSON graph-admission lock
      * and before publishing a write.
