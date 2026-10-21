@@ -3,6 +3,8 @@ package dev.oreslang.runtime;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -141,4 +143,105 @@ final class OresTimersTest {
             assertEquals(before, OresTimers.availableGlobalTimerSlots());
         }
     }
+    @Test
+    void zeroDelayTimerStillResumesOnLaterSchedulerTurn() throws Exception {
+        try (OresTimers timers = new OresTimers();
+             OresScheduler scheduler = new OresScheduler(1)) {
+            AtomicInteger turns = new AtomicInteger();
+            AtomicReference<Long> firstDispatch = new AtomicReference<>();
+            OresFuture<Integer> done = scheduler.start(resume -> {
+                if (turns.getAndIncrement() == 0) {
+                    firstDispatch.set(OresScheduler.currentDispatchId());
+                    return OresScheduler.await(timers.afterNanos(0));
+                }
+                assertSame(scheduler, OresScheduler.current());
+                assertNotEquals(firstDispatch.get().longValue(),
+                        OresScheduler.currentDispatchId());
+                assertNull(resume.failure());
+                return OresScheduler.done(7);
+            });
+            assertEquals(7, done.get(5, TimeUnit.SECONDS));
+            assertEquals(2, turns.get());
+            assertEquals(0, timers.activeTimerCount());
+        }
+    }
+
+    @Test
+    void cancelledTimerNeverExpiresAndCanReleaseItsCapacity() throws Exception {
+        try (OresTimers timers = new OresTimers()) {
+            OresFuture<Void> pending = timers.afterNanos(TimeUnit.HOURS.toNanos(1));
+            AtomicInteger notifications = new AtomicInteger();
+            pending.whenCompleteRuntime((value, failure) -> {
+                assertInstanceOf(CancellationException.class, failure);
+                notifications.incrementAndGet();
+            });
+            assertTrue(pending.cancel(false));
+            assertFalse(pending.cancel(false));
+            assertThrows(CancellationException.class, () -> pending.get(5, TimeUnit.SECONDS));
+            assertEquals(1, notifications.get());
+            assertEquals(0, timers.activeTimerCount());
+        }
+    }
+
+    @Test
+    void ownerAdmissionIsBoundedAndRecoveredAfterCancellation() {
+        try (OresTimers timers = new OresTimers()) {
+            java.util.ArrayList<OresFuture<Void>> waiting = new java.util.ArrayList<>();
+            for (int i = 0; i < 4096; ++i) {
+                waiting.add(timers.afterNanos(TimeUnit.HOURS.toNanos(1)));
+            }
+            assertEquals(4096, timers.activeTimerCount());
+            assertThrows(RejectedExecutionException.class,
+                    () -> timers.afterNanos(TimeUnit.HOURS.toNanos(1)));
+            for (OresFuture<Void> pending : waiting) {
+                assertTrue(pending.cancel(false));
+            }
+            assertEquals(0, timers.activeTimerCount());
+            // No retained admissions after the cancelled batch.
+            assertTrue(timers.afterNanos(TimeUnit.HOURS.toNanos(1)).cancel(false));
+            assertEquals(0, timers.activeTimerCount());
+        }
+    }
+
+    @Test
+    void timerCancelRacingZeroDelayExpirySettlesOnceWithoutLeakingSlots() throws Exception {
+        final int startingPermits = OresTimers.availableGlobalTimerSlots();
+        try (OresTimers timers = new OresTimers()) {
+            for (int i = 0; i < 300; ++i) {
+                OresFuture<Void> pending = timers.afterNanos(0);
+                CountDownLatch notification = new CountDownLatch(1);
+                AtomicInteger outcomes = new AtomicInteger();
+                pending.whenCompleteRuntime((value, failure) -> {
+                    outcomes.incrementAndGet();
+                    notification.countDown();
+                });
+                Thread canceller = Thread.ofPlatform().start(() -> pending.cancel(false));
+                canceller.join();
+                assertTrue(notification.await(5, TimeUnit.SECONDS),
+                        "completion notification was lost");
+                assertTrue(pending.isDone());
+                assertEquals(1, outcomes.get(), "raced timer was delivered twice");
+            }
+            assertEquals(0, timers.activeTimerCount());
+            assertEquals(startingPermits, OresTimers.availableGlobalTimerSlots());
+        }
+    }
+
+    @Test
+    void cancellingPendingIntervalReleasesTimerAndRejectsFurtherNext() throws Exception {
+        try (OresTimers timers = new OresTimers();
+             OresTimers.Interval interval = timers.intervalNanos(
+                     TimeUnit.HOURS.toNanos(1))) {
+            OresFuture<Long> first = interval.next();
+            assertEquals(1, timers.activeTimerCount());
+            assertTrue(interval.cancel());
+            assertFalse(interval.cancel());
+            assertThrows(CancellationException.class, () -> first.get(5, TimeUnit.SECONDS));
+            assertThrows(CancellationException.class,
+                    () -> interval.next().get(5, TimeUnit.SECONDS));
+            assertEquals(0, timers.activeTimerCount());
+            assertEquals(0, timers.activeIntervalCount());
+        }
+    }
+
 }
