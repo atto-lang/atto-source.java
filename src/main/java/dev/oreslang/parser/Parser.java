@@ -491,8 +491,9 @@ public final class Parser {
         java.util.Set<String> structuralNames = structuralAnnotationNames(annotations);
         List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN, structuralNames), annotations);
         consume(RPAREN, "expected ')' after parameters");
+        boolean slimArrowReturn = check(ARROW);
         Ast.TypeRef returnType = parseReturnType(annotations);
-        List<Ast.Stmt> body = parseBlock();
+        List<Ast.Stmt> body = parseFunctionBody(slimArrowReturn, actorKind);
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
                 returnType, annotations, body, specs);
     }
@@ -859,7 +860,10 @@ public final class Parser {
                 consume(LPAREN, "expected '(' after interface function name");
                 List<Ast.Param> params = parseParametersUntil(RPAREN);
                 consume(RPAREN, "expected ')' after interface parameters");
-                Ast.TypeRef returns = match(FAT_ARROW, COLON) ? parseTypeRef() : Ast.TypeRef.simple("void");
+                boolean hasReturnType = moduleContract
+                        ? match(FAT_ARROW, COLON, ARROW)
+                        : match(FAT_ARROW, COLON);
+                Ast.TypeRef returns = hasReturnType ? parseTypeRef() : Ast.TypeRef.simple("void");
                 consumeMemberTerminator(terminator, "interface function signature should end with ';'");
                 members.add(new Ast.InterfaceFunctionDecl(memberName, callableStructural.enabled(), memberGenerics, params, returns));
                 continue;
@@ -1533,6 +1537,12 @@ public final class Parser {
             return parseFunctionTypeSignature();
         }
 
+        if (isContextualIdentifier("tuple") && checkNext(LPAREN)) {
+            advance();
+            consume(LPAREN, "expected '(' after tuple in type position");
+            return parseExplicitTupleType();
+        }
+
         if (check(LPAREN) && looksLikeFunctionType()) return parseFunctionTypeSignature();
         if (match(LPAREN)) {
             Ast.TypeRef grouped = parseTypeRef();
@@ -1590,6 +1600,15 @@ public final class Parser {
             consume(RBRACKET, "expected ']' after sequence type shape");
         }
         return new Ast.TypeRef(name, args, infer);
+    }
+
+    private Ast.TypeRef parseExplicitTupleType() {
+        List<Ast.TypeRef> elements = new ArrayList<>();
+        if (!check(RPAREN)) {
+            do elements.add(parseTypeRef()); while (match(COMMA));
+        }
+        consume(RPAREN, "expected ')' after tuple type");
+        return Ast.TypeRef.tupleType(elements);
     }
 
     private Ast.TypeRef parseMetaValue() {
@@ -1682,6 +1701,33 @@ public final class Parser {
         StringBuilder name = new StringBuilder(consume(IDENT, "expected name").lexeme());
         while (match(DOT)) name.append('.').append(consume(IDENT, "expected name after '.'").lexeme());
         return name.toString();
+    }
+
+    private List<Ast.Stmt> parseFunctionBody(
+            boolean slimArrowReturn,
+            Ast.ActorKind actorKind) {
+        if (check(LBRACE)) return parseBlock();
+        if (!slimArrowReturn) {
+            throw error(peek(),
+                    "end-delimited free/module callable bodies require an explicit '-> ReturnType'; otherwise use a braced body");
+        }
+        if (actorKind != Ast.ActorKind.NONE) {
+            throw error(peek(),
+                    "end-delimited actor callable bodies are not enabled; use a braced actor body");
+        }
+        Token headerEnd = previous();
+        boolean explicitBodySeparator =
+                (check(AS) || check(DOUBLE_COLON)) && peek().line() == headerEnd.line();
+        if (explicitBodySeparator) advance();
+        if (!explicitBodySeparator && (current == 0 || headerEnd.line() >= peek().line())) {
+            throw error(peek(),
+                    "end-delimited callable body must begin on the line after its '-> ReturnType' header, or use same-line optional 'as'/'::'");
+        }
+
+        List<Ast.Stmt> body = new ArrayList<>();
+        while (!check(END) && !check(EOF)) body.add(parseStatement());
+        consume(END, "expected 'end' to close free/module callable");
+        return body;
     }
 
     private List<Ast.Stmt> parseBlock() {
