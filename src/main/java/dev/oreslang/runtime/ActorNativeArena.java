@@ -784,6 +784,26 @@ public final class ActorNativeArena implements AutoCloseable {
         public void writeByte(int offset, byte value) {
             synchronized (ActorNativeArena.this) { requireWritable().put(offset, value); }
         }
+
+        /**
+         * Erase an entire checked native span under one arena monitor. Scratch
+         * message finalization uses this rather than per-byte monitor calls.
+         * Read borrows must have retired before scrubbing can mutate memory.
+         */
+        void clearRange(int offset, int length) {
+            synchronized (ActorNativeArena.this) {
+                ByteBuffer target = requireWritable();
+                if (offset < 0 || length < 0 || offset > capacity
+                        || length > capacity - offset) {
+                    throw new IndexOutOfBoundsException("native clear outside region");
+                }
+                int end = offset + length;
+                for (int i = offset; i < end; i++) {
+                    target.put(i, (byte) 0);
+                }
+            }
+        }
+
         void assertWritable() {
             synchronized (ActorNativeArena.this) { requireWritable(); }
         }
