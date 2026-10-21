@@ -555,118 +555,30 @@ def verified_exact_source_tree(files, source_commit):
 
 
 def publish(repository, source, branch, trusted_root, source_commit):
-    if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
-        raise Denied("invalid destination or isolated CI branch name")
-    source_commit = valid_sha(source_commit)
-    # Do not execute a checkout-provided guard before authenticated origin
-    # review. The old require_preflight() spawned bash against the unchecked
-    # workspace while the publisher could possess GitHub credentials.
-    # Read the bounded local policy as data, authenticate its exact digest
-    # against independently reviewed protected source main, and only then
-    # permit source traversal or destination publication.
-    approved_policy, approved_repository_id = checked_policy_approval(
-        trusted_root, repository
-    )
-    # Must check the GitHub origin's protected main before reading private bytes.
-    verify_protected_origin(
-        repository, approved_policy, approved_repository_id
-    )
-    # Retain the early live-private destination gate that the former shell
-    # preflight provided, but authenticate it through the data-only publisher
-    # after protected source governance has been established. Do not touch
-    # private source bytes before validating destination identity/privacy.
-    checked_repo(repository, approved_repository_id)
-    trusted = trusted_root.resolve(strict=True)
-    checked_source = source.resolve(strict=True)
-    try:
-        checked_source.relative_to(trusted)
-    except ValueError as exc:
-        raise Denied("source directory escapes the trusted checkout") from exc
-    files = collect_source(source, trusted_root)
-    expected_source_tree = verified_exact_source_tree(files, source_commit)
-    base = checked_repo(repository, approved_repository_id)
-    default = base.get("default_branch")
-    if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
-        raise Denied("destination default branch is invalid")
-    base_ref = gh_api(f"repos/{repository}/git/ref/heads/{default}")
-    base_sha = valid_sha(base_ref.get("object", {}).get("sha"))
-    base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
-    base_tree = valid_sha(base_commit.get("tree", {}).get("sha"))
-    def authorize_write():
-        if checked_policy_approval(trusted_root, repository) != (
-                approved_policy, approved_repository_id):
-            raise Denied("private CI destination approval policy changed during transfer")
-        checked_repo(repository, approved_repository_id)
+    """Legacy source export is intentionally unreachable.
 
-    elements = []
-    for rel, data, mode in files:
-        authorize_write()  # recheck approval and identity before each write
-        blob = gh_api(f"repos/{repository}/git/blobs", method="POST", payload={
-            "content": base64.b64encode(data).decode("ascii"), "encoding": "base64"
-        })
-        blob_sha = valid_sha(blob.get("sha"))
-        expected = hashlib.sha1(b"blob " + str(len(data)).encode("ascii")
-                                + bytes([0]) + data).hexdigest()
-        if blob_sha != expected:
-            raise Denied("uploaded blob digest does not match local source bytes")
-        elements.append({"path": rel, "mode": mode,
-                         "type": "blob", "sha": blob_sha})
-    # Construct the source subtree from scratch, without base_tree. Overlaying
-    # PREFIX/file onto the destination base tree retains old private files
-    # that are no longer present in this snapshot.
-    authorize_write()
-    isolated = gh_api(f"repos/{repository}/git/trees", method="POST",
-                      payload={"tree": elements})
-    isolated_sha = valid_sha(isolated.get("sha"))
-    if isolated_sha != expected_source_tree:
-        raise Denied("uploaded source tree differs from pinned Git commit")
-    # Replace the entire PREFIX subtree atomically in the new root tree.
-    # Preserve unrelated destination files and CI workflows from base_tree.
-    authorize_write()
-    new_tree = gh_api(f"repos/{repository}/git/trees", method="POST",
-                      payload={"base_tree": base_tree, "tree": [
-                          {"path": PREFIX, "mode": "040000", "type": "tree",
-                           "sha": isolated_sha}]})
-    new_tree_sha = valid_sha(new_tree.get("sha"))
-    authorize_write()
-    commit = gh_api(f"repos/{repository}/git/commits", method="POST", payload={
-        "message": "ci: source snapshot from approved private Oreslang checkout",
-        "tree": new_tree_sha, "parents": [base_sha]
-    })
-    commit_sha = valid_sha(commit.get("sha"))
-    authorize_write()
-    # Re-verify protected origin at the publication boundary, after any
-    # uploaded blobs but before attaching them to an executable CI branch.
-    verify_protected_origin(
-        repository, approved_policy, approved_repository_id
+    V3 imports this module for audited source traversal, exact-tree checks and
+    GitHub API helpers. Keeping this older write pipeline callable would bypass
+    the V3 carrier-governance, immutable destination/base, reviewed test-plan,
+    receipt/authorization and rollback-ownership controls.
+    """
+    del repository, source, branch, trusted_root, source_commit
+    raise Denied(
+        "legacy publisher is disabled; use "
+        "scripts/run-in-private-ci-destination.sh (v3)"
     )
-    # CREATE a new CI ref, never UPDATE an existing branch, tag, or main.
-    created = gh_api(f"repos/{repository}/git/refs", method="POST", payload={
-        "ref": "refs/heads/" + branch, "sha": commit_sha
-    })
-    if created.get("ref") != "refs/heads/" + branch:
-        raise Denied("GitHub did not confirm creation of requested isolated CI branch")
-    return commit_sha, len(files)
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("repository", help="approved private owner/repo")
-    p.add_argument("--source-dir", required=True, type=Path)
-    p.add_argument("--branch", required=True)
-    p.add_argument("--source-commit", required=True,
-                   help="exact source-origin 40-hex Git commit to prove")
-    args = p.parse_args(argv)
-    # Policy and code are taken from the same trusted checkout as this script.
-    root = Path(__file__).resolve().parent.parent
-    try:
-        commit, count = publish(
-            args.repository, args.source_dir, args.branch, root, args.source_commit)
-    except Denied as exc:
-        print("PRIVATE_CI_DESTINATION_REJECTED: " + str(exc), file=sys.stderr)
-        return 1
-    print(f"PRIVATE_CI_SNAPSHOT_CREATED: files={count} commit={commit}")
-    return 0
+    # Keep a stable CLI denial even when arbitrary legacy arguments are passed.
+    # Do not parse source paths or touch GitHub: this file is helper-only now.
+    del argv
+    print(
+        "PRIVATE_CI_DESTINATION_REJECTED: legacy publisher is disabled; "
+        "use scripts/run-in-private-ci-destination.sh (v3)",
+        file=sys.stderr,
+    )
+    return 1
 
 
 if __name__ == "__main__":
