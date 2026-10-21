@@ -82,7 +82,9 @@ per-instance synchronization and do not use this lock.
 ## Exactness and hostile-host behavior
 
 - integer values above 2^53 remain exact;
-- NaN and infinities are rejected;
+- binary floating-point input, including finite doubles, is rejected until an
+  exact decimal carrier is supplied; NaN and infinities are therefore rejected
+  at the same boundary;
 - numeric precision and absolute scale have runtime ceilings;
 - malformed surrogate strings are rejected before becoming JSON strings;
 - array input is copied instead of retained;
