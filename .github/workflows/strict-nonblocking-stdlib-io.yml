@@ -1,0 +1,41 @@
+name: Strict nonblocking stdlib I/O
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/AsyncNativeIo.java'
+      - 'src/main/java/dev/oreslang/runtime/NativeIo.java'
+      - 'src/main/java/dev/oreslang/runtime/NativeHttp.java'
+      - 'src/main/java/dev/oreslang/runtime/OresContext.java'
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'tools/strict-nonblocking-io-audit.py'
+      - 'docs/ASYNC_IO.md'
+      - 'docs/STRICT_NONBLOCKING_STDLIB_IO.md'
+      - '.github/workflows/strict-nonblocking-stdlib-io.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/AsyncNativeIo.java'
+      - 'src/main/java/dev/oreslang/runtime/NativeIo.java'
+      - 'src/main/java/dev/oreslang/runtime/NativeHttp.java'
+      - 'src/main/java/dev/oreslang/runtime/OresContext.java'
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'tools/strict-nonblocking-io-audit.py'
+      - 'docs/ASYNC_IO.md'
+      - 'docs/STRICT_NONBLOCKING_STDLIB_IO.md'
+      - '.github/workflows/strict-nonblocking-stdlib-io.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  strict-nonblocking-stdlib-io:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - name: Reject blocking stdlib-reachable I/O
+        run: python3 tools/strict-nonblocking-io-audit.py
