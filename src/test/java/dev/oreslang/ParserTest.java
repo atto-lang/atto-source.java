@@ -1348,6 +1348,35 @@ final class ParserTest {
                   val loan = rt borrow mut value;
                   return;
                 }
+                """,
+                """
+                pub fnc main(): void {
+                  val value = 1;
+                  val pointer = rt ref value;
+                  return;
+                }
+                """,
+                """
+                pub fnc main(): void {
+                  val value = rt deref pointer;
+                  return;
+                }
+                """,
+                """
+                pub fnc main(): void {
+                  val value = rt unref pointer;
+                  return;
+                }
+                """,
+                """
+                pub fnc main(Pointer<int> pointer): void {
+                  return;
+                }
+                """,
+                """
+                pub fnc main(RawPointer<int> pointer): void {
+                  return;
+                }
                 """
         );
         for (String source : invalid) {
