@@ -18,6 +18,7 @@ MAX_RESPONSE_BYTES = 131072
 MAX_TOKEN_LENGTH = 4096
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z", re.ASCII)
 BEARER_TOKEN = re.compile(r"[A-Za-z0-9._~+/-]+={0,16}\Z", re.ASCII)
+QUARANTINED_DESTINATIONS = frozenset({"zed-pkg-test/java-app"})
 
 
 class MirrorPreflightError(Exception):
@@ -95,6 +96,10 @@ def fetch_metadata(name, token, opener=None):
 def verify(source, destination, source_id, destination_id, source_token, destination_token, *, fetch=fetch_metadata):
     validate_repository_name(source)
     validate_repository_name(destination)
+    if destination.casefold() in QUARANTINED_DESTINATIONS:
+        raise MirrorPreflightError(
+            "destination is quarantined by private-source exposure incident policy"
+        )
     if source.lower() == destination.lower():
         raise MirrorPreflightError("source and destination must be distinct repositories")
     # bool is an int subclass in Python; never admit it as a pinned GitHub ID.
