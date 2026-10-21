@@ -1280,6 +1280,7 @@ public final class Ast {
 
     /** CPU/GPU task expression. Legacy nb spelling is normalized here for diagnostics/formatting only. */
     public enum ExecutionDomain { CPU, GPU }
+    public enum TaskCaptureTransfer { COPY, MOVE }
     public record TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb) implements Expr {
         public TaskExpr {
             java.util.Objects.requireNonNull(domain, "task execution domain");
@@ -1305,7 +1306,8 @@ public final class Ast {
 
         private static final java.lang.ref.ReferenceQueue<TaskExpr> CLEARED =
                 new java.lang.ref.ReferenceQueue<>();
-        private static final java.util.Map<IdentityKey, java.util.Set<String>> CAPTURES =
+        private static final java.util.Map<
+                IdentityKey, java.util.Map<String, TaskCaptureTransfer>> CAPTURES =
                 new java.util.HashMap<>();
 
         private static final class IdentityKey
@@ -1338,36 +1340,43 @@ public final class Ast {
 
         public static synchronized void record(
                 TaskExpr task,
-                java.util.Collection<String> captureNames) {
+                java.util.Map<String, TaskCaptureTransfer> captureTransfers) {
             java.util.Objects.requireNonNull(task, "checked Task expression");
             java.util.Objects.requireNonNull(
-                    captureNames, "checked Task capture names");
-            java.util.LinkedHashSet<String> checked =
-                    new java.util.LinkedHashSet<>();
-            for (String name : captureNames) {
-                if (name == null || name.isBlank()) {
+                    captureTransfers, "checked Task capture transfers");
+            java.util.LinkedHashMap<String, TaskCaptureTransfer> checked =
+                    new java.util.LinkedHashMap<>();
+            for (java.util.Map.Entry<String, TaskCaptureTransfer> entry
+                    : captureTransfers.entrySet()) {
+                String name = entry.getKey();
+                TaskCaptureTransfer transfer = entry.getValue();
+                if (name == null || name.isBlank() || transfer == null) {
                     throw new IllegalArgumentException(
-                            "checked Task capture name must be non-blank");
+                            "checked Task capture admission requires non-blank names and transfer modes");
                 }
-                if (!checked.add(name)) {
+                if (checked.putIfAbsent(name, transfer) != null) {
                     throw new IllegalArgumentException(
                             "checked Task capture set contains duplicate '" + name + "'");
                 }
             }
-            java.util.Set<String> immutable = java.util.Set.copyOf(checked);
+            java.util.Map<String, TaskCaptureTransfer> immutable =
+                    java.util.Collections.unmodifiableMap(
+                            new java.util.LinkedHashMap<>(checked));
             expunge();
             IdentityKey key = new IdentityKey(task, CLEARED);
-            java.util.Set<String> old = CAPTURES.putIfAbsent(key, immutable);
+            java.util.Map<String, TaskCaptureTransfer> old =
+                    CAPTURES.putIfAbsent(key, immutable);
             if (old != null && !old.equals(immutable)) {
                 throw new IllegalStateException(
                         "same Task expression received inconsistent ownership admissions");
             }
         }
 
-        public static synchronized java.util.Set<String> require(TaskExpr task) {
+        public static synchronized java.util.Map<String, TaskCaptureTransfer> require(
+                TaskExpr task) {
             java.util.Objects.requireNonNull(task, "Task expression");
             expunge();
-            java.util.Set<String> captures =
+            java.util.Map<String, TaskCaptureTransfer> captures =
                     CAPTURES.get(new IdentityKey(task, null));
             if (captures == null) {
                 throw new IllegalStateException(
