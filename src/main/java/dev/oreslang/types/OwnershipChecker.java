@@ -3809,7 +3809,25 @@ public final class OwnershipChecker {
         }
 
         Ast.ClassDecl klass = findClass(type.name());
-        if (klass == null) return false;
+        if (klass == null) {
+            // An unresolved/imported/foreign nominal has no linked field
+            // layout from which to derive Send. Never infer safety merely
+            // because the class is absent from the local registry.
+            //
+            // Only explicit compiler-owned primitive/structural shapes and
+            // audited owning/synchronized generic wrappers may pass here;
+            // the generic arguments have already been checked recursively.
+            if (isCopyType(type) || type.isTupleType() || type.isUnion()) {
+                return false;
+            }
+            return switch (type.name()) {
+                case "Option", "Result", "Future", "Channel",
+                        "Box", "Arc", "Weak",
+                        "Array", "List", "Vector", "FixedArray",
+                        "FixedList", "Slice", "IteratorResult" -> false;
+                default -> true;
+            };
+        }
         if (klass.actorKind() != Ast.ActorKind.NONE) {
             // Actor instances/state are mailbox-confined. A Send-safe ActorRef
             // is a distinct runtime capability and must not be inferred from
