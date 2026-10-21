@@ -1015,6 +1015,9 @@ public final class OresEvalRootNode extends RootNode {
             private final Ast.MethodDecl method;
             private final OresObject receiver;
             private final List<Ast.Stmt> blockBody;
+            // The exact compiler-checked source Task return type, not a
+            // caller-provided runtime string or a host object class.
+            private final Ast.TypeRef blockResultType;
             private final List<?> arguments;
             private TaskScope.Registration scopeRegistration;
             private final Object taskScopeLock = new Object();
@@ -1032,6 +1035,7 @@ public final class OresEvalRootNode extends RootNode {
                 this.method = null;
                 this.receiver = null;
                 this.blockBody = null;
+                this.blockResultType = null;
                 this.arguments = List.copyOf(arguments);
             }
 
@@ -1043,15 +1047,18 @@ public final class OresEvalRootNode extends RootNode {
                 this.method = Objects.requireNonNull(method, "method");
                 this.receiver = receiver;
                 this.blockBody = null;
+                this.blockResultType = null;
                 this.arguments = List.copyOf(arguments);
             }
 
-            private SourceTask(List<Ast.Stmt> blockBody) {
+            private SourceTask(List<Ast.Stmt> blockBody, Ast.TypeRef checkedResult) {
                 this.function = null;
                 this.method = null;
                 this.receiver = null;
                 this.blockBody = List.copyOf(
                         Objects.requireNonNull(blockBody, "blockBody"));
+                this.blockResultType = Objects.requireNonNull(
+                        checkedResult, "source Task has no checked result type");
                 this.arguments = List.of();
             }
 
@@ -1312,11 +1319,11 @@ public final class OresEvalRootNode extends RootNode {
                     SourceFlow flow) {
                 if (blockBody != null) {
                     switch (flow.kind()) {
-                        case NORMAL -> done(null);
-                        // Both nb { ... } and task { ... } produce Task<T>.
-                        // The compiler proves return-value type and exhaustiveness.
-                        // Returning void yields null, matching Task<void>.
-                        case RETURN -> done(flow.value());
+                        case NORMAL -> done(requireSourceTaskResult(null));
+                        // Source Task results are compiler-admitted. Enforce the
+                        // actual runtime handle at the scheduler completion
+                        // boundary, rather than trusting an untyped Object.
+                        case RETURN -> done(requireSourceTaskResult(flow.value()));
                         case THROW -> throw sourceFailure(flow.failure());
                         case BREAK, CONTINUE ->
                                 throw new IllegalStateException(
@@ -1333,6 +1340,20 @@ public final class OresEvalRootNode extends RootNode {
                             throw new IllegalStateException(
                                     "loop control crossed a source function boundary");
                 }
+            }
+
+            private Object requireSourceTaskResult(Object value) {
+                // Non-stream results retain their existing Task v1 ABI. For a
+                // checked Stream<T> result, never publish a Channel<T>, host
+                // iterator or other capability as a live Stream handle.
+                if (blockResultType.name().equals("Stream")) {
+                    if (blockResultType.arguments().size() != 1
+                            || !(value instanceof dev.oreslang.runtime.OresStream<?>)) {
+                        throw new IllegalStateException(
+                                "source Task return failed checked Stream<T> runtime admission");
+                    }
+                }
+                return value;
             }
 
             private Object shapeSourceReturn(
@@ -1449,6 +1470,7 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 future = startSourceBlockTask(
                         task.body(),
+                        task.checkedResultType(),
                         captured,
                         physicalRetirement,
                         child == null ? ignored -> { } : child::terminalReady);
@@ -1477,10 +1499,11 @@ public final class OresEvalRootNode extends RootNode {
 
         private OresFuture<Object> startSourceBlockTask(
                 List<Ast.Stmt> body,
+                Ast.TypeRef checkedResult,
                 Env env,
                 Runnable onQuiescent,
                 java.util.function.Consumer<OresFuture<Object>> onTerminalReady) {
-            SourceTask task = new SourceTask(body);
+            SourceTask task = new SourceTask(body, checkedResult);
             task.scopeRegistration = env.taskScopeParent;
             // Lexically snapshot at spawn time. Captured owned values were
             // consumed by the compile-time ownership pass; no borrowed or
@@ -9221,6 +9244,13 @@ public final class OresEvalRootNode extends RootNode {
                 if (value != null) throw returnTypeMismatch(callable, declared, value);
                 return null;
             }
+            if (declared.name().equals("Stream")) {
+                if (declared.arguments().size() != 1
+                        || !(value instanceof dev.oreslang.runtime.OresStream<?>)) {
+                    throw returnTypeMismatch(callable, declared, value);
+                }
+                return value;
+            }
 
             return value;
         }
@@ -9870,11 +9900,25 @@ public final class OresEvalRootNode extends RootNode {
     private static final class StreamFactory {
         private Object create(List<Object> args) {
             requireOne(args, "Stream.new<T>");
-            if (!(args.getFirst() instanceof Number number)) {
+            Object requested = args.getFirst();
+            // Reject floating-point and other Number implementations: using
+            // longValue() on a Double silently truncates, violating the
+            // statically integer-only intrinsic contract under stale ASTs.
+            final int capacity;
+            try {
+                if (requested instanceof java.math.BigInteger big) {
+                    capacity = big.intValueExact();
+                } else if (requested instanceof Byte || requested instanceof Short
+                        || requested instanceof Integer || requested instanceof Long) {
+                    capacity = Math.toIntExact(((Number) requested).longValue());
+                } else {
+                    throw new IllegalArgumentException(
+                            "Stream.new<T> capacity must be an exact integer");
+                }
+            } catch (ArithmeticException outOfRange) {
                 throw new IllegalArgumentException(
-                        "Stream.new<T> capacity must be an integer");
+                        "Stream.new<T> capacity exceeds supported integer range", outOfRange);
             }
-            int capacity = Math.toIntExact(number.longValue());
             return new dev.oreslang.runtime.OresStream<>(capacity);
         }
     }
