@@ -117,4 +117,19 @@ final class ImplicitStructuralCallLoanTest {
                 }
                 """);
     }
+
+    @Test
+    void structuralReadOfOneOwnerAllowsTransferOfADifferentOwner() {
+        assertOwnershipAccepts("""
+                fnc readAndConsume(struct{id: int} view, Widget owned): int {
+                  return view.id + owned.id;
+                }
+                fnc good(): int {
+                  val Widget reader = new Widget();
+                  val Widget transferred = new Widget();
+                  return readAndConsume(reader, rt take transferred);
+                }
+                """);
+    }
+
 }
