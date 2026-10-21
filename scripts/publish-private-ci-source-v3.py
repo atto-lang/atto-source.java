@@ -772,6 +772,58 @@ def manifest(files):
     return rows, hashlib.sha256(canonical_bytes(rows)).hexdigest()
 
 
+def verify_published_root_and_commit(
+        repository, base_sha, source_tree, receipt_blob_sha,
+        root_tree_sha, commit_sha):
+    """Read back the created carrier commit/tree before exposing any ref."""
+    commit = legacy.gh_api(f"repos/{repository}/git/commits/{commit_sha}")
+    parents = commit.get("parents")
+    if (commit.get("sha") != commit_sha
+            or commit.get("tree", {}).get("sha") != root_tree_sha
+            or not isinstance(parents, list)
+            or len(parents) != 1
+            or not isinstance(parents[0], dict)
+            or parents[0].get("sha") != base_sha):
+        raise Denied("published carrier commit differs from requested object graph")
+
+    listing = legacy.gh_api(
+        f"repos/{repository}/git/trees/{root_tree_sha}?recursive=1"
+    )
+    if (listing.get("sha") != root_tree_sha
+            or listing.get("truncated") is not False
+            or not isinstance(listing.get("tree"), list)):
+        raise Denied("published carrier root tree listing is incomplete")
+
+    expected = {
+        legacy.PREFIX: ("040000", "tree", source_tree),
+        RECEIPT_PATH: ("100644", "blob", receipt_blob_sha),
+    }
+    found = {}
+    for entry in listing["tree"]:
+        if not isinstance(entry, dict):
+            raise Denied("published carrier tree entry is malformed")
+        path = entry.get("path")
+        if path not in expected:
+            continue
+        if path in found:
+            raise Denied("published carrier tree contains duplicate protected path")
+        found[path] = (
+            entry.get("mode"),
+            entry.get("type"),
+            valid_sha(entry.get("sha"), "published carrier tree SHA invalid"),
+        )
+    if found != expected:
+        raise Denied("published carrier tree differs from exact source/receipt binding")
+
+
+def require_handoff_refs_absent(
+        repository, branch, authorization, expected_repository_id):
+    if live_ref_sha(repository, branch, expected_repository_id) is not None:
+        raise Denied("exact-tree carrier branch already exists")
+    if live_ref_sha(repository, authorization, expected_repository_id) is not None:
+        raise Denied("exact-tree authorization ref already exists")
+
+
 def authorize_write(root, repository, approved_policy, contract):
     """Cheap per-write guard: local approval bytes plus live carrier identity.
 
@@ -1030,6 +1082,14 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         },
     )
     commit_sha = valid_sha(commit.get("sha"), "carrier commit SHA invalid")
+    verify_published_root_and_commit(
+        repository,
+        contract["base_sha"],
+        source_tree,
+        receipt_blob_sha,
+        root_tree_sha,
+        commit_sha,
+    )
 
     # Recheck both source policy/protection and the immutable carrier contract
     # immediately before making the source-bearing commit executable.
@@ -1050,6 +1110,9 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     # as potentially successful before it returns: transport ambiguity must not
     # strand a source-bearing ref.
     authorization = "ci/authorized-" + commit_sha
+    require_handoff_refs_absent(
+        repository, branch, authorization, contract["repository_id"]
+    )
     payload_attempted = False
     authorization_attempted = False
     try:
@@ -1102,7 +1165,7 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         require_exact_ref(
             repository, authorization, commit_sha, contract["repository_id"]
         )
-    except Denied as exc:
+    except BaseException:
         rollback_error = None
         if authorization_attempted:
             try:
@@ -1110,7 +1173,7 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
                     repository, authorization, commit_sha,
                     contract["repository_id"],
                 )
-            except Denied as rollback_exc:
+            except BaseException as rollback_exc:
                 rollback_error = rollback_exc
         if payload_attempted:
             try:
@@ -1118,13 +1181,13 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
                     repository, branch, commit_sha,
                     contract["repository_id"],
                 )
-            except Denied as rollback_exc:
+            except BaseException as rollback_exc:
                 rollback_error = rollback_error or rollback_exc
         if rollback_error is not None:
             raise Denied(
                 "private CI handoff failed and carrier ref rollback was incomplete"
             ) from rollback_error
-        raise exc
+        raise
 
     return {
         "commit": commit_sha,
