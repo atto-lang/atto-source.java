@@ -34,4 +34,4 @@ reject "${name}${tab}private${tab}true${tab}1323599063${tab}true${tab}false"
 reject "${name}${tab}private${tab}true${tab}1323599063${tab}false${tab}true"
 reject "${name}${tab}private${tab}true${tab}1323599063${tab}null${tab}false"
 reject "${name}${tab}private${tab}true${tab}1323599063${tab}false"
-printf 'PASS: exact four-field metadata parser\n'
+printf 'PASS: exact six-field metadata parser\n'
