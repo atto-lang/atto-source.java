@@ -139,6 +139,8 @@ public final class ReturnCleanupChecker {
                     if (returned != null) state.returned.add(returned);
                 }
                 expression(ret.value(), scope, inDefer, state);
+            } else if (stmt instanceof Ast.TerminalEffectStmt effect) {
+                expression(effect.value(), scope, inDefer, state);
             } else if (stmt instanceof Ast.YieldStmt yielded) {
                 expression(yielded.value(), scope, inDefer, state);
             } else if (stmt instanceof Ast.DeferStmt deferred) {

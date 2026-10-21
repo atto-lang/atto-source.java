@@ -445,6 +445,13 @@ public final class OwnershipChecker {
             }
             return;
         }
+        if (stmt instanceof Ast.TerminalEffectStmt effect) {
+            ValueInfo value = checkExpr(effect.value(), scope, false);
+            if (containsMutexGuardType(value.type)) {
+                throw error("terminal failure diagnostic cannot contain a MutexGuard");
+            }
+            return;
+        }
         if (stmt instanceof Ast.YieldStmt yielded) {
             if (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard()) {
                 throw error("cannot yield while holding a MutexGuard; release the guard before suspension");
@@ -2647,6 +2654,8 @@ public final class OwnershipChecker {
                 }
             } else if (stmt instanceof Ast.ReturnStmt ret && ret.value() != null) {
                 scanExpr(ret.value(), blockLocals, outer, recursiveBinding, captures, false);
+            } else if (stmt instanceof Ast.TerminalEffectStmt effect) {
+                scanExpr(effect.value(), blockLocals, outer, recursiveBinding, captures, false);
             } else if (stmt instanceof Ast.YieldStmt yielded) {
                 scanExpr(yielded.value(), blockLocals, outer, recursiveBinding, captures, false);
             } else if (stmt instanceof Ast.ExprStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
