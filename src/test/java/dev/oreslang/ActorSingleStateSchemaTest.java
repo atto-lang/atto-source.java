@@ -90,6 +90,53 @@ final class ActorSingleStateSchemaTest {
     }
 
     @Test
+    void stateSchemaCannotFollowFreeStandingActorFields() {
+        String program = """
+                define actor Bad as
+                  let int escaped;
+                  state {
+                    revision: int = 0;
+                  }
+                  receive(ActorMail<String> mail): void {
+                    self.end();
+                    return;
+                  }
+                end
+                """;
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(program));
+        assertTrue(error.getMessage().contains("cannot be mixed"), error.getMessage());
+    }
+
+    @Test
+    void legacyActorFieldsRemainCompatibleUntilMigration() {
+        String program = """
+                define actor Legacy as
+                  let int started = 1;
+                  receive(ActorMail<String> mail): void {
+                    if self.started == 1; do
+                      self.end();
+                    fi
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val actor = spawn Legacy();
+                  await actor.get_ready();
+                  actor.send("stop");
+                  await actor.get_done();
+                  stdio.stdout.write("legacy-ok");
+                  return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+    }
+
+    @Test
     void directStateReadIsRejectedUntilVerifiedLoanExists() {
         String program = """
                 define actor Bad as
