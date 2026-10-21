@@ -2627,7 +2627,7 @@ public final class TypeChecker {
                         typeOf(argument, env, generics, self);
                     }
                 }
-                return Primitive.VOID;
+                return new Named("Future", List.of(Primitive.VOID));
             }
             if (isBuiltinStdoutCall(call, "log_list_async", env)) {
                 if (call.typeArgumentsPresent()) {
@@ -2636,8 +2636,8 @@ public final class TypeChecker {
                 if (call.arguments().size() != 1 || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
                     throw new IllegalArgumentException("stdio.stdout.log_list_async expects exactly one array/list/tuple argument");
                 }
-                requireSpreadable(typeOf(call.arguments().getFirst(), env, generics, self), "stdio.stdout.logList");
-                return Primitive.VOID;
+                requireSpreadable(typeOf(call.arguments().getFirst(), env, generics, self), "stdio.stdout.log_list_async");
+                return new Named("Future", List.of(Primitive.VOID));
             }
             if (call.callee() instanceof Ast.NameExpr name
                     && name.name().equals("init")) {
@@ -3728,14 +3728,20 @@ public final class TypeChecker {
                                 new Named("Option", List.of(Primitive.STRING)))));
             }
             if (member.receiver() instanceof Ast.NameExpr name
-                    && (name.name().equals("process")
-                        || name.name().equals("actor")
-                        || name.name().equals("fs")
+                    && (name.name().equals("fs")
                         || name.name().equals("File")
                         || name.name().equals("network")
                         || name.name().equals("net")
                         || name.name().equals("http")
-                        || name.name().equals("env"))) return Unknown.INSTANCE;
+                        || name.name().equals("env"))) {
+                throw new IllegalArgumentException(
+                        "unknown strict stdlib member '" + name.name() + "."
+                                + member.member()
+                                + "'; blocking I/O names are not admitted");
+            }
+            if (member.receiver() instanceof Ast.NameExpr name
+                    && (name.name().equals("process")
+                        || name.name().equals("actor"))) return Unknown.INSTANCE;
             if (member.receiver() instanceof Ast.NameExpr name && importedValues.contains(name.name())) return Unknown.INSTANCE;
 
             if (receiver instanceof ClassNamespace classNamespace) {
