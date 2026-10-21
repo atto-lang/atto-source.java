@@ -35,3 +35,38 @@ Status: **incremental implementation**. Java TypeChecker now uses compiler-known
 6. Cross-check GraalVM/LLVM code generation, negative tests, sanitizers and real concurrent execution. The LLVM header/test currently checks marker *contract parity only*, not source lowering.
 
 Freestanding `core` owns the type/borrow semantics; `alloc` will own reference-counted storage and allocator-domain policy; optional libraries provide ECS and host scheduling.
+
+
+## Cache-line-aware Task staging
+
+Logical disjointness is necessary for correctness but is not sufficient for
+cache-efficient parallel writes. Two Tasks can own nonoverlapping rows and
+still write different words in the same coherence line.
+
+`RegionAccessPlanner.Access` therefore accepts optional compiler-proven
+`byteBase` and `elementBytes` metadata. The existing four-argument form keeps
+physical layout **unknown** and retains exactly the previous ownership semantics.
+
+`planCacheAware(systems, cacheLineBytes)` first preserves every ordinary
+read/write dependency, then adds a performance dependency when:
+
+- both accesses name the same canonical allocation,
+- at least one access writes,
+- both physical byte geometries are known, and
+- their touched byte spans overlap the same cache line.
+
+This does not convert a topology hint into borrow authority. Unknown physical
+geometry does not invent a false-sharing dependency; it simply means the
+compiler cannot claim cache isolation.
+
+`cacheSafeDisjointChunks` additionally aligns every interior worker boundary to
+a real cache-line boundary when one exists for the supplied element width and
+allocation base. Ticket/borrow creation must still bind the resulting ranges to
+the live allocation epoch. The final column edge can share a line with a
+neighboring column; layouts that independently mutate adjacent columns must
+either pad/separate those column edges or let the cache-aware planner serialize
+the touching systems.
+
+Do **not** blanket-pad entities or components. That can multiply footprint,
+TLB pressure and LLC misses. Padding/separation is justified only for measured
+independently-written boundaries or hot shared control metadata.
