@@ -47,6 +47,11 @@ public final class Parser {
         // silently skipping their bodies would violate placement semantics.
         // A token preflight also covers paths not reached by the normal parser.
         for (Token token : tokens) {
+            if (token.type() == KERNEL) {
+                throw error(token, "kernel declarations are reserved for Oreslang HAT; "
+                        + "typed kernel IR, effect/ownership checking and explicit backend lowering "
+                        + "must be enabled before execution; no implicit CPU fallback");
+            }
             if (token.type() == GPU || token.type() == CPU || token.type() == QUANTUM) {
                 throw error(token, "execution domain '" + token.lexeme()
                         + "' requires typed effect/ownership checking and explicit backend lowering;"
