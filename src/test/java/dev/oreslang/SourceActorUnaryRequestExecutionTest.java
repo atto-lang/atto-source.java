@@ -45,6 +45,36 @@ final class SourceActorUnaryRequestExecutionTest {
     }
 
     @Test
+    void sourceUnaryIntegerResponseUsesExactLongRepresentationWitness() throws Exception {
+        String program = """
+                define actor Worker as
+                  run(int request): int {
+                    return 42;
+                  }
+                  receive(ActorMail<ActorRef<Worker>> mail): void {
+                    val response = await mail.value.request(41);
+                    self.send("integer-replied");
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val server = spawn Worker();
+                  val client = spawn Worker();
+                  await server.get_ready();
+                  await client.get_ready();
+                  client.send(server);
+                  val result = (await client.outputs.next()).value.unwrap();
+                  stdio.stdout.write(result.value);
+                  await client.get_done();
+                  return;
+                }
+                """;
+        assertEquals("integer-replied", run(program, "source-actor-unary-int-witness.ores"));
+    }
+
+    @Test
     void incorrectRequestTypeIsRejectedByClosedWorldTypeChecker() {
         String program = """
                 define actor Worker as
