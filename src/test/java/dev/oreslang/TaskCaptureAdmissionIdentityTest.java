@@ -25,16 +25,19 @@ final class TaskCaptureAdmissionIdentityTest {
                 """);
 
         Ast.TaskExpr task = firstTask(checked);
+        long epoch = Ast.CheckedTaskCaptures.requireProgramEpoch(checked);
         assertEquals(
                 java.util.Map.of(
                         "value", Ast.TaskCaptureTransfer.COPY),
-                Ast.CheckedTaskCaptures.require(task));
+                Ast.CheckedTaskCaptures.require(
+                        checked, task, epoch).captureTransfers());
 
         Ast.TaskExpr clone =
                 new Ast.TaskExpr(task.domain(), task.body(), task.legacyNb());
         assertThrows(
                 IllegalStateException.class,
-                () -> Ast.CheckedTaskCaptures.require(clone));
+                () -> Ast.CheckedTaskCaptures.require(
+                        checked, clone, epoch));
 
         // Generic optimizer metadata transfer deliberately cannot mint Task
         // execution authority. A transformed Task must pass ownership checking
@@ -61,10 +64,14 @@ final class TaskCaptureAdmissionIdentityTest {
                 }
                 """);
 
+        long epoch = Ast.CheckedTaskCaptures.requireProgramEpoch(checked);
         assertEquals(
                 java.util.Map.of(
                         "owner", Ast.TaskCaptureTransfer.MOVE),
-                Ast.CheckedTaskCaptures.require(firstTask(checked)));
+                Ast.CheckedTaskCaptures.require(
+                        checked,
+                        firstTask(checked),
+                        epoch).captureTransfers());
     }
 
     @Test
@@ -93,7 +100,42 @@ final class TaskCaptureAdmissionIdentityTest {
                         typed.program(), typed.shortInferredAliases()));
         assertThrows(
                 IllegalStateException.class,
-                () -> Ast.CheckedTaskCaptures.require(task));
+                () -> Ast.CheckedTaskCaptures.requireProgramEpoch(
+                        typed.program()));
+    }
+
+    @Test
+    void successfulRecheckSupersedesEarlierProgramEpoch() {
+        Ast.Program checked = OresCompiler.parseAndTypeCheck("""
+                pub async fnc main(): void {
+                  const int value = 41;
+                  let Future<int> child = task {
+                    return value + 1;
+                  };
+                  stdio.stdout.write(await child);
+                  return;
+                }
+                """);
+        Ast.TaskExpr task = firstTask(checked);
+        long firstEpoch =
+                Ast.CheckedTaskCaptures.requireProgramEpoch(checked);
+
+        OwnershipChecker.check(checked);
+        long secondEpoch =
+                Ast.CheckedTaskCaptures.requireProgramEpoch(checked);
+
+        assertNotEquals(firstEpoch, secondEpoch);
+        assertThrows(
+                IllegalStateException.class,
+                () -> Ast.CheckedTaskCaptures.require(
+                        checked, task, firstEpoch));
+        assertEquals(
+                java.util.Map.of(
+                        "value", Ast.TaskCaptureTransfer.COPY),
+                Ast.CheckedTaskCaptures.require(
+                        checked,
+                        task,
+                        secondEpoch).captureTransfers());
     }
 
     private static Ast.TaskExpr firstTask(Ast.Program program) {
