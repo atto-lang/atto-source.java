@@ -139,6 +139,234 @@ final class ActorSingleStateSchemaTest {
     }
 
     @Test
+    void handleStateMutatesAndReadsSealedStateAtRuntime() throws Exception {
+        String program = """
+                define actor StateAuthority as
+                  state {
+                    revision: int = 0;
+                    compacted: int = 0;
+                  }
+
+                  receive(ActorMail<String> mail): void {
+                    self.handle_state(|state| -> {
+                      state.revision = state.revision + 1;
+                    });
+                    self.handle_state(|state| -> {
+                      if state.revision == 1; do
+                        self.send("state-loan-ok");
+                      else
+                        self.send("state-loan-bad");
+                      fi
+                    });
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val state = spawn StateAuthority();
+                  await state.get_ready();
+                  state.send("bump");
+                  val step = await state.outputs.next();
+                  val output = step.value.unwrap();
+                  stdio.stdout.write(output.value);
+                  await state.get_done();
+                  return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("state-loan-ok", run(program, "actor-state-loan-runtime.ores"));
+    }
+
+    @Test
+    void handleStateRequiresInlineLambda() {
+        String program = """
+                define actor Bad as
+                  state {
+                    revision: int = 0;
+                  }
+                  receive(ActorMail<String> mail): void {
+                    self.handle_state(1);
+                    self.end();
+                    return;
+                  }
+                end
+                """;
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(program));
+        assertTrue(error.getMessage().contains("inline one-argument lambda"), error.getMessage());
+    }
+
+    @Test
+    void handleStateRejectsNestedLoans() {
+        String program = """
+                define actor Bad as
+                  state {
+                    revision: int = 0;
+                  }
+                  receive(ActorMail<String> mail): void {
+                    self.handle_state(|state| -> {
+                      self.handle_state(|inner| -> {
+                        inner.revision = inner.revision + 1;
+                      });
+                    });
+                    self.end();
+                    return;
+                  }
+                end
+                """;
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(program));
+        assertTrue(error.getMessage().contains("nested self.handle_state"), error.getMessage());
+    }
+
+    @Test
+    void handleStateRejectsAwaitUntilSuspensionSafeReacquisitionExists() {
+        String program = """
+                define actor Bad as
+                  state {
+                    revision: int = 0;
+                  }
+                  receive(ActorMail<String> mail): void {
+                    self.handle_state(|state| -> {
+                      await 1;
+                    });
+                    self.end();
+                    return;
+                  }
+                end
+                """;
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(program));
+        assertTrue(error.getMessage().contains("state loan callback cannot await"), error.getMessage());
+    }
+
+    @Test
+    void handleStateRejectsNonLexicalCallback() {
+        String program = """
+                define actor Bad as
+                  state {
+                    revision: int = 0;
+                  }
+                  receive(ActorMail<String> mail): void {
+                    self.handle_state(nlex |state| -> {
+                      state.revision = state.revision + 1;
+                    });
+                    self.end();
+                    return;
+                  }
+                end
+                """;
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(program));
+        assertTrue(error.getMessage().contains("callback must be lexical"), error.getMessage());
+    }
+
+    @Test
+    void handleStateFailsClosedOnImmutableStateSlotsUntilPerSlotLoansExist() {
+        String program = """
+                define actor Bad as
+                  state {
+                    val int identity = 1;
+                  }
+                  receive(ActorMail<String> mail): void {
+                    self.handle_state(|state| -> {
+                      self.send("never");
+                    });
+                    self.end();
+                    return;
+                  }
+                end
+                """;
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(program));
+        assertTrue(error.getMessage().contains("immutable state field"), error.getMessage());
+    }
+
+    @Test
+    void handleStateBorrowCannotEscapeIntoNestedClosure() {
+        String program = """
+                define actor Bad as
+                  state {
+                    revision: int = 0;
+                  }
+                  receive(ActorMail<String> mail): void {
+                    self.handle_state(|state| -> {
+                      val callback = || -> {
+                        val observed = state.revision;
+                      };
+                    });
+                    self.end();
+                    return;
+                  }
+                end
+                """;
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(program));
+        assertTrue(error.getMessage().contains("cannot capture borrowed value 'state'"), error.getMessage());
+    }
+
+    @Test
+    void handleStateRejectsCooperativeLoopsInM1() {
+        String program = """
+                define actor Bad as
+                  state {
+                    revision: int = 0;
+                  }
+                  receive(ActorMail<String> mail): void {
+                    self.handle_state(|state| -> {
+                      loop {
+                        break;
+                      }
+                    });
+                    self.end();
+                    return;
+                  }
+                end
+                """;
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(program));
+        assertTrue(error.getMessage().contains("cannot contain cooperative loops"), error.getMessage());
+    }
+
+    @Test
+    void handleStateRejectsActorTerminationWhileLoanIsLive() {
+        String program = """
+                define actor Bad as
+                  state {
+                    revision: int = 0;
+                  }
+                  receive(ActorMail<String> mail): void {
+                    self.handle_state(|state| -> {
+                      self.end();
+                    });
+                    return;
+                  }
+                end
+                """;
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(program));
+        assertTrue(error.getMessage().contains("cannot terminate the actor"), error.getMessage());
+    }
+
+    @Test
     void directStateReadIsRejectedUntilVerifiedLoanExists() {
         String program = """
                 define actor Bad as
