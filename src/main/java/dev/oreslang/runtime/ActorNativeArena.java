@@ -680,6 +680,22 @@ public final class ActorNativeArena implements AutoCloseable {
                 || tag == PROCESS_SYMBOL || tag == STABLE_SYMBOL;
     }
 
+    private static long textMetadata(int length, int capacity) {
+        if (length < 0 || capacity < length) {
+            throw new IllegalArgumentException("invalid native text length/capacity");
+        }
+        return (Integer.toUnsignedLong(capacity) << 32)
+                | Integer.toUnsignedLong(length);
+    }
+
+    private static int textLength(long metadata) {
+        return (int) metadata;
+    }
+
+    private static int textCapacity(long metadata) {
+        return (int) (metadata >>> 32);
+    }
+
     private String loadText(long address, int length) {
         char[] data = new char[length];
         int index = slabIndex(address);
@@ -708,7 +724,7 @@ public final class ActorNativeArena implements AutoCloseable {
             }
             return value;
         }
-        String text = loadText(bits, Math.toIntExact(read(slot, 16)));
+        String text = loadText(bits, textLength(read(slot, 16)));
         if (tag == STRING) return text;
         if (tag == BIG_INTEGER) return new BigInteger(text);
         if (tag == BIG_DECIMAL) return new BigDecimal(text);
@@ -762,18 +778,26 @@ public final class ActorNativeArena implements AutoCloseable {
                     + value.getClass().getName() + "; managed guest payload fallback is disabled");
         }
         if (text != null) {
-            // In-place replacement is safe: text payloads are never aliased
-            // between field slots, and generic reads materialize detached values.
-            // Preserve the old value if the new payload requires allocation
-            // and the actor's native budget is exhausted.
+            // Text payloads are never aliased between field/value slots.
+            // Keep the original native capacity so shrink + regrow within that
+            // capacity remains allocation-free without recycling logical
+            // actor-relative addresses.
             long oldTag = read(slot, 0);
-            if (isTextTag(oldTag) && read(slot, 16) == text.length()) {
-                bits = read(slot, 8);
-                overwriteText(bits, text);
+            int capacity = text.length();
+            if (isTextTag(oldTag)) {
+                long oldMetadata = read(slot, 16);
+                int oldCapacity = textCapacity(oldMetadata);
+                if (oldCapacity >= text.length()) {
+                    bits = read(slot, 8);
+                    capacity = oldCapacity;
+                    overwriteText(bits, text);
+                } else {
+                    bits = storeText(text);
+                }
             } else {
                 bits = storeText(text);
             }
-            length = text.length();
+            length = textMetadata(text.length(), capacity);
         }
         // Publish only after validation/allocation succeeds; failed assignment
         // leaves the old slot intact.
