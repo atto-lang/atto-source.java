@@ -520,6 +520,7 @@ class PrivateCiV3Test(unittest.TestCase):
             "default_branch": "main",
         }
         with (
+            patch.object(v3.legacy, "require_resolved_blocking_incidents"),
             patch.object(
                 v3.legacy,
                 "checked_policy_approval",
@@ -534,6 +535,7 @@ class PrivateCiV3Test(unittest.TestCase):
     def test_authorize_write_rejects_reviewed_repository_id_change(self):
         carrier = contract()
         with (
+            patch.object(v3.legacy, "require_resolved_blocking_incidents"),
             patch.object(
                 v3.legacy,
                 "checked_policy_approval",
@@ -545,6 +547,23 @@ class PrivateCiV3Test(unittest.TestCase):
                 v3.authorize_write(
                     Path("."), "trusted/ci", POLICY, carrier)
             checked_repo.assert_not_called()
+
+    def test_authorize_write_rejects_reopened_incident_before_api_or_blob(self):
+        """Fail closed when a P0 changes after preflight but before a write."""
+        carrier = contract()
+        with (
+            patch.object(
+                v3.legacy, "require_resolved_blocking_incidents",
+                side_effect=v3.Denied("blocking P0 incident #77 remains unresolved"),
+            ) as incident_gate,
+            patch.object(v3.legacy, "checked_policy_approval") as policy,
+            patch.object(v3.legacy, "checked_repo") as repo,
+        ):
+            with self.assertRaisesRegex(v3.Denied, "#77 remains unresolved"):
+                v3.authorize_write(Path("."), "trusted/ci", POLICY, carrier)
+            incident_gate.assert_called_once_with()
+            policy.assert_not_called()
+            repo.assert_not_called()
 
     def test_publish_rejects_contract_repository_id_not_in_reviewed_allowlist(self):
         carrier = contract()
