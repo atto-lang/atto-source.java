@@ -893,8 +893,10 @@ public final class Parser {
                     && !method.structural()
                     && method.genericParameters().isEmpty()
                     && method.parameters().size() == 1
+                    && method.parameters().getFirst().type() != null
                     && method.parameters().getFirst().type().name().equals("ChildFailure")
                     && method.parameters().getFirst().type().arguments().isEmpty()
+                    && method.returnType() != null
                     && method.returnType().name().equals("void")
                     && method.returnType().arguments().isEmpty();
             if (!valid) {

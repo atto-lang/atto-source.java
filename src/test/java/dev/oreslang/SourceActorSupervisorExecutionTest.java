@@ -105,6 +105,58 @@ final class SourceActorSupervisorExecutionTest {
     }
 
     @Test
+    void sourcePanicHandlerCanSelectSameIdRestart() throws Exception {
+        String program = """
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    panic "restart-child";
+                  }
+                end
+
+                define supervisor actor Manager as
+                  on_throw(ChildFailure failure): void {
+                    failure.acknowledge();
+                    return;
+                  }
+                  on_raise(ChildFailure failure): void {
+                    failure.acknowledge();
+                    return;
+                  }
+                  on_panic(ChildFailure failure): void {
+                    self.send(failure.generation);
+                    failure.restart();
+                    return;
+                  }
+
+                  receive(ActorMail<String> mail): void {
+                    if mail.value == "start" then
+                      val child = spawn Worker();
+                      child.send("fail");
+                    fi
+                    if mail.value == "stop" then
+                      self.end();
+                    fi
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val manager = spawn Manager();
+                  await manager.get_ready();
+                  manager.send("start");
+                  val generation = (await manager.outputs.next()).value.unwrap();
+                  stdio.stdout.write(generation);
+                  manager.send("stop");
+                  await manager.get_done();
+                  return;
+                }
+                """;
+
+        String output = run(program, "source-supervisor-restart.ores");
+        assertTrue(Long.parseLong(output) > 0L);
+    }
+
+    @Test
     void hiddenControlHandlersCannotBeExtractedAsOrdinaryMethods() {
         String program = """
                 define supervisor actor Manager as
