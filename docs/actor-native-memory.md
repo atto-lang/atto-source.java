@@ -248,15 +248,20 @@ addresses.
 
 `ActorNativeArena.Region.leaseReadOnly(offset, length)` provides an owner-checked,
 bounds-checked native slice. While any read lease is live, the backing region
-rejects writes and explicit release. The lease has no exported memory address,
+rejects overlapping writes and explicit region release. Writes to disjoint
+byte ranges remain allowed. The lease has no exported memory address,
 cannot be used by a foreign actor, and becomes invalid on physical actor
 finalization; a closed lease cannot read again.
 
 `ActorShardColumns.leaseColumnReadOnly(field)` applies this to a physically
 contiguous SoA column without a copy. AoS, AoSoA and grouped SoAoS do not
 silently create a contiguous column pointer: callers must explicitly request a
-copy or a future strided borrow. Current freezing is coarse-grained for the
-entire region, not merely the selected column. Explicit shard close fails
+copy or a future strided borrow. SoA read leases now freeze only the selected
+byte interval, allowing an actor to integrate a distinct SoA column while
+reading velocity through an immutable borrow. Bounds and overlap checks
+occur before each write, including partial intersection with a borrowed
+column. Bulk operations using a conservative whole-region writability
+preflight still reject any active borrow. Explicit shard close fails
 without refunding its reservation if an immutable lease remains outstanding.
 These host-side handles are still managed facades and do not establish
 cross-actor sharing, raw-pointer validity, or allocation-free guest execution.
