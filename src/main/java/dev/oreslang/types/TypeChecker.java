@@ -1896,6 +1896,20 @@ public final class TypeChecker {
             checkBlock(block.body(), env, generics, expectedReturn, self);
             return;
         }
+        if (stmt instanceof Ast.TaskScopeStmt taskScope) {
+            if (currentActorKind != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "task scope is not enabled inside actor execution until "
+                                + "actor quota/hot-reload structured lifetime authority is proven");
+            }
+            if (!currentMaySuspend) {
+                throw new IllegalArgumentException(
+                        "task scope exit is a physical-quiescence suspension point; "
+                                + "declare the enclosing callable async or suspends");
+            }
+            checkBlock(taskScope.body(), env, generics, expectedReturn, self);
+            return;
+        }
         if (stmt instanceof Ast.BreakStmt) {
             if (loopDepth == 0) throw new IllegalArgumentException("'break' may only appear inside loop or for");
             return;
@@ -4572,6 +4586,7 @@ public final class TypeChecker {
         for (Ast.Stmt stmt : body) {
             if (stmt instanceof Ast.ReturnStmt ret && ret.value() != null) return true;
             if (stmt instanceof Ast.BlockStmt block && taskHasValueReturn(block.body())) return true;
+            if (stmt instanceof Ast.TaskScopeStmt scope && taskHasValueReturn(scope.body())) return true;
             if (stmt instanceof Ast.LoopStmt loop && taskHasValueReturn(loop.body())) return true;
             if (stmt instanceof Ast.IfStmt conditional) {
                 for (Ast.IfBranch branch : conditional.branches()) {
@@ -7742,6 +7757,8 @@ public final class TypeChecker {
                 rejectStaticClassGenericReferences(defer.expression(), classGenerics, klass, method);
             } else if (statement instanceof Ast.BlockStmt block) {
                 rejectStaticClassGenericReferences(block.body(), classGenerics, klass, method);
+            } else if (statement instanceof Ast.TaskScopeStmt taskScope) {
+                rejectStaticClassGenericReferences(taskScope.body(), classGenerics, klass, method);
             } else if (statement instanceof Ast.LoopStmt loop) {
                 rejectStaticClassGenericReferences(loop.body(), classGenerics, klass, method);
             } else if (statement instanceof Ast.IfStmt conditional) {
@@ -9186,6 +9203,7 @@ public final class TypeChecker {
         for (Ast.Stmt stmt : body) {
             if (stmt instanceof Ast.ReturnStmt) return true;
             if (stmt instanceof Ast.BlockStmt block && definitelyReturns(block.body())) return true;
+            if (stmt instanceof Ast.TaskScopeStmt scope && definitelyReturns(scope.body())) return true;
             if (stmt instanceof Ast.LoopStmt loop && !containsBreakForCurrentLoop(loop.body())) return true;
             if (stmt instanceof Ast.IfStmt conditional) {
                 boolean allBranches = !conditional.branches().isEmpty()
@@ -9213,6 +9231,8 @@ public final class TypeChecker {
         for (Ast.Stmt stmt : body) {
             if (stmt instanceof Ast.BreakStmt) return true;
             if (stmt instanceof Ast.BlockStmt block && containsBreakForCurrentLoop(block.body())) return true;
+            if (stmt instanceof Ast.TaskScopeStmt scope
+                    && containsBreakForCurrentLoop(scope.body())) return true;
             if (stmt instanceof Ast.IfStmt conditional) {
                 for (Ast.IfBranch branch : conditional.branches()) {
                     if (containsBreakForCurrentLoop(branch.body())) return true;
