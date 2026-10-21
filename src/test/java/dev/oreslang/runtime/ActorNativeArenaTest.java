@@ -544,10 +544,16 @@ final class ActorNativeArenaTest {
         region.writeLong(8, 100L);
         assertEquals(100L, region.readLong(8));
         var outstanding = region.leaseReadOnly(8, 8);
+        // A scheduler's erroneous assertion of physical quiescence may not
+        // free memory that still has an issued native borrow.
+        assertThrows(IllegalStateException.class, arena::close);
+        assertFalse(arena.closed());
+        assertEquals(100L, outstanding.readLong(0));
+        assertEquals(64, charged.get());
+        outstanding.close();
         arena.close();
         assertThrows(IllegalStateException.class, () -> outstanding.readLong(0));
         assertThrows(IllegalStateException.class, () -> outstanding.readByte(0));
-        outstanding.close();
         assertEquals(0, charged.get());
     }
 
