@@ -50,7 +50,7 @@ final class StreamOwnershipProofTest {
         assertTrue(stream.channel().tryWrite(42));
         stream.close();
         assertTrue(stream.isClosed());
-        assertEquals(42, stream.channel().tryRead().orElseThrow());
+        assertEquals(42, stream.channel().tryRead().orElseThrow().intValue());
     }
 
     @Test
@@ -82,7 +82,7 @@ final class StreamOwnershipProofTest {
         OresStream<Integer> accepted = OresStream.fromGuestCapacity(2L);
         try {
             assertTrue(accepted.channel().tryWrite(42));
-            assertEquals(42, accepted.channel().tryRead().orElseThrow());
+            assertEquals(42, accepted.channel().tryRead().orElseThrow().intValue());
         } finally {
             accepted.close();
         }
