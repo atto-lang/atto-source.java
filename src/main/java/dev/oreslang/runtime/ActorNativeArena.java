@@ -821,6 +821,21 @@ public final class ActorNativeArena implements AutoCloseable {
                 return bytes;
             }
 
+            /**
+             * Read exactly one byte of an immutable native slice, with the
+             * same actor and revocation checks as word/double reads.
+             * No ByteBuffer, array, address or mutable view escapes.
+             */
+            public byte readByte(int relative) {
+                synchronized (ActorNativeArena.this) {
+                    return readChecked(relative, Byte.BYTES).get(base + relative);
+                }
+            }
+
+            public int readUnsignedByte(int relative) {
+                return Byte.toUnsignedInt(readByte(relative));
+            }
+
             public long readLong(int relative) {
                 synchronized (ActorNativeArena.this) {
                     return readChecked(relative, Long.BYTES).getLong(base + relative);
