@@ -66,7 +66,7 @@ final class EndDelimitedFunctionCurrentMainTest {
     }
 
     @Test
-    void optionalSameLineAsIsSemanticsFree() {
+    void optionalSameLineBodySeparatorsAreSemanticsFree() {
         var noSeparator = Parser.parse("""
                 fnc identity(int x) -> int
                     return x
@@ -77,14 +77,22 @@ final class EndDelimitedFunctionCurrentMainTest {
                     return x
                 end
                 """);
-        var compact = Parser.parse("fnc identity(int x) -> int as return x; end");
+        var explicitDoubleColon = Parser.parse("""
+                fnc identity(int x) -> int ::
+                    return x
+                end
+                """);
+        var compactAs = Parser.parse("fnc identity(int x) -> int as return x; end");
+        var compactDoubleColon = Parser.parse("fnc identity(int x) -> int :: return x; end");
 
         assertEquals(noSeparator, explicitAs);
-        assertEquals(noSeparator, compact);
+        assertEquals(noSeparator, explicitDoubleColon);
+        assertEquals(noSeparator, compactAs);
+        assertEquals(noSeparator, compactDoubleColon);
     }
 
     @Test
-    void callableAsMustShareHeaderLineAndHeaderDoIsRetired() {
+    void callableBodySeparatorsMustShareHeaderLineAndHeaderDoIsRetired() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc bad(int x) -> int
                 as
@@ -92,17 +100,39 @@ final class EndDelimitedFunctionCurrentMainTest {
                 end
                 """));
 
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc bad(int x) -> int
+                ::
+                    return x
+                end
+                """));
+
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("fnc bad(int x) -> int do return x; end"));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("fnc bad(int x) -> int as :: return x; end"));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("fnc bad(int x): int :: return x; end"));
     }
 
     @Test
-    void completeHigherOrderReturnTypePrecedesOptionalAs() {
+    void completeHigherOrderReturnTypePrecedesOptionalBodySeparator() {
         assertDoesNotThrow(() -> Parser.parse("""
                 fnc callback() -> () => void as
                     return || -> { return; };
                 end
                 """));
+        assertDoesNotThrow(() -> Parser.parse("""
+                fnc callback() -> () => void ::
+                    return || -> { return; };
+                end
+                """));
+    }
+
+    @Test
+    void doubleColonSeparatorDoesNotStealStaticAccessInsideBody() {
+        assertDoesNotThrow(() -> Parser.parse(
+                "fnc lookup() -> int :: return Math::answer(); end"));
     }
 
     @Test
