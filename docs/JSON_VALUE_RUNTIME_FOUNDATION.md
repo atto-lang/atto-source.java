@@ -98,8 +98,20 @@ The next implementation slice should introduce the alloc module/resolver
 boundary and compiler-generated/static JSON constructors/codecs, then bind
 source `JsonValue` to this runtime descriptor.
 
-Source `Map<String, JsonValue>` mutation remains additionally gated on
-commit-aware ownership transfer. A recursive JSON insertion can fail on graph,
-quota, or policy admission; move-only input must not be irreversibly consumed
-before the write commits (or else the failure result must return the
-uncommitted value).
+The runtime/evaluator half of commit-aware ownership transfer is now present.
+`OresKeyedMap.attemptOwnedPut` returns a linear internal result:
+
+- on rejection, `takeRejectedValue()` returns the exact offered object by
+  identity exactly once and live Map storage is unchanged;
+- on commit, `takePrevious()` returns the displaced value exactly once;
+- future JSON-domain indexed writes and named `put` lower through that path,
+  recover the rejected candidate before rethrowing admission failure, and
+  consume the previous-value token after commit.
+
+Source `Map<String, JsonValue>` nevertheless remains gated. The ownership
+checker does not yet model the conditional exceptional edge "move on commit,
+restore on admission failure" for a source-visible move-only Map value.
+General try/catch move tracking is deliberately conservative, so this compiler
+edge must land before recursive Map values are admitted through `alloc/json`.
+Until then, the runtime primitive is executable infrastructure rather than a
+guest-language ownership claim.
