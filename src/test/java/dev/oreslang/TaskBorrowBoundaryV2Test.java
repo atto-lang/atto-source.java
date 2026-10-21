@@ -162,6 +162,37 @@ final class TaskBorrowBoundaryV2Test {
     }
 
     @Test
+    void taskCannotCaptureAnotherFutureAsUnverifiedCrossLaneAuthority() {
+        rejectsWith("""
+                pub async fnc main(): void {
+                  let Future<int> first = task { return 1; };
+                  let Future<int> second = task { return await first; };
+                  await second;
+                  return;
+                }
+                """, "non-Send execution capability");
+    }
+
+    @Test
+    void taskCannotCaptureMutexWithoutSpecificCrossLaneProof() {
+        var parsed = Parser.parse("""
+                pub async fnc main(): void {
+                  let Mutex<int> mutex = Mutex.new(41);
+                  let Future<void> child = task {
+                    val grabbed = mutex;
+                    return;
+                  };
+                  return;
+                }
+                """);
+        var failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(parsed));
+        assertTrue(failure.getMessage().contains("non-Send execution capability"),
+                failure::getMessage);
+    }
+
+    @Test
     void immutableCopyValueMayBeCapturedWithoutMovingParent() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 pub async fnc main(): void {
