@@ -2605,12 +2605,12 @@ public final class ActorRuntime implements AutoCloseable {
             Object value,
             Runnable release,
             Runnable continuation,
-            ActorId sender,
+            ActorRef<?> sender,
             long sequence) implements AutoCloseable {
         private static MessageEnvelope message(
                 Object value,
                 Runnable release,
-                ActorId sender,
+                ActorRef<?> sender,
                 long sequence) {
             if (sequence < 0) {
                 throw new IllegalArgumentException("actor mailbox sequence cannot be negative");
@@ -2770,11 +2770,36 @@ public final class ActorRuntime implements AutoCloseable {
             ActorId recipient,
             Optional<ActorId> sender,
             long sequence,
-            M value) {
+            M value,
+            long recipientGeneration,
+            Optional<Long> senderGeneration) {
+        public ActorInboxMail(
+                ActorId recipient,
+                Optional<ActorId> sender,
+                long sequence,
+                M value) {
+            this(recipient, sender, sequence, value, 0L, Optional.empty());
+        }
+
         public ActorInboxMail {
             Objects.requireNonNull(recipient, "recipient");
             sender = sender == null ? Optional.empty() : sender;
+            senderGeneration =
+                    senderGeneration == null ? Optional.empty() : senderGeneration;
             Objects.requireNonNull(sender, "sender");
+            Objects.requireNonNull(senderGeneration, "senderGeneration");
+            if (recipientGeneration < 0) {
+                throw new IllegalArgumentException(
+                        "actor mailbox recipient generation cannot be negative");
+            }
+            if (senderGeneration.isPresent() && senderGeneration.get() <= 0) {
+                throw new IllegalArgumentException(
+                        "actor mailbox sender generation must be positive when present");
+            }
+            if (sender.isEmpty() && senderGeneration.isPresent()) {
+                throw new IllegalArgumentException(
+                        "host mailbox messages cannot carry an actor sender generation");
+            }
             if (sequence < 0) {
                 throw new IllegalArgumentException("actor mailbox sequence cannot be negative");
             }
@@ -2789,9 +2814,21 @@ public final class ActorRuntime implements AutoCloseable {
     public record ActorOutput<M>(
             ActorId actorId,
             long sequence,
-            M value) {
+            M value,
+            long generation) {
+        public ActorOutput(
+                ActorId actorId,
+                long sequence,
+                M value) {
+            this(actorId, sequence, value, 0L);
+        }
+
         public ActorOutput {
             Objects.requireNonNull(actorId, "actorId");
+            if (generation < 0) {
+                throw new IllegalArgumentException(
+                        "actor output generation cannot be negative");
+            }
             if (sequence < 0) {
                 throw new IllegalArgumentException(
                         "actor output sequence cannot be negative");
@@ -2811,17 +2848,28 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public final class ActorOutputStream<M> {
         private final ActorId actorId;
+        private final long generation;
         private final ChannelRuntime.Channel<ActorOutputEnvelope> channel;
 
         private ActorOutputStream(
                 ActorId actorId,
+                long generation,
                 ChannelRuntime.Channel<ActorOutputEnvelope> channel) {
             this.actorId = Objects.requireNonNull(actorId, "actorId");
+            if (generation <= 0) {
+                throw new IllegalArgumentException(
+                        "actor output stream generation must be positive");
+            }
+            this.generation = generation;
             this.channel = Objects.requireNonNull(channel, "channel");
         }
 
         public ActorId actorId() {
             return actorId;
+        }
+
+        public long generation() {
+            return generation;
         }
 
         public boolean isDone() {
@@ -3163,7 +3211,8 @@ public final class ActorRuntime implements AutoCloseable {
                         new ActorOutput<>(
                                 cell.ref.id(),
                                 sequence,
-                                prepared),
+                                prepared,
+                                cell.ref.generation()),
                         () -> cell.releaseOutput(bytes));
                 if (!cell.outputChannel.tryWrite(envelope)) {
                     throw new IllegalStateException(
@@ -4214,7 +4263,8 @@ public final class ActorRuntime implements AutoCloseable {
          * quota-accounted until the Mailman consumes or teardown drains it.
          */
         public void emit(Object output) {
-            ActorId sender = requireCurrentMember("emit to an ActorGroup Mailman");
+            ActorRef<?> sender =
+                    requireCurrentMemberRef("emit to an ActorGroup Mailman");
             GroupMailmanState<?> state = mailmanState.get();
             if (state == null) {
                 throw new IllegalStateException("ActorGroup has no configured Mailman: " + id);
@@ -4636,11 +4686,11 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         @SuppressWarnings("unchecked")
-        private void emitUntyped(ActorId sender, Object output) {
+        private void emitUntyped(ActorRef<?> sender, Object output) {
             emit(sender, (Out) output);
         }
 
-        private void emit(ActorId sender, Out output) {
+        private void emit(ActorRef<?> sender, Out output) {
             Objects.requireNonNull(sender, "sender");
             Throwable priorFailure = failure.get();
             if (priorFailure != null) {
@@ -4664,10 +4714,11 @@ public final class ActorRuntime implements AutoCloseable {
                 envelope =
                         new GroupMailmanEnvelope<>(
                                 new ActorMail<>(
-                                        sender,
+                                        sender.id(),
                                         group.id,
                                         sequence,
-                                        (Out) frozen.value()),
+                                        (Out) frozen.value(),
+                                        sender.generation()),
                                 frozen.reservation());
 
                 if (!outbox.tryWrite(envelope)) {
@@ -6861,7 +6912,8 @@ public final class ActorRuntime implements AutoCloseable {
             release = () -> cell.releaseSharedMailbox(bytes);
         }
 
-        ActorId sender = currentActorId().orElse(null);
+        ActorCell<?> senderCell = currentActor.get();
+        ActorRef<?> sender = senderCell == null ? null : senderCell.ref;
         MessageEnvelope envelope = null;
         List<OresMutex.Shared<?>> sharedMutexReservations = List.of();
         boolean admitted = false;
@@ -8707,7 +8759,7 @@ public final class ActorRuntime implements AutoCloseable {
             this.outputChannel = new ChannelRuntime.Channel<>(
                     Math.max(1, policy.maxMailboxMessages()));
             this.outputStream = new ActorOutputStream<>(
-                    ref.id(), outputChannel);
+                    ref.id(), ref.generation(), outputChannel);
             ref.outputStream = outputStream;
             actorOutputStreams.add(outputStream);
             this.memorySlice = isPrivateKind(kind)
@@ -9735,11 +9787,18 @@ public final class ActorRuntime implements AutoCloseable {
                         if (activeEnvelope.isContinuation()) {
                             activeEnvelope.continuation().run();
                         } else {
+                            ActorRef<?> sender = activeEnvelope.sender();
                             ActorInboxMail<M> mail = new ActorInboxMail<>(
                                     ref.id(),
-                                    Optional.ofNullable(activeEnvelope.sender()),
+                                    sender == null
+                                            ? Optional.empty()
+                                            : Optional.of(sender.id()),
                                     activeEnvelope.sequence(),
-                                    (M) activeEnvelope.value());
+                                    (M) activeEnvelope.value(),
+                                    ref.generation(),
+                                    sender == null
+                                            ? Optional.empty()
+                                            : Optional.of(sender.generation()));
                             activeMail = mail;
                             try {
                                 if (codeExecutor != null) {

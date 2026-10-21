@@ -28,6 +28,8 @@ final class ActorGroupMailmanTest {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
             ActorRuntime.ActorGroupJoinCapability join = group.joinCapability();
             AtomicReference<ActorGroupContext> captured = new AtomicReference<>();
+            AtomicReference<ActorRuntime.ActorRef<Integer>> emitterRef =
+                    new AtomicReference<>();
             AtomicReference<Throwable> failure = new AtomicReference<>();
             CountDownLatch first = new CountDownLatch(1);
             CountDownLatch second = new CountDownLatch(1);
@@ -35,6 +37,10 @@ final class ActorGroupMailmanTest {
             group.installMailman(4, (mail, context) -> {
                 try {
                     assertEquals(group.id(), context.groupId());
+                    assertEquals(emitterRef.get().id(), mail.actor());
+                    assertEquals(
+                            emitterRef.get().generation(),
+                            mail.actorGeneration());
                     if (captured.compareAndSet(null, context)) {
                         first.countDown();
                     } else {
@@ -54,6 +60,7 @@ final class ActorGroupMailmanTest {
                 join.join();
                 group.emit(message);
             });
+            emitterRef.set(emitter);
             emitter.send(1);
             assertTrue(first.await(5, TimeUnit.SECONDS));
             expectSecurity(captured.get()::groupId, "context escaped to host thread");
