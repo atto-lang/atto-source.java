@@ -11,6 +11,54 @@ import org.junit.jupiter.api.Timeout;
 @Timeout(20)
 final class ActorShardColumnsTest {
     @Test
+    void zeroCopySoaLeaseEnforcesFrozenRegionAndTransactionalClose() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch done = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            AtomicReference<ActorShardColumns.ReadOnlyColumnLease> retained = new AtomicReference<>();
+            var actor = runtime.<Integer>spawnSharedTrusted(ctx -> (message, turn) -> {
+                try {
+                    ActorShardColumns shard =
+                            new ActorShardColumns(ActorShardColumns.Layout.SOA, 8, 2, 1);
+                    for (int row = 0; row < 8; row++) shard.write(row, 1, row + 0.25);
+                    var lease = shard.leaseColumnReadOnly(1);
+                    retained.set(lease);
+                    assertEquals(8, lease.length());
+                    for (int row = 0; row < 8; row++) {
+                        assertEquals(row + 0.25, lease.read(row));
+                    }
+                    assertThrows(IndexOutOfBoundsException.class, () -> lease.read(8));
+                    assertThrows(IllegalStateException.class, () -> shard.write(1, 1, 17));
+                    assertThrows(IllegalStateException.class, () -> shard.integrate(0, 1, 0.1));
+                    assertThrows(IllegalStateException.class, shard::close);
+                    assertEquals(0.25, lease.read(0), "failed close must preserve the lease");
+                    lease.close();
+                    lease.close();
+                    assertThrows(IllegalStateException.class, () -> lease.read(0));
+                    shard.write(1, 1, 17);
+                    assertEquals(17.0, shard.read(1, 1));
+                    shard.close();
+                    try (var aos = new ActorShardColumns(ActorShardColumns.Layout.AOS, 8, 2, 1)) {
+                        assertThrows(UnsupportedOperationException.class,
+                                () -> aos.leaseColumnReadOnly(0));
+                    }
+                } catch (Throwable error) {
+                    failure.set(error);
+                } finally {
+                    done.countDown();
+                }
+            });
+            actor.send(1);
+            assertTrue(done.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            assertThrows(SecurityException.class, () -> retained.get().read(0));
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0, runtime.actorMemoryBytes());
+        }
+    }
+
+    @Test
     void groupedSoaosKeepsEveryRowAndFieldDistinct() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var finished = new CountDownLatch(1);
