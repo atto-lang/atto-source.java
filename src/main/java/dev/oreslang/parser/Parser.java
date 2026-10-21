@@ -510,6 +510,8 @@ public final class Parser {
         Token.Type classTerminator = braceStyle ? RBRACE : END;
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
+        boolean stateSchemaSeen = false;
+        boolean legacyActorFieldSeen = false;
         Ast.ConstructorDecl constructor = null;
 
         while (!check(classTerminator) && !check(EOF)) {
@@ -729,6 +731,8 @@ public final class Parser {
         return match(WHEN) || matchContextualIdentifier("when");
     }
 
+    private static final String ACTOR_STATE_SCHEMA_ANNOTATION = "__actor_state_schema";
+
     private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility) {
         String name = consume(IDENT, "expected actor name").lexeme();
         List<String> generics = parseGenericParameters();
@@ -758,12 +762,39 @@ public final class Parser {
                         "declarations cannot be nested inside actors; declare nested types at file or module scope");
             }
 
+            if (isContextualIdentifier("state")) {
+                if (!annotations.isEmpty()) {
+                    throw error(peek(), "actor state schema does not accept annotations");
+                }
+                validateNoModifiers(mods, "actor state schema");
+                if (stateSchemaSeen) {
+                    throw error(peek(), "actor may declare only one state { ... } schema");
+                }
+                if (legacyActorFieldSeen) {
+                    throw error(peek(),
+                            "actor state schema cannot be mixed with legacy free-standing actor fields");
+                }
+                parseActorStateSchema(fields);
+                stateSchemaSeen = true;
+                continue;
+            }
+
             if (isBindingKind(peek().type())) {
+                if (stateSchemaSeen) {
+                    throw error(peek(),
+                            "free-standing actor fields cannot follow state { ... }; put persistent data inside the single state schema");
+                }
+                legacyActorFieldSeen = true;
                 validateActorFieldModifiers(mods);
                 fields.add(parseField(annotations, mods.visibility));
                 continue;
             }
             if (isContextualIdentifier("final") && checkNext(IDENT)) {
+                if (stateSchemaSeen) {
+                    throw error(peek(),
+                            "free-standing actor fields cannot follow state { ... }; put persistent data inside the single state schema");
+                }
+                legacyActorFieldSeen = true;
                 validateActorFieldModifiers(mods);
                 fields.add(parseFinalActorField(annotations, mods.visibility));
                 continue;
@@ -803,6 +834,64 @@ public final class Parser {
                 : "expected 'end' to close actor " + name);
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods);
+    }
+
+    private void parseActorStateSchema(List<Ast.FieldDecl> fields) {
+        consumeContextualIdentifier("state", "expected 'state'");
+        consume(LBRACE, "actor state schema must use 'state { ... }'");
+
+        java.util.Set<String> names = new java.util.LinkedHashSet<>();
+        while (!check(RBRACE) && !check(EOF)) {
+            List<Ast.Annotation> annotations = parseAnnotations();
+            if (!annotations.isEmpty()) {
+                throw error(peek(), "actor state fields do not accept annotations yet");
+            }
+            Modifiers modifiers = parseModifiers();
+            validateNoModifiers(modifiers, "actor state fields");
+
+            Ast.FieldDecl field;
+            if (check(IDENT) && checkNext(COLON)) {
+                String fieldName = advance().lexeme();
+                consume(COLON, "expected ':' after actor state field name");
+                Ast.TypeRef type = parseTypeRef();
+                Ast.Expr initializer = match(EQUAL) ? parseExpression() : null;
+                consumeExpressionClassFieldTerminator(
+                        initializer, "actor state field should end with ';'");
+                field = new Ast.FieldDecl(
+                        fieldName,
+                        Ast.Visibility.PRIVATE,
+                        Ast.BindingKind.LET,
+                        type,
+                        List.of(),
+                        initializer,
+                        false);
+            } else if (isBindingKind(peek().type())) {
+                field = parseField(List.of(), Ast.Visibility.PRIVATE);
+            } else if (isContextualIdentifier("final") && checkNext(IDENT)) {
+                field = parseFinalActorField(List.of(), Ast.Visibility.PRIVATE);
+            } else {
+                throw error(peek(),
+                        "actor state schema accepts only typed fields such as 'revision: int = 0;'");
+            }
+
+            if (!names.add(field.name())) {
+                throw error(previous(),
+                        "duplicate actor state field '" + field.name() + "'");
+            }
+
+            List<Ast.Annotation> marked = new ArrayList<>(field.annotations());
+            marked.add(new Ast.Annotation(ACTOR_STATE_SCHEMA_ANNOTATION, List.of()));
+            fields.add(new Ast.FieldDecl(
+                    field.name(),
+                    Ast.Visibility.PRIVATE,
+                    field.bindingKind(),
+                    field.type(),
+                    marked,
+                    field.initializer(),
+                    field.mutableReferent()));
+        }
+
+        consume(RBRACE, "expected '}' to close actor state schema");
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {
