@@ -3301,8 +3301,7 @@ public final class Parser {
         }
         if (match(BANG, TILDE, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
         if (match(AMP)) {
-            boolean mutable = match(MUT);
-            return new Ast.UnaryExpr(mutable ? "&mut" : "&", parseUnary());
+            throw error(previous(), "use rt borrow or rt mut borrow; unary pointer syntax is not supported");
         }
         if (match(AWAIT)) return new Ast.AwaitExpr(parseUnary());
 
