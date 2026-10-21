@@ -3133,12 +3133,29 @@ public final class Parser {
     }
 
     private Ast.Expr parseConditional() {
-        Ast.Expr condition = parseLogicalOr();
+        Ast.Expr condition = parseRecordUpdate();
         if (!match(QUESTION)) return condition;
         Ast.Expr whenTrue = parseAssignment();
         consume(COLON, "expected ':' in ternary expression");
         Ast.Expr whenFalse = parseConditional();
         return new Ast.ConditionalExpr(condition, whenTrue, whenFalse);
+    }
+
+    /**
+     * Immutable structural-record update/extension.
+     *
+     * <p>`with` is contextual rather than globally reserved. The RHS grammar
+     * is deliberately a statically keyed record literal body, so a runtime
+     * string can never change the compile-time row type.</p>
+     */
+    private Ast.Expr parseRecordUpdate() {
+        Ast.Expr expr = parseLogicalOr();
+        while (matchContextualIdentifier("with")) {
+            Ast.ObjectExpr updates =
+                    parseObjectLiteral(Ast.ObjectKind.RECORD, List.of());
+            expr = new Ast.BinaryExpr("with", expr, updates);
+        }
+        return expr;
     }
 
     private Ast.Expr parseLogicalOr() {
