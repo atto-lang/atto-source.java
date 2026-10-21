@@ -4292,6 +4292,12 @@ public final class TypeChecker {
                     "gpu task requires verified device kernel lowering, owned device buffers "
                     + "and asynchronous completion fences; GPU-to-CPU fallback is forbidden");
         }
+        if (task.executionDomain() == Ast.TaskExpr.ExecutionDomain.CPU
+                && currentActorKind != Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException(
+                    "cpu task cannot offload from an actor until isolated capture "
+                    + "and off-actor scheduling are verified; use the ordinary actor task form");
+        }
         Env child = new Env(env);
         Map<Env.Binding, Set<String>> initializedBefore = env.initializationSnapshot();
         Ast.ClassDecl previousClass = currentClassOwner;
