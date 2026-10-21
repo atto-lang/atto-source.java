@@ -1440,11 +1440,24 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             SourceTask task = new SourceTask(taskExpr.body(), true);
-            task.initialBlockEnv = env.detachedTaskSnapshot(admitted);
+            Env.DetachedTaskSnapshot transfer =
+                    env.detachedTaskSnapshot(admitted);
+            task.initialBlockEnv = transfer.environment();
             OresScheduler current = OresScheduler.current();
-            return (current != null
-                    ? current
-                    : context.vm().rootScheduler()).start(task);
+            OresScheduler scheduler =
+                    current != null ? current : context.vm().rootScheduler();
+            try {
+                OresFuture<Object> future = scheduler.start(task);
+                transfer.commit();
+                return future;
+            } catch (RuntimeException | Error failure) {
+                // OresScheduler.start only throws before successful admission;
+                // post-admission enqueue failures settle the returned Future.
+                // Restore parent MOVE slots only for this pre-admission path.
+                task.initialBlockEnv = null;
+                transfer.rollback();
+                throw failure;
+            }
         }
 
         private OresFuture<Object> startSourceMethodTask(
@@ -9697,11 +9710,56 @@ public final class OresEvalRootNode extends RootNode {
             return cp;
         }
 
-        private Env detachedTaskSnapshot(
+        private record MovedTaskSlot(Slot slot, Object value) { }
+
+        private static final class DetachedTaskSnapshot {
+            private final Env environment;
+            private final ArrayList<MovedTaskSlot> moved;
+            private boolean resolved;
+
+            private DetachedTaskSnapshot(
+                    Env environment,
+                    ArrayList<MovedTaskSlot> moved) {
+                this.environment =
+                        Objects.requireNonNull(environment, "detached Task environment");
+                this.moved = Objects.requireNonNull(moved, "moved Task slots");
+            }
+
+            private Env environment() {
+                return environment;
+            }
+
+            private void commit() {
+                if (resolved) {
+                    throw new IllegalStateException(
+                            "Task capture transfer was already resolved");
+                }
+                resolved = true;
+                moved.clear();
+            }
+
+            private void rollback() {
+                if (resolved) return;
+                for (int i = moved.size() - 1; i >= 0; i--) {
+                    MovedTaskSlot movedSlot = moved.get(i);
+                    if (movedSlot.slot().value != MOVED_TASK_CAPTURE) {
+                        throw new IllegalStateException(
+                                "Task capture source changed before admission rollback");
+                    }
+                    movedSlot.slot().value = movedSlot.value();
+                }
+                moved.clear();
+                resolved = true;
+            }
+        }
+
+        private DetachedTaskSnapshot detachedTaskSnapshot(
                 Map<String, Ast.TaskCaptureTransfer> admissions) {
             Objects.requireNonNull(admissions, "Task capture admissions");
             preflightTaskCaptures(admissions);
-            return detachedTaskSnapshotUnchecked(admissions);
+            ArrayList<MovedTaskSlot> moved = new ArrayList<>();
+            Env detached = detachedTaskSnapshotUnchecked(admissions, moved);
+            return new DetachedTaskSnapshot(detached, moved);
         }
 
         private void preflightTaskCaptures(
@@ -9730,7 +9788,8 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Env detachedTaskSnapshotUnchecked(
-                Map<String, Ast.TaskCaptureTransfer> admissions) {
+                Map<String, Ast.TaskCaptureTransfer> admissions,
+                ArrayList<MovedTaskSlot> moved) {
             LinkedHashMap<String, Ast.TaskCaptureTransfer> unresolvedParents =
                     new LinkedHashMap<>(admissions);
             for (String localName : slots.keySet()) {
@@ -9741,7 +9800,7 @@ public final class OresEvalRootNode extends RootNode {
                     parent == null
                             ? null
                             : parent.detachedTaskSnapshotUnchecked(
-                                    unresolvedParents),
+                                    unresolvedParents, moved),
                     descendantsNonLexical,
                     accessClass,
                     null,
@@ -9759,6 +9818,7 @@ public final class OresEvalRootNode extends RootNode {
                 // identity and poisons the parent slot before the child can
                 // run. No recursive cloning is used for ownership transfer.
                 if (transfer == Ast.TaskCaptureTransfer.MOVE) {
+                    moved.add(new MovedTaskSlot(source, captured));
                     source.value = MOVED_TASK_CAPTURE;
                 }
 
