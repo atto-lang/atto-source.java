@@ -169,7 +169,7 @@ final class ScopedTaskBorrowPermitTest {
 
                         pub routine main(): void {
                             val Box box = new Box();
-                            val ref = rt borrow mut box;
+                            val ref = rt mut borrow box;
                             nb scope {
                                 let worker = nb {
                                     stdio.stdout.write(ref.value);
