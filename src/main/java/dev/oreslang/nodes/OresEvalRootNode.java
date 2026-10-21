@@ -6658,10 +6658,8 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
                     return BooleanOpsNamespace.INSTANCE;
                 }
-                if (name.name().equals("print")) return (Invokable) args -> {
-                    context.requireCapability(IsolatePolicy.Capability.STDOUT, "print");
-                    requireOne(args, "print"); context.output().print(display(args.getFirst())); context.output().flush(); return null;
-                };
+                if (name.name().equals("print")) return (Invokable) args ->
+                        strictNonblockingIoRejected("print");
                 if (name.name().equals("Some")) return (Invokable) args -> {
                     requireOne(args, "Some");
                     return new OptionValue(true, args.getFirst());
