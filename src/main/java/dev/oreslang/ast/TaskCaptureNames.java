@@ -8,9 +8,9 @@ import java.util.Set;
 /**
  * Conservative, lexically scoped inventory of referenced parent names.
  *
- * This inventory only controls which slots are copied at eager Task
- * submission. Ownership/Send/borrow authority MUST still come from the
- * independently executed type and ownership passes. Nested Tasks, closures,
+ * This inventory is a runtime consistency check over lexical free names.
+ * Actual COPY/MOVE authority comes only from the identity-bound admission
+ * published by the ownership checker. Nested Tasks, closures,
  * select callbacks and cleanup bodies are traversed transitively; unknown
  * AST forms fail closed. A name is captured only when no lexical local of
  * the same name is visible at that expression.
@@ -63,7 +63,9 @@ public final class TaskCaptureNames {
         } else if (stmt instanceof Ast.IfStmt s) {
             for (Ast.IfBranch branch : s.branches()) {
                 visitExpr(branch.condition(), locals, names);
-                visitBody(branch.body(), locals, names);
+                Set<String> branchLocals = new HashSet<>(locals);
+                bindCondition(branch.condition(), branchLocals);
+                visitBody(branch.body(), branchLocals, names);
             }
             visitBody(s.elseBody(), locals, names);
         } else if (stmt instanceof Ast.MatchStmt s) {
@@ -122,6 +124,21 @@ public final class TaskCaptureNames {
                 || stmt instanceof Ast.ContinueStmt)) {
             throw new IllegalStateException("unsupported Task capture statement: "
                     + stmt.getClass().getName());
+        }
+    }
+
+    private static void bindCondition(
+            Ast.Expr condition,
+            Set<String> locals) {
+        if (condition instanceof Ast.TypeTestExpr test
+                && test.binding() != null) {
+            locals.add(test.binding());
+        } else if (condition instanceof Ast.PatternTestExpr test) {
+            bindPattern(test.pattern(), locals);
+        } else if (condition instanceof Ast.BinaryExpr binary
+                && binary.operator().equals("&&")) {
+            bindCondition(binary.left(), locals);
+            bindCondition(binary.right(), locals);
         }
     }
 
