@@ -93,6 +93,39 @@ final class OresJsonValueTest {
     }
 
     @Test
+    void ownedPutAttemptReturnsExactOfferedValueOnRejection() {
+        OresKeyedMap<String, OresJsonValue> fields =
+                OresJsonValue.objectMap();
+        OresJsonValue kept = OresJsonValue.of("kept");
+        fields.put("x", kept);
+
+        OresJsonValue self = OresJsonValue.object(fields);
+        OresKeyedMap.OwnedPutAttempt<OresJsonValue> rejected =
+                fields.attemptOwnedPut("self", self);
+
+        assertFalse(rejected.committed());
+        assertNull(rejected.previous());
+        assertSame(self, rejected.rejectedValue(),
+                "rollback must return the exact offered move-only value");
+        assertNotNull(rejected.rejection());
+        assertTrue(rejected.rejection().getMessage().contains("cyclic"),
+                rejected.rejection().getMessage());
+        assertFalse(fields.containsKey("self"));
+        assertSame(kept, fields.getRequired("x"),
+                "rejected insertion must preserve previous live storage");
+
+        OresJsonValue replacement = OresJsonValue.of("replacement");
+        OresKeyedMap.OwnedPutAttempt<OresJsonValue> committed =
+                fields.attemptOwnedPut("x", replacement);
+
+        assertTrue(committed.committed());
+        assertSame(kept, committed.previous());
+        assertNull(committed.rejectedValue());
+        assertNull(committed.rejection());
+        assertSame(replacement, fields.getRequired("x"));
+    }
+
+    @Test
     void directSelfCycleIsRejectedBeforeMutation() {
         OresKeyedMap<String, OresJsonValue> fields =
                 OresJsonValue.objectMap();
