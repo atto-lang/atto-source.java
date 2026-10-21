@@ -126,6 +126,31 @@ Only exported (`pub`) module members satisfy a module contract. Contracts may re
 
 A module contract is not a class/struct interface and cannot be implemented by a class or actor.
 
+Static class namespaces use a separate compile-time contract domain:
+
+```ores
+define static contract Factory<T> as
+  fnc make(T value) -> T;
+end
+
+define class IntFactory implements static Factory<int> as
+  pub static fnc make(int value) -> int {
+    return value;
+  }
+end
+```
+
+V1 static contracts are callable-only. Only public **local** `static fnc`
+members satisfy them; instance methods, private static functions and inherited
+static functions do not. A non-generic class may specialize a generic static
+contract, while generic-class static-side conformance remains fail-closed until
+its substitution rules are explicit. Static contract fields are rejected until
+class static storage, initialization, ownership and hot-reload semantics exist.
+Module contract fields remain a separate supported feature.
+
+Class `static fnc` implementations remain brace-bodied; the free/module
+`-> Type ... end` body syntax does not broaden class-member grammar.
+
 ## Functions and returns
 
 Functions use `fnc` and are private by default. `pub` exports them. Named callables and braced lambda bodies use explicit return statements; a non-`void` named callable or braced lambda must return on every control-flow path. Expression-bodied lambdas are the deliberate compact exception: their sole expression is the return value.
