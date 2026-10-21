@@ -618,6 +618,33 @@ public final class OresEvalRootNode extends RootNode {
                         "source actor mailbox dispatch does not match actor-owned state");
             }
 
+            if (actorContext.currentMailIsUnaryCall()) {
+                Ast.MethodDecl unary = findMethod(
+                        state.object().klass,
+                        CallableSelector.instance("run", 1));
+                if (unary == null) {
+                    throw new IllegalStateException(
+                            "actor '" + state.object().klass.name()
+                                    + "' has no unary run(Request) handler");
+                }
+                // Do not export a reply port into a suspended source frame.
+                // The call envelope owns it until the synchronous handler
+                // returns and ActorRuntime commits the staged reply.
+                if (methodContainsPotentialSuspension(unary)
+                        || unary.body().stream().anyMatch(this::containsSourceLoop)) {
+                    throw new IllegalStateException(
+                            "unary run(Request) cannot suspend until reply-port continuation lowering exists");
+                }
+                Object response = invoke(methodInvocation(
+                        state.object(), unary, List.of(mail.value())));
+                if (response == null) {
+                    throw new IllegalStateException(
+                            "unary run(Request) must return a non-void response");
+                }
+                actorContext.replyCurrentCall(response);
+                return;
+            }
+
             Ast.MethodDecl receive =
                     findMethod(
                             state.object().klass,
@@ -7513,6 +7540,11 @@ public final class OresEvalRootNode extends RootNode {
                         requireOne(args, "ActorRef.send");
                         typedRef.send(args.getFirst());
                         return null;
+                    };
+                    case "request" -> (Invokable) args -> {
+                        requireOne(args, "ActorRef.request");
+                        return context.actors().requestSourceUnary(
+                                typedRef, args.getFirst());
                     };
                     case "stop" -> (Invokable) args -> {
                         requireZero(args, "ActorRef.stop");
