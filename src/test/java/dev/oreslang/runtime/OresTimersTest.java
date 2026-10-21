@@ -258,6 +258,10 @@ final class OresTimersTest {
             assertNull(timer.getDone().get(5, TimeUnit.SECONDS));
             assertEquals(1, calls.get());
             assertFalse(timer.cancel());
+            long limit = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (timers.activeCallbackCount() != 0 && System.nanoTime() < limit) {
+                Thread.sleep(1);
+            }
             assertEquals(0, timers.activeCallbackCount());
         }
     }
