@@ -398,9 +398,10 @@ public final class ActorNativeArena implements AutoCloseable {
         return cell;
     }
 
-    public final class ValueCell implements NativeValue {
+    public final class ValueCell implements NativeValue, AutoCloseable {
         private final long slot;
         private final Object uninitialized;
+        private boolean retired;
 
         private ValueCell(long slot, Object uninitialized) {
             this.slot = slot;
@@ -409,16 +410,21 @@ public final class ActorNativeArena implements AutoCloseable {
 
         @Override public ActorNativeArena nativeArena() { return ActorNativeArena.this; }
 
+        private void checkLive() {
+            checkAccess();
+            if (retired) throw new IllegalStateException("native lexical value cell was retired");
+        }
+
         @Override public long nativeOffset() {
             synchronized (ActorNativeArena.this) {
-                checkAccess();
+                checkLive();
                 return slot;
             }
         }
 
         public Object get() {
             synchronized (ActorNativeArena.this) {
-                checkAccess();
+                checkLive();
                 return loadValue(slot, uninitialized);
             }
         }
@@ -430,10 +436,23 @@ public final class ActorNativeArena implements AutoCloseable {
          */
         public boolean trySet(Object value) {
             synchronized (ActorNativeArena.this) {
-                checkAccess();
+                checkLive();
                 if (!supportsValue(value, uninitialized)) return false;
                 storeValue(slot, value, uninitialized);
                 return true;
+            }
+        }
+
+        /** Retire an owner-validated lexical slot only after ownership analysis
+         * proves the value dead. The referenced native facade root is released
+         * immediately, but the physical slab persists until actor teardown.
+         */
+        @Override public void close() {
+            synchronized (ActorNativeArena.this) {
+                checkAccess();
+                if (retired) return;
+                storeValue(slot, null, uninitialized);
+                retired = true;
             }
         }
     }
