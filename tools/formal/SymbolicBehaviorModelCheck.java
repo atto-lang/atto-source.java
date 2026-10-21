@@ -88,12 +88,19 @@ public final class SymbolicBehaviorModelCheck {
         private final int[][] conservation;
 
         Net(List<OresSymbol> places, List<NetRule> transitions, int[][] conservation) {
-            this.places = List.copyOf(places);
-            this.transitions = List.copyOf(transitions);
-            this.conservation = Arrays.stream(conservation).map(int[]::clone).toArray(int[][]::new);
+            require(places != null && transitions != null && conservation != null,
+                    "null net definition");
             require(!places.isEmpty() && places.size() <= 64
                     && transitions.size() <= 256 && conservation.length <= 64,
                     "empty or excessive finite net definition");
+            // Check dimensions before copying: cloning a null row otherwise
+            // leaks an unchecked NPE instead of a fail-closed admission error.
+            for (int[] invariant : conservation)
+                require(invariant != null && invariant.length == places.size(),
+                        "invalid P-invariant row");
+            this.places = List.copyOf(places);
+            this.transitions = List.copyOf(transitions);
+            this.conservation = Arrays.stream(conservation).map(int[]::clone).toArray(int[][]::new);
             require(new HashSet<>(places).size() == places.size(), "duplicate places");
             Set<OresSymbol> names = new HashSet<>();
             for (NetRule rule : transitions) {
@@ -121,8 +128,10 @@ public final class SymbolicBehaviorModelCheck {
         }
 
         int[] fire(int[] marking, NetRule transition) {
-            require(marking.length == places.size(), "marking dimension mismatch");
-            require(transitions.contains(transition), "unregistered net transition");
+            require(marking != null && marking.length == places.size(),
+                    "marking dimension mismatch");
+            require(transition != null && transitions.contains(transition),
+                    "unregistered net transition");
             int[] input = transition.consume();
             int[] output = transition.produce();
             // Validate the complete marking before checking whether firing is disabled;
@@ -222,6 +231,12 @@ public final class SymbolicBehaviorModelCheck {
                 new NetRule(sym("leak"), new int[]{1, 0}, new int[]{0, 0})),
                 new int[][]{{1, 1}}), "invalid P-invariant accepted");
         rejects(() -> new Net(List.of(fa, fa), List.of(), new int[0][]), "duplicate places accepted");
+        rejects(() -> new Net(List.of(fa, ha), List.of(), new int[][]{null}),
+                "null P-invariant row accepted");
+        rejects(() -> new Net(List.of(fa, ha), List.of(), null),
+                "null P-invariant list accepted");
+        rejects(() -> net.fire(null, acquireA),
+                "null marking accepted by Petri transition");
         rejects(() -> net.fire(new int[]{0, -1, 1, 0}, acquireA),
                 "disabled transition masked malformed marking");
         rejects(() -> net.totals(new int[]{1, -1, 1, 0}),
