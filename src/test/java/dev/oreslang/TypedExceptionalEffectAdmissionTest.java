@@ -115,7 +115,7 @@ final class TypedExceptionalEffectAdmissionTest {
                 pub fnc fail(): int {
                   panic "boom";
                 }
-                """, BuildOptions.library());
+                """, BuildOptions.library(java.util.Map.of()));
 
         Ast.FunctionDecl fail = result.program().modules().stream()
                 .flatMap(module -> module.declarations().stream())
