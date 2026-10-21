@@ -36,6 +36,22 @@ def metadata(name, repo_id, **extra):
 
 
 class MirrorGateTest(unittest.TestCase):
+    def test_historical_incident_destination_is_quarantined_before_tokens_or_network(self):
+        for destination in ("zed-pkg-test/java-app", "ZED-PKG-TEST/JAVA-APP"):
+            calls = []
+            def fetch(name, token):
+                calls.append((name, token))
+                return metadata(name, 21 if name == "private/src" else 34)
+            with self.subTest(destination=destination):
+                with self.assertRaisesRegex(
+                    admission.MirrorPreflightError, "quarantined"
+                ):
+                    admission.verify(
+                        "private/src", destination, 21, 34,
+                        None, None, fetch=fetch,
+                    )
+                self.assertEqual(calls, [])
+
     def test_private_source_and_destination_with_pinned_ids_admitted(self):
         def fetch(name, _token):
             return metadata(name, 21 if name == "private/src" else 34)
