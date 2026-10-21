@@ -103,8 +103,9 @@ public final class TypeChecker {
     private boolean currentMaySuspend;
     private int loopDepth;
     private boolean inDiscardingSelectArm;
-    // Scoped collector, active only while checking an unannotated Task block.
+    // Scoped collector used by independently returning Task and CPU regions.
     private List<Type> inferredTaskReturnTypes;
+    private int synchronousCpuRegionDepth;
     private final List<String> warnings = new ArrayList<>();
 
     /** Non-fatal compiler diagnostics, detached from mutable checker state. */
@@ -2444,6 +2445,9 @@ public final class TypeChecker {
                 return new Named("ActorRef", List.of(actorType));
             }
             if (runtime.operation().equals("cooperate")) {
+                if (synchronousCpuRegionDepth != 0) {
+                    throw new IllegalArgumentException("cpu { } cannot cooperatively suspend; use cpu task { }");
+                }
                 if (!runtime.arguments().isEmpty()) {
                     throw new IllegalArgumentException("rt cooperate takes no arguments");
                 }
@@ -3779,6 +3783,9 @@ public final class TypeChecker {
             return nominal;
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
+            if (synchronousCpuRegionDepth != 0) {
+                throw new IllegalArgumentException("cpu { } is synchronous: await requires a Task or async region");
+            }
             Type awaitedType = typeOf(awaited.expression(), env, generics, self);
             if (awaitedType instanceof Named named
                     && (named.name().equals("Future") || named.name().equals("Task"))
@@ -3986,6 +3993,9 @@ public final class TypeChecker {
                 }
             }
             return new Record(members, object.inferredStruct());
+        }
+        if (expr instanceof Ast.CpuRegionExpr cpu) {
+            return checkCpuRegion(cpu, Unknown.INSTANCE, env, generics, self);
         }
         if (expr instanceof Ast.TaskExpr task) {
             return checkTaskBlock(task, Unknown.INSTANCE, env, generics, self);
@@ -4281,6 +4291,56 @@ public final class TypeChecker {
     }
 
     /**
+     * A cpu block executes eagerly on the current CPU carrier. Returns and
+     * lexical locals belong to this region, not the surrounding callable.
+     * No await, rt cooperate, or suspension-required user call may cross
+     * the synchronous region.
+     */
+    private Type checkCpuRegion(Ast.CpuRegionExpr cpu, Type expected, Env env,
+                                Set<String> generics, Type self) {
+        Env child = new Env(env);
+        List<Type> previousInference = inferredTaskReturnTypes;
+        boolean previousMaySuspend = currentMaySuspend;
+        List<Type> discovered = expected == Unknown.INSTANCE ? new ArrayList<>() : null;
+        inferredTaskReturnTypes = discovered;
+        currentMaySuspend = false;
+        synchronousCpuRegionDepth++;
+        try {
+            checkCallableBlock(cpu.body(), child, generics, expected, self);
+        } finally {
+            synchronousCpuRegionDepth--;
+            currentMaySuspend = previousMaySuspend;
+            inferredTaskReturnTypes = previousInference;
+        }
+        Type result = expected;
+        if (result == Unknown.INSTANCE) {
+            if (discovered.isEmpty()) {
+                result = Primitive.VOID;
+            } else {
+                result = discovered.getFirst();
+                for (int i = 1; i < discovered.size(); i++) {
+                    Type joined = capabilitySafeEquivalentJoin(result, discovered.get(i));
+                    if (joined == null) {
+                        throw new IllegalArgumentException(
+                                "cpu { } has incompatible return types: "
+                                        + result + " and " + discovered.get(i));
+                    }
+                    result = joined;
+                }
+            }
+        }
+        if (result != Primitive.VOID && !definitelyReturns(cpu.body())) {
+            throw new IllegalArgumentException("cpu { } must return a value on every path");
+        }
+        if (result instanceof Borrow || result == Unknown.INSTANCE) {
+            throw new IllegalArgumentException(
+                    "cpu { } cannot return an unproven or borrowed region-local value");
+        }
+        cpu.bindResultType(taskOwnershipResultRef(result));
+        return result;
+    }
+
+    /**
      * A Task runs after the enclosing function continues, so source analysis
      * cannot credit Task assignments toward parent definite initialization.
      * Neither can a child inherit constructor-only field write privileges.
@@ -4395,6 +4455,9 @@ public final class TypeChecker {
     }
 
     private Type typeOfAgainstExpected(Ast.Expr expr, Type expected, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.CpuRegionExpr cpu) {
+            return checkCpuRegion(cpu, expected, env, generics, self);
+        }
         if (expr instanceof Ast.TaskExpr task
                 && expected instanceof Named named
                 && (named.name().equals("Task") || named.name().equals("Future"))
