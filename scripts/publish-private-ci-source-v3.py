@@ -149,8 +149,7 @@ def read_local_protected_file(root, path, max_bytes):
     if (not parts or path.startswith("/") or "\\" in path
             or any(part in ("", ".", "..", ".git") for part in parts)):
         raise Denied("invalid protected local file path")
-    if (not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW")
-            or not hasattr(os, "O_NONBLOCK")):
+    if not legacy.safe_descriptor_flags_available():
         raise Denied("OS cannot safely read protected local files")
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
@@ -835,14 +834,8 @@ def authorize_write(root, repository, approved_policy, contract):
     are the state that can change between individual writes, so those are
     rechecked immediately before every write.
     """
-    current_policy, current_repository_id = legacy.checked_policy_approval(
-        root, repository
-    )
-    if (current_policy != approved_policy
-            or current_repository_id != contract["repository_id"]):
-        raise Denied(
-            "private CI destination approval or repository identity changed during transfer"
-        )
+    if legacy.checked_policy_fingerprint(root, repository) != approved_policy:
+        raise Denied("private CI destination approval policy changed during transfer")
     repo = legacy.checked_repo(repository, contract["repository_id"])
     if (repo.get("id") != contract["repository_id"]
             or repo.get("archived") is not False
