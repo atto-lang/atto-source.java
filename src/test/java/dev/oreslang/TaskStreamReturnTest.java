@@ -166,7 +166,7 @@ final class TaskStreamReturnTest {
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         pub routine main(): void {
-                            let Stream<&int> stream = Stream.new<&int>(2);
+                            let Stream<borrow int> stream = Stream.new<borrow int>(2);
                             return;
                         }
                         """)));
