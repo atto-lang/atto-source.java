@@ -68,7 +68,10 @@ public final class OresMutex {
             int depth) {
         if (value == null) return false;
         if (value instanceof ActorNativeArena.NativeValue) return true;
-        if (depth > 128 || seen.put(value, Boolean.TRUE) != null) return false;
+        // Depth exhaustion is a security rejection, never evidence that a
+        // graph is safe to publish.
+        if (depth > 128) return true;
+        if (seen.put(value, Boolean.TRUE) != null) return false;
         try {
             if (value instanceof SharedState state) {
                 for (Object child : state.sharedStateChildren()) {
