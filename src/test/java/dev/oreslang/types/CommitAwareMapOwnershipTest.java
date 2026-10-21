@@ -33,16 +33,11 @@ final class CommitAwareMapOwnershipTest {
     void isolatedRejectedWriteRestoresCandidateOnCatchEdge() {
         String source = isolatedRejectedWrite();
 
-        // Existing conservative ownership poisons every move observed in try.
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> OwnershipChecker.check(Parser.parse(source)));
-
-        // Staged commit-aware lowering distinguishes admission rejection from
-        // the successful commit edge.
+        // Production ownership analysis distinguishes admission rejection
+        // from the successful commit edge. TypeChecker still gates this
+        // move-only Map value domain from ordinary source compilation.
         assertDoesNotThrow(
-                () -> OwnershipChecker.checkWithCommitAwareMapWritesForTesting(
-                        Parser.parse(source)));
+                () -> OwnershipChecker.check(Parser.parse(source)));
     }
 
     @Test
@@ -69,8 +64,7 @@ final class CommitAwareMapOwnershipTest {
 
         assertThrows(
                 IllegalArgumentException.class,
-                () -> OwnershipChecker.checkWithCommitAwareMapWritesForTesting(
-                        Parser.parse(source)));
+                () -> OwnershipChecker.check(Parser.parse(source)));
     }
 
     @Test
@@ -97,8 +91,7 @@ final class CommitAwareMapOwnershipTest {
                 """;
 
         assertDoesNotThrow(
-                () -> OwnershipChecker.checkWithCommitAwareMapWritesForTesting(
-                        Parser.parse(secondCandidateRemainsOwned)));
+                () -> OwnershipChecker.check(Parser.parse(secondCandidateRemainsOwned)));
 
         String earlierCandidateMayAlreadyBeMoved = """
                 define class Payload as
@@ -123,8 +116,7 @@ final class CommitAwareMapOwnershipTest {
 
         assertThrows(
                 IllegalArgumentException.class,
-                () -> OwnershipChecker.checkWithCommitAwareMapWritesForTesting(
-                        Parser.parse(earlierCandidateMayAlreadyBeMoved)));
+                () -> OwnershipChecker.check(Parser.parse(earlierCandidateMayAlreadyBeMoved)));
     }
 
     @Test
@@ -151,8 +143,7 @@ final class CommitAwareMapOwnershipTest {
 
         assertThrows(
                 IllegalArgumentException.class,
-                () -> OwnershipChecker.checkWithCommitAwareMapWritesForTesting(
-                        Parser.parse(source)));
+                () -> OwnershipChecker.check(Parser.parse(source)));
     }
 
     @Test
@@ -177,7 +168,6 @@ final class CommitAwareMapOwnershipTest {
                 """;
 
         assertDoesNotThrow(
-                () -> OwnershipChecker.checkWithCommitAwareMapWritesForTesting(
-                        Parser.parse(source)));
+                () -> OwnershipChecker.check(Parser.parse(source)));
     }
 }
