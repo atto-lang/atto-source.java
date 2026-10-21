@@ -137,7 +137,7 @@ param           = type_ref [ "mut" ] IDENT
                 | IDENT "structural" type_ref ;
 
 binding_decl    = named_inferred_binding
-                | "const" "fnc" IDENT "=" pipe_lambda stmt_terminator
+                | "const" "fnc" IDENT "=" lambda stmt_terminator
                 | { annotation } binding_kind
                   ( IDENT ":" type_ref
                   | [ type_ref ] IDENT )
