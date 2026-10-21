@@ -9416,10 +9416,21 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object recordWith(Object left, Object right) {
-            if (!(left instanceof ReadonlyRecordValue base)
-                    || !(right instanceof ReadonlyRecordValue updates)) {
+            if (!(right instanceof ReadonlyRecordValue updates)) {
                 throw new IllegalArgumentException(
-                        "record 'with' requires readonly record operands");
+                        "'with' requires a statically keyed readonly update record");
+            }
+            final Map<String, Object> base;
+            final boolean structResult;
+            if (left instanceof ReadonlyRecordValue record) {
+                base = record;
+                structResult = false;
+            } else if (left instanceof MutableStructValue struct) {
+                base = struct;
+                structResult = true;
+            } else {
+                throw new IllegalArgumentException(
+                        "'with' requires an owned record or plain struct base");
             }
 
             // Never mutate either input. The RHS record has already been
@@ -9434,7 +9445,9 @@ public final class OresEvalRootNode extends RootNode {
                 // replacement and appends a newly introduced field.
                 merged.put(field.getKey(), field.getValue());
             }
-            return new ReadonlyRecordValue(merged);
+            return structResult
+                    ? new MutableStructValue(merged)
+                    : new ReadonlyRecordValue(merged);
         }
 
         private boolean identityEquals(Object left, Object right) {
