@@ -76,6 +76,29 @@ Hardening in this branch bounds and sanitizes metadata before attaching a
 marker. Source labels cannot inject newline/ANSI/bidi control characters or
 grow without limit; the original Throwable identity/message/cause stays intact.
 
+## Source-location confidentiality
+
+Host-boundary `SourceBoundaryTrace` code-unit labels are metadata supplied to a
+diagnostic renderer, not trusted filesystem paths or credential-free URLs.
+Absolute Unix/Windows paths are reduced to their final filename; URL
+authorities (including userinfo), query strings and fragments are not printed.
+Ordinary relative source/module names remain recognizable. All rendered
+labels are still bounded and control-character sanitized. For code-unit
+metadata, an input longer than **4,096 UTF-16 units** is rejected before
+any path or URL parsing: it renders exactly `<source-id-too-long>`.
+This guards the error-reporting path against expensive processing of giant
+credential-bearing source identifiers. A label that is at most 4,096 units
+can still be scanned, but its rendered code-unit component is capped at 160
+UTF-16 units (including any ellipsis).
+
+**Scope:** this redaction applies to source *marker labels*. It does not
+rewrite the original Throwable message/cause, arbitrary user-created
+exceptions, separate structured diagnostic outputs or externally emitted
+logs. Consumers displaying exception messages must enforce their own
+privacy policy. Runtime source-path metadata must never confer filesystem
+authority or be used as a trusted source-map lookup key merely because a
+label is sanitized.
+
 ## Critical diagnostic/classification invariant
 
 The Java host `TrapFailurePolicy` has a 64-node limit on real Throwable
