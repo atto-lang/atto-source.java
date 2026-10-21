@@ -161,6 +161,42 @@ final class ActorNativeArenaTest {
     }
 
     @Test
+    void actorTaskFramesPersistResumeAuthorityInNativeMemory() {
+        AtomicLong charged = new AtomicLong();
+        try (ActorNativeArena arena = arena(4096, charged)) {
+            ActorNativeArena.TaskFrame frame = arena.taskFrame();
+            long address = frame.nativeOffset();
+            assertTrue(address >= 0);
+            assertEquals(ActorNativeArena.TaskPhase.NEW, frame.phase());
+            assertEquals(0, frame.resumeCount());
+
+            frame.beginResume(true);
+            assertEquals(ActorNativeArena.TaskPhase.RUNNING, frame.phase());
+            assertEquals(1, frame.resumeCount());
+            frame.awaiting();
+            assertEquals(ActorNativeArena.TaskPhase.AWAITING, frame.phase());
+
+            frame.beginResume(false);
+            assertEquals(2, frame.resumeCount());
+            frame.cooperating();
+            assertEquals(ActorNativeArena.TaskPhase.COOPERATING, frame.phase());
+
+            frame.beginResume(false);
+            assertEquals(3, frame.resumeCount());
+            frame.done();
+            assertEquals(ActorNativeArena.TaskPhase.DONE, frame.phase());
+            assertThrows(IllegalStateException.class, () -> frame.beginResume(false));
+
+            ActorNativeArena.TaskFrame failed = arena.taskFrame();
+            assertNotEquals(address, failed.nativeOffset());
+            failed.beginResume(true);
+            failed.failed();
+            assertEquals(ActorNativeArena.TaskPhase.FAILED, failed.phase());
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
     void nativeObjectsRegionsAndLinearPagesShareOneNonRecycledActorOffsetSpace() {
         AtomicLong charged = new AtomicLong();
         Object marker = new Object();
