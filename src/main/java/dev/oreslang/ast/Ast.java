@@ -1301,47 +1301,183 @@ public final class Ast {
      * optimizer/rewrite clones must be rechecked rather than inheriting Task
      * execution authority from a structurally similar node.
      */
+    public record TaskCaptureAdmission(
+            long checkEpoch,
+            ExecutionDomain domain,
+            java.util.Map<String, TaskCaptureTransfer> captureTransfers) {
+        public TaskCaptureAdmission {
+            if (checkEpoch <= 0) {
+                throw new IllegalArgumentException(
+                        "Task capture check epoch must be positive");
+            }
+            java.util.Objects.requireNonNull(
+                    domain, "Task capture execution domain");
+            java.util.Objects.requireNonNull(
+                    captureTransfers, "Task capture transfers");
+            captureTransfers = java.util.Collections.unmodifiableMap(
+                    new java.util.LinkedHashMap<>(captureTransfers));
+        }
+    }
+
+    /**
+     * Identity-bound ownership admission for executable TaskExpr nodes.
+     *
+     * <p>Authority is keyed by both the exact checked Program and exact
+     * TaskExpr. A monotonic check epoch distinguishes successful rechecks of
+     * the same immutable AST under different linked/imported ownership
+     * metadata. Evaluators capture an epoch at construction and must keep
+     * using that exact epoch.
+     */
     public static final class CheckedTaskCaptures {
         private CheckedTaskCaptures() { }
 
-        private static final java.lang.ref.ReferenceQueue<TaskExpr> CLEARED =
+        private static final java.util.concurrent.atomic.AtomicLong NEXT_CHECK_EPOCH =
+                new java.util.concurrent.atomic.AtomicLong();
+        private static final java.lang.ref.ReferenceQueue<TaskExpr> CLEARED_TASKS =
                 new java.lang.ref.ReferenceQueue<>();
-        private static final java.util.Map<
-                IdentityKey, java.util.Map<String, TaskCaptureTransfer>> CAPTURES =
+        private static final java.lang.ref.ReferenceQueue<Program> CLEARED_PROGRAMS =
+                new java.lang.ref.ReferenceQueue<>();
+
+        private static final java.util.Map<PairIdentityKey, TaskCaptureAdmission> CAPTURES =
+                new java.util.HashMap<>();
+        private static final java.util.Map<ProgramIdentityKey, Long> PROGRAM_EPOCHS =
                 new java.util.HashMap<>();
 
-        private static final class IdentityKey
+        private static final class PairIdentityKey
                 extends java.lang.ref.WeakReference<TaskExpr> {
+            private final java.lang.ref.WeakReference<Program> program;
             private final int hash;
 
-            private IdentityKey(
+            private PairIdentityKey(
+                    Program program,
                     TaskExpr task,
                     java.lang.ref.ReferenceQueue<TaskExpr> queue) {
                 super(task, queue);
-                hash = System.identityHashCode(task);
+                this.program = new java.lang.ref.WeakReference<>(
+                        java.util.Objects.requireNonNull(
+                                program, "checked Task program"));
+                java.util.Objects.requireNonNull(task, "checked Task expression");
+                hash = 31 * System.identityHashCode(program)
+                        + System.identityHashCode(task);
+            }
+
+            private Program program() {
+                return program.get();
             }
 
             @Override public int hashCode() { return hash; }
 
             @Override public boolean equals(Object other) {
                 if (this == other) return true;
-                if (!(other instanceof IdentityKey key)) return false;
-                TaskExpr value = get();
+                if (!(other instanceof PairIdentityKey key)) return false;
+                Program leftProgram = program();
+                Program rightProgram = key.program();
+                TaskExpr leftTask = get();
+                TaskExpr rightTask = key.get();
+                return leftProgram != null
+                        && leftProgram == rightProgram
+                        && leftTask != null
+                        && leftTask == rightTask;
+            }
+        }
+
+        private static final class ProgramIdentityKey
+                extends java.lang.ref.WeakReference<Program> {
+            private final int hash;
+
+            private ProgramIdentityKey(
+                    Program program,
+                    java.lang.ref.ReferenceQueue<Program> queue) {
+                super(java.util.Objects.requireNonNull(
+                        program, "checked Task program"), queue);
+                hash = System.identityHashCode(program);
+            }
+
+            @Override public int hashCode() { return hash; }
+
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof ProgramIdentityKey key)) return false;
+                Program value = get();
                 return value != null && value == key.get();
             }
         }
 
         private static void expunge() {
-            java.lang.ref.Reference<? extends TaskExpr> collected;
-            while ((collected = CLEARED.poll()) != null) {
-                CAPTURES.remove(collected);
+            java.lang.ref.Reference<? extends TaskExpr> clearedTask;
+            while ((clearedTask = CLEARED_TASKS.poll()) != null) {
+                CAPTURES.remove(clearedTask);
             }
+            java.lang.ref.Reference<? extends Program> clearedProgram;
+            while ((clearedProgram = CLEARED_PROGRAMS.poll()) != null) {
+                PROGRAM_EPOCHS.remove(clearedProgram);
+            }
+            // Pair keys are queued by TaskExpr lifetime. A deliberately shared
+            // TaskExpr can outlive one Program, so opportunistically retire
+            // pair entries whose weak Program side has cleared.
+            CAPTURES.keySet().removeIf(key ->
+                    key.program() == null || key.get() == null);
         }
 
-        public static synchronized void record(
-                TaskExpr task,
+        public static long newCheckEpoch() {
+            long epoch = NEXT_CHECK_EPOCH.incrementAndGet();
+            if (epoch <= 0) {
+                throw new IllegalStateException(
+                        "Task ownership check epoch space exhausted");
+            }
+            return epoch;
+        }
+
+        public static synchronized void publish(
+                Program program,
+                long checkEpoch,
+                java.util.Map<
+                        TaskExpr,
+                        java.util.Map<String, TaskCaptureTransfer>> staged) {
+            java.util.Objects.requireNonNull(program, "checked Task program");
+            java.util.Objects.requireNonNull(staged, "staged Task admissions");
+            if (checkEpoch <= 0) {
+                throw new IllegalArgumentException(
+                        "Task ownership check epoch must be positive");
+            }
+
+            java.util.IdentityHashMap<TaskExpr, TaskCaptureAdmission> normalized =
+                    new java.util.IdentityHashMap<>();
+            for (java.util.Map.Entry<
+                    TaskExpr,
+                    java.util.Map<String, TaskCaptureTransfer>> entry
+                    : staged.entrySet()) {
+                TaskExpr task = java.util.Objects.requireNonNull(
+                        entry.getKey(), "checked Task expression");
+                java.util.Map<String, TaskCaptureTransfer> transfers =
+                        validateTransfers(entry.getValue());
+                normalized.put(
+                        task,
+                        new TaskCaptureAdmission(
+                                checkEpoch,
+                                task.domain(),
+                                transfers));
+            }
+
+            expunge();
+
+            // One successful ownership pass supersedes every earlier
+            // admission for this exact Program identity.
+            CAPTURES.keySet().removeIf(key -> key.program() == program);
+            for (java.util.Map.Entry<TaskExpr, TaskCaptureAdmission> entry
+                    : normalized.entrySet()) {
+                CAPTURES.put(
+                        new PairIdentityKey(
+                                program, entry.getKey(), CLEARED_TASKS),
+                        entry.getValue());
+            }
+            PROGRAM_EPOCHS.put(
+                    new ProgramIdentityKey(program, CLEARED_PROGRAMS),
+                    checkEpoch);
+        }
+
+        private static java.util.Map<String, TaskCaptureTransfer> validateTransfers(
                 java.util.Map<String, TaskCaptureTransfer> captureTransfers) {
-            java.util.Objects.requireNonNull(task, "checked Task expression");
             java.util.Objects.requireNonNull(
                     captureTransfers, "checked Task capture transfers");
             java.util.LinkedHashMap<String, TaskCaptureTransfer> checked =
@@ -1356,34 +1492,55 @@ public final class Ast {
                 }
                 if (checked.putIfAbsent(name, transfer) != null) {
                     throw new IllegalArgumentException(
-                            "checked Task capture set contains duplicate '" + name + "'");
+                            "checked Task capture set contains duplicate '"
+                                    + name + "'");
                 }
             }
-            java.util.Map<String, TaskCaptureTransfer> immutable =
-                    java.util.Collections.unmodifiableMap(
-                            new java.util.LinkedHashMap<>(checked));
-            expunge();
-            IdentityKey key = new IdentityKey(task, CLEARED);
-            java.util.Map<String, TaskCaptureTransfer> old =
-                    CAPTURES.putIfAbsent(key, immutable);
-            if (old != null && !old.equals(immutable)) {
-                throw new IllegalStateException(
-                        "same Task expression received inconsistent ownership admissions");
-            }
+            return java.util.Collections.unmodifiableMap(checked);
         }
 
-        public static synchronized java.util.Map<String, TaskCaptureTransfer> require(
-                TaskExpr task) {
-            java.util.Objects.requireNonNull(task, "Task expression");
+        public static synchronized long requireProgramEpoch(Program program) {
+            java.util.Objects.requireNonNull(program, "Task program");
             expunge();
-            java.util.Map<String, TaskCaptureTransfer> captures =
-                    CAPTURES.get(new IdentityKey(task, null));
-            if (captures == null) {
+            Long epoch = PROGRAM_EPOCHS.get(
+                    new ProgramIdentityKey(program, null));
+            if (epoch == null) {
                 throw new IllegalStateException(
-                        "Task execution requires the exact ownership-checked TaskExpr; "
-                                + "reparsed, cloned, or unchecked Tasks are not executable");
+                        "Task execution requires the exact ownership-checked Program");
             }
-            return captures;
+            return epoch;
+        }
+
+        public static synchronized TaskCaptureAdmission require(
+                Program program,
+                TaskExpr task,
+                long expectedCheckEpoch) {
+            java.util.Objects.requireNonNull(program, "Task program");
+            java.util.Objects.requireNonNull(task, "Task expression");
+            if (expectedCheckEpoch <= 0) {
+                throw new IllegalArgumentException(
+                        "expected Task ownership check epoch must be positive");
+            }
+            expunge();
+
+            Long currentProgramEpoch = PROGRAM_EPOCHS.get(
+                    new ProgramIdentityKey(program, null));
+            if (currentProgramEpoch == null
+                    || currentProgramEpoch.longValue() != expectedCheckEpoch) {
+                throw new IllegalStateException(
+                        "Task Program ownership admission is stale or was superseded by a recheck");
+            }
+
+            TaskCaptureAdmission admission = CAPTURES.get(
+                    new PairIdentityKey(program, task, null));
+            if (admission == null
+                    || admission.checkEpoch() != expectedCheckEpoch
+                    || admission.domain() != task.domain()) {
+                throw new IllegalStateException(
+                        "Task execution requires the exact Program/TaskExpr ownership admission; "
+                                + "reparsed, cloned, unchecked, or stale Tasks are not executable");
+            }
+            return admission;
         }
     }
 
