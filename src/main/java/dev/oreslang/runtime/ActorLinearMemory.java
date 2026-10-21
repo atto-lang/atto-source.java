@@ -95,6 +95,22 @@ public final class ActorLinearMemory {
         return (int) (offset % PAGE_BYTES);
     }
 
+    /**
+     * Borrow one committed native page (or a bounded slice of it) read-only.
+     * Writes to that entire page are frozen until the lease is closed.
+     * No address, ByteBuffer or mutable view escapes the actor arena.
+     */
+    public ActorNativeArena.Region.ReadOnlyLease leaseReadOnlyPage(
+            int pageIndex, int byteOffset, int length) {
+        synchronized (arena) {
+            arena.assertOwner();
+            if (pageIndex < 0 || pageIndex >= pages.size()) {
+                throw new IndexOutOfBoundsException("linear memory page");
+            }
+            return pages.get(pageIndex).leaseReadOnly(byteOffset, length);
+        }
+    }
+
     public byte readByte(long offset) {
         synchronized (arena) {
             checkRange(offset, 1);
