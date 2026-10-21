@@ -1,0 +1,4 @@
+define class Box as
+ pub let int value = 7;
+end
+pub async routine main(): void { val mutex=Mutex.new(new Box()); val guard=mutex.lock(); for (let i=0; i<2000; i=i+1) { guard.value=guard.value+1; } stdio.stdout.write(guard.value); stdio.stdout.write("|"); stdio.stdout.write(process.descriptor.source_loop_cooperates); guard.release(); return; }

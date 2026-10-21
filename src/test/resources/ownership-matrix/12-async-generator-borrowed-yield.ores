@@ -1,0 +1,4 @@
+define class Box as
+ pub let int value = 7;
+end
+async fnc gen* values(): AsyncIterator<borrow Box> { val Box box = new Box(); yield rt borrow box; return; }

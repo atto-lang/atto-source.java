@@ -1,0 +1,5 @@
+define class Box as
+ pub let int value = 7;
+end
+generator fnc values(): int { yield 1; return; }
+async fnc bad(): void { val Box box = new Box(); val borrow Box view = rt borrow box; for const n of values() { stdio.println(n); } return; }

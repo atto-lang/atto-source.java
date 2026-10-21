@@ -1,0 +1,4 @@
+define class Box as
+ pub let int value = 7;
+end
+define untrusted actor Worker as receive(ActorMail<String> mail): void { val target = struct{value: int}{value: 7}; val view = rt borrow target; rt cooperate; return; } end

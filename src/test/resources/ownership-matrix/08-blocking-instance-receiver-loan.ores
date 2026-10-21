@@ -1,0 +1,4 @@
+define class Box as
+ pub let int value = 7; pub suspends read_blocking(): int { return 7; }
+end
+async fnc bad(): void { val Box box = new Box(); box.read_blocking(); return; }
