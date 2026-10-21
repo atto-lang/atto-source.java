@@ -150,4 +150,61 @@ final class ReplyTransportGatewayTest {
                         new ReplySlotRegistry(ORIGIN, 1), CALLEE, ABI,
                         bytes -> "ok", Integer.MAX_VALUE));
     }
+
+    @Test
+    void authenticatedConnectionCloseSettlesOnlyOwnPeerSession() throws Exception {
+        var otherSession = new ReplySlotRegistry.AuthenticatedPeer(
+                CALLEE.endpoint(), CALLEE.sessionId() + 1);
+        try (var slots = new ReplySlotRegistry(ORIGIN, 3)) {
+            var first = slots.reserve(String.class, ABI, CALLEE);
+            var second = slots.reserve(String.class, ABI, CALLEE);
+            var isolated = slots.reserve(String.class, ABI, otherSession);
+            byte[] firstTicket = slots.issueRemoteTicket(first.handle(), CALLEE, ABI);
+            byte[] otherTicket = slots.issueRemoteTicket(isolated.handle(), otherSession, ABI);
+            var oldSession = new ReplyTransportGateway<>(
+                    slots, CALLEE, ABI,
+                    (byte[] b) -> new String(b, StandardCharsets.UTF_8), LIMIT);
+            var survivingSession = new ReplyTransportGateway<>(
+                    slots, otherSession, ABI,
+                    (byte[] b) -> new String(b, StandardCharsets.UTF_8), LIMIT);
+            oldSession.close();
+            oldSession.close();
+            assertTrue(first.future().isDone());
+            assertTrue(second.future().isDone());
+            assertFalse(isolated.future().isDone());
+            assertEquals(1, slots.pendingCount());
+            assertFalse(oldSession.acceptAuthenticatedFrame(
+                    ReplyTransportGateway.encodeFrame(first.handle(),
+                            firstTicket, utf8("stale"), LIMIT)));
+            assertTrue(survivingSession.acceptAuthenticatedFrame(
+                    ReplyTransportGateway.encodeFrame(isolated.handle(),
+                            otherTicket, utf8("still here"), LIMIT)));
+            assertEquals("still here", isolated.future().get(1, TimeUnit.SECONDS));
+            assertEquals(0, slots.pendingCount());
+            survivingSession.close();
+        }
+    }
+
+    @Test
+    void disconnectDoesNotAffectAlreadyCompletedOrDifferentIncarnation() throws Exception {
+        var nextIncarnation = new ReplySlotRegistry.AuthenticatedPeer(
+                new ReplySlotRegistry.Endpoint(CALLEE.endpoint().id(),
+                        CALLEE.endpoint().incarnation() + 1,
+                        CALLEE.endpoint().routeEpoch()), CALLEE.sessionId());
+        try (var slots = new ReplySlotRegistry(ORIGIN, 2)) {
+            var done = slots.reserve(String.class, ABI, CALLEE);
+            var next = slots.reserve(String.class, ABI, nextIncarnation);
+            var ticket = slots.issueRemoteTicket(done.handle(), CALLEE, ABI);
+            assertTrue(slots.completeRemote(ORIGIN, done.handle(), CALLEE, ABI, ticket, "done"));
+            var gateway = new ReplyTransportGateway<String>(
+                    slots, CALLEE, ABI, b -> "unused", LIMIT);
+            gateway.close();
+            assertEquals("done", done.future().get(1, TimeUnit.SECONDS));
+            assertFalse(next.future().isDone());
+            assertEquals(1, slots.pendingCount());
+            assertTrue(slots.completeRemote(ORIGIN, next.handle(), nextIncarnation, ABI,
+                    slots.issueRemoteTicket(next.handle(), nextIncarnation, ABI), "next"));
+            assertEquals("next", next.future().get(1, TimeUnit.SECONDS));
+        }
+    }
 }
