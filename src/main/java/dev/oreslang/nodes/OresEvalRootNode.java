@@ -586,6 +586,10 @@ public final class OresEvalRootNode extends RootNode {
                         eval(field.initializer(), initializerEnv));
             }
 
+            if (klass.supervisor()) {
+                installSourceSupervisorHandlers(klass, object, actorContext);
+            }
+
             Ast.MethodDecl startup =
                     findMethod(
                             klass,
@@ -688,6 +692,80 @@ public final class OresEvalRootNode extends RootNode {
                                 + "' is not an actor");
             }
             return klass;
+        }
+
+        private static boolean isSupervisorControlHandlerName(String name) {
+            return name.equals("on_throw")
+                    || name.equals("on_raise")
+                    || name.equals("on_panic");
+        }
+
+        private void installSourceSupervisorHandlers(
+                Ast.ClassDecl klass,
+                OresObject object,
+                ActorRuntime.ActorContext<Object> actorContext) {
+            java.util.Map<String, Ast.MethodDecl> handlers = new LinkedHashMap<>();
+            for (String name : List.of("on_throw", "on_raise", "on_panic")) {
+                Ast.MethodDecl method =
+                        findMethod(klass, CallableSelector.instance(name, 1));
+                if (method == null) {
+                    throw new IllegalStateException(
+                            "supervisor actor '" + klass.name()
+                                    + "' is missing checked CONTROL handler " + name);
+                }
+                if (methodContainsPotentialSuspension(method)) {
+                    throw new IllegalStateException(
+                            "supervisor CONTROL handler " + klass.name() + "." + name
+                                    + " cannot suspend; CONTROL turns must remain single-flight");
+                }
+                handlers.put(name, method);
+            }
+
+            actorContext.installSupervisorControlHandler(
+                    new ActorRuntime.SupervisorControlHandler() {
+                        @Override
+                        public ActorRuntime.SupervisorControlDirective onThrow(
+                                ActorRuntime.SupervisorControlContext control,
+                                ActorRuntime.SupervisorControlEvent event) {
+                            return invokeSourceSupervisorControl(
+                                    object, handlers.get("on_throw"), event);
+                        }
+
+                        @Override
+                        public ActorRuntime.SupervisorControlDirective onRaise(
+                                ActorRuntime.SupervisorControlContext control,
+                                ActorRuntime.SupervisorControlEvent event) {
+                            return invokeSourceSupervisorControl(
+                                    object, handlers.get("on_raise"), event);
+                        }
+
+                        @Override
+                        public ActorRuntime.SupervisorControlDirective onPanic(
+                                ActorRuntime.SupervisorControlContext control,
+                                ActorRuntime.SupervisorControlEvent event) {
+                            return invokeSourceSupervisorControl(
+                                    object, handlers.get("on_panic"), event);
+                        }
+                    },
+                    null);
+        }
+
+        private ActorRuntime.SupervisorControlDirective invokeSourceSupervisorControl(
+                OresObject object,
+                Ast.MethodDecl handler,
+                ActorRuntime.SupervisorControlEvent event) {
+            SourceChildFailure failure = new SourceChildFailure(event);
+            try {
+                Object result = invoke(methodInvocation(object, handler, List.of(failure)));
+                if (result != null) {
+                    throw new IllegalStateException(
+                            "supervisor CONTROL handler must return void: "
+                                    + object.klass.name() + "." + handler.name());
+                }
+                return failure.directiveOrRetain();
+            } finally {
+                failure.revoke();
+            }
         }
 
         private void executeActorStartup(
@@ -4692,6 +4770,10 @@ public final class OresEvalRootNode extends RootNode {
                             List.of());
                 }
 
+                if (isSupervisorControlHandlerName(member.member())) {
+                    throw new SecurityException(
+                            "supervisor CONTROL handlers are not ordinary actor methods");
+                }
                 Ast.MethodDecl method =
                         object.owner.findMethod(
                                 object.klass,
@@ -5646,6 +5728,19 @@ public final class OresEvalRootNode extends RootNode {
                         env,
                         inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
             }
+            if (stmt instanceof Ast.TerminalEffectStmt effect) {
+                Object raw = eval(effect.value(), env);
+                if (!(raw instanceof String message)) {
+                    throw new IllegalArgumentException(
+                            effect.kind().name().toLowerCase(java.util.Locale.ROOT)
+                                    + " currently requires a string failure value");
+                }
+                throw switch (effect.kind()) {
+                    case THROW -> new ActorFailure.Thrown(message);
+                    case RAISE -> new ActorFailure.Raised(message);
+                    case PANIC -> new ActorFailure.Panic(message);
+                };
+            }
             if (stmt instanceof Ast.YieldStmt yielded) {
                 if (env.hasLiveMutexGuards()) {
                     throw new IllegalStateException("cannot yield while holding a live MutexGuard");
@@ -6385,6 +6480,10 @@ public final class OresEvalRootNode extends RootNode {
                                 List.of());
                     }
 
+                    if (isSupervisorControlHandlerName(methodCall.member())) {
+                        throw new SecurityException(
+                                "supervisor CONTROL handlers are not ordinary actor methods");
+                    }
                     Ast.MethodDecl method = object.owner.findMethod(
                             object.klass, CallableSelector.instance(methodCall.member(), args.size()));
                     if (method != null) {
@@ -6452,6 +6551,10 @@ public final class OresEvalRootNode extends RootNode {
                         && !methodCall.member().equals("release")
                         && !methodCall.member().equals("is_released")
                         && guard.value() instanceof OresObject object) {
+                    if (isSupervisorControlHandlerName(methodCall.member())) {
+                        throw new SecurityException(
+                                "supervisor CONTROL handlers are not ordinary actor methods");
+                    }
                     Ast.MethodDecl method = object.owner.findMethod(
                             object.klass, CallableSelector.instance(methodCall.member(), args.size()));
                     if (method != null) {
@@ -7081,6 +7184,9 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name, Env env) {
+            if (receiver instanceof SourceChildFailure failure) {
+                return failure.member(name);
+            }
             if (receiver instanceof String text) {
                 if (name.equals("split_literal")) {
                     return (Invokable) args -> {
@@ -7799,6 +7905,10 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("unknown static member " + klass.klass().name() + "." + name);
             }
             if (receiver instanceof OresObject object) {
+                if (isSupervisorControlHandlerName(name)) {
+                    throw new SecurityException(
+                            "supervisor CONTROL handlers cannot be extracted or invoked as method values");
+                }
                 if (object.fields.containsKey(name)) {
                     OwnedField ownedField = object.owner.findField(
                             object.klass, name, new LinkedHashSet<>());
@@ -8095,6 +8205,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation prepareBoundMethodInvocation(OresObject receiver, String name, List<Object> args, Ast.ClassDecl accessClass) {
+            if (isSupervisorControlHandlerName(name)) {
+                throw new SecurityException(
+                        "supervisor CONTROL handlers cannot be called through bound method values");
+            }
             CallableSelector selector = CallableSelector.instance(name, args.size());
             Ast.MethodDecl method = findMethod(receiver.klass, selector);
             if (method == null) throw new IllegalArgumentException("no method " + receiver.klass.name() + "." + name + " with arity " + args.size());
@@ -9082,6 +9196,7 @@ public final class OresEvalRootNode extends RootNode {
             if (name.equals("Generator") || name.equals("Iterator")) return value instanceof GeneratorRuntime.Generator<?>;
             if (name.equals("AsyncGenerator") || name.equals("AsyncIterator")) return value instanceof GeneratorRuntime.AsyncGenerator<?>;
             if (name.equals("IteratorResult")) return value instanceof GeneratorRuntime.Step<?>;
+            if (name.equals("ChildFailure")) return value instanceof SourceChildFailure;
 
             if (value instanceof OresObject object) {
                 Ast.ClassDecl targetClass = findClass(name);
@@ -9103,6 +9218,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private String oresRuntimeTypeName(Object value) {
+            if (value instanceof SourceChildFailure) return "ChildFailure";
             if (value instanceof OresObject object) return object.klass.name();
             if (value instanceof OptionValue) return "Option";
             if (value instanceof ResultValue) return "Result";
@@ -9969,6 +10085,75 @@ public final class OresEvalRootNode extends RootNode {
         @Override public boolean containsKey(Object key) { return fields.containsKey(key); }
         @Override public Iterable<?> sharedStateChildren() { return fields.values(); }
         @Override public String toString() { return CycleSafeDisplay.render(this); }
+    }
+
+    private static final class SourceChildFailure {
+        private final ActorRuntime.SupervisorControlEvent event;
+        private ActorRuntime.SupervisorControlDirective directive;
+        private boolean active = true;
+
+        private SourceChildFailure(ActorRuntime.SupervisorControlEvent event) {
+            this.event = Objects.requireNonNull(event, "event");
+        }
+
+        private Object member(String name) {
+            requireActive();
+            return switch (name) {
+                case "actor_id" -> event.actorId().toString();
+                case "generation" -> event.generation();
+                case "kind" -> event.failureKind().name().toLowerCase(java.util.Locale.ROOT);
+                case "failure_type" -> event.failureType();
+                case "parent_generation" -> event.parentGeneration();
+                case "restart" -> (Invokable) args -> {
+                    requireZero(args, "ChildFailure.restart");
+                    choose(ActorRuntime.SupervisorControlDirective.RESTART);
+                    return null;
+                };
+                case "acknowledge" -> (Invokable) args -> {
+                    requireZero(args, "ChildFailure.acknowledge");
+                    choose(ActorRuntime.SupervisorControlDirective.ACKNOWLEDGE);
+                    return null;
+                };
+                case "retain" -> (Invokable) args -> {
+                    requireZero(args, "ChildFailure.retain");
+                    choose(ActorRuntime.SupervisorControlDirective.RETAIN);
+                    return null;
+                };
+                case "escalate" -> (Invokable) args -> {
+                    requireZero(args, "ChildFailure.escalate");
+                    choose(ActorRuntime.SupervisorControlDirective.ESCALATE);
+                    return null;
+                };
+                default -> throw new IllegalArgumentException(
+                        "unknown ChildFailure member " + name);
+            };
+        }
+
+        private void choose(ActorRuntime.SupervisorControlDirective selected) {
+            requireActive();
+            Objects.requireNonNull(selected, "selected");
+            if (directive != null) {
+                throw new IllegalStateException(
+                        "ChildFailure supervisor directive already selected: " + directive);
+            }
+            directive = selected;
+        }
+
+        private ActorRuntime.SupervisorControlDirective directiveOrRetain() {
+            requireActive();
+            return directive == null
+                    ? ActorRuntime.SupervisorControlDirective.RETAIN
+                    : directive;
+        }
+
+        private void revoke() { active = false; }
+
+        private void requireActive() {
+            if (!active) {
+                throw new SecurityException(
+                        "ChildFailure capability expired after supervisor CONTROL turn");
+            }
+        }
     }
 
     private record SourceActorState(
