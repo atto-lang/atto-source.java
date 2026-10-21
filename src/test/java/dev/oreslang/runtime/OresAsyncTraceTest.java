@@ -380,7 +380,7 @@ final class OresAsyncTraceTest {
                 12,
                 7,
                 "g1");
-        assertEquals("https://example.test/pkg/main.ores", hostile.sourceId());
+        assertEquals("main.ores", hostile.sourceId());
 
         OresAsyncTrace.Trace trace = OresAsyncTrace.root(
                 new OresAsyncTrace.Frame("worker", hostile));
@@ -391,19 +391,56 @@ final class OresAsyncTraceTest {
                         OresAsyncTrace.LogicalAsyncStackTrace.class,
                         failure.getSuppressed()[0]);
 
-        assertTrue(logical.logicalTrace().contains("https://example.test/pkg/main.ores"));
+        assertTrue(logical.logicalTrace().contains("main.ores"));
         assertFalse(logical.logicalTrace().contains("alice"));
         assertFalse(logical.logicalTrace().contains("super-secret"));
         assertFalse(logical.logicalTrace().contains("abc123"));
         assertFalse(logical.logicalTrace().contains("private"));
         assertEquals(
-                "https://example.test/pkg/main.ores",
+                "main.ores",
                 logical.getStackTrace()[0].getFileName());
 
         String json = OresDiagnosticRenderer.renderJson(failure);
-        assertTrue(json.contains("https://example.test/pkg/main.ores"), json);
+        assertTrue(json.contains("main.ores"), json);
         assertFalse(json.contains("super-secret"), json);
         assertFalse(json.contains("abc123"), json);
+    }
+
+    @Test
+    void sourceSiteRejectsOversizedIdsAndRedactsPrivateFilesystemLocations() {
+        String secretUrl = "https://name:password@internal.example/"
+                + "very-private/".repeat(100_000) + "confidential.ores";
+        OresAsyncTrace.SourceSite tooLong =
+                OresAsyncTrace.SourceSite.unknown(secretUrl, "generation");
+        assertEquals("<source-id-too-long>", tooLong.sourceId());
+        assertEquals("<source-id-too-long>",
+                OresAsyncTrace.SourceSite.unknown("/private/".repeat(100_000), null)
+                        .sourceId());
+        assertEquals("worker.ores", OresAsyncTrace.SourceSite.unknown(
+                "/home/user/private/worker.ores", null).sourceId());
+        assertEquals("worker.ores", OresAsyncTrace.SourceSite.unknown(
+                "C:\\Users\\hidden\\worker.ores", null).sourceId());
+        assertEquals("worker.ores", OresAsyncTrace.SourceSite.unknown(
+                "file:///private/worker.ores?token=secret", null).sourceId());
+        assertEquals("src/workers/worker.ores", OresAsyncTrace.SourceSite.unknown(
+                "src/workers/worker.ores", null).sourceId());
+        assertEquals("<remote-source>", OresAsyncTrace.SourceSite.unknown(
+                "https://name:password@internal.example", null).sourceId());
+        assertEquals("a".repeat(4096), OresAsyncTrace.SourceSite.unknown(
+                "a".repeat(4096), null).sourceId());
+        assertEquals("<source-id-too-long>", OresAsyncTrace.SourceSite.unknown(
+                "a".repeat(4097), null).sourceId());
+
+        OresAsyncTrace.Trace trace = OresAsyncTrace.root(
+                new OresAsyncTrace.Frame("actor", tooLong));
+        IllegalStateException failure = new IllegalStateException("actor failed");
+        OresAsyncTrace.attach(failure, trace);
+        String text = OresDiagnosticRenderer.renderText(failure);
+        String json = OresDiagnosticRenderer.renderJson(failure);
+        assertTrue(text.contains("<source-id-too-long>"), text);
+        assertTrue(json.contains("<source-id-too-long>"), json);
+        assertFalse(text.contains("password") || text.contains("confidential"));
+        assertFalse(json.contains("password") || json.contains("confidential"));
     }
 
     @Test
