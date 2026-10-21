@@ -347,4 +347,29 @@ final class OresTimersTest {
         }
     }
 
+    @Test
+    void concurrentCancelOrCallbackExecutionHasExactlyOneOutcome() throws Exception {
+        try (OresTimers timers = new OresTimers();
+             OresScheduler scheduler = new OresScheduler(1)) {
+            for (int i = 0; i < 200; ++i) {
+                AtomicInteger invoked = new AtomicInteger();
+                OresTimers.TimerHandle timer = timers.setTimerNanos(0, scheduler,
+                        invoked::incrementAndGet);
+                AtomicReference<Boolean> cancelled = new AtomicReference<>();
+                Thread competitor = Thread.ofPlatform().start(
+                        () -> cancelled.set(timer.cancel()));
+                competitor.join();
+                try {
+                    assertNull(timer.getDone().get(5, TimeUnit.SECONDS));
+                    assertFalse(cancelled.get(), "cancel won but callback completed");
+                    assertEquals(1, invoked.get());
+                } catch (CancellationException expected) {
+                    assertTrue(cancelled.get(), "cancelled result without winner");
+                    assertEquals(0, invoked.get());
+                }
+                assertTrue(timer.isDone());
+            }
+        }
+    }
+
 }
