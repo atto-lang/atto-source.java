@@ -20,6 +20,18 @@ while synchronized on the arena. Exhaustion increments a sticky dropped
 count; dropped>0 disqualifies complete evidence. Recorder buffers are wiped
 and detached during physical arena close.
 
+Recorder snapshots include a nonzero **host-process-local scope ID**. These IDs
+separate independent arena recorder instances within one JVM process, but are
+not globally unique; the test runner must bind them to a verified run/process
+identity. Direct text payload reads and writes now produce one logical byte-span
+record for nonempty strings, in addition to scalar slab accesses. The collector
+still lacks complete guest memory and scheduler coverage.
+
+The proposed shared admission contract is
+[oreslang-test CLI PR #6](https://github.com/ores-truffle-oreslang/oreslang-test.cli/pull/6)
+(`docs/RACE_EVIDENCE_V1.md`). Do not treat `completeBuffer()` as runtime
+coverage certification.
+
 ## Strict limitations
 
 * Region/slot access evidence is **not** full compiler/runtime coverage.
