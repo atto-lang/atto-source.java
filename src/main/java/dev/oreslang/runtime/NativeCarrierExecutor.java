@@ -52,8 +52,8 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     private final AtomicBoolean shutdown = new AtomicBoolean();
     /** Serializes lazy start/set-size/shutdown against native retirement. */
     private final Object nativeLifecycleLock = new Object();
-    /** Guarded by nativeLifecycleLock. Pool metadata exists before any pthread. */
-    private boolean carriersStarted;
+    /** Pool metadata exists before any pthread; first work publishes activation. */
+    private volatile boolean carriersStarted;
     private final long nativeHandle;
 
     public NativeCarrierExecutor(
@@ -231,14 +231,16 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     @Override
     public void execute(Runnable task) {
         Objects.requireNonNull(task, "task");
-        if (shutdown.get()) {
-            throw new RejectedExecutionException("native carrier executor is shut down");
-        }
-        ensureCarriersStarted();
-        if (shutdown.get() || !queue.offer(task)) {
-            throw new RejectedExecutionException(
-                    shutdown.get() ? "native carrier executor is shut down"
-                            : "native carrier ready queue is full");
+        synchronized (nativeLifecycleLock) {
+            if (shutdown.get()) {
+                throw new RejectedExecutionException("native carrier executor is shut down");
+            }
+            ensureCarriersStarted();
+            if (shutdown.get() || !queue.offer(task)) {
+                throw new RejectedExecutionException(
+                        shutdown.get() ? "native carrier executor is shut down"
+                                : "native carrier ready queue is full");
+            }
         }
     }
 
@@ -274,27 +276,27 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     }
 
     private List<Runnable> beginShutdown(boolean interruptActiveCarriers) {
-        if (!shutdown.compareAndSet(false, true)) return List.of();
-        ArrayList<Runnable> abandoned = new ArrayList<>();
-        queue.drainTo(abandoned);
-
-        if (interruptActiveCarriers) {
-            // Match ThreadPoolExecutor.shutdownNow(): signal any active carrier
-            // before native retirement. This is cooperative Java interruption,
-            // never unsafe pthread_cancel().
-            for (int slot = 0; slot < carrierThreads.length(); slot++) {
-                Thread carrier = carrierThreads.get(slot);
-                if (carrier != null) carrier.interrupt();
-            }
-        }
-
         synchronized (nativeLifecycleLock) {
+            if (!shutdown.compareAndSet(false, true)) return List.of();
+            ArrayList<Runnable> abandoned = new ArrayList<>();
+            queue.drainTo(abandoned);
+
+            if (interruptActiveCarriers) {
+                // Match ThreadPoolExecutor.shutdownNow(): signal any active carrier
+                // before native retirement. This is cooperative Java interruption,
+                // never unsafe pthread_cancel().
+                for (int slot = 0; slot < carrierThreads.length(); slot++) {
+                    Thread carrier = carrierThreads.get(slot);
+                    if (carrier != null) carrier.interrupt();
+                }
+            }
+
             // Native shutdown is non-blocking: it marks the pool closed and
             // hands joins/reclamation to a native reaper so an uncooperative
             // guest stack can never hold this caller hostage.
             nativeShutdown(nativeHandle);
+            return List.copyOf(abandoned);
         }
-        return List.copyOf(abandoned);
     }
 
     /**
