@@ -1,5 +1,5 @@
 [package]
-name = "oreslang-js-repo-tools"
+name = "oreslang-repo-policy"
 version = "0.1.0"
 edition = "2021"
 publish = false
