@@ -320,6 +320,7 @@ final class ActorNativeArenaTest {
             try (ActorRuntime runtime = new ActorRuntime()) {
                 var arena = new AtomicReference<ActorNativeArena>();
                 var fields = new AtomicReference<Map<String, Object>>();
+                var local = new AtomicReference<ActorNativeArena.ValueCell>();
                 var failure = new AtomicReference<Throwable>();
                 var finished = new CountDownLatch(1);
                 var actor = runtime.<Integer>spawn(kind, runtime.policyCeiling(), () -> (message, turn) -> {
@@ -329,10 +330,14 @@ final class ActorNativeArenaTest {
                             arena.set(current);
                             fields.set(current.fields(List.of("count"), new Object()));
                             fields.get().put("count", 41L);
+                            local.set(current.valueCell(41L, new Object()));
                         } else {
                             assertSame(arena.get(), current);
                             fields.get().put("count", (long) fields.get().get("count") + 1);
                             assertEquals(42L, fields.get().get("count"));
+                            assertEquals(41L, local.get().get());
+                            assertTrue(local.get().trySet(42L));
+                            assertEquals(42L, local.get().get());
                             finished.countDown();
                         }
                     } catch (Throwable problem) {
@@ -345,9 +350,11 @@ final class ActorNativeArenaTest {
                 assertTrue(finished.await(5, TimeUnit.SECONDS));
                 assertNull(failure.get());
                 assertThrows(SecurityException.class, () -> fields.get().get("count"));
+                assertThrows(SecurityException.class, () -> local.get().get());
                 actor.stop();
                 assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
                 assertTrue(arena.get().closed());
+                assertThrows(IllegalStateException.class, () -> local.get().get());
                 assertEquals(0, arena.get().committedBytes());
                 assertEquals(0, runtime.actorMemoryBytes());
             }
