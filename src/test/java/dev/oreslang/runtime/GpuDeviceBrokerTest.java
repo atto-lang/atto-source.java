@@ -77,6 +77,7 @@ final class GpuDeviceBrokerTest {
             final int workers = 24;
             var ready = new CountDownLatch(workers);
             var start = new CountDownLatch(1);
+            var admittedThree = new CountDownLatch(3);
             var release = new CountDownLatch(1);
             var done = new CountDownLatch(workers);
             var admitted = new AtomicInteger();
@@ -92,6 +93,7 @@ final class GpuDeviceBrokerTest {
                                 broker.tryReserve(owner, "gpu0", 256);
                         if (lease.isPresent()) {
                             admitted.incrementAndGet();
+                            admittedThree.countDown();
                             if (!release.await(5, TimeUnit.SECONDS))
                                 throw new AssertionError("lease release timeout");
                             lease.orElseThrow().close();
@@ -106,7 +108,8 @@ final class GpuDeviceBrokerTest {
 
             assertTrue(ready.await(5, TimeUnit.SECONDS));
             start.countDown();
-            while (admitted.get() < 3 && done.getCount() == workers) Thread.onSpinWait();
+            assertTrue(admittedThree.await(5, TimeUnit.SECONDS),
+                    "owner quota should admit exactly three held reservations");
             var snap = broker.snapshot().get(0);
             assertTrue(snap.inFlight() <= 3);
             assertTrue(snap.reservedBytes() <= 3 * 256L);
