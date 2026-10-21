@@ -135,7 +135,11 @@ final class CpuTopology {
             int examined = 0;
             for (Path cpuDir : cpus) {
                 if (examined++ >= MAX_CPU_DIRECTORY_ENTRIES
-                        || discovered.size() >= MAX_DISCOVERED_CPUS) break;
+                        || discovered.size() >= MAX_DISCOVERED_CPUS) {
+                    // A partial host snapshot must not be treated as locality
+                    // evidence. Unsupported scale degrades to ordinary affinity.
+                    return empty();
+                }
                 int cpu = parseNumericSuffix(cpuDir.getFileName().toString(), "cpu");
                 if (cpu < 0) continue;
                 if (discovered.containsKey(cpu)) {
