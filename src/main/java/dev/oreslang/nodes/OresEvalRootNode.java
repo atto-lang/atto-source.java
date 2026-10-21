@@ -7227,6 +7227,10 @@ public final class OresEvalRootNode extends RootNode {
                     };
                     case "write_text" -> (Invokable) fs::writeText;
                     case "write_text_atomic" -> (Invokable) fs::writeTextAtomic;
+                    case "write_text_atomic_durable" ->
+                            (Invokable) fs::writeTextAtomicDurable;
+                    case "append_text_durable" ->
+                            (Invokable) fs::appendTextDurable;
                     case "write_text_async" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
@@ -10348,6 +10352,30 @@ public final class OresEvalRootNode extends RootNode {
                     context,
                     requireString(args.get(0), "fs.write_text_atomic path"),
                     requireString(args.get(1), "fs.write_text_atomic value"));
+            return null;
+        }
+        private Object writeTextAtomicDurable(List<Object> args) {
+            requireTwo(args, "fs.write_text_atomic_durable");
+            NativeIo.writeTextAtomicDurable(
+                    context,
+                    requireString(
+                            args.get(0),
+                            "fs.write_text_atomic_durable path"),
+                    requireString(
+                            args.get(1),
+                            "fs.write_text_atomic_durable value"));
+            return null;
+        }
+        private Object appendTextDurable(List<Object> args) {
+            requireTwo(args, "fs.append_text_durable");
+            NativeIo.appendTextDurable(
+                    context,
+                    requireString(
+                            args.get(0),
+                            "fs.append_text_durable path"),
+                    requireString(
+                            args.get(1),
+                            "fs.append_text_durable value"));
             return null;
         }
         private Object appendText(List<Object> args) {
