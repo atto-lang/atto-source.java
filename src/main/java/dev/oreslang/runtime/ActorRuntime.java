@@ -165,6 +165,20 @@ public final class ActorRuntime implements AutoCloseable {
         return cell.nativeArena;
     }
 
+    /**
+     * Resolve this logical actor's isolated byte-addressed native guest heap.
+     * The same instance survives mailbox turns and carrier thread migration.
+     * Other actors and host threads cannot read or write it, even when their
+     * logical guest offsets happen to be identical.
+     */
+    public static ActorLinearMemory currentActorLinearMemory(int initialPages, int maxPages) {
+        ActorNativeArena arena = currentNativeArena();
+        if (arena == null) {
+            throw new SecurityException("linear memory requires an executing actor");
+        }
+        return arena.linearMemory(initialPages, maxPages);
+    }
+
     public static Optional<ActorId> currentActorId() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
         return current == null ? Optional.empty() : Optional.of(current.actorId());
