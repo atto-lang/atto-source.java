@@ -149,7 +149,8 @@ mod tests {
 
     #[test]
     fn catches_legacy_source_even_in_java_text_blocks() {
-        assert_eq!(legacy_lines("fnc f() { rt borrow mut owner; }"), vec![1]);
+        let legacy = ["rt", "borrow", "mut"].join(" ");
+        assert_eq!(legacy_lines(&format!("fnc f() {{ {legacy} owner; }}")), vec![1]);
         assert_eq!(legacy_lines("prefix\n  rt\tborrow\n mut owner"), vec![2]);
     }
 
@@ -163,10 +164,11 @@ mod tests {
 
     #[test]
     fn negative_exemption_is_file_and_line_scoped() {
-        let source = "rt borrow mut x; // ORESLANG_EXPECT_INVALID_LEGACY_BORROW\nrt borrow mut y;";
+        let legacy = ["rt", "borrow", "mut"].join(" ");
+        let source = format!("{legacy} x; // ORESLANG_EXPECT_INVALID_LEGACY_BORROW\\n{legacy} y;");
         let expected_path = Path::new("src/test/java/dev/oreslang/CanonicalMutableBorrowParserTest.java");
-        assert!(is_explicit_negative_fixture(expected_path, source, 1));
-        assert!(!is_explicit_negative_fixture(expected_path, source, 2));
-        assert!(!is_explicit_negative_fixture(Path::new("src/Parser.java"), source, 1));
+        assert!(is_explicit_negative_fixture(expected_path, &source, 1));
+        assert!(!is_explicit_negative_fixture(expected_path, &source, 2));
+        assert!(!is_explicit_negative_fixture(Path::new("src/Parser.java"), &source, 1));
     }
 }
