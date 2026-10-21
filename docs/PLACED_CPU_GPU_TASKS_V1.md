@@ -1,10 +1,12 @@
 # Placed CPU/GPU Tasks — Java source implementation and remaining device gates
 
-Status: **CPU Task source lowering implemented on stacked Java Task draft; GPU placement admitted to AST only, always rejected at type check and runtime.** Not a GPU execution implementation. This branch is stacked on Java PR #1468, not merged to main.
+Status: **Synchronous CPU regions and asynchronous CPU Task source lowering are implemented on the stacked Java Task draft; GPU placement is only recognized and always rejected at type check/runtime.** No GPU device backend is connected. This branch is stacked on Java PR #1468, not merged to main.
 
 ## Canonical source surface
 
 ```ores
+let int eager = cpu { return 40 + 2; }; // executes immediately, result is int
+cpu { log_metric(); };                 // synchronous effect-only CPU region
 let Task<int> ordinary = task { return 42; };
 let Task<int> cpu = cpu task { return 42; };
 let Future<int> compatible = cpu task { return 42; };
@@ -21,15 +23,23 @@ let Task<GpuBuffer<float>> device = gpu task { return kernel(); };
 - `rt cooperate` and safe source loop cooperation checkpoints are the CPU yielding operations besides await. Yielding does not change Task/actor ownership or run guest continuation on the Future-settling thread.
 - Captures require compiler joined ownership admission proof and physical-lifetime retirement; moving owned captures into an asynchronous Task is not equivalent to borrowing locals across suspension.
 
+## Synchronous CPU region contract
+
+`cpu { ... }` is an eagerly evaluated **inline host CPU** expression, not a scheduler offload. It produces `T` only when every reachable path has an explicit `return T;`. An effect-only region may complete normally and has type `void`. There is **no automatic Task, Future, device transfer, or scheduling yield**. Returns are region-local; enclosing callable returns are unaffected. The runtime uses a tail-call barrier for inner `return call();` so TCO cannot accidentally return from the outer callable.
+
+The compiler checks the block under an isolated return type scope and disallows `await`, `rt cooperate`, or calls explicitly marked `suspends`. Borrowed results and unknown result shapes cannot escape. The ownership pass checks moves and borrows against the caller's live scope; defer/finally cleanup runs on the region's own exit. The runtime requires the bound type-check proof and verifies that a region does not contain an operation known to suspend before executing.
+
+CPU synchronous region calls from actors run **inline within the existing actor execution lease**; this spelling does not authorize off-actor scheduling or violate the actor single-flight rule. The separate `cpu task` spelling is explicitly rejected inside actors until off-actor transfer is proven.
+
 ## Preserved fail-closed regions
 
-`cpu { ... }`, `gpu { ... }`, `nb cpu { ... }`, `nb gpu { ... }` and `quantum` remain deliberately rejected at source preflight until compatible typed execution-region AST, effects and backend lowering are landed. `gpu task { ... }` is parsed as an explicit GPU Task AST but type checking rejects it with an exact no-fallback diagnostic. Runtime rejects the same AST before consuming Task capture ownership, independent of compile-time checking. No CPU emulation silently satisfies GPU placement.
+`gpu { ... }`, `nb cpu { ... }`, `nb gpu { ... }` and `quantum` remain rejected at source preflight until compatible graph/effect/backend lowering is landed. `gpu task { ... }` is parsed as an explicit GPU Task AST but type checking rejects it with an exact no-fallback diagnostic. Runtime rejects the same AST before consuming Task capture ownership, independent of compile-time checking. No CPU emulation silently satisfies GPU placement.
 
 `gpu { ... }` previously meant a zero-argument anonymous GPU callable in an older, unmerged branch; the CPU/GPU v1 proposal chooses eager regions and instead requires `gpu () { ... }` for callable kernels. Do not enable both interpretations without migrating the prior fixtures.
 
 ## GPU device implementation gates (not yet met)
 
-1. **Syntax/AST/typing:** distinct typed synchronous execution regions and their expression return semantics, device-effect restrictions, full device-call graph validation, and explicit geometry/SIMT mapping.
+1. **Syntax/AST/typing:** GPU synchronous execution regions, device-effect restrictions, full device-call graph validation, and explicit geometry/SIMT mapping. CPU eager expressions are already represented separately, but no cross-domain execution graph is enabled.
 2. **Executable device backend:** approved OpenCL/target backend capable of launching real kernels, with opaque `GpuBuffer<T>`, owned transfers, layouts, alias admission, resource lifetime and device capability discovery. Missing devices fail explicitly.
 3. **Nonblocking completion:** a real GPU stream/fence/event drives one `OresFuture<T>` settlement from a host completion reactor; do not block actor or CPU scheduler carriers while waiting. Completion never runs arbitrary guest code directly.
 4. **Safe teardown:** cancellation is intent, not device quiescence. All buffers/transfers/permits stay alive until the GPU fence is physically complete, including device-loss and canceled/late-completion paths. Keep credits and TaskScope lifetime bound to actual completion.
@@ -41,4 +51,4 @@ Related existing drafts: Java Task #1468, CPU/GPU contract #1096, CPU host graph
 
 ## Java tests in this branch
 
-`PlacedTaskLanguageTest`: real GraalVM guest CPU `Task<T>` value; inferred `Task<T>`; explicit `Future<T>` result; incorrect return failure; GPU placement parser accepts but checker refuses; GPU no-await denial; legacy unsupported CPU/GPU/quantum region refusal; nested GPU task cannot hide in a CPU Task. These are checked-in tests, **not claims of executed CI**.
+`PlacedTaskLanguageTest`: source/guest tests for CPU `Task<T>`, inferred `Task<T>`, explicit `Future<T>`, eager `cpu { }` values, return isolation, effects-only blocks, missing return/type mismatches, suspension rejection, GPU fail-closed placement, and actor CPU Task offload denial. These are checked-in tests, **not claims of executed CI**.
