@@ -46,6 +46,28 @@ final class TaskCaptureAdmissionIdentityTest {
     }
 
     @Test
+    void affineCaptureAdmissionCarriesMoveMode() {
+        Ast.Program checked = OresCompiler.parseAndTypeCheck("""
+                define class Box as
+                  pub let int value = 1;
+                end
+                pub async fnc main(): void {
+                  let Box owner = new Box();
+                  let Future<int> child = task {
+                    return owner.value;
+                  };
+                  stdio.stdout.write(await child);
+                  return;
+                }
+                """);
+
+        assertEquals(
+                java.util.Map.of(
+                        "owner", Ast.TaskCaptureTransfer.MOVE),
+                Ast.CheckedTaskCaptures.require(firstTask(checked)));
+    }
+
+    @Test
     void laterOwnershipFailurePreventsEarlierTaskAdmissionPublication() {
         TypeChecker.TypeCheckResult typed =
                 TypeChecker.checkTypesWithDiagnostics(Parser.parse("""
