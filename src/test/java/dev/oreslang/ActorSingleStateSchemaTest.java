@@ -134,6 +134,8 @@ final class ActorSingleStateSchemaTest {
                 """;
 
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertDoesNotThrow(() -> assertEquals(
+                "legacy-ok", run(program, "legacy-actor-state-compatibility.ores")));
     }
 
     @Test
