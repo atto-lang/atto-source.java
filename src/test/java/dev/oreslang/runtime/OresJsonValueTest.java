@@ -93,7 +93,7 @@ final class OresJsonValueTest {
     }
 
     @Test
-    void ownedPutAttemptReturnsExactOfferedValueOnRejection() {
+    void ownedPutAttemptTransfersPayloadsExactlyOnce() {
         OresKeyedMap<String, OresJsonValue> fields =
                 OresJsonValue.objectMap();
         OresJsonValue kept = OresJsonValue.of("kept");
@@ -104,9 +104,13 @@ final class OresJsonValueTest {
                 fields.attemptOwnedPut("self", self);
 
         assertFalse(rejected.committed());
-        assertNull(rejected.previous());
-        assertSame(self, rejected.rejectedValue(),
+        assertThrows(IllegalStateException.class, rejected::takePrevious);
+        assertSame(self, rejected.takeRejectedValue(),
                 "rollback must return the exact offered move-only value");
+        assertThrows(
+                IllegalStateException.class,
+                rejected::takeRejectedValue,
+                "rejected candidate is a linear one-shot transfer");
         assertNotNull(rejected.rejection());
         assertTrue(rejected.rejection().getMessage().contains("cyclic"),
                 rejected.rejection().getMessage());
@@ -119,10 +123,31 @@ final class OresJsonValueTest {
                 fields.attemptOwnedPut("x", replacement);
 
         assertTrue(committed.committed());
-        assertSame(kept, committed.previous());
-        assertNull(committed.rejectedValue());
+        assertSame(kept, committed.takePrevious());
+        assertThrows(
+                IllegalStateException.class,
+                committed::takePrevious,
+                "displaced value is a linear one-shot transfer");
+        assertThrows(IllegalStateException.class, committed::takeRejectedValue);
         assertNull(committed.rejection());
         assertSame(replacement, fields.getRequired("x"));
+    }
+
+    @Test
+    void ownedPutAttemptReturnsCandidateOnNonGraphAdmissionFailure() {
+        OresKeyedMap<String, OresJsonValue> fields =
+                OresJsonValue.objectMap();
+        OresJsonValue offered = OresJsonValue.of("still-owned");
+
+        String malformedKey = "\uD800";
+        OresKeyedMap.OwnedPutAttempt<OresJsonValue> rejected =
+                fields.attemptOwnedPut(malformedKey, offered);
+
+        assertFalse(rejected.committed());
+        assertSame(offered, rejected.takeRejectedValue());
+        assertInstanceOf(IllegalArgumentException.class, rejected.rejection());
+        assertTrue(fields.isEmpty(),
+                "pre-commit key admission failure must leave storage unchanged");
     }
 
     @Test
