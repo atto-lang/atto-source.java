@@ -123,6 +123,22 @@ final class PlacedTaskLanguageTest {
     }
 
     @Test
+    void explicitCpuOffloadCannotSilentlyUseActorCarrier() {
+        String program = """
+                isoactor PlacementActor {
+                    pub fnc attempt(): void {
+                        let Task<int> worker = cpu task { return 42; };
+                        return;
+                    }
+                }
+                """;
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(program)));
+        assertTrue(denied.getMessage().contains("cpu task cannot offload from an actor"),
+                denied.getMessage());
+    }
+
+    @Test
     void nestedGpuPlacementCannotBeHiddenInsideCpuTask() {
         assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
