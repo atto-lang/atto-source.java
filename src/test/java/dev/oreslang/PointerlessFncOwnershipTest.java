@@ -198,14 +198,14 @@ final class PointerlessFncOwnershipTest {
                 fnc update(borrow mut Array<int> values): void { values.add(7); return; }
                 fnc ok(): void {
                   val Array<int> values = new Array<int>();
-                  update(rt borrow mut values);
+                  update(rt mut borrow values);
                   return;
                 }
                 """)));
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc bad(): void {
                   val Array<int> values = new Array<int>();
-                  val first = rt borrow mut values;
+                  val first = rt mut borrow values;
                   val second = rt borrow values;
                   return;
                 }
@@ -273,7 +273,7 @@ final class PointerlessFncOwnershipTest {
                         fnc inspect(structural Box v): void { return; }
                         fnc bad(): void {
                           let mut Box box = new Box();
-                          inspect(rt borrow mut box);
+                          inspect(rt mut borrow box);
                           return;
                         }
                         """)));
@@ -290,7 +290,7 @@ final class PointerlessFncOwnershipTest {
                         fnc overlap(structural Box a, borrow mut Box b): void { return; }
                         fnc bad(): void {
                           let mut Box box = new Box();
-                          overlap(box, rt borrow mut box);
+                          overlap(box, rt mut borrow box);
                           return;
                         }
                         """)));
@@ -324,7 +324,7 @@ final class PointerlessFncOwnershipTest {
                         fnc overlap(borrow Box a, borrow mut Box b): void { return; }
                         fnc bad(): void {
                           let mut Box box = new Box();
-                          overlap(rt borrow box, rt borrow mut box);
+                          overlap(rt borrow box, rt mut borrow box);
                           return;
                         }
                         """)));
@@ -352,7 +352,7 @@ final class PointerlessFncOwnershipTest {
                 () -> TypeChecker.check(Parser.parse("""
                         fnc bad(): void {
                           const z = infer struct{x: "whatever"};
-                          val reference = rt borrow mut z;
+                          val reference = rt mut borrow z;
                           return;
                         }
                         """)));
@@ -397,7 +397,7 @@ final class PointerlessFncOwnershipTest {
                         fnc overlap(structural Inner view, borrow mut Outer other): void { return; }
                         fnc bad(): void {
                           let mut Outer outer = new Outer();
-                          overlap(outer.middle.inner, rt borrow mut outer);
+                          overlap(outer.middle.inner, rt mut borrow outer);
                           return;
                         }
                         """)));
@@ -451,7 +451,7 @@ final class PointerlessFncOwnershipTest {
                         end
                         fnc bad(): void {
                           let mut Box box = new Box();
-                          box.inspect(rt borrow mut box);
+                          box.inspect(rt mut borrow box);
                           return;
                         }
                         """)));
