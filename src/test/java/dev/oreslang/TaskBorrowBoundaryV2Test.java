@@ -61,6 +61,32 @@ final class TaskBorrowBoundaryV2Test {
     }
 
     @Test
+    void pointerStyleBorrowExpressionsAndTypesAreRejectedAtParsing() {
+        for (String source : java.util.List.of(
+                "pub fnc main(): void { let int value = 1; val loan = &value; return; }",
+                "pub fnc main(): void { let int value = 1; val loan = &mut value; return; }",
+                "pub fnc takes(&int loan): void { return; }",
+                "pub fnc takes(&mut int loan): void { return; }")) {
+            var failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> Parser.parse(source));
+            assertTrue(failure.getMessage().contains("pointer"),
+                    failure::getMessage);
+        }
+    }
+
+    @Test
+    void binaryMultiplicationAndBitwiseAndRemainOrdinaryOperators() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                pub fnc main(): void {
+                  const int product = 2 * 3;
+                  const int masked = 3 & 1;
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void legacyMutableBorrowOrderingIsRejected() {
         var failure = assertThrows(
                 IllegalArgumentException.class,
