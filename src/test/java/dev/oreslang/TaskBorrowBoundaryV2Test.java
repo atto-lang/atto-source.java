@@ -63,7 +63,7 @@ final class TaskBorrowBoundaryV2Test {
         rejectsWith("""
                 pub async fnc main(): void {
                   let Box owner = new Box();
-                  val loan = rt borrow mut owner;
+                  val loan = rt mut borrow owner;
                   let Future<int> child = cpu task { return loan.value; };
                   await child;
                   return;
