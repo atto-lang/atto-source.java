@@ -29,6 +29,7 @@ final class TrustedOpenClProviderTest {
         boolean failDownload;
         boolean failReleaseBufferOnce;
         boolean failReleaseEventOnce;
+        boolean failReleaseProgramOnce;
         int releasedPrograms;
         int releasedBuffers;
         int releasedEvents;
@@ -43,6 +44,10 @@ final class TrustedOpenClProviderTest {
 
         @Override
         public void releaseProgram(TrustedOpenClProvider.Program program) {
+            if (failReleaseProgramOnce) {
+                failReleaseProgramOnce = false;
+                throw new IllegalStateException("release program failed");
+            }
             releasedPrograms++;
         }
 
@@ -145,6 +150,7 @@ final class TrustedOpenClProviderTest {
 
     private static TrustedOpenClProvider provider(FakeDriver driver, Fixture fixture) {
         long bytes = fixture.plan.byteLength();
+        var queue = ComputeAuthority.issueQueue(fixture.device, 9, 21, 4);
         return new TrustedOpenClProvider(
                 driver,
                 new TrustedOpenClProvider.Limits(
@@ -152,7 +158,15 @@ final class TrustedOpenClProviderTest {
                         bytes * 4,
                         4,
                         4),
-                fixture.device);
+                fixture.device,
+                queue,
+                new TrustedOpenClProvider.DeviceProfile(
+                        64,
+                        bytes * 2,
+                        100,
+                        16,
+                        true,
+                        true));
     }
 
     private static GpuTarget target(Fixture f) {
@@ -163,7 +177,7 @@ final class TrustedOpenClProviderTest {
     void successfulProviderTransactionPinsKernelAndReleasesAllQuota() {
         var f = fixture();
         var driver = new FakeDriver();
-        var provider = provider(driver, f.plan.byteLength());
+        var provider = provider(driver, f);
         var prepared = provider.prepare(f.kernel, target(f));
 
         var operation = provider.begin(
@@ -210,7 +224,15 @@ final class TrustedOpenClProviderTest {
                         bytes * 4,
                         1,
                         1),
-                f.device);
+                f.device,
+                ComputeAuthority.issueQueue(f.device, 9, 21, 1),
+                new TrustedOpenClProvider.DeviceProfile(
+                        64,
+                        bytes * 2,
+                        100,
+                        16,
+                        true,
+                        true));
         var prepared = provider.prepare(f.kernel, target(f));
 
         assertThrows(IllegalStateException.class,
@@ -232,7 +254,7 @@ final class TrustedOpenClProviderTest {
         {
             var driver = new FakeDriver();
             driver.failAllocateAt = 2;
-            var provider = provider(driver, bytes);
+            var provider = provider(driver, f);
             var prepared = provider.prepare(f.kernel, target(f));
             assertThrows(IllegalStateException.class,
                     () -> provider.begin(
@@ -248,7 +270,7 @@ final class TrustedOpenClProviderTest {
         {
             var driver = new FakeDriver();
             driver.failUpload = true;
-            var provider = provider(driver, bytes);
+            var provider = provider(driver, f);
             var prepared = provider.prepare(f.kernel, target(f));
             assertThrows(IllegalStateException.class,
                     () -> provider.begin(
@@ -267,7 +289,7 @@ final class TrustedOpenClProviderTest {
         var f = fixture();
         var driver = new FakeDriver();
         driver.failKernel = true;
-        var provider = provider(driver, f.plan.byteLength());
+        var provider = provider(driver, f);
         var prepared = provider.prepare(f.kernel, target(f));
 
         var operation = provider.begin(
@@ -290,7 +312,7 @@ final class TrustedOpenClProviderTest {
         var f = fixture();
         var driver = new FakeDriver();
         driver.statuses.add(TrustedOpenClProvider.EventStatus.PENDING);
-        var provider = provider(driver, f.plan.byteLength());
+        var provider = provider(driver, f);
         var prepared = provider.prepare(f.kernel, target(f));
 
         var operation = provider.begin(
@@ -325,7 +347,7 @@ final class TrustedOpenClProviderTest {
         var f = fixture();
         var driver = new FakeDriver();
         driver.statuses.add(TrustedOpenClProvider.EventStatus.DEVICE_LOST);
-        var provider = provider(driver, f.plan.byteLength());
+        var provider = provider(driver, f);
         var prepared = provider.prepare(f.kernel, target(f));
 
         var operation = provider.begin(
@@ -343,7 +365,7 @@ final class TrustedOpenClProviderTest {
     void physicalReleaseFailureRetainsQuotaAndKernelUntilRetry() {
         var f = fixture();
         var driver = new FakeDriver();
-        var provider = provider(driver, f.plan.byteLength());
+        var provider = provider(driver, f);
         var prepared = provider.prepare(f.kernel, target(f));
 
         var operation = provider.begin(
@@ -375,7 +397,7 @@ final class TrustedOpenClProviderTest {
         var f = fixture();
         var driver = new FakeDriver();
         driver.failReleaseEventOnce = true;
-        var provider = provider(driver, f.plan.byteLength());
+        var provider = provider(driver, f);
         var prepared = provider.prepare(f.kernel, target(f));
 
         var operation = provider.begin(
