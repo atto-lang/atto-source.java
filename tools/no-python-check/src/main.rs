@@ -107,6 +107,9 @@ mod tests {
         assert!(!forbidden_workflow_line("- run: cargo test"));
         assert!(!forbidden_workflow_line("- name: Reject Python files and execution"));
         assert!(!forbidden_workflow_line("name: Python policy"));
+        assert!(inspect_commands(".github/workflows/no-python-policy.yml"));
+        assert!(inspect_commands("scripts/build.sh"));
+        assert!(!inspect_commands("README.md"));
         assert!(forbidden_workflow_line("- run: python3 -m pytest"));
     }
 }
