@@ -228,6 +228,7 @@ public final class TypeChecker {
             if (!module.name().equals(Parser.ROOT_MODULE)) localNames.add(module.name());
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl fn) localNames.add(fn.name());
+                else if (declaration instanceof Ast.KernelDecl kernel) localNames.add(kernel.name());
                 else if (declaration instanceof Ast.ClassDecl klass) {
                     if (klass.name().equals("HttpResponse")) {
                         throw new IllegalArgumentException(
@@ -364,7 +365,10 @@ public final class TypeChecker {
         for (Ast.Decl decl : module.declarations()) {
             String name;
             String category;
-            if (decl instanceof Ast.FunctionDecl fn) {
+            if (decl instanceof Ast.KernelDecl kernel) {
+                name = kernel.name();
+                category = "kernel";
+            } else if (decl instanceof Ast.FunctionDecl fn) {
                 name = fn.name();
                 // FNC and ROUTINE share the same name+arity callable family.
                 // Their kinds affect whether a value can be reified, not the slot key.
