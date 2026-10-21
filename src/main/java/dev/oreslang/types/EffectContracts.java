@@ -148,12 +148,28 @@ public final class EffectContracts {
          * an unbounded callable may legitimately have unknown effects for
          * analysis, but its graph is not closed-world evidence.
          *
-         * Caller-provided DIRECT edges remain untrusted until produced by a
-         * compiler symbol-resolution pass; this method cannot prove origin.
+         * There is no production typed-HIR callsite provenance yet.
+         * Therefore an externally constructed DIRECT edge (or a claimed trap
+         * handler) can never be treated as a certified closed-world call.
+         * The ordinary infer()/validate() operations retain direct edges
+         * for analysis/model checking, not for execution authorization.
          */
         public Map<String, Set<Effect>> validateClosedWorld() {
             if (definitions.isEmpty()) {
                 throw new IllegalArgumentException("empty effect graph is not closed-world evidence");
+            }
+            for (Callable callable : definitions.values()) {
+                if (callable.trapsThrow()) {
+                    throw new IllegalArgumentException("trap handler lacks compiler provenance in "
+                            + callable.symbol());
+                }
+                for (Call call : callable.calls()) {
+                    if (call.resolution() == Call.Resolution.DIRECT) {
+                        throw new IllegalArgumentException(
+                                "direct call lacks compiler-resolved provenance: "
+                                + callable.symbol() + " -> " + call.target());
+                    }
+                }
             }
             Map<String, Set<Effect>> effects = validate();
             for (Callable callable : definitions.values()) {
