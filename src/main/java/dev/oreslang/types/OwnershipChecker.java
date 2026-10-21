@@ -2205,6 +2205,13 @@ public final class OwnershipChecker {
                 }
                 return new ValueInfo(jsonValue, ValueKind.MOVE_ONLY, null);
             }
+            case "parse" -> {
+                if (call.arguments().size() != 1) {
+                    throw error("Json.parse expects exactly one String argument");
+                }
+                checkExpr(call.arguments().getFirst(), scope, false);
+                return new ValueInfo(jsonValue, ValueKind.MOVE_ONLY, null);
+            }
             case "stringify" -> {
                 if (call.arguments().size() != 1) {
                     throw error("Json.stringify expects exactly one argument");
