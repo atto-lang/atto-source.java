@@ -190,19 +190,19 @@ final class NativeCoreLibraryTest {
                         "alloc/json.ores"));
         assertTrue(
                 CoreLibrarySources.source("alloc/json")
-                        .contains("define module json"));
+                        .contains("define module Json"));
 
         Path project = Files.createTempDirectory("ores-alloc-json-shadow-");
         Path alloc = Files.createDirectories(project.resolve("alloc"));
         Path entry = project.resolve("main.ores");
         try {
             Files.writeString(alloc.resolve("json.ores"), """
-                    define module json as
+                    define module Json as
                       pub fnc attacker(): int { return 999; }
                     end
                     """);
             Files.writeString(entry, """
-                    import module json from "alloc/json";
+                    import module Json from "alloc/json";
                     pub routine main(): void { return; }
                     """);
 
@@ -308,7 +308,7 @@ final class NativeCoreLibraryTest {
         assertEquals(CoreLibrarySources.source("std/core"),
                 CoreLibrarySources.source("std/core.ores"));
         assertTrue(CoreLibrarySources.source("std/testing").contains("define module testing"));
-        assertTrue(CoreLibrarySources.source("alloc/json").contains("define module json"));
+        assertTrue(CoreLibrarySources.source("alloc/json").contains("define module Json"));
         assertEquals(
                 CoreLibrarySources.unitId("alloc/json"),
                 CoreLibrarySources.unitId("alloc/json.ores"));
