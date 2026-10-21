@@ -1,6 +1,8 @@
 package dev.oreslang.compiler;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.hat.HatKernelCompiler;
+import dev.oreslang.hat.HatKernelIr;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
@@ -19,6 +21,7 @@ public final class OresCompiler {
     public static Ast.Program analyze(Ast.Program program) {
         TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(program);
         OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
+        HatKernelCompiler.validate(checked.program());
         return checked.program();
     }
 
@@ -34,7 +37,13 @@ public final class OresCompiler {
     public static AnalysisResult analyzeWithDiagnostics(Ast.Program program) {
         TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(program);
         OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
+        HatKernelCompiler.validate(checked.program());
         return new AnalysisResult(checked.program(), checked.warnings());
+    }
+
+    /** Compile all source-visible HAT kernels to portable, provider-neutral IR. */
+    public static java.util.List<HatKernelIr.Kernel> compileHatKernels(String source) {
+        return HatKernelCompiler.compile(parseAndTypeCheck(source));
     }
 
     /**
