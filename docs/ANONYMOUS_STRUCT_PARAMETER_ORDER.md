@@ -22,11 +22,15 @@ Java's parser has both branches in `parseParametersUntil`, while
 
 ## Important typing boundary
 
-Anonymous inline record/struct types must follow the same typechecker semantics
-irrespective of parameter order. This is separate from *width projection*.
+Anonymous inline record/struct parameter types must follow identical typechecker
+semantics irrespective of parameter order **and irrespective of whether the
+redundant structural modifier is present**. Their readonly width projection
+must be identical; nominal types require explicit structural opt-in.
 In Java's draft structural work, named class/interface/trait types are nominal
-by default, and `structural struct{...} value` explicitly requests a readonly
-structural view that may accept compatible additional public fields.
+by default, while any **top-level anonymous inline `struct{...}`, `record{...}`,
+or `{...}` parameter type** automatically requests a readonly structural
+shape view. `structural struct{...} value` is equivalent to the bare form.
+The keyword is still required for a named type to opt into structural matching.
 It must never silently recover write authority or cross actor isolation.
 Do not infer width compatibility merely because a parser accepts an inline
 struct type.
@@ -35,7 +39,7 @@ struct type.
 
 | Target | Verified current architecture | Required work |
 | --- | --- | --- |
-| Java/Graal | `Parser.java` handles both syntaxes; PR #1828 adds JUnit matrix atop draft #1809 | Exact-head Maven/JUnit and Graal guest execution, ownership/structural semantics and canonical formatter tests |
+| Java/Graal | `Parser.java` accepts both orders and normalizes anonymous structural keywords; PR #1828 plus dependent implicit-shape PR cover the matrix | Exact-head Maven/JUnit and Graal guest execution, ownership/structural semantics and canonical formatter tests |
 | LLVM | Native `frontend/Parser.cpp` takes type-first scalars/classes/generics, not full inline `struct{...}` IR | Implement both spellings and safe typed native record field ABI before reporting parity |
 | WASM | Source -> pinned native LLVM compiler -> LLVM IR -> Clang wasm32 -> verified Wasm | Test both spellings through **real pinned LLVM compiler**, wasm32 runtime and bridge ABI |
 | JS | Scalar-v1 `src/compiler.mjs` accepts `int x`; program-v2 is separate | Real shape/type support through checked JS IR, Node + browser; no token-only acceptance |
@@ -51,9 +55,10 @@ Tracking: LLVM issue #813, WASM issue #106, JS issue #30, .NET issue #101.
    named-call argument colon; braces must not consume the function body.
 4. Duplicate fields and parameter names, missing name/type, illegal delimiter
    combinations, and malformed or unclosed record shapes fail closed.
-5. Exact-shape passing calls, missing-field and wrong-field-type rejections.
-6. Explicit readonly `structural` width projection, and rejection of
-   `structural ... mut`, write-through and cross-actor leakage.
+5. Implicit anonymous readonly width passing calls (with or without keyword), missing-field and wrong-field-type rejections; named contracts remain nominal without opt-in.
+6. Implicit and explicit anonymous readonly `structural` width projection,
+   rejection of `mut` in either spelling, write-through and cross-actor leakage.
+   Named types still require the explicit modifier.
 7. Normalized compiler AST/type checks before lowering; check no param-order
    branch survives into LLVM IR, Wasm ABI, JS IR, or CIL.
 8. Formatter canonicalizes to type-first, then reformat is idempotent and
