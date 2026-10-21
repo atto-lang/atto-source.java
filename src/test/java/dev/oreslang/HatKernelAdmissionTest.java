@@ -20,12 +20,26 @@ final class HatKernelAdmissionTest {
     }
 
     @Test
-    void canonicalKernelDeclarationIsRecognizedButFailsClosedUntilLoweringExists() {
+    void canonicalKernelContainerParses() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                define pub kernel Add as
+                  fnc main(int left, int right): int {
+                    return left + right;
+                  }
+                end
+                """));
+    }
+
+    @Test
+    void kernelBodyRejectsOrdinaryDeclarations() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
-                () -> Parser.parse("define pub kernel K as end"));
-        assertTrue(failure.getMessage().contains("kernel declarations are reserved for Oreslang HAT"));
-        assertTrue(failure.getMessage().contains("no implicit CPU fallback"));
+                () -> Parser.parse("""
+                        define pub kernel Bad as
+                          define class NotDeviceCode as end
+                        end
+                        """));
+        assertTrue(failure.getMessage().contains("kernel bodies currently admit only 'fnc'"));
     }
 
     @Test
