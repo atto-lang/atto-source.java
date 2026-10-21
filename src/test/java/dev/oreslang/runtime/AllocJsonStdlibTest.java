@@ -39,7 +39,7 @@ final class AllocJsonStdlibTest {
         Path project = temp.resolve("shadow");
         Files.createDirectories(project.resolve("alloc"));
         Files.writeString(project.resolve("alloc/json.ores"), """
-                define pub class NotJsonValue as
+                pub define class NotJsonValue as
                 end
                 """);
 
@@ -149,7 +149,7 @@ final class AllocJsonStdlibTest {
         Path project = temp.resolve("unknown");
         Files.createDirectories(project.resolve("alloc"));
         Files.writeString(project.resolve("alloc/not-json.ores"), """
-                define pub class JsonValue as
+                pub define class JsonValue as
                 end
                 """);
         Path entry = project.resolve("main.ores");
