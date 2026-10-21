@@ -409,6 +409,8 @@ def checked_destination(repository, contract):
         raise Denied("carrier test plan has invalid base64") from exc
     if not plan_bytes or len(plan_bytes) > MAX_PLAN:
         raise Denied("carrier test plan missing or oversized")
+    if git_blob_sha(plan_bytes) != contract["test_plan_blob_sha"]:
+        raise Denied("carrier test plan blob digest mismatch")
     return repo, base_tree, plan_bytes
 
 
