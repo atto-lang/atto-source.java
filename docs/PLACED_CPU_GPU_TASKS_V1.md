@@ -14,7 +14,7 @@ let int result = await cpu;
 let Task<GpuBuffer<float>> device = gpu task { return kernel(); };
 ```
 
-- `cpu task { ... }` is intentionally exactly the ordinary owned and scheduler-admitted Task execution path, with **no new, parallel threadpool**, no promise that a particular physical CPU core is selected, and no actor affinity guarantee.
+- `cpu task { ... }` reuses the existing owned and scheduler-admitted Task path in ordinary/root execution; there is **no new parallel threadpool** and no promise of a particular physical CPU core. Explicit CPU task offload from actors is rejected until isolated captures and off-actor placement are proven, rather than silently executing the work as an actor turn.
 - `task { ... }` remains the canonical default CPU placement. The new `cpu` prefix is useful in heterogeneous graphs and makes intent explicit.
 - `Task<T>` and `Future<T>` both lower to `OresFuture<T>` at runtime; an explicit, contextual `Future<T>` binding is accepted. Inferred handles remain `Task<T>`.
 - Submission enqueues initial work (it does **not** suspend the caller). `await` suspends the *awaiting* logical continuation and schedules its resumption on its owner scheduler, including for already-settled Futures.
