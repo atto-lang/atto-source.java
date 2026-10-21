@@ -50,6 +50,21 @@ final class ActorCpuAffinityConfigTest {
                         () -> ActorCpuAffinityConfig.budgetCpuCount(0)));
     }
 
+    @Test void hardAffinityRequiresOneDistinctCpuPerActorCarrierAcrossDomains() {
+        withProperties("cpu", "0,1,2,3,4,5", () ->
+                assertDoesNotThrow(() ->
+                        ActorCpuAffinityConfig.requireDistinctHardCpuCapacity(2, 2)));
+        withProperties("cpu", "0,1,2,3,4", () ->
+                assertThrows(IllegalArgumentException.class, () ->
+                        ActorCpuAffinityConfig.requireDistinctHardCpuCapacity(2, 2)));
+        withProperties("lane", null, () ->
+                assertDoesNotThrow(() ->
+                        ActorCpuAffinityConfig.requireDistinctHardCpuCapacity(64, 64)));
+        withProperties("cpu", "0,1,2", () ->
+                assertThrows(IllegalArgumentException.class, () ->
+                        ActorCpuAffinityConfig.requireDistinctHardCpuCapacity(0, 1)));
+    }
+
     @Test void laneOffsetsPartitionHardAffinitySetAcrossPools() {
         int[] cpus = {0, 1, 2, 3, 4, 5, 6, 7};
         assertEquals(0, ActorCpuAffinityConfig.cpuForLane(cpus, 0L, 0));
