@@ -997,11 +997,18 @@ class PrivateCiV3Test(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(
                     v3.Denied, "contract repository ID"
-                ):
+                ) as raised:
                     v3.publish(
                         "trusted/ci", source, "4" * 40, 1482,
                         "ci/test-plans/java-pr1482.json", root,
                     )
+                self.assertFalse(
+                    getattr(
+                        raised.exception,
+                        "_ores_private_ci_retention_incident",
+                        False,
+                    )
+                )
                 verify_source_pr.assert_not_called()
 
     def test_publish_binds_receipt_branch_and_authorization_ref(self):
@@ -1224,12 +1231,21 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
             ):
-                with self.assertRaisesRegex(v3.Denied, "protection revoked"):
+                with self.assertRaisesRegex(
+                    v3.Denied, "protection revoked"
+                ) as raised:
                     v3.publish(
                         "trusted/ci", source, "4" * 40, 1482,
                         "ci/test-plans/java-pr1482.json", root,
                         now=dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc),
                     )
+                self.assertTrue(
+                    getattr(
+                        raised.exception,
+                        "_ores_private_ci_retention_incident",
+                        False,
+                    )
+                )
 
         delete_ref.assert_called_once_with(
             "trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT,
@@ -1721,6 +1737,49 @@ class PrivateCiV3Test(unittest.TestCase):
         self.assertEqual([row[0] for row in rows], ["a", "b"])
         self.assertEqual(
             digest, hashlib.sha256(v3.canonical_bytes(rows)).hexdigest()
+        )
+
+
+    def test_main_uses_distinct_retention_incident_exit_code(self):
+        args = [
+            "trusted/ci",
+            "--source-dir", "/tmp/synthetic-private-source",
+            "--source-commit", "4" * 40,
+            "--source-pr", "1482",
+            "--test-plan", "ci/test-plans/java-pr1482.json",
+        ]
+        incident = v3.Denied("post-upload failure")
+        setattr(incident, "_ores_private_ci_retention_incident", True)
+        with (
+            patch.object(v3, "publish", side_effect=incident),
+            patch.object(v3.sys, "stderr") as stderr,
+        ):
+            self.assertEqual(v3.main(args), 2)
+        self.assertTrue(
+            any(
+                "PRIVATE_CI_RETENTION_INCIDENT" in str(call)
+                for call in stderr.write.call_args_list
+            )
+        )
+
+    def test_main_ordinary_preupload_denial_remains_exit_one(self):
+        args = [
+            "trusted/ci",
+            "--source-dir", "/tmp/synthetic-private-source",
+            "--source-commit", "4" * 40,
+            "--source-pr", "1482",
+            "--test-plan", "ci/test-plans/java-pr1482.json",
+        ]
+        with (
+            patch.object(v3, "publish", side_effect=v3.Denied("pre-upload denial")),
+            patch.object(v3.sys, "stderr") as stderr,
+        ):
+            self.assertEqual(v3.main(args), 1)
+        self.assertTrue(
+            any(
+                "PRIVATE_CI_DESTINATION_REJECTED" in str(call)
+                for call in stderr.write.call_args_list
+            )
         )
 
 
