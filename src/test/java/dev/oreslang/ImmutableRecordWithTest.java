@@ -78,39 +78,21 @@ final class ImmutableRecordWithTest {
     }
 
     @Test
-    void withExtendsPlainStructsAndStillRejectsStructuralContractViews() {
-        String structSource = """
-                pub fnc main(): void {
-                  const point = infer struct{x: 1, y: 2};
-                  const changed = point with {x: "one", z: 3};
-                  stdio.println(changed.x);
-                  stdio.println(changed.y);
-                  stdio.println(changed.z);
-                  return;
-                }
-                """;
-        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(structSource));
-
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        Source program = assertDoesNotThrow(() ->
-                Source.newBuilder(
-                                OresLanguage.ID,
-                                structSource,
-                                "immutable-struct-with.ores")
-                        .mimeType(OresLanguage.MIME_TYPE)
-                        .build());
-        assertDoesNotThrow(() -> {
-            try (Context context = Context.newBuilder(OresLanguage.ID)
-                    .allowAllAccess(false)
-                    .out(output)
-                    .build()) {
-                context.eval(program);
-            }
-        });
-        assertEquals(
-                "one\\n2\\n3\\n",
-                output.toString(StandardCharsets.UTF_8)
-                        .replace("\\r\\n", "\\n"));
+    void withRejectsStructsAndStructuralContractViews() {
+        IllegalArgumentException structRejected =
+                assertThrows(
+                        IllegalArgumentException.class,
+                        () -> TypeChecker.check(Parser.parse("""
+                                pub fnc main(): void {
+                                  const point = infer struct{x: 1, y: 2};
+                                  const changed = point with {x: "one", z: 3};
+                                  return;
+                                }
+                                """)));
+        assertTrue(
+                structRejected.getMessage().contains("struct")
+                        || structRejected.getMessage().contains("readonly structural record"),
+                structRejected.getMessage());
 
         IllegalArgumentException projectionRejected =
                 assertThrows(
@@ -123,7 +105,7 @@ final class ImmutableRecordWithTest {
                                 """)));
         assertTrue(
                 projectionRejected.getMessage().contains("structural contract")
-                        || projectionRejected.getMessage().contains("actual readonly"),
+                        || projectionRejected.getMessage().contains("readonly structural record"),
                 projectionRejected.getMessage());
     }
 
