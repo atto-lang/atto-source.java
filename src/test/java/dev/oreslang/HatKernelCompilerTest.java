@@ -60,6 +60,20 @@ final class HatKernelCompilerTest {
     }
 
     @Test
+    void kernelEntryCannotHaveIndependentPublicVisibility() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.compileHatKernels("""
+                        define pub kernel BadVisibility as
+                          pub fnc main(int value): int {
+                            return value;
+                          }
+                        end
+                        """));
+        assertTrue(failure.getMessage().contains("visibility belongs on the kernel declaration"));
+    }
+
+    @Test
     void rejectsFloatLiteralsEvenWhenMathematicallyIntegral() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
