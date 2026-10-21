@@ -53,3 +53,72 @@ Related existing drafts: Java Task #1468, CPU/GPU contract #1096, CPU host graph
 ## Java tests in this branch
 
 `PlacedTaskLanguageTest`: source/guest tests for CPU `Task<T>`, inferred `Task<T>`, explicit `Future<T>`, eager `cpu { }` values, return isolation, effects-only blocks, missing return/type mismatches, suspension rejection, GPU fail-closed task and eager region placement, nested CPU Task captures, and actor CPU Task offload denial. These are checked-in tests, **not claims of executed CI**.
+
+## Owned bounded Stream<T> Task handoff (v1)
+
+The compiler now recognizes a distinct built-in `Stream<T>` constructed with
+`Stream.new<T>(capacity)`. It uses a dedicated Oreslang-owned `OresStream<T>`
+runtime handle enclosing the existing bounded, synchronized channel coordinator.
+This is **not** a `Channel<T>` type alias, a Java `InputStream`, an
+`Iterator<T>`, or an implicit conversion from `AsyncGenerator<T>`.
+
+```oreslang
+fnc calculate(): Stream<int> {
+    val Stream<int> output = Stream.new<int>(2);
+    val bool inserted = try writech(output, 42);
+    return output;
+}
+
+pub routine main(): void {
+    let Stream<int> stream = await cpu task { return calculate(); };
+    let Option<int> item = try readch(stream);
+    stdio.stdout.write(item.unwrap());
+    stream.close();
+    return;
+}
+```
+
+**Lifetime:** completing the constructing Task does not implicitly close the
+stream or invalidate its queue, coordinator, or pending operations. The handle
+remains valid in the receiving task's execution context until explicitly
+closed or the owning runtime is torn down. Producers and consumers may share
+the synchronized transport handle in an admitted local async execution domain.
+Buffers are bounded by a positive capacity; existing ChannelRuntime admission
+limits also bound outstanding operation registrations.
+
+**Delivery:** each enqueued item is delivered at most once (competing readers
+consume from the same queue); ordering follows the channel coordinator.
+This is *unicast/work-queue*, **not** multicast/broadcast, replay, or reactive
+`Observable` semantics. `try readch` returns `Option<T>`, `nb readch`
+returns `Future<T>`, and `readch` follows existing scheduler/actor blocking
+restrictions. The analogous `writech` forms retain channel admission and
+backpressure. Stream construction is immediate; no producer is implicitly
+started just by calling `Stream.new`.
+
+**Teardown:** `stream.close()` preserves buffered values for later reads,
+then closed operations fail with the existing ChannelClosedException.
+Closing the stream does not claim that an independent producer Task's physical
+execution has quiesced; producers must be supervised/joined separately.
+Cancellation of one waiter is not cancellation of the whole stream.
+
+**Compiler proof:** the payload is a concrete, data-only, owned `Send` type.
+The Stream handle is an intrinsically trusted, synchronized `Send` transport,
+not an arbitrary `Sync`, actor/mailbox message, borrowed view, or host
+capability. Bare `Stream`, borrowed payloads, `Stream<Future<T>>`, nested
+stream handles and unresolved/nominal-unverified payload types reject.
+`Task<Stream<T>>` and `Future<Stream<T>>` are valid checked Task results;
+a Task returning such a handle does not imply that all stream items have
+arrived. Passing an existing stream to an async callable requires an explicitly
+declared `Stream<T>` parameter at runtime.
+
+**Not yet supported:** implicit `Iterator` / `AsyncGenerator` promotion,
+general stream operators, arbitrary host streams, device-resident streams,
+GPU stream/fence completion, typed actor stream messages, or portable LLVM and
+other backend lowering. These require separately audited lifetime/effect
+contracts, not name-based Send exceptions. Full exact-head executable tests
+remain blocked by authorized CI runner availability.
+
+New `TaskStreamReturnTest` exercises awaited `cpu task` stream return,
+retained buffered values, a `Future<Stream<int>>` handle, bounded producer
+capture, malformed payload denial, explicit Channel/Stream distinction,
+bare/borrowed stream denial, and runtime capacity refusal.
