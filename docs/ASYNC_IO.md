@@ -3,7 +3,7 @@
 The async APIs return native Oreslang `Future<T>` values. `await` suspends the
 source continuation and releases its actor/root execution carrier. Completion
 resumes through the owning scheduler; I/O workers never execute guest callbacks.
-Existing synchronous APIs remain available for compatibility.
+Existing synchronous APIs and worker-offloaded host calls are legacy behavior and are **not compliant** with the strict nonblocking stdlib contract. A conforming release must remove/replace them or fail closed on targets without a true async provider.
 
 | API | Awaited result |
 | --- | --- |
@@ -35,8 +35,10 @@ pub async routine main(): void {
 
 Grant the same filesystem/network permissions required by synchronous calls.
 Actor-local capabilities are checked before submission. Canonical path resolution,
-resource permission checks, DNS/connect, file operations and blocking client HTTP
-work execute off the actor carrier. Only immutable argument values are captured.
+resource permission checks, DNS/connect, file operations and HTTP transport must
+ultimately execute through a readiness/completion-based provider. Merely moving a
+blocking call off the actor carrier is no longer sufficient. Only immutable argument
+values may cross the async boundary.
 HTTP redirects remain disabled so a response cannot bypass the destination grant.
 Failures retain their cause and a bounded `native:io` boundary annotation.
 
@@ -50,9 +52,11 @@ all admission needed to close their sockets. These are executor admission
 counters, not additional actor channels. One future is created per
 operation, not one channel. Await uses the actor's existing continuation transport.
 
-This is **non-blocking for guest execution**. The portable implementation offloads
-blocking host filesystem, TCP and HTTP client calls; it does not promise kernel
-asynchronous filesystem I/O or zero blocked OS threads. HTTP client connections
+The current portable Java implementation is **carrier-nonblocking but not strict
+host-nonblocking** because it offloads blocking filesystem/TCP/HTTP calls. That
+fallback is now release-blocking technical debt and must not be described as
+strictly nonblocking stdlib I/O. A target without a completion/readiness provider
+must reject the unsupported operation rather than silently use worker offload. HTTP client connections
 are currently per call and closed after completion. No throughput improvement is
 claimed for tiny cached files.
 
