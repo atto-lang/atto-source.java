@@ -1329,7 +1329,7 @@ public final class Parser {
      */
     private Ast.Param normalizedStructuralParameter(
             Ast.TypeRef type, String name, boolean explicitStructural, boolean mutable) {
-        boolean structural = explicitStructural || type.isRecordType();
+        boolean structural = explicitStructural || type.isClosedAggregateType();
         if (structural && mutable) {
             throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
         }
