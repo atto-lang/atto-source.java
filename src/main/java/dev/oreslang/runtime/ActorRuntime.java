@@ -445,10 +445,12 @@ public final class ActorRuntime implements AutoCloseable {
     private final UUID runtimeInstanceId = UUID.randomUUID();
     private final AtomicLong nextActorGeneration = new AtomicLong(1);
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
-    /** First source unary lowering: bounded runtime-owned correlation and
-     * one shared timer, never one timer/thread/UUID per request. */
-    private final GenerationalReplyRegistry sourceUnaryRegistry =
-            new GenerationalReplyRegistry(4_096);
+    /** One bounded pending-call slab per exact caller ActorRef incarnation.
+     * No actor can exhaust another caller's slots. The scheduler still owns
+     * one shared deadline executor, not one timer/thread/UUID per call. */
+    private static final int SOURCE_UNARY_PER_CALLER_CAPACITY = 128;
+    private final java.util.Map<ActorRef<?>, GenerationalReplyRegistry> sourceUnaryRegistries =
+            java.util.Collections.synchronizedMap(new java.util.IdentityHashMap<>());
     private final java.util.concurrent.ScheduledExecutorService sourceUnaryTimer =
             java.util.concurrent.Executors.newSingleThreadScheduledExecutor(
                     namedFactory("ores-unary-deadline-"));
@@ -1880,7 +1882,20 @@ public final class ActorRuntime implements AutoCloseable {
 
     /** Enroll exact incarnations for compiler-emitted source requests.
      * Called only by this VM intrinsic, never by arbitrary Oreslang methods. */
-    private GenerationalReplyRegistry.Endpoint sourceUnaryEndpoint(ActorRef<?> actor) {
+    private GenerationalReplyRegistry sourceUnaryRegistryFor(ActorRef<?> caller) {
+        // The runtime (not guest code) grants the caller its own bounded slab.
+        synchronized (sourceUnaryRegistries) {
+            if (closed.get() || !caller.ownedBy(this) || !caller.isAlive()) {
+                throw new SecurityException("source unary caller incarnation is stopped/foreign");
+            }
+            return sourceUnaryRegistries.computeIfAbsent(
+                    caller, ignored -> new GenerationalReplyRegistry(
+                            SOURCE_UNARY_PER_CALLER_CAPACITY));
+        }
+    }
+
+    private GenerationalReplyRegistry.Endpoint sourceUnaryEndpoint(
+            ActorRef<?> actor, GenerationalReplyRegistry registry, boolean callerOwner) {
         if (!actor.ownedBy(this) || closed.get()) {
             throw new SecurityException("source unary endpoint belongs to a foreign runtime");
         }
@@ -1892,10 +1907,21 @@ public final class ActorRuntime implements AutoCloseable {
             if (cell.stopped.get() || cell.finalized || cell.sealing) {
                 throw new SecurityException("source unary endpoint is retired/sealed");
             }
-            GenerationalReplyRegistry.Endpoint endpoint = sourceUnaryRegistry.bindActor(
+            GenerationalReplyRegistry.Endpoint endpoint = registry.bindActor(
                     actor, GenerationalReplyRegistry.Role.ACTOR);
-            cell.replyEndpointRevokers.putIfAbsent(
-                    endpoint, () -> sourceUnaryRegistry.retireIfLive(endpoint));
+            cell.replyEndpointRevokers.putIfAbsent(endpoint, () -> {
+                registry.retireIfLive(endpoint);
+                if (callerOwner) {
+                    // The caller's slab dies with its incarnation; no stale
+                    // reply can reach an actor that reused this ActorId.
+                    registry.close();
+                    synchronized (sourceUnaryRegistries) {
+                        if (sourceUnaryRegistries.get(actor) == registry) {
+                            sourceUnaryRegistries.remove(actor);
+                        }
+                    }
+                }
+            });
             return endpoint;
         }
     }
@@ -1913,10 +1939,13 @@ public final class ActorRuntime implements AutoCloseable {
         if (caller == destination) {
             throw new IllegalArgumentException("actor cannot request itself");
         }
-        GenerationalReplyRegistry.Endpoint callerEndpoint = sourceUnaryEndpoint(caller);
-        GenerationalReplyRegistry.Endpoint calleeEndpoint = sourceUnaryEndpoint(destination);
+        GenerationalReplyRegistry registry = sourceUnaryRegistryFor(caller);
+        GenerationalReplyRegistry.Endpoint callerEndpoint =
+                sourceUnaryEndpoint(caller, registry, true);
+        GenerationalReplyRegistry.Endpoint calleeEndpoint =
+                sourceUnaryEndpoint(destination, registry, false);
         return ActorReplySchedulerBridge.requestCurrentActor(
-                this, sourceUnaryRegistry, callerEndpoint, calleeEndpoint,
+                this, registry, callerEndpoint, calleeEndpoint,
                 destination, message, Object.class, java.time.Duration.ofSeconds(5),
                 sourceUnaryTimer);
     }
@@ -6990,7 +7019,12 @@ public final class ActorRuntime implements AutoCloseable {
         }
         for (ActorCell<?> cell : snapshot) cell.stop();
         if (firstClose) {
-            sourceUnaryRegistry.close();
+            java.util.List<GenerationalReplyRegistry> sourceSlabs;
+            synchronized (sourceUnaryRegistries) {
+                sourceSlabs = java.util.List.copyOf(sourceUnaryRegistries.values());
+                sourceUnaryRegistries.clear();
+            }
+            for (GenerationalReplyRegistry registry : sourceSlabs) registry.close();
             sourceUnaryTimer.shutdownNow();
         }
         if (firstClose && physicalTurnGate != null) physicalTurnGate.close();
