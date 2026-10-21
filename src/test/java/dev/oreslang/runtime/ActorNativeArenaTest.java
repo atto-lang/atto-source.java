@@ -69,6 +69,37 @@ final class ActorNativeArenaTest {
     }
 
     @Test
+    void nativeReferencesRequireArenaIssuedProvenanceNotSelfAssertedOffsets() {
+        AtomicLong charged = new AtomicLong();
+        Object marker = new Object();
+        try (ActorNativeArena arena = arena(8192, charged)) {
+            Map<String, Object> holder = arena.fields(List.of("value"), marker);
+            Map<String, Object> backing = arena.fields(List.of("data"), marker);
+            ActorNativeArena.NativeValue fields = (ActorNativeArena.NativeValue) backing;
+            long issuedAddress = fields.nativeOffset();
+            ActorNativeArena.NativeValue forged = new ActorNativeArena.NativeValue() {
+                @Override public ActorNativeArena nativeArena() { return arena; }
+                @Override public long nativeOffset() { return issuedAddress; }
+            };
+            assertThrows(SecurityException.class, () -> holder.put("value", forged),
+                    "a Java object claiming a legitimate address is not an arena-issued capability");
+            assertSame(marker, holder.get("value"),
+                    "failed admission must not publish a guest reference");
+            holder.put("value", backing);
+            assertSame(backing, holder.get("value"));
+
+            ActorNativeArena.NativeValue unissued = new ActorNativeArena.NativeValue() {
+                @Override public ActorNativeArena nativeArena() { return arena; }
+                @Override public long nativeOffset() { return issuedAddress + 8; }
+            };
+            assertThrows(SecurityException.class, () -> arena.registerNativeFacade(unissued, fields),
+                    "facade registration must verify its exact issued backing address");
+            assertSame(backing, holder.get("value"));
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
     void primitiveRegionsHaveExplicitReleaseBoundsAndBudget() {
         AtomicLong charged = new AtomicLong();
         try (ActorNativeArena arena = arena(128, charged)) {
