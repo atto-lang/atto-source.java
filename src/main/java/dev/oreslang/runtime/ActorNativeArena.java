@@ -41,6 +41,8 @@ public final class ActorNativeArena implements AutoCloseable {
     }
 
     private static final int SLOT_BYTES = 24;
+    private static final int TASK_FRAME_BYTES = 32;
+    private static final long TASK_FRAME_MAGIC = 0x4f5245535441534bL; // "ORESTASK"
     private static final int SLAB_BYTES = 4096;
     private static final long NULL = 0, UNINITIALIZED = 1, BOOLEAN = 2,
             BYTE = 3, SHORT = 4, INTEGER = 5, LONG = 6, FLOAT = 7, DOUBLE = 8,
@@ -111,6 +113,105 @@ public final class ActorNativeArena implements AutoCloseable {
             }
         }
         return linearMemory;
+    }
+
+    /**
+     * Compact actor-owned continuation authority. The Java SourceTask may remain
+     * an execution facade during lowering, but resume/suspend/terminal authority
+     * is persisted here in native actor memory and dies with the arena.
+     */
+    public synchronized TaskFrame taskFrame() {
+        checkAccess();
+        long base = allocate(TASK_FRAME_BYTES);
+        write(base, 0, TASK_FRAME_MAGIC);
+        write(base, 8, TaskPhase.NEW.code);
+        write(base, 16, 0L); // resume generation/count
+        write(base, 24, 0L); // reserved for lowered PC/flags
+        return new TaskFrame(base);
+    }
+
+    public enum TaskPhase {
+        NEW(0), RUNNING(1), AWAITING(2), COOPERATING(3), DONE(4), FAILED(5);
+
+        private final long code;
+        TaskPhase(long code) { this.code = code; }
+
+        private static TaskPhase fromCode(long code) {
+            for (TaskPhase phase : values()) if (phase.code == code) return phase;
+            throw new IllegalStateException("invalid native actor task-frame phase " + code);
+        }
+    }
+
+    public final class TaskFrame implements NativeValue {
+        private final long base;
+
+        private TaskFrame(long base) {
+            this.base = base;
+        }
+
+        @Override public ActorNativeArena nativeArena() { return ActorNativeArena.this; }
+
+        @Override public long nativeOffset() {
+            synchronized (ActorNativeArena.this) {
+                checkFrame();
+                return base;
+            }
+        }
+
+        public TaskPhase phase() {
+            synchronized (ActorNativeArena.this) {
+                checkFrame();
+                return TaskPhase.fromCode(read(base, 8));
+            }
+        }
+
+        public long resumeCount() {
+            synchronized (ActorNativeArena.this) {
+                checkFrame();
+                return read(base, 16);
+            }
+        }
+
+        public void beginResume(boolean initial) {
+            synchronized (ActorNativeArena.this) {
+                checkFrame();
+                TaskPhase current = TaskPhase.fromCode(read(base, 8));
+                if (initial ? current != TaskPhase.NEW
+                        : current != TaskPhase.AWAITING && current != TaskPhase.COOPERATING) {
+                    throw new IllegalStateException(
+                            "illegal native actor task resume: initial=" + initial
+                                    + " phase=" + current);
+                }
+                long generation = Math.addExact(read(base, 16), 1L);
+                write(base, 16, generation);
+                write(base, 8, TaskPhase.RUNNING.code);
+            }
+        }
+
+        public void awaiting() { transitionFromRunning(TaskPhase.AWAITING); }
+        public void cooperating() { transitionFromRunning(TaskPhase.COOPERATING); }
+        public void done() { transitionFromRunning(TaskPhase.DONE); }
+        public void failed() { transitionFromRunning(TaskPhase.FAILED); }
+
+        private void transitionFromRunning(TaskPhase next) {
+            synchronized (ActorNativeArena.this) {
+                checkFrame();
+                TaskPhase current = TaskPhase.fromCode(read(base, 8));
+                if (current != TaskPhase.RUNNING) {
+                    throw new IllegalStateException(
+                            "native actor task transition requires RUNNING; phase="
+                                    + current + " next=" + next);
+                }
+                write(base, 8, next.code);
+            }
+        }
+
+        private void checkFrame() {
+            checkAccess();
+            if (read(base, 0) != TASK_FRAME_MAGIC) {
+                throw new SecurityException("invalid or stale native actor task frame");
+            }
+        }
     }
 
     /** Primitive access path for dense stores: no per-element Java objects or codecs. */
