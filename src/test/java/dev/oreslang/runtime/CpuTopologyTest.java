@@ -261,6 +261,86 @@ final class CpuTopologyTest {
     }
 
     @Test
+    void fineCpuRankSeparatesCoreL2LlcNumaAndRemote() {
+        CpuTopology topology = CpuTopology.of(
+                new CpuTopology.Location(0, 30, 0, 3, 0, 20, 10, 64),
+                new CpuTopology.Location(1, 30, 0, 3, 0, 20, 10, 64),
+                new CpuTopology.Location(2, 30, 0, 3, 0, 20, 11, 64),
+                new CpuTopology.Location(3, 30, 0, 3, 0, 21, 12, 64),
+                new CpuTopology.Location(4, 40, 0, 3, 0, 22, 13, 64),
+                new CpuTopology.Location(5, 50, 1, 3, 1, 23, 14, 128));
+
+        assertEquals(0, topology.cpuAffinityRank(0, 0));
+        assertEquals(1, topology.cpuAffinityRank(0, 1),
+                "same package/core is the nearest non-identical CPU");
+        assertEquals(2, topology.cpuAffinityRank(0, 2),
+                "verified shared L2 outranks LLC-only placement");
+        assertEquals(3, topology.cpuAffinityRank(0, 3));
+        assertEquals(4, topology.cpuAffinityRank(0, 4));
+        assertEquals(5, topology.cpuAffinityRank(0, 5));
+        assertEquals(5, topology.cpuAffinityRank(0, 99));
+        assertEquals(64, topology.cacheLineBytes(0));
+        assertEquals(128, topology.cacheLineBytes(5));
+        assertEquals(CpuTopology.UNKNOWN, topology.cacheLineBytes(99));
+    }
+
+    @Test
+    void fineTopologyRequiresQualifiedPackageAndValidLineSize() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new CpuTopology.Location(0, 3, 0, 3, -1, 2, -1, 64));
+        assertThrows(IllegalArgumentException.class,
+                () -> new CpuTopology.Location(0, 3, 0, 3, -1, -1, 7, 64));
+        assertThrows(IllegalArgumentException.class,
+                () -> new CpuTopology.Location(0, 3, 0, 3, 0, 2, 7, 63));
+        assertThrows(IllegalArgumentException.class,
+                () -> new CpuTopology.Location(0, 3, 0, 3, 0, 2, 7, 8192));
+    }
+
+    @Test
+    void discoversCoreL2AndCacheLineWithoutInventingConflictingEvidence(
+            @TempDir Path root) throws IOException {
+        for (int cpu = 0; cpu < 4; cpu++) {
+            cpuFixture(root, cpu, "0", "Unified", "3", "30", "0");
+            Path topology = root.resolve("cpu" + cpu + "/topology");
+            Files.writeString(topology.resolve("core_id"), cpu < 2 ? "10" : "11");
+
+            Path l2 = root.resolve("cpu" + cpu + "/cache/index1");
+            Files.createDirectories(l2);
+            Files.writeString(l2.resolve("level"), "2");
+            Files.writeString(l2.resolve("id"), cpu < 3 ? "20" : "21");
+            Files.writeString(l2.resolve("type"), "Unified");
+            Files.writeString(l2.resolve("coherency_line_size"), "64");
+
+            Files.writeString(root.resolve("cpu" + cpu + "/cache/index0/coherency_line_size"),
+                    "64");
+        }
+
+        CpuTopology topology = CpuTopology.discoverAt(root);
+        assertEquals(1, topology.cpuAffinityRank(0, 1));
+        assertEquals(2, topology.cpuAffinityRank(0, 2));
+        assertEquals(3, topology.cpuAffinityRank(0, 3));
+        assertEquals(64, topology.cacheLineBytes(0));
+
+        // Conflicting line sizes degrade only the cache-line fact; locality
+        // evidence remains independently usable.
+        Files.writeString(root.resolve("cpu2/cache/index1/coherency_line_size"), "128");
+        topology = CpuTopology.discoverAt(root);
+        assertEquals(CpuTopology.UNKNOWN, topology.cacheLineBytes(2));
+        assertEquals(2, topology.cpuAffinityRank(0, 2));
+
+        // Conflicting same-level L2 IDs for one CPU fail closed for L2 only.
+        Path duplicateL2 = root.resolve("cpu2/cache/index2");
+        Files.createDirectories(duplicateL2);
+        Files.writeString(duplicateL2.resolve("level"), "2");
+        Files.writeString(duplicateL2.resolve("id"), "99");
+        Files.writeString(duplicateL2.resolve("type"), "Unified");
+        Files.writeString(duplicateL2.resolve("coherency_line_size"), "128");
+        topology = CpuTopology.discoverAt(root);
+        assertEquals(3, topology.cpuAffinityRank(0, 2),
+                "ambiguous L2 identity must fall back to qualified LLC");
+    }
+
+    @Test
     void cpuPreferenceRanksExactCoreAboveCacheAndNumaWithBoundedProbes() {
         CpuTopology topology = CpuTopology.of(
                 new CpuTopology.Location(20, 7, 0, 3, 0),
