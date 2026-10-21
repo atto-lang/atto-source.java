@@ -1166,11 +1166,10 @@ public final class OwnershipChecker {
                 // later source use of the old binding a compile-time error.
                 ValueInfo base = checkExpr(binary.left(), scope, true);
                 if (base.type == null
-                        || (!base.type.isReadonlyRecordType()
-                            && !base.type.isStructType())
+                        || !base.type.isReadonlyRecordType()
                         || base.type.isBorrow()) {
                     throw error(
-                            "'with' requires an owned readonly record or plain struct");
+                            "'with' requires an owned readonly structural record");
                 }
                 if (!(binary.right() instanceof Ast.ObjectExpr updatesExpr)
                         || !updatesExpr.plainRecord()) {
@@ -1193,9 +1192,7 @@ public final class OwnershipChecker {
                     members.put(field.getKey(), field.getValue());
                 }
                 return new ValueInfo(
-                        base.type.isStructType()
-                                ? Ast.TypeRef.structType(members)
-                                : Ast.TypeRef.readonlyRecordType(members),
+                        Ast.TypeRef.readonlyRecordType(members),
                         ValueKind.MOVE_ONLY,
                         null);
             }
