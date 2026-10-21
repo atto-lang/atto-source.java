@@ -574,7 +574,7 @@ public final class Ast {
     public enum BindingKind { CONST, VAL, LET }
 
     public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
-            BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
+            BlockStmt, TaskScopeStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
             ForOfStmt, ForOfDestructureStmt, ForStmt, DoWhileStmt, LoopStmt, SelectStmt { }
 
     /**
@@ -664,6 +664,16 @@ public final class Ast {
 
     public record BlockStmt(List<Stmt> body) implements Stmt {
         public BlockStmt { body = List.copyOf(body); }
+    }
+
+    /**
+     * Lexical structured Task scope. Scope exit is an asynchronous
+     * physical-quiescence barrier; children may not outlive this statement.
+     * Borrowed captures remain separately gated by compiler-issued scoped
+     * READ authority.
+     */
+    public record TaskScopeStmt(List<Stmt> body) implements Stmt {
+        public TaskScopeStmt { body = List.copyOf(body); }
     }
     public record BreakStmt() implements Stmt { }
     public record ContinueStmt() implements Stmt { }
