@@ -263,4 +263,38 @@ final class ActorNativeObjectAllocationTest {
     }
 
 
+    @Test
+    void actorStructAndRecordLiteralsStayArenaBackedAcrossCooperate() throws Exception {
+        String program = """
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    const mut point = struct{left: int, right: int}{left: 40, right: 2};
+                    const snapshot = infer record{left: 20, right: 22};
+                    rt cooperate;
+                    point.left = point.left + snapshot.left;
+                    point.right = point.right - snapshot.right;
+                    self.send(point.left + point.right);
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = await spawn Worker();
+                  worker.send("go");
+                  val result = (await worker.outputs.next()).value.unwrap();
+                  stdio.stdout.write(result.value);
+                  await worker.get_done();
+                  return;
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Path entry = temp.resolve("actor-native-struct-record.ores");
+        Files.writeString(entry, program);
+        LinkedProgramRunner.run(entry, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                Set.of(), Map.of(), output, new ByteArrayOutputStream());
+        assertEquals("40", output.toString(StandardCharsets.UTF_8));
+    }
+
+
 }
