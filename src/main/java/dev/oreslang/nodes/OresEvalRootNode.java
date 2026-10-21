@@ -144,6 +144,7 @@ public final class OresEvalRootNode extends RootNode {
         private final OresContext context;
         private final String codeUnitId;
         private final long taskAdmissionEpoch;
+        private final AtomicLong nextTaskLaunchId = new AtomicLong();
         // Actor carriers may enter the same evaluator concurrently. The
         // identity map only retains call nodes already owned by this program.
         private final Map<Ast.CallExpr, Integer> optionDepthCache =
@@ -1127,6 +1128,7 @@ public final class OresEvalRootNode extends RootNode {
             private final List<Ast.Stmt> blockBody;
             private final boolean blockAllowsValueReturn;
             private final List<?> arguments;
+            private final TaskLaunchAuthority taskLaunchAuthority;
             private Env initialBlockEnv;
 
             private SourceValueCont awaitingContinuation;
@@ -1141,6 +1143,7 @@ public final class OresEvalRootNode extends RootNode {
                 this.blockBody = null;
                 this.blockAllowsValueReturn = false;
                 this.arguments = List.copyOf(arguments);
+                this.taskLaunchAuthority = null;
             }
 
             private SourceTask(
@@ -1153,11 +1156,13 @@ public final class OresEvalRootNode extends RootNode {
                 this.blockBody = null;
                 this.blockAllowsValueReturn = false;
                 this.arguments = List.copyOf(arguments);
+                this.taskLaunchAuthority = null;
             }
 
             private SourceTask(
                     List<Ast.Stmt> blockBody,
-                    boolean blockAllowsValueReturn) {
+                    boolean blockAllowsValueReturn,
+                    TaskLaunchAuthority taskLaunchAuthority) {
                 this.function = null;
                 this.method = null;
                 this.receiver = null;
@@ -1165,6 +1170,8 @@ public final class OresEvalRootNode extends RootNode {
                         Objects.requireNonNull(blockBody, "blockBody"));
                 this.blockAllowsValueReturn = blockAllowsValueReturn;
                 this.arguments = List.of();
+                this.taskLaunchAuthority = Objects.requireNonNull(
+                        taskLaunchAuthority, "source Task launch authority");
             }
 
             @Override
@@ -1200,6 +1207,16 @@ public final class OresEvalRootNode extends RootNode {
                 if (resume.initial()) {
                     Env params;
                     if (blockBody != null) {
+                        if (taskLaunchAuthority == null
+                                || taskLaunchAuthority.ownershipCheckEpoch()
+                                        != taskAdmissionEpoch
+                                || taskLaunchAuthority.launchId() <= 0
+                                || taskLaunchAuthority.parentScopeEpoch() <= 0
+                                || taskLaunchAuthority.domain()
+                                        != Ast.ExecutionDomain.CPU) {
+                            throw new IllegalStateException(
+                                    "source Task resumed with stale or invalid launch authority");
+                        }
                         params = initialBlockEnv != null
                                 ? initialBlockEnv
                                 : new Env(null);
@@ -1411,6 +1428,31 @@ public final class OresEvalRootNode extends RootNode {
             return new RuntimeException(unwrapped);
         }
 
+        private record TaskLaunchAuthority(
+                long launchId,
+                long ownershipCheckEpoch,
+                long parentScopeEpoch,
+                Ast.ExecutionDomain domain) {
+            private TaskLaunchAuthority {
+                if (launchId <= 0
+                        || ownershipCheckEpoch <= 0
+                        || parentScopeEpoch <= 0) {
+                    throw new IllegalArgumentException(
+                            "Task launch authority identities must be positive");
+                }
+                Objects.requireNonNull(domain, "Task launch execution domain");
+            }
+        }
+
+        private long allocateTaskLaunchId() {
+            long launchId = nextTaskLaunchId.incrementAndGet();
+            if (launchId <= 0) {
+                throw new IllegalStateException(
+                        "source Task launch identity space exhausted");
+            }
+            return launchId;
+        }
+
         private OresFuture<Object> startSourceFunctionTask(
                 Ast.FunctionDecl function,
                 List<?> arguments) {
@@ -1461,9 +1503,21 @@ public final class OresEvalRootNode extends RootNode {
                         "checked Task capture admission is inconsistent with its AST body");
             }
 
-            SourceTask task = new SourceTask(taskExpr.body(), true);
+            TaskLaunchAuthority launchAuthority =
+                    new TaskLaunchAuthority(
+                            allocateTaskLaunchId(),
+                            admission.checkEpoch(),
+                            env.scopeEpoch(),
+                            admission.domain());
+            SourceTask task =
+                    new SourceTask(
+                            taskExpr.body(),
+                            true,
+                            launchAuthority);
             Env.DetachedTaskSnapshot transfer =
-                    env.detachedTaskSnapshot(admitted);
+                    env.detachedTaskSnapshot(
+                            admitted,
+                            launchAuthority.parentScopeEpoch());
             task.initialBlockEnv = transfer.environment();
             OresScheduler current = OresScheduler.current();
             OresScheduler scheduler =
@@ -9596,6 +9650,8 @@ public final class OresEvalRootNode extends RootNode {
     private static final class Env {
         private static final Object MISSING = new Object();
         private static final Object MOVED_TASK_CAPTURE = new Object();
+        private static final AtomicLong NEXT_SCOPE_EPOCH = new AtomicLong();
+        private final long scopeEpoch;
         private final Env parent;
         private final boolean descendantsNonLexical;
         private final Ast.ClassDecl accessClass;
@@ -9650,6 +9706,12 @@ public final class OresEvalRootNode extends RootNode {
                 OresObject constructingObject,
                 String lexicalModule,
                 Ast.ClassDecl lexicalContainerClass) {
+            long nextEpoch = NEXT_SCOPE_EPOCH.incrementAndGet();
+            if (nextEpoch <= 0) {
+                throw new IllegalStateException(
+                        "runtime lexical scope epoch space exhausted");
+            }
+            this.scopeEpoch = nextEpoch;
             this.parent = parent;
             this.descendantsNonLexical = descendantsNonLexical;
             this.accessClass = accessClass;
@@ -9664,6 +9726,7 @@ public final class OresEvalRootNode extends RootNode {
             return new Env(null, true, null, null, lexicalModule,
                     lexicalContainerClass);
         }
+        private long scopeEpoch() { return scopeEpoch; }
         private boolean descendantsNonLexical() { return descendantsNonLexical; }
         private Ast.ClassDecl accessClass() { return accessClass; }
         private Ast.ClassDecl lexicalContainerClass() { return lexicalContainerClass; }
@@ -9776,8 +9839,14 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private DetachedTaskSnapshot detachedTaskSnapshot(
-                Map<String, Ast.TaskCaptureTransfer> admissions) {
+                Map<String, Ast.TaskCaptureTransfer> admissions,
+                long expectedParentScopeEpoch) {
             Objects.requireNonNull(admissions, "Task capture admissions");
+            if (expectedParentScopeEpoch <= 0
+                    || expectedParentScopeEpoch != scopeEpoch) {
+                throw new IllegalStateException(
+                        "Task capture transfer used a stale parent scope epoch");
+            }
             preflightTaskCaptures(admissions);
             ArrayList<MovedTaskSlot> moved = new ArrayList<>();
             try {
