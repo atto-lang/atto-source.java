@@ -242,6 +242,35 @@ final class PlacedTaskLanguageTest {
     }
 
     @Test
+    void eagerGpuRegionCannotBeHiddenInsideCpuRegion() {
+        String source = """
+                pub routine main(): void {
+                    let int value = cpu {
+                        return gpu { return 42; };
+                    };
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> Parser.parse(source));
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(denied.getMessage().contains("CPU fallback is forbidden"),
+                denied.getMessage());
+    }
+
+    @Test
+    void eagerCpuRegionRejectsBorrowedResult() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub routine main(): void {
+                            let int number = 7;
+                            val borrowed = cpu { return rt borrow number; };
+                            return;
+                        }
+                        """));
+    }
+
+    @Test
     void nestedGpuPlacementCannotBeHiddenInsideCpuTask() {
         assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
