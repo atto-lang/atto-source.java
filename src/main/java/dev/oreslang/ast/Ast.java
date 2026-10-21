@@ -1290,6 +1290,94 @@ public final class Ast {
         }
     }
 
+    /**
+     * Ownership-checker admission for the exact TaskExpr that may execute.
+     *
+     * <p>The capture set is published only after the complete ownership pass
+     * succeeds. Runtime consumers must require this identity-bound proof
+     * instead of re-deriving authority from source spelling. It is
+     * intentionally absent from {@link #copyCheckedMetadata(Expr, Expr)}:
+     * optimizer/rewrite clones must be rechecked rather than inheriting Task
+     * execution authority from a structurally similar node.
+     */
+    public static final class CheckedTaskCaptures {
+        private CheckedTaskCaptures() { }
+
+        private static final java.lang.ref.ReferenceQueue<TaskExpr> CLEARED =
+                new java.lang.ref.ReferenceQueue<>();
+        private static final java.util.Map<IdentityKey, java.util.Set<String>> CAPTURES =
+                new java.util.HashMap<>();
+
+        private static final class IdentityKey
+                extends java.lang.ref.WeakReference<TaskExpr> {
+            private final int hash;
+
+            private IdentityKey(
+                    TaskExpr task,
+                    java.lang.ref.ReferenceQueue<TaskExpr> queue) {
+                super(task, queue);
+                hash = System.identityHashCode(task);
+            }
+
+            @Override public int hashCode() { return hash; }
+
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof IdentityKey key)) return false;
+                TaskExpr value = get();
+                return value != null && value == key.get();
+            }
+        }
+
+        private static void expunge() {
+            java.lang.ref.Reference<? extends TaskExpr> collected;
+            while ((collected = CLEARED.poll()) != null) {
+                CAPTURES.remove(collected);
+            }
+        }
+
+        public static synchronized void record(
+                TaskExpr task,
+                java.util.Collection<String> captureNames) {
+            java.util.Objects.requireNonNull(task, "checked Task expression");
+            java.util.Objects.requireNonNull(
+                    captureNames, "checked Task capture names");
+            java.util.LinkedHashSet<String> checked =
+                    new java.util.LinkedHashSet<>();
+            for (String name : captureNames) {
+                if (name == null || name.isBlank()) {
+                    throw new IllegalArgumentException(
+                            "checked Task capture name must be non-blank");
+                }
+                if (!checked.add(name)) {
+                    throw new IllegalArgumentException(
+                            "checked Task capture set contains duplicate '" + name + "'");
+                }
+            }
+            java.util.Set<String> immutable = java.util.Set.copyOf(checked);
+            expunge();
+            IdentityKey key = new IdentityKey(task, CLEARED);
+            java.util.Set<String> old = CAPTURES.putIfAbsent(key, immutable);
+            if (old != null && !old.equals(immutable)) {
+                throw new IllegalStateException(
+                        "same Task expression received inconsistent ownership admissions");
+            }
+        }
+
+        public static synchronized java.util.Set<String> require(TaskExpr task) {
+            java.util.Objects.requireNonNull(task, "Task expression");
+            expunge();
+            java.util.Set<String> captures =
+                    CAPTURES.get(new IdentityKey(task, null));
+            if (captures == null) {
+                throw new IllegalStateException(
+                        "Task execution requires the exact ownership-checked TaskExpr; "
+                                + "reparsed, cloned, or unchecked Tasks are not executable");
+            }
+            return captures;
+        }
+    }
+
     /** Evaluate one expression into Option<T>; only ordinary guest failures become None. */
     public record TrapExpr(Expr expression) implements Expr { }
 
