@@ -10474,7 +10474,15 @@ public final class OresEvalRootNode extends RootNode {
     private record ClassFacade(Evaluator owner, Ast.ClassDecl klass) { }
     private record HostClassFacade(String className, Object symbol, boolean constructible) { }
     private record HostObjectFacade(Object value) {
-        @Override public String toString() { return String.valueOf(value); }
+        private HostObjectFacade {
+            Objects.requireNonNull(value, "host object");
+        }
+
+        @Override
+        public String toString() {
+            // Diagnostic/display conversion must not execute arbitrary host code.
+            return "<host-object:" + value.getClass().getName() + ">";
+        }
     }
     private static final class ChannelFactory {
         private Object create(List<Object> args) {
