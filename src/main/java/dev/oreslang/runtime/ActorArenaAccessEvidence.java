@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * TEST-ONLY forensic evidence of successful actor-native arena memory accesses.
@@ -13,11 +14,14 @@ import java.util.List;
  */
 final class ActorArenaAccessEvidence {
     static final int MAX_EVENTS = 65_536;
+    /** Host-process-local scope. The trusted runner must supply a run identity. */
+    private static final AtomicLong NEXT_SCOPE = new AtomicLong();
     record Access(long offset, int width, boolean write) { }
-    record Snapshot(List<Access> accesses, long dropped, int capacity) {
+    record Snapshot(List<Access> accesses, long dropped, int capacity, long scopeId) {
         boolean completeBuffer() { return dropped == 0; }
     }
 
+    private final long scopeId;
     private final long[] offsets;
     private final int[] widths;
     private final byte[] modes;
@@ -31,6 +35,10 @@ final class ActorArenaAccessEvidence {
         offsets = new long[capacity];
         widths = new int[capacity];
         modes = new byte[capacity];
+        scopeId = NEXT_SCOPE.incrementAndGet();
+        if (scopeId <= 0) {
+            throw new IllegalStateException("actor access evidence scope namespace exhausted");
+        }
     }
 
     void record(long offset, int width, boolean write) {
@@ -52,7 +60,7 @@ final class ActorArenaAccessEvidence {
         for (int i = 0; i < used; i++) {
             result.add(new Access(offsets[i], widths[i], modes[i] == 2));
         }
-        return new Snapshot(List.copyOf(result), dropped, offsets.length);
+        return new Snapshot(List.copyOf(result), dropped, offsets.length, scopeId);
     }
 
     void clear() {
