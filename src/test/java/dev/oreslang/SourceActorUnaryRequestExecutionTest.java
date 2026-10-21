@@ -69,6 +69,62 @@ final class SourceActorUnaryRequestExecutionTest {
                 () -> run(program, "source-actor-unary-wrong-type.ores"));
     }
 
+    @Test
+    void nestedFutureResponseIsRejectedBeforeGuestExecution() {
+        String program = """
+                define actor Worker as
+                  run(String request): Future<String> {
+                    return Future.completed("unreachable");
+                  }
+                  receive(ActorMail<ActorRef<Worker>> mail): void {
+                    val pending = mail.value.request("ping");
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val server = spawn Worker();
+                  val client = spawn Worker();
+                  client.send(server);
+                  await client.get_done();
+                  return;
+                }
+                """;
+        assertThrows(PolyglotException.class,
+                () -> run(program, "source-actor-unary-nested-future.ores"));
+    }
+
+    @Test
+    void suspendingUnaryHandlerFailsClosed() {
+        String program = """
+                define actor Worker as
+                  run(String request): String {
+                    rt cooperate;
+                    return "pong";
+                  }
+                  receive(ActorMail<ActorRef<Worker>> mail): void {
+                    val response = await mail.value.request("ping");
+                    self.send(response);
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val server = spawn Worker();
+                  val client = spawn Worker();
+                  client.send(server);
+                  val result = (await client.outputs.next()).value.unwrap();
+                  stdio.stdout.write(result.value);
+                  await client.get_done();
+                  return;
+                }
+                """;
+        assertThrows(PolyglotException.class,
+                () -> run(program, "source-actor-unary-suspending-handler.ores"));
+    }
+
     private static String run(String sourceText, String name) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, sourceText, name)
