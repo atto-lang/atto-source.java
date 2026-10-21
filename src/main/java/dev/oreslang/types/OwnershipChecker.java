@@ -1628,6 +1628,18 @@ public final class OwnershipChecker {
                             scope,
                             "collection method '" + member.member() + "'");
                 }
+                if (isTypedMapType(concreteCollection)
+                        && (member.member().equals("take")
+                                || member.member().equals("remove"))) {
+                    if (!(member.receiver() instanceof Ast.NameExpr)) {
+                        throw error("Map." + member.member()
+                                + " requires a directly owned local Map binding");
+                    }
+                    ensureMutableReceiver(
+                            member.receiver(),
+                            scope,
+                            "Map." + member.member());
+                }
             }
 
             if (member.receiver() instanceof Ast.NameExpr receiverName
