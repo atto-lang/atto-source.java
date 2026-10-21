@@ -56,6 +56,13 @@ public final class GenerationalReplyRegistry implements AutoCloseable {
         }
         public CompletionStage<R> result() { return future.minimalCompletionStage(); }
         public State state() { return state; }
+        boolean issuedForCaller(ActorRuntime.ActorRef<?> actor) {
+            return caller.actor == actor;
+        }
+        boolean issuedForCallee(ActorRuntime.ActorRef<?> actor) {
+            return callee.actor == actor;
+        }
+
         // Local diagnostics only, scoped by registry and caller incarnation.
         long localHandle() {
             return (generation << 32) | (Integer.toUnsignedLong(index) + 1);
