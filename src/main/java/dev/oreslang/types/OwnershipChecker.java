@@ -1159,6 +1159,43 @@ public final class OwnershipChecker {
                     source.borrowSource);
         }
         if (expr instanceof Ast.BinaryExpr binary) {
+            if (binary.operator().equals("with")) {
+                // Record extension is a value transformation, not aliasing
+                // mutation. V1 records are move-only containers, so consume
+                // the base before checking update values. This also makes a
+                // later source use of the old binding a compile-time error.
+                ValueInfo base = checkExpr(binary.left(), scope, true);
+                if (base.type == null
+                        || !base.type.isReadonlyRecordType()
+                        || base.type.isBorrow()) {
+                    throw error(
+                            "record 'with' requires an owned readonly structural record");
+                }
+                if (!(binary.right() instanceof Ast.ObjectExpr updatesExpr)
+                        || !updatesExpr.plainRecord()) {
+                    throw error(
+                            "record 'with' requires a statically keyed update record");
+                }
+                ValueInfo updates = checkExpr(binary.right(), scope, true);
+                if (updates.type == null
+                        || !updates.type.isReadonlyRecordType()) {
+                    throw error(
+                            "record 'with' update payload must be a readonly record");
+                }
+                LinkedHashMap<String, Ast.TypeRef> members =
+                        new LinkedHashMap<>(base.type.recordMembers());
+                // Existing fields retain their position; replacement changes
+                // only the field type. New fields append in update source
+                // order, matching LinkedHashMap runtime construction.
+                for (Map.Entry<String, Ast.TypeRef> field :
+                        updates.type.recordMembers().entrySet()) {
+                    members.put(field.getKey(), field.getValue());
+                }
+                return new ValueInfo(
+                        Ast.TypeRef.readonlyRecordType(members),
+                        ValueKind.MOVE_ONLY,
+                        null);
+            }
             checkExpr(binary.left(), scope, false);
             if (binary.operator().equals("&&")) {
                 Scope rightScope = new Scope(scope);
