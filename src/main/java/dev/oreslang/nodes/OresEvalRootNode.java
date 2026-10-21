@@ -127,28 +127,33 @@ public final class OresEvalRootNode extends RootNode {
         return false;
     }
 
+    static boolean isTrustedTraversalCollectionCarrier(Object value) {
+        if (value instanceof List<?>) {
+            return value instanceof OresTuple
+                    || TRUSTED_ASYNC_LIST_CLASSES.contains(value.getClass());
+        }
+        if (value instanceof Set<?>) {
+            return TRUSTED_ASYNC_SET_CLASSES.contains(value.getClass());
+        }
+        if (value instanceof Map<?, ?>) {
+            return value instanceof MutableStructValue
+                    || value instanceof ReadonlyRecordValue
+                    || value instanceof ActorRuntime.FrozenGuestMap
+                    || TRUSTED_ASYNC_MAP_CLASSES.contains(value.getClass());
+        }
+        return true;
+    }
+
     static void requireTrustedAsyncCollectionCarrier(Object value) {
-        if (value instanceof List<?>
-                && !(value instanceof OresTuple)
-                && !TRUSTED_ASYNC_LIST_CLASSES.contains(value.getClass())) {
+        if (!isTrustedTraversalCollectionCarrier(value)) {
+            String kind = value instanceof List<?> ? "List"
+                    : value instanceof Set<?> ? "Set"
+                    : value instanceof Map<?, ?> ? "Map"
+                    : "collection";
             throw new IllegalArgumentException(
                     "value of type " + value.getClass().getName()
-                            + " cannot cross an async task boundary; untrusted host List implementations are opaque");
-        }
-        if (value instanceof Set<?>
-                && !TRUSTED_ASYNC_SET_CLASSES.contains(value.getClass())) {
-            throw new IllegalArgumentException(
-                    "value of type " + value.getClass().getName()
-                            + " cannot cross an async task boundary; untrusted host Set implementations are opaque");
-        }
-        if (value instanceof Map<?, ?>
-                && !(value instanceof MutableStructValue)
-                && !(value instanceof ReadonlyRecordValue)
-                && !(value instanceof ActorRuntime.FrozenGuestMap)
-                && !TRUSTED_ASYNC_MAP_CLASSES.contains(value.getClass())) {
-            throw new IllegalArgumentException(
-                    "value of type " + value.getClass().getName()
-                            + " cannot cross an async task boundary; untrusted host Map implementations are opaque");
+                            + " cannot cross an async task boundary; untrusted host "
+                            + kind + " implementations are opaque");
         }
     }
 
@@ -10118,14 +10123,17 @@ public final class OresEvalRootNode extends RootNode {
                 return false;
             }
             if (value instanceof List<?> list) {
+                if (!isTrustedTraversalCollectionCarrier(value)) return false;
                 for (Object item : list) if (containsLiveMutexGuard(item, seen)) return true;
                 return false;
             }
             if (value instanceof Set<?> set) {
+                if (!isTrustedTraversalCollectionCarrier(value)) return false;
                 for (Object item : set) if (containsLiveMutexGuard(item, seen)) return true;
                 return false;
             }
             if (value instanceof Map<?, ?> map) {
+                if (!isTrustedTraversalCollectionCarrier(value)) return false;
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
                     if (containsLiveMutexGuard(entry.getKey(), seen)
                             || containsLiveMutexGuard(entry.getValue(), seen)) return true;
@@ -10188,14 +10196,17 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             if (value instanceof List<?> list) {
+                if (!isTrustedTraversalCollectionCarrier(value)) return;
                 for (Object item : list) releaseMutexGuardsInValue(item, failed, seen);
                 return;
             }
             if (value instanceof Set<?> set) {
+                if (!isTrustedTraversalCollectionCarrier(value)) return;
                 for (Object item : set) releaseMutexGuardsInValue(item, failed, seen);
                 return;
             }
             if (value instanceof Map<?, ?> map) {
+                if (!isTrustedTraversalCollectionCarrier(value)) return;
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
                     releaseMutexGuardsInValue(entry.getKey(), failed, seen);
                     releaseMutexGuardsInValue(entry.getValue(), failed, seen);
@@ -10346,6 +10357,15 @@ public final class OresEvalRootNode extends RootNode {
                 if (output.length() >= MAX_CHARS) return;
                 if (depth > MAX_DEPTH || ++nodes > MAX_NODES) {
                     write(TRUNCATED);
+                    return;
+                }
+                if ((value instanceof Map<?, ?>
+                        || value instanceof List<?>
+                        || value instanceof Set<?>)
+                        && !isTrustedTraversalCollectionCarrier(value)) {
+                    write("<opaque-host-collection:"
+                            + value.getClass().getName()
+                            + ">");
                     return;
                 }
                 if (!(value instanceof OresObject
