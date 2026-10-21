@@ -316,6 +316,102 @@ final class AllocJsonStdlibTest {
     }
 
     @Test
+    void quotaRejectedJsonWriteRestoresNamedOwnerInsideCatch() throws Exception {
+        Path entry = temp.resolve("quota-rollback.ores");
+        String oversizedKey = "x".repeat(OresKeyedMap.MAX_TEXT_KEY_BYTES + 1);
+        Files.writeString(entry, """
+                import class JsonValue from "alloc/json";
+                import class Json from "alloc/json";
+
+                pub routine main(): void {
+                  val Map<string, JsonValue> values =
+                      new Map<string, JsonValue>();
+                  val JsonValue candidate = Json.of("kept");
+                  try {
+                    values["%s"] = candidate;
+                  } catch (err) {
+                    values["restored"] = candidate;
+                  }
+                  stdio.println(values.size());
+                  return;
+                }
+                """.formatted(oversizedKey));
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                entry,
+                IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(),
+                out,
+                new ByteArrayOutputStream());
+
+        assertEquals("1", out.toString(StandardCharsets.UTF_8).trim());
+    }
+
+    @Test
+    void committedJsonMapWriteConsumesNamedOwner() throws Exception {
+        Path entry = temp.resolve("committed-move.ores");
+        Files.writeString(entry, """
+                import class JsonValue from "alloc/json";
+                import class Json from "alloc/json";
+
+                pub routine main(): void {
+                  val Map<string, JsonValue> values =
+                      new Map<string, JsonValue>();
+                  val JsonValue candidate = Json.of("moved");
+                  values.put("first", candidate);
+                  values.put("second", candidate);
+                  return;
+                }
+                """);
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(entry));
+    }
+
+    @Test
+    void jsonObjectConsumesSourceMapSoGuestCyclesCannotBeFormed() throws Exception {
+        Path entry = temp.resolve("cycle-prevention.ores");
+        Files.writeString(entry, """
+                import class JsonValue from "alloc/json";
+                import class Json from "alloc/json";
+
+                pub routine main(): void {
+                  val Map<string, JsonValue> fields =
+                      new Map<string, JsonValue>();
+                  val JsonValue object = Json.object(fields);
+                  fields["self"] = object;
+                  return;
+                }
+                """);
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(entry));
+    }
+
+    @Test
+    void jsonNamespaceCannotBeConstructed() throws Exception {
+        Path entry = temp.resolve("json-namespace-new.ores");
+        Files.writeString(entry, """
+                import class JsonValue from "alloc/json";
+                import class Json from "alloc/json";
+
+                pub routine main(): void {
+                  val Json bad = new Json();
+                  return;
+                }
+                """);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(entry));
+        assertTrue(failure.getMessage().contains("cannot be instantiated"),
+                failure.getMessage());
+    }
+
+    @Test
     void jsonFactoryAliasDoesNotAcquireCompilerAuthority() throws Exception {
         Path entry = temp.resolve("factory-alias.ores");
         Files.writeString(entry, """
