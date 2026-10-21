@@ -40,7 +40,7 @@ define module compute as
     pub val bool requires_unified_memory;
   end
 
-  pub fnc valid_device_capabilities(&DeviceCapabilities caps): bool {
+  pub fnc valid_device_capabilities(borrow DeviceCapabilities caps): bool {
     if caps.backend == ""; do
       return false;
     fi
@@ -59,7 +59,7 @@ define module compute as
     return true;
   }
 
-  pub fnc valid_buffer_layout(&BufferLayout layout): bool {
+  pub fnc valid_buffer_layout(borrow BufferLayout layout): bool {
     if layout.element_bytes <= 0; do
       return false;
     fi
@@ -81,7 +81,7 @@ define module compute as
     return layout.byte_length > 0;
   }
 
-  pub fnc valid_dispatch(&DispatchShape shape): bool {
+  pub fnc valid_dispatch(borrow DispatchShape shape): bool {
     if shape.global_x <= 0 || shape.global_y <= 0 || shape.global_z <= 0; do
       return false;
     fi
@@ -101,8 +101,8 @@ define module compute as
   }
 
   pub fnc device_satisfies(
-    &DeviceCapabilities caps,
-    &KernelRequirements requirements
+    borrow DeviceCapabilities caps,
+    borrow KernelRequirements requirements
   ): bool {
     if caps.backend == "" || caps.name == ""; do
       return false;
