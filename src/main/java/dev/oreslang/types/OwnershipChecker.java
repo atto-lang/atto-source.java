@@ -4412,7 +4412,8 @@ public final class OwnershipChecker {
                 || !type.name().equals("ActorRef")
                 || type.inferArguments()
                 || type.arguments().size() != 1
-                || findClass("ActorRef") != null) {
+                || findClass("ActorRef") != null
+                || hasLocalTypeAliasNamed("ActorRef")) {
             return false;
         }
         Ast.TypeRef target = type.arguments().getFirst();
@@ -4422,6 +4423,7 @@ public final class OwnershipChecker {
                 || target.isTupleType() || target.isClosedAggregateType()) {
             return false;
         }
+        if (hasLocalTypeAliasNamed(target.name())) return false;
         Ast.ClassDecl actorTarget = findClass(target.name());
         return actorTarget != null
                 && actorTarget.actorKind() != Ast.ActorKind.NONE;
