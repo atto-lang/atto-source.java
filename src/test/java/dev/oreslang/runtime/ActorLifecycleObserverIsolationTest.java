@@ -513,6 +513,82 @@ final class ActorLifecycleObserverIsolationTest {
         }
     }
 
+    @Test
+    void earlySupervisorAckCannotReleaseCapacityBeforeDoneExitBarrier()
+            throws Exception {
+        CountDownLatch exitHookEntered = new CountDownLatch(1);
+        CountDownLatch releaseExitHook = new CountDownLatch(1);
+
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 8, 1))) {
+            runtime.setActorExitHook(domain -> {
+                exitHookEntered.countDown();
+                try {
+                    if (!releaseExitHook.await(8, TimeUnit.SECONDS))
+                        throw new AssertionError("exit hook release timed out");
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                }
+            });
+
+            var failed = runtime.<String>spawnShared(
+                    () -> (message, context) -> {
+                        throw new IllegalStateException("boom");
+                    });
+            failed.getReady().get(3, TimeUnit.SECONDS);
+            failed.send("fail");
+
+            assertTrue(exitHookEntered.await(3, TimeUnit.SECONDS),
+                    "exit hook did not enter after actor physical finalization");
+            assertTrue(failed.awaitTermination(3, TimeUnit.SECONDS),
+                    "callback-free terminal latch should already be visible");
+            assertFalse(failed.getDone().isDone(),
+                    "getDone must remain behind the exit-domain retirement hook");
+
+            ActorRuntime.SupervisorControlEvent event = null;
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (event == null && System.nanoTime() < deadline) {
+                event = runtime.peekSupervisorControlEvent().orElse(null);
+                if (event == null) Thread.sleep(1);
+            }
+            assertNotNull(event, "failed actor did not publish supervisor CONTROL");
+            assertEquals(failed.id(), event.actorId());
+            assertTrue(runtime.acknowledgeSupervisorControlEvent(
+                    event.actorId(), event.generation()),
+                    "supervisor CONTROL acknowledgement rejected");
+
+            assertEquals(1, runtime.reservedActorSlots(),
+                    "CONTROL ack must not recycle capacity before lifecycle observers retire");
+            assertThrows(IllegalStateException.class,
+                    () -> runtime.<String>spawnShared(
+                            () -> (message, context) -> { }),
+                    "replacement actor admitted while exit hook still owns retirement");
+
+            releaseExitHook.countDown();
+
+            var doneFailure = assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> failed.getDone().get(3, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, doneFailure.getCause());
+            assertEquals("boom", doneFailure.getCause().getMessage());
+
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (runtime.reservedActorSlots() != 0 && System.nanoTime() < deadline)
+                Thread.sleep(1);
+            assertEquals(0, runtime.reservedActorSlots(),
+                    "capacity must release only after exit hook/DONE observer retirement");
+
+            var replacement = runtime.<String>spawnShared(
+                    () -> (message, context) -> { });
+            replacement.stop();
+            replacement.getDone().get(3, TimeUnit.SECONDS);
+        } finally {
+            releaseExitHook.countDown();
+        }
+    }
+
     @SuppressWarnings("unchecked")
     private static OresFuture<Void> privateFuture(
             ActorRuntime.ActorRef<?> actor,
