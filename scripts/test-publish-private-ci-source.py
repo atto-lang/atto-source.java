@@ -366,7 +366,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         api, _ = self.verified_origin_api(codeowners_file=valid)
         digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
         with patch.object(pub, "gh_api", side_effect=api):
-            with self.assertRaisesRegex(pub.Denied, "terminal"):
+            with self.assertRaisesRegex(pub.Denied, "end with exact export rules"):
                 ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
 
     def test_policy_approval_returns_reviewed_numeric_repository_id(self):
