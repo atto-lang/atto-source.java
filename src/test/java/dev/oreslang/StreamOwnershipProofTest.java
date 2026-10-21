@@ -69,6 +69,26 @@ final class StreamOwnershipProofTest {
     }
 
     @Test
+    void guestStreamConstructorRejectsFractionalOverflowAndImpostorNumbers() {
+        for (Object invalid : List.of(
+                1.5d, 1.0d, Float.NaN, Double.POSITIVE_INFINITY,
+                new java.math.BigDecimal("1.0"),
+                java.math.BigInteger.valueOf(Integer.MAX_VALUE).add(java.math.BigInteger.ONE),
+                "1")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresStream.fromGuestCapacity(invalid),
+                    "invalid capacity " + invalid);
+        }
+        OresStream<Integer> accepted = OresStream.fromGuestCapacity(2L);
+        try {
+            assertTrue(accepted.channel().tryWrite(42));
+            assertEquals(42, accepted.channel().tryRead().orElseThrow());
+        } finally {
+            accepted.close();
+        }
+    }
+
+    @Test
     void streamConstructorEnforcesPositiveCapacity() {
         assertThrows(IllegalArgumentException.class, () -> new OresStream<>(0));
         assertThrows(IllegalArgumentException.class, () -> new OresStream<>(-1));
