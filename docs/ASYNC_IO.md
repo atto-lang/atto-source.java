@@ -1,131 +1,120 @@
-# Async standard-library I/O
+# Strict asynchronous standard-library I/O
 
-> **Strict stdlib status (2026-10-21):** Java's legacy blocking host adapters are no longer reachable from the stdlib I/O facade on the strict branch. The operations listed below describe the intended API/result shapes; until a verified readiness/completion provider is installed, synchronous forms fail closed and async forms return failed Futures. Do not interpret this table as current successful transport support.
+Status: **strict release contract**.
 
-The async APIs return native Oreslang `Future<T>` values. `await` suspends the
-source continuation and releases its actor/root execution carrier. Completion
-resumes through the owning scheduler; I/O workers never execute guest callbacks.
-Existing synchronous APIs and worker-offloaded host calls are legacy behavior and are **not compliant** with the strict nonblocking stdlib contract. A conforming release must remove/replace them or fail closed on targets without a true async provider.
+Oreslang stdlib I/O must be backed by readiness/completion mechanisms. A
+blocking filesystem/socket/HTTP/terminal call moved onto a platform thread,
+worker pool, or virtual thread is still blocking I/O and is not a compliant
+stdlib implementation.
 
-| API | Awaited result |
+A bounded reactor is allowed to sleep in a multiplexed readiness/completion
+wait such as `epoll_wait`, `kevent`, or an IOCP wait. That is not a
+per-operation blocking data-plane call.
+
+## Source API rule
+
+The strict surface currently admits async I/O spellings only:
+
+| API | Type |
 | --- | --- |
-| `fs.read_text_async(path)` | `String` (UTF-8) |
-| `fs.exists_async(path)` | `bool` |
-| `fs.write_text_async(path, text)` | `void` |
-| `fs.append_text_async(path, text)` | `void` |
-| `fs.remove_async(path)` | `void` |
-| `fs.mkdir_all_async(path)` | `void` |
-| `network.connect_async(host, port)` | `TcpConnection` |
-| `socket.read_line_async()` | `Option<String>` (`None` at EOF) |
-| `socket.write_text_async(text)` | `void` (flushes the text) |
-| `socket.close_async()` | `void` |
-| `http.get_text_async(url)` | `String` (response body) |
-| `http.post_text_async(url, text)` | `String` (response body) |
+| `fs.read_text_async(path)` | `Future<String>` |
+| `fs.exists_async(path)` | `Future<bool>` |
+| `fs.write_text_async(path, text)` | `Future<void>` |
+| `fs.append_text_async(path, text)` | `Future<void>` |
+| `fs.remove_async(path)` | `Future<void>` |
+| `fs.mkdir_all_async(path)` | `Future<void>` |
+| `network.connect_async(host, port)` | `Future<TcpConnection>` |
+| `socket.read_line_async()` | `Future<Option<String>>` |
+| `socket.write_text_async(text)` | `Future<void>` |
+| `socket.close_async()` | `Future<void>` |
+| `http.get_text_async(url)` | `Future<String>` |
+| `http.post_text_async(url, text)` | `Future<String>` |
+| `http.listen_async(host, port, capacity, body_limit, deadline_ms)` | `Future<HttpServer>` |
+| `stdio.print_async(value)` / `println_async(value)` | `Future<void>` |
+| `stdio.stdout.write_async(value)` / `println_async(value)` | `Future<void>` |
+| `stdio.stdout.log_async(...values)` | `Future<void>` |
+| `stdio.stdout.log_list_async(values)` | `Future<void>` |
+| `stdio.stdin.read_line_async()` | `Future<Option<String>>` |
 
-`File` aliases `fs`; `net` aliases `network`. Async TCP connections are local
-capabilities, not mailbox-sendable values. Await each operation before starting
-the next operation in the same direction; TCP reads and writes may run in parallel.
+Bare synchronous names such as `fs.read_text`, `network.connect`,
+`http.listen`, `stdio.stdout.write`, and ambient global `print` are not
+part of the strict typechecked stdlib surface.
 
-```ores
-pub async routine main(): void {
-  await fs.write_text_async("./message.txt", "hello");
-  val String text = await fs.read_text_async("./message.txt");
-  stdio.println(text);
-  return;
-}
-```
+The canonical `*_blocking` spelling is reserved for future
+synchronous-looking APIs. It must mean **implicit continuation suspension over
+the exact same nonblocking provider**. Java does not admit those spellings yet,
+because that lowering is not implemented. A `*_blocking` implementation may
+never call a blocking host syscall directly or by worker offload.
 
-Grant the same filesystem/network permissions required by synchronous calls.
-Actor-local capabilities are checked before submission. Canonical path resolution,
-resource permission checks, DNS/connect, file operations and HTTP transport must
-ultimately execute through a readiness/completion-based provider. Merely moving a
-blocking call off the actor carrier is no longer sufficient. Only immutable argument
-values may cross the async boundary.
-HTTP redirects remain disabled so a response cannot bypass the destination grant.
-Failures retain their cause and a bounded `native:io` boundary annotation.
+## Java/Graal state
 
-## Execution and lifecycle
+The Java backend currently fails closed for stdlib I/O until strict providers
+are installed:
 
-Each context owns a virtual-thread executor with a hard maximum of 128 in-flight
-standard-library operations. Submission above that bound returns a failed future;
-there is no unbounded backlog or caller-runs fallback. Socket close has 16
-separately reserved in-flight control slots, so saturated reads cannot consume
-all admission needed to close their sockets. These are executor admission
-counters, not additional actor channels. One future is created per
-operation, not one channel. Await uses the actor's existing continuation transport.
+- async calls typecheck but settle as failed Futures with an unsupported-provider
+  error before host I/O;
+- old bare synchronous names are compiler errors;
+- filesystem/TCP/HTTP/stdio dispatch has no edge to the legacy blocking
+  `NativeIo`, `AsyncNativeIo`, JDK `HttpServer`, `BufferedReader`, or
+  `PrintWriter` I/O paths;
+- injected legacy TCP/HTTP handles cannot use transport read/write/respond/
+  accept/shutdown operations through guest dispatch;
+- `stdlib/testing.ores` is pure and performs no terminal I/O.
 
-The current portable Java implementation is **carrier-nonblocking but not strict
-host-nonblocking** because it offloads blocking filesystem/TCP/HTTP calls. That
-fallback is now release-blocking technical debt and must not be described as
-strictly nonblocking stdlib I/O. A target without a completion/readiness provider
-must reject the unsupported operation rather than silently use worker offload. HTTP client connections
-are currently per call and closed after completion. No throughput improvement is
-claimed for tiny cached files.
+The legacy `NativeIo`, `AsyncNativeIo`, and `NativeHttp` classes remain
+temporarily for migration/reference tests. They are **not stdlib backends** and
+must stay unreachable from strict guest dispatch.
 
-Cancellation of an individual I/O future is declined (`cancel` returns false):
-filesystem writes cannot safely promise rollback. Ending an actor does not undo
-an already submitted operation. Context closure stops new admission, interrupts
-workers, closes tracked sockets and settles pending futures. A filesystem syscall
-that ignores interruption may still finish after context closure. Await outstanding
-writes when their completion matters; closing a socket interrupts its pending read.
-Close TCP sockets explicitly when finished; context shutdown is a fallback.
+## Backend requirements
 
-The server-side HTTP API already returns futures for accept, body reads, response
-writes and graceful shutdown. Listener setup and synchronous abort/close control
-remain separate operations. Stdout/console export and stdin are not migrated by
-this change. This implementation does not add physical actor heap isolation.
+A compliant backend must satisfy all of the following:
 
-## Validation
+1. **TCP/network:** nonblocking descriptors plus readiness/completion
+   notification; no blocking connect/read/write worker fallback.
+2. **Filesystem:** a target-specific asynchronous completion provider. If the
+   target cannot provide one, filesystem stdlib I/O is unsupported. Ordinary
+   blocking file reads on a worker are not a fallback.
+3. **HTTP:** a transport constructed over compliant nonblocking network/TLS
+   primitives. A synchronous HTTP client/server moved to worker threads is not
+   compliant.
+4. **Terminal/pipes/stdio:** nonblocking descriptor/reactor integration or an
+   explicitly nonblocking host sink. Unsupported targets fail closed.
+5. **DNS:** asynchronous resolver integration or fail closed; blocking
+   `getaddrinfo` offload is not compliant.
+6. **Cancellation/backpressure:** bounded admissions and cancellation must not
+   require a parked thread per operation.
+7. **Completion:** Futures settle from readiness/completion notification and
+   resume through the Oreslang scheduler. Guest callbacks never execute on the
+   reactor.
 
-`AsyncNativeIoTest` covers real filesystem operations, permission denial and
-symlink escape, untrusted actor authority, HTTP GET/POST and redirect suppression,
-TCP write/read/EOF, bounded admission and context shutdown. A delayed TCP peer
-withholds its response until a second actor runs on the **same single actor
-carrier**, proving that the first actor's pending read does not occupy that carrier.
-EOF, errors and future results travel through normal continuation lowering.
+## LLVM/native state
 
-Run `mvn -Dtest=AsyncNativeIoTest test` with JDK 25.
+The native Linux TCP substrate already uses nonblocking sockets,
+`MSG_DONTWAIT`, nonblocking `accept4`, eventfd wakeups, and epoll readiness.
+Source-level native stdlib I/O remains fail-closed until typed I/O registry and
+continuation lowering are complete. No thread-pool blocking fallback is
+permitted.
 
-## Synchronous directory operations (Oreslang stack CLI)
+## Other backends
 
-The Java/Graal interpreter exposes capability-gated `fs.list_dir(path): List<String>`,
-`fs.is_dir(path): bool` and `fs.is_symlink(path): bool`. `list_dir` returns only
-the immediate child **names**, sorted lexically, and refuses directories with
-more than 20,000 children. It rejects a symlink at the input path; callers
-must check children before descending. Each operation requires scoped filesystem
-read permission. These metadata operations are not a race-free openat-style
-directory handle and are not sufficient for processing hostile mutable trees.
-The language also exposes `String.split_literal`, `trim`, `starts_with`,
-`ends_with`, and `contains_literal` for source-level code generators.
+Backends that do not yet expose guest stdlib I/O must continue to reject it.
+WASM currently denies guest host imports entirely. Host build/launcher I/O
+(e.g. compiler artifact reads or launcher diagnostics) is outside this stdlib
+contract and must not be repurposed as a guest I/O backend.
 
-## Audited Oreslang Stack CLI source-generation primitives
+## Release gates
 
-`fs.write_text_atomic(path, value)` uses a temporary UTF-8 file adjacent to
-the destination and an atomic move/replace. It requires write permission on
-both the lexical path and canonical parent target, refuses an existing symlink
-destination, and does not fall back to a non-atomic move. Atomic replacement
-is **one file at a time**, not a transaction over all RPC/Lambda outputs.
+Java strict releases require:
 
-Metadata operations `fs.is_dir` and `fs.is_symlink` resolve and authorize
-the parent before inspecting a child entry without following its terminal
-symbolic link. They can inspect an exactly granted project root even when
-its parent directory is not granted; symlinked ancestors cannot extend the
-granted read scope. `fs.list_dir` returns immediate names in sorted order,
-rejects symlink inputs, and caps enumeration at 20,000 names.
+- `tools/strict-nonblocking-io-audit.py` with zero violations;
+- `tools/stdlib-boundary-audit` with no bare synchronous/legacy transport
+  calls in packaged `.ores` modules;
+- `StrictNonblockingStdlibIoTest` proving sync spellings are rejected and
+  admitted async operations fail before host I/O while providers are absent;
+- later, when providers land, real progress/cancellation/backpressure/EOF/
+  timeout tests proving operations complete without a per-operation blocked
+  thread.
 
-All path-based checks remain subject to time-of-check/time-of-use races when
-a different process can concurrently change directory entries. This API is
-not a directory-handle sandbox for actively hostile mutable trees. Use it
-for locally trusted project source generation; a production hostile-tenant
-builder must add race-free directory capabilities and multi-file transaction
-admission.
-
-**Validation:** The private mirror of the Java/Graal reference runtime
-executed the `NativeCliIoTest` suite (5 passing tests) including the complete
-`oreslang-stack-cli/src/main.ores` source, symlink escape denial and atomic
-write operations:
-https://github.com/ores-stack/ores-stack-cli/actions/runs/37884619591
-
-The downstream generator additionally passed its full real-runtime command
-integration:
-https://github.com/ores-stack/ores-stack-cli/actions/runs/37884619670
+Passing historical `AsyncNativeIoTest` or JDK HTTP transport tests is not
+evidence of strict stdlib conformance. Those tests exercise quarantined legacy
+adapters.
