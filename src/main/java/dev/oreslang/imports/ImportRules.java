@@ -49,25 +49,6 @@ public final class ImportRules {
         return imported.names().stream().map(name -> localName(imported, name)).toList();
     }
 
-    private static boolean isExplicitSelfPath(String path) {
-        if ("@self".equals(path)) return true;
-        String unix = path.replace('\\', '/').trim();
-        boolean sawDot = false;
-        for (String component : unix.split("/+", -1)) {
-            if (component.isEmpty()) continue;
-            if (!component.equals(".")) return false;
-            sawDot = true;
-        }
-        return sawDot;
-    }
-
-    public static boolean isTypeOnlyKind(Ast.ImportKind kind) {
-        return switch (kind) {
-            case ACTOR, CLASS, INTERFACE, CONTRACT, TRAIT, STRUCT, TYPE, TYPES -> true;
-            case MODULE, FUNCTION, ALL -> false;
-        };
-    }
-
     public static void validate(Ast.ImportDecl imported) {
         if (imported == null) throw new IllegalArgumentException("import declaration cannot be null");
         if (imported.path() == null || imported.path().isBlank()) {
@@ -75,11 +56,6 @@ public final class ImportRules {
         }
         if (imported.path().length() > 4096 || imported.path().chars().anyMatch(Character::isISOControl)) {
             throw new IllegalArgumentException("import path contains invalid control characters or is too long");
-        }
-
-        if (!isJavaPath(imported.path()) && isExplicitSelfPath(imported.path())) {
-            throw new IllegalArgumentException(
-                    "source file cannot import itself via '" + imported.path() + "'");
         }
 
         if (imported.wildcard()) {
@@ -106,12 +82,8 @@ public final class ImportRules {
         if (!isJavaPath(imported.path())) return;
 
         String simpleName = javaSimpleName(imported.path());
-        if (imported.kind() != Ast.ImportKind.CLASS
-                && imported.kind() != Ast.ImportKind.FUNCTION
-                && imported.kind() != Ast.ImportKind.ALL) {
-            throw new IllegalArgumentException(
-                    "Java host imports support only class, fnc, or * selectors; got "
-                            + imported.kind().name().toLowerCase());
+        if (imported.kind() == Ast.ImportKind.MODULE || imported.kind() == Ast.ImportKind.NAMESPACE) {
+            throw new IllegalArgumentException("Java host classes cannot be imported as Oreslang modules/namespaces");
         }
         if (imported.kind() == Ast.ImportKind.CLASS) {
             if (imported.wildcard() || imported.names().size() != 1) {

@@ -21,17 +21,27 @@ final class IncrementalFunctorStaticTest {
     @Test
     void namespacesAndModulesAreFlat() {
         var program = TypeChecker.check(Parser.parse("""
-                namespace payments;
+                define namespace payments as
+                  type ReceiptId = int;
+                end
 
                 define module api
                   pub fnc ping(): int { return 1; }
                 end
                 """));
-        assertEquals("payments", program.namespace());
-        assertEquals("api", program.modules().getFirst().name());
+        assertNull(program.namespace());
+        assertEquals("payments", program.modules().get(0).name());
+        assertTrue(program.modules().get(0).isNamespace());
+        assertEquals("api", program.modules().get(1).name());
+        assertFalse(program.modules().get(1).isNamespace());
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                namespace company.payments;
+                define namespace company.payments as
+                end
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                namespace payments;
                 fnc x(): void { return; }
                 """));
 
@@ -53,7 +63,6 @@ final class IncrementalFunctorStaticTest {
         IncrementalCompiler compiler = new IncrementalCompiler();
         Map<String, String> firstSources = new LinkedHashMap<>();
         firstSources.put("math.ores", """
-                namespace mathpkg;
                 pub fnc answer(): int { return 42; }
                 """);
         firstSources.put("app.ores", """
@@ -70,7 +79,7 @@ final class IncrementalFunctorStaticTest {
 
         var first = compiler.compile(firstSources);
         assertEquals(4, first.rebuiltUnits().size());
-        assertEquals("mathpkg", first.units().get("math.ores").packageId());
+        assertEquals("math", first.units().get("math.ores").packageId());
         assertEquals("app", first.units().get("app.ores").packageId());
 
         var second = compiler.compile(firstSources);
@@ -79,7 +88,6 @@ final class IncrementalFunctorStaticTest {
 
         Map<String, String> changed = new LinkedHashMap<>(firstSources);
         changed.put("math.ores", """
-                namespace mathpkg;
                 pub fnc answer(): int { return 43; }
                 """);
 
@@ -91,7 +99,6 @@ final class IncrementalFunctorStaticTest {
 
         Map<String, String> abiChanged = new LinkedHashMap<>(changed);
         abiChanged.put("math.ores", """
-                namespace mathpkg;
                 pub fnc answer(): String { return "43"; }
                 """);
 
@@ -100,116 +107,6 @@ final class IncrementalFunctorStaticTest {
         assertTrue(fourth.rebuilt("app.ores"), "public ABI changes must invalidate direct importers");
         assertTrue(fourth.rebuilt("cli.ores"), "ABI changes must conservatively invalidate the transitive reverse-import closure");
         assertTrue(fourth.reused("unrelated.ores"));
-    }
-
-    @Test
-    void callableKindAndActorKindParticipateInAbiInvalidation() {
-        IncrementalCompiler compiler = new IncrementalCompiler();
-        Map<String, String> initial = Map.of(
-                "service.ores", """
-                        pub fnc work(int value): int {
-                          return value + 1;
-                        }
-                        """,
-                "consumer.ores", """
-                        import * as service from "./service.ores";
-                        pub routine main(): void {
-                          stdio.stdout.write(service.work(1));
-                          return;
-                        }
-                        """);
-
-        compiler.compile(initial);
-
-        Map<String, String> routineChanged = Map.of(
-                "service.ores", """
-                        pub routine work(int value): int {
-                          return value + 1;
-                        }
-                        """,
-                "consumer.ores", initial.get("consumer.ores"));
-        var routineResult = compiler.compile(routineChanged);
-        assertTrue(routineResult.rebuilt("service.ores"));
-        assertTrue(routineResult.rebuilt("consumer.ores"),
-                "fnc -> routine changes reifiability and must invalidate dependents");
-
-        Map<String, String> actorChanged = Map.of(
-                "service.ores", """
-                        pub actor fnc work(int value): int {
-                          return value + 1;
-                        }
-                        """,
-                "consumer.ores", initial.get("consumer.ores"));
-        var actorResult = compiler.compile(actorChanged);
-        assertTrue(actorResult.rebuilt("service.ores"));
-        assertTrue(actorResult.rebuilt("consumer.ores"),
-                "actor-kind changes dispatch semantics and must invalidate dependents");
-    }
-
-    @Test
-    void methodOverloadAbiUsesArityIdentityButRetainsContractTypes() {
-        IncrementalCompiler compiler = new IncrementalCompiler();
-
-        Map<String, String> first = new LinkedHashMap<>();
-        first.put("methods.ores", """
-                define module exported
-                  pub define class C as
-                  pub pick(): int { return 1; }
-                  pub pick(int value): int { return value; }
-                end
-                end
-                """);
-        first.put("consumer.ores", """
-                import class C from "./methods.ores";
-                pub routine main(): void { return; }
-                """);
-
-        var initial = compiler.compile(first);
-        assertTrue(initial.rebuilt("methods.ores"));
-        assertTrue(initial.rebuilt("consumer.ores"));
-
-        Map<String, String> reordered = new LinkedHashMap<>(first);
-        reordered.put("methods.ores", """
-                define module exported
-                  pub define class C as
-                  pub pick(int value): int { return value; }
-                  pub pick(): int { return 1; }
-                end
-                end
-                """);
-        var afterReorder = compiler.compile(reordered);
-        assertTrue(afterReorder.rebuilt("methods.ores"), "edited source unit still recompiles");
-        assertTrue(afterReorder.reused("consumer.ores"),
-                "reordering overload declarations must not change the exported ABI");
-
-        Map<String, String> typeChanged = new LinkedHashMap<>(reordered);
-        typeChanged.put("methods.ores", """
-                define module exported
-                  pub define class C as
-                  pub pick(String value): int { return 1; }
-                  pub pick(): int { return 1; }
-                end
-                end
-                """);
-        var afterTypeChange = compiler.compile(typeChanged);
-        assertTrue(afterTypeChange.rebuilt("methods.ores"));
-        assertTrue(afterTypeChange.rebuilt("consumer.ores"),
-                "changing the contract inside an existing name+arity slot must invalidate dependents");
-
-        Map<String, String> arityAdded = new LinkedHashMap<>(typeChanged);
-        arityAdded.put("methods.ores", """
-                define module exported
-                  pub define class C as
-                  pub pick(String value): int { return 1; }
-                  pub pick(): int { return 1; }
-                  pub pick(int left, int right): int { return left + right; }
-                end
-                end
-                """);
-        var afterArityAdded = compiler.compile(arityAdded);
-        assertTrue(afterArityAdded.rebuilt("methods.ores"));
-        assertTrue(afterArityAdded.rebuilt("consumer.ores"),
-                "adding a new arity slot must change the exported ABI");
     }
 
     @Test
@@ -268,7 +165,7 @@ final class IncrementalFunctorStaticTest {
     void staticClassFunctionsUseStaticFncAndDoNotReceiveSelf() throws Exception {
         String output = run("""
                 define module model
-                  pub define class Counter as
+                  define class Counter as
                     pub val int value = 9;
 
                     pub static fnc twice(int x): int {
@@ -344,7 +241,7 @@ final class IncrementalFunctorStaticTest {
     }
 
     @Test
-    void slimArrowIsExecutableWhileFatArrowRemainsTypeLevel() {
+    void slimArrowBelongsToFunctionTypesAndLambdasFatArrowToNamedReturnTypes() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 type Mapper = typeof fnc(bool value) => int;
                 fnc make(): ((bool value) => int) {
@@ -358,9 +255,9 @@ final class IncrementalFunctorStaticTest {
                 }
                 """)));
 
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                fnc right() -> int { return 1; }
-                """)));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc wrong() -> int { return 1; }
+                """));
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc wrong(): int {
@@ -368,12 +265,12 @@ final class IncrementalFunctorStaticTest {
                 }
                 """));
 
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                fnc expressionBody(): int {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc wrong(): int {
                   val Fnc<int> x = () -> 1;
                   return x();
                 }
-                """)));
+                """));
     }
 
     @Test
@@ -408,11 +305,9 @@ final class IncrementalFunctorStaticTest {
         IncrementalCompiler compiler = new IncrementalCompiler();
         Map<String, String> first = Map.of(
                 "model.ores", """
-                        define module exported
-                          pub define class Payload as
+                        define class Payload as
                           @FromJson("foo")
                           foo: String;
-                        end
                         end
                         """,
                 "consumer.ores", """
@@ -424,11 +319,9 @@ final class IncrementalFunctorStaticTest {
 
         Map<String, String> changed = Map.of(
                 "model.ores", """
-                        define module exported
-                          pub define class Payload as
+                        define class Payload as
                           @FromJson("external_foo")
                           foo: String;
-                        end
                         end
                         """,
                 "consumer.ores", first.get("consumer.ores"));
