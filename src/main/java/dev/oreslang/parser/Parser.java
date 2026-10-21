@@ -991,7 +991,12 @@ public final class Parser {
         boolean mutableReferent = parseReferentMutability(kind);
         Ast.TypeRef type = null;
         String name;
-        if (check(IDENT) && checkNext(EQUAL)) name = advance().lexeme();
+        boolean functionShorthand = match(FNC);
+        if (functionShorthand && (kind != Ast.BindingKind.CONST || mutableReferent)) {
+            throw error(previous(), "lambda binding shorthand requires 'const fnc'");
+        }
+        if (functionShorthand) name = consume(IDENT, "expected function binding name").lexeme();
+        else if (check(IDENT) && checkNext(EQUAL)) name = advance().lexeme();
         else {
             type = parseTypeRef();
             name = consume(IDENT, "expected binding name").lexeme();
@@ -999,6 +1004,9 @@ public final class Parser {
         if (type != null) type = applyTypeMetadataAnnotations(type, annotations, false);
         consume(EQUAL, "module bindings require an initializer");
         Ast.Expr initializer = parseExpression();
+        if (functionShorthand && !(initializer instanceof Ast.LambdaExpr)) {
+            throw error(previous(), "'const fnc' requires a lambda initializer");
+        }
         consumeExpressionStatementTerminator(initializer, "module binding should end with ';'");
         return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer, mutableReferent);
     }
@@ -2415,7 +2423,13 @@ public final class Parser {
         boolean mutableReferent = parseReferentMutability(kind);
         Ast.TypeRef type = null;
         String name;
-        if (check(IDENT) && checkNext(COLON)) {
+        boolean functionShorthand = match(FNC);
+        if (functionShorthand && (kind != Ast.BindingKind.CONST || mutableReferent)) {
+            throw error(previous(), "lambda binding shorthand requires 'const fnc'");
+        }
+        if (functionShorthand) {
+            name = consume(IDENT, "expected function binding name").lexeme();
+        } else if (check(IDENT) && checkNext(COLON)) {
             name = advance().lexeme();
             consume(COLON, "expected ':' after binding name");
             type = parseTypeRef();
@@ -2464,6 +2478,9 @@ public final class Parser {
             }
         } else {
             initializer = parseExpression();
+        }
+        if (functionShorthand && !(initializer instanceof Ast.LambdaExpr)) {
+            throw error(previous(), "'const fnc' requires a lambda initializer");
         }
         consumeExpressionStatementTerminator(initializer, "binding should end with ';'");
         return new Ast.BindingStmt(kind, type, name, initializer, mutableReferent, inferredTypeName);
@@ -3792,6 +3809,12 @@ public final class Parser {
                 if (check(IDENT) && (checkNext(COMMA) || checkNext(PIPE))) {
                     String name = advance().lexeme();
                     params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, false));
+                } else if (check(IDENT) && checkNext(COLON)) {
+                    String name = advance().lexeme();
+                    consume(COLON, "expected ':' after lambda parameter name");
+                    Ast.TypeRef type = parseTypeRef();
+                    boolean mutable = match(MUT);
+                    params.add(new Ast.Param(type, name, false, mutable));
                 } else {
                     Ast.TypeRef type = parseTypeRef();
                     boolean mutable = match(MUT);
