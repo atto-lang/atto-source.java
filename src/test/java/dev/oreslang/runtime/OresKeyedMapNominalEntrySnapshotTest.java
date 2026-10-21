@@ -199,4 +199,73 @@ final class OresKeyedMapNominalEntrySnapshotTest {
     }
 
 
+    @Test
+    void nominalSnapshotCannotAccidentallyBecomeActorTransportByComposition() {
+        OresKeyedMap<String, Integer> map =
+                OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.INT);
+        map.put("x", 7);
+
+        List<OresEntry> snapshot = map.nominalEntrySnapshot();
+
+        IllegalArgumentException denied = assertThrows(
+                IllegalArgumentException.class,
+                () -> ActorRuntime.freeze(snapshot));
+        assertTrue(denied.getMessage().contains("not Sendable"),
+                denied.getMessage());
+        assertEquals(1, snapshot.size());
+        assertEquals("x", snapshot.getFirst().key());
+        assertEquals(7, snapshot.getFirst().value());
+    }
+
+    @Test
+    void concurrentRemoveReinsertNeverProducesDuplicateOrMisorderedSnapshotKeys()
+            throws Exception {
+        OresKeyedMap<String, Integer> map =
+                OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.INT);
+        for (int i = 0; i < 32; i++) {
+            map.put("fixed-" + i, i);
+        }
+        map.put("moving", 100);
+
+        List<String> fixed = java.util.stream.IntStream.range(0, 32)
+                .mapToObj(i -> "fixed-" + i)
+                .toList();
+
+        var workers = java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            var writer = workers.submit(() -> {
+                for (int i = 0; i < 2_000; i++) {
+                    map.remove("moving");
+                    map.put("moving", i);
+                }
+            });
+            var reader = workers.submit(() -> {
+                for (int i = 0; i < 2_000; i++) {
+                    List<OresEntry> snapshot = map.nominalEntrySnapshot();
+                    List<Object> keys =
+                            snapshot.stream().map(OresEntry::key).toList();
+
+                    assertEquals(keys.size(),
+                            new java.util.LinkedHashSet<>(keys).size(),
+                            "one atomic snapshot must never contain duplicate keys");
+                    assertTrue(keys.size() == fixed.size()
+                                    || keys.size() == fixed.size() + 1,
+                            "snapshot cardinality must correspond to either side of the atomic remove/put");
+                    assertEquals(fixed, keys.subList(0, fixed.size()),
+                            "stable keys must keep insertion order");
+                    if (keys.size() == fixed.size() + 1) {
+                        assertEquals("moving", keys.getLast(),
+                                "reinsertion must place the moving key at the end");
+                    }
+                }
+            });
+
+            writer.get(10, java.util.concurrent.TimeUnit.SECONDS);
+            reader.get(10, java.util.concurrent.TimeUnit.SECONDS);
+        } finally {
+            workers.shutdownNow();
+        }
+    }
+
+
 }
