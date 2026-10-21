@@ -257,7 +257,7 @@ final class InlineSelfReceiverArityTest {
                 end
                 fnc unsafe_alias(): int {
                   val Counter counter = new Counter();
-                  return counter.borrow_and_read(rt borrow mut counter);
+                  return counter.borrow_and_read(rt mut borrow counter);
                 }
                 """);
         IllegalArgumentException error =
@@ -280,7 +280,7 @@ final class InlineSelfReceiverArityTest {
                 fnc valid(): int {
                   val Counter counter = new Counter();
                   val Counter other = new Counter();
-                  return counter.borrow_and_read(rt borrow mut other);
+                  return counter.borrow_and_read(rt mut borrow other);
                 }
                 """);
         assertDoesNotThrow(() -> TypeChecker.check(parsed));
