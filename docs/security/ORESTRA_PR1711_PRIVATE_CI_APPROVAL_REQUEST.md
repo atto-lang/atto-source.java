@@ -58,11 +58,11 @@ trusted V3 publisher.
 - Destination repository ID: `1426277234`
 - Live destination `main` protection at audit time: `protected=false`
 - Reviewed source-free carrier `main` after merging Conformance #13:
-  `45a0b599e2dc45a57b5fed290eb03210cc8bafe0`
+  `bc8878377ddc2dd589d246477325c58476c2b679`
 - Candidate workflow:
   `.github/workflows/oreslang-exact-tree-carrier.yml`
 - Candidate workflow blob SHA:
-  `f4759633e2d7bb0c528394325e770013a8cc1826`
+  `f6541bbb59bed111db76931a2b9256fd479a5acb`
 - Trusted test plan:
   `ci/test-plans/java-pr1711.json`, merged by
   `orestra/orestra-conformance` PR #13
@@ -91,3 +91,14 @@ re-pin before authorization.
 
 This file deliberately does not modify allowlists, protected carrier contracts,
 GitHub branch protection, or CI authorization refs.
+
+
+## Carrier governance hardening update
+
+The reviewed carrier base now includes source-free governance hardening from Orestra Conformance #14:
+- carrier base: `bc8878377ddc2dd589d246477325c58476c2b679`;
+- workflow blob: `f6541bbb59bed111db76931a2b9256fd479a5acb`;
+- CODEOWNERS blob: `ec126032aeb1bde2ee9f0ab5c220c4282603f5b7`;
+- test-plan blob remains `1b00f6c863b87e262b9f56990b6f22ae5d6fbecd`.
+
+The carrier workflow now validates live branch protection and CODEOWNERS before checkout and rechecks the protected base before source execution. The source-side authorization PR #1798 pins all of these identities. Transfer remains denied while either source or carrier `main` reports `protected=false`.
