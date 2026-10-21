@@ -3943,7 +3943,14 @@ public final class TypeChecker {
                     ? env.lookup(ownerName.name()) : null;
             if (isTypedMapType(receiver)) {
                 requireAssignable(index, typedMapKeyType(receiver), "Map key");
-                return typedMapValueType(receiver);
+                Type value = typedMapValueType(receiver);
+                if (isJsonValueType(value)) {
+                    throw new IllegalArgumentException(
+                            "Map<String, JsonValue> indexed reads are disabled until "
+                                    + "borrow/snapshot semantics prevent move-only aliasing; "
+                                    + "use has/take/remove for the staged surface");
+                }
+                return value;
             }
             if (receiver instanceof Record record) {
                 requireAssignable(index, Primitive.STRING, "record/struct field key");
@@ -6753,9 +6760,16 @@ public final class TypeChecker {
             return switch (member) {
                 case "size" -> Primitive.INT;
                 case "has" -> new Function(List.of(key), Primitive.BOOL);
-                case "get" -> new Function(
-                        List.of(key),
-                        new Named("Option", List.of(value)));
+                case "get" -> {
+                    if (isJsonValueType(value)) {
+                        throw new IllegalArgumentException(
+                                "Map<String, JsonValue>.get is disabled until "
+                                        + "move-only borrow/snapshot semantics are implemented");
+                    }
+                    yield new Function(
+                            List.of(key),
+                            new Named("Option", List.of(value)));
+                }
                 case "put" -> new Function(
                         List.of(key, value),
                         new Named("Option", List.of(value)));
