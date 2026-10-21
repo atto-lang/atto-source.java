@@ -10,7 +10,7 @@ import dev.oreslang.interop.MixedJavaCompiler;
 import dev.oreslang.interop.MixedSourceUnit;
 import dev.oreslang.nodes.OresEvalRootNode;
 import dev.oreslang.parser.Parser;
-import dev.oreslang.stdlib.CoreLibrarySources;
+import dev.oreslang.stdlib.PortableLibrarySources;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
@@ -394,11 +394,20 @@ public final class LinkedProgramRunner {
             ImportRules.validate(imported);
             if (ImportRules.isJavaPath(imported.path())) continue;
 
-            if (CoreLibrarySources.isCoreImport(imported.path())) {
-                String targetId = CoreLibrarySources.unitId(imported.path());
-                recordImportResolution(importResolutions, id, imported.path(), targetId);
-                collectCoreImportClosure(imported.path(), units, importResolutions,
-                        budget, depth + 1);
+            if (PortableLibrarySources.isPackagedImport(imported.path())) {
+                String targetId =
+                        PortableLibrarySources.unitId(imported.path());
+                recordImportResolution(
+                        importResolutions,
+                        id,
+                        imported.path(),
+                        targetId);
+                collectPackagedLibraryImportClosure(
+                        imported.path(),
+                        units,
+                        importResolutions,
+                        budget,
+                        depth + 1);
                 continue;
             }
 
@@ -429,52 +438,83 @@ public final class LinkedProgramRunner {
 
 
     /**
-     * Collects only compiler-owned Oreslang sources under the reserved std/
-     * namespace. Neither the project manifest nor ORESLANG_PATH can override it.
+     * Collects compiler-owned packaged Oreslang library source. Reserved
+     * std/* and alloc/* imports resolve before project/package lookup, so
+     * neither the project manifest nor ORESLANG_PATH can shadow them.
      */
-    private static void collectCoreImportClosure(
+    private static void collectPackagedLibraryImportClosure(
             String importPath,
             Map<String, MixedSourceUnit> units,
             Map<String, Map<String, String>> importResolutions,
             SourceAdmissionBudget budget,
             int depth) throws IOException {
-        String id = CoreLibrarySources.unitId(importPath);
+        PortableLibrarySources.Tier tier =
+                PortableLibrarySources.tier(importPath);
+        if (tier == null) {
+            throw new IllegalArgumentException(
+                    "not a compiler-owned packaged library import: "
+                            + importPath);
+        }
+
+        String id = PortableLibrarySources.unitId(importPath);
         if (units.containsKey(id)) return;
         budget.checkCanAdmitUnit(depth);
 
-        String coreSource = CoreLibrarySources.source(importPath);
-        budget.admit(coreSource.getBytes(java.nio.charset.StandardCharsets.UTF_8).length, depth);
+        String librarySource =
+                PortableLibrarySources.source(importPath);
+        budget.admit(
+                librarySource.getBytes(
+                        java.nio.charset.StandardCharsets.UTF_8).length,
+                depth);
         MixedSourceUnit mixed = MixedSourceUnit.parse(
                 id,
-                CoreLibrarySources.fileName(importPath),
-                coreSource);
+                PortableLibrarySources.fileName(importPath),
+                librarySource);
         if (mixed.hasJavaSource()) {
             throw new SecurityException(
-                    "packaged std/* modules must be native Oreslang, not Java source islands: "
+                    "packaged " + tier.importPrefix()
+                            + " modules must be native Oreslang, not Java source islands: "
                             + importPath);
         }
 
         Ast.Program program = Parser.parse(mixed.oresSource());
-        // Validate the whole source before admitting any unit to the closure.
+        // Validate the complete dependency surface before admitting this unit.
+        // A packaged library source cannot escape into Java, project source,
+        // package search, or a forbidden library tier.
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
             if (ImportRules.isJavaPath(imported.path())) {
-                throw new SecurityException("std/* cannot import Java host classes: "
-                        + importPath + " -> " + imported.path());
+                throw new SecurityException(
+                        tier.importPrefix()
+                                + " cannot import Java host classes: "
+                                + importPath + " -> " + imported.path());
             }
-            if (!CoreLibrarySources.isCoreImport(imported.path())) {
-                throw new IllegalArgumentException("std/* cannot import project or ambient modules: "
-                        + importPath + " -> " + imported.path());
+            if (!PortableLibrarySources.mayImport(
+                    tier,
+                    imported.path())) {
+                throw new IllegalArgumentException(
+                        tier.importPrefix()
+                                + " cannot import project, ambient, or forbidden-tier modules: "
+                                + importPath + " -> " + imported.path());
             }
-            CoreLibrarySources.unitId(imported.path());
+            PortableLibrarySources.unitId(imported.path());
         }
 
         units.put(id, mixed);
         for (Ast.ImportDecl imported : program.imports()) {
-            String targetId = CoreLibrarySources.unitId(imported.path());
-            recordImportResolution(importResolutions, id, imported.path(), targetId);
-            collectCoreImportClosure(imported.path(), units, importResolutions,
-                    budget, depth + 1);
+            String targetId =
+                    PortableLibrarySources.unitId(imported.path());
+            recordImportResolution(
+                    importResolutions,
+                    id,
+                    imported.path(),
+                    targetId);
+            collectPackagedLibraryImportClosure(
+                    imported.path(),
+                    units,
+                    importResolutions,
+                    budget,
+                    depth + 1);
         }
     }
 
