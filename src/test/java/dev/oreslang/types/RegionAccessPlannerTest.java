@@ -58,6 +58,76 @@ final class RegionAccessPlannerTest {
         assertEquals(1,RegionAccessPlanner.plan(List.of(a,b,c)).size());
     }
 
+    @Test void cacheAwarePlanSerializesOnlyProvenFalseSharing() {
+        var left = system("left", new RegionAccessPlanner.Access(
+                POSITION, 0, 8, RegionAccessPlanner.Mode.WRITE, 0L, 4));
+        var right = system("right", new RegionAccessPlanner.Access(
+                POSITION, 8, 16, RegionAccessPlanner.Mode.WRITE, 0L, 4));
+
+        assertEquals(1, RegionAccessPlanner.plan(List.of(left, right)).size(),
+                "logical disjointness remains a correctness-level parallel proof");
+        assertEquals(2,
+                RegionAccessPlanner.planCacheAware(List.of(left, right), 64).size(),
+                "adjacent F32 writers share a physical 64-byte line");
+
+        var alignedRight = system("aligned-right", new RegionAccessPlanner.Access(
+                POSITION, 16, 32, RegionAccessPlanner.Mode.WRITE, 0L, 4));
+        assertEquals(1,
+                RegionAccessPlanner.planCacheAware(List.of(left, alignedRight), 64).size());
+
+        var unknown = system("unknown-physical",
+                access(POSITION, 8, 16, RegionAccessPlanner.Mode.WRITE));
+        assertEquals(1,
+                RegionAccessPlanner.planCacheAware(List.of(left, unknown), 64).size(),
+                "unknown physical geometry must not fabricate a performance dependency");
+    }
+
+    @Test void differentColumnsCanStillShareOnePhysicalCacheLine() {
+        var position = system("position", new RegionAccessPlanner.Access(
+                POSITION, 0, 4, RegionAccessPlanner.Mode.WRITE, 0L, 8));
+        var velocity = system("velocity", new RegionAccessPlanner.Access(
+                VELOCITY, 0, 4, RegionAccessPlanner.Mode.WRITE, 32L, 8));
+
+        assertFalse(RegionAccessPlanner.conflicts(position, velocity));
+        assertTrue(RegionAccessPlanner.cacheLineConflicts(position, velocity, 64));
+        assertEquals(2,
+                RegionAccessPlanner.planCacheAware(List.of(position, velocity), 64).size());
+
+        var separateLine = system("velocity-far", new RegionAccessPlanner.Access(
+                VELOCITY, 0, 4, RegionAccessPlanner.Mode.WRITE, 64L, 8));
+        assertFalse(RegionAccessPlanner.cacheLineConflicts(position, separateLine, 64));
+    }
+
+    @Test void cacheSafeChunksAlignInteriorWriterBoundaries() {
+        var chunks = RegionAccessPlanner.cacheSafeDisjointChunks(
+                POSITION, 40, 10, RegionAccessPlanner.Mode.WRITE,
+                0, 4, 64);
+        assertEquals(List.of(0L, 16L, 32L),
+                chunks.stream().map(RegionAccessPlanner.Access::from).toList());
+        assertEquals(List.of(16L, 32L, 40L),
+                chunks.stream().map(RegionAccessPlanner.Access::until).toList());
+
+        var work = chunks.stream()
+                .map(a -> system("chunk-" + a.from(), a))
+                .toList();
+        assertEquals(1, RegionAccessPlanner.planCacheAware(work, 64).size());
+
+        assertThrows(IllegalArgumentException.class,
+                () -> RegionAccessPlanner.cacheSafeDisjointChunks(
+                        POSITION, 100, 10, RegionAccessPlanner.Mode.WRITE,
+                        1, 4, 64),
+                "misaligned base with no reachable line boundary must fail closed");
+    }
+
+    @Test void cacheGeometryRejectsInvalidWidthsAndOverflow() {
+        assertThrows(IllegalArgumentException.class,
+                () -> RegionAccessPlanner.planCacheAware(List.of(), 48));
+        assertThrows(IllegalArgumentException.class,
+                () -> new RegionAccessPlanner.Access(
+                        POSITION, 0, Long.MAX_VALUE,
+                        RegionAccessPlanner.Mode.READ, Long.MAX_VALUE - 8, 8));
+    }
+
     @Test void failClosedForUnknownOrEmptyAccess() {
         assertThrows(IllegalArgumentException.class,()->system("unknown"));
         assertThrows(IllegalArgumentException.class,()->new RegionAccessPlanner.Region("", "X"));
