@@ -111,3 +111,22 @@ These are runtime **preflight data contracts**, not a compiler-approved
 A trusted provider must atomically claim buffers, authenticate device
 allocation provenance, enforce no host/device aliasing and wait for real
 device fences; preflight snapshots alone do not authorize launching work.
+
+
+## G2 source-neutral kernel reference
+
+The runtime now carries a source-neutral `PortableKernelIR` used only for
+backend conformance. It supports checked AoS/SoA/AoSoA layouts, homogeneous
+`f32` elementwise scale/bias/scale-bias kernels, and an explicit deterministic
+CPU reference provider.
+
+This does **not** relax the frontend gate. `gpu`, `cpu`, and `quantum`
+remain reserved and fail closed at parse time, and there is no source `kernel`
+lowering yet. The CPU reference provider is never an implicit fallback for a
+GPU request and is not hard-realtime evidence.
+
+LLVM/native owns the first OpenCL C lowering for this subset. Generated OpenCL
+source is an artifact only; real device execution still requires an
+authenticated provider, physical buffer provenance, queue admission, a
+submitted-state witness, device-event completion evidence, and verified
+retirement.
