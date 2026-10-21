@@ -2630,6 +2630,16 @@ public final class OwnershipChecker {
             boolean allowActorSelfCapture,
             boolean deferredCleanup) {
         boolean nonLexical = lambda.nonLexical() || outer.descendantsNonLexical();
+        // The current evaluator snapshots the whole lexical environment for
+        // ordinary closures. Until runtime closures carry compiler-proven free
+        // variable sets, permitting an unrelated live Map in that environment
+        // would compile successfully and then fail only during snapshot().
+        if (!nonLexical && outer.visibleStates().stream()
+                .anyMatch(state -> !state.moved && containsTypedMapType(state.type))) {
+            throw error(
+                    "ordinary lexical closures cannot be created while a live Map<K,V> is in scope "
+                            + "in the closed v1 surface; use nlex or end/move the Map lifetime first");
+        }
         CaptureSet captures = nonLexical ? new CaptureSet() : collectCaptures(lambda, outer, recursiveBinding);
         Scope closure = new Scope(null, nonLexical);
 
