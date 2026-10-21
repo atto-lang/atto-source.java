@@ -27,6 +27,13 @@ guest-language API release or a native LLVM implementation.
 - Every `select` execution allocates new winner/cancellation and channel or
   Future subscriptions; plans share immutable *descriptors*, never live waiters.
   Future listener detach is performed outside the global channel coordinator.
+- **Mapped selection cancellation is arbitration-gated.** An outer keyed/read/
+  write Future may cancel only if its private underlying select successfully
+  revokes its pending operation. A source that has already committed a read/
+  write/Future winner must not be converted into a cancelled mapped result
+  during delayed subscriber or mapping publication. `mapSelection` therefore
+  uses the source's `cancel(false)` as the mapped Future's admission predicate,
+  not an unconditional cancellation hook.
 - At admission under the global coordinator, FAIR captures a reusable plan's
   winner cursor or a compiler-owned source static ticket. PRIORITY scans source
   order and RANDOM freshly shuffles. FAIR/PRIORITY use **ordinal arithmetic**
@@ -55,7 +62,9 @@ guest-language API release or a native LLVM implementation.
 Regression sources include `DynamicSelectPlanTest`,
 `DynamicSelectMainlineInteropTest`, `SelectLoopMainlineRegressionTest`,
 `SelectPlanMainlineLanguageTest`, `SelectPlanMainlineBorrowSafetyTest` and
-`SelectPlanMainlineActorBoundaryTest`.
+`SelectPlanMainlineActorBoundaryTest` and
+`SelectMappedCancellationArbitrationTest` (including a deterministic
+late-mapping cancellation gate and keyed rendezvous cancellation races).
 Added cases exercise versioned generations, mixed Future/channel fairness,
 duplicate Future alias priority, terminal failure, repeated cancellation,
 quota rejection, nested lexical binding, and RANDOM permutations.
