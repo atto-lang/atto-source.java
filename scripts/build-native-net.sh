@@ -39,7 +39,6 @@ mkdir -p target/native
   -D_DEFAULT_SOURCE \
   -O2 \
   -fPIC \
-  -pthread \
   $shared_flags \
   -I"$JAVA_HOME/include" \
   -I"$JAVA_HOME/include/$jni_os" \
