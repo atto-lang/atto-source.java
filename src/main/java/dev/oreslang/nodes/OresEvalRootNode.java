@@ -104,6 +104,9 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callFunction(Ast.FunctionDecl fn, List<?> args) {
+            if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
+                context.schedulerSafepoint();
+            }
             if (fn.actorKind() != Ast.ActorKind.NONE) {
                 throw new IllegalStateException("actor fnc '" + fn.name()
                         + "' cannot execute on the caller stack; it must be lowered through ActorRuntime");
@@ -124,6 +127,9 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args) {
+            if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
+                context.schedulerSafepoint();
+            }
             if (args.size() != method.parameters().size()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
             Env env = new Env(null);
             if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
@@ -331,14 +337,14 @@ public final class OresEvalRootNode extends RootNode {
                 if (binary.operator().equals("^^")) {
                     return truth(eval(binary.left(), env)) ^ truth(eval(binary.right(), env));
                 }
-                Object left = eval(binary.left(), env);
-                Object right = eval(binary.right(), env);
-                if (binary.operator().equals("|") && left instanceof Boolean lb && right instanceof Boolean rb) {
-                    return lb || rb;
-                }
-                return binary(binary.operator(), left, right);
+                return binary(binary.operator(), eval(binary.left(), env), eval(binary.right(), env));
             }
             if (expr instanceof Ast.CallExpr call) {
+                if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
+                    // Charge every callable path, including recursive lambdas
+                    // and static-method dispatch, not only named functions.
+                    context.schedulerSafepoint();
+                }
                 if (call.callee() instanceof Ast.MemberExpr methodCall) {
                     Object receiver = eval(methodCall.receiver(), env);
                     List<Object> args = call.arguments().stream().map(arg -> eval(arg, env)).toList();
@@ -394,7 +400,7 @@ public final class OresEvalRootNode extends RootNode {
                     var future = stage.toCompletableFuture();
                     if (ActorRuntime.inActorExecution() && !future.isDone()) {
                         throw new IllegalStateException(
-                                "await would block this actor/worker and prevent mailbox progress; actor continuation lowering must suspend/resume the worker");
+                                "await would block an actor dispatcher carrier; actor continuation lowering must suspend/resume the mailbox turn");
                     }
                     return future.join();
                 }

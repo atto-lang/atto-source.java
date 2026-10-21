@@ -11,28 +11,19 @@ public final class Lexer {
     private static final Map<String, Token.Type> KEYWORDS = new HashMap<>();
 
     static {
-        KEYWORDS.put("define", DEFINE); KEYWORDS.put("class", CLASS); KEYWORDS.put("module", MODULE); KEYWORDS.put("contract", CONTRACT); KEYWORDS.put("conforms", CONFORMS); KEYWORDS.put("namespace", NAMESPACE);
+        KEYWORDS.put("define", DEFINE); KEYWORDS.put("class", CLASS); KEYWORDS.put("module", MODULE); KEYWORDS.put("namespace", NAMESPACE);
         KEYWORDS.put("import", IMPORT); KEYWORDS.put("from", FROM); KEYWORDS.put("as", AS);
         KEYWORDS.put("extends", EXTENDS); KEYWORDS.put("implements", IMPLEMENTS);
         KEYWORDS.put("try", TRY); KEYWORDS.put("catch", CATCH); KEYWORDS.put("finally", FINALLY);
         KEYWORDS.put("end", END); KEYWORDS.put("fi", FI); KEYWORDS.put("if", IF); KEYWORDS.put("do", DO);
-        KEYWORDS.put("else", ELSE); KEYWORDS.put("then", THEN); KEYWORDS.put("new", NEW); KEYWORDS.put("spawn", SPAWN); KEYWORDS.put("stop", STOP); KEYWORDS.put("done", DONE);
-        KEYWORDS.put("await", AWAIT); KEYWORDS.put("rt", RT); KEYWORDS.put("async", ASYNC); KEYWORDS.put("suspends", SUSPENDS); KEYWORDS.put("generator", GENERATOR); KEYWORDS.put("nlex", NLEX); KEYWORDS.put("trap", TRAP); KEYWORDS.put("actor", ACTOR); KEYWORDS.put("isoactor", ISOACTOR); KEYWORDS.put("def", DEF); KEYWORDS.put("fnc", FNC); KEYWORDS.put("routine", ROUTINE);
-        KEYWORDS.put("while", WHILE); KEYWORDS.put("for", FOR); KEYWORDS.put("of", OF); KEYWORDS.put("loop", LOOP); KEYWORDS.put("block", BLOCK); KEYWORDS.put("break", BREAK); KEYWORDS.put("continue", CONTINUE); KEYWORDS.put("yield", YIELD); KEYWORDS.put("super", SUPER); KEYWORDS.put("elseif", ELSEIF); KEYWORDS.put("elif", ELSEIF); KEYWORDS.put("switch", SWITCH); KEYWORDS.put("over", OVER); KEYWORDS.put("match", MATCH); KEYWORDS.put("matches", MATCHES); KEYWORDS.put("is", IS); KEYWORDS.put("default", DEFAULT);
-        KEYWORDS.put("eq", EQ); KEYWORDS.put("neq", NEQ);
-        KEYWORDS.put("nb", NB); KEYWORDS.put("select", SELECT); KEYWORDS.put("readch", READCH); KEYWORDS.put("writech", WRITECH);
-        KEYWORDS.put("cb", CB); KEYWORDS.put("shared", SHARED); KEYWORDS.put("untrusted", UNTRUSTED);
-        KEYWORDS.put("type", TYPE); KEYWORDS.put("types", TYPES); KEYWORDS.put("typeof", TYPEOF); KEYWORDS.put("interface", INTERFACE); KEYWORDS.put("trait", TRAIT); KEYWORDS.put("struct", STRUCT); KEYWORDS.put("impl", IMPL); KEYWORDS.put("abstract", ABSTRACT);
+        KEYWORDS.put("else", ELSE); KEYWORDS.put("then", THEN); KEYWORDS.put("new", NEW); KEYWORDS.put("done", DONE);
+        KEYWORDS.put("await", AWAIT); KEYWORDS.put("async", ASYNC); KEYWORDS.put("nlex", NLEX); KEYWORDS.put("actor", ACTOR); KEYWORDS.put("shared", SHARED); KEYWORDS.put("untrusted", UNTRUSTED); KEYWORDS.put("def", DEF); KEYWORDS.put("fnc", FNC); KEYWORDS.put("routine", ROUTINE);
+        KEYWORDS.put("for", FOR); KEYWORDS.put("of", OF); KEYWORDS.put("yield", YIELD); KEYWORDS.put("super", SUPER); KEYWORDS.put("elseif", ELSEIF); KEYWORDS.put("switch", SWITCH);
+        KEYWORDS.put("type", TYPE); KEYWORDS.put("typeof", TYPEOF); KEYWORDS.put("interface", INTERFACE); KEYWORDS.put("impl", IMPL); KEYWORDS.put("abstract", ABSTRACT);
         KEYWORDS.put("void", VOID); KEYWORDS.put("static", STATIC); KEYWORDS.put("pub", PUB); KEYWORDS.put("private", PRIVATE);
-        KEYWORDS.put("return", RETURN); KEYWORDS.put("defer", DEFER);
-        // Reserved until compiler-checked typed effects and source lowering exist.
-        KEYWORDS.put("throw", THROW); KEYWORDS.put("raise", RAISE);
-        KEYWORDS.put("panic", PANIC); KEYWORDS.put("recover", RECOVER); KEYWORDS.put("val", VAL); KEYWORDS.put("const", CONST);
+        KEYWORDS.put("return", RETURN); KEYWORDS.put("defer", DEFER); KEYWORDS.put("val", VAL); KEYWORDS.put("const", CONST);
         KEYWORDS.put("let", LET); KEYWORDS.put("mut", MUT); KEYWORDS.put("self", SELF); KEYWORDS.put("true", TRUE); KEYWORDS.put("false", FALSE);
         KEYWORDS.put("null", NULL); KEYWORDS.put("obj", OBJ); KEYWORDS.put("arr", ARR);
-        // Accelerator/host execution domains are reserved even before backend lowering.
-        // They must not be interpreted as ordinary CPU-side identifiers or calls.
-        KEYWORDS.put("gpu", GPU); KEYWORDS.put("cpu", CPU); KEYWORDS.put("quantum", QUANTUM);
     }
 
     private final String source;
@@ -46,18 +37,6 @@ public final class Lexer {
     public Lexer(String source) { this.source = source == null ? "" : source; }
 
     public List<Token> scan() {
-        // Validate ignored comments and string contents as well as tokens.
-        // Embedders can pass malformed UTF-16 without a UTF-8 file decoder.
-        for (int i = 0; i < source.length(); i++) {
-            char c = source.charAt(i);
-            if (c == '\0') throw new IllegalArgumentException("source contains NUL byte");
-            if (Character.isHighSurrogate(c)) {
-                if (++i >= source.length() || !Character.isLowSurrogate(source.charAt(i)))
-                    throw new IllegalArgumentException("source contains invalid UTF-16");
-            } else if (Character.isLowSurrogate(c)) {
-                throw new IllegalArgumentException("source contains invalid UTF-16");
-            }
-        }
         while (!isAtEnd()) {
             start = current;
             startColumn = column;
@@ -71,15 +50,9 @@ public final class Lexer {
         char c = advance();
         switch (c) {
             case '(' -> add(LPAREN); case ')' -> add(RPAREN); case '{' -> add(LBRACE); case '}' -> add(RBRACE);
-            case '[' -> add(LBRACKET); case ']' -> add(RBRACKET); case ',' -> add(COMMA);
-            case '.' -> {
-                if (match('.')) {
-                    if (!match('.')) throw error("unexpected '..'; argument spread uses '...'");
-                    add(ELLIPSIS);
-                } else add(DOT);
-            }
-            case ';' -> add(SEMICOLON); case ':' -> add(match(':') ? DOUBLE_COLON : COLON); case '?' -> add(QUESTION); case '@' -> add(AT); case '`' -> add(BACKTICK); case '+' -> add(PLUS);
-            case '*' -> add(STAR); case '%' -> add(PERCENT); case '|' -> add(match('>') ? PIPE_FORWARD : PIPE); case '&' -> add(AMP);
+            case '[' -> add(LBRACKET); case ']' -> add(RBRACKET); case ',' -> add(COMMA); case '.' -> add(DOT);
+            case ';' -> add(SEMICOLON); case ':' -> add(COLON); case '?' -> add(QUESTION); case '@' -> add(AT); case '+' -> add(PLUS);
+            case '*' -> add(STAR); case '%' -> add(PERCENT); case '|' -> add(PIPE); case '&' -> add(AMP);
             case '^' -> add(CARET); case '~' -> add(TILDE);
             case '-' -> add(match('>') ? ARROW : MINUS);
             case '!' -> add(match('=') ? BANG_EQUAL : BANG);
@@ -93,68 +66,12 @@ public final class Lexer {
             case ' ', '\r', '\t' -> { }
             case '\n' -> newline();
             case '"', '\'' -> string(c);
-            case '#' -> symbol();
             default -> {
                 if (isDigit(c)) number();
                 else if (isIdentStart(c)) identifier();
                 else throw error("unexpected character '" + c + "'");
             }
         }
-    }
-
-    /** Hash only introduces Symbol literals; colon remains a field/type separator. */
-    private void symbol() {
-        if (peek() == '"' || peek() == '\'') {
-            symbolQuoted(advance());
-            return;
-        }
-        if (!asciiSymbolStart(peek())) {
-            throw error("expected Symbol name immediately after '#'");
-        }
-        int nameStart = current;
-        do {
-            advance();
-        } while (asciiSymbolPart(peek()));
-        if (current - nameStart > 128) {
-            throw error("unquoted Symbol literal exceeds 128 ASCII bytes");
-        }
-        tokens.add(new Token(SYMBOL_LITERAL, source.substring(nameStart, current), line, startColumn));
-    }
-
-    /** Quoted Symbol escapes are strict, unlike legacy ordinary string escapes. */
-    private void symbolQuoted(char quote) {
-        StringBuilder value = new StringBuilder();
-        while (!isAtEnd() && peek() != quote) {
-            char ch = advance();
-            if (ch == '\n' || ch == '\r') {
-                throw error("raw newline in quoted Symbol literal");
-            }
-            if (ch == '\\') {
-                if (isAtEnd()) throw error("unterminated quoted Symbol escape");
-                char escaped = advance();
-                ch = switch (escaped) {
-                    case 'u' -> unicodeEscape();
-                    case 'n' -> '\n';
-                    case 'r' -> '\r';
-                    case 't' -> '\t';
-                    case '"', '\'', '\\' -> escaped;
-                    default -> throw error("invalid quoted Symbol escape");
-                };
-            }
-            value.append(ch);
-        }
-        if (isAtEnd()) throw error("unterminated quoted Symbol literal");
-        advance();
-        String key = dev.oreslang.runtime.OresSymbol.normalizeAndValidate(value.toString());
-        tokens.add(new Token(SYMBOL_LITERAL, key, line, startColumn));
-    }
-
-    private static boolean asciiSymbolStart(char c) {
-        return c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z';
-    }
-
-    private static boolean asciiSymbolPart(char c) {
-        return asciiSymbolStart(c) || c >= '0' && c <= '9';
     }
 
     private void blockComment() {
@@ -177,7 +94,6 @@ public final class Lexer {
                 if (isAtEnd()) throw error("unterminated string escape");
                 char escaped = advance();
                 value.append(switch (escaped) {
-                    case 'u' -> unicodeEscape();
                     case 'n' -> '\n'; case 'r' -> '\r'; case 't' -> '\t'; case '"' -> '"'; case '\'' -> '\''; case '\\' -> '\\'; default -> escaped;
                 });
             } else value.append(c);
@@ -185,20 +101,6 @@ public final class Lexer {
         if (isAtEnd()) throw error("unterminated string");
         advance();
         tokens.add(new Token(STRING, value.toString(), line, startColumn));
-    }
-
-    private char unicodeEscape() {
-        int code = 0;
-        for (int i = 0; i < 4; i++) {
-            if (isAtEnd()) throw error("incomplete Unicode escape");
-            char digit = advance();
-            int hex = digit >= '0' && digit <= '9' ? digit - '0'
-                    : digit >= 'a' && digit <= 'f' ? digit - 'a' + 10
-                    : digit >= 'A' && digit <= 'F' ? digit - 'A' + 10 : -1;
-            if (hex < 0) throw error("invalid Unicode escape");
-            code = (code << 4) | hex;
-        }
-        return (char) code;
     }
 
     private void number() {
@@ -221,22 +123,6 @@ public final class Lexer {
     private void identifier() {
         while (isIdentPart(peek())) advance();
         String text = source.substring(start, current);
-
-        // Both 'nb' and 'select' are already reserved, so this spelling cannot
-        // change the meaning of a legal subtraction expression. Critical and
-        // pipeline compounds are instead recognized only in declaration
-        // context by the parser: both halves may be ordinary variable names.
-        if (text.equals("nb") && source.startsWith("-select", current)
-                && (current + 7 == source.length()
-                    || (source.charAt(current + 7) != '-'
-                        && !isIdentPart(source.charAt(current + 7))))) {
-            add(NB);
-            advance(); // ASCII hyphen-minus, U+002D
-            int keywordColumn = column;
-            for (int i = 0; i < 6; i++) advance();
-            tokens.add(new Token(SELECT, "select", line, keywordColumn));
-            return;
-        }
         add(KEYWORDS.getOrDefault(text, IDENT));
     }
 

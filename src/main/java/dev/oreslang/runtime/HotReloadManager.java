@@ -34,49 +34,33 @@ public final class HotReloadManager implements AutoCloseable {
     private final IsolatePolicy guestPolicy;
     private final ExecutionProfile executionProfile;
     private final AtomicLong sequence = new AtomicLong();
-    private boolean closed;
     private final AtomicReference<Generation> active = new AtomicReference<>();
     private final Map<String, Generation> activeByCodeUnit = new LinkedHashMap<>();
     private final Map<Long, Generation> generations = new LinkedHashMap<>();
 
-    public HotReloadManager(
-            IsolatePolicy supervisorPolicy,
-            ExecutionProfile executionProfile) {
-        this(supervisorPolicy, supervisorPolicy, executionProfile);
+    public HotReloadManager(IsolatePolicy policy, ExecutionProfile executionProfile) {
+        this(policy, policy, executionProfile);
     }
 
+    /**
+     * Separates trusted loader authority from the capabilities granted to the
+     * loaded guest. This is required for hostile hot-loaded code: the
+     * supervisor may load code while the guest itself cannot hot-load anything.
+     */
     public HotReloadManager(
             IsolatePolicy supervisorPolicy,
             IsolatePolicy guestPolicy,
             ExecutionProfile executionProfile) {
-        this.supervisorPolicy =
-                java.util.Objects.requireNonNull(supervisorPolicy);
-        this.guestPolicy =
-                java.util.Objects.requireNonNull(guestPolicy);
-        this.executionProfile =
-                java.util.Objects.requireNonNull(executionProfile);
-        this.supervisorPolicy.require(
-                IsolatePolicy.Capability.HOT_CODE_LOAD,
-                "HotReloadManager");
-        // Trusted parents may narrow authority, but must never grant a
-        // hot-loaded guest more permission or resource budget than they own.
-        if (!this.supervisorPolicy.capabilities().containsAll(this.guestPolicy.capabilities())
-                || this.guestPolicy.maxHeapBytes() > this.supervisorPolicy.maxHeapBytes()
-                || this.guestPolicy.maxMailboxMessages() > this.supervisorPolicy.maxMailboxMessages()
-                || this.guestPolicy.maxWallTime().compareTo(this.supervisorPolicy.maxWallTime()) > 0
-                || (this.supervisorPolicy.adversarial() && !this.guestPolicy.adversarial())) {
-            throw new SecurityException(
-                    "hot-loaded guest policy must be no more permissive than its supervisor");
-        }
+        this.supervisorPolicy = java.util.Objects.requireNonNull(supervisorPolicy);
+        this.guestPolicy = java.util.Objects.requireNonNull(guestPolicy);
+        this.executionProfile = java.util.Objects.requireNonNull(executionProfile);
+        this.supervisorPolicy.require(IsolatePolicy.Capability.HOT_CODE_LOAD, "HotReloadManager");
     }
 
     public static HotReloadManager forUntrustedActors(
             IsolatePolicy supervisorPolicy,
             ExecutionProfile executionProfile) {
-        return new HotReloadManager(
-                supervisorPolicy,
-                IsolatePolicy.untrustedActor(),
-                executionProfile);
+        return new HotReloadManager(supervisorPolicy, IsolatePolicy.untrustedActor(), executionProfile);
     }
 
     public IsolatePolicy supervisorPolicy() { return supervisorPolicy; }
@@ -103,15 +87,10 @@ public final class HotReloadManager implements AutoCloseable {
         return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText());
     }
 
-    private void validateAdmissionInputs(
-            String codeUnitId,
-            String sourceText) {
-        requireOpen();
+    private void validateAdmissionInputs(String codeUnitId, String sourceText) {
         java.util.Objects.requireNonNull(codeUnitId, "codeUnitId");
         java.util.Objects.requireNonNull(sourceText, "sourceText");
-        if (codeUnitId.isBlank()) {
-            throw new IllegalArgumentException("codeUnitId cannot be blank");
-        }
+        if (codeUnitId.isBlank()) throw new IllegalArgumentException("codeUnitId cannot be blank");
         if (!guestPolicy.adversarial()) return;
         if (codeUnitId.length() > MAX_ADVERSARIAL_CODE_UNIT_ID_CHARS) {
             throw new IllegalArgumentException(
@@ -126,21 +105,20 @@ public final class HotReloadManager implements AutoCloseable {
     }
 
     private Generation stage(String codeUnitId, String sourceDigest, String sourceText) {
-        requireOpen();
         if (guestPolicy.adversarial()
                 && generations.size() >= MAX_ADVERSARIAL_LIVE_GENERATIONS) {
             throw new IllegalStateException(
                     "adversarial hot-load live generation limit exceeded: "
-                            + MAX_ADVERSARIAL_LIVE_GENERATIONS);
+                            + MAX_ADVERSARIAL_LIVE_GENERATIONS
+                            + "; retire an older generation before loading another");
         }
         long id = sequence.incrementAndGet();
-        Context context =
-                guestPolicy.restrictedContextBuilder(executionProfile).build();
+        Context context = guestPolicy.restrictedContextBuilder(executionProfile).build();
         try {
             Source source = Source.newBuilder(OresLanguage.ID, sourceText, codeUnitId)
                     .mimeType(OresLanguage.MIME_TYPE)
                     .buildLiteral();
-            Generation generation = new Generation(this, id, codeUnitId, sourceDigest, context, source, executionProfile);
+            Generation generation = new Generation(id, codeUnitId, sourceDigest, context, source, executionProfile);
             generations.put(id, generation);
             activeByCodeUnit.put(codeUnitId, generation);
             active.set(generation);
@@ -153,15 +131,8 @@ public final class HotReloadManager implements AutoCloseable {
 
     public synchronized Generation loadAndStart(String name, String sourceText) {
         Generation generation = load(name, sourceText);
-        try {
-            generation.start();
-            return generation;
-        } catch (RuntimeException | Error failure) {
-            // Generation.start() closes its context on most guest failures,
-            // but the manager must also release its registry/quota reservation.
-            retire(generation.id());
-            throw failure;
-        }
+        generation.start();
+        return generation;
     }
 
     /** Last generation staged, retained for compatibility with the single-unit API. */
@@ -188,48 +159,12 @@ public final class HotReloadManager implements AutoCloseable {
 
     public synchronized int liveGenerations() { return generations.size(); }
 
-    /** Closed guest contexts must not remain in the manager's active registry. */
-    private synchronized void onGenerationClosed(Generation generation) {
-        generations.remove(generation.id(), generation);
-        activeByCodeUnit.remove(generation.codeUnitId(), generation);
-        active.compareAndSet(generation, null);
-    }
-
-    private void requireOpen() {
-        if (closed) {
-            throw new IllegalStateException("hot reload manager is closed");
-        }
-    }
-
     @Override
     public synchronized void close() {
-        if (closed) {
-            return;
-        }
-        closed = true;
-        // Snapshot first: each Generation.close() re-enters onGenerationClosed.
-        java.util.List<Generation> toClose = java.util.List.copyOf(generations.values());
+        for (Generation generation : generations.values()) generation.close();
         generations.clear();
         activeByCodeUnit.clear();
         active.set(null);
-        Throwable failure = null;
-        for (Generation generation : toClose) {
-            try {
-                generation.close();
-            } catch (RuntimeException | Error closingFailure) {
-                if (failure == null) {
-                    failure = closingFailure;
-                } else {
-                    failure.addSuppressed(closingFailure);
-                }
-            }
-        }
-        if (failure instanceof Error error) {
-            throw error;
-        }
-        if (failure instanceof RuntimeException runtimeFailure) {
-            throw runtimeFailure;
-        }
     }
 
     private static String digest(String text) {
@@ -242,8 +177,6 @@ public final class HotReloadManager implements AutoCloseable {
     }
 
     public static final class Generation implements AutoCloseable {
-        // A retained retired Generation must not pin the manager (and all its other contexts).
-        private final java.lang.ref.WeakReference<HotReloadManager> owner;
         private final long id;
         private final String codeUnitId;
         private final String sha256;
@@ -253,8 +186,7 @@ public final class HotReloadManager implements AutoCloseable {
         private final AtomicBoolean started = new AtomicBoolean();
         private final AtomicBoolean closed = new AtomicBoolean();
 
-        private Generation(HotReloadManager owner, long id, String codeUnitId, String sha256, Context context, Source source, ExecutionProfile executionProfile) {
-            this.owner = new java.lang.ref.WeakReference<>(owner);
+        private Generation(long id, String codeUnitId, String sha256, Context context, Source source, ExecutionProfile executionProfile) {
             this.id = id;
             this.codeUnitId = codeUnitId;
             this.sha256 = sha256;
@@ -278,7 +210,7 @@ public final class HotReloadManager implements AutoCloseable {
             if (!started.compareAndSet(false, true)) throw new IllegalStateException("generation already started");
             try {
                 return context.eval(source);
-            } catch (RuntimeException | Error failure) {
+            } catch (RuntimeException failure) {
                 close();
                 throw failure;
             }
@@ -286,16 +218,7 @@ public final class HotReloadManager implements AutoCloseable {
 
         @Override
         public void close() {
-            if (closed.compareAndSet(false, true)) {
-                try {
-                    context.close(true);
-                } finally {
-                    HotReloadManager manager = owner.get();
-                    if (manager != null) {
-                        manager.onGenerationClosed(this);
-                    }
-                }
-            }
+            if (closed.compareAndSet(false, true)) context.close(true);
         }
     }
 }
