@@ -6425,6 +6425,32 @@ public final class OresEvalRootNode extends RootNode {
                 Object receiver = eval(methodCall.receiver(), env);
                 List<Object> args = evaluateArguments(call.arguments(), env);
 
+                if (receiver instanceof OresKeyedMap<?, ?> rawMap
+                        && (methodCall.member().equals("take")
+                                || methodCall.member().equals("remove"))) {
+                    if (!(methodCall.receiver() instanceof Ast.NameExpr owner)
+                            || !env.canWriteMap(owner.name(), rawMap)) {
+                        throw new SecurityException(
+                                "Map." + methodCall.member()
+                                        + " requires a directly owned mutable local binding");
+                    }
+                    if (args.size() != 1) {
+                        throw new IllegalArgumentException(
+                                "Map." + methodCall.member() + " expects exactly 1 argument");
+                    }
+                    Object key = args.getFirst();
+                    @SuppressWarnings("unchecked")
+                    OresKeyedMap<Object, Object> map =
+                            (OresKeyedMap<Object, Object>) rawMap;
+                    return invokableInvocation(values -> {
+                        OresKeyedMap.Lookup<Object> removed = map.take(key);
+                        if (methodCall.member().equals("take")) {
+                            return new OptionValue(removed.present(), removed.value());
+                        }
+                        return removed.present();
+                    }, List.of());
+                }
+
                 if (receiver instanceof OptionValue option
                         && methodCall.member().equals("unwrap_all")) {
                     int depth = checkedOptionDepth(call);
@@ -7825,7 +7851,7 @@ public final class OresEvalRootNode extends RootNode {
                     };
                     case "take", "remove" -> throw new SecurityException(
                             "Map." + name
-                                    + " is not exposed until owner-aware mutating member lowering is implemented");
+                                    + " is direct-call-only because mutation authority belongs to the owning binding");
                     default -> throw new IllegalArgumentException(
                             "unknown Map member " + name);
                 };
