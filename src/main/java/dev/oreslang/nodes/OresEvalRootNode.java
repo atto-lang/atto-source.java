@@ -9560,6 +9560,7 @@ public final class OresEvalRootNode extends RootNode {
 
     private static final class Env {
         private static final Object MISSING = new Object();
+        private static final Object MOVED_TASK_CAPTURE = new Object();
         private final Env parent;
         private final boolean descendantsNonLexical;
         private final Ast.ClassDecl accessClass;
@@ -9664,7 +9665,17 @@ public final class OresEvalRootNode extends RootNode {
             Slot slot = lookupSlot(name);
             return slot == null ? null : slot.staticClassView;
         }
-        private Object lookup(String name) { Slot s=slots.get(name); return s!=null?s.value:parent==null?MISSING:parent.lookup(name); }
+        private Object lookup(String name) {
+            Slot slot = slots.get(name);
+            if (slot != null) {
+                if (slot.value == MOVED_TASK_CAPTURE) {
+                    throw new IllegalStateException(
+                            "binding '" + name + "' was moved into an eager Task");
+                }
+                return slot.value;
+            }
+            return parent == null ? MISSING : parent.lookup(name);
+        }
         private void assign(String name, Object value) {
             Slot slot = slots.get(name);
             if (slot != null) {
@@ -9686,34 +9697,81 @@ public final class OresEvalRootNode extends RootNode {
             return cp;
         }
 
-        private Env detachedSnapshot(
-                Set<String> referencedNames,
-                java.util.function.Function<Object, Object> copier) {
-            Objects.requireNonNull(referencedNames, "Task referenced names");
-            Objects.requireNonNull(copier, "task capture copier");
-            // Resolve a referenced identifier to the nearest lexical slot.
-            // A shadowed parent Future must not be copied merely because a
-            // child scope has a Copy value using the same identifier.
-            Set<String> unresolvedParents = new java.util.HashSet<>(referencedNames);
-            unresolvedParents.removeAll(slots.keySet());
+        private Env detachedTaskSnapshot(
+                Map<String, Ast.TaskCaptureTransfer> admissions) {
+            Objects.requireNonNull(admissions, "Task capture admissions");
+            preflightTaskCaptures(admissions);
+            return detachedTaskSnapshotUnchecked(admissions);
+        }
+
+        private void preflightTaskCaptures(
+                Map<String, Ast.TaskCaptureTransfer> admissions) {
+            for (Map.Entry<String, Ast.TaskCaptureTransfer> entry
+                    : admissions.entrySet()) {
+                if (entry.getValue() == null) {
+                    throw new IllegalStateException(
+                            "Task capture admission has no transfer mode for '"
+                                    + entry.getKey() + "'");
+                }
+                Slot source = lookupSlot(entry.getKey());
+                if (source == null || source.value == MISSING) {
+                    throw new IllegalStateException(
+                            "ownership-checked Task capture '"
+                                    + entry.getKey()
+                                    + "' has no initialized runtime binding");
+                }
+                if (source.value == MOVED_TASK_CAPTURE) {
+                    throw new IllegalStateException(
+                            "ownership-checked Task capture '"
+                                    + entry.getKey()
+                                    + "' was already moved");
+                }
+            }
+        }
+
+        private Env detachedTaskSnapshotUnchecked(
+                Map<String, Ast.TaskCaptureTransfer> admissions) {
+            LinkedHashMap<String, Ast.TaskCaptureTransfer> unresolvedParents =
+                    new LinkedHashMap<>(admissions);
+            for (String localName : slots.keySet()) {
+                unresolvedParents.remove(localName);
+            }
+
             Env cp = new Env(
-                    parent == null ? null : parent.detachedSnapshot(unresolvedParents, copier),
+                    parent == null
+                            ? null
+                            : parent.detachedTaskSnapshotUnchecked(
+                                    unresolvedParents),
                     descendantsNonLexical,
                     accessClass,
                     null,
                     lexicalModule);
+
             for (Map.Entry<String, Slot> entry : slots.entrySet()) {
-                if (!referencedNames.contains(entry.getKey())) continue;
+                Ast.TaskCaptureTransfer transfer =
+                        admissions.get(entry.getKey());
+                if (transfer == null) continue;
                 Slot source = entry.getValue();
+                Object captured = source.value;
+
+                // COPY types are statically proven immutable/synchronized
+                // handles. MOVE preserves the exact runtime object/authority
+                // identity and poisons the parent slot before the child can
+                // run. No recursive cloning is used for ownership transfer.
+                if (transfer == Ast.TaskCaptureTransfer.MOVE) {
+                    source.value = MOVED_TASK_CAPTURE;
+                }
+
                 cp.slots.put(
                         entry.getKey(),
                         new Slot(
-                                copier.apply(source.value),
+                                captured,
                                 source.kind,
                                 source.staticClassView));
             }
             return cp;
         }
+
         private boolean hasLiveMutexGuards() {
             Set<Object> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
             for (Slot slot : slots.values()) {
