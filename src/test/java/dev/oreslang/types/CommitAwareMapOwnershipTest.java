@@ -120,6 +120,52 @@ final class CommitAwareMapOwnershipTest {
     }
 
     @Test
+    void namedPutCanBindLinearPreviousValueAndStillRestoreCandidateOnRejection() {
+        String source = """
+                define class Payload as
+                end
+
+                pub fnc main(): void {
+                  val Map<string, Payload> values =
+                      new Map<string, Payload>();
+                  val Payload item = new Payload();
+
+                  try {
+                    val Option<Payload> previous =
+                        values.put("x", item);
+                  } catch (err) {
+                    val Payload recovered = item;
+                  }
+
+                  return;
+                }
+                """;
+
+        assertDoesNotThrow(
+                () -> OwnershipChecker.check(Parser.parse(source)));
+    }
+
+    @Test
+    void indexedMoveOnlyInsertionCannotInitializeAnotherBinding() {
+        String source = """
+                define class Payload as
+                end
+
+                pub fnc main(): void {
+                  val Map<string, Payload> values =
+                      new Map<string, Payload>();
+                  val Payload item = new Payload();
+                  val Payload alias = (values["x"] = item);
+                  return;
+                }
+                """;
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse(source)));
+    }
+
+    @Test
     void candidateIsStillMovedAfterTryBecauseCommitMayHaveSucceeded() {
         String source = """
                 define class Payload as
