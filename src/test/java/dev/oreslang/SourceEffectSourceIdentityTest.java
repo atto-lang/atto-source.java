@@ -30,7 +30,7 @@ final class SourceEffectSourceIdentityTest {
     }
 
     @Test void malformedUtf16DoesNotReceiveSourceIdentity() {
-        String malformed = "pub fnc result(): int { return 42; } // \uD800";
+        String malformed = "pub fnc result(): int { return 42; } // " + (char) 0xD800;
         assertThrows(IllegalArgumentException.class,
                 () -> SourceEffectAudit.inspect(malformed));
     }
