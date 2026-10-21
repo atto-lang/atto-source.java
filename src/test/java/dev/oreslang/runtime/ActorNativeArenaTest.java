@@ -88,7 +88,7 @@ final class ActorNativeArenaTest {
     @Test
     void sameLengthFieldTextUpdatesReuseNativeAllocation() {
         AtomicLong charged = new AtomicLong();
-        try (ActorNativeArena arena = arena(4096, charged)) {
+        try (ActorNativeArena arena = arena(40, charged)) {
             Map<String, Object> fields = arena.fields(List.of("value"), new Object());
             fields.put("value", "alfa");
             long allocated = arena.allocatedBytes();
