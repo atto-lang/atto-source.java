@@ -192,8 +192,12 @@ final class CpuTopologyTest {
         java.util.function.IntUnaryOperator cpuAt = lane -> targetCpus[lane];
 
         assertEquals(0, topology.preferredSlotForNuma(0, 0, 4, cpuAt));
-        assertEquals(1, topology.preferredSlotForNuma(0, 1, 4, cpuAt));
-        assertEquals(2, topology.preferredSlotForNuma(2, 1, 4, cpuAt));
+        int chosen = topology.preferredSlotForNuma(0, 1, 4, cpuAt);
+        assertTrue(chosen == 1 || chosen == 2);
+        assertEquals(chosen, topology.preferredSlotForNuma(0, 1, 4, cpuAt),
+                "same Task key retains a stable physical carrier preference");
+        int other = topology.preferredSlotForNuma(2, 1, 4, cpuAt);
+        assertTrue(other == 1 || other == 2);
         assertEquals(0, topology.preferredSlotForNuma(0, 55, 4, cpuAt));
         assertEquals(3, topology.preferredSlotForNuma(-1, -1, 4, cpuAt));
         assertEquals(3, CpuTopology.empty().preferredSlotForNuma(
@@ -233,6 +237,67 @@ final class CpuTopologyTest {
         assertEquals(0, topology.preferredSlotForNuma(0, 55, 8192, targets));
         assertEquals(64, probes.get(),
                 "missing NUMA node must not scan all 8192 carriers");
+    }
+
+    @Test
+    void stableNumaPlacementDoesNotHotspotTheFirstLocalSlot() {
+        CpuTopology topology = CpuTopology.of(
+                new CpuTopology.Location(100, -1, 0),
+                new CpuTopology.Location(101, -1, 1));
+        int[] hits = new int[8];
+        // Most hashed starting slots target NUMA 1. The old first-match
+        // search collapsed all those keys onto NUMA 0 slot zero.
+        java.util.function.IntUnaryOperator cpuAt = slot -> slot < 8 ? 100 : 101;
+        for (int key = 0; key < 4096; key++) {
+            int selected = topology.preferredSlotForNuma(key, 0, 64, cpuAt);
+            assertTrue(selected >= 0 && selected < 8);
+            assertEquals(selected, topology.preferredSlotForNuma(key, 0, 64, cpuAt));
+            hits[selected]++;
+        }
+        for (int count : hits) {
+            assertTrue(count > 300 && count < 800,
+                    "stable NUMA keys should use all local workers, not one boundary");
+        }
+    }
+
+    @Test
+    void cpuPreferenceRanksExactCoreAboveCacheAndNumaWithBoundedProbes() {
+        CpuTopology topology = CpuTopology.of(
+                new CpuTopology.Location(20, 7, 0, 3, 0),
+                new CpuTopology.Location(21, 7, 0, 3, 0),
+                new CpuTopology.Location(22, 8, 0, 3, 0),
+                new CpuTopology.Location(23, 7, 1, 3, 1),
+                new CpuTopology.Location(24, 7, 0, 3, 1),
+                new CpuTopology.Location(30, 7, 0, 3, 0));
+        int[] cpus = {22, 21, 20, 23, 24};
+        java.util.function.IntUnaryOperator cpuAt = slot -> cpus[slot];
+        assertEquals(2, topology.preferredSlotForCpu(0, 20, cpus.length, cpuAt),
+                "a same-core target beats same LLC");
+        int cachePeer = topology.preferredSlotForCpu(0, 30, cpus.length, cpuAt);
+        assertTrue(cachePeer == 1 || cachePeer == 2,
+                "same package and cache beats merely same NUMA");
+        assertEquals(0, topology.preferredSlotForCpu(0, CpuTopology.UNKNOWN,
+                cpus.length, cpuAt));
+        assertEquals(3, CpuTopology.empty().preferredSlotForCpu(
+                3, 30, cpus.length, cpuAt),
+                "unknown topology must preserve hashed fallback");
+        assertThrows(IllegalArgumentException.class,
+                () -> topology.preferredSlotForCpu(0, -2, 3, cpuAt));
+        assertThrows(IllegalArgumentException.class,
+                () -> topology.preferredSlotForCpu(0, 3, 0, cpuAt));
+
+        var probes = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.function.IntUnaryOperator count = slot -> {
+            if (probes.incrementAndGet() > 64) {
+                throw new AssertionError("unbounded CPU locality scan");
+            }
+            return slot == 63 ? 20 : 23;
+        };
+        assertEquals(63, topology.preferredSlotForCpu(0, 20, 8192, count));
+        assertEquals(64, probes.get());
+        probes.set(0);
+        assertEquals(0, topology.preferredSlotForCpu(0, 20, 8193, count));
+        assertEquals(0, probes.get());
     }
 
     @Test
