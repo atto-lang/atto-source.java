@@ -103,18 +103,15 @@ public final class ScopedTaskReadRuntime {
     }
 
     private static Lease register(AllocationKey key) {
-        AtomicInteger readers = READERS.compute(key, (ignored, current) -> {
-            AtomicInteger counter = current == null
-                    ? new AtomicInteger()
-                    : current;
-            int next = counter.incrementAndGet();
-            if (next <= 0) {
+        Integer readers = READERS.compute(key, (ignored, current) -> {
+            int count = current == null ? 0 : current;
+            if (count == Integer.MAX_VALUE) {
                 throw new IllegalStateException(
                         "scoped Task READ reader count overflow");
             }
-            return counter;
+            return count + 1;
         });
-        if (readers == null || readers.get() <= 0) {
+        if (readers == null || readers <= 0) {
             throw new IllegalStateException(
                     "scoped Task READ registration failed");
         }
@@ -143,16 +140,12 @@ public final class ScopedTaskReadRuntime {
                         "scoped Task READ lease retired more than once at " + edge);
             }
             READERS.compute(key, (ignored, counter) -> {
-                if (counter == null) {
+                if (counter == null || counter <= 0) {
                     throw new IllegalStateException(
-                            "scoped Task READ ledger entry missing at " + edge);
+                            "scoped Task READ ledger entry missing/corrupt at " + edge);
                 }
-                int remaining = counter.decrementAndGet();
-                if (remaining < 0) {
-                    throw new IllegalStateException(
-                            "scoped Task READ reader count underflow");
-                }
-                return remaining == 0 ? null : counter;
+                int remaining = counter - 1;
+                return remaining == 0 ? null : remaining;
             });
         }
     }
