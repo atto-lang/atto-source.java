@@ -52,6 +52,106 @@ public final class OresEvalRootNode extends RootNode {
     public static final String INVOKE_PUBLIC_COMMAND = "__ores_internal_invoke_public__";
     public static final String REGISTER_IMPORT_COMMAND = "__ores_internal_register_import__";
 
+    private static final Set<Class<?>> TRUSTED_ASYNC_LIST_CLASSES =
+            trustedAsyncListClasses();
+    private static final Set<Class<?>> TRUSTED_ASYNC_SET_CLASSES =
+            trustedAsyncSetClasses();
+    private static final Set<Class<?>> TRUSTED_ASYNC_MAP_CLASSES =
+            trustedAsyncMapClasses();
+
+    private static Set<Class<?>> trustedAsyncListClasses() {
+        Set<Class<?>> classes = new java.util.HashSet<>();
+        classes.add(ArrayList.class);
+        classes.add(java.util.Arrays.asList(new Object[0]).getClass());
+        classes.add(List.of().getClass());
+        classes.add(List.of(1).getClass());
+        classes.add(List.of(1, 2, 3).getClass());
+        classes.add(java.util.Collections.emptyList().getClass());
+        classes.add(java.util.Collections.singletonList(1).getClass());
+        classes.add(java.util.Collections.nCopies(1, 1).getClass());
+        classes.add(java.util.Collections.unmodifiableList(new ArrayList<>()).getClass());
+        return Set.copyOf(classes);
+    }
+
+    private static Set<Class<?>> trustedAsyncSetClasses() {
+        Set<Class<?>> classes = new java.util.HashSet<>();
+        classes.add(java.util.HashSet.class);
+        classes.add(LinkedHashSet.class);
+        classes.add(Set.of().getClass());
+        classes.add(Set.of(1).getClass());
+        classes.add(Set.of(1, 2, 3).getClass());
+        classes.add(java.util.Collections.emptySet().getClass());
+        classes.add(java.util.Collections.singleton(1).getClass());
+        classes.add(java.util.Collections.unmodifiableSet(new LinkedHashSet<>()).getClass());
+        return Set.copyOf(classes);
+    }
+
+    private static Set<Class<?>> trustedAsyncMapClasses() {
+        Set<Class<?>> classes = new java.util.HashSet<>();
+        classes.add(HashMap.class);
+        classes.add(LinkedHashMap.class);
+        classes.add(Map.of().getClass());
+        classes.add(Map.of(1, 1).getClass());
+        classes.add(Map.of(1, 1, 2, 2).getClass());
+        classes.add(java.util.Collections.emptyMap().getClass());
+        classes.add(java.util.Collections.singletonMap(1, 1).getClass());
+        classes.add(java.util.Collections.unmodifiableMap(new LinkedHashMap<>()).getClass());
+        return Set.copyOf(classes);
+    }
+
+    static boolean isTrustedAsyncScalar(Object value) {
+        if (value == null
+                || value instanceof String
+                || value instanceof Boolean
+                || value instanceof Character
+                || value instanceof Byte
+                || value instanceof Short
+                || value instanceof Integer
+                || value instanceof Long
+                || value instanceof Float
+                || value instanceof Double
+                || value instanceof java.util.UUID
+                || value instanceof Complex
+                || value instanceof OptionUnwrapError) {
+            return true;
+        }
+        if (value.getClass() == java.math.BigInteger.class
+                || value.getClass() == java.math.BigDecimal.class) {
+            return true;
+        }
+        if (value instanceof Enum<?> e) {
+            Class<?> declaring = e.getDeclaringClass();
+            return declaring.getClassLoader() == OresEvalRootNode.class.getClassLoader()
+                    && declaring.getName().startsWith("dev.oreslang.");
+        }
+        return false;
+    }
+
+    static void requireTrustedAsyncCollectionCarrier(Object value) {
+        if (value instanceof List<?>
+                && !(value instanceof OresTuple)
+                && !TRUSTED_ASYNC_LIST_CLASSES.contains(value.getClass())) {
+            throw new IllegalArgumentException(
+                    "value of type " + value.getClass().getName()
+                            + " cannot cross an async task boundary; untrusted host List implementations are opaque");
+        }
+        if (value instanceof Set<?>
+                && !TRUSTED_ASYNC_SET_CLASSES.contains(value.getClass())) {
+            throw new IllegalArgumentException(
+                    "value of type " + value.getClass().getName()
+                            + " cannot cross an async task boundary; untrusted host Set implementations are opaque");
+        }
+        if (value instanceof Map<?, ?>
+                && !(value instanceof MutableStructValue)
+                && !(value instanceof ReadonlyRecordValue)
+                && !(value instanceof ActorRuntime.FrozenGuestMap)
+                && !TRUSTED_ASYNC_MAP_CLASSES.contains(value.getClass())) {
+            throw new IllegalArgumentException(
+                    "value of type " + value.getClass().getName()
+                            + " cannot cross an async task boundary; untrusted host Map implementations are opaque");
+        }
+    }
+
     private final Ast.Program program;
     private final String codeUnitId;
     private volatile Evaluator evaluator;
@@ -5325,22 +5425,7 @@ public final class OresEvalRootNode extends RootNode {
         private Object detachAsyncValue(
                 Object value,
                 IdentityHashMap<Object, Boolean> visiting) {
-            if (value == null
-                    || value instanceof String
-                    || value instanceof Boolean
-                    || value instanceof Character
-                    || value instanceof Byte
-                    || value instanceof Short
-                    || value instanceof Integer
-                    || value instanceof Long
-                    || value instanceof Float
-                    || value instanceof Double
-                    || value instanceof java.math.BigInteger
-                    || value instanceof java.math.BigDecimal
-                    || value instanceof Enum<?>
-                    || value instanceof java.util.UUID
-                    || value instanceof Complex
-                    || value instanceof OptionUnwrapError) {
+            if (isTrustedAsyncScalar(value)) {
                 return value;
             }
 
@@ -5393,11 +5478,13 @@ public final class OresEvalRootNode extends RootNode {
                     return new OresTuple(copy);
                 }
                 if (value instanceof List<?> list) {
+                    requireTrustedAsyncCollectionCarrier(value);
                     ArrayList<Object> copy = new ArrayList<>(list.size());
                     for (Object item : list) copy.add(detachAsyncValue(item, visiting));
                     return copy;
                 }
                 if (value instanceof Map<?, ?> map) {
+                    requireTrustedAsyncCollectionCarrier(value);
                     LinkedHashMap<Object, Object> copy = new LinkedHashMap<>();
                     for (Map.Entry<?, ?> entry : map.entrySet()) {
                         copy.put(
@@ -5407,6 +5494,7 @@ public final class OresEvalRootNode extends RootNode {
                     return copy;
                 }
                 if (value instanceof Set<?> set) {
+                    requireTrustedAsyncCollectionCarrier(value);
                     LinkedHashSet<Object> copy = new LinkedHashSet<>();
                     for (Object item : set) copy.add(detachAsyncValue(item, visiting));
                     return copy;
