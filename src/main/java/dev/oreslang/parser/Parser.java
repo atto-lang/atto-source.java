@@ -3343,6 +3343,10 @@ public final class Parser {
     }
 
     private Ast.Expr parseRuntimeExpression() {
+        // Explicit mutable-borrow syntax is 'rt mut borrow expr'. The
+        // qualifier precedes the operation so no parser branch can
+        // accidentally treat it as a mutable assignment to the operand.
+        boolean mutableBorrow = match(MUT);
         Token operation;
         if (match(YIELD)) {
             operation = previous(); // compatibility spelling: rt yield
@@ -3351,6 +3355,9 @@ public final class Parser {
         }
 
         String name = operation.lexeme();
+        if (mutableBorrow && !name.equals("borrow")) {
+            throw error(operation, "rt mut is only supported with 'borrow'");
+        }
         if (operation.type() == YIELD || name.equals("yield") || name.equals("cooperate")) {
             if (match(LPAREN)) {
                 if (!check(RPAREN)) {
@@ -3369,9 +3376,15 @@ public final class Parser {
                             + "'; supported operations are cooperate, copy, take, borrow, share, and fail");
         }
 
-        // Mutable borrows use the same ownership checks as the legacy spelling.
-        if (name.equals("borrow") && match(MUT)) {
+        if (mutableBorrow) {
+            // Lower to the existing exclusive-loan AST node. Only one
+            // canonical spelling is admitted; type/ownership checks remain
+            // identical to the established mutable borrow representation.
             return new Ast.UnaryExpr("&mut", parseUnary());
+        }
+        if (name.equals("borrow") && match(MUT)) {
+            throw error(previous(),
+                    "legacy 'rt borrow mut' is invalid; use 'rt mut borrow'");
         }
         Ast.Expr argument;
         if (match(LPAREN)) {
