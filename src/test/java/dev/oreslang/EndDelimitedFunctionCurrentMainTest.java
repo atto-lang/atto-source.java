@@ -148,6 +148,20 @@ final class EndDelimitedFunctionCurrentMainTest {
     }
 
     @Test
+    void completeLiteralBorrowAndStructuralReturnTypesPrecedeOptionalSeparator() {
+        assertDoesNotThrow(() -> Parser.parse(
+                "fnc literal() -> \"ok value\" :: return \"ok value\"; end"));
+        assertDoesNotThrow(() -> Parser.parse(
+                "fnc borrowed() -> &mut Thing :: return value; end"));
+        assertDoesNotThrow(() -> Parser.parse(
+                "fnc borrowed_words() -> borrow mut Thing :: return value; end"));
+        assertDoesNotThrow(() -> Parser.parse(
+                "fnc record_shape() -> {foo: int, bar: string} :: return value; end"));
+        assertDoesNotThrow(() -> Parser.parse(
+                "fnc struct_shape() -> struct {foo: int} :: return value; end"));
+    }
+
+    @Test
     void completeHigherOrderReturnTypePrecedesOptionalBodySeparator() {
         assertDoesNotThrow(() -> Parser.parse("""
                 fnc callback() -> () => void as
