@@ -194,7 +194,9 @@ public final class TreeShaker {
 
         private boolean containsLambda(Ast.Expr expression) {
             if (expression == null) return false;
-            if (expression instanceof Ast.LambdaExpr || expression instanceof Ast.TaskExpr) return true;
+            if (expression instanceof Ast.LambdaExpr
+                    || expression instanceof Ast.TaskExpr
+                    || expression instanceof Ast.CpuRegionExpr) return true;
             if (expression instanceof Ast.TypeTestExpr test) return containsLambda(test.value());
             if (expression instanceof Ast.PatternTestExpr test) return containsLambda(test.value());
             if (expression instanceof Ast.CastExpr cast) return containsLambda(cast.value());
