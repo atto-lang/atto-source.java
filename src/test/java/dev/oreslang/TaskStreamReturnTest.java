@@ -67,6 +67,27 @@ final class TaskStreamReturnTest {
     }
 
     @Test
+    void producerTaskCanShareSynchronizedHandleWithConsumer() throws Exception {
+        assertEquals("23", execute("""
+                pub routine main(): void {
+                    val Stream<int> output = Stream.new<int>(2);
+                    let Task<void> producer = cpu task {
+                        val bool first = try writech(output, 2);
+                        val bool second = try writech(output, 3);
+                        return;
+                    };
+                    await producer;
+                    let Option<int> first = try readch(output);
+                    let Option<int> second = try readch(output);
+                    stdio.stdout.write(first.unwrap());
+                    stdio.stdout.write(second.unwrap());
+                    output.close();
+                    return;
+                }
+                """));
+    }
+
+    @Test
     void streamPayloadCannotBeFutureOrIteratorCapability() {
         for (String type : new String[] {"Future<int>", "Iterator<int>"}) {
             String source = "pub routine main(): void { "
