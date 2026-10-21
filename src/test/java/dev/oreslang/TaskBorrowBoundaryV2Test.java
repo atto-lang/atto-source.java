@@ -372,6 +372,33 @@ final class TaskBorrowBoundaryV2Test {
     }
 
     @Test
+    void recursiveNominalGenericCaptureCannotHideNestedNonSendAuthority() throws Exception {
+        // A declaration-identity-only recursion short-circuit is unsound:
+        // Recursive<T> can recur as Recursive<Rc<T>> with stronger restrictions.
+        // Until nominal instances have a complete coinductive Send proof,
+        // both recursive and changing-generic cycles must fail closed.
+        var program = Parser.parse("""
+                define class Recursive<T> as
+                  pub let Recursive<Rc<T>> next;
+                end
+                pub fnc main(): void { return; }
+                """);
+        var constructor = OwnershipChecker.class.getDeclaredConstructor(
+                dev.oreslang.ast.Ast.Program.class, java.util.Map.class);
+        constructor.setAccessible(true);
+        var checker = constructor.newInstance(program, java.util.Map.of());
+        var gate = OwnershipChecker.class.getDeclaredMethod(
+                "forbiddenTaskCapability", dev.oreslang.ast.Ast.TypeRef.class);
+        gate.setAccessible(true);
+
+        var candidate = new dev.oreslang.ast.Ast.TypeRef(
+                "Recursive", java.util.List.of(
+                        dev.oreslang.ast.Ast.TypeRef.simple("int")), false);
+        assertTrue((Boolean) gate.invoke(checker, candidate),
+                "recursion cannot be treated as an automatically Send-safe capture");
+    }
+
+    @Test
     void unknownNominalTaskCaptureCannotAssumeSendWithoutLinkedLayout() throws Exception {
         // The missing class definition is NOT proof that a host/external
         // object is transferable. Only verified owned types can move across
