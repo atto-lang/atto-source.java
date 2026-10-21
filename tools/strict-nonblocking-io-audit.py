@@ -41,6 +41,12 @@ RULES = (
     Rule("src/main/java/dev/oreslang/nodes/OresEvalRootNode.java",
          r"context\.http\(\)\.listen\s*\(",
          "stdlib must not expose the legacy JDK HttpServer transport"),
+    Rule("src/main/java/dev/oreslang/nodes/OresEvalRootNode.java",
+         r"\bserver\.(?:accept|shutdown)\s*\(",
+         "stdlib must not drive legacy blocking HTTP server transport"),
+    Rule("src/main/java/dev/oreslang/nodes/OresEvalRootNode.java",
+         r"\bexchange\.(?:bodyText|readChunk|writeBytes|respondBytes|respond|start|write|finish|abort)\s*\(",
+         "stdlib must not drive legacy blocking HTTP exchange transport"),
 )
 
 def strip_line_comment(line: str) -> str:
