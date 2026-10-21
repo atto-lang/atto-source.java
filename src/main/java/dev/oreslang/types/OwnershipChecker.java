@@ -2671,7 +2671,29 @@ public final class OwnershipChecker {
         Set<String> blockLocals = new HashSet<>(locals);
         for (Ast.Stmt stmt : statements) {
             if (stmt instanceof Ast.BindingStmt binding) {
-                scanExpr(binding.initializer(), blockLocals, outer, recursiveBinding, captures, false);
+                // A lambda binding is recursive: its own name is local inside
+                // the lambda initializer. Without this shadowing rule, a Task
+                // can falsely capture/move an unrelated outer value with the
+                // same name.
+                if (binding.initializer() instanceof Ast.LambdaExpr) {
+                    Set<String> initializerLocals = new HashSet<>(blockLocals);
+                    initializerLocals.add(binding.name());
+                    scanExpr(
+                            binding.initializer(),
+                            initializerLocals,
+                            outer,
+                            recursiveBinding,
+                            captures,
+                            false);
+                } else {
+                    scanExpr(
+                            binding.initializer(),
+                            blockLocals,
+                            outer,
+                            recursiveBinding,
+                            captures,
+                            false);
+                }
                 blockLocals.add(binding.name());
             } else if (stmt instanceof Ast.DestructureStmt destructure) {
                 scanExpr(destructure.initializer(), blockLocals, outer, recursiveBinding, captures, false);
@@ -2768,9 +2790,14 @@ public final class OwnershipChecker {
                 // condition, update and body.
                 Set<String> loop = new HashSet<>(blockLocals);
                 if (s.initializer() instanceof Ast.BindingStmt binding) {
+                    Set<String> initializerLocals = blockLocals;
+                    if (binding.initializer() instanceof Ast.LambdaExpr) {
+                        initializerLocals = new HashSet<>(blockLocals);
+                        initializerLocals.add(binding.name());
+                    }
                     scanExpr(
                             binding.initializer(),
-                            blockLocals,
+                            initializerLocals,
                             outer,
                             recursiveBinding,
                             captures,
