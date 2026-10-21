@@ -141,7 +141,12 @@ parent user turn is blocked, active-failure vs queued-tail accounting, and a
 
 The source-level OTP supervisor remains an integration gate, but its restart
 semantics are constrained now so implementation cannot silently inherit common
-actor-system failure modes:
+actor-system failure modes. The JVM integration additionally exposes a
+host-side `SupervisorRestartPolicy` + `SupervisorRestartLimiter` primitive for
+deterministic intensity/backoff decisions over retained generation-bound
+CONTROL events. It does **not** auto-restart actors or claim source-level
+supervisor callback lowering:
+
 
 - **No unbounded crash loops.** Every supervisor has an explicit
   `maxRestarts` within a monotonic `restartWindow`. Exhaustion escalates one
