@@ -3842,6 +3842,12 @@ public final class OwnershipChecker {
         }
 
         String name = type.name();
+        Ast.ClassDecl declaredClass = findClass(name);
+        if (declaredClass != null && java.util.Set.of(
+                "ActorRef", "Future", "Channel", "SharedMutex",
+                "Option", "Result", "IteratorResult",
+                "Array", "List", "Vector", "Slice",
+                "FixedArray", "FixedList").contains(name)) return none;
 
         if (switch (name) {
             case "i8", "i16", "i32", "i64",
@@ -3936,8 +3942,6 @@ public final class OwnershipChecker {
 
         // User classes with builtin-looking names follow their declared class
         // layout where TypeChecker permits that shadowing (Box/Arc/etc.).
-        Ast.ClassDecl declaredClass = findClass(name);
-
         AutoTraitRules.Kind wrapperKind = switch (name) {
             case "Box" -> AutoTraitRules.Kind.BOX;
             case "Arc" -> AutoTraitRules.Kind.ARC;
