@@ -670,6 +670,33 @@ class PrivateCiV3Test(unittest.TestCase):
             if method == "POST" and route.endswith("/git/commits"):
                 commit_payload.update(payload)
                 return {"sha": COMMIT}
+            if method == "GET" and route.endswith("/git/commits/" + COMMIT):
+                return {
+                    "sha": COMMIT,
+                    "tree": {"sha": ROOT_TREE},
+                    "parents": [{"sha": BASE}],
+                }
+            if method == "GET" and route.endswith(
+                    "/git/trees/" + ROOT_TREE + "?recursive=1"):
+                receipt_sha = v3.git_blob_sha(blob_payloads[-1])
+                return {
+                    "sha": ROOT_TREE,
+                    "truncated": False,
+                    "tree": [
+                        {
+                            "path": v3.legacy.PREFIX,
+                            "mode": "040000",
+                            "type": "tree",
+                            "sha": SOURCE_TREE,
+                        },
+                        {
+                            "path": v3.RECEIPT_PATH,
+                            "mode": "100644",
+                            "type": "blob",
+                            "sha": receipt_sha,
+                        },
+                    ],
+                }
             if method == "POST" and route.endswith("/git/refs"):
                 return {"ref": payload["ref"], "object": {"sha": payload["sha"]}}
             raise AssertionError((method, route))
@@ -720,6 +747,16 @@ class PrivateCiV3Test(unittest.TestCase):
                     return_value=SOURCE_TREE,
                 ),
                 patch.object(v3, "authorize_write") as authorize_write,
+                patch.object(
+                    v3, "_gh_ref_request",
+                    return_value=type(
+                        "Result", (), {
+                            "returncode": 1,
+                            "stderr": "HTTP 404",
+                            "stdout": "",
+                        },
+                    )(),
+                ),
                 patch.object(v3, "require_exact_ref") as require_exact_ref,
                 patch.object(v3.legacy, "gh_api", side_effect=api),
             ):
