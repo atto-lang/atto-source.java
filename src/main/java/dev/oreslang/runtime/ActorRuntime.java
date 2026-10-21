@@ -252,6 +252,29 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * One-shot host supervisor capability authorizing a replacement only after
+     * the exact failed incarnation has crossed its physical DONE barrier.
+     */
+    public final class SupervisorRestartPermit {
+        private final SupervisorControlEvent terminalEvent;
+        private final AtomicBoolean consumed = new AtomicBoolean();
+
+        private SupervisorRestartPermit(SupervisorControlEvent terminalEvent) {
+            this.terminalEvent = Objects.requireNonNull(terminalEvent, "terminalEvent");
+        }
+
+        public ActorId failedActorId() { return terminalEvent.actorId(); }
+        public long failedGeneration() { return terminalEvent.generation(); }
+        public ActorKind failedActorKind() { return terminalEvent.actorKind(); }
+        public Optional<ActorId> failedParentId() { return terminalEvent.parentId(); }
+        public ActorFailure.Kind failureKind() { return terminalEvent.failureKind(); }
+
+        private boolean ownedBy(ActorRuntime runtime) {
+            return ActorRuntime.this == runtime;
+        }
+    }
+
+    /**
      * Bounded immutable supervisor diagnostic. This is NOT actor mail and is
      * never required for lifecycle correctness; a full observer queue may drop
      * records rather than delaying actor finalization.
@@ -1226,6 +1249,83 @@ public final class ActorRuntime implements AutoCloseable {
             return Optional.of(pending.event);
         }
         return Optional.empty();
+    }
+
+    /**
+     * Atomically consume a failed incarnation's retained supervisor CONTROL
+     * event as restart authority, but only after physical/public lifecycle
+     * retirement is complete. This is intentionally non-blocking.
+     */
+    public Optional<SupervisorRestartPermit> tryAcquireSupervisorRestartPermit(
+            ActorId actorId,
+            long generation) {
+        requireSupervisorContext("acquire an actor supervisor restart permit");
+        Objects.requireNonNull(actorId, "actorId");
+        if (generation <= 0) {
+            throw new IllegalArgumentException(
+                    "supervisor restart generation must be positive");
+        }
+
+        for (;;) {
+            PendingSupervisorControl pending = pendingSupervisorControls.get(actorId);
+            if (pending == null || pending.event.generation() != generation) {
+                return Optional.empty();
+            }
+            ActorCell<?> cell = pending.cell;
+            if (!cell.lifecycleObserversRetired.get()
+                    || cell.ref.doneFuture.runtimeTerminalStateOrNull() == null
+                    || !cell.actorSlotReleasePending.get()) {
+                return Optional.empty();
+            }
+
+            SupervisorRestartPermit permit =
+                    new SupervisorRestartPermit(pending.event);
+            if (!pendingSupervisorControls.remove(actorId, pending)) {
+                continue;
+            }
+            if (!cell.supervisorControlPending.compareAndSet(true, false)) {
+                lifecyclePublicationFailures.incrementAndGet();
+                pendingSupervisorControls.putIfAbsent(actorId, pending);
+                return Optional.empty();
+            }
+            supervisorControlAcknowledged.incrementAndGet();
+            tryReleaseActorSlot(cell);
+            return Optional.of(permit);
+        }
+    }
+
+    /**
+     * Spawn one fresh incarnation under an exact, one-shot restart permit.
+     */
+    public <M> ActorRef<M> restartAfterFailure(
+            SupervisorRestartPermit permit,
+            ActorKind kind,
+            IsolatePolicy policy,
+            BehaviorFactory<M> behaviorFactory) {
+        requireSupervisorContext("restart a failed actor incarnation");
+        Objects.requireNonNull(permit, "permit");
+        Objects.requireNonNull(kind, "kind");
+        Objects.requireNonNull(policy, "policy");
+        Objects.requireNonNull(behaviorFactory, "behaviorFactory");
+        if (!permit.ownedBy(this)) {
+            throw new IllegalArgumentException(
+                    "restart permit belongs to a different ActorRuntime");
+        }
+        if (!permit.consumed.compareAndSet(false, true)) {
+            throw new IllegalStateException("supervisor restart permit already consumed");
+        }
+        try {
+            ActorRef<M> replacement = spawn(kind, policy, behaviorFactory);
+            if (replacement.generation() <= permit.failedGeneration()) {
+                try { replacement.cancel(); } catch (RuntimeException ignored) { }
+                throw new IllegalStateException(
+                        "replacement generation did not advance past failed incarnation");
+            }
+            return replacement;
+        } catch (RuntimeException | Error failure) {
+            permit.consumed.set(false);
+            throw failure;
+        }
     }
 
     /**
@@ -3711,7 +3811,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final Map<ActorId, ActorRef<?>> managedWorkers = new ConcurrentHashMap<>();
         // Guarded by authorityLock: a stop-admitted actor cannot be released
         // into a different supervisor before stop actually dispatches.
-        private final Set<ActorId> stoppingWorkers = new java.util.HashSet<>();
+        private final Set<ActorRef<?>> stoppingWorkers = new java.util.HashSet<>();
         private final AtomicBoolean groupClosed = new AtomicBoolean();
         // Runtime-owned, non-cancellable observer; actor retirement may outlive
         // group admission revocation and clearing managed-worker references.
@@ -3780,8 +3880,11 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (authorityLock) {
                 requireOpen();
                 ActorCell<?> cell = actors.get(worker.id());
-                if (cell == null || cell.stopped.get() || stoppingWorkers.contains(worker.id())) {
-                    throw new IllegalStateException("cannot manage a stopped, stopping or unknown worker");
+                if (cell == null || cell.ref != worker
+                        || cell.ref.generation() != worker.generation()
+                        || cell.stopped.get() || stoppingWorkers.contains(worker)) {
+                    throw new IllegalStateException(
+                            "cannot manage a stale, stopped, stopping or unknown worker");
                 }
                 if (!managedWorkers.containsKey(worker.id()) && managedWorkers.size() >= memberLimit) {
                     throw new IllegalStateException(
@@ -3856,14 +3959,20 @@ public final class ActorRuntime implements AutoCloseable {
             }
             synchronized (authorityLock) {
                 requireOpen();
-                if (stoppingWorkers.contains(worker.id())) {
+                if (stoppingWorkers.contains(worker)) {
                     throw new IllegalStateException(
                             "cannot transfer worker after stop/cancellation was admitted");
                 }
-                if (!managedWorkers.containsKey(worker.id())) return false;
+                ActorRef<?> managed = managedWorkers.get(worker.id());
+                if (managed == null) return false;
+                if (managed != worker || managed.generation() != worker.generation()) {
+                    throw new IllegalStateException("cannot transfer a stale worker incarnation");
+                }
                 ActorCell<?> cell = actors.get(worker.id());
-                if (cell == null || cell.stopped.get()) {
-                    throw new IllegalStateException("cannot transfer a stopped worker");
+                if (cell == null || cell.ref != worker
+                        || cell.ref.generation() != worker.generation()
+                        || cell.stopped.get()) {
+                    throw new IllegalStateException("cannot transfer a stale or stopped worker");
                 }
                 if (!cell.managedByGroup.compareAndSet(id, null)) {
                     throw new IllegalStateException("worker lifecycle owner changed unexpectedly");
@@ -3921,7 +4030,7 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (authorityLock) {
                 requireOpen();
                 stopRequests = List.copyOf(managedWorkers.values());
-                for (ActorRef<?> ref : stopRequests) stoppingWorkers.add(ref.id());
+                for (ActorRef<?> ref : stopRequests) stoppingWorkers.add(ref);
             }
             // Do not acquire actor lifecycle locks while group authority is
             // held: actor finalization takes its own lock before group cleanup.
@@ -3937,7 +4046,7 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (authorityLock) {
                 requireOpen();
                 stopRequests = List.copyOf(managedWorkers.values());
-                for (ActorRef<?> ref : stopRequests) stoppingWorkers.add(ref.id());
+                for (ActorRef<?> ref : stopRequests) stoppingWorkers.add(ref);
             }
             int cancelled = 0;
             for (ActorRef<?> ref : stopRequests) {
@@ -4191,14 +4300,15 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        private void actorTerminated(ActorId actorId) {
-            // Fenced against concurrent worker admission so stale actor refs
-            // cannot be resurrected after finalization.
+        private void actorTerminated(ActorRef<?> actor) {
+            Objects.requireNonNull(actor, "actor");
+            // Exact-ref removal prevents a stale terminal callback from
+            // mutating a future incarnation if ActorId reuse is ever enabled.
             synchronized (authorityLock) {
-                managedWorkers.remove(actorId);
-                stoppingWorkers.remove(actorId);
+                managedWorkers.remove(actor.id(), actor);
+                stoppingWorkers.remove(actor);
             }
-            leaveId(actorId);
+            leaveId(actor.id());
             if (Objects.equals(creator, actorId)) closeFromRuntime();
         }
 
@@ -6007,7 +6117,7 @@ public final class ActorRuntime implements AutoCloseable {
         for (ActorGroupId groupId : affected) {
             try {
                 ActorGroup group = actorGroups.get(groupId);
-                if (group != null) group.actorTerminated(cell.ref.id());
+                if (group != null) group.actorTerminated(cell.ref);
             } catch (Throwable failure) {
                 firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
             }
