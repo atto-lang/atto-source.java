@@ -1112,9 +1112,12 @@ public final class OresEvalRootNode extends RootNode {
             private Env pendingLoopGuardEnv;
             private final Ast.FunctionDecl function;
             private final Ast.MethodDecl method;
-            private final OresObject receiver;
+            // Initial-call facades only. Once rebound into Env on first resume,
+            // clear these Java roots so suspended actor tasks do not pin guest
+            // payloads outside the actor arena.
+            private OresObject receiver;
             private final List<Ast.Stmt> blockBody;
-            private final List<?> arguments;
+            private List<?> arguments;
             private Env initialBlockEnv;
 
             private SourceValueCont awaitingContinuation;
@@ -1245,6 +1248,13 @@ public final class OresEvalRootNode extends RootNode {
                                 function != null
                                         ? "function " + function.name()
                                         : "method " + method.name());
+
+                        // Env slots are now the sole guest-value roots. In an
+                        // actor they lower supported scalars/native references
+                        // into ActorNativeArena.ValueCell storage. Do not keep a
+                        // duplicate Java argument list or receiver across await.
+                        arguments = List.of();
+                        receiver = null;
                     }
 
                     List<Ast.Stmt> body =
