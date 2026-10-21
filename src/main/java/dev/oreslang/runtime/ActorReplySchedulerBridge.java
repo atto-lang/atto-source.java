@@ -61,7 +61,12 @@ public final class ActorReplySchedulerBridge {
             ScheduledExecutorService timer) {
         Objects.requireNonNull(destination, "destination");
         Objects.requireNonNull(runtime, "runtime");
+        Objects.requireNonNull(registry, "registry");
         Objects.requireNonNull(caller, "caller");
+        Objects.requireNonNull(callee, "callee");
+        Objects.requireNonNull(responseType, "response type");
+        Objects.requireNonNull(timeout, "request timeout");
+        Objects.requireNonNull(timer, "request timer");
         if (caller.role() != GenerationalReplyRegistry.Role.ACTOR) {
             throw new SecurityException("a supervisor application endpoint cannot impersonate an actor caller");
         }
@@ -81,8 +86,16 @@ public final class ActorReplySchedulerBridge {
         }
         GenerationalReplyRegistry.Ticket<R> ticket =
                 registry.reserve(caller, callee, responseType);
-        OresFuture<R> future = bindCurrentActor(
-                runtime, ticket, caller, timeout, timer, (value, failure) -> { });
+        final OresFuture<R> future;
+        try {
+            future = bindCurrentActor(
+                    runtime, ticket, caller, timeout, timer, (value, failure) -> { });
+        } catch (RuntimeException | Error bindingFailure) {
+            // No caller Future was returned: release admission immediately.
+            // This includes actor continuation-queue registration failures.
+            ticket.failAdmission(caller, bindingFailure);
+            throw bindingFailure;
+        }
         if (ticket.state() != GenerationalReplyRegistry.State.PENDING) {
             return future;
         }
@@ -112,8 +125,14 @@ public final class ActorReplySchedulerBridge {
             Duration timeout,
             ScheduledExecutorService timer) {
         Objects.requireNonNull(runtime, "runtime");
+        Objects.requireNonNull(registry, "registry");
         Objects.requireNonNull(supervisorApplication, "supervisor application endpoint");
         Objects.requireNonNull(supervisorServiceActor, "supervisor application service");
+        Objects.requireNonNull(callee, "callee");
+        Objects.requireNonNull(destination, "destination");
+        Objects.requireNonNull(responseType, "response type");
+        Objects.requireNonNull(timeout, "request timeout");
+        Objects.requireNonNull(timer, "request timer");
         if (supervisorApplication.role() !=
                 GenerationalReplyRegistry.Role.SUPERVISOR_APPLICATION) {
             throw new SecurityException("supervisor application role required");
@@ -131,8 +150,14 @@ public final class ActorReplySchedulerBridge {
         }
         GenerationalReplyRegistry.Ticket<R> ticket =
                 registry.reserve(supervisorApplication, callee, responseType);
-        OresFuture<R> future = bindCurrentActor(
-                runtime, ticket, supervisorApplication, timeout, timer, (value, failure) -> { });
+        final OresFuture<R> future;
+        try {
+            future = bindCurrentActor(
+                    runtime, ticket, supervisorApplication, timeout, timer, (value, failure) -> { });
+        } catch (RuntimeException | Error bindingFailure) {
+            ticket.failAdmission(supervisorApplication, bindingFailure);
+            throw bindingFailure;
+        }
         if (ticket.state() != GenerationalReplyRegistry.State.PENDING) return future;
         try {
             runtime.sendCall(destination, message, ticket, callee);
