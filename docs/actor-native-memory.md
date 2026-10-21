@@ -163,11 +163,16 @@ handles even after the OS reuses a descriptor. Failed delivery and shutdown must
 close exactly once or explicitly roll back ownership before publication.
 
 `NativeHttp.Exchange` already implements generation-bound `move_to`/claim and
-actor-exit cleanup. Native object fields can retain its checked control-plane
-handle ID; transport state remains runtime-managed. Access revalidates the
-generation and execution owner. Its existing restriction on untrusted transfers
-is preserved. TCP/FD movement still needs a corresponding checked handle path;
-this patch does not assert that those adapters are implemented.
+actor-exit cleanup. It is a `NativeCapability`, deliberately distinct from
+`NativeValue`: native object/local slots store a monotonic arena-local opaque
+handle ID, never an actor-memory offset or OS descriptor. The arena keeps the
+control-plane facade only while at least one native slot references that handle;
+overwriting the last slot retires the registry entry. Access revalidates the
+generation and execution owner, and generic mailbox/shared-data paths reject
+`NativeCapability` just like actor-native memory aliases. Its existing
+restriction on untrusted transfers is preserved. TCP/FD movement still needs a
+corresponding checked handle path; this patch does not assert that those adapters
+are implemented.
 
 ## Guest code, surrounding code, and FFI authority
 
