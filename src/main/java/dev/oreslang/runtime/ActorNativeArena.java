@@ -464,9 +464,12 @@ public final class ActorNativeArena implements AutoCloseable {
             if (address < 0 || issued == null || issued.longValue() != address) {
                 throw new SecurityException("actor-native reference was not issued by this arena");
             }
-            // The payload is already native; keep only its non-authoritative
-            // facade in Env until captured-scope/drop lifetime lowering exists.
-            return false;
+            // The referent's authoritative payload is already native. Persist
+            // only its arena-issued actor-relative offset in this lexical slot;
+            // storeValue()/overwrite retirement maintain the facade registry.
+            // This keeps actor object/list locals native across await/cooperate
+            // without granting authority to an arbitrary Java reference.
+            return true;
         }
         return false;
     }
