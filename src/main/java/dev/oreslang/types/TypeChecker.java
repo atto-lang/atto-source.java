@@ -235,6 +235,7 @@ public final class TypeChecker {
                     }
                     localNames.add(klass.name());
                 }
+                else if (declaration instanceof Ast.KernelDecl kernel) localNames.add(kernel.name());
                 else if (declaration instanceof Ast.InterfaceDecl iface) localNames.add(iface.name());
                 else if (declaration instanceof Ast.FieldDecl field) localNames.add(field.name());
                 else if (declaration instanceof Ast.TypeAliasDecl alias) {
@@ -283,6 +284,11 @@ public final class TypeChecker {
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {
                     putQualified(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias, "type alias");
                     typeAliasOwners.put(alias, module.name());
+                } else if (decl instanceof Ast.KernelDecl kernel) {
+                    throw new IllegalArgumentException(
+                            "kernel '" + kernel.name()
+                                    + "' requires HAT device effect/ownership checking and backend lowering; "
+                                    + "parser/IR support does not imply executable admission");
                 }
             }
         }
