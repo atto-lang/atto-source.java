@@ -19,16 +19,26 @@ final class TypedExceptionalEffectAdmissionTest {
     }
 
     @Test
-    void unsupportedEffectsRejectBeforeSourceExecution() {
-        for (String effect : List.of("throw", "raise", "panic", "recover")) {
-            String source = "pub fnc main(): int { " + effect + " 1; return 0; }";
-            IllegalArgumentException failure = assertThrows(
-                    IllegalArgumentException.class, () -> Parser.parse(source), effect);
-            assertTrue(failure.getMessage().contains("typed exceptional effect '" + effect + "'"),
-                    failure::getMessage);
-            assertTrue(failure.getMessage().contains("not yet enabled"),
-                    failure::getMessage);
-        }
+    void exceptionalControlStatementsParseIntoDedicatedNodes() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                fnc throws_value(): int {
+                  throw new Error("ordinary");
+                }
+                fnc raises_value(): int {
+                  raise new Error("escape");
+                }
+                fnc panics_value(): int {
+                  panic new Error("invariant");
+                }
+                fnc recovers_value(): void {
+                  recover {
+                    raises_value();
+                  } catch (signal) {
+                    stdio.stdout.write(signal.kind);
+                  }
+                  return;
+                }
+                """));
     }
 
     @Test

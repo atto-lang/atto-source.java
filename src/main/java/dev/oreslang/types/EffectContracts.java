@@ -80,6 +80,9 @@ public final class EffectContracts {
                 changed = false;
                 for (Callable def : definitions.values()) {
                     EnumSet<Effect> acc = enumCopy(def.direct());
+                    // A trap boundary consumes the callable's own ordinary
+                    // THROW effect as well as THROW effects from its callees.
+                    if (def.trapsThrow()) acc.remove(Effect.THROW);
                     for (Call call : def.calls()) {
                         Set<Effect> from = results.get(call.target());
                         if (from == null) {
