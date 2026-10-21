@@ -103,6 +103,7 @@ public final class ActorNativeArena implements AutoCloseable {
         private ByteBuffer memory;
         private final int capacity;
         private final Runnable release;
+        private int readLeases;
         private Region(ByteBuffer memory, int capacity, Runnable release) {
             this.memory = memory;
             this.capacity = capacity;
@@ -122,14 +123,84 @@ public final class ActorNativeArena implements AutoCloseable {
             synchronized (ActorNativeArena.this) { return checked().getLong(offset); }
         }
         public void writeLong(int offset, long value) {
-            synchronized (ActorNativeArena.this) { checked().putLong(offset, value); }
+            synchronized (ActorNativeArena.this) { requireWritable().putLong(offset, value); }
         }
         public double readDouble(int offset) {
             synchronized (ActorNativeArena.this) { return checked().getDouble(offset); }
         }
         public void writeDouble(int offset, double value) {
-            synchronized (ActorNativeArena.this) { checked().putDouble(offset, value); }
+            synchronized (ActorNativeArena.this) { requireWritable().putDouble(offset, value); }
         }
+
+        private ByteBuffer requireWritable() {
+            ByteBuffer bytes = checked();
+            if (readLeases != 0) throw new IllegalStateException("native region has active read-only leases");
+            return bytes;
+        }
+
+        /**
+         * Temporarily freezes writes to the entire region. The returned slice
+         * does not expose a raw address or bypass the actor's ownership check.
+         * The lease must be closed before the region can be explicitly released.
+         */
+        public ReadOnlyLease leaseReadOnly(int offset, int length) {
+            synchronized (ActorNativeArena.this) {
+                checked();
+                if (offset < 0 || length < 0 || offset > capacity || length > capacity - offset) {
+                    throw new IndexOutOfBoundsException("read-only lease outside native region");
+                }
+                readLeases = Math.addExact(readLeases, 1);
+                return new ReadOnlyLease(offset, length);
+            }
+        }
+
+        public final class ReadOnlyLease implements AutoCloseable {
+            private final int base;
+            private final int length;
+            private boolean released;
+
+            private ReadOnlyLease(int base, int length) {
+                this.base = base;
+                this.length = length;
+            }
+
+            public int length() { return length; }
+
+            private ByteBuffer readChecked(int relative, int width) {
+                if (released) throw new IllegalStateException("read-only lease is closed");
+                ByteBuffer bytes = Region.this.checked();
+                if (relative < 0 || relative > length || width > length - relative) {
+                    throw new IndexOutOfBoundsException("read outside leased native slice");
+                }
+                return bytes;
+            }
+
+            public long readLong(int relative) {
+                synchronized (ActorNativeArena.this) {
+                    return readChecked(relative, Long.BYTES).getLong(base + relative);
+                }
+            }
+
+            public double readDouble(int relative) {
+                synchronized (ActorNativeArena.this) {
+                    return readChecked(relative, Double.BYTES).getDouble(base + relative);
+                }
+            }
+
+            @Override public void close() {
+                synchronized (ActorNativeArena.this) {
+                    if (released) return;
+                    // Physical actor finalization revokes all native storage;
+                    // outstanding Java facades must not resurrect it.
+                    if (!ActorNativeArena.this.closed) {
+                        checkAccess();
+                        readLeases--;
+                    }
+                    released = true;
+                }
+            }
+        }
+
         private void revoke() {
             if (memory == null) return;
             releaseNative(memory);
@@ -140,6 +211,9 @@ public final class ActorNativeArena implements AutoCloseable {
         @Override public void close() {
             synchronized (ActorNativeArena.this) {
                 checkAccess();
+                if (readLeases != 0) {
+                    throw new IllegalStateException("cannot release a leased native region");
+                }
                 revoke();
                 regions.remove(this);
             }
@@ -197,10 +271,19 @@ public final class ActorNativeArena implements AutoCloseable {
 
     private long storeText(String value) {
         long address = allocate(Math.multiplyExact(value.length(), 2));
+        overwriteText(address, value);
+        return address;
+    }
+
+    private void overwriteText(long address, String value) {
         ByteBuffer data = slab(address);
         int start = offset(address);
         for (int i = 0; i < value.length(); i++) data.putChar(start + i * 2, value.charAt(i));
-        return address;
+    }
+
+    private static boolean isTextTag(long tag) {
+        return tag == STRING || tag == BIG_INTEGER || tag == BIG_DECIMAL
+                || tag == PROCESS_SYMBOL || tag == STABLE_SYMBOL;
     }
 
     private String loadText(long address, int length) {
@@ -270,7 +353,20 @@ public final class ActorNativeArena implements AutoCloseable {
             throw new IllegalArgumentException("actor field requires native value lowering for "
                     + value.getClass().getName() + "; managed guest payload fallback is disabled");
         }
-        if (text != null) { bits = storeText(text); length = text.length(); }
+        if (text != null) {
+            // In-place replacement is safe: text payloads are never aliased
+            // between field slots, and generic reads materialize detached values.
+            // Preserve the old value if the new payload requires allocation
+            // and the actor's native budget is exhausted.
+            long oldTag = read(slot, 0);
+            if (isTextTag(oldTag) && read(slot, 16) == text.length()) {
+                bits = read(slot, 8);
+                overwriteText(bits, text);
+            } else {
+                bits = storeText(text);
+            }
+            length = text.length();
+        }
         // Publish only after validation/allocation succeeds; failed assignment
         // leaves the old slot intact.
         write(slot, 8, bits);
