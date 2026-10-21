@@ -88,6 +88,26 @@ final class TaskStreamReturnTest {
     }
 
     @Test
+    void taskAndFunctionCannotSubstituteChannelForStream() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub routine main(): void {
+                            let Task<Stream<int>> future = cpu task {
+                                return Channel.new<int>(1);
+                            };
+                            return;
+                        }
+                        """));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        fnc wrong(): Stream<int> {
+                            return Channel.new<int>(1);
+                        }
+                        pub routine main(): void { return; }
+                        """));
+    }
+
+    @Test
     void streamPayloadCannotBeFutureOrIteratorCapability() {
         for (String type : new String[] {"Future<int>", "Iterator<int>"}) {
             String source = "pub routine main(): void { "
