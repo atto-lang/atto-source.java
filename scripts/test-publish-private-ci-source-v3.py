@@ -321,17 +321,17 @@ class PrivateCiV3Test(unittest.TestCase):
                 )
             opened.assert_not_called()
 
-    def test_authorize_write_rejects_reviewed_repository_id_change(self):
+    def test_authorize_write_rejects_reviewed_policy_change(self):
         carrier = contract()
         with (
             patch.object(
                 v3.legacy,
-                "checked_policy_approval",
-                return_value=(POLICY, carrier["repository_id"] + 1),
+                "checked_policy_fingerprint",
+                return_value=b"x" * len(POLICY),
             ),
             patch.object(v3.legacy, "checked_repo") as checked_repo,
         ):
-            with self.assertRaisesRegex(v3.Denied, "repository identity changed"):
+            with self.assertRaisesRegex(v3.Denied, "approval policy changed"):
                 v3.authorize_write(
                     Path("."), "trusted/ci", POLICY, carrier)
             checked_repo.assert_not_called()
@@ -1158,9 +1158,9 @@ class PrivateCiV3Test(unittest.TestCase):
             (source / "hello.ores").write_text("synthetic\n")
             with (
                 patch.object(v3.legacy, "require_preflight"),
-                patch.object(v3.legacy, "checked_policy_fingerprint", return_value=POLICY),
+                patch.object(v3.legacy, "checked_policy_approval", return_value=(POLICY, carrier["repository_id"])),
                 patch.object(
-                    v3.legacy, "verify_protected_origin", return_value=PROTECTED
+                    v3, "authorized_main_sha", return_value=PROTECTED
                 ) as verify_origin,
                 patch.object(v3, "checked_control_plane") as control_plane,
                 patch.object(v3, "checked_contract", return_value=carrier) as checked_contract,
@@ -1313,10 +1313,10 @@ class PrivateCiV3Test(unittest.TestCase):
             (source / "hello.ores").write_text("synthetic\n")
             with (
                 patch.object(v3.legacy, "require_preflight"),
-                patch.object(v3.legacy, "checked_policy_fingerprint", return_value=POLICY),
+                patch.object(v3.legacy, "checked_policy_approval", return_value=(POLICY, carrier["repository_id"])),
                 patch.object(
-                    v3.legacy,
-                    "verify_protected_origin",
+                    v3,
+                    "authorized_main_sha",
                     side_effect=[PROTECTED, PROTECTED, v3.Denied("protection revoked")],
                 ),
                 patch.object(v3, "checked_control_plane"),
@@ -1386,8 +1386,8 @@ class PrivateCiV3Test(unittest.TestCase):
             verify_calls = [v3.SOURCE_REPOSITORY_ID, v3.SOURCE_REPOSITORY_ID, v3.Denied("PR head moved")]
             with (
                 patch.object(v3.legacy, "require_preflight"),
-                patch.object(v3.legacy, "checked_policy_fingerprint", return_value=POLICY),
-                patch.object(v3.legacy, "verify_protected_origin", return_value=PROTECTED),
+                patch.object(v3.legacy, "checked_policy_approval", return_value=(POLICY, carrier["repository_id"])),
+                patch.object(v3, "authorized_main_sha", return_value=PROTECTED),
                 patch.object(v3, "checked_control_plane"),
                 patch.object(v3, "checked_contract", return_value=carrier),
                 patch.object(v3, "verify_source_pr", side_effect=verify_calls),
@@ -1457,8 +1457,8 @@ class PrivateCiV3Test(unittest.TestCase):
             (source / "hello.ores").write_text("synthetic\n")
             with (
                 patch.object(v3.legacy, "require_preflight"),
-                patch.object(v3.legacy, "checked_policy_fingerprint", return_value=POLICY),
-                patch.object(v3.legacy, "verify_protected_origin", return_value=PROTECTED),
+                patch.object(v3.legacy, "checked_policy_approval", return_value=(POLICY, carrier["repository_id"])),
+                patch.object(v3, "authorized_main_sha", return_value=PROTECTED),
                 patch.object(v3, "checked_control_plane"),
                 patch.object(v3, "checked_contract", return_value=carrier),
                 patch.object(v3, "verify_source_pr", return_value=v3.SOURCE_REPOSITORY_ID),
@@ -1531,8 +1531,8 @@ class PrivateCiV3Test(unittest.TestCase):
             (source / "hello.ores").write_text("synthetic\n")
             with (
                 patch.object(v3.legacy, "require_preflight"),
-                patch.object(v3.legacy, "checked_policy_fingerprint", return_value=POLICY),
-                patch.object(v3.legacy, "verify_protected_origin", return_value=PROTECTED),
+                patch.object(v3.legacy, "checked_policy_approval", return_value=(POLICY, carrier["repository_id"])),
+                patch.object(v3, "authorized_main_sha", return_value=PROTECTED),
                 patch.object(v3, "checked_control_plane"),
                 patch.object(v3, "checked_contract", return_value=carrier),
                 patch.object(v3, "verify_source_pr", return_value=v3.SOURCE_REPOSITORY_ID),
@@ -1634,11 +1634,11 @@ class PrivateCiV3Test(unittest.TestCase):
                     with (
                         patch.object(v3.legacy, "require_preflight"),
                         patch.object(
-                            v3.legacy, "checked_policy_fingerprint",
-                            return_value=POLICY,
+                            v3.legacy, "checked_policy_approval",
+                            return_value=(POLICY, carrier["repository_id"]),
                         ),
                         patch.object(
-                            v3.legacy, "verify_protected_origin",
+                            v3, "authorized_main_sha",
                             return_value=PROTECTED,
                         ),
                         patch.object(v3, "checked_control_plane"),
