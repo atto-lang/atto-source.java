@@ -118,6 +118,34 @@ final class TypedMapClosedSurfaceLanguageTest {
     }
 
     @Test
+    void outerCatchKeepsInnerCommittedRecoverableMapMoveConservative() {
+        String source = """
+                define class Payload as
+                end
+
+                pub fnc main(): void {
+                  val Map<string, Payload> values =
+                      new Map<string, Payload>();
+                  val Payload item = new Payload();
+
+                  try {
+                    try {
+                      values["x"] = item;
+                    } catch (inner) {
+                    }
+                  } catch (outer) {
+                    rt take item;
+                  }
+                  return;
+                }
+                """;
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse(source)));
+    }
+
+    @Test
     void stringAndNominalSymbolKeysExecuteWithoutCoercion() {
         String source = """
                 pub fnc main(): void {
