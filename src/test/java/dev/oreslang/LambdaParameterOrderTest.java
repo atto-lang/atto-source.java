@@ -109,6 +109,26 @@ final class LambdaParameterOrderTest {
     }
 
     @Test
+    void unionTypePipesAreDistinctFromTheClosingLambdaPipe() {
+        for (String params : new String[] {
+                "candidate: string | int",
+                "string | int candidate"
+        }) {
+            Ast.Program ast = assertDoesNotThrow(() -> Parser.parse("""
+                    pub routine main(): void {
+                      const fnc typed = |%s| -> { return candidate; };
+                      return;
+                    }
+                    """.formatted(params)));
+            Ast.FunctionDecl main = (Ast.FunctionDecl) ast.modules().getFirst().declarations().getFirst();
+            Ast.BindingStmt binding = (Ast.BindingStmt) main.body().getFirst();
+            Ast.LambdaExpr lambda = (Ast.LambdaExpr) binding.initializer();
+            assertEquals("candidate", lambda.parameters().getFirst().name());
+            assertNotNull(lambda.parameters().getFirst().type());
+        }
+    }
+
+    @Test
     void shorthandRequiresLambdaAndImmutableBinding() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 pub routine main(): void { const fnc bad = 42; return; }
