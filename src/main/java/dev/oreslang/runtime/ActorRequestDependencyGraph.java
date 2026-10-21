@@ -30,6 +30,7 @@ final class ActorRequestDependencyGraph {
     }
 
     static final class CyclicRequestException extends IllegalStateException {
+        private static final long serialVersionUID = 1L;
         CyclicRequestException(String message) { super(message); }
     }
 
