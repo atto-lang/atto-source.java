@@ -457,48 +457,60 @@ public final class OresKeyedMap<K, V> {
     }
 
     private PutAttempt<V> tryPutOwnedUnderMonitor(K key, V value) {
+        final Lookup<V> previous;
+        final long addedBytes;
         try {
             rejectReentrantMutation();
             checkKey(key);
             checkValueDomain(value);
 
-            long addedBytes = 0L;
-            if (!entries.containsKey(key)) {
+            boolean replacing = entries.containsKey(key);
+            previous = replacing
+                    ? Lookup.present(entries.get(key))
+                    : Lookup.missing();
+
+            if (!replacing) {
                 if (entries.size() >= MAX_ENTRIES) {
                     throw new IllegalArgumentException(
                             "typed Map exceeds maximum key count");
                 }
-                addedBytes = wireKeyBytes(key);
-                if (addedBytes
+                long candidateBytes = wireKeyBytes(key);
+                if (candidateBytes
                         > MAX_KEY_SET_WIRE_BYTES - storedKeyWireBytes) {
                     throw new IllegalArgumentException(
                             "typed Map exceeds aggregate key byte budget");
                 }
+                addedBytes = candidateBytes;
+            } else {
+                addedBytes = 0L;
             }
 
-            // Stage every allocation/hash-table expansion before ownership can
-            // be considered committed. Key domains are restricted to immutable
-            // String/Symbol values, so staging cannot dispatch guest equality
-            // or hash callbacks.
-            LinkedHashMap<K, V> staged = new LinkedHashMap<>(entries);
-            V previous = staged.put(key, value);
-
-            // Compiler-owned policy hooks are the final fallible preflight.
+            // Compiler-owned policy hooks are the final recoverable preflight.
             // The live mapping is still untouched if they reject.
             runEntryValidator(key, value);
-
-            // Publication is a pair of field/counter assignments after every
-            // expected RuntimeException-producing operation has completed.
-            // Fatal VM Errors are outside guest recovery/ownership semantics.
-            entries = staged;
-            storedKeyWireBytes += addedBytes;
-            return PutAttempt.committed(
-                    previous == null
-                            ? Lookup.missing()
-                            : Lookup.present(previous));
         } catch (RuntimeException rejected) {
             return PutAttempt.rejected(value, rejected);
         }
+
+        /*
+         * Commit point. All expected guest-recoverable RuntimeExceptions have
+         * already happened. String/Symbol keys have runtime-owned hash/equality
+         * behavior, so this publication cannot dispatch guest callbacks. A VM
+         * fatal Error such as OutOfMemoryError is deliberately outside the
+         * recoverable ownership contract.
+         */
+        V publishedPrevious = entries.put(key, value);
+        if (previous.present()) {
+            if (publishedPrevious != previous.value()) {
+                throw new IllegalStateException(
+                        "typed Map changed between ownership preflight and commit");
+            }
+        } else if (publishedPrevious != null) {
+            throw new IllegalStateException(
+                    "typed Map unexpectedly replaced a value during commit");
+        }
+        storedKeyWireBytes += addedBytes;
+        return PutAttempt.committed(previous);
     }
 
     /**
