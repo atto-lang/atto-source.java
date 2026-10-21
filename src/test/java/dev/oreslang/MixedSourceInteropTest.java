@@ -5,6 +5,9 @@ import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.LinkedProgramRunner;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.PolyglotException;
+import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -171,6 +174,29 @@ final class MixedSourceInteropTest {
                         new ByteArrayOutputStream(),
                         new ByteArrayOutputStream()));
         assertTrue(denied.getMessage().contains("guest/user source cannot contain Java/FFI source islands"));
+    }
+
+    @Test
+    void directPolyglotGuestCannotAcquireJavaInteropFromHostPermissions() {
+        Source source = Source.newBuilder(
+                        OresLanguage.ID,
+                        """
+                        import class ArrayList as JArrayList from "java:java.util.ArrayList";
+                        pub fnc main(): void { return; }
+                        """,
+                        "direct-guest-java-import.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .buildLiteral();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(true)
+                .build()) {
+            PolyglotException denied = assertThrows(
+                    PolyglotException.class,
+                    () -> context.eval(source));
+            assertTrue(denied.getMessage().contains("guest Oreslang cannot import Java/FFI host classes"),
+                    denied.getMessage());
+        }
     }
 
     private static IsolatePolicy legacyHostInteropPolicy() {
