@@ -633,6 +633,7 @@ public final class TreeShaker {
                         klass.genericParameters(),
                         klass.parents(),
                         klass.interfaces(),
+                        klass.staticContracts(),
                         fields,
                         constructor,
                         methods);
@@ -1156,6 +1157,7 @@ public final class TreeShaker {
             if (declaration instanceof Ast.ClassDecl klass) {
                 for (Ast.TypeRef parent : klass.parents()) scanType(parent);
                 for (Ast.TypeRef iface : klass.interfaces()) scanType(iface);
+                for (Ast.TypeRef contract : klass.staticContracts()) scanType(contract);
                 for (Ast.FieldDecl field : klass.fields()) {
                     scanType(field.type());
                     scanExpression(module, field.initializer(), Set.of("self"));
