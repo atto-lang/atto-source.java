@@ -326,8 +326,8 @@ public final class Parser {
             if (match(ACTOR, ISOACTOR)) {
                 return parseDefinedActorClass(previous(), modifiers, annotations);
             }
-            if (modifiers.shared || modifiers.untrusted) {
-                throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
+            if (modifiers.shared || modifiers.untrusted || modifiers.supervisor) {
+                throw error(previous(), "'shared'/'untrusted'/'supervisor' must modify an actor declaration");
             }
             if (match(CONTRACT)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
@@ -416,8 +416,8 @@ public final class Parser {
                 Ast.ActorKind actorKind = resolveActorKind(actorToken, isolated, modifiers);
                 return parseFunction(annotations, modifiers, Ast.CallableKind.FNC, actorKind);
             }
-            if (modifiers.shared || modifiers.untrusted) {
-                throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
+            if (modifiers.shared || modifiers.untrusted || modifiers.supervisor) {
+                throw error(previous(), "'shared'/'untrusted'/'supervisor' must modify an actor declaration");
             }
             return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
         }
@@ -433,8 +433,8 @@ public final class Parser {
                 Ast.ActorKind actorKind = resolveActorKind(actorToken, isolated, modifiers);
                 return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE, actorKind);
             }
-            if (modifiers.shared || modifiers.untrusted) {
-                throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
+            if (modifiers.shared || modifiers.untrusted || modifiers.supervisor) {
+                throw error(previous(), "'shared'/'untrusted'/'supervisor' must modify an actor declaration");
             }
             return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
         }
