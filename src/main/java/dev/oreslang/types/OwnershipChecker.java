@@ -2294,6 +2294,15 @@ public final class OwnershipChecker {
                 boolean structuralLoan = param.structural() && !param.type().isBorrow();
                 VarState loanOwner = (structuralLoan || param.type().isBorrow())
                         ? invocationLoanRoot(argument, scope) : null;
+                if (structuralLoan && argument instanceof Ast.NameExpr name) {
+                    VarState binding = scope.lookup(name.name());
+                    if (binding != null && binding.borrowSource != null) {
+                        // A retained borrow is a lexical *view* of its source.
+                        // Never lock only the view binding and leave the owner
+                        // free to move in a later argument.
+                        loanOwner = ownershipRoot(binding.borrowSource);
+                    }
+                }
                 boolean mutable = param.type().isBorrow() && param.type().mutableBorrow();
                 if (loanOwner != null) {
                     Boolean previous = invocationLoans.get(loanOwner);
