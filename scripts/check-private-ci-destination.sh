@@ -39,7 +39,7 @@ metadata="$(GH_HOST=github.com gh api "repos/$target" --jq '[.full_name, .visibi
   fail 'API returned empty or multiline repository metadata'
 IFS=$'\t' read -r actual_name visibility private_flag actual_id <<< "$metadata"
 # Reject Bash IFS whitespace collapsing missing TSV values into valid fields.
-tab="$(printf '\\t')"
+tab="$(printf '\t')"
 [[ "$metadata" == "$actual_name$tab$visibility$tab$private_flag$tab$actual_id" ]] ||
   fail 'API metadata must have exactly four nonempty fields'
 [[ "${actual_name,,}" == "${target,,}" ]] || fail 'API identity differs from requested destination'
