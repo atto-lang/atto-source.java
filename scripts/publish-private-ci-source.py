@@ -531,6 +531,9 @@ def publish(repository, source, branch, trusted_root, source_commit):
     verify_protected_origin(
         repository, approved_policy, approved_repository_id
     )
+    # P0 incident closure is live authorization, not a one-time preflight fact.
+    # Recheck immediately before private bytes are read from the checkout.
+    require_resolved_blocking_incidents()
     trusted = trusted_root.resolve(strict=True)
     checked_source = source.resolve(strict=True)
     try:
@@ -548,6 +551,9 @@ def publish(repository, source, branch, trusted_root, source_commit):
     base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
     base_tree = valid_sha(base_commit.get("tree", {}).get("sha"))
     def authorize_write():
+        # Any incident reopening revokes publication authority for subsequent
+        # Git object/ref writes. Recheck before every non-idempotent API call.
+        require_resolved_blocking_incidents()
         if checked_policy_approval(trusted_root, repository) != (
                 approved_policy, approved_repository_id):
             raise Denied("private CI destination approval policy changed during transfer")
@@ -595,6 +601,9 @@ def publish(repository, source, branch, trusted_root, source_commit):
     verify_protected_origin(
         repository, approved_policy, approved_repository_id
     )
+    # Protection/approval checks above may take time; revalidate every live
+    # authorization immediately before the executable source-bearing ref.
+    authorize_write()
     # CREATE a new CI ref, never UPDATE an existing branch, tag, or main.
     created = gh_api(f"repos/{repository}/git/refs", method="POST", payload={
         "ref": "refs/heads/" + branch, "sha": commit_sha
