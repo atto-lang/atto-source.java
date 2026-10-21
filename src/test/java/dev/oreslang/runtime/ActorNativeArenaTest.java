@@ -76,6 +76,39 @@ final class ActorNativeArenaTest {
     }
 
     @Test
+    void nativeReferenceRegistryRetainsOnlyCurrentlyReferencedFacades() {
+        AtomicLong charged = new AtomicLong();
+        Object marker = new Object();
+        try (ActorNativeArena arena = arena(16 * 1024, charged)) {
+            Map<String, Object> holder = arena.fields(List.of("left", "right"), marker);
+            Map<String, Object> child = arena.fields(List.of("value"), marker);
+
+            assertEquals(0, arena.nativeReferenceCount());
+            holder.put("left", child);
+            assertEquals(1, arena.nativeReferenceCount());
+            holder.put("right", child);
+            assertEquals(1, arena.nativeReferenceCount(),
+                    "registry cardinality is by native object identity, not slot count");
+
+            holder.put("left", null);
+            assertEquals(1, arena.nativeReferenceCount(),
+                    "one remaining native slot keeps the facade resolvable");
+            assertSame(child, holder.get("right"));
+
+            holder.put("right", null);
+            assertEquals(0, arena.nativeReferenceCount(),
+                    "last slot overwrite must release the strong reference registry entry");
+
+            // Provenance remains valid through the weak issued ledger while the
+            // caller still owns the facade, so it can be stored again safely.
+            holder.put("left", child);
+            assertEquals(1, arena.nativeReferenceCount());
+            assertSame(child, holder.get("left"));
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
     void nativeCapabilityHandlesAreOpaqueArenaLocalAndReferenceCounted() {
         AtomicLong charged = new AtomicLong();
         AtomicLong foreignCharged = new AtomicLong();
