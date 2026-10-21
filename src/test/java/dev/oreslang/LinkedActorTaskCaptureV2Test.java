@@ -100,6 +100,37 @@ final class LinkedActorTaskCaptureV2Test {
     }
 
     @Test
+    void mailboxCopyAndTaskSendAgreeOnRealActorVersusUnverifiedTarget()
+            throws Exception {
+        Ast.Program program = Parser.parse("""
+                define actor Worker as
+                  receive(ActorMail<int> mail): void { return; }
+                end
+                pub fnc main(): void { return; }
+                """);
+        var ctor = OwnershipChecker.class.getDeclaredConstructor(
+                Ast.Program.class, Map.class);
+        ctor.setAccessible(true);
+        var checker = ctor.newInstance(program, Map.of());
+        var copyGate = OwnershipChecker.class.getDeclaredMethod(
+                "isCopyType", Ast.TypeRef.class);
+        copyGate.setAccessible(true);
+        var sendGate = OwnershipChecker.class.getDeclaredMethod(
+                "forbiddenTaskCapability", Ast.TypeRef.class);
+        sendGate.setAccessible(true);
+
+        for (String target : List.of("Worker", "UnverifiedActor")) {
+            Ast.TypeRef handle = new Ast.TypeRef("ActorRef",
+                    List.of(Ast.TypeRef.simple(target)), false);
+            boolean valid = target.equals("Worker");
+            assertEquals(valid, copyGate.invoke(checker, handle),
+                    "ActorRef Copy must use verified actor provenance");
+            assertEquals(!valid, sendGate.invoke(checker, handle),
+                    "ActorRef Task Send must match checked mailbox provenance");
+        }
+    }
+
+    @Test
     void privateLinkedActorIsNotAnAuthorizedPublicImport() {
         Ast.Program program = source("actor");
         Map<String, Ast.ClassDecl> metadata =
