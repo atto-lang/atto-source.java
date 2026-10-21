@@ -1,0 +1,90 @@
+package dev.oreslang;
+
+import dev.oreslang.parser.Lexer;
+import dev.oreslang.parser.Parser;
+import dev.oreslang.parser.Token;
+import dev.oreslang.types.TypeChecker;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
+import org.junit.jupiter.api.Test;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+final class TemplateLiteralContractTest {
+    @Test
+    void quotesStayDataAndInterpolatedParametersExecute() throws Exception {
+        String program = """
+                fnc render(string bar, string star): string {
+                  return `${bar} is ${star}`;
+                }
+                pub fnc main(): void {
+                  const foo1 = "abc";
+                  const foo2 = "'abc'";
+                  const foo3 = '"abc"';
+                  const foo4 = `'"abc"'`;
+                  stdio.stdout.write(foo1 + "|" + foo2 + "|" + foo3 + "|" + foo4);
+                  stdio.stdout.write("|" + render("Mars", "bright"));
+                  return;
+                }
+                """;
+        assertEquals("abc|'abc'|\"abc\"|'\"abc\"'|Mars is bright", run(program));
+    }
+
+    @Test
+    void escapedDollarAndBacktickAreLiteralData() throws Exception {
+        String program = """
+                pub fnc main(): void {
+                  const word = "value";
+                  stdio.stdout.write(`pre${word}post`);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(`escaped \\${notInterpolated} and \\` and \\\\`);
+                  return;
+                }
+                """;
+        assertEquals("prevaluepost|escaped ${notInterpolated} and " + (char) 0x60 + " and \\", run(program));
+    }
+
+    @Test
+    void interpolationMustBeCompleteExpressionWithStringType() {
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("pub fnc main(): void { const bad = `${1; 2}`; return; }"));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("pub fnc main(): void { const bad = `${ }`; return; }"));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Lexer("const bad = `${x};").scan());
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(
+                        "pub fnc main(): void { const bad = `${5}`; return; }")));
+    }
+
+    @Test
+    void quotedBracesInsideInterpolationDoNotCloseIt() throws Exception {
+        String program = """
+                pub fnc main(): void {
+                  stdio.stdout.write(`${ "}" + "{" }`);
+                  return;
+                }
+                """;
+        assertEquals("}{", run(program));
+        var tokens = new Lexer("`${ \"}\" + \"{\" }`").scan();
+        assertEquals(Token.Type.TEMPLATE_LITERAL, tokens.getFirst().type());
+        assertEquals(Token.Type.EOF, tokens.get(1).type());
+    }
+
+    private static String run(String program) throws Exception {
+        TypeChecker.check(Parser.parse(program));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "template-contract.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+        return output.toString(StandardCharsets.UTF_8);
+    }
+}
