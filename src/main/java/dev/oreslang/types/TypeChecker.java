@@ -8317,8 +8317,7 @@ public final class TypeChecker {
                                     + "' must be constructorless and non-inheriting; "
                                     + "use a record/struct DTO or add an explicit future JSON constructor contract");
                 }
-                List<Ast.FieldDecl> instanceFields = klass.fields().stream()
-                        .filter(field -> !field.isStatic()).toList();
+                List<Ast.FieldDecl> instanceFields = klass.fields();
                 List<AnnotationExpander.FromJsonBinding> bindings =
                         AnnotationExpander.fromJsonBindings(klass);
                 if (bindings.size() != instanceFields.size()) {

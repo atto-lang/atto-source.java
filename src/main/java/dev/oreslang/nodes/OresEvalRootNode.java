@@ -5117,8 +5117,7 @@ public final class OresEvalRootNode extends RootNode {
                         "class '" + klass.name()
                                 + "' no longer satisfies its checked JSON construction contract");
             }
-            long instanceFields =
-                    klass.fields().stream().filter(field -> !field.isStatic()).count();
+            int instanceFields = klass.fields().size();
             if (AnnotationExpander.fromJsonBindings(klass).size()
                     != instanceFields) {
                 throw new IllegalStateException(
