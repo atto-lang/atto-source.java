@@ -1,22 +1,14 @@
 package dev.oreslang.runtime;
 
 /**
- * Narrow capability surface exposed to an ActorGroup Mailman.
+ * Narrow authority exposed to a mailman turn.
  *
- * CONTROL-carrier identity does not confer host/supervisor authority. Mailmen
- * may inspect their own group identity/member count and send through ActorRef
- * mailboxes; they do not receive ActorRuntime lifecycle/control capabilities.
- * Every operation requires an active CONTROL turn for the owning Mailman. For
- * synchronous Mailmen the context expires when receiveMail returns. A
- * CooperativeActorMailman may retain the context across suspension, but it is
- * inactive between resumptions and on Future/completion threads; only the next
- * runtime-scheduled CONTROL turn reactivates it. The capability must never be
- * forwarded outside that logical Mailman task.
+ * It can route messages into actor inboxes but cannot mutate actor state or
+ * obtain direct references to actor-owned memory.
  */
-public interface ActorGroupContext {
-    ActorRuntime.ActorGroupId groupId();
-
-    int memberCount();
+public interface ActorGroupContext<Out> {
+    ActorGroupId groupId();
+    int actorCount();
 
     <M> void send(ActorRuntime.ActorRef<M> target, M message);
 }
