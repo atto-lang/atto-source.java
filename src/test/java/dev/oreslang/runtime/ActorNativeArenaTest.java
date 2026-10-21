@@ -20,6 +20,8 @@ final class ActorNativeArenaTest {
         Object marker = new Object();
         try (ActorNativeArena arena = arena(1 << 20, charged)) {
             Map<String, Object> fields = arena.fields(List.of("value"), marker);
+            assertTrue(fields instanceof ActorNativeArena.NativeValue);
+            assertTrue(((ActorNativeArena.NativeValue) fields).nativeOffset() >= 0);
             for (Object value : List.of(true, (byte) 1, (short) 2, 3, Long.MAX_VALUE,
                     -0.0f, Double.NaN, '\ud800', "\ud800\u0000\udc00", "", new BigInteger("12345678901234567890"),
                     new BigDecimal("1.2300"), OresSymbol.process("ready"), marker)) {
@@ -53,6 +55,10 @@ final class ActorNativeArenaTest {
         right.put("next", left);
         assertSame(right, left.get("next"));
         assertSame(left, right.get("next"));
+        long leftOffset = ((ActorNativeArena.NativeValue) left).nativeOffset();
+        long rightOffset = ((ActorNativeArena.NativeValue) right).nativeOffset();
+        assertNotEquals(leftOffset, rightOffset, "distinct actor objects need distinct logical addresses");
+        assertTrue(leftOffset >= 0 && rightOffset >= 0);
         Map<String, Object> foreign = second.fields(List.of("next"), new Object());
         assertThrows(SecurityException.class, () -> left.put("next", foreign));
         first.close();
@@ -151,6 +157,42 @@ final class ActorNativeArenaTest {
         arena.close();
         assertThrows(IllegalStateException.class, () -> outstanding.readLong(0));
         outstanding.close();
+        assertEquals(0, charged.get());
+    }
+
+    @Test
+    void nativeObjectsRegionsAndLinearPagesShareOneNonRecycledActorOffsetSpace() {
+        AtomicLong charged = new AtomicLong();
+        Object marker = new Object();
+        try (ActorNativeArena arena = arena(128L * 1024, charged)) {
+            Map<String, Object> fields = arena.fields(List.of("left", "right"), marker);
+            long fieldsBase = ((ActorNativeArena.NativeValue) fields).nativeOffset();
+
+            var region = arena.region(32);
+            long regionBase = region.nativeOffset();
+
+            ActorLinearMemory memory = arena.linearMemory(1, 1);
+            long pageBase = memory.actorOffset(0);
+
+            assertTrue(fieldsBase >= 0);
+            assertTrue(regionBase >= 0);
+            assertTrue(pageBase >= 0);
+            assertNotEquals(fieldsBase, regionBase);
+            assertNotEquals(fieldsBase, pageBase);
+            assertNotEquals(regionBase, pageBase);
+
+            // Native object references now carry the canonical actor-relative
+            // offset instead of a Java-side reference-table ordinal.
+            Map<String, Object> child = arena.fields(List.of("value"), marker);
+            fields.put("left", child);
+            assertSame(child, fields.get("left"));
+
+            long retired = region.nativeOffset();
+            region.close();
+            var replacement = arena.region(32);
+            assertNotEquals(retired, replacement.nativeOffset(),
+                    "actor-relative addresses must not ABA-recycle within one actor lifetime");
+        }
         assertEquals(0, charged.get());
     }
 
