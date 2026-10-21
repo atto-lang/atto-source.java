@@ -115,7 +115,14 @@ public final class ActorNativeArena implements AutoCloseable {
 
     private static final int SLOT_BYTES = 24;
     private static final int TASK_FRAME_BYTES = 40;
+    private static final int LIST_HEADER_BYTES = 32;
+    private static final int LIST_CHUNK_SLOTS = 16;
+    private static final int LIST_CHUNK_HEADER_BYTES = Long.BYTES;
+    private static final int LIST_CHUNK_BYTES =
+            LIST_CHUNK_HEADER_BYTES + LIST_CHUNK_SLOTS * SLOT_BYTES;
     private static final long TASK_FRAME_MAGIC = 0x4f5245535441534bL; // "ORESTASK"
+    private static final long LIST_MAGIC = 0x4f5245534c495354L; // "ORESLIST"
+    private static final long NO_OFFSET = -1L;
     private static final int SLAB_BYTES = 4096;
     private static final long NULL = 0, UNINITIALIZED = 1, BOOLEAN = 2,
             BYTE = 3, SHORT = 4, INTEGER = 5, LONG = 6, FLOAT = 7, DOUBLE = 8,
@@ -185,6 +192,151 @@ public final class ActorNativeArena implements AutoCloseable {
         Long existing = issuedNativeOffsets.putIfAbsent(facade, issued);
         if (existing != null && !existing.equals(issued)) {
             throw new SecurityException("native facade attempted to change actor-relative address");
+        }
+    }
+
+    /**
+     * Actor-owned list storage foundation. Public collection policy remains in
+     * Oreslang stdlib; this class owns only bounded native element storage.
+     * Size and chunk links are authoritative native words. Element payloads use
+     * the same tagged slots/reference provenance as actor object fields.
+     */
+    public synchronized NativeList nativeList() {
+        checkAccess();
+        long header = allocate(LIST_HEADER_BYTES);
+        write(header, 0, LIST_MAGIC);
+        write(header, 8, 0L);
+        write(header, 16, NO_OFFSET);
+        write(header, 24, NO_OFFSET);
+        NativeList list = new NativeList(header);
+        issuedNativeOffsets.put(list, header);
+        return list;
+    }
+
+    public final class NativeList extends java.util.AbstractList<Object>
+            implements NativeValue {
+        private final long header;
+
+        private NativeList(long header) {
+            this.header = header;
+        }
+
+        @Override public ActorNativeArena nativeArena() { return ActorNativeArena.this; }
+
+        @Override public long nativeOffset() {
+            synchronized (ActorNativeArena.this) {
+                checkList();
+                return header;
+            }
+        }
+
+        @Override public int size() {
+            synchronized (ActorNativeArena.this) {
+                checkList();
+                return Math.toIntExact(read(header, 8));
+            }
+        }
+
+        @Override public Object get(int index) {
+            synchronized (ActorNativeArena.this) {
+                checkIndex(index);
+                return loadValue(elementSlot(index), null);
+            }
+        }
+
+        @Override public Object set(int index, Object value) {
+            synchronized (ActorNativeArena.this) {
+                checkIndex(index);
+                long slot = elementSlot(index);
+                Object previous = loadValueForOverwrite(slot, null);
+                storeValue(slot, value, null);
+                return previous;
+            }
+        }
+
+        @Override public void add(int index, Object value) {
+            synchronized (ActorNativeArena.this) {
+                checkList();
+                int currentSize = Math.toIntExact(read(header, 8));
+                if (index != currentSize) {
+                    throw new UnsupportedOperationException(
+                            "native actor List currently supports append insertion only");
+                }
+
+                int inChunk = currentSize % LIST_CHUNK_SLOTS;
+                long chunk = read(header, 24);
+                if (inChunk == 0) {
+                    long next = allocate(LIST_CHUNK_BYTES);
+                    write(next, 0, NO_OFFSET);
+                    // Store before publishing the new chunk. Unsupported values
+                    // or quota failures leave the authoritative list unchanged.
+                    storeValue(next + LIST_CHUNK_HEADER_BYTES, value, null);
+                    if (currentSize == 0) {
+                        write(header, 16, next);
+                    } else {
+                        if (chunk == NO_OFFSET) {
+                            throw new IllegalStateException("native List tail is missing");
+                        }
+                        write(chunk, 0, next);
+                    }
+                    write(header, 24, next);
+                } else {
+                    if (chunk == NO_OFFSET) {
+                        throw new IllegalStateException("native List tail is missing");
+                    }
+                    long slot = chunk + LIST_CHUNK_HEADER_BYTES
+                            + (long) inChunk * SLOT_BYTES;
+                    storeValue(slot, value, null);
+                }
+                write(header, 8, Math.addExact((long) currentSize, 1L));
+                modCount++;
+            }
+        }
+
+        @Override public void clear() {
+            synchronized (ActorNativeArena.this) {
+                checkList();
+                int count = Math.toIntExact(read(header, 8));
+                for (int i = 0; i < count; i++) {
+                    storeValue(elementSlot(i), null, null);
+                }
+                write(header, 8, 0L);
+                write(header, 16, NO_OFFSET);
+                write(header, 24, NO_OFFSET);
+                modCount++;
+            }
+        }
+
+        private void checkList() {
+            checkAccess();
+            if (read(header, 0) != LIST_MAGIC) {
+                throw new IllegalStateException("invalid native actor List header");
+            }
+        }
+
+        private void checkIndex(int index) {
+            checkList();
+            int count = Math.toIntExact(read(header, 8));
+            if (index < 0 || index >= count) {
+                throw new IndexOutOfBoundsException(
+                        "native actor List index " + index + " outside size " + count);
+            }
+        }
+
+        private long elementSlot(int index) {
+            int chunkIndex = index / LIST_CHUNK_SLOTS;
+            int inChunk = index % LIST_CHUNK_SLOTS;
+            long chunk = read(header, 16);
+            for (int i = 0; i < chunkIndex; i++) {
+                if (chunk == NO_OFFSET) {
+                    throw new IllegalStateException("native actor List chunk chain is truncated");
+                }
+                chunk = read(chunk, 0);
+            }
+            if (chunk == NO_OFFSET) {
+                throw new IllegalStateException("native actor List chunk is missing");
+            }
+            return chunk + LIST_CHUNK_HEADER_BYTES + (long) inChunk * SLOT_BYTES;
         }
     }
 
