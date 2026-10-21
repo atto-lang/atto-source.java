@@ -3,6 +3,8 @@ package dev.oreslang.runtime;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.time.Duration;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -244,6 +246,112 @@ final class SupervisorControlLaneTest {
                     failed.id(), failed.generation()));
             assertTrue(runtime.acknowledgeSupervisorControlEvent(
                     supervisor.id(), supervisor.generation()));
+        }
+    }
+
+    @Test
+    void typedThrowRaiseAndPanicCallbacksRemainSingleFlight() throws Exception {
+        List<ActorRuntime.ActorRef<String>> children = new CopyOnWriteArrayList<>();
+        CountDownLatch controls = new CountDownLatch(3);
+        AtomicInteger activeControls = new AtomicInteger();
+        AtomicInteger maxControls = new AtomicInteger();
+        AtomicInteger throwsSeen = new AtomicInteger();
+        AtomicInteger raisesSeen = new AtomicInteger();
+        AtomicInteger panicsSeen = new AtomicInteger();
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> supervisor = runtime.spawnShared(context -> {
+                ActorRuntime.SupervisorControlHandler handler =
+                        new ActorRuntime.SupervisorControlHandler() {
+                            private ActorRuntime.SupervisorControlDirective observe(
+                                    ActorFailure.Kind expected,
+                                    ActorRuntime.SupervisorControlEvent event) {
+                                assertEquals(expected, event.failureKind());
+                                int active = activeControls.incrementAndGet();
+                                maxControls.accumulateAndGet(active, Math::max);
+                                try {
+                                    if (expected == ActorFailure.Kind.THROW) throwsSeen.incrementAndGet();
+                                    if (expected == ActorFailure.Kind.RAISE) raisesSeen.incrementAndGet();
+                                    if (expected == ActorFailure.Kind.PANIC) panicsSeen.incrementAndGet();
+                                    try {
+                                        Thread.sleep(5);
+                                    } catch (InterruptedException interrupted) {
+                                        Thread.currentThread().interrupt();
+                                        throw new RuntimeException(interrupted);
+                                    }
+                                    controls.countDown();
+                                    return ActorRuntime.SupervisorControlDirective.ACKNOWLEDGE;
+                                } finally {
+                                    activeControls.decrementAndGet();
+                                }
+                            }
+
+                            @Override
+                            public ActorRuntime.SupervisorControlDirective onThrow(
+                                    ActorRuntime.SupervisorControlContext control,
+                                    ActorRuntime.SupervisorControlEvent event) {
+                                return observe(ActorFailure.Kind.THROW, event);
+                            }
+
+                            @Override
+                            public ActorRuntime.SupervisorControlDirective onRaise(
+                                    ActorRuntime.SupervisorControlContext control,
+                                    ActorRuntime.SupervisorControlEvent event) {
+                                return observe(ActorFailure.Kind.RAISE, event);
+                            }
+
+                            @Override
+                            public ActorRuntime.SupervisorControlDirective onPanic(
+                                    ActorRuntime.SupervisorControlContext control,
+                                    ActorRuntime.SupervisorControlEvent event) {
+                                return observe(ActorFailure.Kind.PANIC, event);
+                            }
+                        };
+                context.installSupervisorControlHandler(handler, null);
+
+                return (message, turn) -> {
+                    if (!"spawn".equals(message)) return;
+                    for (String kind : List.of("throw", "raise", "panic")) {
+                        ActorRuntime.ActorRef<String> child = runtime.spawn(
+                                ActorRuntime.ActorKind.SHARED,
+                                dev(),
+                                childContext -> (childMessage, ignored) -> {
+                                    switch (childMessage) {
+                                        case "throw" -> throw new ActorFailure.Thrown("t");
+                                        case "raise" -> throw new ActorFailure.Raised("r");
+                                        case "panic" -> throw new ActorFailure.Panic("p");
+                                        default -> { }
+                                    }
+                                });
+                        children.add(child);
+                    }
+                };
+            });
+
+            supervisor.getReady().get(3, TimeUnit.SECONDS);
+            supervisor.send("spawn");
+            supervisor.drain().get(3, TimeUnit.SECONDS);
+            assertEquals(3, children.size());
+
+            for (int i = 0; i < children.size(); i++) {
+                children.get(i).send(List.of("throw", "raise", "panic").get(i));
+            }
+            for (ActorRuntime.ActorRef<String> child : children) {
+                assertThrows(
+                        ExecutionException.class,
+                        () -> child.getDone().get(5, TimeUnit.SECONDS));
+            }
+
+            assertTrue(controls.await(5, TimeUnit.SECONDS));
+            assertEquals(1, throwsSeen.get());
+            assertEquals(1, raisesSeen.get());
+            assertEquals(1, panicsSeen.get());
+            assertEquals(1, maxControls.get(),
+                    "typed supervisor CONTROL handlers must never overlap");
+            assertEquals(0, runtime.supervisorControlBacklog());
+
+            supervisor.stop();
+            supervisor.getDone().get(3, TimeUnit.SECONDS);
         }
     }
 
