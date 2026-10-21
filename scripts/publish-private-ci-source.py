@@ -29,6 +29,7 @@ SOURCE_REPO = "ores-truffle-oreslang/oreslang-source.java"
 SOURCE_REPOSITORY_ID = 1400792274
 SOURCE_PROTECTED_BRANCH = "main"
 POLICY_PATH = ".github/private-ci-approved-repositories.txt"
+QUARANTINED_DESTINATIONS = frozenset({"zed-pkg-test/java-app"})
 CODEOWNERS_PATH = ".github/CODEOWNERS"
 SECURITY_CODEOWNER_PATHS = (
     "/.github/CODEOWNERS",
@@ -40,6 +41,11 @@ SECURITY_CODEOWNER_PATHS = (
     "/scripts/publish-private-ci-source-v3.py",
 )
 SECURITY_CODEOWNER = "@ORESoftware"
+
+
+def is_quarantined_destination(repository):
+    return (isinstance(repository, str)
+            and repository.casefold() in QUARANTINED_DESTINATIONS)
 
 
 class Denied(RuntimeError):
@@ -113,6 +119,8 @@ def gh_api(route, method="GET", payload=None):
 
 
 def checked_repo(repository, expected_repository_id=None):
+    if is_quarantined_destination(repository):
+        raise Denied("destination is quarantined by private-source exposure incident policy")
     result = gh_api("repos/" + repository)
     if (not isinstance(result.get("full_name"), str)
             or result["full_name"].casefold() != repository.casefold()
@@ -477,6 +485,8 @@ def verified_exact_source_tree(files, source_commit):
 
 
 def publish(repository, source, branch, trusted_root, source_commit):
+    if is_quarantined_destination(repository):
+        raise Denied("destination is quarantined by private-source exposure incident policy")
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
         raise Denied("invalid destination or isolated CI branch name")
     source_commit = valid_sha(source_commit)
