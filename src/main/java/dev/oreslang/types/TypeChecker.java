@@ -2301,7 +2301,11 @@ public final class TypeChecker {
                 }
                 Type receiver = receiverDispatchType(deref(receiverSource));
                 Type index = typeOf(indexed.index(), env, generics, self);
-                if (receiver instanceof Record record) {
+                if (receiver instanceof Named map
+                        && map.name().equals("Map") && map.arguments().size() == 2) {
+                    requireAssignable(index, map.arguments().get(0), "Map key");
+                    targetType = map.arguments().get(1);
+                } else if (receiver instanceof Record record) {
                     requireAssignable(index, Primitive.STRING, "record/struct field key");
                     Map<String, Type> indexableMembers = indexableRecordMembers(record);
                     if (record.kind() == AggregateKind.CONTRACT) {
@@ -2600,6 +2604,30 @@ public final class TypeChecker {
                 }
                 return Primitive.VOID;
             }
+            if (runtime.operation().equals("struct_with")) {
+                if (runtime.arguments().size() != 2
+                        || !(runtime.arguments().get(1) instanceof Ast.ObjectExpr patch)
+                        || !patch.inferredStruct()) {
+                    throw new IllegalArgumentException(
+                            "internal struct_with requires a closed structural base and static patch");
+                }
+                Type baseType = deref(typeOf(runtime.arguments().get(0), env, generics, self));
+                if (!(baseType instanceof Record base)
+                        || base.kind() == AggregateKind.CONTRACT) {
+                    throw new IllegalArgumentException(
+                            "with { ... } requires a concrete struct or structural record value");
+                }
+                Type patchType = deref(typeOf(patch, env, generics, self));
+                if (!(patchType instanceof Record update)
+                        || update.kind() != AggregateKind.STRUCT) {
+                    throw new IllegalStateException(
+                            "with { ... } patch did not typecheck as a closed struct");
+                }
+                LinkedHashMap<String, Type> members =
+                        new LinkedHashMap<>(base.members());
+                members.putAll(update.members());
+                return new Record(members, base.readOnly(), base.kind());
+            }
             if (runtime.arguments().size() != 1) {
                 throw new IllegalArgumentException(
                         "rt " + runtime.operation() + " expects exactly one argument");
@@ -2617,6 +2645,61 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr jsonCall
+                    && jsonCall.receiver() instanceof Ast.NameExpr jsonName
+                    && jsonName.name().equals("Json")
+                    && env.lookup("Json") == null
+                    && findClass("Json") == null
+                    && !modules.containsKey("Json")) {
+                if (call.arguments().size() != 1
+                        || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
+                    throw new IllegalArgumentException(
+                            "Json." + jsonCall.member() + " expects exactly one non-spread argument");
+                }
+                return switch (jsonCall.member()) {
+                    case "parse" -> {
+                        if (call.typeArgumentsPresent()) {
+                            throw new IllegalArgumentException(
+                                    "Json.parse does not accept type arguments");
+                        }
+                        requireAssignable(
+                                typeOf(call.arguments().getFirst(), env, generics, self),
+                                Primitive.STRING,
+                                "Json.parse input");
+                        yield new Named("JsonValue", List.of());
+                    }
+                    case "encode" -> {
+                        if (call.typeArgumentsPresent()) {
+                            throw new IllegalArgumentException(
+                                    "Json.encode does not accept type arguments");
+                        }
+                        Type source =
+                                typeOf(call.arguments().getFirst(), env, generics, self);
+                        requireJsonCodecType(source, "Json.encode");
+                        yield Primitive.STRING;
+                    }
+                    case "decode" -> {
+                        if (!call.typeArgumentsPresent()
+                                || call.typeArguments().size() != 1) {
+                            throw new IllegalArgumentException(
+                                    "Json.decode<T> requires exactly one explicit target type");
+                        }
+                        requireAssignable(
+                                typeOf(call.arguments().getFirst(), env, generics, self),
+                                Primitive.STRING,
+                                "Json.decode input");
+                        Type target = resolve(
+                                call.typeArguments().getFirst(), generics, self);
+                        requireJsonCodecType(target, "Json.decode");
+                        Ast.CheckedJsonDecodeTarget.record(
+                                call, jsonDescriptor(target));
+                        yield target;
+                    }
+                    default -> throw new IllegalArgumentException(
+                            "unknown core Json operation '" + jsonCall.member()
+                                    + "'; expected parse, encode, or decode<T>");
+                };
+            }
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
@@ -3808,6 +3891,11 @@ public final class TypeChecker {
             String constantKey = constantStringKey(indexed.index(), env);
             Env.Binding indexedOwner = indexed.receiver() instanceof Ast.NameExpr ownerName
                     ? env.lookup(ownerName.name()) : null;
+            if (receiver instanceof Named map
+                    && map.name().equals("Map") && map.arguments().size() == 2) {
+                requireAssignable(index, map.arguments().get(0), "Map key");
+                return map.arguments().get(1);
+            }
             if (receiver instanceof Record record) {
                 requireAssignable(index, Primitive.STRING, "record/struct field key");
                 Map<String, Type> indexableMembers = indexableRecordMembers(record);
@@ -3922,6 +4010,13 @@ public final class TypeChecker {
             // Do not silently reinterpret the historical STABLE constructor.
             if (created.type().name().equals("Symbol") && findClass("Symbol") == null) {
                 throw new IllegalArgumentException("new Symbol(...) is not supported; use #name or Symbol.stable(uuid)");
+            }
+            if (created.type().name().equals("Map") && findClass("Map") == null) {
+                if (!created.arguments().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "Map<K,V> constructor takes no positional arguments");
+                }
+                return resolve(created.type(), generics, self);
             }
             if (created.type().name().equals("DynamicStruct")) {
                 throw new IllegalArgumentException(
@@ -8170,6 +8265,128 @@ public final class TypeChecker {
         return false;
     }
 
+    /**
+     * JSON is a core data codec, not host reflection. Only statically reifiable,
+     * ownership-safe value shapes cross this boundary.
+     */
+    private void requireJsonCodecType(Type type, String operation) {
+        type = deref(type);
+        if (type == Primitive.INT || type == Primitive.FLOAT
+                || type == Primitive.DECIMAL || type == Primitive.BOOL
+                || type == Primitive.STRING) return;
+        if (type instanceof StringLiteral || type instanceof BoolLiteral) return;
+        if (type instanceof ListType list) {
+            requireJsonCodecType(list.element(), operation);
+            return;
+        }
+        if (type instanceof Tuple tuple) {
+            for (Type slot : tuple.elements()) requireJsonCodecType(slot, operation);
+            return;
+        }
+        if (type instanceof Record record) {
+            if (record.kind() == AggregateKind.CONTRACT) {
+                throw new IllegalArgumentException(
+                        operation + " cannot serialize a structural contract view");
+            }
+            for (Type field : record.members().values()) {
+                requireJsonCodecType(field, operation);
+            }
+            return;
+        }
+        if (type instanceof Named named) {
+            if (named.name().equals("JsonValue") && named.arguments().isEmpty()) return;
+            if (named.name().equals("Map") && named.arguments().size() == 2) {
+                requireAssignable(named.arguments().get(0), Primitive.STRING,
+                        operation + " Map key");
+                requireJsonCodecType(named.arguments().get(1), operation);
+                return;
+            }
+            Ast.ClassDecl klass = findClass(named.name());
+            if (klass != null) {
+                if (klass.actorKind() != Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            operation + " cannot serialize actor-owned class state");
+                }
+                if (!klass.genericParameters().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            operation + " currently requires a non-generic @FromJson class");
+                }
+                if (!klass.parents().isEmpty() || klass.constructor() != null) {
+                    throw new IllegalArgumentException(
+                            operation + " class '" + klass.name()
+                                    + "' must be constructorless and non-inheriting; "
+                                    + "use a record/struct DTO or add an explicit future JSON constructor contract");
+                }
+                List<Ast.FieldDecl> instanceFields = klass.fields().stream()
+                        .filter(field -> !field.isStatic()).toList();
+                List<AnnotationExpander.FromJsonBinding> bindings =
+                        AnnotationExpander.fromJsonBindings(klass);
+                if (bindings.size() != instanceFields.size()) {
+                    throw new IllegalArgumentException(
+                            operation + " class '" + klass.name()
+                                    + "' must annotate every instance field with @FromJson");
+                }
+                for (AnnotationExpander.FromJsonBinding binding : bindings) {
+                    requireJsonCodecType(
+                            resolve(binding.type(), Set.of(), nominalClassType(klass)),
+                            operation);
+                }
+                return;
+            }
+        }
+        throw new IllegalArgumentException(
+                operation + " does not support type " + type
+                        + "; use scalars, List/Tuple, Map<String,V>, closed record/struct, "
+                        + "JsonValue, or a fully @FromJson constructorless class");
+    }
+
+    private Ast.TypeRef jsonDescriptor(Type type) {
+        type = deref(type);
+        if (type == Primitive.INT) return Ast.TypeRef.simple("int");
+        if (type == Primitive.FLOAT) return Ast.TypeRef.simple("float");
+        if (type == Primitive.DECIMAL) return Ast.TypeRef.simple("decimal");
+        if (type == Primitive.BOOL || type instanceof BoolLiteral)
+            return Ast.TypeRef.simple("bool");
+        if (type == Primitive.STRING || type instanceof StringLiteral)
+            return Ast.TypeRef.simple("String");
+        if (type instanceof ListType list) {
+            return new Ast.TypeRef(
+                    "List", List.of(jsonDescriptor(list.element())), false);
+        }
+        if (type instanceof Tuple tuple) {
+            return Ast.TypeRef.tupleType(
+                    tuple.elements().stream().map(this::jsonDescriptor).toList());
+        }
+        if (type instanceof Record record) {
+            LinkedHashMap<String, Ast.TypeRef> members = new LinkedHashMap<>();
+            for (Map.Entry<String, Type> field : record.members().entrySet()) {
+                members.put(field.getKey(), jsonDescriptor(field.getValue()));
+            }
+            return record.kind() == AggregateKind.STRUCT
+                    ? Ast.TypeRef.structType(members)
+                    : Ast.TypeRef.readonlyRecordType(members);
+        }
+        if (type instanceof Named named) {
+            if (named.name().equals("JsonValue")) {
+                return Ast.TypeRef.simple("JsonValue");
+            }
+            if (named.name().equals("Map") && named.arguments().size() == 2) {
+                return new Ast.TypeRef(
+                        "Map",
+                        List.of(
+                                jsonDescriptor(named.arguments().get(0)),
+                                jsonDescriptor(named.arguments().get(1))),
+                        false);
+            }
+            return new Ast.TypeRef(
+                    named.name(),
+                    named.arguments().stream().map(this::jsonDescriptor).toList(),
+                    false);
+        }
+        throw new IllegalArgumentException(
+                "cannot materialize JSON runtime descriptor for " + type);
+    }
+
     private Type resolve(Ast.TypeRef ref, Set<String> generics, Type self) {
         return resolve(ref, generics, self, false);
     }
@@ -8629,6 +8846,26 @@ public final class TypeChecker {
                             ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
                 }
                 yield resolveCollectionType(ref, generics, self, allowNullMarker);
+            }
+            case "Map" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 2) {
+                    throw new IllegalArgumentException(
+                            "Map<K,V> requires exactly two explicit type arguments");
+                }
+                Type key = resolve(ref.arguments().get(0), generics, self, allowNullMarker);
+                Type value = resolve(ref.arguments().get(1), generics, self, allowNullMarker);
+                if (key == Primitive.VOID || value == Primitive.VOID
+                        || key instanceof Borrow || value instanceof Borrow) {
+                    throw new IllegalArgumentException(
+                            "Map<K,V> keys and values must be owned non-void values");
+                }
+                yield new Named("Map", List.of(key, value));
+            }
+            case "JsonValue" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException("JsonValue does not accept type arguments");
+                }
+                yield new Named("JsonValue", List.of());
             }
             case "DynamicStruct" -> throw new IllegalArgumentException(
                     "DynamicStruct has been removed for AOT-safe static shape semantics; "

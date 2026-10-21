@@ -6,6 +6,7 @@ import com.oracle.truffle.api.interop.InteropLibrary;
 import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
@@ -21,6 +22,7 @@ import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
+import dev.oreslang.runtime.CoreJson;
 import dev.oreslang.runtime.Awaitable;
 import dev.oreslang.runtime.OresScheduler;
 import dev.oreslang.runtime.SourceCooperationQuantum;
@@ -4410,6 +4412,35 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
 
+            if (runtime.operation().equals("struct_with")) {
+                if (runtime.arguments().size() != 2) {
+                    continuation.accept(
+                            task, null,
+                            new IllegalArgumentException(
+                                    "internal struct_with requires exactly two arguments"));
+                    return;
+                }
+                evalSuspendableArguments(
+                        task,
+                        runtime.arguments(),
+                        env,
+                        (t, values, failure) -> {
+                            if (failure != null) {
+                                continuation.accept(t, null, failure);
+                                return;
+                            }
+                            try {
+                                continuation.accept(
+                                        t,
+                                        applyStructuralWith(values.get(0), values.get(1)),
+                                        null);
+                            } catch (RuntimeException | Error structuralFailure) {
+                                continuation.accept(t, null, structuralFailure);
+                            }
+                        });
+                return;
+            }
+
             if (runtime.arguments().size() != 1) {
                 continuation.accept(
                         task,
@@ -4443,6 +4474,27 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.CallExpr call,
                 Env env,
                 SourceValueCont continuation) {
+            if (isCoreJsonCall(call, env)) {
+                evalSuspendableArguments(
+                        task,
+                        call.arguments(),
+                        env,
+                        (t, values, failure) -> {
+                            if (failure != null) {
+                                continuation.accept(t, null, failure);
+                                return;
+                            }
+                            try {
+                                continuation.accept(
+                                        t,
+                                        evalCoreJsonCallEvaluated(call, values),
+                                        null);
+                            } catch (RuntimeException | Error jsonFailure) {
+                                continuation.accept(t, null, jsonFailure);
+                            }
+                        });
+                return;
+            }
             if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
@@ -4753,6 +4805,376 @@ public final class OresEvalRootNode extends RootNode {
             return invokableInvocation(invokable, args);
         }
 
+        private boolean isCoreJsonCall(Ast.CallExpr call, Env env) {
+            if (!(call.callee() instanceof Ast.MemberExpr member)
+                    || !(member.receiver() instanceof Ast.NameExpr namespace)
+                    || !namespace.name().equals("Json")) return false;
+            if (env.lookup("Json") != Env.MISSING) return false;
+            return findClass("Json") == null && !modules.containsKey("Json");
+        }
+
+        private Object evalCoreJsonCallEvaluated(
+                Ast.CallExpr call,
+                List<Object> values) {
+            if (!(call.callee() instanceof Ast.MemberExpr member)
+                    || values.size() != 1) {
+                throw new IllegalStateException("malformed checked core Json call");
+            }
+            Object value = values.getFirst();
+            return switch (member.member()) {
+                case "parse" -> CoreJson.parse(
+                        requireString(value, "Json.parse input"));
+                case "encode" -> CoreJson.encode(
+                        jsonEncodeView(
+                                value,
+                                new IdentityHashMap<>(),
+                                0));
+                case "decode" -> decodeJsonValue(
+                        CoreJson.parse(
+                                requireString(value, "Json.decode input")),
+                        Ast.CheckedJsonDecodeTarget.require(call),
+                        "$",
+                        new LinkedHashSet<>());
+                default -> throw new IllegalArgumentException(
+                        "unknown core Json operation '" + member.member() + "'");
+            };
+        }
+
+        private Object applyStructuralWith(Object base, Object patchValue) {
+            if (!(patchValue instanceof MutableStructValue patch)) {
+                throw new IllegalStateException(
+                        "checked with { ... } patch is not a closed struct value");
+            }
+            LinkedHashMap<String, Object> merged = new LinkedHashMap<>();
+            if (base instanceof MutableStructValue struct) {
+                merged.putAll(struct);
+                merged.putAll(patch);
+                return new MutableStructValue(merged);
+            }
+            if (base instanceof ReadonlyRecordValue record) {
+                merged.putAll(record);
+                merged.putAll(patch);
+                return new ReadonlyRecordValue(merged);
+            }
+            throw new IllegalStateException(
+                    "checked with { ... } base is not a closed struct/record value");
+        }
+
+        private Object jsonEncodeView(
+                Object value,
+                IdentityHashMap<Object, Boolean> visiting,
+                int depth) {
+            if (depth > 128) {
+                throw new IllegalArgumentException(
+                        "Json.encode value nesting exceeds 128");
+            }
+            if (value == null
+                    || value == dev.oreslang.runtime.OresNull.INSTANCE
+                    || value instanceof String
+                    || value instanceof Boolean
+                    || value instanceof Byte
+                    || value instanceof Short
+                    || value instanceof Integer
+                    || value instanceof Long
+                    || value instanceof Float
+                    || value instanceof Double
+                    || value instanceof java.math.BigInteger
+                    || value instanceof java.math.BigDecimal) {
+                return value;
+            }
+            if (visiting.put(value, Boolean.TRUE) != null) {
+                throw new IllegalArgumentException(
+                        "Json.encode cannot serialize cyclic object graphs");
+            }
+            try {
+                if (value instanceof OresObject object) {
+                    requireJsonClassRuntimeContract(object.klass);
+                    LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+                    for (AnnotationExpander.FromJsonBinding binding
+                            : AnnotationExpander.fromJsonBindings(object.klass)) {
+                        Object field = object.fields.get(binding.fieldName());
+                        if (field == UNINITIALIZED_FIELD) {
+                            throw new IllegalArgumentException(
+                                    "Json.encode cannot serialize uninitialized field '"
+                                            + object.klass.name() + "."
+                                            + binding.fieldName() + "'");
+                        }
+                        result.put(
+                                binding.jsonKey(),
+                                jsonEncodeView(field, visiting, depth + 1));
+                    }
+                    return result;
+                }
+                if (value instanceof Map<?, ?> map) {
+                    LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+                    for (Map.Entry<?, ?> entry : map.entrySet()) {
+                        if (!(entry.getKey() instanceof String key)) {
+                            throw new IllegalArgumentException(
+                                    "Json.encode object maps require String keys");
+                        }
+                        result.put(
+                                key,
+                                jsonEncodeView(
+                                        entry.getValue(), visiting, depth + 1));
+                    }
+                    return result;
+                }
+                if (value instanceof List<?> list) {
+                    ArrayList<Object> result = new ArrayList<>(list.size());
+                    for (Object item : list) {
+                        result.add(
+                                jsonEncodeView(item, visiting, depth + 1));
+                    }
+                    return result;
+                }
+                if (value instanceof Object[] array) {
+                    ArrayList<Object> result = new ArrayList<>(array.length);
+                    for (Object item : array) {
+                        result.add(
+                                jsonEncodeView(item, visiting, depth + 1));
+                    }
+                    return result;
+                }
+                throw new IllegalArgumentException(
+                        "Json.encode encountered unsupported runtime value "
+                                + value.getClass().getName());
+            } finally {
+                visiting.remove(value);
+            }
+        }
+
+        private Object decodeJsonValue(
+                Object raw,
+                Ast.TypeRef originalTarget,
+                String path,
+                Set<Ast.TypeAliasDecl> resolvingAliases) {
+            Ast.TypeRef target =
+                    expandJsonRuntimeType(originalTarget, resolvingAliases);
+            if (target.name().equals("JsonValue")
+                    && target.arguments().isEmpty()) {
+                return raw;
+            }
+            if (target.name().equals("String")
+                    || target.name().equals("string")) {
+                if (raw instanceof String string) return string;
+                throw jsonTypeError(path, "String", raw);
+            }
+            if (target.name().equals("bool")
+                    || target.name().equals("Bool")) {
+                if (raw instanceof Boolean bool) return bool;
+                throw jsonTypeError(path, "bool", raw);
+            }
+            if (target.name().equals("int")) {
+                return CoreJson.exactLong(raw, "JSON value at " + path);
+            }
+            if (target.name().equals("float")
+                    || target.name().equals("f32")
+                    || target.name().equals("f64")) {
+                return CoreJson.finiteDouble(raw, "JSON value at " + path);
+            }
+            if (target.name().equals("decimal")) {
+                return CoreJson.decimal(raw, "JSON value at " + path);
+            }
+            if (target.name().equals("Map")
+                    && target.arguments().size() == 2) {
+                Ast.TypeRef keyType =
+                        expandJsonRuntimeType(
+                                target.arguments().get(0),
+                                new LinkedHashSet<>(resolvingAliases));
+                if (!(keyType.name().equals("String")
+                        || keyType.name().equals("string"))) {
+                    throw new IllegalStateException(
+                            "checked JSON Map target does not have String keys");
+                }
+                Map<?, ?> object = requireJsonObject(raw, path);
+                LinkedHashMap<Object, Object> result = new LinkedHashMap<>();
+                for (Map.Entry<?, ?> entry : object.entrySet()) {
+                    String key = (String) entry.getKey();
+                    result.put(
+                            key,
+                            decodeJsonValue(
+                                    entry.getValue(),
+                                    target.arguments().get(1),
+                                    path + "." + key,
+                                    new LinkedHashSet<>(resolvingAliases)));
+                }
+                return result;
+            }
+            if ((target.name().equals("List")
+                    || target.name().equals("Array"))
+                    && target.arguments().size() == 1) {
+                List<?> array = requireJsonArray(raw, path);
+                ArrayList<Object> result = new ArrayList<>(array.size());
+                for (int i = 0; i < array.size(); i++) {
+                    result.add(
+                            decodeJsonValue(
+                                    array.get(i),
+                                    target.arguments().getFirst(),
+                                    path + "[" + i + "]",
+                                    new LinkedHashSet<>(resolvingAliases)));
+                }
+                return result;
+            }
+            if (target.isTupleType()) {
+                List<?> array = requireJsonArray(raw, path);
+                if (array.size() != target.arguments().size()) {
+                    throw new IllegalArgumentException(
+                            "JSON array at " + path + " has "
+                                    + array.size() + " element(s), expected "
+                                    + target.arguments().size());
+                }
+                ArrayList<Object> result = new ArrayList<>(array.size());
+                for (int i = 0; i < array.size(); i++) {
+                    result.add(
+                            decodeJsonValue(
+                                    array.get(i),
+                                    target.arguments().get(i),
+                                    path + "[" + i + "]",
+                                    new LinkedHashSet<>(resolvingAliases)));
+                }
+                return List.copyOf(result);
+            }
+            if (target.isClosedAggregateType()) {
+                Map<?, ?> object = requireJsonObject(raw, path);
+                Map<String, Ast.TypeRef> members = target.aggregateMembers();
+                requireExactJsonKeys(object, members.keySet(), path);
+                LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+                for (Map.Entry<String, Ast.TypeRef> member : members.entrySet()) {
+                    result.put(
+                            member.getKey(),
+                            decodeJsonValue(
+                                    object.get(member.getKey()),
+                                    member.getValue(),
+                                    path + "." + member.getKey(),
+                                    new LinkedHashSet<>(resolvingAliases)));
+                }
+                return target.isStructType()
+                        ? new MutableStructValue(result)
+                        : new ReadonlyRecordValue(result);
+            }
+
+            Ast.ClassDecl klass = findClass(target.name());
+            if (klass != null) {
+                requireJsonClassRuntimeContract(klass);
+                Map<?, ?> object = requireJsonObject(raw, path);
+                List<AnnotationExpander.FromJsonBinding> bindings =
+                        AnnotationExpander.fromJsonBindings(klass);
+                LinkedHashSet<String> expected = new LinkedHashSet<>();
+                for (AnnotationExpander.FromJsonBinding binding : bindings) {
+                    expected.add(binding.jsonKey());
+                }
+                requireExactJsonKeys(object, expected, path);
+                LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+                for (AnnotationExpander.FromJsonBinding binding : bindings) {
+                    fields.put(
+                            binding.fieldName(),
+                            decodeJsonValue(
+                                    object.get(binding.jsonKey()),
+                                    binding.type(),
+                                    path + "." + binding.jsonKey(),
+                                    new LinkedHashSet<>(resolvingAliases)));
+                }
+                return new OresObject(this, klass, fields);
+            }
+            throw new IllegalArgumentException(
+                    "unsupported checked JSON target at runtime: " + target);
+        }
+
+        private Ast.TypeRef expandJsonRuntimeType(
+                Ast.TypeRef type,
+                Set<Ast.TypeAliasDecl> resolving) {
+            Ast.TypeAliasDecl alias = findTypeAlias(type.name());
+            if (alias == null) return type;
+            if (alias.genericParameters().size() != type.arguments().size()) {
+                throw new IllegalStateException(
+                        "checked JSON alias arity changed for " + alias.name());
+            }
+            if (!resolving.add(alias)) {
+                throw new IllegalArgumentException(
+                        "JSON type alias cycle involving '" + alias.name() + "'");
+            }
+            try {
+                Map<String, Ast.TypeRef> substitutions = new HashMap<>();
+                for (int i = 0; i < alias.genericParameters().size(); i++) {
+                    substitutions.put(
+                            alias.genericParameters().get(i),
+                            type.arguments().get(i));
+                }
+                return expandJsonRuntimeType(
+                        substituteReturnType(alias.target(), substitutions),
+                        resolving);
+            } finally {
+                resolving.remove(alias);
+            }
+        }
+
+        private void requireJsonClassRuntimeContract(Ast.ClassDecl klass) {
+            if (klass.actorKind() != Ast.ActorKind.NONE
+                    || !klass.parents().isEmpty()
+                    || klass.constructor() != null
+                    || !klass.genericParameters().isEmpty()) {
+                throw new IllegalStateException(
+                        "class '" + klass.name()
+                                + "' no longer satisfies its checked JSON construction contract");
+            }
+            long instanceFields =
+                    klass.fields().stream().filter(field -> !field.isStatic()).count();
+            if (AnnotationExpander.fromJsonBindings(klass).size()
+                    != instanceFields) {
+                throw new IllegalStateException(
+                        "class '" + klass.name()
+                                + "' JSON field contract changed after checking");
+            }
+        }
+
+        private static Map<?, ?> requireJsonObject(Object raw, String path) {
+            if (raw instanceof Map<?, ?> map) return map;
+            throw jsonTypeError(path, "object", raw);
+        }
+
+        private static List<?> requireJsonArray(Object raw, String path) {
+            if (raw instanceof List<?> list) return list;
+            throw jsonTypeError(path, "array", raw);
+        }
+
+        private static void requireExactJsonKeys(
+                Map<?, ?> object,
+                java.util.Collection<String> expected,
+                String path) {
+            LinkedHashSet<String> actual = new LinkedHashSet<>();
+            for (Object key : object.keySet()) {
+                if (!(key instanceof String string)) {
+                    throw new IllegalArgumentException(
+                            "JSON object at " + path + " contains a non-string key");
+                }
+                actual.add(string);
+            }
+            LinkedHashSet<String> wanted = new LinkedHashSet<>(expected);
+            if (!actual.equals(wanted)) {
+                LinkedHashSet<String> missing = new LinkedHashSet<>(wanted);
+                missing.removeAll(actual);
+                LinkedHashSet<String> unknown = new LinkedHashSet<>(actual);
+                unknown.removeAll(wanted);
+                throw new IllegalArgumentException(
+                        "JSON object at " + path
+                                + " does not match the checked closed shape; missing="
+                                + missing + ", unknown=" + unknown);
+            }
+        }
+
+        private static IllegalArgumentException jsonTypeError(
+                String path,
+                String expected,
+                Object raw) {
+            String actual = raw == dev.oreslang.runtime.OresNull.INSTANCE
+                    ? "null"
+                    : raw == null ? "<host-null>"
+                    : raw.getClass().getSimpleName();
+            return new IllegalArgumentException(
+                    "JSON value at " + path + " must be "
+                            + expected + ", got " + actual);
+        }
+
         private static int sequenceIndex(Object value) {
             // Dynamic/host values still cross this check. Number.longValue()
             // would silently truncate floating-point indices (including NaN).
@@ -4891,14 +5313,10 @@ public final class OresEvalRootNode extends RootNode {
                 return value;
             }
             if (receiver instanceof Map<?, ?> map) {
-                if (!(index instanceof String || index instanceof dev.oreslang.runtime.OresSymbol)) {
-                    throw new IllegalArgumentException(
-                            "indexed map key must be a String or Symbol");
-                }
                 Object key = index;
                 if (!map.containsKey(key)) {
                     throw new IllegalArgumentException(
-                            "unknown struct/map key " + key);
+                            "unknown map key " + key);
                 }
                 Object value = map.get(key);
                 if (value == UNINITIALIZED_FIELD) {
@@ -4976,6 +5394,12 @@ public final class OresEvalRootNode extends RootNode {
                 struct.put(fieldName, value);
                 return value;
             }
+            if (receiver instanceof Map<?, ?> rawMap) {
+                @SuppressWarnings("unchecked")
+                Map<Object, Object> map = (Map<Object, Object>) rawMap;
+                map.put(key, value);
+                return value;
+            }
             if (receiver instanceof List<?> raw) {
                 @SuppressWarnings("unchecked")
                 List<Object> list = (List<Object>) raw;
@@ -4983,7 +5407,7 @@ public final class OresEvalRootNode extends RootNode {
                 return value;
             }
             throw new IllegalArgumentException(
-                    "indexed assignment requires mutable class/struct state or a mutable sequence");
+                    "indexed assignment requires mutable class/struct/map state or a mutable sequence");
         }
 
         private Object unaryValue(String operator, Object value) {
@@ -5066,6 +5490,13 @@ public final class OresEvalRootNode extends RootNode {
                                     + "<T> constructor takes no positional arguments");
                 }
                 return new ArrayList<>();
+            }
+            if (created.type().name().equals("Map")) {
+                if (!args.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "Map<K,V> constructor takes no positional arguments");
+                }
+                return new LinkedHashMap<>();
             }
             if (created.type().name().equals("DynamicStruct")) {
                 throw new IllegalArgumentException(
@@ -6869,6 +7300,15 @@ public final class OresEvalRootNode extends RootNode {
                             this,
                             created.type().name());
                 }
+                if (runtime.operation().equals("struct_with")) {
+                    if (runtime.arguments().size() != 2) {
+                        throw new IllegalArgumentException(
+                                "internal struct_with requires exactly two arguments");
+                    }
+                    return applyStructuralWith(
+                            eval(runtime.arguments().get(0), env),
+                            eval(runtime.arguments().get(1), env));
+                }
                 if (runtime.operation().equals("cooperate")) {
                     if (!runtime.arguments().isEmpty()) {
                         throw new IllegalArgumentException("rt cooperate takes no arguments");
@@ -6901,6 +7341,11 @@ public final class OresEvalRootNode extends RootNode {
                 return applyRuntimeOwnership(runtime.operation(), value);
             }
             if (expr instanceof Ast.CallExpr call) {
+                if (isCoreJsonCall(call, env)) {
+                    List<Object> values =
+                            call.arguments().stream().map(arg -> eval(arg, env)).toList();
+                    return evalCoreJsonCallEvaluated(call, values);
+                }
                 if (isBooleanIntrinsicCall(call, env)) return evalBooleanIntrinsic(call, env);
                 return invoke(prepareInvocation(call, env));
             }
@@ -6925,6 +7370,13 @@ public final class OresEvalRootNode extends RootNode {
                                         + "<T> constructor takes no positional arguments");
                     }
                     return new ArrayList<>();
+                }
+                if (created.type().name().equals("Map")) {
+                    if (!created.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "Map<K,V> constructor takes no positional arguments");
+                    }
+                    return new LinkedHashMap<>();
                 }
                 if (created.type().name().equals("DynamicStruct")) {
                     throw new IllegalArgumentException(

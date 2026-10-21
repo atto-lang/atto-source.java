@@ -3106,7 +3106,7 @@ public final class Parser {
     public Ast.Expr parseExpression() { return parseAssignment(); }
 
     private Ast.Expr parseAssignment() {
-        Ast.Expr expr = parseConditional();
+        Ast.Expr expr = parseStructuralWith();
         if (match(EQUAL)) {
             if (!(expr instanceof Ast.NameExpr) && !(expr instanceof Ast.MemberExpr) && !(expr instanceof Ast.IndexExpr)) {
                 throw error(previous(), "assignment target must be a local, field, or index");
@@ -3114,6 +3114,25 @@ public final class Parser {
             return new Ast.AssignExpr(expr, parseAssignment());
         }
         return expr;
+    }
+
+    /**
+     * Immutable closed-shape update. "with" stays contextual so ordinary
+     * identifiers named with remain legal outside this exact postfix form.
+     *
+     * The parser lowers the surface syntax to a compiler-only intrinsic rather
+     * than adding a runtime-dynamic object AST. Type/ownership checking derives
+     * the exact resulting closed shape before execution.
+     */
+    private Ast.Expr parseStructuralWith() {
+        Ast.Expr base = parseConditional();
+        while (isContextualIdentifier("with") && checkNext(LBRACE)) {
+            advance(); // contextual with
+            Ast.ObjectExpr patch =
+                    parseObjectLiteral(Ast.ObjectKind.INFERRED_STRUCT, List.of());
+            base = new Ast.RuntimeCallExpr("struct_with", List.of(base, patch));
+        }
+        return base;
     }
 
     private Ast.Expr parseConditional() {

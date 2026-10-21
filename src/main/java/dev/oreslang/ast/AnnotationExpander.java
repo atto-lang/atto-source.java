@@ -133,6 +133,11 @@ public final class AnnotationExpander {
                 throw new IllegalArgumentException("@FromJson field '" + klass.name() + "." + field.name()
                         + "' requires an explicit field type");
             }
+            if (field.isStatic()) {
+                throw new IllegalArgumentException("@FromJson is not valid on static field '"
+                        + klass.name() + "." + field.name()
+                        + "'; JSON decoding constructs instance state only");
+            }
 
             String previous = jsonKeys.putIfAbsent(jsonKey, field.name());
             if (previous != null && !previous.equals(field.name())) {

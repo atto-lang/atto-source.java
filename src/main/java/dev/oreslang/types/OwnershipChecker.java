@@ -1031,6 +1031,28 @@ public final class OwnershipChecker {
                 }
                 return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
             }
+            if (runtime.operation().equals("struct_with")) {
+                if (runtime.arguments().size() != 2
+                        || !(runtime.arguments().get(1) instanceof Ast.ObjectExpr patch)
+                        || !patch.inferredStruct()) {
+                    throw error("malformed internal struct_with intrinsic");
+                }
+                ValueInfo base = checkExpr(runtime.arguments().get(0), scope, true);
+                if (base.type == null || !base.type.isClosedAggregateType()) {
+                    throw error("with { ... } requires an owned struct or structural record");
+                }
+                ValueInfo update = checkExpr(patch, scope, true);
+                if (update.type == null || !update.type.isStructType()) {
+                    throw error("with { ... } patch must be a closed inferred struct");
+                }
+                LinkedHashMap<String, Ast.TypeRef> members =
+                        new LinkedHashMap<>(base.type.aggregateMembers());
+                members.putAll(update.type.aggregateMembers());
+                Ast.TypeRef result = base.type.isStructType()
+                        ? Ast.TypeRef.structType(members)
+                        : Ast.TypeRef.readonlyRecordType(members);
+                return new ValueInfo(result, ValueKind.MOVE_ONLY, null);
+            }
             if (runtime.arguments().size() != 1) {
                 throw error("rt " + runtime.operation() + " expects exactly one argument");
             }
@@ -1450,6 +1472,43 @@ public final class OwnershipChecker {
                     throw error("constructor cannot borrow partially initialized self for a call");
                 }
             }
+        }
+        if (call.callee() instanceof Ast.MemberExpr jsonCall
+                && jsonCall.receiver() instanceof Ast.NameExpr jsonName
+                && jsonName.name().equals("Json")
+                && scope.lookup("Json") == null) {
+            if (call.arguments().size() != 1
+                    || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
+                throw error("Json." + jsonCall.member()
+                        + " expects exactly one non-spread argument");
+            }
+            Ast.Expr argument = call.arguments().getFirst();
+            return switch (jsonCall.member()) {
+                case "parse" -> {
+                    checkExpr(argument, scope, false);
+                    yield new ValueInfo(
+                            Ast.TypeRef.simple("JsonValue"),
+                            ValueKind.MOVE_ONLY,
+                            null);
+                }
+                case "encode" -> {
+                    ValueInfo observed = checkExpr(argument, scope, false);
+                    if (containsMutexGuardType(observed.type)) {
+                        throw error("Json.encode cannot observe MutexGuard state");
+                    }
+                    yield new ValueInfo(
+                            Ast.TypeRef.simple("String"),
+                            ValueKind.COPY,
+                            null);
+                }
+                case "decode" -> {
+                    checkExpr(argument, scope, false);
+                    Ast.TypeRef target = Ast.CheckedJsonDecodeTarget.require(call);
+                    yield new ValueInfo(target, kindOfType(target), null);
+                }
+                default -> throw error("unknown core Json operation '"
+                        + jsonCall.member() + "'");
+            };
         }
         if (isBooleanIntrinsicCall(call, scope)) {
             for (Ast.Expr argument : call.arguments()) {
@@ -3653,6 +3712,9 @@ public final class OwnershipChecker {
         if ((concrete.name().equals("Array") || concrete.name().equals("List"))
                 && concrete.arguments().size() == 1) {
             return concrete.arguments().getFirst();
+        }
+        if (concrete.name().equals("Map") && concrete.arguments().size() == 2) {
+            return concrete.arguments().get(1);
         }
 
         Ast.ClassDecl klass = findClass(concrete.name());
