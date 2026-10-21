@@ -1294,6 +1294,18 @@ public final class OwnershipChecker {
                     throw error("independent task cannot capture actor self; send a message or pass owned data instead");
                 }
             }
+            // Generic deferred callbacks are not a complete Task Send proof:
+            // they may run under a mailbox's existing authority. A new Task
+            // must not capture a capability the runtime cannot safely detach.
+            // Preserve the explicitly synchronized Channel<T> source-Task seam;
+            // Future, guards and foreign/scheduler authority stay local.
+            for (Capture capture : captured.values.values()) {
+                if (forbiddenTaskCapability(capture.source.type)) {
+                    throw error("independent task capture '" + capture.name
+                            + "' contains a non-Send execution capability; "
+                            + "pass owned values or an explicit Channel<T> instead");
+                }
+            }
             validateDeferredCaptures(captured);
             Scope taskScope = deferredSelectArmScope(captured);
             int savedLoopDepth = loopDepth;
@@ -3631,6 +3643,29 @@ public final class OwnershipChecker {
         return capture.name.equals("self")
                 && capture.source.origin == Origin.PARAM
                 && capture.source.kind == ValueKind.MUT_BORROW;
+    }
+
+    /**
+     * Minimal explicit forbidden-capability backstop for independently
+     * scheduled Tasks. This is NOT a full nominal Send derivation: the type
+     * checker and runtime detacher remain independent admission authorities.
+     */
+    private static boolean forbiddenTaskCapability(Ast.TypeRef type) {
+        if (type == null) return false;
+        if (type.isBorrow()) return false; // dedicated borrow diagnostic below
+        if (switch (type.name()) {
+            case "Future", "Task", "TaskHandle", "TaskScope",
+                    "Mutex", "MutexGuard", "Rc", "RefCell",
+                    "ActorMail", "ActorOutput", "ActorOutputStream",
+                    "TcpConnection", "HttpExchange", "HttpServer",
+                    "HttpHandler", "HttpResponse", "HttpResponseDraft",
+                    "SelectCase", "SelectSet", "SelectResult" -> true;
+            default -> false;
+        }) return true;
+        for (Ast.TypeRef arg : type.arguments()) {
+            if (forbiddenTaskCapability(arg)) return true;
+        }
+        return false;
     }
 
     private void validateDeferredCaptures(CaptureSet union) {
