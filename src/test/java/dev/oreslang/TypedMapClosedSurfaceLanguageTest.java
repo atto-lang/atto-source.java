@@ -159,6 +159,32 @@ final class TypedMapClosedSurfaceLanguageTest {
     }
 
     @Test
+    void productionOwnershipWideningDoesNotOpenMoveOnlyMapTypes() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define class Payload as
+                        end
+
+                        pub fnc main(): void {
+                          val Map<string, Payload> values =
+                              new Map<string, Payload>();
+                          return;
+                        }
+                        """));
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub fnc main(): void {
+                          val Map<string, JsonValue> values =
+                              new Map<string, JsonValue>();
+                          return;
+                        }
+                        """));
+    }
+
+    @Test
     void closedMapTypeRequiresSupportedExplicitDomains() {
         for (String source : new String[] {
                 """
