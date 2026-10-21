@@ -733,10 +733,38 @@ public final class OresAsyncTrace {
     }
 
 
+    /**
+     * Source identifiers are untrusted diagnostic labels, not filesystem or
+     * remote-source access capabilities. Bound input work before URI parsing,
+     * strip credentials/absolute path prefixes, and preserve useful relative
+     * source paths only.
+     */
     private static String sanitizeSourceId(String sourceId) {
-        String value = sourceId == null || sourceId.isBlank()
-                ? "<unknown>"
-                : sourceId;
+        if (sourceId == null || sourceId.isEmpty()) return "<unknown>";
+        // Enforce the bound *before* isBlank/indexOf/substrings so an error
+        // carrying a giant private URI cannot exhaust the diagnostic path.
+        if (sourceId.length() > MAX_SOURCE_CHARS) return "<source-id-too-long>";
+        if (sourceId.isBlank()) return "<unknown>";
+
+        String value = sourceId;
+        int scheme = value.indexOf("://");
+        if (scheme >= 0) {
+            int slash = value.indexOf('/', scheme + 3);
+            if (slash < 0) return "<remote-source>";
+            // Do not expose scheme, host, userinfo, private directories or
+            // authenticated source-server query metadata to actor traces.
+            value = value.substring(slash + 1);
+            value = value.substring(Math.max(value.lastIndexOf('/'),
+                    value.lastIndexOf('\\')) + 1);
+        } else if (value.startsWith("/") || value.startsWith("\\")
+                || value.startsWith("file:") || value.startsWith("jar:")
+                || (value.length() >= 3 && Character.isLetter(value.charAt(0))
+                        && value.charAt(1) == ':'
+                        && (value.charAt(2) == '/' || value.charAt(2) == '\\'))) {
+            int leafStart = Math.max(value.lastIndexOf('/'), value.lastIndexOf('\\'));
+            if (leafStart < 0) return "<unknown>";
+            value = value.substring(leafStart + 1);
+        }
 
         int query = value.indexOf('?');
         int fragment = value.indexOf('#');
@@ -744,22 +772,6 @@ public final class OresAsyncTrace {
         if (query >= 0) cut = query;
         if (fragment >= 0 && (cut < 0 || fragment < cut)) cut = fragment;
         if (cut >= 0) value = value.substring(0, cut);
-
-        int scheme = value.indexOf("://");
-        if (scheme >= 0) {
-            int authorityStart = scheme + 3;
-            int slash = value.indexOf('/', authorityStart);
-            int authorityEnd = slash >= 0 ? slash : value.length();
-            int at = value.lastIndexOf('@', authorityEnd - 1);
-            if (at >= authorityStart) {
-                value = value.substring(0, authorityStart)
-                        + value.substring(at + 1);
-            }
-        }
-
-        if (value.length() > MAX_SOURCE_CHARS) {
-            value = value.substring(0, MAX_SOURCE_CHARS) + "…";
-        }
         return value.isBlank() ? "<unknown>" : value;
     }
 
