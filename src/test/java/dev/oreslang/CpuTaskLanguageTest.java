@@ -156,6 +156,23 @@ final class CpuTaskLanguageTest {
                 """));
     }
 
+    @Test void taskLocalShadowDoesNotDetachOuterCapability() throws Exception {
+        assertEquals("42", run("""
+                define class Box as
+                  pub let int value = 1;
+                end
+                pub async fnc main(): void {
+                  val mutex = Mutex.new(new Box());
+                  let Future<int> worker = task {
+                    const int mutex = 41;
+                    return mutex + 1;
+                  };
+                  stdio.stdout.write(await worker);
+                  return;
+                }
+                """));
+    }
+
     @Test void taskCapturesTransitiveNestedTaskReferences() throws Exception {
         assertEquals("42", run("""
                 pub async fnc main(): void {
