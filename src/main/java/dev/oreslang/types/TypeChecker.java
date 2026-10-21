@@ -3832,23 +3832,24 @@ public final class TypeChecker {
                         || name.name().equals("net")
                         || name.name().equals("http")
                         || name.name().equals("env"))) return Unknown.INSTANCE;
+            if (receiver instanceof ClassNamespace classNamespace
+                    && isCompilerJsonFactoryNamespace(classNamespace)) {
+                if (member.member().equals("null")) {
+                    return compilerJsonValueType();
+                }
+                if (member.member().equals("of")
+                        || member.member().equals("array")
+                        || member.member().equals("object")) {
+                    throw new IllegalArgumentException(
+                            "Json." + member.member()
+                                    + " is direct-call-only; invoke it instead of extracting a callable value");
+                }
+                throw new IllegalArgumentException(
+                        "unknown compiler-owned Json member '" + member.member() + "'");
+            }
             if (member.receiver() instanceof Ast.NameExpr name && importedValues.contains(name.name())) return Unknown.INSTANCE;
 
             if (receiver instanceof ClassNamespace classNamespace) {
-                if (isCompilerJsonFactoryNamespace(classNamespace)) {
-                    if (member.member().equals("null")) {
-                        return compilerJsonValueType();
-                    }
-                    if (member.member().equals("of")
-                            || member.member().equals("array")
-                            || member.member().equals("object")) {
-                        throw new IllegalArgumentException(
-                                "Json." + member.member()
-                                        + " is direct-call-only; invoke it instead of extracting a callable value");
-                    }
-                    throw new IllegalArgumentException(
-                            "unknown compiler-owned Json member '" + member.member() + "'");
-                }
                 Ast.ClassDecl klass = findClass(classNamespace.className());
                 if (klass == null) throw new IllegalArgumentException("unknown class namespace '" + classNamespace.className() + "'");
                 List<Ast.MethodDecl> functions = findStaticFunctionsByName(klass, member.member(), new LinkedHashSet<>());
