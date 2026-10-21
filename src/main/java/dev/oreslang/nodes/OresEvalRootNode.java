@@ -19,6 +19,7 @@ import dev.oreslang.runtime.HttpResponseDraft;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.OresKeyedMap;
 import dev.oreslang.runtime.OresJsonValue;
+import dev.oreslang.runtime.AllocJsonCodec;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
@@ -233,6 +234,43 @@ public final class OresEvalRootNode extends RootNode {
             return imported.names().size() == 1
                     && imported.names().getFirst().equals("Json")
                     && ImportRules.localName(imported, "Json").equals("Json");
+        }
+
+        private boolean isAllocJsonStringifyCall(
+                Ast.CallExpr call,
+                Env env) {
+            if (!allocJsonImported
+                    || !(call.callee() instanceof Ast.MemberExpr member)
+                    || !member.member().equals("stringify")
+                    || !(member.receiver() instanceof Ast.NameExpr namespace)
+                    || !namespace.name().equals("Json")) {
+                return false;
+            }
+            return env == null || env.lookup("Json") == Env.MISSING;
+        }
+
+        private Object stringifyAllocJsonEvaluated(
+                Ast.CallExpr call,
+                List<Object> values) {
+            if (call.typeArgumentsPresent()) {
+                throw new IllegalArgumentException(
+                        "Json.stringify does not accept call-site type arguments");
+            }
+            if (values.size() != 1) {
+                throw new IllegalArgumentException(
+                        "Json.stringify expects exactly one Map<String, JsonValue>");
+            }
+            Object value = values.getFirst();
+            if (!(value instanceof OresKeyedMap<?, ?> raw)
+                    || raw.keyDomain() != OresKeyedMap.KeyDomain.STRING
+                    || raw.valueDomain() != OresKeyedMap.ValueDomain.JSON) {
+                throw new IllegalArgumentException(
+                        "Json.stringify currently requires Map<String, JsonValue>");
+            }
+            @SuppressWarnings("unchecked")
+            OresKeyedMap<String, OresJsonValue> object =
+                    (OresKeyedMap<String, OresJsonValue>) raw;
+            return AllocJsonCodec.stringifyObject(object);
         }
 
         private void indexImports() {
@@ -4469,6 +4507,40 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.CallExpr call,
                 Env env,
                 SourceValueCont continuation) {
+            if (isAllocJsonStringifyCall(call, env)) {
+                if (call.typeArgumentsPresent()
+                        || call.arguments().size() != 1
+                        || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
+                    continuation.accept(
+                            task,
+                            null,
+                            new IllegalArgumentException(
+                                    "Json.stringify expects exactly one "
+                                            + "Map<String, JsonValue> and no type arguments"));
+                    return;
+                }
+                evalSuspendableArguments(
+                        task,
+                        call.arguments(),
+                        env,
+                        (t, values, failure) -> {
+                            if (failure != null) {
+                                continuation.accept(t, null, failure);
+                                return;
+                            }
+                            try {
+                                continuation.accept(
+                                        t,
+                                        stringifyAllocJsonEvaluated(call, values),
+                                        null);
+                            } catch (RuntimeException | Error stringifyFailure) {
+                                continuation.accept(
+                                        t, null, stringifyFailure);
+                            }
+                        });
+                return;
+            }
+
             if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
@@ -7191,6 +7263,18 @@ public final class OresEvalRootNode extends RootNode {
                 return applyRuntimeOwnership(runtime.operation(), value);
             }
             if (expr instanceof Ast.CallExpr call) {
+                if (isAllocJsonStringifyCall(call, env)) {
+                    if (call.typeArgumentsPresent()
+                            || call.arguments().size() != 1
+                            || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
+                        throw new IllegalArgumentException(
+                                "Json.stringify expects exactly one "
+                                        + "Map<String, JsonValue> and no type arguments");
+                    }
+                    return stringifyAllocJsonEvaluated(
+                            call,
+                            List.of(eval(call.arguments().getFirst(), env)));
+                }
                 if (isBooleanIntrinsicCall(call, env)) return evalBooleanIntrinsic(call, env);
                 return invoke(prepareInvocation(call, env));
             }
