@@ -1334,7 +1334,7 @@ public final class Parser {
                 continue;
             }
 
-            Ast.TypeRef type = parseTypeRef();
+            Ast.TypeRef type = parsePipeParameterType();
             boolean mutable = match(MUT);
             String name = consume(IDENT, "lambda-style callable declaration parameters require canonical 'Type name'").lexeme();
             if (structural && mutable) {
@@ -3832,7 +3832,7 @@ public final class Parser {
                     boolean mutable = match(MUT);
                     params.add(new Ast.Param(type, name, false, mutable));
                 } else {
-                    Ast.TypeRef type = parseTypeRef();
+                    Ast.TypeRef type = parsePipeParameterType();
                     boolean mutable = match(MUT);
                     String name = consume(IDENT, "expected lambda parameter name").lexeme();
                     params.add(new Ast.Param(type, name, false, mutable));
