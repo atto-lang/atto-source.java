@@ -9775,7 +9775,7 @@ public final class OresEvalRootNode extends RootNode {
         private void initialize(String name, Object value) {
             Slot slot = slots.get(name);
             if (slot == null) throw new IllegalArgumentException("unknown binding " + name);
-            slot.value = value;
+            slot.setValue(value);
         }
         private Slot lookupSlot(String name) {
             Slot slot = slots.get(name);
@@ -9785,12 +9785,12 @@ public final class OresEvalRootNode extends RootNode {
             Slot slot = lookupSlot(name);
             return slot == null ? null : slot.staticClassView;
         }
-        private Object lookup(String name) { Slot s=slots.get(name); return s!=null?s.value:parent==null?MISSING:parent.lookup(name); }
+        private Object lookup(String name) { Slot s=slots.get(name); return s!=null?s.value():parent==null?MISSING:parent.lookup(name); }
         private void assign(String name, Object value) {
             Slot slot = slots.get(name);
             if (slot != null) {
                 if (slot.kind != Ast.BindingKind.LET) throw new IllegalArgumentException("cannot reassign " + slot.kind.name().toLowerCase() + " binding " + name);
-                slot.value = value;
+                slot.setValue(value);
                 return;
             }
             if (parent != null) { parent.assign(name, value); return; }
@@ -9809,7 +9809,7 @@ public final class OresEvalRootNode extends RootNode {
         private boolean hasLiveMutexGuards() {
             Set<Object> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
             for (Slot slot : slots.values()) {
-                if (containsLiveMutexGuard(slot.value, seen)) return true;
+                if (containsLiveMutexGuard(slot.value(), seen)) return true;
             }
             return parent != null && parent.hasLiveMutexGuards();
         }
@@ -9863,7 +9863,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private void releaseMutexGuards(boolean failed) {
             Set<Object> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
-            for (Slot slot : slots.values()) releaseMutexGuardsInValue(slot.value, failed, seen);
+            for (Slot slot : slots.values()) releaseMutexGuardsInValue(slot.value(), failed, seen);
         }
 
         private static void releaseMutexGuardsInValue(Object value, boolean failed, Set<Object> seen) {
@@ -9928,8 +9928,10 @@ public final class OresEvalRootNode extends RootNode {
 
     private static final class Slot {
         private Object value;
+        private ActorNativeArena.ValueCell nativeCell;
         private final Ast.BindingKind kind;
         private final Ast.ClassDecl staticClassView;
+
         private Slot(
                 Object value,
                 Ast.BindingKind kind,
@@ -9937,6 +9939,53 @@ public final class OresEvalRootNode extends RootNode {
             this.value = value;
             this.kind = kind;
             this.staticClassView = staticClassView;
+            lowerInitialValueIfSupported();
+        }
+
+        private void lowerInitialValueIfSupported() {
+            if (value == Env.MISSING) return;
+            ActorNativeArena arena = ActorRuntime.currentNativeArena();
+            if (arena == null) return;
+            try {
+                nativeCell = arena.valueCell(value, Env.MISSING);
+                value = null;
+            } catch (IllegalArgumentException notLoweredYet) {
+                // Collections/ADTs/callables and other managed-only families
+                // remain an explicit transitional fallback. Arena/security
+                // failures are deliberately not swallowed.
+            }
+        }
+
+        private Object value() {
+            return nativeCell == null ? value : nativeCell.get();
+        }
+
+        private void setValue(Object next) {
+            if (nativeCell != null) {
+                if (nativeCell.trySet(next)) return;
+                // Preserve language semantics while a value family still lacks
+                // native lowering. The old native cell remains arena-owned and
+                // unreachable until actor retirement; its address is not reused.
+                nativeCell = null;
+                value = next;
+                return;
+            }
+
+            // Reserved bindings have not published a payload yet. Lower their
+            // first real value directly into the actor arena when possible.
+            if (value == Env.MISSING) {
+                ActorNativeArena arena = ActorRuntime.currentNativeArena();
+                if (arena != null) {
+                    try {
+                        nativeCell = arena.valueCell(next, Env.MISSING);
+                        value = null;
+                        return;
+                    } catch (IllegalArgumentException notLoweredYet) {
+                        // Explicit managed fallback pending native lowering.
+                    }
+                }
+            }
+            value = next;
         }
     }
 
