@@ -4342,7 +4342,8 @@ public final class TypeChecker {
         if (result != Primitive.VOID && !definitelyReturns(cpu.body())) {
             throw new IllegalArgumentException("cpu { } must return a value on every path");
         }
-        if (result instanceof Borrow || result == Unknown.INSTANCE) {
+        if (result == Unknown.INSTANCE || containsUnknown(result)
+                || containsChannelBorrow(result, new LinkedHashSet<>(), Map.of())) {
             throw new IllegalArgumentException(
                     "cpu { } cannot return an unproven or borrowed region-local value");
         }
