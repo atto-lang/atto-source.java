@@ -594,6 +594,19 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         writes = [r for m, r, _ in self.route_calls if m == "POST"]
         self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
 
+    def test_incident_reopen_after_preflight_blocks_before_private_source_read(self):
+        with (
+            patch.object(
+                pub, "require_resolved_blocking_incidents",
+                side_effect=pub.Denied("blocking P0 incident #22 remains unresolved"),
+            ),
+            patch.object(pub, "collect_source") as collect_source,
+        ):
+            with self.assertRaisesRegex(pub.Denied, "#22 remains unresolved"):
+                self.publish()
+        collect_source.assert_not_called()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
     def test_mid_transfer_incident_reopen_aborts_before_next_git_write(self):
         calls = 0
 
