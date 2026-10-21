@@ -62,6 +62,9 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     private volatile CarrierTopologyPlan topologyPlan;
     private final CarrierTopologyPlan.Location[] carrierLocations;
     private int observedCarrierLocations; // protected by publishCarrierLocation monitor
+    private final AtomicLong affinitySameCoreSteals = new AtomicLong();
+    private final AtomicLong affinitySameL2Steals = new AtomicLong();
+    /** Aggregate: core/L2/LLC-only steals all share the qualified LLC. */
     private final AtomicLong affinitySameLlcSteals = new AtomicLong();
     private final AtomicLong affinitySameNumaSteals = new AtomicLong();
     private final AtomicLong affinityRemoteSteals = new AtomicLong();
@@ -356,8 +359,16 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
             if (stolen != null) {
                 affinitySteals.incrementAndGet();
                 switch (plan.tier(thiefSlot, victimSlot)) {
-                    case 0 -> affinitySameLlcSteals.incrementAndGet();
-                    case 1 -> affinitySameNumaSteals.incrementAndGet();
+                    case 0 -> {
+                        affinitySameCoreSteals.incrementAndGet();
+                        affinitySameLlcSteals.incrementAndGet();
+                    }
+                    case 1 -> {
+                        affinitySameL2Steals.incrementAndGet();
+                        affinitySameLlcSteals.incrementAndGet();
+                    }
+                    case 2 -> affinitySameLlcSteals.incrementAndGet();
+                    case 3 -> affinitySameNumaSteals.incrementAndGet();
                     default -> affinityRemoteSteals.incrementAndGet();
                 }
                 clearLaneAgeIfEmpty(victimSlot, victim);
@@ -623,6 +634,8 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     public long getCompletedTaskCount() { return completedTaskCount.get(); }
     public long getAffinityPreferredHitCount() { return affinityPreferredHits.get(); }
     public long getAffinityStealCount() { return affinitySteals.get(); }
+    public long getAffinitySameCoreStealCount() { return affinitySameCoreSteals.get(); }
+    public long getAffinitySameL2StealCount() { return affinitySameL2Steals.get(); }
     public long getAffinitySameLlcStealCount() { return affinitySameLlcSteals.get(); }
     public long getAffinitySameNumaStealCount() { return affinitySameNumaSteals.get(); }
     public long getAffinityRemoteStealCount() { return affinityRemoteSteals.get(); }
