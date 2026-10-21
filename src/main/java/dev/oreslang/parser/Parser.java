@@ -3776,11 +3776,19 @@ public final class Parser {
                 if (check(IDENT) && (checkNext(COMMA) || checkNext(PIPE))) {
                     String name = advance().lexeme();
                     params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, false));
+                } else if (check(IDENT) && checkNext(COLON)) {
+                    String name = advance().lexeme();
+                    consume(COLON, "expected ':' after lambda parameter name");
+                    boolean explicitStructural = matchContextualKeyword("structural");
+                    Ast.TypeRef type = parseTypeRef();
+                    boolean mutable = match(MUT);
+                    params.add(normalizedStructuralParameter(type, name, explicitStructural, mutable));
                 } else {
+                    boolean explicitStructural = matchContextualKeyword("structural");
                     Ast.TypeRef type = parseTypeRef();
                     boolean mutable = match(MUT);
                     String name = consume(IDENT, "expected lambda parameter name").lexeme();
-                    params.add(new Ast.Param(type, name, false, mutable));
+                    params.add(normalizedStructuralParameter(type, name, explicitStructural, mutable));
                 }
             } while (match(COMMA));
         }
