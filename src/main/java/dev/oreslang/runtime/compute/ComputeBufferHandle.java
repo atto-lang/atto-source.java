@@ -115,6 +115,9 @@ public final class ComputeBufferHandle<T> {
         if (!device.sameAuthority(expectedDevice) || !ownerDomain.equals(expectedOwnerDomain)) {
             throw new IllegalArgumentException("foreign compute retirement authority");
         }
+        if (state == State.RETIRED) {
+            throw new IllegalStateException("compute allocation already retired");
+        }
         if (state == State.IN_FLIGHT || !backendQuiescent) {
             throw new IllegalStateException("compute allocation is not quiescent");
         }
