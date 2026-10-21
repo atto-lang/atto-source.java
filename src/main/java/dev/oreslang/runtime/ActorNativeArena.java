@@ -171,6 +171,13 @@ public final class ActorNativeArena implements AutoCloseable {
         }
         long slots = allocate(Math.multiplyExact(layout.size(), SLOT_BYTES));
         Fields fields = new Fields(layout, slots, uninitialized);
+        // calloc zeroes native bytes to the NULL tag. A declared-but-not-yet
+        // initialized field is semantically distinct from null, so publish the
+        // explicit UNINITIALIZED tag for every fixed slot before exposing the
+        // field facade.
+        for (int index = 0; index < layout.size(); index++) {
+            storeValue(slots + (long) index * SLOT_BYTES, uninitialized, uninitialized);
+        }
         issuedNativeOffsets.put(fields, slots);
         return fields;
     }
