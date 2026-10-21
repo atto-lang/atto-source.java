@@ -390,6 +390,11 @@ public final class TreeShaker {
                 }
                 return new Ast.ObjectExpr(fields, object.kind(), object.declaredFields());
             }
+            if (expression instanceof Ast.CpuRegionExpr cpu) {
+                // Keep the type-checked region identity; its body is an
+                // independently returning execution/ownership scope.
+                return cpu;
+            }
             if (expression instanceof Ast.TaskExpr task) {
                 // A Task is an execution/capture boundary. Never substitute
                 // caller expressions through it during constant inlining.
@@ -998,6 +1003,9 @@ public final class TreeShaker {
                 }
                 return new Ast.ObjectExpr(fields, object.kind(), object.declaredFields());
             }
+            if (expression instanceof Ast.CpuRegionExpr cpu) {
+                return cpu; // checked eager-region identity and effects survive DCE
+            }
             if (expression instanceof Ast.TaskExpr task) {
                 // Task spawns have observable effects and ownership moves.
                 // Keep the exact checked body; reachability scanner below
@@ -1389,6 +1397,8 @@ public final class TreeShaker {
                 for (Ast.ObjectField field : object.fields()) {
                     scanExpression(module, field.value(), locals);
                 }
+            } else if (expression instanceof Ast.CpuRegionExpr cpu) {
+                scanStatements(module, cpu.body(), new LinkedHashSet<>(locals));
             } else if (expression instanceof Ast.TaskExpr task) {
                 scanStatements(module, task.body(), new LinkedHashSet<>(locals));
             } else if (expression instanceof Ast.LambdaExpr lambda) {
