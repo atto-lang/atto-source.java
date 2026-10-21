@@ -4957,7 +4957,7 @@ public final class OresEvalRootNode extends RootNode {
                                 @SuppressWarnings("unchecked")
                                 OresKeyedMap<String, OresJsonValue> jsonMap =
                                         (OresKeyedMap<String, OresJsonValue>) map;
-                                yield OresJsonValue.stringify(jsonMap);
+                                yield OresJsonValue.stringifyObject(jsonMap);
                             }
                             throw new IllegalArgumentException(
                                     "Json.stringify requires JsonValue or Map<String, JsonValue>");
