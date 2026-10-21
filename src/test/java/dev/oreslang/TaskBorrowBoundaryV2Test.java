@@ -193,6 +193,24 @@ final class TaskBorrowBoundaryV2Test {
     }
 
     @Test
+    void nonSendCapabilityCannotBeLaunderedThroughOwnedClass() {
+        rejectsWith("""
+                define class UnsafeWrapper as
+                  pub let Mutex<Box> lock = Mutex.new(new Box());
+                end
+                pub async fnc main(): void {
+                  let UnsafeWrapper wrapper = new UnsafeWrapper();
+                  let Future<int> child = task {
+                    let UnsafeWrapper moved = wrapper;
+                    return 1;
+                  };
+                  stdio.stdout.write(await child);
+                  return;
+                }
+                """, "non-Send", "capability");
+    }
+
+    @Test
     void immutableCopyValueMayBeCapturedWithoutMovingParent() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 pub async fnc main(): void {
