@@ -377,9 +377,9 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
                 throw new RejectedExecutionException("native carrier executor is shut down");
             }
             corePoolSize.set(value);
+            nativeSetDesired(nativeHandle, value);
             if (carriersStarted) {
                 largestPoolSize.accumulateAndGet(value, Math::max);
-                nativeSetDesired(nativeHandle, value);
             }
         }
     }
