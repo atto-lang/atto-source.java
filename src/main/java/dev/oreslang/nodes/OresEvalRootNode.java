@@ -133,6 +133,7 @@ public final class OresEvalRootNode extends RootNode {
         private final Ast.Program program;
         private final OresContext context;
         private final String codeUnitId;
+        private final boolean compilerJsonValueImported;
         // Actor carriers may enter the same evaluator concurrently. The
         // identity map only retains call nodes already owned by this program.
         private final Map<Ast.CallExpr, Integer> optionDepthCache =
@@ -217,6 +218,8 @@ public final class OresEvalRootNode extends RootNode {
             this.program = program;
             this.context = context;
             this.codeUnitId = normalizeUnitId(codeUnitId);
+            this.compilerJsonValueImported = program.imports().stream()
+                    .anyMatch(ImportRules::isAllocJsonValueImport);
             indexImports();
             indexDeclarations();
             indexCallableSlots();
@@ -5232,6 +5235,12 @@ public final class OresEvalRootNode extends RootNode {
             Ast.TypeRef valueType = type.arguments().get(1);
             OresKeyedMap.ValueDomain values = mapValueDomain(valueType);
 
+            if (values == OresKeyedMap.ValueDomain.JSON
+                    && !isStringMapKeyType(keyType)) {
+                throw new IllegalArgumentException(
+                        "Map<String, JsonValue> requires a String-only key domain");
+            }
+
             if (!keyType.isUnion()) {
                 if (!keyType.inferArguments() && keyType.arguments().isEmpty()) {
                     if (keyType.name().equals("String")
@@ -5273,10 +5282,13 @@ public final class OresEvalRootNode extends RootNode {
                     && type.name().equals("Symbol");
         }
 
-        private static OresKeyedMap.ValueDomain mapValueDomain(Ast.TypeRef type) {
+        private OresKeyedMap.ValueDomain mapValueDomain(Ast.TypeRef type) {
             if (type.inferArguments() || !type.arguments().isEmpty()) {
                 throw new IllegalArgumentException(
-                        "closed Map<K,V> v1 values must be int, string, bool, or Symbol");
+                        "closed Map<K,V> values require a directly named value type");
+            }
+            if (compilerJsonValueImported && type.name().equals("JsonValue")) {
+                return OresKeyedMap.ValueDomain.JSON;
             }
             if (Set.of(
                     "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
@@ -5293,7 +5305,8 @@ public final class OresEvalRootNode extends RootNode {
                 return OresKeyedMap.ValueDomain.SYMBOL;
             }
             throw new IllegalArgumentException(
-                    "closed Map<K,V> v1 values must be int, string, bool, or Symbol");
+                    "closed Map<K,V> values must be int, string, bool, Symbol, "
+                            + "or imported alloc/json JsonValue");
         }
 
         private Object instantiateEvaluated(
