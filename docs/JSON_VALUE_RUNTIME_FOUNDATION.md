@@ -108,10 +108,21 @@ The runtime/evaluator half of commit-aware ownership transfer is now present.
   recover the rejected candidate before rethrowing admission failure, and
   consume the previous-value token after commit.
 
-Source `Map<String, JsonValue>` nevertheless remains gated. The ownership
-checker does not yet model the conditional exceptional edge "move on commit,
-restore on admission failure" for a source-visible move-only Map value.
-General try/catch move tracking is deliberately conservative, so this compiler
-edge must land before recursive Map values are admitted through `alloc/json`.
-Until then, the runtime primitive is executable infrastructure rather than a
-guest-language ownership claim.
+The ownership checker now models the conditional exceptional edge for the
+narrow source shapes we can prove today:
+
+- terminal direct indexed assignment `m[key] = value;`;
+- terminal direct named `m.put(key, value);`;
+- terminal direct binding from `m.put(key, value)`.
+
+For those forms, the normal path consumes the move-only candidate while the
+innermost admission-failure catch sees the candidate restored. A non-terminal
+write remains conservative, as do top-level-defer/live-MutexGuard cases.
+Nested tries suppress recovery only for the innermost catch; every enclosing
+try still observes the committed move so a later outer failure cannot reuse it.
+
+Source `Map<String, JsonValue>` is still unavailable, but the remaining gate
+is now module/type-surface work rather than this ownership edge: `JsonValue`
+must first resolve only through `alloc/json`, and the typed-Map frontend must
+admit that recursive value descriptor without broadening the closed scalar
+surface accidentally.
