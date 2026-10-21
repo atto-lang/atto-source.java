@@ -386,13 +386,22 @@ public final class LinkedProgramRunner {
         BoundedSourceReader.ReadResult source = BoundedSourceReader.readWithByteCount(normalized);
         budget.admit(source.byteCount(), depth);
         MixedSourceUnit mixed = MixedSourceUnit.parse(normalized, source.text());
+        if (mixed.hasJavaSource()) {
+            throw new SecurityException(
+                    "guest/user source cannot contain Java/FFI source islands; "
+                            + "privileged native bridges are reserved for compiler-owned core/stdlib");
+        }
         units.put(id, mixed);
         if (!mixed.hasOresSource()) return;
 
         Ast.Program program = Parser.parse(mixed.oresSource());
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
-            if (ImportRules.isJavaPath(imported.path())) continue;
+            if (ImportRules.isJavaPath(imported.path())) {
+                throw new SecurityException(
+                        "guest/user source cannot import Java host classes: " + imported.path()
+                                + "; use a typed core/stdlib API");
+            }
 
             if (CoreLibrarySources.isCoreImport(imported.path())) {
                 String targetId = CoreLibrarySources.unitId(imported.path());
