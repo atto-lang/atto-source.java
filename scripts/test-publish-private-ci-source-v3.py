@@ -1198,7 +1198,10 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3, "require_exact_ref") as require_exact_ref,
                 patch.object(
                     v3.legacy, "checked_repo",
-                    return_value={"id": carrier["repository_id"]},
+                    return_value={
+                        "id": carrier["repository_id"],
+                        "permissions": {"pull": True, "push": True},
+                    },
                 ),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
             ):
@@ -1341,7 +1344,10 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3, "require_exact_ref"),
                 patch.object(
                     v3.legacy, "checked_repo",
-                    return_value={"id": carrier["repository_id"]},
+                    return_value={
+                        "id": carrier["repository_id"],
+                        "permissions": {"pull": True, "push": True},
+                    },
                 ),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
@@ -1410,7 +1416,10 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3, "require_exact_ref"),
                 patch.object(
                     v3.legacy, "checked_repo",
-                    return_value={"id": carrier["repository_id"]},
+                    return_value={
+                        "id": carrier["repository_id"],
+                        "permissions": {"pull": True, "push": True},
+                    },
                 ),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
@@ -1481,7 +1490,10 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3, "require_exact_ref"),
                 patch.object(
                     v3.legacy, "checked_repo",
-                    return_value={"id": carrier["repository_id"]},
+                    return_value={
+                        "id": carrier["repository_id"],
+                        "permissions": {"pull": True, "push": True},
+                    },
                 ),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
@@ -1555,7 +1567,10 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3, "require_exact_ref"),
                 patch.object(
                     v3.legacy, "checked_repo",
-                    return_value={"id": carrier["repository_id"]},
+                    return_value={
+                        "id": carrier["repository_id"],
+                        "permissions": {"pull": True, "push": True},
+                    },
                 ),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
@@ -1675,7 +1690,10 @@ class PrivateCiV3Test(unittest.TestCase):
                         patch.object(v3, "require_exact_ref"),
                         patch.object(
                             v3.legacy, "checked_repo",
-                            return_value={"id": carrier["repository_id"]},
+                            return_value={
+                        "id": carrier["repository_id"],
+                        "permissions": {"pull": True, "push": True},
+                    },
                         ),
                         patch.object(v3.legacy, "gh_api", side_effect=api),
                         patch.object(v3, "delete_exact_ref") as cleanup,
@@ -1870,6 +1888,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 "full_name": "trusted/ci",
                 "private": True,
                 "visibility": "private",
+                "permissions": {"pull": True, "push": True},
             },
         ):
             for payload in payloads:
@@ -1958,6 +1977,7 @@ class PrivateCiV3Test(unittest.TestCase):
                     "full_name": "trusted/ci",
                     "private": True,
                     "visibility": "private",
+                    "permissions": {"pull": True, "push": True},
                 },
             ) as checked_repo,
         ):
@@ -1967,6 +1987,60 @@ class PrivateCiV3Test(unittest.TestCase):
                 )
             )
         checked_repo.assert_called_once_with("trusted/ci")
+
+    def test_live_ref_404_requires_explicit_ref_read_write_permission(self):
+        response = type(
+            "Result", (),
+            {"returncode": 1, "stderr": "gh: Not Found (HTTP 404)\n", "stdout": ""},
+        )()
+        denied = (
+            {},
+            {"pull": True},
+            {"push": True},
+            {"pull": True, "push": False},
+            {"pull": False, "push": True},
+        )
+        for permissions in denied:
+            with self.subTest(permissions=permissions), (
+                patch.object(v3, "_gh_ref_request", return_value=response) as request,
+                patch.object(
+                    v3.legacy,
+                    "checked_repo",
+                    return_value={
+                        "id": 1323598177,
+                        "full_name": "trusted/ci",
+                        "private": True,
+                        "visibility": "private",
+                        "permissions": permissions,
+                    },
+                ),
+            ):
+                with self.assertRaisesRegex(v3.Denied, "ref read/write permission"):
+                    v3.live_ref_sha(
+                        "trusted/ci", "ci/authorized-" + COMMIT, 1323598177
+                    )
+                request.assert_not_called()
+
+    def test_create_handoff_ref_requires_explicit_ref_read_write_permission(self):
+        with (
+            patch.object(
+                v3.legacy,
+                "checked_repo",
+                return_value={
+                    "id": 1323598177,
+                    "full_name": "trusted/ci",
+                    "private": True,
+                    "visibility": "private",
+                    "permissions": {"pull": True, "push": False},
+                },
+            ),
+            patch.object(v3.legacy, "gh_api") as api,
+        ):
+            with self.assertRaisesRegex(v3.Denied, "ref read/write permission"):
+                v3.create_handoff_ref(
+                    "trusted/ci", "ci/authorized-" + COMMIT, COMMIT, 1323598177
+                )
+            api.assert_not_called()
 
     def test_delete_exact_ref_missing_is_idempotent(self):
         with patch.object(v3, "live_ref_sha", return_value=None):
