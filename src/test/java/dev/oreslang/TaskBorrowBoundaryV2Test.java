@@ -437,6 +437,45 @@ final class TaskBorrowBoundaryV2Test {
     }
 
     @Test
+    void builtinMailboxCapabilityCannotBeForgedByNominalName() throws Exception {
+        var program = Parser.parse("""
+                define class ActorRef<T> as
+                  pub let Rc<int> unsafePayload;
+                end
+                pub fnc main(): void { return; }
+                """);
+        var constructor = OwnershipChecker.class.getDeclaredConstructor(
+                dev.oreslang.ast.Ast.Program.class, java.util.Map.class);
+        constructor.setAccessible(true);
+        var checker = constructor.newInstance(program, java.util.Map.of());
+        var gate = OwnershipChecker.class.getDeclaredMethod(
+                "forbiddenTaskCapability", dev.oreslang.ast.Ast.TypeRef.class);
+        gate.setAccessible(true);
+        var claimedMailbox = new dev.oreslang.ast.Ast.TypeRef(
+                "ActorRef", java.util.List.of(
+                        dev.oreslang.ast.Ast.TypeRef.simple("Worker")), false);
+        assertTrue((Boolean) gate.invoke(checker, claimedMailbox),
+                "same-named user classes must not inherit ActorRef Send authority");
+    }
+
+    @Test
+    void actorRefWithUnprovenTargetDoesNotGainTaskSendAuthority() throws Exception {
+        var program = Parser.parse("pub fnc main(): void { return; }");
+        var constructor = OwnershipChecker.class.getDeclaredConstructor(
+                dev.oreslang.ast.Ast.Program.class, java.util.Map.class);
+        constructor.setAccessible(true);
+        var checker = constructor.newInstance(program, java.util.Map.of());
+        var gate = OwnershipChecker.class.getDeclaredMethod(
+                "forbiddenTaskCapability", dev.oreslang.ast.Ast.TypeRef.class);
+        gate.setAccessible(true);
+        var unverified = new dev.oreslang.ast.Ast.TypeRef(
+                "ActorRef", java.util.List.of(
+                        dev.oreslang.ast.Ast.TypeRef.simple("UndeclaredActor")), false);
+        assertTrue((Boolean) gate.invoke(checker, unverified),
+                "ActorRef<T> requires proven actor target metadata");
+    }
+
+    @Test
     void canonicalRtCopyAndRtShareScalarsRemainSafeInTasks() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 pub async fnc main(): void {
