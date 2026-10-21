@@ -162,6 +162,53 @@ final class StreamConcurrencyTest {
     }
 
     @Test
+    void closeAndPendingWriterCancellationRaceCannotCommitRejectedValue() throws Exception {
+        ExecutorService workers = Executors.newFixedThreadPool(2);
+        try {
+            for (int round = 0; round < 64; round++) {
+                OresStream<Integer> stream = new OresStream<>(1);
+                assertTrue(stream.channel().tryWrite(99));
+                OresFuture<Void> pending = stream.channel().writeAsync(100 + round);
+                assertFalse(pending.isDone());
+                java.util.concurrent.CountDownLatch start =
+                        new java.util.concurrent.CountDownLatch(1);
+                Future<?> closing = workers.submit(() -> {
+                    try {
+                        start.await();
+                        stream.close();
+                    } catch (InterruptedException interruption) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(interruption);
+                    }
+                });
+                Future<?> cancelling = workers.submit(() -> {
+                    try {
+                        start.await();
+                        pending.cancel(false);
+                    } catch (InterruptedException interruption) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(interruption);
+                    }
+                });
+                start.countDown();
+                closing.get(5, TimeUnit.SECONDS);
+                cancelling.get(5, TimeUnit.SECONDS);
+                assertTrue(stream.isClosed());
+                assertTrue(pending.isDone());
+                assertEquals(0, stream.channel().pendingRegistrations(),
+                        "pending writer remained registered after close/cancel");
+                assertEquals(99, stream.channel().tryRead().orElseThrow().intValue());
+                if (!pending.isCancelled()) {
+                    assertClosed(pending::join);
+                }
+                assertClosed(() -> stream.channel().readAsync().join());
+            }
+        } finally {
+            workers.shutdownNow();
+        }
+    }
+
+    @Test
     void concurrentConsumersDeliverEveryCommittedItemExactlyOnce() throws Exception {
         final int count = 256;
         OresStream<Integer> stream = new OresStream<>(8);
