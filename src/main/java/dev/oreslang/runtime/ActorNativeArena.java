@@ -109,6 +109,90 @@ public final class ActorNativeArena implements AutoCloseable {
         }
     }
 
+    /**
+     * One actor-local scalar/reference slot for lowered lexical bindings.
+     * The Java Env/Slot object may remain as metadata, but supported guest
+     * payloads live in this arena and therefore inherit actor ownership,
+     * lifetime, and stale-access checks.
+     */
+    public synchronized ValueCell valueCell(Object initial, Object uninitialized) {
+        checkAccess();
+        if (!supportsValue(initial, uninitialized)) {
+            throw new IllegalArgumentException(
+                    "actor local requires native value lowering for "
+                            + (initial == null ? "null" : initial.getClass().getName()));
+        }
+        long slot = allocate(SLOT_BYTES);
+        ValueCell cell = new ValueCell(slot, uninitialized);
+        issuedNativeOffsets.put(cell, slot);
+        storeValue(slot, initial, uninitialized);
+        return cell;
+    }
+
+    public final class ValueCell implements NativeValue {
+        private final long slot;
+        private final Object uninitialized;
+
+        private ValueCell(long slot, Object uninitialized) {
+            this.slot = slot;
+            this.uninitialized = uninitialized;
+        }
+
+        @Override public ActorNativeArena nativeArena() { return ActorNativeArena.this; }
+
+        @Override public long nativeOffset() {
+            synchronized (ActorNativeArena.this) {
+                checkAccess();
+                return slot;
+            }
+        }
+
+        public Object get() {
+            synchronized (ActorNativeArena.this) {
+                checkAccess();
+                return loadValue(slot, uninitialized);
+            }
+        }
+
+        /**
+         * Store in place when this value family has native lowering.
+         * Unsupported managed-only values return false so the evaluator can
+         * retain an explicit fallback until that family is lowered.
+         */
+        public boolean trySet(Object value) {
+            synchronized (ActorNativeArena.this) {
+                checkAccess();
+                if (!supportsValue(value, uninitialized)) return false;
+                storeValue(slot, value, uninitialized);
+                return true;
+            }
+        }
+    }
+
+    private boolean supportsValue(Object value, Object uninitialized) {
+        if (value == null || value == uninitialized
+                || value instanceof Boolean || value instanceof Byte
+                || value instanceof Short || value instanceof Integer
+                || value instanceof Long || value instanceof Float
+                || value instanceof Double || value instanceof Character
+                || value instanceof String || value instanceof BigInteger
+                || value instanceof BigDecimal || value instanceof OresSymbol) {
+            return true;
+        }
+        if (value instanceof NativeValue nativeValue) {
+            if (nativeValue.nativeArena() != this) {
+                throw new SecurityException("foreign actor arena reference");
+            }
+            long address = nativeValue.nativeOffset();
+            Long issued = issuedNativeOffsets.get(nativeValue);
+            if (address < 0 || issued == null || issued.longValue() != address) {
+                throw new SecurityException("actor-native reference was not issued by this arena");
+            }
+            return true;
+        }
+        return false;
+    }
+
     public synchronized long committedBytes() { return committed; }
     public synchronized long allocatedBytes() { return allocated; }
     public synchronized boolean closed() { return closed; }
