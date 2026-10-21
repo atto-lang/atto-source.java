@@ -32,9 +32,15 @@ Security authorization remains tracked by issue #962.
    changes to authorise their own transfer.
 4. Require the destination's immutable workflow/plan blob SHAs, approved
    fixed base commit, and a scoped one-use authorization.
-5. On the destination, verify the nested source subtree SHA (e.g.
-   `git rev-parse HEAD:source`) equals the authenticated Git tree SHA
-   from the candidate source commit **before** any code executes.
+5. On the destination, require `HEAD:private-oreslang-source` to
+   be an actual Git **tree**, not a blob or symlink, and compare its full
+   SHA against the authenticated candidate source tree. Use the reviewed,
+   fixed-base carrier copy of the source-free Rust
+   `verify-private-source-subtree` guard, **not code from the unverified
+   nested source**. Run it before compiling any mirrored files. Wrong
+   digest, replaced checkout, nested working directory, or changed tree
+   fails closed; the expected SHA must be supplied by the independent
+   reviewer-pinned source attestation, never read from the carrier itself.
 6. Do not print the source code, source files, tokens or binary artifacts
    into public logs. No source-tree transfer to public/internal repos.
 7. Recheck authorization during every write batch; treat revocation,
@@ -50,12 +56,15 @@ is **capacity evidence only**, not authorization to export private source.
 ## Tests on the exact approved source tree
 
 Before Maven, compile the zero-dependency `tools/ownership-syntax-audit.rs`
-with `rustc --edition=2021` and run its embedded tests. Run `--report`
-across the source tree until all unintended legacy syntax is removed; only
-then enable `--strict`. The tool was independently tested with synthetic
-fixtures in private alternate-org Actions run
-https://github.com/ores-otel-test/legacy-java-consumer/actions/runs/39670220806 .
-This does **not** test private Oreslang source or approve its transfer.
+with `rustc --edition=2021` and run its embedded tests. Require the
+`--strict` whole-repository gate before Maven; it includes src, docs,
+contracts, formal models, CI, tooling, and examples. Its standalone Rust
+unit and synthetic strict-mode tests passed in private alternate-org CI
+https://github.com/ores-otel-test/legacy-java-consumer/actions/runs/39681504483 .
+The separate Rust nested-tree admission/verifier (real Git trees, synthetic
+altered-source and wrong-root cases) passed in private alternate-org CI
+https://github.com/ores-otel-test/legacy-java-consumer/actions/runs/39682065900 .
+Neither source-free test proves the Oreslang compiler or authorizes a transfer.
 
 Use the reviewed JDK25/GraalVM runner toolchain. Run a Maven compile followed
 by the focused JUnit matrix, then the full Java/Truffle suite:
