@@ -1321,9 +1321,10 @@ public final class OwnershipChecker {
             }
             // Generic deferred callbacks are not a complete Task Send proof:
             // they may run under a mailbox's existing authority. A new Task
-            // must not capture a capability the runtime cannot safely detach.
-            // Preserve the explicitly synchronized Channel<T> source-Task seam;
-            // Future, guards and foreign/scheduler authority stay local.
+            // needs a compiler-derived Send proof from the canonical
+            // AutoTraitRules lattice. Task-specific runtime seams are limited
+            // to affine Future<T> MOVE and synchronized Channel<T> handles;
+            // guards, Rc and foreign/scheduler authority remain non-Send.
             for (Capture capture : captured.values.values()) {
                 if (!capture.source.type.isBorrow()
                         && forbiddenTaskCapability(capture.source.type)) {
