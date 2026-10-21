@@ -77,6 +77,152 @@ final class ScopedTaskReadRuntimeTest {
         }
     }
 
+
+    @Test
+    void writeLeaseBlocksReaderAdmissionUntilPhysicalWriteEnds() {
+        Ast.Program program = OresCompiler.parseAndTypeCheck("""
+                pub async fnc main(): void {
+                  let Future<int> child = task { return 1; };
+                  stdio.stdout.write(await child);
+                  return;
+                }
+                """);
+        Ast.TaskExpr boundary = firstTask(program);
+        long epoch = Ast.CheckedTaskCaptures.requireProgramEpoch(program);
+        var allocation = new ScopedTaskReadAuthority.AllocationIdentity(
+                "PROCESS", "root", 303, 2, true);
+        var authority = ScopedTaskReadAuthority.prove(
+                program,
+                boundary,
+                epoch,
+                allocation,
+                List.of(),
+                new AutoTraitRules.Capabilities(true, true, false));
+
+        try (OresScheduler scheduler = new OresScheduler(1);
+             ScopedTaskReadRuntime.WriteLease ignored =
+                     ScopedTaskReadRuntime.acquireWrite(allocation)) {
+            assertTrue(ScopedTaskReadRuntime.writeHeldForTesting(allocation));
+            assertThrows(IllegalStateException.class,
+                    () -> ScopedTaskReadRuntime.start(
+                            scheduler,
+                            resume -> OresScheduler.done(1),
+                            authority,
+                            program,
+                            boundary,
+                            epoch,
+                            allocation.allocationId(),
+                            allocation.generation()));
+        }
+
+        assertFalse(ScopedTaskReadRuntime.writeHeldForTesting(allocation));
+        assertDoesNotThrow(
+                () -> ScopedTaskReadRuntime.requireWritable(allocation));
+    }
+
+    @Test
+    void readerAndWriterAdmissionAreLinearizedUnderRace() throws Exception {
+        Ast.Program program = OresCompiler.parseAndTypeCheck("""
+                pub async fnc main(): void {
+                  let Future<int> child = task { return 1; };
+                  stdio.stdout.write(await child);
+                  return;
+                }
+                """);
+        Ast.TaskExpr boundary = firstTask(program);
+        long epoch = Ast.CheckedTaskCaptures.requireProgramEpoch(program);
+        var allocation = new ScopedTaskReadAuthority.AllocationIdentity(
+                "PROCESS", "root", 404, 6, true);
+        var authority = ScopedTaskReadAuthority.prove(
+                program,
+                boundary,
+                epoch,
+                allocation,
+                List.of(),
+                new AutoTraitRules.Capabilities(true, true, false));
+
+        for (int round = 0; round < 128; round++) {
+            CountDownLatch start = new CountDownLatch(1);
+            CountDownLatch taskRelease = new CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicReference<
+                    ScopedTaskReadRuntime.WriteLease> writeLease =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            java.util.concurrent.atomic.AtomicReference<Throwable> readerFailure =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            java.util.concurrent.atomic.AtomicReference<Throwable> writerFailure =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+
+            try (OresScheduler scheduler = new OresScheduler(1)) {
+                Thread reader = Thread.ofPlatform().start(() -> {
+                    try {
+                        start.await();
+                        ScopedTaskReadRuntime.start(
+                                scheduler,
+                                resume -> {
+                                    taskRelease.await(5, TimeUnit.SECONDS);
+                                    return OresScheduler.done(1);
+                                },
+                                authority,
+                                program,
+                                boundary,
+                                epoch,
+                                allocation.allocationId(),
+                                allocation.generation());
+                    } catch (Throwable failure) {
+                        readerFailure.set(failure);
+                    }
+                });
+                Thread writer = Thread.ofPlatform().start(() -> {
+                    try {
+                        start.await();
+                        writeLease.set(
+                                ScopedTaskReadRuntime.acquireWrite(allocation));
+                    } catch (Throwable failure) {
+                        writerFailure.set(failure);
+                    }
+                });
+
+                start.countDown();
+                reader.join(5000);
+                writer.join(5000);
+                assertFalse(reader.isAlive());
+                assertFalse(writer.isAlive());
+
+                boolean readerWon = readerFailure.get() == null;
+                boolean writerWon = writerFailure.get() == null;
+                assertNotEquals(readerWon, writerWon,
+                        "exactly one conflicting READ/WRITE admission must win");
+
+                if (writerWon) {
+                    assertTrue(ScopedTaskReadRuntime.writeHeldForTesting(allocation));
+                    assertEquals(0,
+                            ScopedTaskReadRuntime.activeReadersForTesting(allocation));
+                    writeLease.get().close();
+                } else {
+                    assertEquals(1,
+                            ScopedTaskReadRuntime.activeReadersForTesting(allocation));
+                    assertFalse(ScopedTaskReadRuntime.writeHeldForTesting(allocation));
+                    taskRelease.countDown();
+                    long deadline =
+                            System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                    while (ScopedTaskReadRuntime.activeReadersForTesting(allocation) != 0
+                            && System.nanoTime() < deadline) {
+                        Thread.onSpinWait();
+                    }
+                    assertEquals(0,
+                            ScopedTaskReadRuntime.activeReadersForTesting(allocation));
+                }
+            } finally {
+                taskRelease.countDown();
+                ScopedTaskReadRuntime.WriteLease lease = writeLease.get();
+                if (lease != null
+                        && ScopedTaskReadRuntime.writeHeldForTesting(allocation)) {
+                    lease.close();
+                }
+            }
+        }
+    }
+
     @Test
     void staleGenerationDoesNotBlockReplacementAllocation() {
         var oldAllocation = new ScopedTaskReadAuthority.AllocationIdentity(
