@@ -101,6 +101,17 @@ public final class ActorLinearMemory {
     }
 
     /**
+     * Translate a guest-linear byte offset to the arena's canonical
+     * actor-relative logical address. The result is not a host pointer.
+     */
+    long actorOffset(long offset) {
+        synchronized (arena) {
+            checkRange(offset, 1);
+            return Math.addExact(page(offset).nativeOffset(), inPage(offset));
+        }
+    }
+
+    /**
      * Borrow one committed native page (or a bounded slice of it) read-only.
      * Writes to that entire page are frozen until the lease is closed.
      * No address, ByteBuffer or mutable view escapes the actor arena.
