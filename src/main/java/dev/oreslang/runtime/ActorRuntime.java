@@ -319,6 +319,22 @@ public final class ActorRuntime implements AutoCloseable {
 
     public enum CarrierBackend { NATIVE_PTHREAD, JVM_THREAD_POOL }
 
+    /** Host-visible snapshot of the three eagerly-created GraalVM actor pools. */
+    public record ActorThreadPoolStatus(
+            ActorThreadPoolDomain domain,
+            int configuredParallelism,
+            int workerThreads) {
+        public ActorThreadPoolStatus {
+            Objects.requireNonNull(domain, "domain");
+            if (configuredParallelism <= 0) {
+                throw new IllegalArgumentException("configuredParallelism must be > 0");
+            }
+            if (workerThreads < 0) {
+                throw new IllegalArgumentException("workerThreads must be >= 0");
+            }
+        }
+    }
+
     private static final String CARRIER_BACKEND_PROPERTY = "ores.runtime.carriers";
 
     public record DispatcherConfig(
@@ -600,6 +616,28 @@ public final class ActorRuntime implements AutoCloseable {
     public IsolatePolicy policyCeiling() { return policyCeiling; }
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
     public int maxActors() { return dispatcherConfig.maxActors(); }
+
+    /**
+     * Exactly three actor pool objects exist for the lifetime of this runtime.
+     * Pool objects are created in the constructor; physical workers remain zero
+     * until the corresponding domain receives runnable actor work.
+     */
+    public List<ActorThreadPoolStatus> actorThreadPoolStatus() {
+        requireSupervisorContext("inspect actor thread-pool topology");
+        return List.of(
+                new ActorThreadPoolStatus(
+                        ActorThreadPoolDomain.SHARED,
+                        dispatcherConfig.sharedParallelism(),
+                        dispatcherWorkerCount(sharedDispatcher)),
+                new ActorThreadPoolStatus(
+                        ActorThreadPoolDomain.ISOLATED,
+                        dispatcherConfig.privateParallelism(),
+                        dispatcherWorkerCount(privateDispatcher)),
+                new ActorThreadPoolStatus(
+                        ActorThreadPoolDomain.UNTRUSTED,
+                        Math.max(1, dispatcherConfig.privateParallelism()),
+                        dispatcherWorkerCount(untrustedDispatcher)));
+    }
 
     /** Total overrun detections, including notices dropped from the bounded queue. */
     public long watchdogOverruns() {
@@ -6910,6 +6948,20 @@ public final class ActorRuntime implements AutoCloseable {
     private static boolean usesNativeCarriers(ExecutorService executor) {
         return executor instanceof NativeCarrierExecutor
                 || executor instanceof ActorAffinityDispatcher lanes && lanes.nativeCarriers();
+    }
+
+    private static int dispatcherWorkerCount(ExecutorService executor) {
+        if (executor instanceof NativeCarrierExecutor nativePool) {
+            return nativePool.getPoolSize();
+        }
+        if (executor instanceof ThreadPoolExecutor javaPool) {
+            return javaPool.getPoolSize();
+        }
+        if (executor instanceof ActorAffinityDispatcher lanes) {
+            return lanes.workerCount();
+        }
+        throw new IllegalStateException(
+                "unknown actor dispatcher type: " + executor.getClass().getName());
     }
 
     private static ExecutorService newActorDispatcher(int parallelism, int capacity, String prefix) {
