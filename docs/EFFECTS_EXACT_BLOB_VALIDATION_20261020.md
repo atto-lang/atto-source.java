@@ -192,3 +192,39 @@ and Option construction semantics. Merely writing `trap` never discharges
 the underlying THROW effect in this conservative path. A synthetic AST
 JUnit regression checks the denial; it is **not yet executed** against
 the full Java compiler.
+
+
+## Checker-scoped identity evidence: narrow positive static-call path
+
+The current stacked draft now also contains a narrow implementation in
+`TypeChecker` and `OresCompiler.parseAndTypeCheckForEffectAudit`:
+after overload selection, generic argument typing, actor boundary checks
+and suspension checks succeed, the type checker records the *exact*
+`Ast.CallExpr` node identity to its resolved `Ast.FunctionDecl`.
+The result uses an immutable `IdentityHashMap`, rather than a
+structurally keyed record map. `SourceEffectAudit.inspect(source)`
+consumes those checker-produced identities, builds conservative static
+call edges and computes transitive effects. Checked same-unit calls to
+literal-only functions can be reported effect-free, while a callback
+unbound by the checker stays `UNKNOWN_CALL`.
+
+This checker-scoped AST fact is **not** a general typed-HIR ABI witness,
+not a runtime authority token and not a public assertion that
+`Call.direct("text")` is trusted. Arbitrary public
+`TypeChecker.TypeCheckResult` records and `EffectContracts.Call`
+values remain constructible, so no production runtime may treat those
+API values as authenticated capabilities. Thus
+`Graph.validateClosedWorld()` intentionally rejects *unbound public*
+DIRECT edges; the source-backed auditor builds its model via
+`Graph.infer()` after obtaining its own checked callsite map.
+
+A new `CheckedEffectCallBindingsTest` regression verifies that a
+checker-bound local target cannot erase an unverified surrounding
+arithmetic operator. Direct local-call proof coverage and remaining
+producer hardening are tracked in [Java #1793](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/1793).
+
+**Verification status:** these updated full-compiler JUnit tests
+and recently edited `EffectContracts`, `TypeChecker`, and
+`SourceEffectAudit` integrations have **not** passed an exact-head
+Maven or GitHub Actions execution. The earlier JDK component results
+apply only to the exact older blobs noted in preceding sections.
