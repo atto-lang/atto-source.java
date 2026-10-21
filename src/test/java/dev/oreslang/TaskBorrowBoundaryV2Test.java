@@ -241,6 +241,39 @@ final class TaskBorrowBoundaryV2Test {
     }
 
     @Test
+    void canonicalRtCopyAndRtShareScalarsRemainSafeInTasks() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                pub async fnc main(): void {
+                  const int original = 40;
+                  const int copied = rt copy original;
+                  const int shared = rt share original;
+                  let Future<int> child = task {
+                    return copied + shared - original + 2;
+                  };
+                  stdio.stdout.write(await child);
+                  stdio.stdout.write(original);
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void canonicalRtTakeTransfersOwnedValueExactlyOnce() {
+        rejectsWith("""
+                pub async fnc main(): void {
+                  let Box original = new Box();
+                  let Box transferred = rt take original;
+                  let Future<int> child = task {
+                    return transferred.value;
+                  };
+                  stdio.stdout.write(original.value);
+                  stdio.stdout.write(await child);
+                  return;
+                }
+                """, "moved", "rt take");
+    }
+
+    @Test
     void immutableCopyValueMayBeCapturedWithoutMovingParent() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 pub async fnc main(): void {
