@@ -30,6 +30,32 @@ public final class OresStream<T> implements AutoCloseable {
         this.channel = new ChannelRuntime.Channel<>(capacity);
     }
 
+    /**
+     * Runtime ABI for Stream.new<T>(capacity). Compiler checking alone cannot
+     * authorize a stale/forged AST or a host invocation with a fractional
+     * Number. Accept only actual integral guest representations, without
+     * truncation, unsigned saturation or implicit narrowing.
+     */
+    public static <T> OresStream<T> fromGuestCapacity(Object requested) {
+        final int capacity;
+        try {
+            if (requested instanceof java.math.BigInteger big) {
+                capacity = big.intValueExact();
+            } else if (requested instanceof Byte || requested instanceof Short
+                    || requested instanceof Integer || requested instanceof Long) {
+                capacity = Math.toIntExact(((Number) requested).longValue());
+            } else {
+                throw new IllegalArgumentException(
+                        "Stream.new<T> capacity must be an exact integer");
+            }
+        } catch (ArithmeticException outOfRange) {
+            throw new IllegalArgumentException(
+                    "Stream.new<T> capacity exceeds supported integer range",
+                    outOfRange);
+        }
+        return new OresStream<>(capacity);
+    }
+
     public ChannelRuntime.Channel<T> channel() {
         return channel;
     }
