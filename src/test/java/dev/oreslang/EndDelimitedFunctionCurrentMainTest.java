@@ -112,7 +112,20 @@ final class EndDelimitedFunctionCurrentMainTest {
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("fnc bad(int x) -> int as :: return x; end"));
         assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("fnc bad(int x) -> int :: as return x; end"));
+        assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("fnc bad(int x): int :: return x; end"));
+    }
+
+    @Test
+    void doubleColonInCommentsOrStringsCannotImpersonateHeaderSeparator() {
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("fnc bad() -> int /* :: */ return 1; end"));
+
+        assertDoesNotThrow(() -> Parser.parse(
+                "fnc text() -> string :: return \"::\"; end"));
+        assertDoesNotThrow(() -> Parser.parse(
+                "fnc comment() -> int /* :: */ as return 1; end"));
     }
 
     @Test
