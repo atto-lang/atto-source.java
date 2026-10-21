@@ -119,8 +119,8 @@ Move-only recursive values (including future `JsonValue`) remain gated beyond th
 
 `OresKeyedMap.tryPutOwned(key, candidate)` has exactly two outcomes:
 
-- **committed** — the candidate is owned by the Map and the result exposes only the previous mapping as `Lookup<V>`;
-- **rejected** — the live Map is unchanged and the result owns the **exact candidate object** so compiler lowering can restore its source place (or return it in an error) before rethrowing the original admission failure.
+- **committed** — the candidate is owned by the Map and the result transfers the previous mapping exactly once through `takePrevious()` as `Lookup<V>`;
+- **rejected** — the live Map is unchanged and the result owns the **exact candidate object** and exposes it only through one-shot `takeUncommittedValue()`, so compiler lowering can restore its source place (or return it in an error) before `rethrowAfterRecovery()` propagates the original admission failure.
 
 All recoverable domain/graph/quota/policy checks happen before the commit point. The final Map publication uses runtime-owned String/Symbol hashing and invokes no guest callbacks. Fatal VM `Error` conditions such as out-of-memory are outside recoverable guest ownership semantics.
 
