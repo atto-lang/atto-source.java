@@ -254,4 +254,48 @@ final class StreamConcurrencyTest {
             workers.shutdownNow();
         }
     }
+
+    @Test
+    void producerFailureCloseRejectsBlockedWriterAndRetainsCommittedItem() {
+        OresStream<Integer> stream = new OresStream<>(1);
+        IllegalStateException producerFailure =
+                new IllegalStateException("producer failed during backpressure");
+        assertTrue(stream.channel().tryWrite(42));
+        OresFuture<Void> blockedWriter = stream.channel().writeAsync(43);
+        assertFalse(blockedWriter.isDone());
+        assertTrue(stream.channel().pendingRegistrations() > 0);
+
+        stream.close(producerFailure);
+
+        CompletionException writerFailure = assertThrows(
+                CompletionException.class, blockedWriter::join);
+        assertInstanceOf(ChannelRuntime.ChannelClosedException.class,
+                writerFailure.getCause());
+        assertSame(producerFailure, writerFailure.getCause().getCause());
+        assertEquals(0, stream.channel().pendingRegistrations());
+        assertEquals(42, stream.channel().tryRead().orElseThrow().intValue());
+        CompletionException readerFailure = assertThrows(
+                CompletionException.class, () -> stream.channel().readAsync().join());
+        assertInstanceOf(ChannelRuntime.ChannelClosedException.class,
+                readerFailure.getCause());
+        assertSame(producerFailure, readerFailure.getCause().getCause());
+        assertEquals(0, stream.channel().size(),
+                "a rejected blocked write must not become a committed item");
+    }
+
+    @Test
+    void normalCloseCannotBeRewrittenAsProducerFailureAfterDrain() {
+        OresStream<Integer> stream = new OresStream<>(1);
+        assertTrue(stream.channel().tryWrite(77));
+        stream.close();
+        stream.close(new IllegalStateException("late producer failure"));
+        assertEquals(77, stream.channel().tryRead().orElseThrow().intValue());
+        CompletionException closed = assertThrows(
+                CompletionException.class, () -> stream.channel().readAsync().join());
+        assertInstanceOf(ChannelRuntime.ChannelClosedException.class, closed.getCause());
+        assertNull(closed.getCause().getCause(),
+                "a second close must not replace the original terminal outcome");
+        assertEquals(0, stream.channel().pendingRegistrations());
+    }
+
 }
