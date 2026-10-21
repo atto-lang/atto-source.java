@@ -65,4 +65,90 @@ final class ActorNativeObjectAllocationTest {
             assertEquals("42", output.toString(StandardCharsets.UTF_8), actorKind);
         }
     }
+    @Test
+    void actorMayUseSharedHelperCodeAndImmutableModuleData() throws Exception {
+        String program = """
+                define module constants
+                  pub val int answer = 42;
+                end
+
+                fnc shared_helper(): int {
+                  return constants.answer;
+                }
+
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    self.send(shared_helper());
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = await spawn Worker();
+                  worker.send("go");
+                  val result = (await worker.outputs.next()).value.unwrap();
+                  stdio.stdout.write(result.value);
+                  await worker.get_done();
+                  return;
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Path entry = temp.resolve("immutable-module.ores");
+        Files.writeString(entry, program);
+        LinkedProgramRunner.run(entry, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                Set.of(), Map.of(), output, new ByteArrayOutputStream());
+        assertEquals("42", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void helperCalledByActorCannotAcquireMutableModuleBinding() throws Exception {
+        String program = """
+                define module ambient
+                  pub let int counter = 41;
+                end
+
+                fnc shared_helper(): int {
+                  return ambient.counter;
+                }
+
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    self.send(shared_helper());
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = await spawn Worker();
+                  worker.send("go");
+                  await worker.get_done();
+                  return;
+                }
+                """;
+        Path entry = temp.resolve("mutable-module.ores");
+        Files.writeString(entry, program);
+
+        RuntimeException denied = assertThrows(RuntimeException.class, () ->
+                LinkedProgramRunner.run(
+                        entry,
+                        IsolatePolicy.developer(),
+                        ExecutionProfile.serverJit(),
+                        Set.of(),
+                        Map.of(),
+                        new ByteArrayOutputStream(),
+                        new ByteArrayOutputStream()));
+        assertTrue(
+                messageChainContains(denied, "actor execution cannot access mutable module binding"),
+                denied.toString());
+    }
+
+    private static boolean messageChainContains(Throwable failure, String needle) {
+        for (Throwable current = failure; current != null; current = current.getCause()) {
+            if (current.getMessage() != null && current.getMessage().contains(needle)) return true;
+        }
+        return false;
+    }
+
 }
