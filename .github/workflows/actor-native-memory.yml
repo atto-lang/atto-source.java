@@ -29,6 +29,8 @@ jobs:
           distribution: 'graalvm'
           github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: maven
+      - name: Verify source-native JNI allocation ABI
+        run: bash scripts/check-native-arena-abi.sh
       - name: Exercise native storage and source allocation
         run: >-
           mvn -B -ntp
