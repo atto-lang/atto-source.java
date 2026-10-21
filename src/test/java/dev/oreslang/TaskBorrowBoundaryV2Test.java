@@ -162,15 +162,27 @@ final class TaskBorrowBoundaryV2Test {
     }
 
     @Test
-    void taskCannotCaptureAnotherFutureAsUnverifiedCrossLaneAuthority() {
-        rejectsWith("""
+    void affineFutureCanMoveIntoTaskButCannotBeUsedTwice() {
+        // Futures are transferable owned handles, not copyable capabilities.
+        // A child may consume the Future while the parent loses that binding.
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 pub async fnc main(): void {
-                  let Future<int> first = task { return 1; };
-                  let Future<int> second = task { return await first; };
-                  await second;
+                  let Future<int> first = task { return 41; };
+                  let Future<int> second = task { return (await first) + 1; };
+                  stdio.stdout.write(await second);
                   return;
                 }
-                """, "non-Send execution capability");
+                """));
+
+        rejectsWith("""
+                pub async fnc main(): void {
+                  let Future<int> first = task { return 41; };
+                  let Future<int> second = task { return await first; };
+                  stdio.stdout.write(await first);
+                  stdio.stdout.write(await second);
+                  return;
+                }
+                """, "moved", "capture", "used");
     }
 
     @Test
