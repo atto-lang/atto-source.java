@@ -205,6 +205,58 @@ final class OresJsonValueTest {
     }
 
     @Test
+    void putAllSnapshotsForeignInputBeforeTakingInternalJsonLocks() {
+        OresKeyedMap<String, OresJsonValue> destination =
+                OresJsonValue.objectMap();
+        OresKeyedMap<String, OresJsonValue> peer =
+                OresJsonValue.objectMap();
+        var workers = Executors.newSingleThreadExecutor();
+        try {
+            java.util.Map<String, OresJsonValue> hostile =
+                    new java.util.AbstractMap<>() {
+                        private final java.util.Set<
+                                java.util.Map.Entry<String, OresJsonValue>> entries =
+                                java.util.Set.of(
+                                        java.util.Map.entry(
+                                                "x", OresJsonValue.of(1L)));
+
+                        @Override
+                        public int size() {
+                            assertFalse(
+                                    Thread.holdsLock(destination),
+                                    "foreign size() must run before destination monitor");
+                            var probe = workers.submit(
+                                    () -> peer.put(
+                                            "probe", OresJsonValue.of(true)));
+                            try {
+                                probe.get(2, TimeUnit.SECONDS);
+                            } catch (Exception blocked) {
+                                throw new AssertionError(
+                                        "foreign size() ran while the global JSON graph lock was held",
+                                        blocked);
+                            }
+                            return entries.size();
+                        }
+
+                        @Override
+                        public java.util.Set<
+                                java.util.Map.Entry<String, OresJsonValue>> entrySet() {
+                            assertFalse(
+                                    Thread.holdsLock(destination),
+                                    "foreign entrySet() must run before destination monitor");
+                            return entries;
+                        }
+                    };
+
+            assertDoesNotThrow(() -> destination.putAll(hostile));
+            assertTrue(destination.containsKey("x"));
+            assertTrue(peer.containsKey("probe"));
+        } finally {
+            workers.shutdownNow();
+        }
+    }
+
+    @Test
     @SuppressWarnings({"rawtypes", "unchecked"})
     void invalidJsonBatchIsAtomic() {
         OresKeyedMap<String, OresJsonValue> fields =
