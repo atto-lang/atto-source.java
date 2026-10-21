@@ -277,4 +277,50 @@ final class OresTimersTest {
         }
     }
 
+    @Test
+    void expiryMayBeCancelledWhileSchedulerQueueIsBlocked() throws Exception {
+        try (OresTimers timers = new OresTimers();
+             OresScheduler scheduler = new OresScheduler(1)) {
+            CountDownLatch began = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            OresFuture<Void> blocker = scheduler.startSync(() -> {
+                began.countDown();
+                if (!release.await(5, TimeUnit.SECONDS))
+                    throw new AssertionError("barrier timed out");
+                return null;
+            });
+            assertTrue(began.await(5, TimeUnit.SECONDS));
+            AtomicInteger called = new AtomicInteger();
+            OresTimers.TimerHandle timer = timers.setTimerNanos(0, scheduler,
+                    called::incrementAndGet);
+            try {
+                assertTrue(timer.cancel(), "blocked callback could not be cancelled");
+                assertFalse(timer.cancel(), "cancel succeeded twice");
+            } finally {
+                release.countDown();
+            }
+            assertNull(blocker.get(5, TimeUnit.SECONDS));
+            assertThrows(CancellationException.class,
+                    () -> timer.getDone().get(5, TimeUnit.SECONDS));
+            assertNull(scheduler.startSync(() -> null).get(5, TimeUnit.SECONDS));
+            assertEquals(0, called.get());
+        }
+    }
+
+    @Test
+    void callbackFailureIsObservableThroughGetDone() throws Exception {
+        try (OresTimers timers = new OresTimers();
+             OresScheduler scheduler = new OresScheduler(1)) {
+            OresTimers.TimerHandle timer = timers.setTimerNanos(0, scheduler, () -> {
+                throw new IllegalStateException("timer callback failure");
+            });
+            java.util.concurrent.ExecutionException failure =
+                assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> timer.getDone().get(5, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, failure.getCause());
+            assertEquals("timer callback failure", failure.getCause().getMessage());
+            assertFalse(timer.cancel());
+        }
+    }
+
 }
