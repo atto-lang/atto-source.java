@@ -4034,6 +4034,11 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "JsonValue is an opaque alloc/json value; construct it through Json.* APIs");
             }
+            if (created.type().name().equals("Json")
+                    && compilerJsonFactoryImported) {
+                throw new IllegalArgumentException(
+                        "Json is a compiler-owned construction namespace and cannot be instantiated");
+            }
             if (created.type().name().equals("Map") && findClass("Map") == null) {
                 if (!created.arguments().isEmpty()) {
                     throw new IllegalArgumentException(
