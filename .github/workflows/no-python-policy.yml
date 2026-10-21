@@ -5,13 +5,16 @@ on:
     branches: [main]
 jobs:
   prohibit-python:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Pin Rust toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal --no-self-update
       - name: Rust policy tests
-        run: cargo test --manifest-path tools/no-python-check/Cargo.toml
+        run: cargo +1.88.0 test --manifest-path tools/no-python-check/Cargo.toml
       - name: Reject Python files and execution
-        run: cargo run --manifest-path tools/no-python-check/Cargo.toml -- .
+        run: cargo +1.88.0 run --manifest-path tools/no-python-check/Cargo.toml -- .
