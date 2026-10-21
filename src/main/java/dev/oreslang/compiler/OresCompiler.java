@@ -23,6 +23,19 @@ public final class OresCompiler {
         return checked.program();
     }
 
+    /**
+     * Full source parse/type/ownership admission retaining exact-AST
+     * call-target bindings from the checker. The returned map is only
+     * internal compiler analysis metadata; it is not a codegen signature,
+     * execution permission, or an externally authenticated proof.
+     */
+    public static TypeChecker.TypeCheckResult parseAndTypeCheckForEffectAudit(String source) {
+        TypeChecker.TypeCheckResult checked =
+                TypeChecker.checkTypesWithDiagnostics(Parser.parse(source));
+        OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
+        return checked;
+    }
+
     /** Compiler diagnostics are returned explicitly instead of written to shared stderr. */
     public record AnalysisResult(Ast.Program program, java.util.List<String> warnings) {
         public AnalysisResult { warnings = java.util.List.copyOf(warnings); }
