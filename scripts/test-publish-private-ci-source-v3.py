@@ -459,6 +459,51 @@ class PrivateCiV3Test(unittest.TestCase):
             with self.assertRaisesRegex(v3.Denied, "not source-free"):
                 v3.checked_destination("trusted/ci", carrier)
 
+    def test_checked_destination_rejects_test_plan_metadata_content_mismatch(self):
+        carrier = contract()
+        carrier["test_plan_blob_sha"] = v3.git_blob_sha(PLAN)
+        tampered = PLAN.replace(b"1482", b"1483", 1)
+        root = "repos/trusted/ci"
+
+        def api(route, method="GET", payload=None):
+            if route == root + "/git/ref/heads/main":
+                return {"object": {"sha": BASE}}
+            if route == root + "/git/commits/" + BASE:
+                return {"sha": BASE, "tree": {"sha": ROOT_TREE}}
+            if route == root + "/git/trees/" + ROOT_TREE + "?recursive=1":
+                return {"sha": ROOT_TREE, "truncated": False, "tree": []}
+            if route == root + "/contents/" + carrier["workflow_path"] + "?ref=" + BASE:
+                return {
+                    "path": carrier["workflow_path"],
+                    "type": "file",
+                    "sha": carrier["workflow_blob_sha"],
+                }
+            if route == root + "/contents/" + carrier["test_plan_path"] + "?ref=" + BASE:
+                return {
+                    "path": carrier["test_plan_path"],
+                    "type": "file",
+                    "encoding": "base64",
+                    "sha": carrier["test_plan_blob_sha"],
+                    "content": base64.b64encode(tampered).decode("ascii"),
+                }
+            raise AssertionError(route)
+
+        with (
+            patch.object(v3.legacy, "checked_repo", return_value={
+                "id": carrier["repository_id"],
+                "private": True,
+                "visibility": "private",
+                "archived": False,
+                "disabled": False,
+                "fork": False,
+                "default_branch": "main",
+            }),
+            patch.object(v3.legacy, "gh_api", side_effect=api),
+            patch.object(v3, "require_destination_main_governance", return_value=None),
+        ):
+            with self.assertRaisesRegex(v3.Denied, "test plan blob digest mismatch"):
+                v3.checked_destination("trusted/ci", carrier)
+
     def test_verify_source_pr_requires_exact_open_head(self):
         def api(route, method="GET", payload=None):
             if route == "repos/" + v3.legacy.SOURCE_REPO:
