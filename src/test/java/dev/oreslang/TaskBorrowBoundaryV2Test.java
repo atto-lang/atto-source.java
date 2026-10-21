@@ -38,7 +38,7 @@ final class TaskBorrowBoundaryV2Test {
         rejectsWith("""
                 pub async fnc main(): void {
                   let Box owner = new Box();
-                  val &Box loan = &owner;
+                  val loan = rt borrow owner;
                   let Future<int> child = task { return loan.value; };
                   await child;
                   return;
@@ -51,7 +51,7 @@ final class TaskBorrowBoundaryV2Test {
         rejectsWith("""
                 pub async fnc main(): void {
                   let Box owner = new Box();
-                  val &mut Box loan = &mut owner;
+                  val loan = rt borrow mut owner;
                   let Future<int> child = cpu task { return loan.value; };
                   await child;
                   return;
@@ -64,7 +64,7 @@ final class TaskBorrowBoundaryV2Test {
         rejectsWith("""
                 pub async fnc main(): void {
                   let Box owner = new Box();
-                  val &Box loan = &owner;
+                  val loan = rt borrow owner;
                   let Future<int> child = task { return 42; };
                   await child;
                   stdio.stdout.write(loan.value);
@@ -112,9 +112,9 @@ final class TaskBorrowBoundaryV2Test {
         rejectsWith("""
                 pub async fnc main(): void {
                   let Box owner = new Box();
-                  val &Box loan = &owner;
+                  val loan = rt borrow owner;
                   let Future<int> child = task {
-                    for (val &Box loopLoan = loan; false; ) {
+                    for (val loopLoan = loan; false; ) {
                       return loopLoan.value;
                     }
                     return 0;
