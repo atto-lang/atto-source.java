@@ -32,7 +32,7 @@ public final class Lexer {
         KEYWORDS.put("null", NULL); KEYWORDS.put("obj", OBJ); KEYWORDS.put("arr", ARR);
         // Accelerator/host execution domains are reserved even before backend lowering.
         // They must not be interpreted as ordinary CPU-side identifiers or calls.
-        KEYWORDS.put("gpu", GPU); KEYWORDS.put("cpu", CPU); KEYWORDS.put("quantum", QUANTUM);
+        KEYWORDS.put("gpu", GPU); KEYWORDS.put("cpu", CPU); KEYWORDS.put("quantum", QUANTUM); KEYWORDS.put("kernel", KERNEL);
     }
 
     private final String source;
