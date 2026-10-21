@@ -94,9 +94,10 @@ public final class OresKeyedMap<K, V> {
      * {@link #rethrowIfRejected()} to preserve the original admission error.</p>
      */
     public static final class PutAttempt<V> {
-        private final Lookup<V> previous;
-        private final V uncommittedValue;
+        private Lookup<V> previous;
+        private V uncommittedValue;
         private final RuntimeException failure;
+        private boolean ownershipTaken;
 
         private PutAttempt(
                 Lookup<V> previous,
@@ -129,26 +130,69 @@ public final class OresKeyedMap<K, V> {
             return failure == null;
         }
 
-        public Lookup<V> previous() {
+        /**
+         * Transfer the displaced mapping exactly once after a committed write.
+         */
+        public Lookup<V> takePrevious() {
             if (!committed()) {
                 throw new IllegalStateException(
                         "rejected Map insertion has no committed previous-value result");
             }
-            return previous;
+            if (ownershipTaken) {
+                throw new IllegalStateException(
+                        "committed Map insertion result was already consumed");
+            }
+            ownershipTaken = true;
+            Lookup<V> result = previous;
+            previous = null;
+            return result;
         }
 
-        public V uncommittedValue() {
+        /**
+         * Recover the rejected candidate exactly once before propagating the
+         * admission failure.
+         */
+        public V takeUncommittedValue() {
             if (committed()) {
                 throw new IllegalStateException(
                         "committed Map insertion transferred the candidate into the Map");
             }
-            return uncommittedValue;
+            if (ownershipTaken) {
+                throw new IllegalStateException(
+                        "rejected Map candidate was already recovered or discarded");
+            }
+            ownershipTaken = true;
+            V result = uncommittedValue;
+            uncommittedValue = null;
+            return result;
         }
 
-        public void rethrowIfRejected() {
-            if (!committed()) throw failure;
+        /**
+         * Preserve the original admission error only after the rejected
+         * candidate has been recovered by ownership-aware lowering.
+         */
+        public void rethrowAfterRecovery() {
+            if (committed()) return;
+            if (!ownershipTaken) {
+                throw new IllegalStateException(
+                        "recover the rejected Map candidate before propagating its failure");
+            }
+            throw failure;
         }
-    }
+
+        /**
+         * Copy-safe compatibility path used by ordinary scalar put(). This is
+         * intentionally explicit: move-only lowering must recover the candidate
+         * instead of discarding it.
+         */
+        private void discardRejectedAndRethrow() {
+            if (committed()) return;
+            if (!ownershipTaken) {
+                ownershipTaken = true;
+                uncommittedValue = null;
+            }
+            throw failure;
+        }
 
     /**
      * Runtime policy hook used by compiler-owned typed Map descriptors.
@@ -423,8 +467,8 @@ public final class OresKeyedMap<K, V> {
      */
     public V put(K key, V value) {
         PutAttempt<V> attempt = tryPutOwned(key, value);
-        attempt.rethrowIfRejected();
-        Lookup<V> previous = attempt.previous();
+        attempt.discardRejectedAndRethrow();
+        Lookup<V> previous = attempt.takePrevious();
         return previous.present() ? previous.value() : null;
     }
 
@@ -434,7 +478,7 @@ public final class OresKeyedMap<K, V> {
      * <p>All domain, graph, quota, policy and staging work completes while the
      * caller still conceptually owns {@code value}. The live Map is published
      * only after those fallible operations succeed. On rejection the exact
-     * candidate is returned in {@link PutAttempt#uncommittedValue()} and the
+     * candidate is returned by {@link PutAttempt#takeUncommittedValue()} and the
      * live mapping is unchanged.</p>
      *
      * <p>For JSON values the global graph-stability guard is acquired before
