@@ -86,6 +86,7 @@ final class TrustedOpenClProvider {
         private final OpenClArtifact artifact;
         private Program program;
         private int activeOperations;
+        private boolean releaseInProgress;
 
         PreparedKernel(
                 TrustedOpenClProvider owner,
@@ -98,27 +99,21 @@ final class TrustedOpenClProvider {
 
         OpenClArtifact artifact() {
             synchronized (this) {
-                if (program == null) {
-                    throw new IllegalStateException("prepared kernel already closed");
-                }
+                requireUsableLocked();
                 return artifact;
             }
         }
 
         Program program() {
             synchronized (this) {
-                if (program == null) {
-                    throw new IllegalStateException("prepared kernel already closed");
-                }
+                requireUsableLocked();
                 return program;
             }
         }
 
         void retainOperation() {
             synchronized (this) {
-                if (program == null) {
-                    throw new IllegalStateException("prepared kernel already closed");
-                }
+                requireUsableLocked();
                 if (activeOperations == Integer.MAX_VALUE) {
                     throw new IllegalStateException("prepared kernel operation count exhausted");
                 }
@@ -140,14 +135,43 @@ final class TrustedOpenClProvider {
             Program held;
             synchronized (this) {
                 if (program == null) return;
+                if (releaseInProgress) {
+                    throw new IllegalStateException("prepared kernel release already in progress");
+                }
                 if (activeOperations != 0) {
                     throw new IllegalStateException(
                             "prepared kernel still has active provider operations");
                 }
+                releaseInProgress = true;
                 held = program;
-                program = null;
             }
-            owner.driver.releaseProgram(held);
+
+            try {
+                owner.driver.releaseProgram(held);
+            } catch (RuntimeException | Error releaseFailure) {
+                synchronized (this) {
+                    releaseInProgress = false;
+                }
+                throw releaseFailure;
+            }
+
+            synchronized (this) {
+                if (program != held) {
+                    releaseInProgress = false;
+                    throw new IllegalStateException("prepared kernel authority changed during release");
+                }
+                program = null;
+                releaseInProgress = false;
+            }
+        }
+
+        private void requireUsableLocked() {
+            if (program == null) {
+                throw new IllegalStateException("prepared kernel already closed");
+            }
+            if (releaseInProgress) {
+                throw new IllegalStateException("prepared kernel release in progress");
+            }
         }
     }
 
