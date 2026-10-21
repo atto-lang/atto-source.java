@@ -65,8 +65,10 @@ final class SourceActorUnaryRequestExecutionTest {
                   return;
                 }
                 """;
-        assertThrows(PolyglotException.class,
+        PolyglotException failure = assertThrows(PolyglotException.class,
                 () -> run(program, "source-actor-unary-wrong-type.ores"));
+        assertTrue(failure.getMessage().contains("ActorRef.request payload"),
+                failure.getMessage());
     }
 
     @Test
@@ -91,8 +93,10 @@ final class SourceActorUnaryRequestExecutionTest {
                   return;
                 }
                 """;
-        assertThrows(PolyglotException.class,
+        PolyglotException failure = assertThrows(PolyglotException.class,
                 () -> run(program, "source-actor-unary-nested-future.ores"));
+        assertTrue(failure.getMessage().contains("concrete response, not Future<T>"),
+                failure.getMessage());
     }
 
     @Test
@@ -121,8 +125,10 @@ final class SourceActorUnaryRequestExecutionTest {
                   return;
                 }
                 """;
-        assertThrows(PolyglotException.class,
+        PolyglotException failure = assertThrows(PolyglotException.class,
                 () -> run(program, "source-actor-unary-suspending-handler.ores"));
+        assertTrue(failure.getMessage().contains("unary run(Request) cannot suspend"),
+                failure.getMessage());
     }
 
     private static String run(String sourceText, String name) throws Exception {
