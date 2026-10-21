@@ -24,11 +24,13 @@ import java.util.concurrent.atomic.AtomicReferenceArray;
  * native carrier set; no actor owns a carrier and carrier identity is never
  * actor identity.</p>
  *
- * <p>All max carriers are created up front so watchdog compensation never has
- * to allocate an OS thread while the runtime is already under pressure. Only
- * {@code corePoolSize} carrier slots are enabled at a time. Extra carriers are
- * parked in native code and are enabled/disabled by the bounded compensation
- * policy in {@link ActorRuntime}.</p>
+ * <p>The pool object and bounded ready queue are created eagerly, but it owns
+ * zero OS threads at construction. Native carriers are materialized lazily on
+ * the first admitted task. This keeps VM startup at exactly zero actor workers
+ * across the shared, isolated and untrusted scheduler domains while preserving
+ * a bounded maximum carrier count after activation. Only {@code corePoolSize}
+ * carrier slots are enabled at a time; extra carriers are parked in native
+ * code and may be enabled/disabled by bounded compensation.</p>
  */
 public final class NativeCarrierExecutor extends AbstractExecutorService implements AutoCloseable {
     private static final String LIBRARY = "oresthread";
@@ -48,8 +50,10 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     private final AtomicLong completedTaskCount = new AtomicLong();
     private final AtomicReferenceArray<Thread> carrierThreads;
     private final AtomicBoolean shutdown = new AtomicBoolean();
-    /** Serializes Java->native pool calls against asynchronous native retirement. */
+    /** Serializes lazy start/set-size/shutdown against native retirement. */
     private final Object nativeLifecycleLock = new Object();
+    /** Guarded by nativeLifecycleLock. Pool metadata exists before any pthread. */
+    private boolean carriersStarted;
     private final long nativeHandle;
 
     public NativeCarrierExecutor(
@@ -71,20 +75,14 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         this.nativeStackBytes = configuredCarrierStackBytes();
         this.carrierThreads = new AtomicReferenceArray<>(maximumPoolSize);
         this.corePoolSize = new AtomicInteger(corePoolSize);
-        this.largestPoolSize = new AtomicInteger(corePoolSize);
+        this.largestPoolSize = new AtomicInteger(0);
 
         long handle = nativeCreate(
                 this, maximumPoolSize, corePoolSize, threadPrefix, nativeStackBytes);
         if (handle == 0L) throw new IllegalStateException("native carrier pool returned a null handle");
         this.nativeHandle = handle;
-
-        boolean started = false;
-        try {
-            nativeStart(handle);
-            started = true;
-        } finally {
-            if (!started) nativeShutdown(handle);
-        }
+        // Deliberately do not call nativeStart() here. ActorRuntime eagerly
+        // creates exactly three pool objects, all with zero physical workers.
     }
 
     static void requireAllowedCpu(int cpu) {
@@ -209,9 +207,34 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         }
     }
 
+    private void ensureCarriersStarted() {
+        if (carriersStarted) return;
+        synchronized (nativeLifecycleLock) {
+            if (carriersStarted) return;
+            if (shutdown.get()) {
+                throw new RejectedExecutionException("native carrier executor is shut down");
+            }
+            try {
+                nativeStart(nativeHandle);
+                carriersStarted = true;
+                largestPoolSize.accumulateAndGet(corePoolSize.get(), Math::max);
+            } catch (RuntimeException | Error failure) {
+                // If partial native startup failed, make the Java-side executor
+                // terminal before asking native code to retire any created slots.
+                shutdown.set(true);
+                nativeShutdown(nativeHandle);
+                throw failure;
+            }
+        }
+    }
+
     @Override
     public void execute(Runnable task) {
         Objects.requireNonNull(task, "task");
+        if (shutdown.get()) {
+            throw new RejectedExecutionException("native carrier executor is shut down");
+        }
+        ensureCarriersStarted();
         if (shutdown.get() || !queue.offer(task)) {
             throw new RejectedExecutionException(
                     shutdown.get() ? "native carrier executor is shut down"
@@ -344,17 +367,27 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
                 throw new RejectedExecutionException("native carrier executor is shut down");
             }
             corePoolSize.set(value);
-            largestPoolSize.accumulateAndGet(value, Math::max);
-            nativeSetDesired(nativeHandle, value);
+            if (carriersStarted) {
+                largestPoolSize.accumulateAndGet(value, Math::max);
+                nativeSetDesired(nativeHandle, value);
+            }
         }
     }
 
-    /**
-     * All bounded compensation carriers are physically created at pool
-     * construction and parked natively, so there is nothing to allocate here.
-     */
+    /** Explicit prestart remains available to scheduler owners; ActorRuntime never uses it at startup. */
     public boolean prestartCoreThread() {
-        return false;
+        synchronized (nativeLifecycleLock) {
+            if (carriersStarted) return false;
+        }
+        ensureCarriersStarted();
+        return true;
+    }
+
+    /** True only after at least one physical native carrier set has been started. */
+    boolean carriersStarted() {
+        synchronized (nativeLifecycleLock) {
+            return carriersStarted;
+        }
     }
 
     public static boolean isNativeCarrierThread() {
