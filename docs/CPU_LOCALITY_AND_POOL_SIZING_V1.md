@@ -35,6 +35,19 @@ Setting `-Dores.runtime.actor.pool-sizing=cpu-budget` makes `ActorRuntime.Dispat
 - The property defaults to `legacy` to preserve existing sizing/behavior pending real performance testing.
 - Explicit `new DispatcherConfig(...)` remains authoritative. `cpu-budget` affects only defaults.
 
+When `ores.actor.affinity=cpu`, the runtime now additionally requires enough
+**distinct configured logical CPUs for every dedicated actor carrier across all
+three domains**: `2 * privateParallelism + sharedParallelism`. The three
+dispatchers already use consecutive global lane offsets, so satisfying this
+gate means PRIVATE, SHARED and UNTRUSTED lanes do not wrap modulo the CPU list
+and become hard-pinned competitors on the same logical CPU. Impossible hard
+pinning fails before any actor pool is created.
+
+The configured CPU order remains host-authoritative. This gate does not infer
+physical cores or SMT siblings: for cache-sensitive deployments, list one
+logical CPU per physical core before adding sibling threads, until verified
+topology-aware ordering is integrated.
+
 This is **not** yet a process-wide CPU coordinator: CONTROL/root/ordinary Task pools, JVM GC, host I/O and OS processes are not counted; the apparent single-worker headroom is not pinned or reserved. `availableProcessors()` is not a full physical-core/NUMA topology enumeration. For a real global budget, include cpuset and CPU quota, worker-domain requirements, SMT, memory locality, dynamic topology changes, and priority/fairness.
 
 ## Next scheduler/region integration slices (not implemented)
