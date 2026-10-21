@@ -9967,8 +9967,12 @@ public final class OresEvalRootNode extends RootNode {
             if (nativeCell != null) {
                 if (nativeCell.trySet(next)) return;
                 // Preserve language semantics while a value family still lacks
-                // native lowering. The old native cell remains arena-owned and
-                // unreachable until actor retirement; its address is not reused.
+                // native lowering. Clear the old native payload first so an
+                // opaque capability handle is not retained merely because the
+                // lexical slot downgrades to managed fallback storage.
+                if (!nativeCell.trySet(null)) {
+                    throw new IllegalStateException("native lexical cell refused null retirement");
+                }
                 nativeCell = null;
                 value = next;
                 return;
