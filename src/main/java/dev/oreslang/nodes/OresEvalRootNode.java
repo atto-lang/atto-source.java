@@ -9969,6 +9969,10 @@ public final class OresEvalRootNode extends RootNode {
             return fields instanceof ActorNativeArena.NativeValue nativeFields
                     ? nativeFields.nativeArena() : null;
         }
+        @Override public long nativeOffset() {
+            return fields instanceof ActorNativeArena.NativeValue nativeFields
+                    ? nativeFields.nativeOffset() : -1L;
+        }
         @Override public String toString() { return CycleSafeDisplay.render(this); }
     }
 
