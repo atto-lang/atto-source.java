@@ -149,6 +149,12 @@ final class LinkedActorTaskCaptureV2Test {
             decls.add(new Ast.TypeAliasDecl("Channel",
                     Ast.Visibility.PRIVATE, List.of(),
                     Ast.TypeRef.simple("int")));
+            decls.add(new Ast.TypeAliasDecl("Option",
+                    Ast.Visibility.PRIVATE, List.of(),
+                    Ast.TypeRef.simple("int")));
+            decls.add(new Ast.TypeAliasDecl("Result",
+                    Ast.Visibility.PRIVATE, List.of(),
+                    Ast.TypeRef.simple("int")));
             modules.add(new Ast.ModuleDecl(
                     module.name(), module.annotations(),
                     module.contracts(), decls));
@@ -170,9 +176,19 @@ final class LinkedActorTaskCaptureV2Test {
                 List.of(Ast.TypeRef.simple("Worker")), false);
         Ast.TypeRef claimedChannel = new Ast.TypeRef("Channel",
                 List.of(Ast.TypeRef.simple("int")), false);
-        assertEquals(false, copy.invoke(checker, claimedMailbox));
-        assertEquals(true, send.invoke(checker, claimedMailbox));
-        assertEquals(true, send.invoke(checker, claimedChannel));
+        Ast.TypeRef claimedOption = new Ast.TypeRef("Option",
+                List.of(Ast.TypeRef.simple("int")), false);
+        Ast.TypeRef claimedResult = new Ast.TypeRef("Result",
+                List.of(Ast.TypeRef.simple("int"),
+                        Ast.TypeRef.simple("int")), false);
+        for (Ast.TypeRef unproven :
+                List.of(claimedMailbox, claimedChannel,
+                        claimedOption, claimedResult)) {
+            assertEquals(false, copy.invoke(checker, unproven),
+                    "shadowed runtime builtin must not be Copy");
+            assertEquals(true, send.invoke(checker, unproven),
+                    "shadowed runtime builtin must not be Task Send");
+        }
     }
 
     @Test
