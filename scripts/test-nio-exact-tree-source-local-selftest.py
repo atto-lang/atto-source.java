@@ -41,6 +41,11 @@ elif name == 'mvn':
             if os.environ.get('NIO_TEST_FAIL') == 'verify': sys.exit(90)
             if os.environ.get('NIO_TEST_FAIL') == 'mutate':
                 with open('README.md', 'a') as f: print('MUTATED', file=f)
+            if os.environ.get('NIO_TEST_FAIL') == 'mutate-evidence-parser':
+                pathlib.Path('scripts/nio_verify_surefire_evidence.py').write_text(
+                    "from pathlib import Path\n"
+                    "Path('MALICIOUS_EVIDENCE_PARSER_EXECUTED').write_text('bad')\n"
+                    "raise SystemExit(0)\n")
         elif step == 'package':
             if '-Pnative-aot' not in args: sys.exit(99)
         else: sys.exit(98)
@@ -107,7 +112,7 @@ def scenario(name, code, setup=None, *, aot=False):
             (repo / 'target/stale.class').write_text('stale build')
         elif setup == 'wrong-jdk': env['NIO_TEST_JDK'] = '21'
         elif setup in ('clean', 'test', 'verify', 'mutate', 'future-targeted',
-                            'mutate-targeted'):
+                            'mutate-targeted', 'mutate-evidence-parser'):
             env['NIO_TEST_FAIL'] = setup
         if aot: cmd.append('--native-aot')
         result = invoke(cmd, repo, env, check=False)
@@ -121,11 +126,12 @@ def scenario(name, code, setup=None, *, aot=False):
             assert f'exit_code={code}\n' in body, (name, body)
             assert ('result=PASS' in body) == (code == 0), name
             if setup in ('clean', 'test', 'verify', 'mutate', 'future-targeted',
-                         'mutate-targeted'):
+                         'mutate-targeted', 'mutate-evidence-parser'):
                 stage = dict(clean='clean-stale-build', test='targeted-junit',
                              verify='full-maven-verify', mutate='postflight-source-identity',
                              **{'future-targeted': 'full-report-audit',
-                                'mutate-targeted': 'targeted-source-identity'})[setup]
+                                'mutate-targeted': 'targeted-source-identity',
+                                'mutate-evidence-parser': 'full-report-audit'})[setup]
                 assert f'stage={stage}\n' in body, (name, body)
         trace = root / 'trace'
         calls = [row.split()[0] for row in trace.read_text().splitlines()] if trace.exists() else []
@@ -140,6 +146,11 @@ def scenario(name, code, setup=None, *, aot=False):
         if setup == 'mutate-targeted':
             assert calls == ['clean', 'test'], (
                 name, 'full verify ran after targeted source mutation', calls)
+        if setup == 'mutate-evidence-parser':
+            assert calls == ['clean', 'test', 'verify'], (
+                name, 'unexpected Maven phases after evidence-parser mutation', calls)
+            assert not (repo / 'MALICIOUS_EVIDENCE_PARSER_EXECUTED').exists(), (
+                name, 'mutated evidence parser was executed')
         print(f'PASS {name} (exit={code})')
 
 
@@ -157,6 +168,7 @@ if __name__ == '__main__':
              ('targeted-source-mutation', 77, 'mutate-targeted', False),
              ('verify-failure', 90, 'verify', False),
              ('future-dated-targeted-reports', 76, 'future-targeted', False),
+             ('mutated-evidence-parser-not-executed', 77, 'mutate-evidence-parser', False),
              ('postflight-mutation', 77, 'mutate', False)]
     for name, code, fixture, aot in tests:
         scenario(name, code, fixture, aot=aot)
