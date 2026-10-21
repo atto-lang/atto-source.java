@@ -618,6 +618,27 @@ final class ParserTest {
                 }
                 """));
 
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc choose_return(bool condition): int {
+                  return if condition then
+                    1;
+                  else
+                    2;
+                  fi;
+                }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc identity(int value): int { return value; }
+                fnc choose_argument(bool condition): int {
+                  return identity(if condition then
+                    1;
+                  else
+                    2;
+                  fi);
+                }
+                """));
+
         IllegalArgumentException implicitBranchValues = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
