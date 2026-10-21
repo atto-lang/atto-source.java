@@ -2750,8 +2750,16 @@ public final class OwnershipChecker {
                 for (Ast.DestructureBinding binding : destructure.bindings()) {
                     if (!binding.isDiscard()) blockLocals.add(binding.name());
                 }
-            } else if (stmt instanceof Ast.ReturnStmt ret && ret.value() != null) {
-                scanExpr(ret.value(), blockLocals, outer, recursiveBinding, captures, false);
+            } else if (stmt instanceof Ast.ReturnStmt ret) {
+                if (ret.value() != null) {
+                    scanExpr(
+                            ret.value(),
+                            blockLocals,
+                            outer,
+                            recursiveBinding,
+                            captures,
+                            false);
+                }
             } else if (stmt instanceof Ast.YieldStmt yielded) {
                 scanExpr(yielded.value(), blockLocals, outer, recursiveBinding, captures, false);
             } else if (stmt instanceof Ast.ExprStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
@@ -2872,11 +2880,20 @@ public final class OwnershipChecker {
             } else if (stmt instanceof Ast.DoWhileStmt s) {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
                 scanExpr(s.condition(), blockLocals, outer, recursiveBinding, captures, false);
+            } else if (stmt instanceof Ast.BreakStmt
+                    || stmt instanceof Ast.ContinueStmt) {
+                // No values referenced by loop-control statements.
+            } else {
+                throw error(
+                        "unsupported Task capture statement '"
+                                + stmt.getClass().getName()
+                                + "'; capture analysis must fail closed");
             }
         }
     }
 
     private void scanExpr(Ast.Expr expr, Set<String> locals, Scope outer, String recursiveBinding, CaptureSet captures, boolean write) {
+        if (expr == null || expr instanceof Ast.LiteralExpr) return;
         if (expr instanceof Ast.NameExpr name) {
             if (name.name().equals(recursiveBinding)) return;
             if (!locals.contains(name.name())) {
@@ -2888,6 +2905,34 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.AssignExpr assignment) {
             scanExpr(assignment.target(), locals, outer, recursiveBinding, captures, true);
             scanExpr(assignment.value(), locals, outer, recursiveBinding, captures, false);
+        } else if (expr instanceof Ast.MatchExpr match) {
+            scanExpr(
+                    match.subject(),
+                    locals,
+                    outer,
+                    recursiveBinding,
+                    captures,
+                    false);
+            for (Ast.MatchValueArm arm : match.arms()) {
+                Set<String> armLocals = new HashSet<>(locals);
+                collectPatternBindingNames(arm.pattern(), armLocals);
+                if (arm.guard() != null) {
+                    scanExpr(
+                            arm.guard(),
+                            armLocals,
+                            outer,
+                            recursiveBinding,
+                            captures,
+                            false);
+                }
+                scanExpr(
+                        arm.value(),
+                        armLocals,
+                        outer,
+                        recursiveBinding,
+                        captures,
+                        false);
+            }
         } else if (expr instanceof Ast.TypeTestExpr e) {
             scanExpr(e.value(), locals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.PatternTestExpr e) {
@@ -2974,6 +3019,11 @@ public final class OwnershipChecker {
                         recursiveBinding,
                         captures);
             }
+        } else {
+            throw error(
+                    "unsupported Task capture expression '"
+                            + expr.getClass().getName()
+                            + "'; capture analysis must fail closed");
         }
     }
 
