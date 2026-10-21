@@ -64,7 +64,8 @@ final class ActorArenaAccessEvidenceTest {
         try (arena) {
             arena.enableAccessEvidence(128);
             var fields = arena.fields(java.util.List.of("label"), new Object());
-            assertNull(fields.put("label", "AB"));
+            Object uninitialized = fields.get("label");
+            assertSame(uninitialized, fields.put("label", "AB"));
             assertEquals("AB", fields.get("label"));
             assertEquals("AB", fields.put("label", "CD"));
             assertEquals("CD", fields.get("label"));
