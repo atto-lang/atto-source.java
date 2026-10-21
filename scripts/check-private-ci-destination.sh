@@ -9,6 +9,11 @@ fail() {
 target="$1"
 slug_pattern='^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$'
 [[ "$target" =~ $slug_pattern ]] || fail 'destination must be an owner/repo slug'
+# Incident quarantine must be enforced even if the allowlist is misconfigured.
+case "${target,,}" in
+  zed-pkg-test/java-app)
+    fail 'destination permanently quarantined by private-source incident policy' ;;
+esac
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 policy_dir="$script_dir/../.github"
 [[ -d "$policy_dir" && ! -L "$policy_dir" ]] ||
