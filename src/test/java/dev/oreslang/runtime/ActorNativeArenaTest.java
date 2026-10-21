@@ -496,6 +496,19 @@ final class ActorNativeArenaTest {
         assertThrows(IndexOutOfBoundsException.class, () -> region.leaseReadOnly(60, 8));
         assertThrows(IllegalStateException.class, () -> region.writeLong(8, 100L));
         assertThrows(IllegalStateException.class, () -> region.writeDouble(8, 1.0));
+        // Borrowed range is [8,24); writes to adjacent non-overlapping
+        // intervals are legal, including a word ending exactly at byte 8.
+        region.writeLong(0, 12L);
+        assertEquals(12L, region.readLong(0));
+        region.writeLong(24, 99L);
+        assertEquals(99L, region.readLong(24));
+        region.writeByte(24, (byte) 4);
+        assertEquals(4, region.readByte(24));
+        assertThrows(IllegalStateException.class, () -> region.writeLong(1, 12L),
+                "a word crossing into a borrowed interval must not partially write");
+        assertEquals(12L, region.readLong(0), "overlapping write must be atomic");
+        assertThrows(IllegalStateException.class, () -> region.writeByte(23, (byte) 5));
+        assertEquals(0, region.readByte(23));
         assertThrows(IllegalStateException.class, region::close);
         AtomicReference<Throwable> foreign = new AtomicReference<>();
         Thread other = new Thread(() -> {
@@ -511,7 +524,11 @@ final class ActorNativeArenaTest {
         assertThrows(IllegalStateException.class, () -> first.readByte(0));
         assertThrows(IllegalStateException.class, () -> region.writeLong(8, 100L));
         second.close();
+        // A zero-length borrow freezes no bytes, but still guards lifetime.
+        var emptyLease = region.leaseReadOnly(8, 0);
         region.writeLong(8, 100L);
+        assertThrows(IllegalStateException.class, region::close);
+        emptyLease.close();
         assertEquals(100L, region.readLong(8));
         var outstanding = region.leaseReadOnly(8, 8);
         arena.close();
