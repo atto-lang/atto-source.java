@@ -5960,9 +5960,12 @@ public final class OresEvalRootNode extends RootNode {
         private ChannelRuntime.Channel<Object> requireChannel(
                 Object value,
                 String where) {
+            if (value instanceof dev.oreslang.runtime.OresStream<?> stream) {
+                return (ChannelRuntime.Channel<Object>) stream.channel();
+            }
             if (!(value instanceof ChannelRuntime.Channel<?> channel)) {
                 throw new IllegalArgumentException(
-                        where + " requires Channel<T>; got " + value);
+                        where + " requires Channel<T> or Stream<T>; got " + value);
             }
             return (ChannelRuntime.Channel<Object>) channel;
         }
@@ -6463,6 +6466,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
                 if (name.name().equals("Channel")) return new ChannelFactory();
+                if (name.name().equals("Stream")) return new StreamFactory();
                 if (name.name().equals("SelectCase")) return new SelectCaseFactory();
                 if (name.name().equals("SelectSet")) return new SelectSetFactory(this);
                 if (name.name().equals("Future")) return FutureFactory.INSTANCE;
@@ -7221,6 +7225,21 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException("unknown actor member " + name);
                 };
             }
+            if (receiver instanceof dev.oreslang.runtime.OresStream<?> stream) {
+                return switch (name) {
+                    case "close" -> (Invokable) args -> {
+                        requireZero(args, "Stream.close");
+                        stream.close();
+                        return null;
+                    };
+                    case "is_closed" -> (Invokable) args -> {
+                        requireZero(args, "Stream.is_closed");
+                        return stream.isClosed();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown Stream member " + name);
+                };
+            }
             if (receiver instanceof ChannelRuntime.Channel<?> channel) {
                 return switch (name) {
                     case "close" -> (Invokable) args -> {
@@ -7239,6 +7258,12 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof ChannelFactory factory) {
                 if (!name.equals("new")) {
                     throw new IllegalArgumentException("unknown Channel factory member " + name);
+                }
+                return (Invokable) factory::create;
+            }
+            if (receiver instanceof StreamFactory factory) {
+                if (!name.equals("new")) {
+                    throw new IllegalArgumentException("unknown Stream factory member " + name);
                 }
                 return (Invokable) factory::create;
             }
@@ -7581,7 +7606,8 @@ public final class OresEvalRootNode extends RootNode {
         private Object normalizeHostResult(Object value) {
             value = context.unwrapHostRuntimeValue(value);
             if (value == null) return new OptionValue(false, null);
-            if (value instanceof ChannelRuntime.Channel<?>) return value;
+            if (value instanceof ChannelRuntime.Channel<?>
+                    || value instanceof dev.oreslang.runtime.OresStream<?>) return value;
             if (value instanceof CompletionStage<?> stage) {
                 return OresFuture.from(stage);
             }
@@ -8740,6 +8766,7 @@ public final class OresEvalRootNode extends RootNode {
             if (name.equals("Option")) return value instanceof OptionValue;
             if (name.equals("Result")) return value instanceof ResultValue;
             if (name.equals("Array") || name.equals("List")) return value instanceof List<?>;
+            if (name.equals("Stream")) return value instanceof dev.oreslang.runtime.OresStream<?>;
             if (name.equals("Generator") || name.equals("Iterator")) return value instanceof GeneratorRuntime.Generator<?>;
             if (name.equals("AsyncGenerator") || name.equals("AsyncIterator")) return value instanceof GeneratorRuntime.AsyncGenerator<?>;
             if (name.equals("IteratorResult")) return value instanceof GeneratorRuntime.Step<?>;
@@ -8769,6 +8796,7 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof ResultValue) return "Result";
             if (value instanceof ActorRuntime.ActorOutput<?>) return "ActorOutput";
             if (value instanceof ActorRuntime.ActorOutputStream<?>) return "ActorOutputStream";
+            if (value instanceof dev.oreslang.runtime.OresStream<?>) return "Stream";
             if (value instanceof GeneratorRuntime.Generator<?>) return "Iterator";
             if (value instanceof GeneratorRuntime.AsyncGenerator<?>) return "AsyncIterator";
             if (value instanceof GeneratorRuntime.Step<?>) return "IteratorResult";
@@ -9825,6 +9853,18 @@ public final class OresEvalRootNode extends RootNode {
     private record HostObjectFacade(Object value) {
         @Override public String toString() { return String.valueOf(value); }
     }
+    private static final class StreamFactory {
+        private Object create(List<Object> args) {
+            requireOne(args, "Stream.new<T>");
+            if (!(args.getFirst() instanceof Number number)) {
+                throw new IllegalArgumentException(
+                        "Stream.new<T> capacity must be an integer");
+            }
+            int capacity = Math.toIntExact(number.longValue());
+            return new dev.oreslang.runtime.OresStream<>(capacity);
+        }
+    }
+
     private static final class ChannelFactory {
         private Object create(List<Object> args) {
             requireOne(args, "Channel.new<T>");
