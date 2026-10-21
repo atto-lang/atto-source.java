@@ -5317,7 +5317,10 @@ public final class OresEvalRootNode extends RootNode {
             }
             try {
                 if (value instanceof OresObject object) {
-                    LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+                    ActorNativeArena arena = ActorRuntime.currentNativeArena();
+                    Map<String, Object> fields = arena == null
+                            ? new LinkedHashMap<>()
+                            : arena.fields(new ArrayList<>(object.fields.keySet()), UNINITIALIZED_FIELD);
                     for (Map.Entry<String, Object> entry : object.fields.entrySet()) {
                         fields.put(entry.getKey(), detachAsyncValue(entry.getValue(), visiting));
                     }
