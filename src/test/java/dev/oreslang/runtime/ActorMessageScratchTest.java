@@ -171,6 +171,68 @@ final class ActorMessageScratchTest {
     }
 
     @Test
+    @Timeout(120)
+    void hundredThousandUnaryActorMessagesRetainStateAndBoundScratchCapacity() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicLong processed = new AtomicLong();
+            AtomicLong firstScratchCapacity = new AtomicLong();
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            AtomicReference<CountDownLatch> batchComplete = new AtomicReference<>();
+
+            ActorRuntime.ActorRef<Integer> actor = runtime.spawnSharedTrusted(ctx -> {
+                final long[] state = {0};
+                return (message, turn) -> {
+                    try {
+                        ActorMessageScratch scratch = ActorRuntime.currentMessageScratch();
+                        if (scratch.usedBytes() != 0) {
+                            throw new AssertionError("scratch cursor leaked across messages");
+                        }
+                        var temp = scratch.allocate(8);
+                        if (temp.readLong(0) != 0) {
+                            throw new AssertionError("new message observed stale scratch contents");
+                        }
+                        temp.writeLong(0, message);
+                        state[0]++;
+                        if (state[0] != message) {
+                            throw new AssertionError("unary actor reordered or lost a message");
+                        }
+                        long capacity = scratch.reservedBytes();
+                        if (firstScratchCapacity.compareAndSet(0, capacity)) {
+                            assertEquals(4096, capacity);
+                        } else {
+                            assertEquals(firstScratchCapacity.get(), capacity);
+                        }
+                        processed.incrementAndGet();
+                    } catch (Throwable error) {
+                        failure.compareAndSet(null, error);
+                    } finally {
+                        CountDownLatch done = batchComplete.get();
+                        if (done != null) done.countDown();
+                    }
+                };
+            });
+
+            // Bounded mail in batches: this does not need a 100,000-envelope
+            // mailbox and cannot silently mask backpressure/overflow.
+            for (int batch = 0; batch < 100; batch++) {
+                CountDownLatch done = new CountDownLatch(1000);
+                batchComplete.set(done);
+                for (int index = 1; index <= 1000; index++) {
+                    actor.send(batch * 1000 + index);
+                }
+                assertTrue(done.await(20, TimeUnit.SECONDS),
+                        "one thousand admitted actor messages must finish");
+                assertNull(failure.get(), "native scratch invariant failed during actor execution");
+            }
+            assertEquals(100_000, processed.get());
+            assertEquals(4096, firstScratchCapacity.get());
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0, runtime.actorMemoryBytes());
+        }
+    }
+
+    @Test
     @Timeout(15)
     void suspendedSourceReceiveKeepsScratchUntilFutureCompletion() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
