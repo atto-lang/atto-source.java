@@ -167,6 +167,13 @@ public final class OresMutex {
         }
     }
 
+    /** A different actor execution segment already holds a nonparking local mutex. */
+    public static final class MutexContendedException extends IllegalStateException {
+        public MutexContendedException() {
+            super("Mutex<T> is held by another execution segment; use try_lock() or scheduler-owned logical admission");
+        }
+    }
+
     public static final class WrongMutexDomainException extends IllegalStateException {
         public WrongMutexDomainException(String message) {
             super(message);
@@ -192,15 +199,19 @@ public final class OresMutex {
     }
 
     /**
-     * Actor/private-domain mutex. There is no host lock and therefore no
-     * blocking path. Ownership follows the actor execution domain, not the
-     * transient JVM worker Thread. Outside actor execution, Thread identity is
-     * used as the local domain.
+     * Actor/private-domain mutex. The stable actor domain authorizes access,
+     * but each physical dispatch has a distinct execution-segment identity.
+     * Atomic admission is required even for actor-local state: multiple
+     * carrier threads may execute the same actor when explicitly configured.
+     *
+     * <p>No JVM thread parks on contention. Local lock_async() retains its
+     * existing immediate-acquisition contract and fails closed when busy;
+     * queued logical admission must be provided by the actor scheduler.</p>
      */
     public static final class Local<T> implements Lock<T> {
         private final T value;
         private final Object ownerDomain;
-        private boolean held;
+        private final AtomicReference<Object> holderSegment = new AtomicReference<>();
 
         private Local(T value) {
             this.value = value;
@@ -217,17 +228,22 @@ public final class OresMutex {
         @Override
         public Guard<T> lock() {
             requireOwnerDomain();
-            if (held) throw new RecursiveLockException("Mutex<T>");
-            held = true;
-            return new LocalGuard();
+            Object segment = ActorRuntime.currentMutexExecutionSegment();
+            if (!holderSegment.compareAndSet(null, segment)) {
+                if (holderSegment.get() == segment) {
+                    throw new RecursiveLockException("Mutex<T>");
+                }
+                throw new MutexContendedException();
+            }
+            return new LocalGuard(segment);
         }
 
         @Override
         public Optional<Guard<T>> tryLock() {
             requireOwnerDomain();
-            if (held) return Optional.empty();
-            held = true;
-            return Optional.of(new LocalGuard());
+            Object segment = ActorRuntime.currentMutexExecutionSegment();
+            if (!holderSegment.compareAndSet(null, segment)) return Optional.empty();
+            return Optional.of(new LocalGuard(segment));
         }
 
         @Override
@@ -275,23 +291,41 @@ public final class OresMutex {
         }
 
         private final class LocalGuard implements Guard<T> {
-            private boolean released;
+            private final Object owningSegment;
+            private final AtomicBoolean released = new AtomicBoolean();
+
+            private LocalGuard(Object owningSegment) {
+                this.owningSegment = owningSegment;
+            }
+
+            private void requireOwningSegment() {
+                requireOwnerDomain();
+                // Identity is intentional: record value equality would merge
+                // separate physical actor turns in the same execution domain.
+                if (ActorRuntime.currentMutexExecutionSegment() != owningSegment) {
+                    throw new WrongMutexDomainException(
+                            "MutexGuard belongs to another physical actor execution segment; state borrows cannot cross a turn boundary");
+                }
+            }
 
             @Override
             public T value() {
-                requireOwnerDomain();
-                if (released) throw new IllegalStateException("MutexGuard has been released");
+                requireOwningSegment();
+                if (released.get() || holderSegment.get() != owningSegment) {
+                    throw new IllegalStateException("MutexGuard has been released");
+                }
                 return value;
             }
 
-            @Override public boolean released() { return released; }
+            @Override public boolean released() { return released.get(); }
 
             @Override
             public void release() {
-                requireOwnerDomain();
-                if (released) return;
-                released = true;
-                held = false;
+                requireOwningSegment();
+                if (!released.compareAndSet(false, true)) return;
+                if (!holderSegment.compareAndSet(owningSegment, null)) {
+                    throw new IllegalStateException("MutexGuard owner segment changed before release");
+                }
             }
 
             @Override

@@ -6,7 +6,7 @@
 2. The supervisor/launcher supplies an `IsolatePolicy`.
 3. Compiler admission rejects language APIs not in that policy.
 4. Runtime API facades repeat the authorization check.
-5. Graal host access, native access, environment access, guest-created threads, host IO, and unrestricted polyglot access are disabled by default in restricted contexts.
+5. Graal host access/class lookup, native access, environment access, guest-created threads, host IO, and unrestricted polyglot access are disabled by default in restricted contexts.
 6. Actors cannot exceed their configured mailbox capacity.
 7. Hot reload never requires loading executable native libraries.
 8. Every hot-loaded generation is a fresh guest context and may be mapped to a stronger Graal/native isolate by the production host.
@@ -14,12 +14,43 @@
 10. An actor has one mailbox and never executes two mailbox turns concurrently.
 11. Private and shared actors use separate dispatcher thread pools.
 12. Private actor transport rejects synchronized shared-memory cells.
-13. Shared actor state is still actor-owned; ordinary actor field mutation is serialized by the mailbox, not by implicit locks.
-14. Actor `self` and move-only actor-owned state cannot escape a mailbox turn as ordinary mutable aliases.
-15. Synchronized shared memory requires `SHARED_MEMORY`; strict FaaS does not grant it by default.
-16. Private slices and synchronized shared cells compete for one parent actor-memory ceiling.
-17. Actor message graphs are cycle-checked and bounded by depth, node count, and logical byte quotas before transport.
-18. SharedMutex runtime ownership is reserved before mailbox visibility and committed only after successful admission; failed first publication rolls back.
+13. Every actor kind has its own default actor-local allocation arena, including shared actors. “Shared” never means “allocate ordinary mutable actor state into one common heap.”
+14. Shared actor state is still actor-owned; ordinary actor field mutation is serialized by the mailbox, not by implicit locks. Explicit frozen/shared regions and synchronized shared-memory capabilities are separate from the actor's default arena.
+15. Actor `self` and move-only actor-owned state cannot escape a mailbox turn as ordinary mutable aliases.
+16. Synchronized shared memory requires `SHARED_MEMORY`; strict FaaS does not grant it by default.
+17. Actor-local arenas and explicit shared regions are accounted independently but compete for the configured parent actor-memory ceiling.
+18. Actor message graphs are cycle-checked and bounded by depth, node count, and logical byte quotas before transport.
+19. SharedMutex runtime ownership is reserved before mailbox visibility and committed only after successful admission; failed first publication rolls back.
+
+## Actor-local allocation arenas
+
+The default memory topology is **arena-per-actor**, not heap-per-actor-kind.
+Shared, private/isolated, untrusted, and dedicated actors all allocate ordinary
+actor-owned data into an actor-local arena. Shared actors may additionally hold
+leases on explicit frozen/read-only regions or, when policy grants
+`SHARED_MEMORY`, synchronized shared-memory objects. Those shared regions are
+not the actor's default mutable heap.
+
+The arena split serves both safety and performance:
+
+- allocation can use actor-local slabs/bump paths without a process-wide allocator
+  becoming the ordinary fast path;
+- short-lived scratch allocations can be reclaimed in bulk at validated turn,
+  task, or region boundaries;
+- persistent actor state can live in a longer-lived arena and be reclaimed when
+  the actor retires or the owning generation is torn down;
+- memory quotas and leak attribution remain naturally per actor;
+- JVM/Graal backends can move suitable payload bytes off the managed heap,
+  reducing managed allocation rate and tracing pressure;
+- native/LLVM backends can use ownership, borrowing, region lifetime proofs, and
+  deterministic arena destruction instead of a tracing collector on verified
+  paths.
+
+An actor-local arena is an **allocation/ownership domain**, not automatically a
+physical GC domain. On the JVM, Java wrappers, Truffle nodes, mailbox objects and
+other managed objects may still share one HotSpot/Native Image collector. A
+dedicated Graal isolate or OS process is a separate decision used when independent
+collector, address-space, or security fault domains are required.
 
 ## Deployment matrix
 
@@ -37,6 +68,42 @@ Native Image is fundamentally closed-world for Java classes. Oreslang therefore 
 
 That makes the mechanism consistent across Windows, macOS, Linux, Android, and AOT-only targets. Platform-specific native dynamic linking can remain an optional trusted-host optimization, never a semantic dependency.
 
+## Native-first language/runtime boundary
+
+Java/Truffle is a reference/bootstrap backend, not the semantic definition of
+Oreslang runtime features. Ores-owned facilities should lower through
+backend-independent runtime intrinsics and, where practical, be implemented in
+the native runtime. JNI may be used as a narrow bridge from the Java-hosted
+compiler/runtime, but Java reflection, JVM class identity, and Java library
+behavior must not define Oreslang semantics.
+
+Type tests, casts, and pattern matching therefore use Oreslang type and
+constructor metadata. Java host objects remain explicit capability-gated
+interop values and do not acquire Oreslang nominal identity through JVM
+`instanceof`.
+
+The native ABI direction and migration rules are specified in
+[NATIVE_RUNTIME_ABI.md](NATIVE_RUNTIME_ABI.md).
+
+## Java host interop boundary
+
+Java imports are a two-key boundary. Source may name an explicit `java:` class, but execution requires both:
+
+1. the Oreslang `JAVA_INTEROP` capability; and
+2. an exact fully-qualified host-class allowlist entry supplied by the launcher/embedder.
+
+The runtime uses Graal host lookup rather than guest-side `Class.forName`, disables host class loading, exposes only public **declared** members of explicitly allowlisted classes, and disables access inheritance. This prevents admitting one class from automatically exposing inherited reflection such as `Object.getClass()`.
+
+Private/memory-isolated actors have `JAVA_INTEROP` stripped from their effective policy. Java host objects are wrapped as host capabilities, are not ordinary Oreslang data, and are rejected from synchronized shared-state publication. Adversarial isolates cannot grant `JAVA_INTEROP` at all.
+
+Class-level interop blocks VM-control/reflection infrastructure (for example `Runtime`, `System`, `Class`, class loaders, reflection/invoke, script/compiler APIs, and JDK internals). Broad JDK families additionally require their corresponding Ores capabilities: filesystem, network, thread creation, native access, or process info. Third-party classes remain the embedder's responsibility: allowlisting one explicitly grants access to its public declared host surface.
+
+Example:
+
+```text
+oreslang-compiler --allow=JAVA_INTEROP --allow-host-class=java.util.ArrayList app.ores
+```
+
 ## Capability ownership
 
 Capabilities belong to a launch policy, not to source code. Source may eventually declare required capabilities for diagnostics, but declarations will never grant them.
@@ -50,8 +117,26 @@ The strict production direction is:
 
 ## Receiver implementation
 
-Method code is stored once per class declaration. Direct calls dispatch to that definition with the receiver as an implicit immutable argument. Only first-class method extraction allocates a bound method pair. This provides Go-like receiver safety without allocating a closure for every instance or every direct method invocation.
+Method code is stored once per class declaration. Object instances store state/layout data, not private copies of their methods.
 
+A direct instance call dispatches through the statically known `(INSTANCE, name, arity)` selector and supplies the object as an implicit first argument. It does not create a bound callable.
+
+First-class extraction such as `obj.method` is represented semantically as a compact bound-method pair containing receiver identity plus shared method identity/slot information. The current reference evaluator keeps the receiver and method-name family and selects the closed-world slot from callback arity; AOT may resolve that to a receiver pointer plus code/vtable slot. A non-escaping value may be stack/register allocated or optimized away, so the language does not require a heap allocation merely because method-value syntax was used.
+
+The receiver is fixed when the method value is formed. Invocation never dynamically rebinds `self`.
+
+
+## Proper tail-call runtime
+
+OresVM implements proper tail calls itself instead of relying on GraalVM to infer tail-recursion optimization. A tail-position call is prepared as an internal invocation descriptor after its receiver/callee and arguments have been evaluated. The current activation unwinds, and an iterative trampoline executes the next raw activation. Self-recursion, same-evaluator mutual recursion, routines, instance methods, `static fnc`, same-unit module calls, lambdas, and evaluator-owned first-class Oreslang function values therefore share the same constant-call-stack mechanism. Untyped cross-code-unit imports are the explicit contract barrier described below.
+
+The trampoline performs a scheduler safepoint every 64 tail transfers. This prevents a very long recursive chain from becoming an uncooperative scheduling loophole.
+
+Tail transfer is deliberately blocked when caller-owned cleanup still exists: active `defer`, catch/finally semantics, or live mutex guards. Those calls use ordinary call/return behavior so cleanup ordering and lock lifetime remain correct. Arbitrary Java/host `Invokable` values are also not tail-transferred.
+
+Tail-transferable first-class Oreslang callables carry the evaluator that owns their validated contract. A target owned by another linked code unit is treated as a contract barrier because imports are currently typed as `Unknown` within an individual unit. The caller waits for that imported invocation and performs its own declared return-shape validation. Internal tail calls in the target evaluator still trampoline normally. This avoids weakening runtime contracts while keeping retained heap state O(1); no return-validator chain is accumulated across recursive depth.
+
+This mechanism is part of Oreslang semantics and runs identically inside the JVM/Graal JIT runtime, the Native Image AOT launcher, and the AOT-host/guest-JIT hybrid launcher.
 
 ## Truffle thread boundary
 
@@ -70,7 +155,7 @@ Oreslang has two deliberately different mutex domains:
 - `SharedMutex<T>` is an explicit same-OS-process shared-memory capability within one `ActorRuntime`. It is non-reentrant and uses acquire/release synchronization. Only shared actors may receive/use it; private actors reject it even when the parent runtime is otherwise trusted. Sender and receiver must have `SHARED_MEMORY`. It binds transactionally to the first runtime that successfully publishes it, and later cross-runtime transport is rejected. Publication validation is nonblocking and runs while the mutex's physical permit is held, so transport never races a legitimate protected mutation; publishing a currently locked/contended mutex fails fast and may be retried later.
 - The payload and declared type argument of `SharedMutex<T>` must be **SharedSafe**: concrete owned data whose reachable field graph contains no borrows, actor-local `Mutex`, `MutexGuard`, pending `Future`, closure/function values, or unresolved dynamic/generic state. This applies to signatures/fields/aliases as well as `SharedMutex.new(...)`. Until Oreslang has an explicit SharedSafe generic bound, unconstrained `SharedMutex<T>` is rejected conservatively. The type checker recursively validates class fields (including inherited generic substitutions), and the interpreter repeats runtime admission checks as defense in depth. Nested `SharedMutex` values are also rejected for now; recursive publication and lock-order semantics must be explicit before lock-containing-lock state is admitted.
 - `MutexGuard<T>` is a lexical linear capability. The runtime releases it on normal scope exit and poisons a shared mutex on abnormal scope exit. Guest code may call `guard.release()` for early release; there is intentionally no `mutex.unlock()`. A released guard can no longer expose its protected value.
-- Guard access is deliberately non-escaping. Copy-like fields may be read, mutable fields may be replaced, and methods may be invoked directly when they return `void` or a copy-like value. Move-only nested fields and bound method values cannot be extracted through a guard. For compound mutation, use `with_lock(|state| -> { ... })`.
+- Guard access is deliberately non-escaping. Copy-like fields may be read, mutable fields may be replaced, and methods may be invoked directly when they return `void` or a copy-like value. Move-only nested fields cannot be extracted through a guard, and instance methods are direct-call-only everywhere rather than becoming bound method values. For compound mutation, use `with_lock(|state| -> { ... })`.
 - `with_lock` and `recover` require an inline one-argument, `void` lambda. The callback parameter is treated as a lexical exclusive `&mut T`: it may mutate protected state but cannot move or return that state, escape it through a closure, or suspend with `await`.
 - `await` while a guard is live and closure capture of a guard are compile-time ownership errors. Guard-bearing results must be bound once with `val`; they cannot be discarded, reassigned, stored in aggregates, passed through arbitrary calls, or hidden inside another mutex.
 - Blocking `SharedMutex.lock()`/timed acquisition is rejected while executing an actor. `lock_async()` returns a runtime-owned, caller-cancellable `GuardFuture` and is the nonblocking acquisition primitive. Contended async acquisition is queued inside the mutex and receives the permit by direct guard handoff; it does **not** allocate one helper thread per waiter. Acquisitions reserve the semantic actor/execution domain before waiting, so recursive async acquisition fails instead of self-deadlocking even if an actor migrates JVM workers. Cancellation removes queued waiters and releases their domain reservation; poisoning drains queued async waiters with `PoisonedMutexException`. Admission is bounded by the current actor mailbox policy, an 8,192-waiter ceiling per mutex, and a 32,768-waiter JVM-process ceiling. When blocking host waiters and async waiters coexist, release alternates handoff preference so neither class monopolizes the mutex. The runtime also exposes `lockAsyncFor(Duration)`, using the same queue plus one shared daemon timeout scheduler; expiry completes with `LockTimeoutException` and removes the waiter immediately. This remains a backend/runtime API until source-level duration/timeout representation is finalized. Language `await` lowering must suspend/resume the actor turn rather than synchronously join an incomplete future; until continuation lowering is complete, actor-backed singleton/mailbox serialization is preferred over contended shared-memory locking from shared actors.
@@ -104,6 +189,40 @@ The current reference runtime uses a one-permit JVM semaphore for `SharedMutex<T
 Actor transport is independently hardened from mutex synchronization. Ordinary messages are recursively frozen with cycle detection and hard depth/node/byte budgets (256 levels, 100,000 nodes, 16 MiB estimated frozen size). Read-only shared wrappers are runtime-constructed and revalidated on every boundary. `ActorRef` capabilities may cross only inside their owning `ActorRuntime`; a wrapper cannot be used to smuggle a foreign actor reference into another runtime. Arbitrary host-controlled `Sendable` callbacks are not part of the transport boundary. Runtime-owned capabilities have explicit cases, while ordinary message graphs are recursively frozen/copied and validated.
 
 Compiler-generated/context-aware `BehaviorFactory` values are capture-free for both private and shared actors. This prevents a shared actor from bypassing mailbox/capability semantics by closing over an arbitrary mutable JVM object. `spawnPrivateTrusted(...)`, `spawnSharedTrusted(...)`, and trusted `Supplier` construction are host/supervisor escape hatches only; adversarial policies reject them.
+
+## Async task runtime
+
+Ordinary `async` callables are separate from actor dispatchers. The reference interpreter owns one context-local async scheduler and returns runtime-owned `OresFuture<T>` / language `Future<T>` values immediately. Java `CompletionStage` is host interop only and is normalized one-way into `OresFuture`; it does not define guest continuation scheduling. The current compatibility execution bridge still uses Java virtual threads so blocking host/runtime operations do not consume the bounded private/shared actor worker pools. This is transitional: Oreslang source semantics are future/continuation based, not virtual-thread based.
+
+The design intentionally mirrors the strongest C# async/await practices:
+
+- do not make `async` synonymous with "new OS thread";
+- avoid sync-over-async on bounded actor workers;
+- propagate cancellation to the underlying task;
+- preserve the original exception at `await`;
+- keep the execution scheduler out of the source-level future contract;
+- separate I/O/task concurrency from explicitly CPU-bound scheduling.
+
+Actor dispatcher carriers must not park on pending future reads. Pending `OresFuture.get()`, positive-timeout `get(...)`, and `join()` host/runtime bridges are rejected before registering a waiter. Settled reads and zero-timeout polling remain available. Guest `await` uses the compiler continuation path where supported; host blocking bridges cannot substitute for that suspension/resumption protocol.
+
+Async callable arguments/results are detached at the evaluator boundary. This is stricter than C#'s shared managed heap and preserves Oreslang's ownership direction: mutable task state is owned by the task instead of becoming an implicit cross-thread alias. Generic async boundaries remain closed until a Send/task-safe generic contract exists.
+
+## HungryActor: explicit dedicated CPU carrier
+
+`HungryActor<M>` is the deliberate exception to the ordinary multiplexed actor rule. It is a runtime primitive for sustained CPU-bound or thread-affine work and owns one dedicated **JNI-attached pthread carrier** from construction until `release()`/termination. It does not create a Java platform thread.
+
+Its invariants are:
+
+- exactly one dedicated native pthread carrier per live HungryActor;
+- bounded nonblocking mailbox admission;
+- messages are frozen before delivery;
+- serial message execution;
+- fail-stop behavior on callback failure;
+- cooperative CPU-loop cancellation through `schedulerSafepoint()`;
+- `release()`/close relinquishes the carrier, with bounded shutdown observation;
+- it never consumes a private/shared ActorRuntime dispatcher worker.
+
+A HungryActor is intentionally expensive. It is appropriate when reserving a whole carrier is the requirement—not as the default way to obtain parallelism. Ordinary actors should remain multiplexed, and ordinary `async` should remain task/future based. The current class is a host/compiler runtime primitive; exposing a richer source-level constructor must preserve the same ownership and capability checks rather than becoming a raw guest thread API.
 
 ## Actor dispatchers
 
@@ -147,3 +266,27 @@ Persistent generated actor state reserves from the same slice. Actor teardown cl
 The logical size metric intentionally does not claim to equal JVM object layout. It exists to enforce Oreslang memory-domain policy while actors remain multiplexed on one JVM. A hardened backend may replace the accounting implementation with arena/region allocation or a Graal/native isolate without changing source semantics.
 
 A private actor's memory owner is its **ActorId**, never its carrier thread. Successive mailbox turns may execute on different private-dispatcher workers. Consequently a future FFM/off-heap backend must not make `Arena.ofConfined()` carrier-thread identity part of Oreslang semantics. It should use a cross-thread-capable region whose access is guarded by the actor owner token, or map the private actor to a true Graal/native isolate when physical heap isolation is required.
+
+## Native runtime boundary
+
+Oreslang's preferred actor carrier backend is now a JNI bridge to a bounded pthread pool on Linux and macOS. The library is built from `src/main/c/oresthread.c`; each pthread attaches to the host VM once and then multiplexes many unrelated Oreslang actor turns. Actor identity remains independent of physical carrier identity.
+
+The backend selector is `-Dores.runtime.carriers=auto|native|java`:
+
+- `auto` prefers the native pthread backend on supported Unix hosts and falls back only when the native library cannot be linked;
+- `native` fails closed if the JNI runtime cannot be loaded or initialized;
+- `java` is an explicit compatibility/debugging backend and must not be treated as the production Oreslang scheduler.
+
+`process.descriptor.actor_carrier_backend` reports the physical backend so tests and supervisors can verify that native execution is actually active.
+
+This does **not** mean the whole runtime is native yet. The current actor mailbox containers, shared-memory synchronization, async virtual-thread bridge, GC timer, and several host-integration data structures still use Java runtime primitives. Those are migration targets behind Oreslang-owned abstractions; Native Image compilation by itself is not considered proof that a primitive is natively implemented. New runtime features should avoid exposing Java concurrency types in language semantics and should prefer the JNI/native substrate where a physical scheduler, clock, thread, or memory primitive is required.
+
+### Strict isolate root admission
+
+The VM prestarts its CONTROL carriers before guest execution. In UNTRUSTED
+contexts, ROOT_TASK turns are queued to the calling thread that owns the isolate
+JNI scope, preserving the existing one-thread sandbox limit. Pending waits leave
+guest execution while the caller waits for queued continuations. Resuming a task
+retains its logical scheduler ownership without admitting another guest thread.
+A rejected context entry settles the owning task exceptionally rather than
+leaving a host waiting on an unresolved Future.
