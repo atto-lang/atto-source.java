@@ -193,6 +193,7 @@ public final class OresKeyedMap<K, V> {
             }
             throw failure;
         }
+    }
 
     /**
      * Runtime policy hook used by compiler-owned typed Map descriptors.
@@ -475,7 +476,7 @@ public final class OresKeyedMap<K, V> {
     /**
      * Attempt one insert/replace without losing ownership of a rejected value.
      *
-     * <p>All domain, graph, quota, policy and staging work completes while the
+     * <p>All domain, graph, quota and policy preflight completes while the
      * caller still conceptually owns {@code value}. The live Map is published
      * only after those fallible operations succeed. On rejection the exact
      * candidate is returned by {@link PutAttempt#takeUncommittedValue()} and the
@@ -483,7 +484,7 @@ public final class OresKeyedMap<K, V> {
      *
      * <p>For JSON values the global graph-stability guard is acquired before
      * the destination Map monitor, matching every other JSON-object mutation.
-     * No guest callback may run from validation or staging.</p>
+     * No guest callback may run from validation or the commit point.</p>
      */
     public PutAttempt<V> tryPutOwned(K key, V value) {
         // A null candidate has no valid guest ownership state to return.
