@@ -72,5 +72,7 @@ final class StreamOwnershipProofTest {
     void streamConstructorEnforcesPositiveCapacity() {
         assertThrows(IllegalArgumentException.class, () -> new OresStream<>(0));
         assertThrows(IllegalArgumentException.class, () -> new OresStream<>(-1));
+        assertThrows(IllegalArgumentException.class,
+                () -> new OresStream<>(OresStream.MAX_CAPACITY + 1));
     }
 }
