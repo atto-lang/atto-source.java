@@ -349,6 +349,18 @@ final class EndDelimitedFunctionCurrentMainTest {
     }
 
     @Test
+    void malformedReturnTypesCannotReachTheBodySeparator() {
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("fnc bad() -> Result<int :: return value; end"));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("fnc bad() -> tuple (int, string :: return value; end"));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("fnc bad() -> {foo: int, bar: string :: return value; end"));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("fnc bad() -> Thing> :: return value; end"));
+    }
+
+    @Test
     void doubleColonSeparatorHasExactLexicalBoundaries() {
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("fnc bad() -> int : : return 1; end"));
