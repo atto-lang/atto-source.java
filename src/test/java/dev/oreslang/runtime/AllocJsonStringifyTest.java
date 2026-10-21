@@ -65,7 +65,7 @@ final class AllocJsonStringifyTest {
                     pub routine main(): void {
                       val Map<String, JsonValue> object =
                           new Map<String, JsonValue>();
-                      object["name"] = "Ada \"Lovelace\"";
+                      object["name"] = "Ada \\\"Lovelace\\\"";
                       object["age"] = 37;
                       object["active"] = true;
                       object["score"] = 1.25;
