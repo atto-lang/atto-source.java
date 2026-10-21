@@ -2525,6 +2525,39 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.BinaryExpr binary) {
             Type left = typeOf(binary.left(), env, generics, self);
+            if (binary.operator().equals("with")) {
+                if (left instanceof Borrow) {
+                    throw new IllegalArgumentException(
+                            "record 'with' requires an owned readonly record value; borrowed records cannot be consumed");
+                }
+                if (!(left instanceof Record base)
+                        || base.kind() != AggregateKind.RECORD
+                        || !base.readOnly()) {
+                    throw new IllegalArgumentException(
+                            "'with' requires an actual owned readonly structural record, not a struct, class, Map, or structural contract view");
+                }
+                if (!(binary.right() instanceof Ast.ObjectExpr updates)
+                        || !updates.plainRecord()) {
+                    throw new IllegalStateException(
+                            "record 'with' RHS must be the compiler-owned static update record");
+                }
+
+                Map<String, Type> members =
+                        new LinkedHashMap<>(base.members());
+                for (Ast.ObjectField field : updates.fields()) {
+                    Type exactValueType =
+                            typeOf(field.value(), env, generics, self);
+                    // Match ordinary record-literal inference: singleton
+                    // literals are widened to their storable field domain.
+                    members.put(
+                            field.name(),
+                            widenCollectionElement(exactValueType));
+                }
+                return new Record(
+                        members,
+                        true,
+                        AggregateKind.RECORD);
+            }
             if (binary.operator().equals("&&") || binary.operator().equals("||")) {
                 requireAssignable(left, Primitive.BOOL, "logical operand");
                 Map<Env.Binding, Set<String>> afterLeft = env.initializationSnapshot();
