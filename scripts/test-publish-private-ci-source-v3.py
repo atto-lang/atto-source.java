@@ -56,6 +56,26 @@ def contract():
 
 
 class PrivateCiV3Test(unittest.TestCase):
+    def test_publish_rejects_quarantined_carrier_before_policy_or_api(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "snapshot"
+            source.mkdir()
+            (source / "synthetic.ores").write_text("synthetic\n")
+            with patch.object(v3.legacy, "checked_policy_approval") as policy:
+                with patch.object(v3.legacy, "gh_api") as api:
+                    with self.assertRaisesRegex(v3.Denied, "quarantined"):
+                        v3.publish(
+                            "ZED-PKG-TEST/JAVA-APP",
+                            source,
+                            "4" * 40,
+                            1482,
+                            "ci/test-plans/java-pr1482.json",
+                            root,
+                        )
+                    policy.assert_not_called()
+                    api.assert_not_called()
+
     def review_governance_fixture(self, policy=b"trusted/ci 246810\n"):
         codeowners = (
             "\n".join(
