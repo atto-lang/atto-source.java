@@ -55,7 +55,7 @@ by the focused JUnit matrix, then the full Java/Truffle suite:
 ```sh
 set -euo pipefail
 mvn -B -ntp -DskipTests package
-mvn -B -ntp -Dtest=AnonymousStructParameterOrderTest,ImplicitAnonymousStructuralParameterTest,AnonymousParamAstInvariantTest,ImplicitStructuralCallLoanTest,StructuralTakeRejectionTest,StructuralKeywordMatrixTest,StructuralTypingHardeningTest,CallArgumentBorrowExclusivityTest,InvocationMutableBorrowAliasTest test
+mvn -B -ntp -Dtest=AnonymousStructParameterOrderTest,ImplicitAnonymousStructuralParameterTest,AnonymousParamAstInvariantTest,ImplicitStructuralCallLoanTest,StructuralTakeRejectionTest,AnonymousStructuralRuntimeParityTest,StructuralKeywordMatrixTest,StructuralTypingHardeningTest,CallArgumentBorrowExclusivityTest,InvocationMutableBorrowAliasTest test
 mvn -B -ntp test
 ```
 
