@@ -53,27 +53,27 @@ final class ScopedTaskReadRuntimeTest {
 
             assertTrue(entered.await(5, TimeUnit.SECONDS));
             assertEquals(1,
-                    ScopedTaskReadRuntime.activeReadersForTesting(allocation));
+                    ScopedTaskReadRuntime.activeReadersForTesting(program, allocation));
             assertThrows(IllegalStateException.class,
-                    () -> ScopedTaskReadRuntime.requireWritable(allocation));
+                    () -> ScopedTaskReadRuntime.requireWritable(program, allocation));
 
             future.cancel(false);
             assertEquals(1,
-                    ScopedTaskReadRuntime.activeReadersForTesting(allocation),
+                    ScopedTaskReadRuntime.activeReadersForTesting(program, allocation),
                     "Future cancellation is not physical Task retirement");
             assertThrows(IllegalStateException.class,
-                    () -> ScopedTaskReadRuntime.requireWritable(allocation));
+                    () -> ScopedTaskReadRuntime.requireWritable(program, allocation));
 
             release.countDown();
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-            while (ScopedTaskReadRuntime.activeReadersForTesting(allocation) != 0
+            while (ScopedTaskReadRuntime.activeReadersForTesting(program, allocation) != 0
                     && System.nanoTime() < deadline) {
                 Thread.onSpinWait();
             }
             assertEquals(0,
-                    ScopedTaskReadRuntime.activeReadersForTesting(allocation));
+                    ScopedTaskReadRuntime.activeReadersForTesting(program, allocation));
             assertDoesNotThrow(
-                    () -> ScopedTaskReadRuntime.requireWritable(allocation));
+                    () -> ScopedTaskReadRuntime.requireWritable(program, allocation));
         }
     }
 
@@ -101,8 +101,8 @@ final class ScopedTaskReadRuntimeTest {
 
         try (OresScheduler scheduler = new OresScheduler(1);
              ScopedTaskReadRuntime.WriteLease ignored =
-                     ScopedTaskReadRuntime.acquireWrite(allocation)) {
-            assertTrue(ScopedTaskReadRuntime.writeHeldForTesting(allocation));
+                     ScopedTaskReadRuntime.acquireWrite(program, allocation)) {
+            assertTrue(ScopedTaskReadRuntime.writeHeldForTesting(program, allocation));
             assertThrows(IllegalStateException.class,
                     () -> ScopedTaskReadRuntime.start(
                             scheduler,
@@ -115,9 +115,9 @@ final class ScopedTaskReadRuntimeTest {
                             allocation.generation()));
         }
 
-        assertFalse(ScopedTaskReadRuntime.writeHeldForTesting(allocation));
+        assertFalse(ScopedTaskReadRuntime.writeHeldForTesting(program, allocation));
         assertDoesNotThrow(
-                () -> ScopedTaskReadRuntime.requireWritable(allocation));
+                () -> ScopedTaskReadRuntime.requireWritable(program, allocation));
     }
 
     @Test
@@ -176,7 +176,7 @@ final class ScopedTaskReadRuntimeTest {
                     try {
                         start.await();
                         writeLease.set(
-                                ScopedTaskReadRuntime.acquireWrite(allocation));
+                                ScopedTaskReadRuntime.acquireWrite(program, allocation));
                     } catch (Throwable failure) {
                         writerFailure.set(failure);
                     }
@@ -194,29 +194,29 @@ final class ScopedTaskReadRuntimeTest {
                         "exactly one conflicting READ/WRITE admission must win");
 
                 if (writerWon) {
-                    assertTrue(ScopedTaskReadRuntime.writeHeldForTesting(allocation));
+                    assertTrue(ScopedTaskReadRuntime.writeHeldForTesting(program, allocation));
                     assertEquals(0,
-                            ScopedTaskReadRuntime.activeReadersForTesting(allocation));
+                            ScopedTaskReadRuntime.activeReadersForTesting(program, allocation));
                     writeLease.get().close();
                 } else {
                     assertEquals(1,
-                            ScopedTaskReadRuntime.activeReadersForTesting(allocation));
-                    assertFalse(ScopedTaskReadRuntime.writeHeldForTesting(allocation));
+                            ScopedTaskReadRuntime.activeReadersForTesting(program, allocation));
+                    assertFalse(ScopedTaskReadRuntime.writeHeldForTesting(program, allocation));
                     taskRelease.countDown();
                     long deadline =
                             System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-                    while (ScopedTaskReadRuntime.activeReadersForTesting(allocation) != 0
+                    while (ScopedTaskReadRuntime.activeReadersForTesting(program, allocation) != 0
                             && System.nanoTime() < deadline) {
                         Thread.onSpinWait();
                     }
                     assertEquals(0,
-                            ScopedTaskReadRuntime.activeReadersForTesting(allocation));
+                            ScopedTaskReadRuntime.activeReadersForTesting(program, allocation));
                 }
             } finally {
                 taskRelease.countDown();
                 ScopedTaskReadRuntime.WriteLease lease = writeLease.get();
                 if (lease != null
-                        && ScopedTaskReadRuntime.writeHeldForTesting(allocation)) {
+                        && ScopedTaskReadRuntime.writeHeldForTesting(program, allocation)) {
                     lease.close();
                 }
             }
@@ -262,12 +262,12 @@ final class ScopedTaskReadRuntimeTest {
 
             assertTrue(entered.await(5, TimeUnit.SECONDS));
             assertEquals(1,
-                    ScopedTaskReadRuntime.activeReadersForTesting(allocation));
+                    ScopedTaskReadRuntime.activeReadersForTesting(program, allocation));
             child.result().cancel(false);
             scope.seal();
 
             assertEquals(1,
-                    ScopedTaskReadRuntime.activeReadersForTesting(allocation),
+                    ScopedTaskReadRuntime.activeReadersForTesting(program, allocation),
                     "result settlement/cancellation must not retire READ authority");
             assertFalse(scope.getDone().isDone(),
                     "scope cannot report quiescence while the physical child is running");
@@ -275,9 +275,9 @@ final class ScopedTaskReadRuntimeTest {
             release.countDown();
             assertNull(scope.getDone().get(5, TimeUnit.SECONDS));
             assertEquals(0,
-                    ScopedTaskReadRuntime.activeReadersForTesting(allocation));
+                    ScopedTaskReadRuntime.activeReadersForTesting(program, allocation));
             assertDoesNotThrow(
-                    () -> ScopedTaskReadRuntime.requireWritable(allocation));
+                    () -> ScopedTaskReadRuntime.requireWritable(program, allocation));
         }
     }
 
@@ -309,7 +309,7 @@ final class ScopedTaskReadRuntimeTest {
                     authority, program, boundary, epoch,
                     allocation.allocationId(), allocation.generation());
             assertEquals(1,
-                    ScopedTaskReadRuntime.activeReadersForTesting(allocation));
+                    ScopedTaskReadRuntime.activeReadersForTesting(program, allocation));
 
             assertThrows(
                     java.util.concurrent.RejectedExecutionException.class,
@@ -318,7 +318,7 @@ final class ScopedTaskReadRuntimeTest {
                             resume -> OresScheduler.done(1),
                             read));
             assertEquals(0,
-                    ScopedTaskReadRuntime.activeReadersForTesting(allocation),
+                    ScopedTaskReadRuntime.activeReadersForTesting(program, allocation),
                     "proven pre-admission rejection must retire its READ reservation");
         }
     }
@@ -379,32 +379,67 @@ final class ScopedTaskReadRuntimeTest {
 
     @Test
     void processOwnerLabelCannotAliasSameAllocationGeneration() {
+        Ast.Program program = checkedProgram();
         var first = new ScopedTaskReadAuthority.AllocationIdentity(
                 "PROCESS", "first-label", 606, 4, true);
         var second = new ScopedTaskReadAuthority.AllocationIdentity(
                 "PROCESS", "second-label", 606, 4, true);
 
         try (ScopedTaskReadRuntime.WriteLease ignored =
-                     ScopedTaskReadRuntime.acquireWrite(first)) {
+                     ScopedTaskReadRuntime.acquireWrite(program, first)) {
             assertThrows(IllegalStateException.class,
-                    () -> ScopedTaskReadRuntime.acquireWrite(second));
+                    () -> ScopedTaskReadRuntime.acquireWrite(program, second));
             assertThrows(IllegalStateException.class,
-                    () -> ScopedTaskReadRuntime.requireWritable(second));
+                    () -> ScopedTaskReadRuntime.requireWritable(program, second));
         }
         assertDoesNotThrow(
-                () -> ScopedTaskReadRuntime.requireWritable(second));
+                () -> ScopedTaskReadRuntime.requireWritable(program, second));
+    }
+
+    @Test
+    void separateCheckedProgramsDoNotShareAllocationAuthoritySlots() {
+        Ast.Program firstProgram = checkedProgram();
+        Ast.Program secondProgram = checkedProgram();
+        assertNotSame(firstProgram, secondProgram);
+
+        var allocation = new ScopedTaskReadAuthority.AllocationIdentity(
+                "PROCESS", "root", 707, 1, true);
+        try (ScopedTaskReadRuntime.WriteLease ignored =
+                     ScopedTaskReadRuntime.acquireWrite(firstProgram, allocation)) {
+            assertDoesNotThrow(
+                    () -> ScopedTaskReadRuntime.requireWritable(
+                            secondProgram, allocation));
+            try (ScopedTaskReadRuntime.WriteLease second =
+                         ScopedTaskReadRuntime.acquireWrite(
+                                 secondProgram, allocation)) {
+                assertNotNull(second);
+            }
+        }
     }
 
     @Test
     void staleGenerationDoesNotBlockReplacementAllocation() {
+        Ast.Program program = checkedProgram();
         var oldAllocation = new ScopedTaskReadAuthority.AllocationIdentity(
                 "PROCESS", "root", 7, 1, true);
         var replacement = new ScopedTaskReadAuthority.AllocationIdentity(
                 "PROCESS", "root", 7, 2, true);
         assertDoesNotThrow(
-                () -> ScopedTaskReadRuntime.requireWritable(oldAllocation));
+                () -> ScopedTaskReadRuntime.requireWritable(
+                        program, oldAllocation));
         assertDoesNotThrow(
-                () -> ScopedTaskReadRuntime.requireWritable(replacement));
+                () -> ScopedTaskReadRuntime.requireWritable(
+                        program, replacement));
+    }
+
+    private static Ast.Program checkedProgram() {
+        return OresCompiler.parseAndTypeCheck("""
+                pub async fnc main(): void {
+                  let Future<int> child = task { return 1; };
+                  stdio.stdout.write(await child);
+                  return;
+                }
+                """);
     }
 
     private static Ast.TaskExpr firstTask(Ast.Program program) {
