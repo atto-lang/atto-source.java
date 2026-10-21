@@ -29,7 +29,7 @@ final class BorrowedContinuationBoundaryTest {
     @Test
     void synchronousBorrowParameterRemainsValid() {
         assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse(BOX + """
-                fnc read(&Box box): int {
+                fnc read(borrow Box box): int {
                   return box.value;
                 }
                 fnc good(): void {
@@ -72,7 +72,7 @@ final class BorrowedContinuationBoundaryTest {
     @Test
     void asyncCallCannotRetainCallSiteBorrow() {
         reject(BOX + """
-                async fnc later(&Box box): int {
+                async fnc later(borrow Box box): int {
                   return box.value;
                 }
                 fnc bad(): void {
@@ -87,7 +87,7 @@ final class BorrowedContinuationBoundaryTest {
     void qualifiedAsyncCallAlsoRejectsBorrow() {
         reject(BOX + """
                 define module worker as
-                  pub async fnc later(&Box box): int {
+                  pub async fnc later(borrow Box box): int {
                     return box.value;
                   }
                 end
@@ -102,7 +102,7 @@ final class BorrowedContinuationBoundaryTest {
     @Test
     void generatorCallCannotRetainCallSiteBorrow() {
         reject(BOX + """
-                gen* fnc numbers(&Box box): Iterator<int> {
+                gen* fnc numbers(borrow Box box): Iterator<int> {
                   yield box.value;
                   return;
                 }
@@ -117,7 +117,7 @@ final class BorrowedContinuationBoundaryTest {
     @Test
     void generatorCannotYieldNewlyCreatedBorrow() {
         reject(BOX + """
-                gen* fnc bad(): Iterator<&Box> {
+                gen* fnc bad(): Iterator<borrow Box> {
                   let Box box = new Box();
                   yield rt borrow box;
                   return;
@@ -176,7 +176,7 @@ final class BorrowedContinuationBoundaryTest {
     void ownedContainerTypeCannotHideNestedBorrow() {
         reject(BOX + """
                 fnc bad(): void {
-                  val Option<&Box> hidden = None;
+                  val Option<borrow Box> hidden = None;
                   return;
                 }
                 """, "owned binding cannot contain a borrowed reference");
@@ -186,7 +186,7 @@ final class BorrowedContinuationBoundaryTest {
     void classFieldCannotHideNestedBorrowInOption() {
         reject(BOX + """
                 define class UnsafeHolder as
-                  pub val Option<&Box> reference = None;
+                  pub val Option<borrow Box> reference = None;
                 end
                 """, "cannot store a borrowed reference");
     }
@@ -194,7 +194,7 @@ final class BorrowedContinuationBoundaryTest {
     @Test
     void unusedAsyncBorrowSignatureIsStillRejected() {
         reject(BOX + """
-                async fnc unsafe(&Box input): int {
+                async fnc unsafe(borrow Box input): int {
                   return input.value;
                 }
                 """, "cannot borrow across an async/generator lifetime");
@@ -212,7 +212,7 @@ final class BorrowedContinuationBoundaryTest {
     @Test
     void asyncResultMustNotExposeBorrowedReference() {
         reject(BOX + """
-                async fnc identity(&Box box): &Box {
+                async fnc identity(borrow Box box): borrow Box {
                   return box;
                 }
                 fnc bad(): void {
@@ -226,7 +226,7 @@ final class BorrowedContinuationBoundaryTest {
     @Test
     void nestedBorrowParameterCannotCrossCooperationSafepoint() {
         reject(BOX + """
-                fnc unsafe(Option<&Box> nested): void {
+                fnc unsafe(Option<borrow Box> nested): void {
                   rt cooperate;
                   return;
                 }
@@ -241,7 +241,7 @@ final class BorrowedContinuationBoundaryTest {
                 }
                 fnc unsafe(): int {
                   const fixed: int = 42;
-                  return mutate(rt borrow mut fixed);
+                  return mutate(rt mut borrow fixed);
                 }
                 """, "cannot mutably borrow immutable owner");
     }
@@ -286,7 +286,7 @@ final class BorrowedContinuationBoundaryTest {
         reject(BOX + """
                 fnc unsafe(): void {
                   let mut Box box = new Box();
-                  http.handler("Owner").dispatch(rt borrow mut box);
+                  http.handler("Owner").dispatch(rt mut borrow box);
                   return;
                 }
                 """, "unknown call cannot retain borrowed arguments");
