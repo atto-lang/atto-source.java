@@ -70,8 +70,19 @@ Supported lexical binding payloads are now opportunistically lowered through
 arena-issued actor-native objects inherit the same owner/lifetime checks as
 `state {}`. The Java `Env`/`Slot` objects remain metadata, and unsupported
 collections/ADTs/callables explicitly fall back to managed storage until their
-native lowering exists. Reads may still materialize boxed/String evaluator
-values. **Full native async frame lowering is therefore not yet complete**:
+native lowering exists. Privileged `NativeCapability` values deliberately stay
+out of lexical `ValueCell` storage until compiler-generated scope-drop lowering
+can retire their handle references at lexical exit. Reads may still materialize
+boxed/String evaluator values.
+
+Native facade provenance uses weak identity keys rather than structural equality
+or strong actor-lifetime references. A separate reference-counted lookup retains
+a facade only while one or more native slots contain its actor-relative address;
+overwriting the last such slot removes that strong lookup entry. This reduces
+managed-heap retention for long-lived actors without recycling native addresses
+or weakening forged-facade checks.
+
+**Full native async frame lowering is therefore not yet complete**:
 managed environment topology, collection/ADT payloads, callback/cleanup
 metadata, runtime-capability handles, and lowered program counters still need
 typed native representations. These changes establish native continuation and
