@@ -51,7 +51,7 @@ final class AsyncSuspensionOwnershipMatrixTest {
                 async fnc bad(): int {
                   val Channel<int> ch = Channel.new<int>(1);
                   let mut Bar owner = new Bar();
-                  val view = rt borrow mut owner;
+                  val view = rt mut borrow owner;
                   val int received = await (nb readch ch);
                   stdio.println(view.value);
                   return received;
@@ -509,7 +509,7 @@ final class AsyncSuspensionOwnershipMatrixTest {
                 actor fnc bad(): void {
                   val Channel<int> ch = Channel.new<int>(1);
                   let mut Bar owner = new Bar();
-                  val view = rt borrow mut owner;
+                  val view = rt mut borrow owner;
                   do nb select {
                     when readch ch: val received {
                       stdio.println(view.value);
