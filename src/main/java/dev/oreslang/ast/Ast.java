@@ -1163,12 +1163,11 @@ public final class Ast {
     }
 
     /**
-     * Lightweight Task expression (nb { ... }), returning Task<void>.
-     * Captures are proved at the ownership pass and materialized when
-     * execution is scheduled, not rebound to a physical Java carrier.
-     *
-     * The Phase-1 Task is void-returning. Scoped borrowed captures and
-     * value-returning Task<T> need additional checked lowering.
+     * Typed Task expression: task/nb, or an explicitly placed cpu/gpu task.
+     * Captures and result are checked before any scheduling or ownership move.
+     * An unsupported GPU domain remains recorded and rejected fail-closed.
+     * Task handles are scheduler-independent logical continuations, not
+     * physical Java threads.
      */
     public static final class TaskExpr implements Expr {
         /** Physical execution placement is a compiler-owned choice, not a capture capability. */
