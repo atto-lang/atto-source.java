@@ -90,12 +90,23 @@ public final class OresKeyedMap<K, V> {
      * object by identity so lowering can restore the source owner without
      * reconstructing or copying a move-only value.</p>
      */
-    public record OwnedPutAttempt<V>(
-            boolean committed,
-            V previous,
-            V rejectedValue,
-            RuntimeException rejection) {
-        public OwnedPutAttempt {
+    public static final class OwnedPutAttempt<V> {
+        private final boolean committed;
+        private V previous;
+        private V rejectedValue;
+        private final RuntimeException rejection;
+        private boolean previousTaken;
+        private boolean rejectedTaken;
+
+        private OwnedPutAttempt(
+                boolean committed,
+                V previous,
+                V rejectedValue,
+                RuntimeException rejection) {
+            this.committed = committed;
+            this.previous = previous;
+            this.rejectedValue = rejectedValue;
+            this.rejection = rejection;
             if (committed) {
                 if (rejectedValue != null || rejection != null) {
                     throw new IllegalArgumentException(
@@ -123,6 +134,65 @@ public final class OresKeyedMap<K, V> {
                     null,
                     Objects.requireNonNull(offered, "offered Map value"),
                     Objects.requireNonNull(rejection, "owned put rejection"));
+        }
+
+        public boolean committed() {
+            return committed;
+        }
+
+        /**
+         * Take the displaced value exactly once after a committed replacement.
+         * A successful insertion into an absent key returns null.
+         */
+        public synchronized V takePrevious() {
+            if (!committed) {
+                throw new IllegalStateException(
+                        "rejected owned put has no displaced value");
+            }
+            if (previousTaken) {
+                throw new IllegalStateException(
+                        "owned put displaced value was already taken");
+            }
+            previousTaken = true;
+            V value = previous;
+            previous = null;
+            return value;
+        }
+
+        /**
+         * Take the exact uncommitted offered value exactly once after rejection.
+         */
+        public synchronized V takeRejectedValue() {
+            if (committed) {
+                throw new IllegalStateException(
+                        "committed owned put has no rejected offered value");
+            }
+            if (rejectedTaken) {
+                throw new IllegalStateException(
+                        "owned put rejected value was already taken");
+            }
+            rejectedTaken = true;
+            V value = rejectedValue;
+            rejectedValue = null;
+            return value;
+        }
+
+        /**
+         * Compatibility spelling for lowering/tests; this is consuming.
+         */
+        public V previous() {
+            return takePrevious();
+        }
+
+        /**
+         * Compatibility spelling for lowering/tests; this is consuming.
+         */
+        public V rejectedValue() {
+            return takeRejectedValue();
+        }
+
+        public RuntimeException rejection() {
+            return rejection;
         }
     }
 
