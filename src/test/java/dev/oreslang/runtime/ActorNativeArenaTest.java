@@ -412,6 +412,13 @@ final class ActorNativeArenaTest {
         var second = region.leaseReadOnly(8, 8);
         assertEquals(77L, first.readLong(0));
         assertEquals(77L, second.readLong(0));
+        assertEquals(77, first.readUnsignedByte(0));
+        assertEquals((byte) 77, first.readByte(0));
+        assertEquals(0, first.readUnsignedByte(1));
+        assertEquals(0, first.readUnsignedByte(15));
+        assertThrows(IndexOutOfBoundsException.class, () -> first.readByte(-1));
+        assertThrows(IndexOutOfBoundsException.class, () -> first.readByte(16));
+        assertThrows(IndexOutOfBoundsException.class, () -> second.readUnsignedByte(8));
         assertThrows(IndexOutOfBoundsException.class, () -> first.readLong(9));
         assertThrows(IndexOutOfBoundsException.class, () -> region.leaseReadOnly(60, 8));
         assertThrows(IllegalStateException.class, () -> region.writeLong(8, 100L));
@@ -428,6 +435,7 @@ final class ActorNativeArenaTest {
         first.close();
         first.close();
         assertThrows(IllegalStateException.class, () -> first.readLong(0));
+        assertThrows(IllegalStateException.class, () -> first.readByte(0));
         assertThrows(IllegalStateException.class, () -> region.writeLong(8, 100L));
         second.close();
         region.writeLong(8, 100L);
@@ -435,6 +443,7 @@ final class ActorNativeArenaTest {
         var outstanding = region.leaseReadOnly(8, 8);
         arena.close();
         assertThrows(IllegalStateException.class, () -> outstanding.readLong(0));
+        assertThrows(IllegalStateException.class, () -> outstanding.readByte(0));
         outstanding.close();
         assertEquals(0, charged.get());
     }
