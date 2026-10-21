@@ -437,6 +437,15 @@ public final class OwnershipChecker {
             checkBlock(block.body(), scope, returnType);
             return;
         }
+        if (stmt instanceof Ast.TaskScopeStmt taskScope) {
+            checkBlock(taskScope.body(), scope, returnType);
+            // Structured scope exit is an implicit asynchronous wait for
+            // physical child quiescence. Until exact scoped READ proof is
+            // attached to a capture, every ordinary borrow/guard must end
+            // before this hidden suspension boundary.
+            checkSuspensionBorrows(scope, "task scope exit");
+            return;
+        }
         if (stmt instanceof Ast.BreakStmt) {
             if (loopDepth == 0) throw error("'break' may only appear inside loop or for");
             return;
@@ -2778,6 +2787,8 @@ public final class OwnershipChecker {
             } else if (stmt instanceof Ast.ExprStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
             else if (stmt instanceof Ast.DeferStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
             else if (stmt instanceof Ast.BlockStmt s) {
+                scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
+            } else if (stmt instanceof Ast.TaskScopeStmt s) {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.LoopStmt s) {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
