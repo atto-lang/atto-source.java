@@ -166,6 +166,23 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * Borrow the current logical mailbox message's native scratch allocator.
+     * Views are epoch-bound, cannot escape a completed message, and remain
+     * alive across source-await carrier yields until that receive completes.
+     * The persistent actor heap and ECS shards use separate storage.
+     */
+    public static ActorMessageScratch currentMessageScratch() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        if (current == null) throw new SecurityException("message scratch requires an actor turn");
+        ActorCell<?> cell = current.runtime().currentActor.get();
+        if (cell == null || !cell.ref.id().equals(current.actorId())) {
+            throw new SecurityException("message scratch requires its owning physical actor turn");
+        }
+        cell.messageScratch.assertActive();
+        return cell.messageScratch;
+    }
+
+    /**
      * Resolve this logical actor's isolated byte-addressed native guest heap.
      * The same instance survives mailbox turns and carrier thread migration.
      * Other actors and host threads cannot read or write it, even when their
@@ -2220,6 +2237,10 @@ public final class ActorRuntime implements AutoCloseable {
                     cell.activeMail = null;
                     cell.lifecycleLock.notifyAll();
                 }
+                // The logical receive (rather than a physical carrier turn)
+                // has ended. Clear the scratch epoch only after its Future
+                // settled; a yield/await never resets message allocations.
+                cell.messageScratch.finishMessage();
                 if (failure != null) {
                     Throwable terminal = OresFuture.unwrap(failure);
                     if (terminal instanceof java.util.concurrent.CancellationException
@@ -7077,6 +7098,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorMemorySlice memorySlice;
         /** Every actor kind has separate source-object storage, including SHARED. */
         private final ActorNativeArena nativeArena;
+        /** Native page capacity is reused between messages; never actor-persistent state. */
+        private final ActorMessageScratch messageScratch;
         private long nativeArenaBytes;
         private final Set<ActorShardLease> shardLeases = ConcurrentHashMap.newKeySet();
         private final Set<ActorShardSnapshotLease> shardSnapshotLeases = ConcurrentHashMap.newKeySet();
@@ -7190,6 +7213,7 @@ public final class ActorRuntime implements AutoCloseable {
                         }
                     },
                     this::reserveNativeArena);
+            this.messageScratch = new ActorMessageScratch(this.nativeArena, policy.maxHeapBytes());
         }
 
         private Runnable reserveNativeArena(int bytes) {
@@ -7934,6 +7958,7 @@ public final class ActorRuntime implements AutoCloseable {
                                     Optional.ofNullable(activeEnvelope.sender()),
                                     activeEnvelope.sequence(),
                                     (M) activeEnvelope.value());
+                            messageScratch.beginMessage();
                             activeMail = mail;
                             try {
                                 if (codeExecutor != null) {
@@ -7957,7 +7982,10 @@ public final class ActorRuntime implements AutoCloseable {
                                     behavior.onMessage(mail.value(), context);
                                 }
                             } finally {
-                                if (!sourceReceiveSuspended) activeMail = null;
+                                if (!sourceReceiveSuspended) {
+                                    activeMail = null;
+                                    messageScratch.finishMessage();
+                                }
                             }
                         }
                         if (codeExecutor == null
