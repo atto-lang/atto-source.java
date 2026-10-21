@@ -192,6 +192,10 @@ public final class OresEvalRootNode extends RootNode {
             return callFunctionBody(fn, normalized);
         }
 
+        private static boolean isGeneratorType(Ast.TypeRef type) {
+            return type != null && type.name().equals("Generator");
+        }
+
         private Object spawnFunction(Ast.CallExpr call, Env env) {
             Ast.FunctionDecl fn;
             if (call.callee() instanceof Ast.NameExpr name) {
@@ -242,6 +246,12 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callFunctionBody(Ast.FunctionDecl fn, List<?> args) {
+            if (isGeneratorType(fn.returnType())) {
+                throw new UnsupportedOperationException(
+                        "source generator '" + fn.name()
+                                + "' requires generator-frame lowering; the recursive reference evaluator "
+                                + "must not execute a Generator body eagerly");
+            }
             Env env = new Env(null, fn.nonLexical());
             for (int i = 0; i < fn.parameters().size(); i++) {
                 Ast.Param param = fn.parameters().get(i);
@@ -259,6 +269,12 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args) {
+            if (isGeneratorType(method.returnType())) {
+                throw new UnsupportedOperationException(
+                        "source generator method '" + method.name()
+                                + "' requires generator-frame lowering; the recursive reference evaluator "
+                                + "must not execute a Generator body eagerly");
+            }
             if (args.size() != method.parameters().size()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
             Env env = new Env(null);
             if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
@@ -541,6 +557,10 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.SpawnExpr spawned) {
                 return spawnFunction(spawned.call(), env);
+            }
+            if (expr instanceof Ast.YieldExpr) {
+                throw new IllegalStateException(
+                        "yield reached the recursive evaluator without generator-frame lowering");
             }
             if (expr instanceof Ast.AwaitExpr awaited) {
                 Object value = eval(awaited.expression(), env);
