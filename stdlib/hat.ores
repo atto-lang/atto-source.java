@@ -43,7 +43,7 @@ define module hat as
 
   define pub interface Queue
     fnc idle() => bool;
-    fnc dispatch(KernelHandle kernel, DispatchRange range) => Fence;
+    fnc dispatch(KernelHandle kernel_handle, DispatchRange range) => Fence;
   end
 
   define pub interface Device
