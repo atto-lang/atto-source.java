@@ -93,6 +93,36 @@ final class ActorLinearMemoryTest {
     }
 
     @Test
+    void primitiveWordAccessMatchesLittleEndianOracleAcrossAllPageEdges() {
+        AtomicLong charged = new AtomicLong();
+        long base = ActorLinearMemory.PAGE_BYTES;
+        try (ActorNativeArena arena = arena(3 * base, charged)) {
+            ActorLinearMemory memory = arena.linearMemory(3, 3);
+            long[] patterns = {
+                    0L, -1L, Long.MIN_VALUE, Long.MAX_VALUE,
+                    0x0123456789abcdefL, 0xfedcba9876543210L
+            };
+            for (int edge = -7; edge <= 7; edge++) {
+                long offset = base + edge;
+                for (long pattern : patterns) {
+                    memory.writeLong(offset, pattern);
+                    assertEquals(pattern, memory.readLong(offset));
+                    for (int byteIndex = 0; byteIndex < Long.BYTES; byteIndex++) {
+                        assertEquals((int) ((pattern >>> (byteIndex * 8)) & 0xff),
+                                memory.readUnsignedByte(offset + byteIndex),
+                                "little-endian byte at edge " + edge + ", index " + byteIndex);
+                    }
+                }
+            }
+            assertThrows(IndexOutOfBoundsException.class,
+                    () -> memory.writeLong(memory.byteLength() - 7L, 1L));
+            assertThrows(IndexOutOfBoundsException.class,
+                    () -> memory.readLong(Long.MIN_VALUE));
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
     void failedInitialCommitDoesNotPublishOrChargeLinearMemory() {
         AtomicLong charged = new AtomicLong();
         try (ActorNativeArena arena = arena(ActorLinearMemory.PAGE_BYTES - 1L, charged)) {
