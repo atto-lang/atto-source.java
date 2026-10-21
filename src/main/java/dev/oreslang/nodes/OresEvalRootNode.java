@@ -4705,7 +4705,7 @@ public final class OresEvalRootNode extends RootNode {
                 OresKeyedMap<Object, Object> map,
                 Object key,
                 Object value) {
-            OresKeyedMap.OwnedPutResult<Object> attempt =
+            OresKeyedMap.OwnedPutAttempt<Object> attempt =
                     map.attemptOwnedPut(key, value);
             if (!attempt.committed()) {
                 Object recovered = attempt.takeUncommittedValue();
