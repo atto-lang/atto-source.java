@@ -110,12 +110,14 @@ Module shape is described by a dedicated `contract`, not by a trait or ordinary 
 
 ```ores
 define contract MathApi as
-  fnc add(int a, int b) => int;
+  fnc add(int a, int b) -> int;
   String name;
 end
 
 define module math conforms MathApi as
-  pub fnc add(int a, int b): int { return a + b; }
+  pub fnc add(int a, int b) -> int
+    return a + b
+  end
   pub val String name = "math";
 end
 ```
@@ -131,7 +133,39 @@ Functions use `fnc` and are private by default. `pub` exports them. Named callab
 Class fields, instance methods, and `static fnc` members are also private by default unless marked `pub`. Private class-member access is scoped to the **declaring class**, not to a particular receiver instance: code declared in class `A` may access an `A` private member on another `A` instance, but subclasses and external callers may not. A lexical lambda created inside an `A` method retains that private-access authority with its lexical environment; an explicit or inherited `nlex` lambda does not. Runtime member dispatch enforces the same rule for dynamically linked/wildcard-imported values whose static type is `Unknown`, so imports cannot bypass private visibility. Public/structural class shapes expose only public members.
 
 Named executable callables may spell their return type with either `: T` or
-the executable slim arrow `-> T`; both forms are equivalent:
+the executable slim arrow `-> T`; both forms are equivalent for braced
+bodies. Ordinary free/module `fnc` and `routine` declarations may also use
+an `end`-delimited body when the return type is explicit:
+
+```ores
+fnc classify(int x) -> int
+  if x > 0 then
+    return 1
+  else
+    return 0
+  fi
+end
+
+fnc log_once() -> void
+end
+```
+
+The keyword-delimited form requires `-> ReturnType`. Without an explicit
+body separator, its first body token starts on a later source line. An optional
+semantics-free `as` or `::` may appear immediately after the complete return type on
+the same physical source line:
+
+```ores
+fnc identity(int x) -> int as return x; end
+fnc identity2(int x) -> int :: return x; end
+```
+
+A next-line `as` or `::` is not a header separator, and callable-header `do` is
+retired: every `do` belongs to executable body syntax such as `do select`
+or `do match`. The complete recursive return type is parsed before optional
+`as`, including function-valued returns. Indentation is presentation only;
+`fi` and `end` own structure. Class instance methods, class `static fnc`
+implementations, and actor callables remain brace-bodied.
 
 ```ores
 pub fnc run() -> (() => void) {
@@ -181,12 +215,20 @@ fnc fixed(): [int, bool, string] {
   return [3, true, "yes"];
 }
 
+fnc fixed_named(int x) -> tuple (int, int, string)
+  if x > 0 then
+    return (1, x, "positive")
+  else
+    return (0, x, "non-positive")
+  fi
+end
+
 fnc named(): {foo: int, bar: string} {
   return infer struct{foo: 5, bar: "x"};
 }
 ```
 
-The `type` marker inside `Array<type intOrBoolOrString>` is accepted as an explicit alias marker; `Array<intOrBoolOrString>` is equivalent. A finite tuple type records exact arity and the type of each position even though the interpreter represents the value with a JVM `List`. A record type names required members; extra members remain compatible with the structural type system.
+The `type` marker inside `Array<type intOrBoolOrString>` is accepted as an explicit alias marker; `Array<intOrBoolOrString>` is equivalent. A finite tuple type records exact arity and the type of each position even though the interpreter represents the value with a JVM `List`. The contextual spelling `tuple (T1, T2, ...)` normalizes to the same finite tuple TypeRef as bare `[T1, T2, ...]` and introduces no spelling-specific arity limit; both use the existing finite-tuple policy. A record type names required members; extra members remain compatible with the structural type system.
 
 ## Collection shapes and named type metadata
 
