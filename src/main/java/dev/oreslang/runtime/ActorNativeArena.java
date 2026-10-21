@@ -736,6 +736,13 @@ public final class ActorNativeArena implements AutoCloseable {
             }
             return value;
         }
+        if (tag == CAPABILITY) {
+            NativeCapability capability = capabilitiesById.get(bits);
+            if (capability == null || capability.nativeArena() != this) {
+                throw new SecurityException("stale or moved actor capability handle");
+            }
+            return capability;
+        }
         String text = loadText(bits, textLength(read(slot, 16)));
         if (tag == STRING) return text;
         if (tag == BIG_INTEGER) return new BigInteger(text);
@@ -746,6 +753,8 @@ public final class ActorNativeArena implements AutoCloseable {
     }
 
     private void storeValue(long slot, Object value, Object uninitialized) {
+        long oldTag = read(slot, 0);
+        long oldBits = read(slot, 8);
         long tag, bits = 0, length = 0;
         String text = null;
         if (value == null) tag = NULL;
@@ -764,6 +773,20 @@ public final class ActorNativeArena implements AutoCloseable {
         else if (value instanceof OresSymbol v) {
             tag = v.kind() == OresSymbol.Kind.PROCESS ? PROCESS_SYMBOL : STABLE_SYMBOL;
             text = v.name();
+        } else if (value instanceof NativeCapability capability) {
+            if (capability.nativeArena() != this) {
+                throw new SecurityException("foreign actor capability");
+            }
+            tag = CAPABILITY;
+            Long id = capabilityIds.get(capability);
+            if (id == null) {
+                id = nextCapabilityId;
+                nextCapabilityId = Math.addExact(nextCapabilityId, 1L);
+                if (id <= 0L) throw new IllegalStateException("actor capability handle space exhausted");
+                capabilityIds.put(capability, id);
+                capabilitiesById.put(id, capability);
+            }
+            bits = id;
         } else if (value instanceof NativeValue v) {
             if (v.nativeArena() != this) throw new SecurityException("foreign actor arena reference");
             long address = v.nativeOffset();
@@ -794,7 +817,6 @@ public final class ActorNativeArena implements AutoCloseable {
             // Keep the original native capacity so shrink + regrow within that
             // capacity remains allocation-free without recycling logical
             // actor-relative addresses.
-            long oldTag = read(slot, 0);
             int capacity = text.length();
             if (isTextTag(oldTag)) {
                 long oldMetadata = read(slot, 16);
@@ -812,10 +834,31 @@ public final class ActorNativeArena implements AutoCloseable {
             length = textMetadata(text.length(), capacity);
         }
         // Publish only after validation/allocation succeeds; failed assignment
-        // leaves the old slot intact.
+        // leaves the old slot intact. Capability registry references follow
+        // slot publication and are dropped when the old handle is overwritten.
+        boolean newCapabilityReference =
+                tag == CAPABILITY && (oldTag != CAPABILITY || oldBits != bits);
+        if (newCapabilityReference) capabilityRefCounts.merge(bits, 1, Math::addExact);
         write(slot, 8, bits);
         write(slot, 16, length);
         write(slot, 0, tag);
+        if (oldTag == CAPABILITY && (tag != CAPABILITY || oldBits != bits)) {
+            releaseCapabilityReference(oldBits);
+        }
+    }
+
+    private void releaseCapabilityReference(long id) {
+        Integer refs = capabilityRefCounts.get(id);
+        if (refs == null || refs <= 0) {
+            throw new IllegalStateException("actor capability reference accounting underflow");
+        }
+        if (refs == 1) {
+            capabilityRefCounts.remove(id);
+            NativeCapability capability = capabilitiesById.remove(id);
+            if (capability != null) capabilityIds.remove(capability);
+        } else {
+            capabilityRefCounts.put(id, refs - 1);
+        }
     }
 
     private final class Fields extends AbstractMap<String, Object> implements NativeValue {
@@ -894,6 +937,9 @@ public final class ActorNativeArena implements AutoCloseable {
         releases.clear();
         referencesByOffset.clear();
         referenceOffsets.clear();
+        capabilityRefCounts.clear();
+        capabilitiesById.clear();
+        capabilityIds.clear();
         issuedNativeOffsets.clear();
         committed = 0;
     }
