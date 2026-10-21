@@ -123,6 +123,64 @@ final class ActorLinearMemoryTest {
     }
 
     @Test
+    void bulkCopyAndFillUseMemmoveAndNeverPartiallyWriteBorrowedPages() {
+        AtomicLong charged = new AtomicLong();
+        long edge = ActorLinearMemory.PAGE_BYTES;
+        try (ActorNativeArena arena = arena(2L * edge, charged)) {
+            ActorLinearMemory memory = arena.linearMemory(2, 2);
+            byte[] oracle = new byte[40];
+            for (int i = 0; i < oracle.length; i++) {
+                oracle[i] = (byte) (i + 1);
+                memory.writeByte(edge - 16 + i, oracle[i]);
+            }
+            memory.copy(edge - 8, edge - 16, 24);
+            System.arraycopy(oracle, 0, oracle, 8, 24);
+            for (int i = 0; i < oracle.length; i++) {
+                assertEquals(oracle[i], memory.readByte(edge - 16 + i));
+            }
+            memory.copy(edge - 16, edge - 8, 24);
+            System.arraycopy(oracle, 8, oracle, 0, 24);
+            for (int i = 0; i < oracle.length; i++) {
+                assertEquals(oracle[i], memory.readByte(edge - 16 + i));
+            }
+            try (var borrowed = memory.leaseReadOnlyPage(1, 0, 8)) {
+                byte[] before = new byte[16];
+                for (int i = 0; i < before.length; i++) {
+                    before[i] = memory.readByte(edge - 8 + i);
+                }
+                assertThrows(IllegalStateException.class,
+                        () -> memory.fill(edge - 8, 16, (byte) 0x5a));
+                assertThrows(IllegalStateException.class,
+                        () -> memory.copy(edge - 8, edge + 8, 16));
+                for (int i = 0; i < before.length; i++) {
+                    assertEquals(before[i], memory.readByte(edge - 8 + i),
+                            "an immutable page cannot cause partial writes on the prior page");
+                }
+                // Read leases guard writes, not zero-copy reads from the page.
+                memory.copy(0, edge, 8);
+                for (int i = 0; i < 8; i++) {
+                    assertEquals(before[8 + i], memory.readByte(i));
+                }
+            }
+            memory.fill(edge - 8, 16, (byte) 0x5a);
+            for (int i = 0; i < 16; i++) {
+                assertEquals((byte) 0x5a, memory.readByte(edge - 8 + i));
+            }
+            memory.copy(memory.byteLength(), memory.byteLength(), 0);
+            memory.fill(memory.byteLength(), 0, (byte) 0);
+            assertThrows(IndexOutOfBoundsException.class,
+                    () -> memory.copy(edge, -1, 1));
+            assertThrows(IndexOutOfBoundsException.class,
+                    () -> memory.copy(memory.byteLength() - 1, 0, 2));
+            assertThrows(IndexOutOfBoundsException.class,
+                    () -> memory.fill(0, -1, (byte) 0));
+            assertThrows(IndexOutOfBoundsException.class,
+                    () -> memory.fill(Long.MAX_VALUE, 1, (byte) 0));
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
     void failedInitialCommitDoesNotPublishOrChargeLinearMemory() {
         AtomicLong charged = new AtomicLong();
         try (ActorNativeArena arena = arena(ActorLinearMemory.PAGE_BYTES - 1L, charged)) {
