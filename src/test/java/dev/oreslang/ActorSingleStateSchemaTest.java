@@ -124,10 +124,10 @@ final class ActorSingleStateSchemaTest {
                 end
 
                 pub async routine main(): void {
-                  val actor = spawn Legacy();
-                  await actor.get_ready();
-                  actor.send("stop");
-                  await actor.get_done();
+                  val worker = spawn Legacy();
+                  await worker.get_ready();
+                  worker.send("stop");
+                  await worker.get_done();
                   stdio.stdout.write("legacy-ok");
                   return;
                 }
