@@ -48,6 +48,37 @@ final class JsonValueTypedMapLanguageTest {
     }
 
     @Test
+    void jsonMapReadByValueRemainsDisabledToPreventMoveOnlyAliasing() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        import module Json from "alloc/json";
+
+                        pub fnc main(): void {
+                          val Map<String, JsonValue> object =
+                              new Map<String, JsonValue>();
+                          object["name"] = "Ada";
+                          const value = object["name"];
+                          return;
+                        }
+                        """));
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        import module Json from "alloc/json";
+
+                        pub fnc main(): void {
+                          val Map<String, JsonValue> object =
+                              new Map<String, JsonValue>();
+                          object["name"] = "Ada";
+                          const value = object.get("name");
+                          return;
+                        }
+                        """));
+    }
+
+    @Test
     void standaloneJsonValueRemainsGatedUntilOwnedLoweringLands() {
         assertThrows(
                 IllegalArgumentException.class,
