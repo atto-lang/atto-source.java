@@ -19,6 +19,8 @@ import java.util.Objects;
 final class CpuTopology {
     static final int UNKNOWN = -1;
     private static final int MAX_DISCOVERED_CPUS = 8192;
+    private static final int MAX_CPU_DIRECTORY_ENTRIES = MAX_DISCOVERED_CPUS * 2;
+    private static final int MAX_NUMA_DIRECTORY_ENTRIES = 256;
     private static final int MAX_CACHE_INDEXES = 32;
     // A Task locality hint must never trigger a full scan of thousands
     // of carrier slots on the scheduling hot path.
@@ -130,10 +132,17 @@ final class CpuTopology {
 
         Map<Integer, Location> discovered = new HashMap<>();
         try (DirectoryStream<Path> cpus = Files.newDirectoryStream(cpuRoot, "cpu[0-9]*")) {
+            int examined = 0;
             for (Path cpuDir : cpus) {
-                if (discovered.size() >= MAX_DISCOVERED_CPUS) break;
+                if (examined++ >= MAX_CPU_DIRECTORY_ENTRIES
+                        || discovered.size() >= MAX_DISCOVERED_CPUS) break;
                 int cpu = parseNumericSuffix(cpuDir.getFileName().toString(), "cpu");
                 if (cpu < 0) continue;
+                if (discovered.containsKey(cpu)) {
+                    // Ambiguous aliases such as cpu0/cpu00 mean this is not a
+                    // trustworthy sysfs topology snapshot. Degrade to unknown.
+                    return empty();
+                }
                 int packageId = readInt(cpuDir.resolve(
                         "topology/physical_package_id"));
                 CacheLevel cache = discoverLastLevelCache(cpuDir);
@@ -178,7 +187,9 @@ final class CpuTopology {
     private static int discoverNumaNode(Path cpuDir) {
         try (DirectoryStream<Path> nodes = Files.newDirectoryStream(cpuDir, "node[0-9]*")) {
             int result = UNKNOWN;
+            int examined = 0;
             for (Path node : nodes) {
+                if (examined++ >= MAX_NUMA_DIRECTORY_ENTRIES) return UNKNOWN;
                 int parsed = parseNumericSuffix(node.getFileName().toString(), "node");
                 if (parsed >= 0 && (result == UNKNOWN || parsed < result)) result = parsed;
             }
