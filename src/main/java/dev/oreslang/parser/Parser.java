@@ -1715,9 +1715,12 @@ public final class Parser {
             throw error(peek(),
                     "end-delimited actor callable bodies are not enabled; use a braced actor body");
         }
-        if (current == 0 || previous().line() >= peek().line()) {
+        Token headerEnd = previous();
+        boolean explicitBodySeparator = check(AS) && peek().line() == headerEnd.line();
+        if (explicitBodySeparator) advance();
+        if (!explicitBodySeparator && (current == 0 || headerEnd.line() >= peek().line())) {
             throw error(peek(),
-                    "end-delimited callable body must begin on the line after its '-> ReturnType' header");
+                    "end-delimited callable body must begin on the line after its '-> ReturnType' header, or use same-line optional 'as'");
         }
 
         List<Ast.Stmt> body = new ArrayList<>();
