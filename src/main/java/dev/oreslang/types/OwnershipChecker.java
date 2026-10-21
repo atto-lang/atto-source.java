@@ -3777,6 +3777,13 @@ public final class OwnershipChecker {
         if (type.isBorrow()) return true;
         if (type.name().equals("$infer$")) return true;
 
+        // ActorRef<T> is an explicit, runtime-synchronized mailbox capability.
+        // T names the actor protocol/target; it is not embedded actor state and
+        // therefore must not inherit the actor class's confinement.
+        if (type.name().equals("ActorRef")) {
+            return type.arguments().size() != 1;
+        }
+
         if (switch (type.name()) {
             case "Task", "TaskHandle", "TaskScope",
                     "Mutex", "MutexGuard", "Rc", "RefCell",
@@ -4182,6 +4189,7 @@ public final class OwnershipChecker {
                     "f32","f64","float","decimal","complex64","complex128","complex",
                     "bool","Bool","string","String","void","SharedMutex",
                     "Channel","SelectCase","SelectSet","OptionUnwrapError" -> true;
+            case "ActorRef" -> type.arguments().size() == 1;
             case "Option" -> type.arguments().size() == 1 && isCopyType(type.arguments().getFirst());
             case "Result" -> type.arguments().size() == 2
                     && isCopyType(type.arguments().get(0))
