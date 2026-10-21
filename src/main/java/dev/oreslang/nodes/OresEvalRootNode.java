@@ -1382,6 +1382,12 @@ public final class OresEvalRootNode extends RootNode {
         private OresFuture<Object> startSourceBlockTask(
                 Ast.TaskExpr task,
                 Env caller) {
+            // Independent runtime boundary: even a forged or stale typed AST
+            // cannot route a GPU task onto an ordinary CPU scheduler.
+            if (task.executionDomain() == Ast.TaskExpr.ExecutionDomain.GPU) {
+                throw new IllegalStateException(
+                        "gpu task has no admitted device execution/fence backend; CPU fallback forbidden");
+            }
             if (taskAdmissions == null) {
                 throw new IllegalStateException(
                         "source Task execution requires a joined compiler admission proof");
