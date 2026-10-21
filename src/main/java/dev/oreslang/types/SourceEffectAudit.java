@@ -312,6 +312,12 @@ public final class SourceEffectAudit {
                 // themselves literal constants. This is not a no-heap proof.
                 direct.add(EffectContracts.Effect.ALLOC);
             }
+            if (node instanceof Ast.TrapExpr) {
+                // A syntactic trap is not authenticated evidence that THROW
+                // has been discharged, nor that its Option wrapping is free.
+                direct.add(EffectContracts.Effect.UNKNOWN_CALL);
+                direct.add(EffectContracts.Effect.ALLOC);
+            }
             if (node instanceof Ast.CastExpr || node instanceof Ast.SpreadExpr) {
                 // Conversion, iteration and generic spreads may invoke
                 // compiler hooks or user-defined protocol implementations.
