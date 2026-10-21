@@ -9402,6 +9402,7 @@ public final class OresEvalRootNode extends RootNode {
                 case "eq", "==" -> valueEquals(left, right);
                 case "neq", "!=" -> !valueEquals(left, right);
                 case "is" -> identityEquals(left, right);
+                case "with" -> recordWith(left, right);
                 case "<" -> compare(left, right) < 0; case "<=" -> compare(left, right) <= 0;
                 case ">" -> compare(left, right) > 0; case ">=" -> compare(left, right) >= 0;
                 case "&" -> integralLong(left) & integralLong(right);
@@ -9412,6 +9413,28 @@ public final class OresEvalRootNode extends RootNode {
                 case ">>>" -> integralLong(left) >>> shiftDistance(right);
                 default -> throw new IllegalArgumentException("unsupported operator " + op);
             };
+        }
+
+        private Object recordWith(Object left, Object right) {
+            if (!(left instanceof ReadonlyRecordValue base)
+                    || !(right instanceof ReadonlyRecordValue updates)) {
+                throw new IllegalArgumentException(
+                        "record 'with' requires readonly record operands");
+            }
+
+            // Never mutate either input. The RHS record has already been
+            // constructed completely, so any update-expression failure occurs
+            // before this point and cannot publish a partially updated value.
+            LinkedHashMap<String, Object> merged = new LinkedHashMap<>();
+            for (Map.Entry<String, Object> field : base.entrySet()) {
+                merged.put(field.getKey(), field.getValue());
+            }
+            for (Map.Entry<String, Object> field : updates.entrySet()) {
+                // LinkedHashMap.put preserves the original position on
+                // replacement and appends a newly introduced field.
+                merged.put(field.getKey(), field.getValue());
+            }
+            return new ReadonlyRecordValue(merged);
         }
 
         private boolean identityEquals(Object left, Object right) {
