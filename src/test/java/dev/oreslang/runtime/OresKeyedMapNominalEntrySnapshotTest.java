@@ -178,4 +178,25 @@ final class OresKeyedMapNominalEntrySnapshotTest {
     }
 
 
+    @Test
+    void nominalSnapshotDoesNotReenterCompilerOwnedEntryValidator() {
+        java.util.concurrent.atomic.AtomicInteger validations =
+                new java.util.concurrent.atomic.AtomicInteger();
+        OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys(
+                OresKeyedMap.ValueDomain.INT,
+                (key, value) -> validations.incrementAndGet());
+        map.put("x", 1);
+        assertEquals(1, validations.get());
+
+        validations.set(0);
+        List<OresEntry> snapshot = map.nominalEntrySnapshot();
+
+        assertEquals(0, validations.get(),
+                "read-only snapshot construction must not re-run mutation policy");
+        assertEquals(1, snapshot.size());
+        assertEquals("x", snapshot.getFirst().key());
+        assertEquals(1, snapshot.getFirst().value());
+    }
+
+
 }
