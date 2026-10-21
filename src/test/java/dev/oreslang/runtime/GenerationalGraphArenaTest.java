@@ -192,7 +192,7 @@ final class GenerationalGraphArenaTest {
             graph.connect(root, neighbor);
 
             int visited = graph.visitLiveNeighbors(root, (slot, generation, value) -> {
-                assertEquals(9, value);
+                assertEquals(Integer.valueOf(9), value);
                 assertEquals(1, graph.visitLiveNeighbors(root,
                         (innerSlot, innerGeneration, innerValue) -> assertEquals(9, innerValue)));
                 assertThrows(IllegalStateException.class, () -> graph.add(10));
