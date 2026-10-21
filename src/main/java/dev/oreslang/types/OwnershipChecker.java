@@ -3690,22 +3690,81 @@ public final class OwnershipChecker {
      * cross-scheduler await is supported, and Future is affine so Task capture
      * transfers it with MOVE rather than copying cancellation/consumer authority.
      */
-    private static boolean forbiddenTaskCapability(Ast.TypeRef type) {
-        if (type == null) return false;
+    /**
+     * Conservative compiler-derived Send backstop for independently scheduled
+     * Tasks. Owned data may move only when every statically visible component
+     * is safe to transfer. Unknown/inferred values and first-class closures
+     * remain fail-closed until they carry explicit Send provenance.
+     *
+     * <p>Future<T> is intentionally allowed: OresFuture is runtime-thread-safe,
+     * the await graph is VM-wide, and Future is affine so Task capture uses
+     * MOVE rather than duplicating cancellation/consumer authority.
+     */
+    private boolean forbiddenTaskCapability(Ast.TypeRef type) {
+        return forbiddenTaskCapability(
+                type,
+                java.util.Collections.newSetFromMap(
+                        new IdentityHashMap<>()));
+    }
+
+    private boolean forbiddenTaskCapability(
+            Ast.TypeRef type,
+            Set<Ast.ClassDecl> visitingClasses) {
+        if (type == null) return true;
         if (type.isBorrow()) return false; // dedicated borrow diagnostic below
+        if (type.name().equals("$infer$")) return true;
+
         if (switch (type.name()) {
             case "Task", "TaskHandle", "TaskScope",
                     "Mutex", "MutexGuard", "Rc", "RefCell",
+                    "Fnc", "Function",
                     "ActorMail", "ActorOutput", "ActorOutputStream",
                     "TcpConnection", "HttpExchange", "HttpServer",
                     "HttpHandler", "HttpResponse", "HttpResponseDraft",
                     "SelectCase", "SelectSet", "SelectResult" -> true;
             default -> false;
         }) return true;
-        for (Ast.TypeRef arg : type.arguments()) {
-            if (forbiddenTaskCapability(arg)) return true;
+
+        if (type.isClosedAggregateType()) {
+            for (Ast.TypeRef member : type.aggregateMembers().values()) {
+                if (forbiddenTaskCapability(member, visitingClasses)) {
+                    return true;
+                }
+            }
+            return false;
         }
-        return false;
+
+        for (Ast.TypeRef arg : type.arguments()) {
+            if (forbiddenTaskCapability(arg, visitingClasses)) return true;
+        }
+
+        Ast.ClassDecl klass = findClass(type.name());
+        if (klass == null) return false;
+        if (klass.actorKind() != Ast.ActorKind.NONE) {
+            // Actor instances/state are mailbox-confined. A Send-safe ActorRef
+            // is a distinct runtime capability and must not be inferred from
+            // the actor class object itself.
+            return true;
+        }
+        if (!visitingClasses.add(klass)) {
+            return false;
+        }
+        try {
+            for (ResolvedField field : effectiveFieldTargets(
+                    klass, type, new LinkedHashSet<>())) {
+                Ast.TypeRef fieldType = substituteType(
+                        ownershipFieldType(field.field()),
+                        genericBindings(
+                                field.owner().genericParameters(),
+                                field.ownerType().arguments()));
+                if (forbiddenTaskCapability(fieldType, visitingClasses)) {
+                    return true;
+                }
+            }
+            return false;
+        } finally {
+            visitingClasses.remove(klass);
+        }
     }
 
     private void validateDeferredCaptures(CaptureSet union) {
