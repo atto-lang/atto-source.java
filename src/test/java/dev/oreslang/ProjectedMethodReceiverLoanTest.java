@@ -26,25 +26,25 @@ final class ProjectedMethodReceiverLoanTest {
         assertThrows(IllegalArgumentException.class, () -> OwnershipChecker.check(parsed));
     }
     @Test void sharedReceiverBlocksRootMutationInLaterArgument() {
-        rejects("holder.item.read(mutate(rt borrow mut holder))");
+        rejects("holder.item.read(mutate(rt mut borrow holder))");
     }
     @Test void sharedReceiverBlocksRootMoveInLaterArgument() {
         rejects("holder.item.read(consume(rt take holder))");
     }
     @Test void exclusiveReceiverBlocksRootMutationInLaterArgument() {
-        rejects("holder.item.update(mutate(rt borrow mut holder))");
+        rejects("holder.item.update(mutate(rt mut borrow holder))");
     }
     @Test void independentArgumentRemainsValid() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(TYPES + """
             fnc good(Holder mut left, Holder mut right): int {
-              return left.item.read(mutate(rt borrow mut right));
+              return left.item.read(mutate(rt mut borrow right));
             }
             """)));
     }
     @Test void sharedReceiverBlocksMutationThroughBorrowedAlias() {
         var parsed = Parser.parse(TYPES + """
             fnc bad(borrow mut Holder holder): int {
-              return holder.item.read(mutate(rt borrow mut holder));
+              return holder.item.read(mutate(rt mut borrow holder));
             }
             """);
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(parsed));
@@ -64,7 +64,7 @@ final class ProjectedMethodReceiverLoanTest {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(TYPES + """
             fnc good(Holder mut holder): int {
               let int result = holder.item.read(holder.item.read(0));
-              return mutate(rt borrow mut holder) + result;
+              return mutate(rt mut borrow holder) + result;
             }
             """)));
     }
@@ -92,7 +92,7 @@ final class ProjectedMethodReceiverLoanTest {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(TYPES + """
             fnc good(Holder mut holder): int {
               let int result = holder.item.update(42);
-              return mutate(rt borrow mut holder) + result;
+              return mutate(rt mut borrow holder) + result;
             }
             """)));
     }
@@ -111,7 +111,7 @@ final class ProjectedMethodReceiverLoanTest {
         var parsed = Parser.parse(TYPES + """
             fnc identity(borrow Item item):borrow Item { return item; }
             fnc bad(Holder mut holder):int {
-              return identity(rt borrow holder.item).read(mutate(rt borrow mut holder));
+              return identity(rt borrow holder.item).read(mutate(rt mut borrow holder));
             }
             """);
         var failure = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(parsed));
