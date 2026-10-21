@@ -8307,6 +8307,11 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             operation + " cannot serialize actor-owned class state");
                 }
+                if (klass.isAbstract()) {
+                    throw new IllegalArgumentException(
+                            operation + " cannot construct/serialize abstract class '"
+                                    + klass.name() + "'");
+                }
                 if (!klass.genericParameters().isEmpty()) {
                     throw new IllegalArgumentException(
                             operation + " currently requires a non-generic @FromJson class");
@@ -8318,6 +8323,12 @@ public final class TypeChecker {
                                     + "use a record/struct DTO or add an explicit future JSON constructor contract");
                 }
                 List<Ast.FieldDecl> instanceFields = klass.fields();
+                if (instanceFields.stream().anyMatch(field -> field.initializer() != null)) {
+                    throw new IllegalArgumentException(
+                            operation + " class '" + klass.name()
+                                    + "' cannot use field initializers with direct JSON construction; "
+                                    + "move defaults into the JSON schema/producer or decode through an explicit adapter");
+                }
                 List<AnnotationExpander.FromJsonBinding> bindings =
                         AnnotationExpander.fromJsonBindings(klass);
                 if (bindings.size() != instanceFields.size()) {

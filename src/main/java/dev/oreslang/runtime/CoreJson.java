@@ -21,6 +21,7 @@ public final class CoreJson {
     private static final int MAX_DEPTH = 128;
     private static final int MAX_NODES = 1_000_000;
     private static final int MAX_CONTAINER_ENTRIES = 200_000;
+    private static final int MAX_NUMBER_CHARS = 4096;
 
     private CoreJson() { }
 
@@ -153,13 +154,14 @@ public final class CoreJson {
                     throw error("object key must be a JSON string");
                 }
                 String key = string();
+                if (result.containsKey(key)) {
+                    throw error("duplicate object key '" + key + "'");
+                }
                 ws();
                 if (end() || source.charAt(at) != ':') throw error("expected ':' after object key");
                 at++;
                 Object value = value(depth);
-                if (result.putIfAbsent(key, value) != null) {
-                    throw error("duplicate object key '" + key + "'");
-                }
+                result.put(key, value);
                 if (++entries > MAX_CONTAINER_ENTRIES) {
                     throw error("JSON object exceeds entry limit");
                 }
@@ -291,6 +293,9 @@ public final class CoreJson {
                 int digits = at;
                 while (!end() && Character.isDigit(source.charAt(at))) at++;
                 if (digits == at) throw error("exponent requires at least one digit");
+            }
+            if (at - start > MAX_NUMBER_CHARS) {
+                throw error("JSON number exceeds " + MAX_NUMBER_CHARS + " characters");
             }
             String token = source.substring(start, at);
             try {

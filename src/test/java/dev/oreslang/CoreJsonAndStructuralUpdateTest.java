@@ -185,6 +185,31 @@ final class CoreJsonAndStructuralUpdateTest {
     }
 
     @Test
+    void jsonClassDecodeRejectsAbstractClassesAndFieldInitializers() {
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define abstract class AbstractUser as
+                          @FromJson("id")
+                          id: int;
+                        end
+                        fnc bad(): AbstractUser {
+                          return Json.decode<AbstractUser>("{\"id\":1}");
+                        }
+                        """)));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class DefaultedUser as
+                          @FromJson("id")
+                          id: int = 7;
+                        end
+                        fnc bad(): DefaultedUser {
+                          return Json.decode<DefaultedUser>("{\"id\":1}");
+                        }
+                        """)));
+    }
+
+    @Test
     void fromJsonCannotTargetStaticState() {
         assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""

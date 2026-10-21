@@ -5110,9 +5110,11 @@ public final class OresEvalRootNode extends RootNode {
 
         private void requireJsonClassRuntimeContract(Ast.ClassDecl klass) {
             if (klass.actorKind() != Ast.ActorKind.NONE
+                    || klass.isAbstract()
                     || !klass.parents().isEmpty()
                     || klass.constructor() != null
-                    || !klass.genericParameters().isEmpty()) {
+                    || !klass.genericParameters().isEmpty()
+                    || klass.fields().stream().anyMatch(field -> field.initializer() != null)) {
                 throw new IllegalStateException(
                         "class '" + klass.name()
                                 + "' no longer satisfies its checked JSON construction contract");
