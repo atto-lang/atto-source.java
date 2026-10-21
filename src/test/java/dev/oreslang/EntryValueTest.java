@@ -217,6 +217,16 @@ final class EntryValueTest {
     }
 
     @Test
+    void lexicalEntryBindingMayShadowFactoryNamespace() {
+        accepted("""
+                fnc main(): int {
+                  const Entry = 42;
+                  return Entry;
+                }
+                """);
+    }
+
+    @Test
     void ownershipPreservesEntryShapeAndTupleCompatibilityType() {
         ownershipAccepted("""
                 fnc consume(Entry<int, int> entry): int {
