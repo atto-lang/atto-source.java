@@ -66,6 +66,8 @@ public final class ActorNativeArena implements AutoCloseable {
     private boolean closed;
     /** Lazy per-actor byte-addressed guest heap; no other actor can access it. */
     private ActorLinearMemory linearMemory;
+    /** Optional host-only diagnostic. No per-access JVM allocation when enabled. */
+    private ActorArenaAccessEvidence accessEvidence;
 
     ActorNativeArena(long limit, Runnable checkOwner, Budget budget) {
         if (limit <= 0) throw new IllegalArgumentException("native arena limit must be positive");
@@ -90,6 +92,28 @@ public final class ActorNativeArena implements AutoCloseable {
     public synchronized boolean closed() { return closed; }
 
     synchronized void assertOwner() { checkAccess(); }
+
+    /** Host-only opt-in before the arena's first allocation. Not source-callable. */
+    synchronized void enableAccessEvidence(int capacity) {
+        checkAccess();
+        if (accessEvidence != null || allocated != 0 || committed != 0) {
+            throw new IllegalStateException("native access evidence must be enabled before allocation");
+        }
+        accessEvidence = new ActorArenaAccessEvidence(capacity);
+    }
+
+    /** Observed accesses only; caller cannot infer full race-free execution. */
+    synchronized ActorArenaAccessEvidence.Snapshot accessEvidenceSnapshot() {
+        checkAccess();
+        if (accessEvidence == null) {
+            throw new IllegalStateException("native access recorder not enabled");
+        }
+        return accessEvidence.snapshot();
+    }
+
+    private void recordNativeAccess(long address, int width, boolean write) {
+        if (accessEvidence != null) accessEvidence.record(address, width, write);
+    }
 
     /**
      * Exactly one growable linear guest address space per actor arena.
@@ -281,25 +305,46 @@ public final class ActorNativeArena implements AutoCloseable {
             return memory;
         }
         public byte readByte(int offset) {
-            synchronized (ActorNativeArena.this) { return checked().get(offset); }
+            synchronized (ActorNativeArena.this) {
+                byte value = checked().get(offset);
+                recordNativeAccess(Math.addExact(baseOffset, offset), Byte.BYTES, false);
+                return value;
+            }
         }
         public void writeByte(int offset, byte value) {
-            synchronized (ActorNativeArena.this) { requireWritable().put(offset, value); }
+            synchronized (ActorNativeArena.this) {
+                requireWritable().put(offset, value);
+                recordNativeAccess(Math.addExact(baseOffset, offset), Byte.BYTES, true);
+            }
         }
         void assertWritable() {
             synchronized (ActorNativeArena.this) { requireWritable(); }
         }
         public long readLong(int offset) {
-            synchronized (ActorNativeArena.this) { return checked().getLong(offset); }
+            synchronized (ActorNativeArena.this) {
+                long value = checked().getLong(offset);
+                recordNativeAccess(Math.addExact(baseOffset, offset), Long.BYTES, false);
+                return value;
+            }
         }
         public void writeLong(int offset, long value) {
-            synchronized (ActorNativeArena.this) { requireWritable().putLong(offset, value); }
+            synchronized (ActorNativeArena.this) {
+                requireWritable().putLong(offset, value);
+                recordNativeAccess(Math.addExact(baseOffset, offset), Long.BYTES, true);
+            }
         }
         public double readDouble(int offset) {
-            synchronized (ActorNativeArena.this) { return checked().getDouble(offset); }
+            synchronized (ActorNativeArena.this) {
+                double value = checked().getDouble(offset);
+                recordNativeAccess(Math.addExact(baseOffset, offset), Double.BYTES, false);
+                return value;
+            }
         }
         public void writeDouble(int offset, double value) {
-            synchronized (ActorNativeArena.this) { requireWritable().putDouble(offset, value); }
+            synchronized (ActorNativeArena.this) {
+                requireWritable().putDouble(offset, value);
+                recordNativeAccess(Math.addExact(baseOffset, offset), Double.BYTES, true);
+            }
         }
 
         private ByteBuffer requireWritable() {
@@ -353,13 +398,19 @@ public final class ActorNativeArena implements AutoCloseable {
 
             public long readLong(int relative) {
                 synchronized (ActorNativeArena.this) {
-                    return readChecked(relative, Long.BYTES).getLong(base + relative);
+                    long value = readChecked(relative, Long.BYTES).getLong(base + relative);
+                    recordNativeAccess(Math.addExact(baseOffset, base + (long) relative),
+                                       Long.BYTES, false);
+                    return value;
                 }
             }
 
             public double readDouble(int relative) {
                 synchronized (ActorNativeArena.this) {
-                    return readChecked(relative, Double.BYTES).getDouble(base + relative);
+                    double value = readChecked(relative, Double.BYTES).getDouble(base + relative);
+                    recordNativeAccess(Math.addExact(baseOffset, base + (long) relative),
+                                       Double.BYTES, false);
+                    return value;
                 }
             }
 
@@ -466,10 +517,13 @@ public final class ActorNativeArena implements AutoCloseable {
         return Math.toIntExact(address - slabBases.get(index));
     }
     private long read(long address, int relative) {
-        return slab(address).getLong(Math.addExact(offset(address), relative));
+        long value = slab(address).getLong(Math.addExact(offset(address), relative));
+        recordNativeAccess(Math.addExact(address, relative), Long.BYTES, false);
+        return value;
     }
     private void write(long address, int relative, long value) {
         slab(address).putLong(Math.addExact(offset(address), relative), value);
+        recordNativeAccess(Math.addExact(address, relative), Long.BYTES, true);
     }
 
     private long storeText(String value) {
@@ -661,6 +715,10 @@ public final class ActorNativeArena implements AutoCloseable {
         releases.clear();
         referencesByOffset.clear();
         referenceOffsets.clear();
+        if (accessEvidence != null) {
+            accessEvidence.clear();
+            accessEvidence = null;
+        }
         committed = 0;
     }
 
