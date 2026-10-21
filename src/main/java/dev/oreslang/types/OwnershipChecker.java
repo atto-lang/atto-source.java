@@ -1362,10 +1362,12 @@ public final class OwnershipChecker {
             }
             checkExpr(selected.cases(), scope, false);
             Ast.TypeRef selectedResult = Ast.TypeRef.simple("SelectResult");
+            Ast.TypeRef optional = new Ast.TypeRef(
+                    "Option", List.of(selectedResult), false);
             Ast.TypeRef result = switch (selected.mode()) {
-                case BLOCKING -> selectedResult;
-                case NONBLOCKING -> new Ast.TypeRef("Future", List.of(selectedResult), false);
-                case IMMEDIATE -> new Ast.TypeRef("Option", List.of(selectedResult), false);
+                case BLOCKING, IMMEDIATE -> optional;
+                case NONBLOCKING -> new Ast.TypeRef(
+                        "Future", List.of(optional), false);
             };
             return new ValueInfo(result, kindOfType(result), null);
         }
