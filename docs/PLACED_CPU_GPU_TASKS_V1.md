@@ -83,8 +83,7 @@ stream or invalidate its queue, coordinator, or pending operations. The handle
 remains valid in the receiving task's execution context until explicitly
 closed or the owning runtime is torn down. Producers and consumers may share
 the synchronized transport handle in an admitted local async execution domain.
-Buffers are bounded by a positive capacity; existing ChannelRuntime admission
-limits also bound outstanding operation registrations.
+Buffers require an explicit positive capacity capped at **65,536** items per Stream; construction fails rather than silently clamping an oversized request. Existing ChannelRuntime admission limits also bound outstanding operation registrations. This is a per-handle admission bound, **not** proof of a full per-isolate byte quota.
 
 **Delivery:** each enqueued item is delivered at most once (competing readers
 consume from the same queue); ordering follows the channel coordinator.
@@ -99,7 +98,7 @@ started just by calling `Stream.new`.
 then closed operations fail with the existing ChannelClosedException.
 Closing the stream does not claim that an independent producer Task's physical
 execution has quiesced; producers must be supervised/joined separately.
-Cancellation of one waiter is not cancellation of the whole stream.
+Cancellation of one waiter is not cancellation of the whole stream. A producer Task failing without explicitly closing the stream can leave future reads pending; producer supervision and failure-to-close wiring still require a separately verified structured-lifetime API.
 
 **Compiler proof:** the payload is a concrete, data-only, owned `Send` type.
 The Stream handle is an intrinsically trusted, synchronized `Send` transport,
