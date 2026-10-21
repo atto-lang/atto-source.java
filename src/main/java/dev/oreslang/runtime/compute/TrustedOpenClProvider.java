@@ -81,6 +81,23 @@ final class TrustedOpenClProvider {
             int outstandingEvents,
             int queueSlots) {}
 
+    record DeviceProfile(
+            int addressBits,
+            long maximumBufferBytes,
+            long maximumRows,
+            int maximumFields,
+            boolean float32,
+            boolean littleEndian) {
+        DeviceProfile {
+            if ((addressBits != 32 && addressBits != 64)
+                    || maximumBufferBytes <= 0
+                    || maximumRows <= 0
+                    || maximumFields <= 0) {
+                throw new IllegalArgumentException("invalid physical compute device profile");
+            }
+        }
+    }
+
     static final class PreparedKernel implements AutoCloseable {
         private final TrustedOpenClProvider owner;
         private final OpenClArtifact artifact;
@@ -237,28 +254,56 @@ final class TrustedOpenClProvider {
         }
     }
 
+    private static final class PreEnqueueRecovery {
+        private final Lease lease;
+        private PhysicalBuffer input;
+        private PhysicalBuffer output;
+
+        PreEnqueueRecovery(Lease lease, PhysicalBuffer input, PhysicalBuffer output) {
+            this.lease = lease;
+            this.input = input;
+            this.output = output;
+        }
+    }
+
     private final Driver driver;
     private final Limits limits;
     private final ComputeDeviceHandle deviceAuthority;
+    private final ComputeQueueHandle queueAuthority;
+    private final DeviceProfile deviceProfile;
 
     private long residentBytes;
     private long pinnedHostBytes;
     private int outstandingEvents;
     private int queueSlots;
+    private boolean quarantineLatched;
     private final List<Operation> quarantinedOperations = new ArrayList<>();
+    private final List<PreEnqueueRecovery> preEnqueueRecoveries = new ArrayList<>();
 
     TrustedOpenClProvider(
             Driver driver,
             Limits limits,
-            ComputeDeviceHandle deviceAuthority) {
+            ComputeDeviceHandle deviceAuthority,
+            ComputeQueueHandle queueAuthority,
+            DeviceProfile deviceProfile) {
         this.driver = Objects.requireNonNull(driver, "driver");
         this.limits = Objects.requireNonNull(limits, "limits");
         this.deviceAuthority = Objects.requireNonNull(
                 deviceAuthority, "deviceAuthority");
+        this.queueAuthority = Objects.requireNonNull(queueAuthority, "queueAuthority");
+        this.deviceProfile = Objects.requireNonNull(deviceProfile, "deviceProfile");
+        if (!queueAuthority.matchesDevice(deviceAuthority)) {
+            throw new IllegalArgumentException(
+                    "compute queue authority is not bound to provider device");
+        }
     }
 
     PreparedKernel prepare(Kernel kernel, GpuTarget target) {
+        Objects.requireNonNull(kernel, "kernel");
+        Objects.requireNonNull(target, "target");
+        validateTarget(target);
         OpenClArtifact artifact = lowerOpenCl(kernel, target);
+        validateArtifact(artifact);
         Program program = Objects.requireNonNull(
                 driver.prepare(artifact),
                 "OpenCL driver returned null program");
@@ -277,9 +322,11 @@ final class TrustedOpenClProvider {
         Objects.requireNonNull(expectedOwnerDomain, "expectedOwnerDomain");
         Objects.requireNonNull(hostInput, "hostInput");
         synchronized (this) {
-            if (!quarantinedOperations.isEmpty()) {
+            if (quarantineLatched
+                    || !quarantinedOperations.isEmpty()
+                    || !preEnqueueRecoveries.isEmpty()) {
                 throw new IllegalStateException(
-                        "compute provider quarantined after post-enqueue invariant failure");
+                        "compute provider quarantined pending physical recovery");
             }
         }
 
