@@ -1370,6 +1370,11 @@ public final class ActorRuntime implements AutoCloseable {
                     (GenerationalReplyRegistry.Ticket<Object>) ticket;
             typed.reply(callee, response);
         }
+        void rejectFailure(Throwable cause) {
+            if (ticket.state() == GenerationalReplyRegistry.State.PENDING) {
+                ticket.reject(callee, Objects.requireNonNull(cause, "unary handler failure"));
+            }
+        }
         void failUnanswered() {
             if (ticket.state() == GenerationalReplyRegistry.State.PENDING) {
                 ticket.reject(callee,
@@ -8065,6 +8070,14 @@ public final class ActorRuntime implements AutoCloseable {
                                 } else {
                                     behavior.onMessage(mail.value(), context);
                                 }
+                            } catch (Throwable handlerFailure) {
+                                // An actor failing after staging a response must
+                                // reject with its ORIGINAL failure. Do not let the
+                                // envelope's unanswered fallback mask the cause.
+                                if (activeCall != null) {
+                                    activeCall.rejectFailure(handlerFailure);
+                                }
+                                throw handlerFailure;
                             } finally {
                                 // Suspended unary reply is fail-closed for now:
                                 // retaining this reply port across an await requires
