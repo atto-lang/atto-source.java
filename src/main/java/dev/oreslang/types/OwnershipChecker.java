@@ -2099,7 +2099,10 @@ public final class OwnershipChecker {
                 ? mapState.type.borrowedTarget() : mapState.type;
         if (!isTypedMapType(mapType)) return null;
         Ast.TypeRef mapValueType = mapType.arguments().get(1);
-        if (isCopyType(mapValueType)) return null;
+        if (isCopyType(mapValueType)
+                || !isCommitAwareOwnedMapValueType(mapValueType)) {
+            return null;
+        }
 
         VarState sourceRoot = ownershipRoot(sourceState);
         VarState mapRoot = ownershipRoot(mapState);
@@ -4217,6 +4220,19 @@ public final class OwnershipChecker {
         if (left.name().equals("$infer$")) return right;
         if (right.name().equals("$infer$")) return left;
         return Ast.TypeRef.union(List.of(left, right));
+    }
+
+    /**
+     * Keep the recoverable move proof coupled to the one runtime domain that
+     * currently guarantees one-shot rollback. A user-declared class named
+     * JsonValue is not that compiler-owned descriptor.
+     */
+    private boolean isCommitAwareOwnedMapValueType(Ast.TypeRef type) {
+        if (type == null || type.isBorrow() || !type.arguments().isEmpty()) {
+            return false;
+        }
+        return type.name().equals("JsonValue")
+                && findClass("JsonValue") == null;
     }
 
     private static boolean isTypedMapType(Ast.TypeRef type) {
