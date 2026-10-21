@@ -244,4 +244,37 @@ final class OresTimersTest {
         }
     }
 
+    @Test
+    void callbackRunsOnceOnOwningScheduler() throws Exception {
+        try (OresTimers timers = new OresTimers();
+             OresScheduler scheduler = new OresScheduler(1)) {
+            AtomicInteger calls = new AtomicInteger();
+            OresTimers.TimerHandle timer = timers.setTimerNanos(0, scheduler, () -> {
+                assertSame(scheduler, OresScheduler.current());
+                assertFalse(Thread.currentThread().getName()
+                        .startsWith("ores-monotonic-timer-"));
+                calls.incrementAndGet();
+            });
+            assertNull(timer.getDone().get(5, TimeUnit.SECONDS));
+            assertEquals(1, calls.get());
+            assertFalse(timer.cancel());
+            assertEquals(0, timers.activeCallbackCount());
+        }
+    }
+
+    @Test
+    void ownerShutdownCancelsUnfiredCallback() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresTimers timers = new OresTimers();
+            AtomicInteger calls = new AtomicInteger();
+            OresTimers.TimerHandle timer = timers.setTimerNanos(
+                TimeUnit.HOURS.toNanos(1), scheduler, calls::incrementAndGet);
+            timers.close();
+            assertThrows(CancellationException.class,
+                () -> timer.getDone().get(5, TimeUnit.SECONDS));
+            assertEquals(0, timers.activeCallbackCount());
+            assertEquals(0, calls.get());
+        }
+    }
+
 }
