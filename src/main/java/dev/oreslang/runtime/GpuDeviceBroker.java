@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -124,7 +125,7 @@ final class GpuDeviceBroker implements AutoCloseable {
                         "duplicate GPU device identifier: " + spec.deviceId());
             }
         }
-        devices = Map.copyOf(byId);
+        devices = Collections.unmodifiableMap(new LinkedHashMap<>(byId));
     }
 
     Owner issueOwner(String label, int maxInFlight) {
