@@ -36,7 +36,7 @@ public sealed interface OresJsonValue
     int MAX_ABS_NUMBER_SCALE = 4_096;
 
 
-    static OresJsonValue nullValue() {
+    public static OresJsonValue nullValue() {
         return NullValue.INSTANCE;
     }
 
