@@ -6,6 +6,9 @@ on:
       - 'docs/proposals/SYMBOLIC_BEHAVIOR_MODELS_V1.md'
       - 'src/main/java/dev/oreslang/runtime/OresSymbol.java'
       - 'tools/formal/SymbolicBehaviorModelCheck.java'
+      - 'tools/formal/FsmTraceWitness.java'
+      - 'tools/formal/check_fsm_trace_witness.py'
+      - 'tools/formal/contracts/trace_v0.py'
       - 'scripts/check_symbolic_behavior_models.sh'
       - '.github/workflows/symbolic-behavior-formal.yml'
   push:
@@ -13,6 +16,9 @@ on:
     paths:
       - 'src/main/java/dev/oreslang/runtime/OresSymbol.java'
       - 'tools/formal/SymbolicBehaviorModelCheck.java'
+      - 'tools/formal/FsmTraceWitness.java'
+      - 'tools/formal/check_fsm_trace_witness.py'
+      - 'tools/formal/contracts/trace_v0.py'
       - 'scripts/check_symbolic_behavior_models.sh'
       - '.github/workflows/symbolic-behavior-formal.yml'
   workflow_dispatch:
@@ -35,3 +41,16 @@ jobs:
       - name: Compile actual Symbol implementation and exhaustively check finite models
         shell: bash
         run: bash scripts/check_symbolic_behavior_models.sh
+      - name: Verify pinned merged FSM trace oracle
+        run: |
+          test "$(git hash-object tools/formal/contracts/trace_v0.py)" = d39f833a794aeb34397765cc8436dc50156ea6ae
+      - name: Compile Java witness and validate 2040 bounded transitions
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          javac --release 21 -encoding UTF-8 -d "$tmp" tools/formal/FsmTraceWitness.java
+          java -cp "$tmp" FsmTraceWitness > "$tmp/trace.csv"
+          python3 -O tools/formal/check_fsm_trace_witness.py \
+            --oracle tools/formal/contracts/trace_v0.py < "$tmp/trace.csv"
