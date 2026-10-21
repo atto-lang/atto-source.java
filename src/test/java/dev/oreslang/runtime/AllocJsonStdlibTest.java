@@ -317,9 +317,9 @@ final class AllocJsonStdlibTest {
     @Test
     void typedDecodeRejectsMissingUnknownAndWrongFieldTypes() throws Exception {
         for (String json : new String[]{
-                "{\\\"id\\\":1}",
-                "{\\\"id\\\":1,\\\"name\\\":\\\"Ada\\\",\\\"extra\\\":2}",
-                "{\\\"id\\\":\\\"wrong\\\",\\\"name\\\":\\\"Ada\\\"}"
+                "{\"id\":1}",
+                "{\"id\":1,\"name\":\"Ada\",\"extra\":2}",
+                "{\"id\":\"wrong\",\"name\":\"Ada\"}"
         }) {
             Path entry = temp.resolve(
                     "decode-bad-" + Math.abs(json.hashCode()) + ".ores");
