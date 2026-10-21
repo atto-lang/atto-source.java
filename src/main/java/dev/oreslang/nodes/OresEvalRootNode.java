@@ -8335,6 +8335,7 @@ public final class OresEvalRootNode extends RootNode {
                             && field.visibility() == Ast.Visibility.PUBLIC
                             && field.name().equals(name)) {
                         if (field.initializer() == null) throw new IllegalArgumentException("exported binding has no initializer: " + name);
+                        requireActorSafeModuleBinding(candidate, field);
                         return eval(field.initializer(), new Env(null));
                     }
                 }
@@ -8533,10 +8534,30 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (decl instanceof Ast.FieldDecl field && field.name().equals(name) && field.visibility() == Ast.Visibility.PUBLIC) {
                     if (field.initializer() == null) throw new IllegalArgumentException("module field has no initializer: " + module.name() + "." + name);
+                    requireActorSafeModuleBinding(module, field);
                     return eval(field.initializer(), new Env(null));
                 }
             }
             throw new IllegalArgumentException("module '" + module.name() + "' does not export '" + name + "'");
+        }
+
+        /**
+         * Lexical/module proximity never grants mutable process state to an actor.
+         * This check is dynamic on purpose: shared helper functions can be called
+         * from ordinary code or from an actor, and only the actor execution path
+         * must reject ambient mutable module bindings.
+         */
+        private void requireActorSafeModuleBinding(
+                Ast.ModuleDecl module,
+                Ast.FieldDecl field) {
+            if (!ActorRuntime.inActorExecution()) return;
+            if (field.bindingKind() == Ast.BindingKind.LET || field.mutableReferent()) {
+                throw new SecurityException(
+                        "actor execution cannot access mutable module binding '"
+                                + module.name() + "." + field.name()
+                                + "'; move mutable state into actor state or use an explicit "
+                                + "synchronized shared-state capability");
+            }
         }
 
         private Invocation prepareModuleInvocation(Ast.ModuleDecl module, String name, List<Object> args) {
@@ -10226,7 +10247,8 @@ public final class OresEvalRootNode extends RootNode {
                 return true;
             }
 
-            if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>
+            if (value instanceof ActorNativeArena.NativeValue
+                    || value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>
                     || value instanceof CompletionStage<?> || value instanceof Invokable
                     || value instanceof HostClassFacade || value instanceof HostObjectFacade) {
                 return false;
