@@ -224,6 +224,159 @@ final class ScopedTaskReadRuntimeTest {
     }
 
     @Test
+    void structuredScopeRetiresReadOnlyAtExactChildQuiescence() throws Exception {
+        Ast.Program program = OresCompiler.parseAndTypeCheck("""
+                pub async fnc main(): void {
+                  let Future<int> child = task { return 1; };
+                  stdio.stdout.write(await child);
+                  return;
+                }
+                """);
+        Ast.TaskExpr boundary = firstTask(program);
+        long epoch = Ast.CheckedTaskCaptures.requireProgramEpoch(program);
+        var allocation = new ScopedTaskReadAuthority.AllocationIdentity(
+                "PROCESS", "root", 505, 8, true);
+        var authority = ScopedTaskReadAuthority.prove(
+                program,
+                boundary,
+                epoch,
+                allocation,
+                List.of(),
+                Types.Primitive.INT);
+
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskScope scope = scheduler.newTaskScope();
+            var read = ScopedTaskReadRuntime.acquireRead(
+                    authority, program, boundary, epoch,
+                    allocation.allocationId(), allocation.generation());
+            TaskHandle<Integer> child = ScopedTaskReadRuntime.startInScope(
+                    scope,
+                    resume -> {
+                        entered.countDown();
+                        release.await(5, TimeUnit.SECONDS);
+                        return OresScheduler.done(1);
+                    },
+                    read);
+
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            assertEquals(1,
+                    ScopedTaskReadRuntime.activeReadersForTesting(allocation));
+            child.result().cancel(false);
+            scope.seal();
+
+            assertEquals(1,
+                    ScopedTaskReadRuntime.activeReadersForTesting(allocation),
+                    "result settlement/cancellation must not retire READ authority");
+            assertFalse(scope.getDone().isDone(),
+                    "scope cannot report quiescence while the physical child is running");
+
+            release.countDown();
+            assertNull(scope.getDone().get(5, TimeUnit.SECONDS));
+            assertEquals(0,
+                    ScopedTaskReadRuntime.activeReadersForTesting(allocation));
+            assertDoesNotThrow(
+                    () -> ScopedTaskReadRuntime.requireWritable(allocation));
+        }
+    }
+
+    @Test
+    void structuredScopePreAdmissionRejectionRollsBackReadLease() {
+        Ast.Program program = OresCompiler.parseAndTypeCheck("""
+                pub async fnc main(): void {
+                  let Future<int> child = task { return 1; };
+                  stdio.stdout.write(await child);
+                  return;
+                }
+                """);
+        Ast.TaskExpr boundary = firstTask(program);
+        long epoch = Ast.CheckedTaskCaptures.requireProgramEpoch(program);
+        var allocation = new ScopedTaskReadAuthority.AllocationIdentity(
+                "PROCESS", "root", 606, 4, true);
+        var authority = ScopedTaskReadAuthority.prove(
+                program,
+                boundary,
+                epoch,
+                allocation,
+                List.of(),
+                Types.Primitive.INT);
+
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskScope scope = scheduler.newTaskScope();
+            scope.seal();
+            var read = ScopedTaskReadRuntime.acquireRead(
+                    authority, program, boundary, epoch,
+                    allocation.allocationId(), allocation.generation());
+            assertEquals(1,
+                    ScopedTaskReadRuntime.activeReadersForTesting(allocation));
+
+            assertThrows(
+                    java.util.concurrent.RejectedExecutionException.class,
+                    () -> ScopedTaskReadRuntime.startInScope(
+                            scope,
+                            resume -> OresScheduler.done(1),
+                            read));
+            assertEquals(0,
+                    ScopedTaskReadRuntime.activeReadersForTesting(allocation),
+                    "proven pre-admission rejection must retire its READ reservation");
+        }
+    }
+
+    @Test
+    void duplicateReadRetirementPoisonsStructuredChildOutcome() throws Exception {
+        Ast.Program program = OresCompiler.parseAndTypeCheck("""
+                pub async fnc main(): void {
+                  let Future<int> child = task { return 1; };
+                  stdio.stdout.write(await child);
+                  return;
+                }
+                """);
+        Ast.TaskExpr boundary = firstTask(program);
+        long epoch = Ast.CheckedTaskCaptures.requireProgramEpoch(program);
+        var allocation = new ScopedTaskReadAuthority.AllocationIdentity(
+                "PROCESS", "root", 707, 3, true);
+        var authority = ScopedTaskReadAuthority.prove(
+                program,
+                boundary,
+                epoch,
+                allocation,
+                List.of(),
+                Types.Primitive.INT);
+
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskScope scope = scheduler.newTaskScope();
+            var read = ScopedTaskReadRuntime.acquireRead(
+                    authority, program, boundary, epoch,
+                    allocation.allocationId(), allocation.generation());
+            ScopedTaskReadRuntime.startInScope(
+                    scope,
+                    resume -> {
+                        entered.countDown();
+                        release.await(5, TimeUnit.SECONDS);
+                        return OresScheduler.done(1);
+                    },
+                    read);
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+
+            // Fault injection: an early/forged retirement must not allow the
+            // later exact physical callback to pass silently.
+            read.close();
+            scope.seal();
+            release.countDown();
+            assertNull(scope.getDone().get(5, TimeUnit.SECONDS));
+
+            var retained = assertInstanceOf(
+                    TaskHandle.Failed.class,
+                    scope.firstNonSuccessOutcome());
+            assertTrue(retained.failure().getMessage().contains("more than once"),
+                    retained.failure()::getMessage);
+        }
+    }
+
+    @Test
     void staleGenerationDoesNotBlockReplacementAllocation() {
         var oldAllocation = new ScopedTaskReadAuthority.AllocationIdentity(
                 "PROCESS", "root", 7, 1, true);
