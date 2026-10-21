@@ -1,5 +1,7 @@
 # Async standard-library I/O
 
+> **Strict stdlib status (2026-10-21):** Java's legacy blocking host adapters are no longer reachable from the stdlib I/O facade on the strict branch. The operations listed below describe the intended API/result shapes; until a verified readiness/completion provider is installed, synchronous forms fail closed and async forms return failed Futures. Do not interpret this table as current successful transport support.
+
 The async APIs return native Oreslang `Future<T>` values. `await` suspends the
 source continuation and releases its actor/root execution carrier. Completion
 resumes through the owning scheduler; I/O workers never execute guest callbacks.
