@@ -190,6 +190,49 @@ final class TaskCaptureAdmissionIdentityTest {
     }
 
     @Test
+    void failedRealImportedClassRecheckRevokesPreviouslyExecutableTask() {
+        Ast.Program checked = OresCompiler.parseAndTypeCheck("""
+                define class Box as
+                  pub let int value = 1;
+                end
+                pub async fnc main(): void {
+                  const int value = 41;
+                  let Future<int> child = task { return value + 1; };
+                  stdio.stdout.write(await child);
+                  return;
+                }
+                """);
+        Ast.TaskExpr task = firstTask(checked);
+        long originalEpoch =
+                Ast.CheckedTaskCaptures.requireProgramEpoch(checked);
+        Ast.ClassDecl existingClass = null;
+        for (Ast.ModuleDecl module : checked.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.ClassDecl cls
+                        && cls.name().equals("Box")) {
+                    existingClass = cls;
+                }
+            }
+        }
+        assertNotNull(existingClass,
+                "fixture must contain a local class used to force linked-class conflict");
+        Ast.ClassDecl duplicateClass = existingClass;
+
+        // This is a real OwnershipChecker entrypoint failure, not an explicit
+        // test-only call to beginCheck. The import is invalid because Box
+        // already exists locally. The checker must revoke prior authorization
+        // before it reports the conflicting linked class.
+        assertThrows(IllegalArgumentException.class,
+                () -> OwnershipChecker.checkWithImportedClasses(
+                        checked, java.util.Map.of("Box", duplicateClass)));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedTaskCaptures.requireProgramEpoch(checked));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedTaskCaptures.require(
+                        checked, task, originalEpoch));
+    }
+
+    @Test
     void supersededConcurrentCheckerCannotRepublishStaleTaskAuthority() {
         Ast.Program checked = OresCompiler.parseAndTypeCheck("""
                 pub async fnc main(): void {
