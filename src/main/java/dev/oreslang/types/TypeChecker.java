@@ -3180,6 +3180,21 @@ public final class TypeChecker {
 
                 Type collectionBuiltin = builtinCollectionMember(receiver, member.member());
                 if (collectionBuiltin != null) {
+                    if (isTypedMapType(receiver)
+                            && (member.member().equals("take")
+                                    || member.member().equals("remove"))) {
+                        if (!(member.receiver() instanceof Ast.NameExpr ownerName)) {
+                            throw new IllegalArgumentException(
+                                    "Map." + member.member()
+                                            + " requires a directly owned local Map binding");
+                        }
+                        Env.Binding owner = env.lookup(ownerName.name());
+                        if (owner == null || !owner.mutableReferent()) {
+                            throw new IllegalArgumentException(
+                                    "Map." + member.member()
+                                            + " requires mutable referent authority (val or explicit mut binding)");
+                        }
+                    }
                     if (!(collectionBuiltin instanceof Function builtin)) {
                         throw new IllegalArgumentException(
                                 "collection member '" + member.member() + "' is not callable");
@@ -3729,6 +3744,13 @@ public final class TypeChecker {
                         + "'; invoke directly or spread a statically known tuple with f(...args)");
             }
             Type collectionMember = builtinCollectionMember(sumReceiver, member.member());
+            if (isTypedMapType(sumReceiver)
+                    && (member.member().equals("take")
+                            || member.member().equals("remove"))) {
+                throw new IllegalArgumentException(
+                        "Map." + member.member()
+                                + " is direct-call-only because its mutation authority belongs to the owning binding");
+            }
             if (isStringLike(sumReceiver)) {
                 return switch (member.member()) {
                     case "replace_literal" -> new Function(List.of(Primitive.STRING, Primitive.STRING), Primitive.STRING);
@@ -6692,8 +6714,10 @@ public final class TypeChecker {
                 case "get" -> new Function(
                         List.of(key),
                         new Named("Option", List.of(value)));
-                // take/remove mutate or transfer ownership and need an
-                // owner-aware runtime call lowering before exposure.
+                case "take" -> new Function(
+                        List.of(key),
+                        new Named("Option", List.of(value)));
+                case "remove" -> new Function(List.of(key), Primitive.BOOL);
                 default -> null;
             };
         }
