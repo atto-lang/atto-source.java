@@ -88,6 +88,14 @@ final class ActorNativeArenaTest {
             holder.put("value", backing);
             assertSame(backing, holder.get("value"));
 
+            // A facade may be registered to a real native allocation, but it
+            // must not silently replace an existing object identity at that offset.
+            arena.registerNativeFacade(forged, fields);
+            assertThrows(SecurityException.class, () -> holder.put("value", forged),
+                    "two facades must not alias the same offset with different identities");
+            assertSame(backing, holder.get("value"),
+                    "address collisions must leave the previously stored reference intact");
+
             ActorNativeArena.NativeValue unissued = new ActorNativeArena.NativeValue() {
                 @Override public ActorNativeArena nativeArena() { return arena; }
                 @Override public long nativeOffset() { return issuedAddress + 8; }
