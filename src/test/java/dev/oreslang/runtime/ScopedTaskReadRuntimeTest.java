@@ -376,6 +376,25 @@ final class ScopedTaskReadRuntimeTest {
         }
     }
 
+
+    @Test
+    void processOwnerLabelCannotAliasSameAllocationGeneration() {
+        var first = new ScopedTaskReadAuthority.AllocationIdentity(
+                "PROCESS", "first-label", 606, 4, true);
+        var second = new ScopedTaskReadAuthority.AllocationIdentity(
+                "PROCESS", "second-label", 606, 4, true);
+
+        try (ScopedTaskReadRuntime.WriteLease ignored =
+                     ScopedTaskReadRuntime.acquireWrite(first)) {
+            assertThrows(IllegalStateException.class,
+                    () -> ScopedTaskReadRuntime.acquireWrite(second));
+            assertThrows(IllegalStateException.class,
+                    () -> ScopedTaskReadRuntime.requireWritable(second));
+        }
+        assertDoesNotThrow(
+                () -> ScopedTaskReadRuntime.requireWritable(second));
+    }
+
     @Test
     void staleGenerationDoesNotBlockReplacementAllocation() {
         var oldAllocation = new ScopedTaskReadAuthority.AllocationIdentity(
