@@ -17,9 +17,11 @@
     },
     "orestra/orestra-conformance": {
       "repository_id": 1426277234,
-      "base_sha": "45a0b599e2dc45a57b5fed290eb03210cc8bafe0",
+      "base_sha": "bc8878377ddc2dd589d246477325c58476c2b679",
       "workflow_path": ".github/workflows/oreslang-exact-tree-carrier.yml",
-      "workflow_blob_sha": "f4759633e2d7bb0c528394325e770013a8cc1826",
+      "workflow_blob_sha": "f6541bbb59bed111db76931a2b9256fd479a5acb",
+      "codeowners_path": ".github/CODEOWNERS",
+      "codeowners_blob_sha": "ec126032aeb1bde2ee9f0ab5c220c4282603f5b7",
       "test_plans": {
         "ci/test-plans/java-pr1711.json": {
           "blob_sha": "1b00f6c863b87e262b9f56990b6f22ae5d6fbecd",
