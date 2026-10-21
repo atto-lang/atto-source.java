@@ -29,7 +29,6 @@ define module hat as
   end
 
   define pub interface DeviceViewMut<T> extends DeviceView<T>
-    fnc length() => int;
   end
 
   define pub interface DeviceBuffer<T>
