@@ -47,6 +47,24 @@ final class TemplateLiteralContractTest {
     }
 
     @Test
+    void constFncShorthandAcceptsTemplateReturningLambda() {
+        String source = """
+                const fnc foo = |string bar, string star| -> {
+                  return `${bar} is ${star}`;
+                };
+                pub fnc main(): void {
+                  const fnc local = |string left, string right| -> {
+                    return `${left} and ${right}`;
+                  };
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> Parser.parse(source));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                "pub fnc main(): void { const fnc invalid = 42; return; }"));
+    }
+
+    @Test
     void interpolationMustBeCompleteExpressionWithStringType() {
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("pub fnc main(): void { const bad = `${1; 2}`; return; }"));
