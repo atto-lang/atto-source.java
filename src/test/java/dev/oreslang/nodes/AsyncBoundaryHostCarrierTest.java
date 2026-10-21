@@ -70,6 +70,52 @@ final class AsyncBoundaryHostCarrierTest {
     }
 
     @Test
+    void traversalGuardRejectsHostCollectionsBeforeCallbacks() {
+        AtomicInteger callbacks = new AtomicInteger();
+
+        final class HostileList extends ArrayList<Object> {
+            @Override public int size() {
+                callbacks.incrementAndGet();
+                throw new AssertionError("host List.size invoked");
+            }
+            @Override public java.util.Iterator<Object> iterator() {
+                callbacks.incrementAndGet();
+                throw new AssertionError("host List.iterator invoked");
+            }
+        }
+
+        final class HostileMap extends LinkedHashMap<Object, Object> {
+            @Override public Set<Map.Entry<Object, Object>> entrySet() {
+                callbacks.incrementAndGet();
+                throw new AssertionError("host Map.entrySet invoked");
+            }
+            @Override public boolean containsKey(Object key) {
+                callbacks.incrementAndGet();
+                throw new AssertionError("host Map.containsKey invoked");
+            }
+            @Override public Object get(Object key) {
+                callbacks.incrementAndGet();
+                throw new AssertionError("host Map.get invoked");
+            }
+        }
+
+        HostileList list = new HostileList();
+        list.add("x");
+        HostileMap map = new HostileMap();
+        map.put("k", "v");
+
+        for (Object hostile : List.of(list, map)) {
+            IllegalArgumentException rejected = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> OresEvalRootNode.requireTrustedTraversalCollectionCarrier(
+                            hostile, "guest traversal"));
+            assertTrue(rejected.getMessage().contains("guest traversal"),
+                    rejected.getMessage());
+            assertEquals(0, callbacks.get());
+        }
+    }
+
+    @Test
     void exactJdkGuestCarriersRemainAllowed() {
         assertDoesNotThrow(() ->
                 OresEvalRootNode.requireTrustedAsyncCollectionCarrier(
