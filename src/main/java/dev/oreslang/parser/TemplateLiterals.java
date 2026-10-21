@@ -12,6 +12,8 @@ import java.util.List;
  */
 final class TemplateLiterals {
     private static final int MAX_NESTING = 32;
+    private static final int MAX_BRACE_NESTING = 256;
+    private static final int MAX_INTERPOLATIONS = 1024;
 
     private TemplateLiterals() { }
 
@@ -54,7 +56,9 @@ final class TemplateLiterals {
             } else if (c == '/' && at + 1 < source.length() && source.charAt(at + 1) == '*') {
                 at = skipBlockComment(source, at + 2);
             } else if (c == '{') {
-                braces++;
+                if (++braces > MAX_BRACE_NESTING) {
+                    throw syntax("template interpolation brace nesting limit exceeded");
+                }
                 at++;
             } else if (c == '}') {
                 if (--braces == 0) return at;
@@ -96,6 +100,7 @@ final class TemplateLiterals {
     static Ast.Expr lower(String raw) {
         List<Ast.Expr> pieces = new ArrayList<>();
         StringBuilder literal = new StringBuilder();
+        int interpolations = 0;
         int at = 0;
         while (at < raw.length()) {
             char c = raw.charAt(at++);
@@ -115,7 +120,10 @@ final class TemplateLiterals {
                         if (at + 4 > raw.length()) throw syntax("incomplete template Unicode escape");
                         int value = 0;
                         for (int j = 0; j < 4; j++) {
-                            int digit = Character.digit(raw.charAt(at++), 16);
+                            char hex = raw.charAt(at++);
+                            int digit = hex >= '0' && hex <= '9' ? hex - '0'
+                                    : hex >= 'a' && hex <= 'f' ? hex - 'a' + 10
+                                    : hex >= 'A' && hex <= 'F' ? hex - 'A' + 10 : -1;
                             if (digit < 0) throw syntax("invalid template Unicode escape");
                             value = (value << 4) | digit;
                         }
@@ -125,7 +133,37 @@ final class TemplateLiterals {
                 }
                 continue;
             }
-            if (c == '$' && at < raw.length() && raw.charAt(at) == '{') {
+            if (c == '
+                literal.setLength(0);
+                int close = interpolationEnd(raw, at + 1, 0);
+                String source = raw.substring(at + 1, close);
+                if (source.isBlank()) throw syntax("empty template interpolation");
+                pieces.add(Parser.parseInterpolatedExpression(source));
+                at = close + 1;
+                continue;
+            }
+            literal.append(c);
+        }
+        pieces.add(new Ast.LiteralExpr(literal.toString()));
+        Ast.Expr result = pieces.getFirst();
+        for (int i = 1; i < pieces.size(); i++) {
+            result = new Ast.BinaryExpr("+", result, pieces.get(i));
+        }
+        return result;
+    }
+
+    private static void requireDepth(int nesting) {
+        if (nesting > MAX_NESTING) throw syntax("template interpolation nesting limit exceeded");
+    }
+
+    private static IllegalArgumentException syntax(String detail) {
+        return new IllegalArgumentException("Oreslang template error: " + detail);
+    }
+}
+ && at < raw.length() && raw.charAt(at) == '{') {
+                if (++interpolations > MAX_INTERPOLATIONS) {
+                    throw syntax("template interpolation count limit exceeded");
+                }
                 pieces.add(new Ast.LiteralExpr(literal.toString()));
                 literal.setLength(0);
                 int close = interpolationEnd(raw, at + 1, 0);
