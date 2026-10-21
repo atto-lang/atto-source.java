@@ -31,6 +31,10 @@ final class SourceEffectAuditShapeTest {
         method.setAccessible(true);
         try {
             var report = (SourceEffectAudit.Report) method.invoke(null, program);
+            assertNull(report.sourceSha256(),
+                    "unchecked synthetic AST cannot receive a source-bound fingerprint");
+            assertFalse(report.conservativelyEffectFree(),
+                    "synthetic AST inspection must not mint a compiler-admitted report");
             return report.functions().values().iterator().next();
         } catch (InvocationTargetException e) {
             throw new AssertionError("AST walker failed", e.getCause());
