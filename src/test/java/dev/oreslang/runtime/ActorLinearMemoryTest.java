@@ -94,6 +94,59 @@ final class ActorLinearMemoryTest {
     }
 
     @Test
+    void exactIntervalBorrowPreflightAllowsDisjointWritesAndRejectsAtomicOverlap() {
+        AtomicLong charged = new AtomicLong();
+        final long edge = ActorLinearMemory.PAGE_BYTES;
+        try (ActorNativeArena arena = arena(2L * edge, charged)) {
+            ActorLinearMemory memory = arena.linearMemory(2, 2);
+            memory.writeLong(edge - 4, 0x1020304050607080L);
+            try (var first = memory.leaseReadOnlyPage(1, 16, 16)) {
+                // The same native page contains the read-only slice, but the
+                // cross-page word touches only [edge,edge+4) on page two.
+                memory.writeLong(edge - 4, 0x0102030405060708L);
+                assertEquals(0x0102030405060708L, memory.readLong(edge - 4));
+                memory.fill(edge, 16, (byte) 0x55);
+                memory.copy(edge + 32, edge, 16);
+                for (int index = 0; index < 16; index++) {
+                    assertEquals(0x55, memory.readUnsignedByte(edge + 32 + index));
+                }
+                // A scalar ending exactly at the lease start is allowed.
+                memory.writeLong(edge + 8, 0x1122334455667788L);
+                assertEquals(0x1122334455667788L, memory.readLong(edge + 8));
+
+                byte[] before = new byte[24];
+                for (int i = 0; i < before.length; i++) {
+                    before[i] = memory.readByte(edge + 8 + i);
+                }
+                assertThrows(IllegalStateException.class,
+                        () -> memory.fill(edge + 8, 16, (byte) 0x5a));
+                assertThrows(IllegalStateException.class,
+                        () -> memory.copy(edge + 8, edge + 32, 16));
+                assertThrows(IllegalStateException.class,
+                        () -> memory.writeLong(edge + 12, -1L));
+                for (int i = 0; i < before.length; i++) {
+                    assertEquals(before[i], memory.readByte(edge + 8 + i),
+                            "rejected overlapping operation must not change any byte");
+                }
+                assertThrows(IllegalStateException.class,
+                        () -> memory.writeByte(edge + 16, (byte) 1));
+                memory.writeByte(edge + 15, (byte) 2);
+            }
+            // The second page's borrowed interval intersects the second half
+            // of a spanning word. Even though the first page is writable,
+            // preflight must reject before the first byte changes.
+            memory.writeLong(edge - 4, 0x1112131415161718L);
+            try (var second = memory.leaseReadOnlyPage(1, 2, 8)) {
+                assertThrows(IllegalStateException.class,
+                        () -> memory.writeLong(edge - 4, 0x0102030405060708L));
+                assertEquals(0x1112131415161718L, memory.readLong(edge - 4));
+            }
+            memory.writeLong(edge - 4, 0x0102030405060708L);
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
     void primitiveWordAccessMatchesLittleEndianOracleAcrossAllPageEdges() {
         AtomicLong charged = new AtomicLong();
         long base = ActorLinearMemory.PAGE_BYTES;
