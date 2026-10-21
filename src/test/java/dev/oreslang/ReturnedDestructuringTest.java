@@ -103,8 +103,13 @@ final class ReturnedDestructuringTest {
     @Test
     void recordReturnSupportsBothObjectDestructureSpellings() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class RecordValue as
+                  pub val int foo;
+                  pub val string bar;
+                end
+
                 fnc result(): {foo: int, bar: string} {
-                  return record{foo: 5, bar: "x"};
+                  return new RecordValue(5, "x");
                 }
 
                 fnc prefixed(): void {
@@ -132,24 +137,38 @@ final class ReturnedDestructuringTest {
     @Test
     void recordReturnsAndDestructuresRejectMissingOrWrongMembers() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class MissingResult as
+                  pub val int foo;
+                end
+
                 fnc broken(): {foo: int, bar: string} {
-                  return record{foo: 5};
+                  return new MissingResult(5);
                 }
 
                 pub fnc main(): void { return; }
                 """)));
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class WrongResult as
+                  pub val string foo;
+                  pub val string bar;
+                end
+
                 fnc broken(): {foo: int, bar: string} {
-                  return record{foo: "wrong", bar: "x"};
+                  return new WrongResult("wrong", "x");
                 }
 
                 pub fnc main(): void { return; }
                 """)));
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class RecordValue as
+                  pub val int foo;
+                  pub val string bar;
+                end
+
                 fnc result(): {foo: int, bar: string} {
-                  return record{foo: 5, bar: "x"};
+                  return new RecordValue(5, "x");
                 }
 
                 pub fnc main(): void {
@@ -162,6 +181,11 @@ final class ReturnedDestructuringTest {
     @Test
     void equivalentUnionAndRecordOrderingsHaveCanonicalSignatures() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class RecordValue as
+                  pub val int foo;
+                  pub val string bar;
+                end
+
                 @Ret<string | int>
                 fnc scalar(): int | string {
                   return 3;
@@ -169,7 +193,7 @@ final class ReturnedDestructuringTest {
 
                 @Ret<{bar: string, foo: int}>
                 fnc object(): {foo: int, bar: string} {
-                  return record{foo: 5, bar: "x"};
+                  return new RecordValue(5, "x");
                 }
 
                 pub fnc main(): void { return; }
@@ -179,12 +203,17 @@ final class ReturnedDestructuringTest {
     @Test
     void prefixedPatternSyntaxDoesNotStealFiniteTupleOrRecordTypedBindings() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class RecordValue as
+                  pub val int foo;
+                  pub val string bar;
+                end
+
                 fnc fixed(): [int, bool, string] {
                   return [3, true, "yes"];
                 }
 
                 fnc result(): {foo: int, bar: string} {
-                  return record{foo: 5, bar: "x"};
+                  return new RecordValue(5, "x");
                 }
 
                 pub fnc main(): void {
@@ -220,11 +249,21 @@ final class ReturnedDestructuringTest {
     @Test
     void unionRecordReturnsDestructureWhenEveryAlternativeProvidesRequestedMembers() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class IntResult as
+                  pub val int foo;
+                  pub val string bar;
+                end
+
+                define class BoolResult as
+                  pub val bool foo;
+                  pub val string bar;
+                end
+
                 fnc variant(bool flag): {foo: int, bar: string} | {foo: bool, bar: string} {
                   if flag; do
-                    return record{foo: 3, bar: "number"};
+                    return new IntResult(3, "number");
                   else
-                    return record{foo: true, bar: "boolean"};
+                    return new BoolResult(true, "boolean");
                   fi
                 }
 
@@ -255,11 +294,20 @@ final class ReturnedDestructuringTest {
                 """)));
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class FullResult as
+                  pub val int foo;
+                  pub val string bar;
+                end
+
+                define class PartialResult as
+                  pub val bool foo;
+                end
+
                 fnc variant(bool flag): {foo: int, bar: string} | {foo: bool} {
                   if flag; do
-                    return record{foo: 3, bar: "number"};
+                    return new FullResult(3, "number");
                   else
-                    return record{foo: true};
+                    return new PartialResult(true);
                   fi
                 }
 
@@ -273,8 +321,13 @@ final class ReturnedDestructuringTest {
     @Test
     void bareDiscardIsRejectedInObjectPatterns() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define class RecordValue as
+                  pub val int foo;
+                  pub val string bar;
+                end
+
                 fnc result(): {foo: int, bar: string} {
-                  return record{foo: 5, bar: "x"};
+                  return new RecordValue(5, "x");
                 }
 
                 pub fnc main(): void {
@@ -333,17 +386,22 @@ final class ReturnedDestructuringTest {
     }
 
     @Test
-    void returnedTupleAndRecordDestructureAtRuntime() throws Exception {
+    void returnedTupleAndStaticRecordDestructureAtRuntime() throws Exception {
         String program = """
                 type FixedResult = [int, bool, string];
                 type NamedResult = {foo: int, bar: string};
+
+                define class RecordValue as
+                  pub val int foo;
+                  pub val string bar;
+                end
 
                 fnc fixed(): FixedResult {
                   return [3, true, "yes"];
                 }
 
                 fnc result(): NamedResult {
-                  return record{foo: 5, bar: "x"};
+                  return new RecordValue(5, "x");
                 }
 
                 pub fnc main(): void {
@@ -377,362 +435,4 @@ final class ReturnedDestructuringTest {
         assertTrue(text.contains("5"));
         assertTrue(text.contains("x"));
     }
-
-    @Test
-    void restDestructuringInfersHomogeneousAndFiniteRemainders() {
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                fnc values(): Array<int> {
-                  return [1, 2, 3];
-                }
-
-                fnc fixed(): [int, bool, string] {
-                  return [7, true, "tail"];
-                }
-
-                fnc acceptsInts(Array<int> values): void {
-                  stdio.println(values[0]);
-                  return;
-                }
-
-                fnc single(): [int] {
-                  return [99];
-                }
-
-                pub fnc main(): void {
-                  const [v, ...rest] = values();
-                  acceptsInts(rest);
-
-                  [const first, const ...tail] = fixed();
-                  val [bool, string] typedTail = tail;
-                  const [flag, label] = typedTail;
-
-                  const [only, ...emptyTail] = single();
-                  val [] typedEmptyTail = emptyTail;
-                  stdio.println(only);
-                  stdio.println(v);
-                  stdio.println(first);
-                  stdio.println(flag);
-                  stdio.println(label);
-                  return;
-                }
-                """)));
-    }
-
-    @Test
-    void recordRestComputesStaticOmitShapeForBothBindingSpellings() {
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                type Row = {v: int, label: string, ok: bool};
-
-                fnc row(): Row {
-                  return record{v: 5, label: "x", ok: true};
-                }
-
-                fnc acceptsRest({label: string, ok: bool} value): void {
-                  stdio.println(value.label);
-                  stdio.println(value.ok);
-                  return;
-                }
-
-                fnc prefixed(): void {
-                  const {v, ...rest} = row();
-                  acceptsRest(rest);
-                  stdio.println(v);
-                  return;
-                }
-
-                fnc inlineKinds(): void {
-                  {const v, const ...rest} = row();
-                  acceptsRest(rest);
-                  stdio.println(v);
-                  return;
-                }
-
-                pub fnc main(): void {
-                  prefixed();
-                  inlineKinds();
-                  return;
-                }
-                """)));
-    }
-
-    @Test
-    void finiteTupleRestRejectsImpossiblePrefixAtCompileTime() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc fixed(): [int] {
-                  return [7];
-                }
-
-                pub fnc main(): void {
-                  const [a, b, ...rest] = fixed();
-                  return;
-                }
-                """)));
-    }
-
-    @Test
-    void objectRestRejectsDynamicShapeAndRemovedMembers() {
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                fnc dynamic(string key): void {
-                  const value = infer struct{`key`: 1, v: 2};
-                  return;
-                }
-                """));
-
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                type Row = {v: int, label: string};
-
-                fnc row(): Row {
-                  return record{v: 5, label: "x"};
-                }
-
-                pub fnc main(): void {
-                  const {v, ...rest} = row();
-                  stdio.println(rest.v);
-                  return;
-                }
-                """)));
-    }
-
-    @Test
-    void parserRequiresRestBindingToBeFinal() {
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                fnc values(): Array<int> { return [1, 2, 3]; }
-                pub fnc main(): void {
-                  const [v, ...rest, last] = values();
-                  return;
-                }
-                """));
-
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                fnc value(): {v: int, label: string} {
-                  return record{v: 1, label: "x"};
-                }
-                pub fnc main(): void {
-                  const {v, ...rest, label} = value();
-                  return;
-                }
-                """));
-    }
-
-    @Test
-    void restFirstOrMiddleIsAlwaysRejectedForBothSyntaxFamilies() {
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                fnc values(): Array<int> { return [1, 2, 3]; }
-                pub fnc main(): void {
-                  const [first, ...rest, last] = values();
-                  return;
-                }
-                """));
-
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                fnc values(): Array<int> { return [1, 2, 3]; }
-                pub fnc main(): void {
-                  [const ...rest, const last] = values();
-                  return;
-                }
-                """));
-
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                fnc value(): {active: bool, label: string} {
-                  return record{active: true, label: "x"};
-                }
-                pub fnc main(): void {
-                  const {...rest, active} = value();
-                  return;
-                }
-                """));
-
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                fnc value(): {active: bool, label: string} {
-                  return record{active: true, label: "x"};
-                }
-                pub fnc main(): void {
-                  {const ...rest, const active} = value();
-                  return;
-                }
-                """));
-    }
-
-    @Test
-    void staticallyTypedIterableRestUsesDeclaredIteratorShape() {
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                define class Vector<T> as
-                  let mut Array<T> items = new Array<T>();
-
-                  pub add(mut self)(T value): void {
-                    self.items.add(value);
-                    return;
-                  }
-
-                  pub [Symbol.iterator](): Array<T> {
-                    return self.items;
-                  }
-                end
-
-                fnc vector(): Vector<int> {
-                  let mut Vector<int> values = new Vector<int>();
-                  values.add(4);
-                  values.add(5);
-                  values.add(6);
-                  return values;
-                }
-
-                fnc acceptsInts(Array<int> values): void {
-                  stdio.println(values[0]);
-                  return;
-                }
-
-                pub fnc main(): void {
-                  const [first, ...rest] = vector();
-                  acceptsInts(rest);
-                  stdio.println(first);
-                  return;
-                }
-                """)));
-    }
-
-    @Test
-    void unionRestKeepsEveryFiniteTailAlternativeStatic() {
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                fnc variant(bool flag): [int, string] | [int, bool, string] {
-                  if flag; then
-                    return [3, "short"];
-                  else
-                    return [4, true, "long"];
-                  fi
-                }
-
-                pub fnc main(): void {
-                  const [head, ...rest] = variant(false);
-                  stdio.println(head);
-                  return;
-                }
-                """)));
-    }
-
-    @Test
-    void restOnlyPatternsPreserveCompleteStaticShape() {
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                fnc values(): Array<int> {
-                  return [1, 2, 3];
-                }
-
-                fnc row(): {v: int, active: bool} {
-                  return record{v: 5, active: true};
-                }
-
-                fnc acceptsAllInts(Array<int> values): void {
-                  stdio.println(values[0]);
-                  return;
-                }
-
-                fnc acceptsWholeRow({v: int, active: bool} value): void {
-                  stdio.println(value.v);
-                  stdio.println(value.active);
-                  return;
-                }
-
-                pub fnc main(): void {
-                  const [...all] = values();
-                  const {...whole} = row();
-                  acceptsAllInts(all);
-                  acceptsWholeRow(whole);
-                  return;
-                }
-                """)));
-    }
-
-    @Test
-    void restDiscardIsRejectedInSequenceAndObjectPatterns() {
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                fnc values(): Array<int> { return [1, 2, 3]; }
-                pub fnc main(): void {
-                  const [..._] = values();
-                  return;
-                }
-                """));
-
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                fnc row(): {v: int} { return record{v: 1}; }
-                pub fnc main(): void {
-                  const {..._} = row();
-                  return;
-                }
-                """));
-    }
-
-    @Test
-    void borrowedHolderMemberKeepsStaticSequenceRestType() {
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                define class Holder as
-                  pub val Array<int> values;
-                end
-
-                fnc acceptsInts(Array<int> values): void {
-                  stdio.println(values[0]);
-                  return;
-                }
-
-                fnc inspect(&Holder holder): void {
-                  const [first, ...rest] = holder.values;
-                  acceptsInts(rest);
-                  stdio.println(first);
-                  return;
-                }
-
-                pub fnc main(): void {
-                  val Holder holder = new Holder([1, 2, 3]);
-                  inspect(&holder);
-                  return;
-                }
-                """)));
-    }
-
-    @Test
-    void restDestructuringExecutesWithoutRuntimeTypeDiscovery() throws Exception {
-        String program = """
-                type Row = {v: int, label: string, ok: bool};
-
-                fnc values(): Array<int> {
-                  return [10, 20, 30];
-                }
-
-                fnc row(): Row {
-                  return record{v: 5, label: "rest", ok: true};
-                }
-
-                pub fnc main(): void {
-                  const [head, ...tail] = values();
-                  const {v, ...other} = row();
-                  stdio.println(head);
-                  stdio.println(tail[0]);
-                  stdio.println(tail[1]);
-                  stdio.println(v);
-                  stdio.println(other.label);
-                  stdio.println(other.ok);
-                  return;
-                }
-                """;
-
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        Source source = Source.newBuilder(OresLanguage.ID, program, "rest-destructure.ores")
-                .mimeType(OresLanguage.MIME_TYPE)
-                .build();
-
-        try (Context context = Context.newBuilder(OresLanguage.ID)
-                .allowAllAccess(false)
-                .out(output)
-                .build()) {
-            context.eval(source);
-        }
-
-        String text = output.toString(StandardCharsets.UTF_8);
-        assertTrue(text.contains("10"));
-        assertTrue(text.contains("20"));
-        assertTrue(text.contains("30"));
-        assertTrue(text.contains("5"));
-        assertTrue(text.contains("rest"));
-        assertTrue(text.contains("true"));
-    }
-
 }

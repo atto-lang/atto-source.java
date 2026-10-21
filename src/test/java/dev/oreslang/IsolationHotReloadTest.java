@@ -128,6 +128,11 @@ final class IsolationHotReloadTest {
                   markerBrand: 'marking/branding'
                 }
 
+                define class Branded as
+                  pub val 'brand' marker;
+                  pub val 'marking/branding' markerBrand;
+                end
+
                 fnc first(y structural Foo): void {
                   return;
                 }
@@ -142,7 +147,7 @@ final class IsolationHotReloadTest {
                 }
 
                 pub routine main(): void {
-                  const branded = struct{marker: 'brand', markerBrand: 'marking/branding'}{marker: "brand", markerBrand: "marking/branding"};
+                  val branded = new Branded("brand", "marking/branding");
                   first(branded);
                   second(branded);
                   third(branded);
@@ -158,10 +163,14 @@ final class IsolationHotReloadTest {
                   marker: 'brand'
                 }
 
+                define class Branded as
+                  pub val 'brand' marker;
+                end
+
                 fnc nominal(Foo y): void { return; }
 
                 pub routine main(): void {
-                  const branded = struct{marker: 'brand'}{marker: "brand"};
+                  val branded = new Branded("brand");
                   nominal(branded);
                   return;
                 }
@@ -169,8 +178,9 @@ final class IsolationHotReloadTest {
     }
 
     @Test
-    void explicitReceiverCallbacksKeepTheirReceiverAndSelfCannotBeRebound() throws Exception {
-        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+    void instanceMethodValuesRequireExplicitLambdaAndSelfCannotBeRebound() throws Exception {
+        IllegalArgumentException extracted = assertThrows(
+                IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define class Box as
                           val int value;
@@ -184,7 +194,7 @@ final class IsolationHotReloadTest {
                           val Fnc<int> callback = box.get;
                         }
                         """)));
-        assertTrue(rejected.getMessage().contains("direct-call-only"), rejected::getMessage);
+        assertTrue(extracted.getMessage().contains("direct-call-only"));
 
         String output = run("""
                 define class Box as
@@ -197,7 +207,9 @@ final class IsolationHotReloadTest {
 
                 pub routine main(): void {
                   val box = new Box(17);
-                  val Fnc<int> callback = || -> { return box.get(); };
+                  val Fnc<int> callback = || -> {
+                    return box.get();
+                  };
                   stdio.stdout.write(callback())
                 }
                 """);

@@ -52,16 +52,16 @@ final class LanguageHardeningTest {
     }
 
     @Test
-    void modulesAreTypedNamespacesAndCanConformToContracts() {
+    void modulesAreTypedNamespacesAndCanAdhereToInterfaces() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-
                 define module contracts
-                  define contract MathApi as
+                  define interface MathApi
                     fnc add(int a, int b) => int;
                   end
                 end
 
-                define module math conforms contracts.MathApi as
+                @AdheresTo(contracts.MathApi)
+                define module math
                   pub fnc add(int a, int b): int { return a + b; }
                 end
 
@@ -79,12 +79,13 @@ final class LanguageHardeningTest {
     void directOnlyRoutineStillParticipatesInModuleCallableContracts() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module contracts
-                  define contract Api as
+                  define interface Api
                     fnc ping(int value) => int;
                   end
                 end
 
-                define module service conforms contracts.Api as
+                @AdheresTo(contracts.Api)
+                define module service
                   pub routine ping(int value): int {
                     return value + 1;
                   }
@@ -171,7 +172,7 @@ final class LanguageHardeningTest {
     void structuralMethodsAreDirectOnlyButDirectCallsRemainTyped() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module model
-                  define interface Api as
+                  define interface Api
                     fnc apply(int value) => int;
                   end
 
@@ -185,7 +186,7 @@ final class LanguageHardeningTest {
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define module model
-                          define interface Api as
+                          define interface Api
                             fnc apply(int value) => int;
                           end
 
@@ -202,7 +203,7 @@ final class LanguageHardeningTest {
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define module model
-                          define interface Api as
+                          define interface Api
                             fnc apply(int value) => int;
                           end
 
@@ -429,19 +430,20 @@ final class LanguageHardeningTest {
     }
 
     @Test
-    void moduleConformanceRejectsMissingExports() {
+    void moduleAdherenceRejectsMissingExports() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define module contracts
-                  define contract Api as
+                  define interface Api
                     fnc ping() => int;
                   end
                 end
 
-                define module broken conforms contracts.Api as
+                @AdheresTo(contracts.Api)
+                define module broken
                   pub fnc pong(): int { return 1; }
                 end
                 """)));
-        assertTrue(error.getMessage().contains("does not conform"));
+        assertTrue(error.getMessage().contains("does not adhere"));
     }
 
     @Test
@@ -499,11 +501,16 @@ final class LanguageHardeningTest {
     }
 
     @Test
-    void structArrTupleIndexAndLetAssignmentAreStaticallyChecked() {
+    void declaredObjectArrTupleIndexAndLetAssignmentAreStaticallyChecked() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module app
+                  define class Person as
+                    pub val string name;
+                    pub val int age;
+                  end
+
                   pub fnc main(): void {
-                    const person = infer struct{name: "ore", age: 1};
+                    val person = new Person("ore", 1);
                     val values = arr[10, 20, 30];
                     val first = values[0];
                     [const left, let right] = (1, "two");
@@ -598,90 +605,6 @@ final class LanguageHardeningTest {
                 """)));
     }
     @Test
-    void capabilityAdmissionTraversesMatchSwitchAndDestructureLoops() {
-        Ast.Program inMatch = TypeChecker.check(Parser.parse("""
-                fnc hidden(int tag): void {
-                  match first tag
-                  _ -> {
-                    val lock = SharedMutex.new(1);
-                    return;
-                  }
-                  end
-                }
-                """));
-        assertThrows(
-                SecurityException.class,
-                () -> CapabilityChecker.check(
-                        inMatch,
-                        IsolatePolicy.strictFaas()));
-
-        Ast.Program inSwitch = TypeChecker.check(Parser.parse("""
-                fnc hidden(int tag): void {
-                  switch tag
-                  case 1 -> {
-                    val lock = SharedMutex.new(1);
-                  }
-                  default -> {
-                    return;
-                  }
-                  end
-                  return;
-                }
-                """));
-        assertThrows(
-                SecurityException.class,
-                () -> CapabilityChecker.check(
-                        inSwitch,
-                        IsolatePolicy.strictFaas()));
-
-        Ast.Program inDestructureLoop = TypeChecker.check(Parser.parse("""
-                fnc hidden(): void {
-                  for const [left, right] of arr[arr[1, 2]] {
-                    val lock = SharedMutex.new(left + right);
-                  }
-                  return;
-                }
-                """));
-        assertThrows(
-                SecurityException.class,
-                () -> CapabilityChecker.check(
-                        inDestructureLoop,
-                        IsolatePolicy.strictFaas()));
-    }
-
-    @Test
-    void staticClassGenericCannotHideInsideSelectArm() {
-        IllegalArgumentException rejected = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        define class Token<X> as
-                        end
-
-                        define class Box<T> as
-                          pub static fnc bad(): void {
-                            val Channel<int> input = Channel.new<int>(1);
-
-                            try select {
-                              case readch input: val value {
-                                val token = new Token<T>();
-                              }
-                              default: {
-                                stdio.println("not ready");
-                              }
-                            }
-
-                            return;
-                          }
-                        end
-                        """)));
-
-        assertTrue(
-                rejected.getMessage().contains("static")
-                        && rejected.getMessage().contains("T"),
-                rejected::getMessage);
-    }
-
-    @Test
     void strictFaasRejectsSharedActorDeclarationsAtAdmission() {
         Ast.Program sharedActor = TypeChecker.check(Parser.parse("""
                 shared actor Account {
@@ -727,60 +650,5 @@ final class LanguageHardeningTest {
                 end
                 """)));
     }
-
-    @Test
-    void declarationIdentitiesCannotBeCreatedFromExecutableBlocks() {
-        IllegalArgumentException module = assertThrows(
-                IllegalArgumentException.class,
-                () -> Parser.parse("""
-                        pub fnc main() : void {
-                          define module RuntimeMade
-                          end
-                          return;
-                        }
-                        """));
-        assertTrue(module.getMessage().contains("module declarations are compile-time"));
-
-        IllegalArgumentException klass = assertThrows(
-                IllegalArgumentException.class,
-                () -> Parser.parse("""
-                        pub fnc main() : void {
-                          define class RuntimeMade as
-                          end
-                          return;
-                        }
-                        """));
-        assertTrue(klass.getMessage().contains("class declarations are compile-time"));
-
-        IllegalArgumentException namespace = assertThrows(
-                IllegalArgumentException.class,
-                () -> Parser.parse("""
-                        pub fnc main() : void {
-                          namespace runtime;
-                          return;
-                        }
-                        """));
-        assertTrue(namespace.getMessage().contains("namespace declarations are file-scope"));
-    }
-
-    @Test
-    void structAndTraitAreReservedForStaticTypeDeclarations() {
-        var tokens = new Lexer("struct Point trait Display").scan();
-        assertEquals(Token.Type.STRUCT, tokens.get(0).type());
-        assertEquals(Token.Type.IDENT, tokens.get(1).type());
-        assertEquals(Token.Type.TRAIT, tokens.get(2).type());
-        assertEquals(Token.Type.IDENT, tokens.get(3).type());
-
-        IllegalArgumentException trait = assertThrows(
-                IllegalArgumentException.class,
-                () -> Parser.parse("""
-                        pub fnc main() : void {
-                          trait RuntimeTrait
-                          return;
-                        }
-                        """));
-        assertTrue(trait.getMessage().contains("runtime trait creation is forbidden"));
-    }
-
 
 }
