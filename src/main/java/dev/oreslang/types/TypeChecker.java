@@ -4287,6 +4287,11 @@ public final class TypeChecker {
      */
     private Type checkTaskBlock(Ast.TaskExpr task, Type expected, Env env,
                                 Set<String> generics, Type self) {
+        if (task.executionDomain() == Ast.TaskExpr.ExecutionDomain.GPU) {
+            throw new IllegalArgumentException(
+                    "gpu task requires verified device kernel lowering, owned device buffers "
+                    + "and asynchronous completion fences; GPU-to-CPU fallback is forbidden");
+        }
         Env child = new Env(env);
         Map<Env.Binding, Set<String>> initializedBefore = env.initializationSnapshot();
         Ast.ClassDecl previousClass = currentClassOwner;
@@ -4386,9 +4391,12 @@ public final class TypeChecker {
     private Type typeOfAgainstExpected(Ast.Expr expr, Type expected, Env env, Set<String> generics, Type self) {
         if (expr instanceof Ast.TaskExpr task
                 && expected instanceof Named named
-                && named.name().equals("Task")
+                && (named.name().equals("Task") || named.name().equals("Future"))
                 && named.arguments().size() == 1) {
-            return checkTaskBlock(task, named.arguments().getFirst(), env, generics, self);
+            Type inferred = checkTaskBlock(task, named.arguments().getFirst(), env, generics, self);
+            // Source Task<T> and Future<T> share the checked OresFuture runtime ABI.
+            // Preserve the explicit expected handle type, never coerce the payload.
+            return named.name().equals("Future") ? expected : inferred;
         }
         if (expr instanceof Ast.LambdaExpr lambda && expected instanceof Function fn) {
             validateLambdaAgainstExpected(lambda, fn, env, generics, self);
