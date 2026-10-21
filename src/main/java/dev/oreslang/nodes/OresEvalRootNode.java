@@ -6717,6 +6717,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("network") || name.name().equals("net")) return new NetworkFacade(context);
                 if (name.name().equals("http")) return new HttpFacade(context);
                 if (name.name().equals("env")) return new EnvFacade(context);
+                if (name.name().equals("crypto")) return CryptoFacade.INSTANCE;
                 if (name.name().equals("process")) return new ProcessFacade(context);
                 if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
@@ -7483,6 +7484,12 @@ public final class OresEvalRootNode extends RootNode {
                     case "get" -> (Invokable) environment::get;
                     case "has" -> (Invokable) environment::has;
                     default -> throw new IllegalArgumentException("unknown env member " + name);
+                };
+            }
+            if (receiver instanceof CryptoFacade crypto) {
+                return switch (name) {
+                    case "sha256" -> (Invokable) crypto::sha256;
+                    default -> throw new IllegalArgumentException("unknown crypto member " + name);
                 };
             }
             if (receiver instanceof StdFacade std) {
@@ -10442,6 +10449,24 @@ public final class OresEvalRootNode extends RootNode {
             return NativeIo.envHas(context, requireStringArg(args, "env.has"));
         }
     }
+    private enum CryptoFacade {
+        INSTANCE;
+
+        private Object sha256(List<Object> args) {
+            requireOne(args, "crypto.sha256");
+            String value = requireString(args.getFirst(), "crypto.sha256 value");
+            try {
+                java.security.MessageDigest digest =
+                        java.security.MessageDigest.getInstance("SHA-256");
+                byte[] encoded = digest.digest(
+                        value.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                return java.util.HexFormat.of().formatHex(encoded);
+            } catch (java.security.NoSuchAlgorithmException impossible) {
+                throw new IllegalStateException("SHA-256 is unavailable", impossible);
+            }
+        }
+    }
+
 
     private record StdioFacade(OresContext context) {
         private Object print(List<Object> args) {
