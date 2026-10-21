@@ -1990,18 +1990,20 @@ public final class ActorRuntime implements AutoCloseable {
      * this same contract to a physically separate heap/arena.
      */
     public final class ActorMemorySlice implements AutoCloseable {
-        private final ActorId owner;
+        private final ActorRef<?> owner;
         private final long limitBytes;
         private final AtomicLong usedBytes = new AtomicLong();
         private final AtomicBoolean sliceClosed = new AtomicBoolean();
         private final Set<PrivateMemoryBlock> blocks = ConcurrentHashMap.newKeySet();
 
-        private ActorMemorySlice(ActorId owner, long limitBytes) {
+        private ActorMemorySlice(ActorRef<?> owner, long limitBytes) {
             this.owner = Objects.requireNonNull(owner);
             this.limitBytes = limitBytes;
         }
 
-        public ActorId owner() { return owner; }
+        public ActorId owner() { return owner.id(); }
+        public long ownerGeneration() { return owner.generation(); }
+        private boolean ownedBy(ActorRef<?> actor) { return owner == actor; }
         public long limitBytes() { return limitBytes; }
         public long usedBytes() { return usedBytes.get(); }
         public long remainingBytes() { return Math.max(0L, limitBytes - usedBytes.get()); }
@@ -2054,18 +2056,18 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalStateException(purpose + " accounting overflow");
             }
             if (next > limitBytes) {
-                throw new IllegalStateException(purpose + " limit exceeded for " + owner
+                throw new IllegalStateException(purpose + " limit exceeded for " + owner.id() + "#" + owner.generation()
                         + ": requested=" + bytes + " used=" + current + " limit=" + limitBytes);
             }
 
-            reservePrivateRuntimeBytes(bytes, owner, purpose);
+            reservePrivateRuntimeBytes(bytes, owner.id(), purpose);
             usedBytes.set(next);
             return new MemoryReservation(this, bytes);
         }
 
         private void requireCurrentOwner() {
             ActorCell<?> cell = currentActor.get();
-            if (cell == null || !isPrivateKind(cell.kind) || !cell.ref.id().equals(owner)) {
+            if (cell == null || !isPrivateKind(cell.kind) || cell.ref != owner) {
                 throw new IllegalStateException(
                         "private actor memory slice may only be reserved by its owning actor");
             }
@@ -2076,10 +2078,12 @@ public final class ActorRuntime implements AutoCloseable {
             long remaining = usedBytes.addAndGet(-bytes);
             if (remaining < 0) {
                 usedBytes.addAndGet(bytes);
-                throw new IllegalStateException("private actor memory accounting underflow for " + owner);
+                throw new IllegalStateException(
+                        "private actor memory accounting underflow for "
+                                + owner.id() + "#" + owner.generation());
             }
             try {
-                releasePrivateRuntimeBytes(bytes, owner);
+                releasePrivateRuntimeBytes(bytes, owner.id());
             } catch (RuntimeException failure) {
                 usedBytes.addAndGet(bytes);
                 throw failure;
@@ -2092,7 +2096,7 @@ public final class ActorRuntime implements AutoCloseable {
             for (PrivateMemoryBlock block : List.copyOf(blocks)) block.invalidateFromSlice();
             blocks.clear();
             long bytes = usedBytes.getAndSet(0);
-            if (bytes != 0) releasePrivateRuntimeBytes(bytes, owner);
+            if (bytes != 0) releasePrivateRuntimeBytes(bytes, owner.id());
         }
 
         private void unregister(PrivateMemoryBlock block) {
@@ -2125,6 +2129,8 @@ public final class ActorRuntime implements AutoCloseable {
 
         public int capacity() { return capacity; }
         public ActorId owner() { return slice.owner(); }
+        public long ownerGeneration() { return slice.ownerGeneration(); }
+        private boolean ownedBy(ActorRef<?> actor) { return slice.ownedBy(actor); }
         public boolean closed() { return blockClosed.get(); }
 
         public byte readByte(int index) {
@@ -2226,6 +2232,8 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public ActorId owner() { return slice.owner(); }
+        public long ownerGeneration() { return slice.ownerGeneration(); }
+        private boolean ownedBy(ActorRef<?> actor) { return slice.ownedBy(actor); }
         public long bytes() { return bytes; }
 
         @Override
@@ -2262,8 +2270,8 @@ public final class ActorRuntime implements AutoCloseable {
                 attachedShard = Objects.requireNonNull(shard, "shard");
             }
         }
-        boolean ownedBy(ActorRuntime runtime, ActorId actor) {
-            return runtime == ActorRuntime.this && cell.ref.id().equals(actor);
+        boolean ownedBy(ActorRuntime runtime, ActorRef<?> actor) {
+            return runtime == ActorRuntime.this && cell.ref == actor;
         }
         void requireOwner() {
             if (currentActor.get() != cell) {
@@ -3152,7 +3160,7 @@ public final class ActorRuntime implements AutoCloseable {
                         ? Math.max(0L, nowCpu - cell.turnStartedCpuNanos) : 0L;
                 inheritedQuota = new UntrustedLogicalQuota(
                         ActorRuntime.this,
-                        cell.ref.id(),
+                        cell.ref,
                         cell.policy.maxWallTime().toNanos(),
                         cell.untrustedFuelRemaining,
                         cell.turnStartedWallNanos,
@@ -3161,7 +3169,7 @@ public final class ActorRuntime implements AutoCloseable {
                         ActorRuntime::currentThreadCpuNanos);
                 cell.activeUntrustedSourceQuota = inheritedQuota;
             } else if (inheritedQuota != cell.activeUntrustedSourceQuota
-                    || !inheritedQuota.ownedBy(ActorRuntime.this, cell.ref.id())) {
+                    || !inheritedQuota.ownedBy(ActorRuntime.this, cell.ref)) {
                 throw new SecurityException(
                         "untrusted source-task quota belongs to a different actor or runtime");
             }
@@ -3620,11 +3628,11 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public final class ActorHandle<M> {
         private final ActorRef<M> ref;
-        private final ActorId ownerActorId;
+        private final ActorRef<?> ownerActorRef;
 
-        private ActorHandle(ActorRef<M> ref, ActorId ownerActorId) {
+        private ActorHandle(ActorRef<M> ref, ActorRef<?> ownerActorRef) {
             this.ref = Objects.requireNonNull(ref, "ref");
-            this.ownerActorId = Objects.requireNonNull(ownerActorId, "ownerActorId");
+            this.ownerActorRef = Objects.requireNonNull(ownerActorRef, "ownerActorRef");
         }
 
         public ActorRef<M> ref() { return ref; }
@@ -3746,10 +3754,12 @@ public final class ActorRuntime implements AutoCloseable {
                     "ActorHandle belongs to a different ActorRuntime");
         }
         ActorCell<?> caller = currentActor.get();
-        if (caller == null || !caller.ref.id().equals(handle.ownerActorId)) {
+        if (caller == null || caller.ref != handle.ownerActorRef) {
             throw new SecurityException(
                     "ActorHandle lifecycle authority is bound to spawning parent "
-                            + handle.ownerActorId + "; cannot " + operation
+                            + handle.ownerActorRef.id() + "#"
+                            + handle.ownerActorRef.generation()
+                            + "; cannot " + operation
                             + " from this execution context");
         }
         ActorCell<?> target = exactActorCell(handle.ref);
@@ -5261,7 +5271,7 @@ public final class ActorRuntime implements AutoCloseable {
                 policy,
                 behaviorFactory,
                 false);
-        return new ActorHandle<>(ref, parent.ref.id());
+        return new ActorHandle<>(ref, parent.ref);
     }
 
     public <M> ActorHandle<M> spawnChildPrivate(
@@ -5492,7 +5502,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    private void validatePrivateBehaviorState(ActorId owner, Behavior<?> behavior) {
+    private void validatePrivateBehaviorState(ActorRef<?> owner, Behavior<?> behavior) {
         for (Class<?> type = behavior.getClass();
              type != null && type != Object.class;
              type = type.getSuperclass()) {
@@ -5556,7 +5566,7 @@ public final class ActorRuntime implements AutoCloseable {
                 || value instanceof Class<?>;
     }
 
-    private void validatePrivateBehaviorCapture(ActorId owner, String fieldName, Object value) {
+    private void validatePrivateBehaviorCapture(ActorRef<?> owner, String fieldName, Object value) {
         if (value == null || isScalar(value) || value instanceof Class<?>) return;
 
         if (value instanceof ActorShardColumns shard) {
@@ -5567,21 +5577,21 @@ public final class ActorRuntime implements AutoCloseable {
             return;
         }
         if (value instanceof PrivateMemoryBlock block) {
-            if (!block.owner().equals(owner)) {
+            if (!block.ownedBy(owner)) {
                 throw new SecurityException(
                         "private actor behavior captured another actor's memory block in " + fieldName);
             }
             return;
         }
         if (value instanceof ActorMemorySlice slice) {
-            if (!slice.owner().equals(owner)) {
+            if (!slice.ownedBy(owner)) {
                 throw new SecurityException(
                         "private actor behavior captured another actor's memory slice in " + fieldName);
             }
             return;
         }
         if (value instanceof MemoryReservation reservation) {
-            if (!reservation.owner().equals(owner)) {
+            if (!reservation.ownedBy(owner)) {
                 throw new SecurityException(
                         "private actor behavior captured another actor's memory reservation in " + fieldName);
             }
@@ -5595,7 +5605,7 @@ public final class ActorRuntime implements AutoCloseable {
             return;
         }
         if (value instanceof ActorContext<?> actorContext) {
-            if (!actorContext.self().id().equals(owner) || actorContext.runtime() != this) {
+            if (actorContext.self() != owner || actorContext.runtime() != this) {
                 throw new SecurityException(
                         "private actor behavior captured a foreign actor context in " + fieldName);
             }
@@ -6877,7 +6887,7 @@ public final class ActorRuntime implements AutoCloseable {
      */
     static final class UntrustedLogicalQuota {
         private final ActorRuntime ownerRuntime;
-        private final ActorId ownerActor;
+        private final ActorRef<?> ownerActor;
         private final long wallBudgetNanos;
         private final long startedNanos;
         private final LongSupplier wallClock;
@@ -6901,7 +6911,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         UntrustedLogicalQuota(
                 ActorRuntime ownerRuntime,
-                ActorId ownerActor,
+                ActorRef<?> ownerActor,
                 long wallBudgetNanos,
                 long fuelRemaining,
                 long startedNanos,
@@ -6921,8 +6931,8 @@ public final class ActorRuntime implements AutoCloseable {
             this.cpuClock = Objects.requireNonNull(cpuClock, "cpuClock");
         }
 
-        boolean ownedBy(ActorRuntime runtime, ActorId actor) {
-            return ownerRuntime == runtime && Objects.equals(ownerActor, actor);
+        boolean ownedBy(ActorRuntime runtime, ActorRef<?> actor) {
+            return ownerRuntime == runtime && ownerActor == actor;
         }
 
         /** Remaining cohort wall time, including elapsed suspended time. */
@@ -6936,11 +6946,10 @@ public final class ActorRuntime implements AutoCloseable {
 
         synchronized void enter() {
             if (ownerRuntime != null) {
-                ActorExecutionContext context = CURRENT_ACTOR_EXECUTION.get();
-                if (context == null || context.runtime() != ownerRuntime
-                        || !context.actorId().equals(ownerActor)) {
+                ActorCell<?> cell = ownerRuntime.currentActor.get();
+                if (cell == null || cell.ref != ownerActor) {
                     throw new SecurityException(
-                            "untrusted source-task quota entered outside its actor");
+                            "untrusted source-task quota entered outside its actor incarnation");
                 }
             }
             if (segmentActive) {
@@ -8579,7 +8588,7 @@ public final class ActorRuntime implements AutoCloseable {
             ref.outputStream = outputStream;
             actorOutputStreams.add(outputStream);
             this.memorySlice = isPrivateKind(kind)
-                    ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
+                    ? new ActorMemorySlice(ref, policy.maxHeapBytes())
                     : null;
         }
 
@@ -9531,7 +9540,7 @@ public final class ActorRuntime implements AutoCloseable {
                                 behaviorFactory.create(context),
                                 "actor behaviorFactory returned null");
                         if (isPrivateKind(kind) && !trustedFactory) {
-                            validatePrivateBehaviorState(ref.id(), created);
+                            validatePrivateBehaviorState(ref, created);
                         }
                         behavior = created;
                     }
@@ -9640,7 +9649,7 @@ public final class ActorRuntime implements AutoCloseable {
                             // catches behavior fields that were null/immutable
                             // at construction but later retain a mutable JVM
                             // object across turns.
-                            validatePrivateBehaviorState(ref.id(), behavior);
+                            validatePrivateBehaviorState(ref, behavior);
                         }
                     }
                     // A source receive that suspended is not processed until

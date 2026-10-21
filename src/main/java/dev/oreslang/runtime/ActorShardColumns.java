@@ -73,7 +73,7 @@ public final class ActorShardColumns implements AutoCloseable {
         }
     }
 
-    boolean ownedBy(ActorRuntime runtime, ActorRuntime.ActorId actor) {
+    boolean ownedBy(ActorRuntime runtime, ActorRuntime.ActorRef<?> actor) {
         return reservation.ownedBy(runtime, actor);
     }
     boolean isPrivateBacked() { return reservation.privateBacking(); }
