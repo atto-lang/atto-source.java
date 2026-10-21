@@ -49,6 +49,14 @@ public final class OwnershipChecker {
     private boolean currentAsyncGenerator;
     /** Every active try records outer roots transferred anywhere inside its body. */
     private final List<Set<VarState>> tryMoveObservers = new ArrayList<>();
+    /**
+     * Exact Task capture admissions are staged during checking and published
+     * only after the complete ownership pass succeeds. This prevents a Task
+     * from retaining executable authority when a later statement/declaration
+     * makes the enclosing program invalid.
+     */
+    private final IdentityHashMap<Ast.TaskExpr, Set<String>> pendingTaskCaptures =
+            new IdentityHashMap<>();
 
     private OwnershipChecker(Ast.Program program) {
         this(program, Map.of());
@@ -71,6 +79,7 @@ public final class OwnershipChecker {
             Ast.Program program, Map<Ast.BindingStmt, String> validatedShortAliases) {
         OwnershipChecker checker = new OwnershipChecker(program, validatedShortAliases);
         checker.validate(program);
+        checker.publishTaskAdmissions();
         return program;
     }
 
@@ -105,7 +114,15 @@ public final class OwnershipChecker {
             checker.classes.put(name, declaration);
         }
         checker.validate(program);
+        checker.publishTaskAdmissions();
         return program;
+    }
+
+    private void publishTaskAdmissions() {
+        for (Map.Entry<Ast.TaskExpr, Set<String>> entry
+                : pendingTaskCaptures.entrySet()) {
+            Ast.CheckedTaskCaptures.record(entry.getKey(), entry.getValue());
+        }
     }
 
     private void index(Ast.Program program) {
@@ -1318,6 +1335,14 @@ public final class OwnershipChecker {
                 loopDepth = savedLoopDepth;
                 discardingSelectReturn = savedDiscard;
                 taskScope.close();
+            }
+            Set<String> admittedNames = Set.copyOf(captured.values.keySet());
+            Set<String> previousAdmission =
+                    pendingTaskCaptures.putIfAbsent(task, admittedNames);
+            if (previousAdmission != null
+                    && !previousAdmission.equals(admittedNames)) {
+                throw error(
+                        "same Task expression produced inconsistent capture admission");
             }
             Ast.TypeRef result = new Ast.TypeRef(
                     "Future", List.of(Ast.TypeRef.inferred()), false);
