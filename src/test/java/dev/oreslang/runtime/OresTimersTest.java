@@ -376,4 +376,19 @@ final class OresTimersTest {
         }
     }
 
+    @Test
+    void globalCallbackReservationIsReturnedAfterCancellation() throws Exception {
+        try (OresTimers timers = new OresTimers();
+             OresScheduler scheduler = new OresScheduler(1)) {
+            int before = OresTimers.availableGlobalCallbackSlots();
+            OresTimers.TimerHandle handle = timers.setTimerNanos(
+                    TimeUnit.HOURS.toNanos(1), scheduler, () -> { });
+            assertEquals(before - 1, OresTimers.availableGlobalCallbackSlots());
+            assertTrue(handle.cancel());
+            assertThrows(CancellationException.class,
+                    () -> handle.getDone().get(5, TimeUnit.SECONDS));
+            assertEquals(before, OresTimers.availableGlobalCallbackSlots());
+        }
+    }
+
 }
