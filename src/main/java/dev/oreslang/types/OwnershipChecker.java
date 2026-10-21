@@ -1574,6 +1574,21 @@ public final class OwnershipChecker {
 
             if (member.receiver() instanceof Ast.NameExpr receiverName
                     && receiverName.name().equals("self")
+                    && member.member().equals("handle_state")) {
+                VarState actorSelf = scope.lookup("self");
+                if (actorSelf == null || !isActorConfinedBorrow(actorSelf)) {
+                    throw error("self.handle_state is only available on an actor-owned self borrow");
+                }
+                if (call.arguments().size() != 1
+                        || !(call.arguments().getFirst() instanceof Ast.LambdaExpr lambda)) {
+                    throw error("self.handle_state expects exactly one inline lexical lambda");
+                }
+                checkActorStateLoanLambda(lambda, scope);
+                return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+            }
+
+            if (member.receiver() instanceof Ast.NameExpr receiverName
+                    && receiverName.name().equals("self")
                     && member.member().equals("endWithCleanup")) {
                 VarState actorSelf = scope.lookup("self");
                 if (actorSelf != null) {
@@ -2522,6 +2537,31 @@ public final class OwnershipChecker {
         String name = source == null ? "<unknown>" : source.debugName;
         throw error("cannot return borrow rooted in '" + name
                 + "'; returned borrows must originate from an incoming borrowed parameter/receiver so they cannot outlive their owner");
+    }
+
+    private void checkActorStateLoanLambda(Ast.LambdaExpr lambda, Scope outer) {
+        if (lambda.nonLexical()) {
+            throw error("self.handle_state callback must be lexical");
+        }
+        if (lambda.parameters().size() != 1) {
+            throw error("self.handle_state callback requires exactly one state parameter");
+        }
+        Ast.Param original = lambda.parameters().getFirst();
+        Ast.Param loanParam = new Ast.Param(
+                Ast.TypeRef.borrowed(Ast.TypeRef.inferred(), true),
+                original.name(),
+                false,
+                false);
+        Ast.LambdaExpr checked = new Ast.LambdaExpr(
+                List.of(loanParam),
+                lambda.expressionBody(),
+                lambda.blockBody(),
+                false);
+        ValueInfo value = checkLambda(checked, outer, null);
+        if (value.kind != ValueKind.MOVE_ONLY) {
+            throw new IllegalStateException(
+                    "actor state callback ownership invariant violated");
+        }
     }
 
     private ValueInfo checkLambda(Ast.LambdaExpr lambda, Scope outer, String recursiveBinding) {
