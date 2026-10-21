@@ -323,4 +323,28 @@ final class OresTimersTest {
         }
     }
 
+    @Test
+    void genericSchedulerCallbackCannotBypassActorMailbox() throws Exception {
+        try (OresTimers timers = new OresTimers();
+             OresScheduler scheduler = new OresScheduler(1);
+             ActorRuntime actors = new ActorRuntime()) {
+            CountDownLatch delivered = new CountDownLatch(1);
+            AtomicReference<Throwable> rejected = new AtomicReference<>();
+            var actor = actors.<String>spawnShared(() -> (message, context) -> {
+                try {
+                    timers.setTimerNanos(0, scheduler, () -> { });
+                } catch (Throwable failure) {
+                    rejected.set(failure);
+                } finally {
+                    delivered.countDown();
+                    context.self().stop();
+                }
+            });
+            actor.send("attempt");
+            assertTrue(delivered.await(5, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, rejected.get());
+            assertEquals(0, timers.activeCallbackCount());
+        }
+    }
+
 }
