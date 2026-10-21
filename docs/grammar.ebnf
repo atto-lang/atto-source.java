@@ -19,6 +19,7 @@ top_level_item  = annotated_module_decl
                 | actor_decl
                 | actor_callable_decl
                 | callable_decl
+                | kernel_decl
                 | class_decl
                 | interface_decl
                 | type_decl
@@ -31,6 +32,7 @@ module_member   = contract_decl
                 | actor_decl
                 | actor_callable_decl
                 | callable_decl
+                | kernel_decl
                 | class_decl
                 | interface_decl
                 | type_decl
@@ -44,6 +46,12 @@ callable_decl   = { annotation } visibility { callable_modifier } callable_kind 
                   ( "(" [ param_list ] ")" return_spec block
                   | "=" "|" [ param_list ] "|" "->" [ type_ref ] block ) ;
 callable_kind   = "fnc" | "routine" ;
+
+kernel_decl     = "define" visibility "kernel" IDENT "as" { kernel_entry } "end" ;
+kernel_entry    = { annotation } visibility "fnc" callable_name [ generic_params ]
+                  "(" [ param_list ] ")" return_spec block ;
+(* HAT v1 semantic admission further requires exactly one entry named main,
+   immutable int parameters, int return, and one scalar return expression. *)
 
 actor_callable_decl
                 = { annotation } visibility { "async" | "nlex" | "structural" | "shared" } "actor" "fnc" callable_name [ generic_params ]
