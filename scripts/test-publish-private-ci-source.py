@@ -46,7 +46,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.source_tree_mock = self.source_tree_guard.start()
         self.addCleanup(self.source_tree_guard.stop)
 
-    def incident_api(self, states=None, repository_id=None):
+    def incident_api(self, states=None, repository_id=None, issue_ids=None):
         states = states or {
             22: ("closed", "completed"),
             77: ("closed", "completed"),
@@ -55,6 +55,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             pub.BLOCKING_INCIDENT_REPOSITORY_ID
             if repository_id is None else repository_id
         )
+        issue_ids = dict(pub.BLOCKING_INCIDENT_IDS if issue_ids is None else issue_ids)
         def api(route, method="GET", payload=None):
             if route == "repos/" + pub.BLOCKING_INCIDENT_REPO:
                 return {
@@ -70,11 +71,20 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             if route.startswith(prefix):
                 number = int(route[len(prefix):])
                 state, reason = states[number]
+                repository_url = (
+                    "https://api.github.com/repos/"
+                    + pub.BLOCKING_INCIDENT_REPO
+                )
                 return {
+                    "id": issue_ids[number],
                     "number": number,
-                    "repository_url": (
-                        "https://api.github.com/repos/"
+                    "repository_url": repository_url,
+                    "url": repository_url + "/issues/" + str(number),
+                    "html_url": (
+                        "https://github.com/"
                         + pub.BLOCKING_INCIDENT_REPO
+                        + "/issues/"
+                        + str(number)
                     ),
                     "state": state,
                     "state_reason": reason,
@@ -102,6 +112,16 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         }
         with patch.object(pub, "gh_api", side_effect=self.incident_api(states)):
             with self.assertRaisesRegex(pub.Denied, "#22 remains unresolved"):
+                pub.require_resolved_blocking_incidents()
+
+    def test_blocking_p0_incidents_reject_issue_identity_drift(self):
+        ids = dict(pub.BLOCKING_INCIDENT_IDS)
+        ids[22] += 1
+        with patch.object(
+            pub, "gh_api",
+            side_effect=self.incident_api(issue_ids=ids),
+        ):
+            with self.assertRaisesRegex(pub.Denied, "incident identity"):
                 pub.require_resolved_blocking_incidents()
 
     def test_blocking_p0_incidents_reject_repository_identity_drift(self):
