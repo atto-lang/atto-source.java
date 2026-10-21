@@ -162,7 +162,7 @@ final class ActorNativeArenaTest {
     }
 
     @Test
-    void sameLengthFieldTextUpdatesReuseNativeAllocation() {
+    void fieldTextUpdatesReuseNativeCapacityAcrossShrinkAndRegrow() {
         AtomicLong charged = new AtomicLong();
         try (ActorNativeArena arena = arena(40, charged)) {
             Map<String, Object> fields = arena.fields(List.of("value"), new Object());
@@ -178,6 +178,20 @@ final class ActorNativeArenaTest {
             assertEquals(new BigInteger("1234"), fields.get("value"));
             assertEquals(allocated, arena.allocatedBytes(),
                     "same-size native text should be reusable across supported tagged types");
+
+            fields.put("value", "x");
+            assertEquals("x", fields.get("value"));
+            fields.put("value", "four");
+            assertEquals("four", fields.get("value"));
+            assertEquals(allocated, arena.allocatedBytes(),
+                    "shrink + regrow within original text capacity must stay allocation-free");
+
+            fields.put("value", new BigInteger("12"));
+            fields.put("value", new BigInteger("9999"));
+            assertEquals(new BigInteger("9999"), fields.get("value"));
+            assertEquals(allocated, arena.allocatedBytes(),
+                    "text capacity reuse must survive supported tag changes");
+
             assertThrows(IllegalStateException.class, () -> fields.put("value", "larger"));
             assertEquals(new BigInteger("1234"), fields.get("value"),
                     "failed growth must preserve the old field");
