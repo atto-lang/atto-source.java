@@ -64,7 +64,7 @@ final class NativeCoreLibraryTest {
 
 
     @Test
-    void everyPackagedStdModuleIsPureOreslangAndHasOnlyStdDependencies() throws Exception {
+    void everyPackagedModuleIsPureOreslangAndUsesOnlyBundledDependencies() throws Exception {
         Path root = Path.of("stdlib");
         assertTrue(Files.isDirectory(root), "packaged stdlib source root must exist");
 
@@ -84,7 +84,8 @@ final class NativeCoreLibraryTest {
             for (Path module : modules) {
                 String source = Files.readString(module);
                 String relative = root.relativize(module).toString().replace('\\', '/');
-                String importPath = "std/" + relative.substring(0, relative.length() - ".ores".length());
+                String importPath =
+                        CoreLibrarySources.importPathForPackagedSource(relative);
                 MixedSourceUnit unit = MixedSourceUnit.parse(
                         CoreLibrarySources.unitId(importPath),
                         module.getFileName().toString(),
@@ -98,8 +99,16 @@ final class NativeCoreLibraryTest {
                 var program = dev.oreslang.parser.Parser.parse(unit.oresSource());
                 for (var imported : program.imports()) {
                     assertTrue(
-                            CoreLibrarySources.isCoreImport(imported.path()),
-                            () -> relative + " depends on non-std module " + imported.path());
+                            CoreLibrarySources.isBundledImport(imported.path()),
+                            () -> relative + " depends on non-bundled module "
+                                    + imported.path());
+                    if (CoreLibrarySources.isCoreImport(importPath)) {
+                        assertFalse(
+                                CoreLibrarySources.isAllocImport(imported.path()),
+                                () -> relative
+                                        + " leaks allocator-backed alloc/* into std/*: "
+                                        + imported.path());
+                    }
                 }
             }
         }
@@ -157,11 +166,62 @@ final class NativeCoreLibraryTest {
                     """);
             IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                     () -> LinkedProgramRunner.validate(entry));
-            assertTrue(failure.getMessage().contains("unknown Oreslang core-library module"));
+            assertTrue(
+                    failure.getMessage().contains(
+                            "unknown Oreslang bundled-library module"));
         } finally {
             Files.deleteIfExists(entry);
             Files.deleteIfExists(std.resolve("phantom.ores"));
             Files.deleteIfExists(std);
+            Files.deleteIfExists(project);
+        }
+    }
+
+    @Test
+    void allocJsonIsReservedBundledModuleAndCannotBeShadowed() throws Exception {
+        assertTrue(CoreLibrarySources.isAllocImport("alloc/json"));
+        assertTrue(CoreLibrarySources.isBundledImport("alloc/json"));
+        assertFalse(CoreLibrarySources.isCoreImport("alloc/json"));
+        assertEquals("@alloc/json.ores", CoreLibrarySources.unitId("alloc/json"));
+        assertEquals("json.ores", CoreLibrarySources.fileName("alloc/json"));
+        assertEquals(
+                "alloc/json",
+                CoreLibrarySources.importPathForPackagedSource(
+                        "alloc/json.ores"));
+        assertTrue(
+                CoreLibrarySources.source("alloc/json")
+                        .contains("define module json"));
+
+        Path project = Files.createTempDirectory("ores-alloc-json-shadow-");
+        Path alloc = Files.createDirectories(project.resolve("alloc"));
+        Path entry = project.resolve("main.ores");
+        try {
+            Files.writeString(alloc.resolve("json.ores"), """
+                    define module json as
+                      pub fnc attacker(): int { return 999; }
+                    end
+                    """);
+            Files.writeString(entry, """
+                    import module json from "alloc/json";
+                    pub routine main(): void { return; }
+                    """);
+
+            var build = LinkedProgramRunner.validate(entry);
+            assertTrue(
+                    build.units().containsKey("@alloc/json.ores"),
+                    "allocator-tier JSON must resolve to its packaged unit");
+            assertFalse(
+                    build.units().containsKey(
+                            alloc.resolve("json.ores")
+                                    .toAbsolutePath()
+                                    .normalize()
+                                    .toString()
+                                    .replace('\\', '/')),
+                    "application source roots must never shadow alloc/json");
+        } finally {
+            Files.deleteIfExists(entry);
+            Files.deleteIfExists(alloc.resolve("json.ores"));
+            Files.deleteIfExists(alloc);
             Files.deleteIfExists(project);
         }
     }
@@ -214,6 +274,15 @@ final class NativeCoreLibraryTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> CoreLibrarySources.unitId("std/"));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> CoreLibrarySources.unitId("alloc/../secret"));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> CoreLibrarySources.unitId("alloc//json"));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> CoreLibrarySources.unitId("alloc/"));
 
         for (String invalid : List.of(
                 "std/../secret", "std/./core", "std/a/../core",
@@ -221,7 +290,13 @@ final class NativeCoreLibraryTest {
                 "std/core?x", "std/%2e%2e/core", "std/one//two",
                 "std/core" + (char) 0,
                 "std/" + "verylongsegment".repeat(400),
-                "std/" + "nested/".repeat(33) + "core")) {
+                "std/" + "nested/".repeat(33) + "core",
+                "alloc/../secret", "alloc/./json", "alloc/a/../json",
+                "alloc//json", "alloc/", "alloc/\\\\json",
+                "alloc/json?x", "alloc/%2e%2e/json", "alloc/one//two",
+                "alloc/json" + (char) 0,
+                "alloc/" + "verylongsegment".repeat(400),
+                "alloc/" + "nested/".repeat(33) + "json")) {
             assertThrows(IllegalArgumentException.class,
                     () -> CoreLibrarySources.unitId(invalid), invalid);
         }
@@ -233,6 +308,13 @@ final class NativeCoreLibraryTest {
         assertEquals(CoreLibrarySources.source("std/core"),
                 CoreLibrarySources.source("std/core.ores"));
         assertTrue(CoreLibrarySources.source("std/testing").contains("define module testing"));
+        assertTrue(CoreLibrarySources.source("alloc/json").contains("define module json"));
+        assertEquals(
+                CoreLibrarySources.unitId("alloc/json"),
+                CoreLibrarySources.unitId("alloc/json.ores"));
+        assertEquals(
+                CoreLibrarySources.source("alloc/json"),
+                CoreLibrarySources.source("alloc/json.ores"));
         assertFalse(CoreLibrarySources.packagedSourcePaths().contains("phantom.ores"));
     }
 }
