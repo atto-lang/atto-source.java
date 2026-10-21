@@ -22,13 +22,16 @@ fn forbidden_workflow_line(line: &str) -> bool {
      "pytest ", "poetry run "].iter().any(|s| l.contains(s))
 }
 
+fn inspect_commands(path: &str) -> bool {
+    let p = path.to_ascii_lowercase();
+    (p.starts_with(".github/workflows/") && (p.ends_with(".yaml") || p.ends_with(".yml")))
+        || p == "makefile" || p.ends_with("/makefile") || p.ends_with(".sh")
+}
+
 fn violation(path: &str, body: &str) -> Vec<String> {
     let mut messages = Vec::new();
     if forbidden_path(path) { messages.push("Python file or dependency manifest".to_string()); }
-    let p = path.to_ascii_lowercase();
-    let workflow = (p.starts_with(".github/workflows/") && (p.ends_with(".yaml") || p.ends_with(".yml")))
-        || p == "makefile" || p.ends_with("/makefile") || p.ends_with(".sh");
-    if workflow {
+    if inspect_commands(path) {
         for (index, line) in body.lines().enumerate() {
             if forbidden_workflow_line(line) {
                 messages.push(format!("Python invocation at line {}", index + 1));
@@ -48,9 +51,35 @@ fn main() {
     let mut found = 0;
     for raw in output.stdout.split(|byte| *byte == 0).filter(|v| !v.is_empty()) {
         let name = String::from_utf8_lossy(raw);
+        if !forbidden_path(&name) && !inspect_commands(&name) { continue; }
         let file = Path::new(&root).join(name.as_ref());
-        if !file.is_file() { continue; }
-        let body = fs::read_to_string(&file).unwrap_or_default();
+        // A broken/symlinked tracked policy surface must not disappear from
+        // coverage or be read through an uncontrolled external file target.
+        let metadata = match fs::symlink_metadata(&file) {
+            Ok(metadata) => metadata,
+            Err(err) => {
+                eprintln!("{}: cannot inspect tracked file: {err}", name);
+                found += 1;
+                continue;
+            }
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            eprintln!("{}: tracked policy surface is not a regular file", name);
+            found += 1;
+            continue;
+        }
+        let body = if inspect_commands(&name) {
+            match fs::read_to_string(&file) {
+                Ok(body) => body,
+                Err(err) => {
+                    eprintln!("{}: cannot decode or read policy surface: {err}", name);
+                    found += 1;
+                    continue;
+                }
+            }
+        } else {
+            String::new()
+        };
         for problem in violation(&name, &body) {
             eprintln!("{}: {}", name, problem);
             found += 1;
