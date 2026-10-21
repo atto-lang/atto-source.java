@@ -274,6 +274,34 @@ final class CommitAwareMapOwnershipTest {
     }
 
     @Test
+    void liveMutexGuardDisablesTerminalCatchRecovery() {
+        String source = """
+                define class Payload as
+                end
+
+                pub fnc main(): void {
+                  val Map<string, Payload> values =
+                      new Map<string, Payload>();
+                  val Payload item = new Payload();
+                  val mutex = Mutex.new(1);
+
+                  try {
+                    val guard = mutex.lock();
+                    values.put("x", item);
+                  } catch (err) {
+                    val Payload invalid = item;
+                  }
+
+                  return;
+                }
+                """;
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse(source)));
+    }
+
+    @Test
     void candidateIsStillMovedAfterTryBecauseCommitMayHaveSucceeded() {
         String source = """
                 define class Payload as
