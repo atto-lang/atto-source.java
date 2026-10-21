@@ -45,6 +45,43 @@ final class StreamOwnershipProofTest {
     }
 
     @Test
+    void nestedTransportHandlesCannotForgeStreamSendProof() {
+        ThreadSafetyTraits.NominalProof trustedTransport =
+                new ThreadSafetyTraits.NominalProof() {
+                    @Override
+                    public boolean has(
+                            Types.Named type, ThreadSafetyTraits.Trait trait) {
+                        return false;
+                    }
+
+                    @Override
+                    public boolean trustedIntrinsic(Types.Named type) {
+                        return java.util.Set.of("Stream", "Channel", "Option")
+                                .contains(type.name());
+                    }
+                };
+        Types.Type scalar = Types.Primitive.INT;
+        Types.Named innerStream = new Types.Named("Stream", List.of(scalar));
+        Types.Named innerChannel = new Types.Named("Channel", List.of(scalar));
+        Types.Type[] unsafe = {
+                innerStream,
+                innerChannel,
+                new Types.Named("Option", List.of(innerStream)),
+                new Types.ListType(innerChannel),
+                new Types.Named("Option",
+                        List.of(new Types.ListType(innerStream)))
+        };
+        for (Types.Type payload : unsafe) {
+            Types.Named outer = new Types.Named("Stream", List.of(payload));
+            assertFalse(ThreadSafetyTraits.isOwnedSend(outer, trustedTransport),
+                    "nested transport escaped Stream data-only policy: " + payload);
+        }
+        Types.Named dataOnly = new Types.Named("Stream", List.of(
+                new Types.Named("Option", List.of(scalar))));
+        assertTrue(ThreadSafetyTraits.isOwnedSend(dataOnly, trustedTransport));
+    }
+
+    @Test
     void runtimeStreamDoesNotLoseCommittedBuffersWhenClosed() {
         OresStream<Integer> stream = new OresStream<>(1);
         assertTrue(stream.channel().tryWrite(42));
