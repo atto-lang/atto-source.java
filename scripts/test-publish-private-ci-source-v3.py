@@ -426,6 +426,81 @@ class PrivateCiV3Test(unittest.TestCase):
         with self.assertRaisesRegex(v3.Denied, "duplicate JSON key"):
             v3.parse_contract(raw, "trusted/ci", 1, "ci/test-plans/x.json")
 
+    def test_strict_json_rejects_nonfinite_values(self):
+        with self.assertRaisesRegex(v3.Denied, "nonfinite"):
+            v3.strict_json_loads('{"x":NaN}', "fixture")
+        with self.assertRaisesRegex(v3.Denied, "nonfinite"):
+            v3.strict_json_loads('{"x":1e9999}', "fixture")
+
+    def test_safe_policy_path_requires_canonical_ascii_route(self):
+        self.assertEqual(
+            v3.safe_policy_path(
+                "ci/test-plans/java-pr1482.json",
+                "ci/test-plans/",
+                ".json",
+            ),
+            "ci/test-plans/java-pr1482.json",
+        )
+        for value in (
+            "ci/test-plans/../x.json",
+            "ci/test-plans/x%2fescape.json",
+            "ci/test-plans/x.json?ref=other",
+            "ci/test-plans//x.json",
+        ):
+            with self.subTest(value=value), self.assertRaises(v3.Denied):
+                v3.safe_policy_path(value, "ci/test-plans/", ".json")
+
+    def test_published_git_objects_are_read_back_exactly(self):
+        receipt = "4" * 40
+        root = "5" * 40
+        source = "6" * 40
+        commit = "7" * 40
+
+        def api(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/commits/" + commit:
+                return {
+                    "sha": commit,
+                    "tree": {"sha": root},
+                    "parents": [{"sha": BASE}],
+                }
+            if route == "repos/trusted/ci/git/trees/" + root + "?recursive=1":
+                return {
+                    "sha": root,
+                    "truncated": False,
+                    "tree": [
+                        {
+                            "path": v3.legacy.PREFIX,
+                            "mode": "040000",
+                            "type": "tree",
+                            "sha": source,
+                        },
+                        {
+                            "path": v3.RECEIPT_PATH,
+                            "mode": "100644",
+                            "type": "blob",
+                            "sha": receipt,
+                        },
+                    ],
+                }
+            raise AssertionError(route)
+
+        with patch.object(v3.legacy, "gh_api", side_effect=api):
+            v3.verify_published_root_and_commit(
+                "trusted/ci", BASE, source, receipt, root, commit
+            )
+
+    def test_handoff_requires_both_refs_absent(self):
+        with patch.object(v3, "live_ref_sha", side_effect=[None, None]):
+            v3.require_handoff_refs_absent(
+                "trusted/ci", "ci/oreslang-tree", "ci/authorized-" + "a" * 40, 42
+            )
+        with patch.object(v3, "live_ref_sha", return_value="b" * 40):
+            with self.assertRaisesRegex(v3.Denied, "already exists"):
+                v3.require_handoff_refs_absent(
+                    "trusted/ci", "ci/oreslang-tree",
+                    "ci/authorized-" + "a" * 40, 42
+                )
+
     def test_checked_destination_rejects_source_bearing_reviewed_base(self):
         carrier = contract()
         def api(route, method="GET", payload=None):
