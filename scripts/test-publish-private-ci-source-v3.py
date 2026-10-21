@@ -1252,7 +1252,9 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
             ):
-                with self.assertRaisesRegex(v3.Denied, "dispatcher authorization ref"):
+                with self.assertRaisesRegex(
+                    v3.Denied, "carrier did not confirm exact ref creation"
+                ):
                     v3.publish(
                         "trusted/ci", source, "4" * 40, 1482,
                         "ci/test-plans/java-pr1482.json", root,
@@ -1276,8 +1278,8 @@ class PrivateCiV3Test(unittest.TestCase):
     def test_handoff_unexpected_failure_or_interrupt_always_attempts_ref_cleanup(self):
         """No orphaned source-bearing ref on malformed response or interruption."""
         scenarios = (
-            ("payload_response", AttributeError, False),
-            ("authorization_response", AttributeError, False),
+            ("payload_response", v3.Denied, False),
+            ("authorization_response", v3.Denied, False),
             ("authorization_interrupt", KeyboardInterrupt, False),
             ("authorization_cleanup_failure", v3.Denied, True),
         )
