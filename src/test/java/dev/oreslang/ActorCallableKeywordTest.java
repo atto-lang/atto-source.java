@@ -151,9 +151,12 @@ final class ActorCallableKeywordTest {
                 actor fnc invalid(&int value) => void { return; }
                 """)));
 
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                actor fnc valid(SharedMutex<int> value) => void { return; }
-                """)));
+        IllegalArgumentException sharedMutexFailure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        actor fnc invalid(SharedMutex<int> value) => void { return; }
+                        """)));
+        assertTrue(sharedMutexFailure.getMessage().contains("writable SharedMutex"));
 
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 isoactor fnc valid(int value) => int { return value; }
