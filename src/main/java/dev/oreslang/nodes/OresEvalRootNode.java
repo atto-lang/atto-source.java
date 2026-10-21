@@ -10006,6 +10006,15 @@ public final class OresEvalRootNode extends RootNode {
             this.owner = owner;
             this.klass = klass;
             this.fields = fields;
+            // The runtime must issue provenance for this source-object facade;
+            // merely implementing NativeValue and claiming an offset is unsafe.
+            if (fields instanceof ActorNativeArena.NativeValue nativeFields) {
+                ActorNativeArena arena = nativeFields.nativeArena();
+                if (arena == null) {
+                    throw new SecurityException("source object has no native arena authority");
+                }
+                arena.registerNativeFacade(this, nativeFields);
+            }
         }
         @Override public Iterable<?> sharedStateChildren(){return fields.values();}
         @Override public ActorNativeArena nativeArena() {
