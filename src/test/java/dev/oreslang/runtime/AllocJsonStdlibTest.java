@@ -248,6 +248,74 @@ final class AllocJsonStdlibTest {
     }
 
     @Test
+    void rejectedIndexedJsonWriteRestoresMoveOnlyCandidateInCatch() throws Exception {
+        Path entry = temp.resolve("indexed-rollback.ores");
+        Files.writeString(entry, """
+                import class JsonValue from "alloc/json";
+                import class Json from "alloc/json";
+
+                pub routine main(): void {
+                  val Map<string, JsonValue> values =
+                      new Map<string, JsonValue>();
+                  val JsonValue item = Json.of("kept");
+
+                  try {
+                    values["\\uD800"] = item;
+                  } catch (err) {
+                    values["restored"] = item;
+                  }
+
+                  stdio.println(values.size());
+                  return;
+                }
+                """);
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                entry,
+                IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(),
+                out,
+                new ByteArrayOutputStream());
+
+        assertEquals("1", out.toString(StandardCharsets.UTF_8).trim());
+    }
+
+    @Test
+    void rejectedNamedPutRestoresMoveOnlyCandidateInCatch() throws Exception {
+        Path entry = temp.resolve("named-put-rollback.ores");
+        Files.writeString(entry, """
+                import class JsonValue from "alloc/json";
+                import class Json from "alloc/json";
+
+                pub routine main(): void {
+                  val Map<string, JsonValue> values =
+                      new Map<string, JsonValue>();
+                  val JsonValue item = Json.of("kept");
+
+                  try {
+                    values.put("\\uD800", item);
+                  } catch (err) {
+                    values.put("restored", item);
+                  }
+
+                  stdio.println(values.size());
+                  return;
+                }
+                """);
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                entry,
+                IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(),
+                out,
+                new ByteArrayOutputStream());
+
+        assertEquals("1", out.toString(StandardCharsets.UTF_8).trim());
+    }
+
+    @Test
     void jsonFactoryAliasDoesNotAcquireCompilerAuthority() throws Exception {
         Path entry = temp.resolve("factory-alias.ores");
         Files.writeString(entry, """
