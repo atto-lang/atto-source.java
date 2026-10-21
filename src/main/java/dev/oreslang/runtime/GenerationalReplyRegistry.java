@@ -175,9 +175,10 @@ public final class GenerationalReplyRegistry implements AutoCloseable {
             boundActors.put(actor, endpoint);
             liveEndpoints.put(endpoint, Boolean.TRUE);
         }
-        // Subscribe after releasing registry monitor. Registration may invoke
-        // synchronously if the actor finalized between mint and subscription.
-        actor.done().whenCompleteRuntime((ignored, failure) -> retireIfLive(endpoint));
+        // ActorRuntime holds the actor lifecycle monitor while attaching a
+        // stop-boundary revoker. Do not register a done() callback here:
+        // finalizeStopLocked settles done under that monitor, and synchronous
+        // Future callbacks could otherwise reenter foreign actor locks.
         return endpoint;
     }
 
