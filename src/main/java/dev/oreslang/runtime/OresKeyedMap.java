@@ -91,7 +91,7 @@ public final class OresKeyedMap<K, V> {
      *
      * <p>The raw failure object is intentionally not exposed as data. After a
      * rejected candidate has been restored, compiler/runtime code may call
-     * {@link #rethrowIfRejected()} to preserve the original admission error.</p>
+     * {@link #rethrowAfterRecovery()} to preserve the original admission error.</p>
      */
     public static final class PutAttempt<V> {
         private Lookup<V> previous;
