@@ -1166,10 +1166,11 @@ public final class OwnershipChecker {
                 // later source use of the old binding a compile-time error.
                 ValueInfo base = checkExpr(binary.left(), scope, true);
                 if (base.type == null
-                        || !base.type.isReadonlyRecordType()
+                        || (!base.type.isReadonlyRecordType()
+                            && !base.type.isStructType())
                         || base.type.isBorrow()) {
                     throw error(
-                            "record 'with' requires an owned readonly structural record");
+                            "'with' requires an owned readonly record or plain struct");
                 }
                 if (!(binary.right() instanceof Ast.ObjectExpr updatesExpr)
                         || !updatesExpr.plainRecord()) {
@@ -1183,7 +1184,7 @@ public final class OwnershipChecker {
                             "record 'with' update payload must be a readonly record");
                 }
                 LinkedHashMap<String, Ast.TypeRef> members =
-                        new LinkedHashMap<>(base.type.recordMembers());
+                        new LinkedHashMap<>(base.type.aggregateMembers());
                 // Static aggregate types canonicalize member order; row
                 // identity is name/type based. Runtime source-order retention
                 // is handled independently by ReadonlyRecordValue.
@@ -1192,7 +1193,9 @@ public final class OwnershipChecker {
                     members.put(field.getKey(), field.getValue());
                 }
                 return new ValueInfo(
-                        Ast.TypeRef.readonlyRecordType(members),
+                        base.type.isStructType()
+                                ? Ast.TypeRef.structType(members)
+                                : Ast.TypeRef.readonlyRecordType(members),
                         ValueKind.MOVE_ONLY,
                         null);
             }
