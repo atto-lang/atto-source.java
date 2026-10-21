@@ -25,6 +25,9 @@ final class OresJsonValueTest {
                 ((OresJsonValue.NumberValue) value).value());
 
         assertThrows(IllegalArgumentException.class,
+                () -> OresJsonValue.of(1.25d),
+                "finite binary floating input must not bypass the exact-decimal source gate");
+        assertThrows(IllegalArgumentException.class,
                 () -> OresJsonValue.of(Double.NaN));
         assertThrows(IllegalArgumentException.class,
                 () -> OresJsonValue.of(Double.POSITIVE_INFINITY));
