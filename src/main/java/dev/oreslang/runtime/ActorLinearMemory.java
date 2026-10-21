@@ -101,8 +101,10 @@ public final class ActorLinearMemory {
     }
 
     /**
-     * Translate a guest-linear byte offset to the arena's canonical
-     * actor-relative logical address. The result is not a host pointer.
+     * Translate one committed guest-linear byte to its arena identity address.
+     * This value is for provenance only, not linear-memory pointer arithmetic.
+     * Pages added by separate grow calls can be separated by other arena
+     * allocations, so callers must retain and bounds-check the guest offset.
      */
     long actorOffset(long offset) {
         synchronized (arena) {
