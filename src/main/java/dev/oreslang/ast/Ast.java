@@ -246,6 +246,17 @@ public final class Ast {
     }
 
     public record Param(TypeRef type, String name, boolean structural, boolean mutable) {
+        public Param {
+            java.util.Objects.requireNonNull(type, "parameter type");
+            // Source spelling cannot change ownership: anonymous inline struct,
+            // record and brace-only shapes are always structural readonly loans,
+            // including ASTs synthesized by macros, imports or test frontends.
+            structural = structural || type.isClosedAggregateType();
+            if (structural && mutable) {
+                throw new IllegalArgumentException(
+                        "structural parameters are read-only borrowed views and cannot be 'mut'");
+            }
+        }
         public Param(TypeRef type, String name) { this(type, name, false, false); }
         public Param(TypeRef type, String name, boolean structural) { this(type, name, structural, false); }
     }
