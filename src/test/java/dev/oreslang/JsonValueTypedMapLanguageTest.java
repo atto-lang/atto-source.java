@@ -7,9 +7,10 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
- * Source-level JsonValue is intentionally unavailable until the alloc/json
- * module and resolver expose it. The runtime descriptor landing must not make
- * an allocator-backed library type globally visible as a core builtin.
+ * JsonValue remains non-ambient. The canonical alloc/json import may expose it
+ * only as the reified value domain of Map<String, JsonValue> in this staged
+ * slice. Standalone JsonValue declarations and owned JsonValue reinsertion
+ * remain gated until rollback-safe ownership lowering lands.
  */
 final class JsonValueTypedMapLanguageTest {
     @Test
