@@ -567,6 +567,7 @@ public class TaskScopeTest {
     @Test void racingNonSuccessChildrenRetainExactlyOneStableOutcome() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(2)) {
             for (int i = 0; i < 128; i++) {
+                final int round = i;
                 TaskScope scope = scheduler.newTaskScope();
                 CountDownLatch entered = new CountDownLatch(2);
                 CountDownLatch release = new CountDownLatch(1);
@@ -574,7 +575,7 @@ public class TaskScopeTest {
                 TaskHandle<Integer> failing = scope.startTask(resume -> {
                     entered.countDown();
                     awaitUninterruptibly(release);
-                    throw new IllegalStateException("failure-" + i);
+                    throw new IllegalStateException("failure-" + round);
                 });
                 TaskHandle<Integer> cancelled = scope.startTask(resume -> {
                     entered.countDown();
@@ -584,7 +585,7 @@ public class TaskScopeTest {
                 });
 
                 assertTrue(entered.await(3, TimeUnit.SECONDS));
-                assertTrue(cancelled.cancel("cancel-" + i));
+                assertTrue(cancelled.cancel("cancel-" + round));
                 scope.seal();
                 release.countDown();
                 assertNull(scope.getDone().get(3, TimeUnit.SECONDS));
