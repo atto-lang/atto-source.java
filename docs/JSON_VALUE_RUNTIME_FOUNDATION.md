@@ -108,8 +108,12 @@ The runtime/evaluator half of commit-aware ownership transfer is now present.
   recover the rejected candidate before rethrowing admission failure, and
   consume the previous-value token after commit.
 
-The ownership checker now models the conditional exceptional edge for the
-narrow source shapes we can prove today:
+The ownership checker now models the conditional exceptional edge only for
+the compiler-owned `JsonValue` Map value descriptor, and only for the narrow
+source shapes we can prove today. A same-named user class or unrelated future
+move-only Map domain does not inherit rollback semantics.
+
+The admitted source shapes are:
 
 - terminal direct indexed assignment `m[key] = value;`;
 - terminal direct named `m.put(key, value);`;
