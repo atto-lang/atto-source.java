@@ -86,6 +86,75 @@ final class ActorNativeArenaTest {
     }
 
     @Test
+    void sameLengthFieldTextUpdatesReuseNativeAllocation() {
+        AtomicLong charged = new AtomicLong();
+        try (ActorNativeArena arena = arena(4096, charged)) {
+            Map<String, Object> fields = arena.fields(List.of("value"), new Object());
+            fields.put("value", "alfa");
+            long allocated = arena.allocatedBytes();
+            for (int i = 0; i < 1000; i++) {
+                fields.put("value", (i & 1) == 0 ? "beta" : "zeta");
+                assertEquals((i & 1) == 0 ? "beta" : "zeta", fields.get("value"));
+            }
+            assertEquals(allocated, arena.allocatedBytes(),
+                    "same-size text mutation must not consume arena lifetime budget");
+            fields.put("value", new BigInteger("1234"));
+            assertEquals(new BigInteger("1234"), fields.get("value"));
+            assertEquals(allocated, arena.allocatedBytes(),
+                    "same-size native text should be reusable across supported tagged types");
+            assertThrows(IllegalStateException.class, () -> fields.put("value", "larger"));
+            assertEquals(new BigInteger("1234"), fields.get("value"),
+                    "failed growth must preserve the old field");
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
+    void readOnlyNativeLeasesFreezeWritesUntilReleaseAndRevokeAtActorExit() throws Exception {
+        AtomicLong charged = new AtomicLong();
+        Thread owner = Thread.currentThread();
+        ActorNativeArena arena = new ActorNativeArena(64, () -> {
+            if (Thread.currentThread() != owner) {
+                throw new SecurityException("foreign native region access");
+            }
+        }, bytes -> {
+            charged.addAndGet(bytes);
+            return () -> charged.addAndGet(-bytes);
+        });
+        var region = arena.region(64);
+        region.writeLong(8, 77L);
+        var first = region.leaseReadOnly(8, 16);
+        var second = region.leaseReadOnly(8, 8);
+        assertEquals(77L, first.readLong(0));
+        assertEquals(77L, second.readLong(0));
+        assertThrows(IndexOutOfBoundsException.class, () -> first.readLong(9));
+        assertThrows(IndexOutOfBoundsException.class, () -> region.leaseReadOnly(60, 8));
+        assertThrows(IllegalStateException.class, () -> region.writeLong(8, 100L));
+        assertThrows(IllegalStateException.class, () -> region.writeDouble(8, 1.0));
+        assertThrows(IllegalStateException.class, region::close);
+        AtomicReference<Throwable> foreign = new AtomicReference<>();
+        Thread other = new Thread(() -> {
+            try { first.readLong(0); }
+            catch (Throwable failure) { foreign.set(failure); }
+        });
+        other.start();
+        other.join();
+        assertInstanceOf(SecurityException.class, foreign.get());
+        first.close();
+        first.close();
+        assertThrows(IllegalStateException.class, () -> first.readLong(0));
+        assertThrows(IllegalStateException.class, () -> region.writeLong(8, 100L));
+        second.close();
+        region.writeLong(8, 100L);
+        assertEquals(100L, region.readLong(8));
+        var outstanding = region.leaseReadOnly(8, 8);
+        arena.close();
+        assertThrows(IllegalStateException.class, () -> outstanding.readLong(0));
+        outstanding.close();
+        assertEquals(0, charged.get());
+    }
+
+    @Test
     void everyActorKindHasDistinctStorageAndFreesItAfterTheLastTurn() throws Exception {
         for (var kind : ActorRuntime.ActorKind.values()) {
             try (ActorRuntime runtime = new ActorRuntime()) {
