@@ -190,6 +190,55 @@ final class OresJsonValueTest {
     }
 
     @Test
+    void graphStabilityGuardExcludesJsonRemovalUntilBoundaryCompletes() throws Exception {
+        OresKeyedMap<String, OresJsonValue> fields =
+                OresJsonValue.objectMap();
+        fields.put("x", OresJsonValue.of(1L));
+
+        CountDownLatch guardEntered = new CountDownLatch(1);
+        CountDownLatch releaseGuard = new CountDownLatch(1);
+        CountDownLatch removalAttempted = new CountDownLatch(1);
+        var workers = Executors.newFixedThreadPool(2);
+        try {
+            var holder = workers.submit(() ->
+                    OresKeyedMap.withJsonGraphLock(() -> {
+                        guardEntered.countDown();
+                        try {
+                            if (!releaseGuard.await(10, TimeUnit.SECONDS)) {
+                                throw new IllegalStateException("test guard release timed out");
+                            }
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new IllegalStateException(interrupted);
+                        }
+                        return null;
+                    }));
+
+            assertTrue(guardEntered.await(10, TimeUnit.SECONDS));
+            var remover = workers.submit(() -> {
+                removalAttempted.countDown();
+                return fields.take("x");
+            });
+            assertTrue(removalAttempted.await(10, TimeUnit.SECONDS));
+
+            assertThrows(
+                    java.util.concurrent.TimeoutException.class,
+                    () -> remover.get(100, TimeUnit.MILLISECONDS),
+                    "JSON removal must wait for the graph-stable boundary");
+
+            releaseGuard.countDown();
+            holder.get(10, TimeUnit.SECONDS);
+            OresKeyedMap.Lookup<OresJsonValue> removed =
+                    remover.get(10, TimeUnit.SECONDS);
+            assertTrue(removed.present());
+            assertTrue(fields.isEmpty());
+        } finally {
+            releaseGuard.countDown();
+            workers.shutdownNow();
+        }
+    }
+
+    @Test
     void completeBoundaryValidationRejectsDepthGrownThroughNestedAliasMutation() {
         OresKeyedMap<String, OresJsonValue> rootFields =
                 OresJsonValue.objectMap();
