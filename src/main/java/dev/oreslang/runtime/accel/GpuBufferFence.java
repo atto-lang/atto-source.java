@@ -41,6 +41,7 @@ public final class GpuBufferFence implements AutoCloseable {
         Status status = Status.IDLE;
         boolean backendQuiescent = true;
         boolean paired; // must use paired terminal transitions
+        boolean enqueued; // paired reservation has physical provider submission
         long sequence;
         Ticket activeTicket;
         State(Identity identity, long bytes) {
@@ -141,13 +142,79 @@ public final class GpuBufferFence implements AutoCloseable {
                 a.activeTicket = at;
                 b.activeTicket = bt;
                 a.paired = b.paired = true;
-                a.backendQuiescent = b.backendQuiescent = false;
+                // A fence claim is a host-side reservation, not evidence that
+                // the provider enqueued anything. Physical backend state is
+                // still quiescent until markPairEnqueued is called.
+                a.enqueued = b.enqueued = false;
+                a.backendQuiescent = b.backendQuiescent = true;
                 a.status = b.status = Status.IN_FLIGHT;
                 return pair;
             }
         }
     }
 
+
+    /**
+     * Provider calls this only after both physical allocation handles and the
+     * exact native event have been durably submitted. A reservation that never
+     * reached the device must use abortPairBeforeEnqueue instead.
+     */
+    static void markPairEnqueued(GpuBufferFence input, GpuBufferFence output,
+                                 PairTickets pair) {
+        requireDistinctPair(input, output, pair);
+        State a = input.state, b = output.state;
+        State first = a.rank < b.rank ? a : b, second = first == a ? b : a;
+        synchronized (first) {
+            synchronized (second) {
+                input.active();
+                output.active();
+                if (a.status != Status.IN_FLIGHT || b.status != Status.IN_FLIGHT
+                        || !a.paired || !b.paired || a.enqueued || b.enqueued
+                        || !a.backendQuiescent || !b.backendQuiescent
+                        || a.activeTicket != pair.inputTicket()
+                        || b.activeTicket != pair.outputTicket()
+                        || !a.identity.equals(pair.input())
+                        || !b.identity.equals(pair.output())) {
+                    throw new IllegalStateException(
+                            "stale or already-enqueued GPU pair reservation");
+                }
+                a.enqueued = b.enqueued = true;
+                a.backendQuiescent = b.backendQuiescent = false;
+            }
+        }
+    }
+
+    /**
+     * Fail a paired reservation before any physical command was submitted.
+     * Ticket sequences are intentionally not rewound: all issued tickets stay
+     * permanently stale after abort and cannot alias a future submission.
+     */
+    static void abortPairBeforeEnqueue(GpuBufferFence input, GpuBufferFence output,
+                                       PairTickets pair) {
+        requireDistinctPair(input, output, pair);
+        State a = input.state, b = output.state;
+        State first = a.rank < b.rank ? a : b, second = first == a ? b : a;
+        synchronized (first) {
+            synchronized (second) {
+                input.active();
+                output.active();
+                if (a.status != Status.IN_FLIGHT || b.status != Status.IN_FLIGHT
+                        || !a.paired || !b.paired || a.enqueued || b.enqueued
+                        || !a.backendQuiescent || !b.backendQuiescent
+                        || a.activeTicket != pair.inputTicket()
+                        || b.activeTicket != pair.outputTicket()
+                        || !a.identity.equals(pair.input())
+                        || !b.identity.equals(pair.output())) {
+                    throw new IllegalStateException(
+                            "GPU pair cannot abort after enqueue or with stale tickets");
+                }
+                a.status = b.status = Status.IDLE;
+                a.activeTicket = b.activeTicket = null;
+                a.paired = b.paired = false;
+                a.enqueued = b.enqueued = false;
+            }
+        }
+    }
 
     /**
      * Trusted-provider terminal transition for ONE two-buffer submission.
@@ -164,7 +231,8 @@ public final class GpuBufferFence implements AutoCloseable {
                 input.active();
                 output.active();
                 if (a.status != Status.IN_FLIGHT || b.status != Status.IN_FLIGHT
-                        || !a.paired || !b.paired
+                        || !a.paired || !b.paired || !a.enqueued || !b.enqueued
+                        || a.backendQuiescent || b.backendQuiescent
                         || a.activeTicket != pair.inputTicket()
                         || b.activeTicket != pair.outputTicket()
                         || !a.identity.equals(pair.input())
@@ -174,6 +242,7 @@ public final class GpuBufferFence implements AutoCloseable {
                 a.backendQuiescent = b.backendQuiescent = true;
                 a.activeTicket = b.activeTicket = null;
                 a.paired = b.paired = false;
+                a.enqueued = b.enqueued = false;
             }
         }
     }
@@ -192,7 +261,8 @@ public final class GpuBufferFence implements AutoCloseable {
                 input.active();
                 output.active();
                 if (a.status != Status.IN_FLIGHT || b.status != Status.IN_FLIGHT
-                        || !a.paired || !b.paired
+                        || !a.paired || !b.paired || !a.enqueued || !b.enqueued
+                        || a.backendQuiescent || b.backendQuiescent
                         || a.activeTicket != pair.inputTicket()
                         || b.activeTicket != pair.outputTicket()
                         || !a.identity.equals(pair.input())
@@ -215,7 +285,7 @@ public final class GpuBufferFence implements AutoCloseable {
                 output.active();
                 if (a.status != Status.POISONED || b.status != Status.POISONED
                         || a.backendQuiescent || b.backendQuiescent
-                        || !a.paired || !b.paired
+                        || !a.paired || !b.paired || !a.enqueued || !b.enqueued
                         || a.activeTicket != pair.inputTicket()
                         || b.activeTicket != pair.outputTicket()
                         || !a.identity.equals(pair.input())
@@ -224,6 +294,7 @@ public final class GpuBufferFence implements AutoCloseable {
                 a.backendQuiescent = b.backendQuiescent = true;
                 a.activeTicket = b.activeTicket = null;
                 a.paired = b.paired = false;
+                a.enqueued = b.enqueued = false;
             }
         }
     }
