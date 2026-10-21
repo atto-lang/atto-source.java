@@ -6,7 +6,6 @@ import dev.oreslang.types.ScopedTaskReadAuthority;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Runtime bridge for the compiler-proven structured immutable Task READ gate.
@@ -143,15 +142,6 @@ public final class ScopedTaskReadRuntime {
         return Integer.valueOf(WRITE_HELD).equals(ACCESS.get(key(allocation)));
     }
 
-    static boolean poisonedForTesting(
-            ScopedTaskReadAuthority.AllocationIdentity allocation) {
-        return Integer.valueOf(POISONED).equals(ACCESS.get(key(allocation)));
-    }
-
-    static void corruptLedgerEntryForTesting(
-            ScopedTaskReadAuthority.AllocationIdentity allocation) {
-        ACCESS.remove(key(allocation));
-    }
 
     private static AllocationKey key(
             ScopedTaskReadAuthority.AllocationIdentity allocation) {
@@ -204,13 +194,16 @@ public final class ScopedTaskReadRuntime {
                 throw new IllegalStateException(
                         "scoped Task WRITE lease released more than once");
             }
-            ACCESS.compute(key, (ignored, state) -> {
+            Integer after = ACCESS.compute(key, (ignored, state) -> {
                 if (state == null || state != WRITE_HELD) {
-                    throw new IllegalStateException(
-                            "scoped Task WRITE ledger entry missing/corrupt at release");
+                    return POISONED;
                 }
                 return null;
             });
+            if (Integer.valueOf(POISONED).equals(after)) {
+                throw new IllegalStateException(
+                        "scoped Task WRITE ledger entry missing/corrupt at release");
+            }
         }
     }
 
@@ -235,21 +228,16 @@ public final class ScopedTaskReadRuntime {
                 throw new IllegalStateException(
                         "scoped Task READ lease retired more than once at " + edge);
             }
-            try {
-                ACCESS.compute(key, (ignored, counter) -> {
-                    if (counter == null || counter <= 0) {
-                        throw new IllegalStateException(
-                                "scoped Task READ ledger entry missing/corrupt at " + edge);
-                    }
-                    int remaining = counter - 1;
-                    return remaining == 0 ? null : remaining;
-                });
-            } catch (RuntimeException | Error failure) {
-                // Retirement failure must never make a missing/corrupt ledger
-                // look writable. Preserve a sticky poison until the owning
-                // runtime tears down the allocation/domain.
-                ACCESS.put(key, POISONED);
-                throw failure;
+            Integer after = ACCESS.compute(key, (ignored, counter) -> {
+                if (counter == null || counter <= 0) {
+                    return POISONED;
+                }
+                int remaining = counter - 1;
+                return remaining == 0 ? null : remaining;
+            });
+            if (Integer.valueOf(POISONED).equals(after)) {
+                throw new IllegalStateException(
+                        "scoped Task READ ledger entry missing/corrupt at " + edge);
             }
         }
     }
