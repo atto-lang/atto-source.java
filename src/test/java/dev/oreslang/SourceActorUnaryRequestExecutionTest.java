@@ -22,8 +22,8 @@ final class SourceActorUnaryRequestExecutionTest {
                 end
 
                 define actor Client as
-                  receive(ActorMail<String> mail): void {
-                    val server = spawn PingServer();
+                  receive(ActorMail<ActorRef<PingServer>> mail): void {
+                    val server = mail.value;
                     val answer = server.request("ping");
                     val response = await answer;
                     self.send(response);
@@ -33,9 +33,11 @@ final class SourceActorUnaryRequestExecutionTest {
                 end
 
                 pub async routine main(): void {
+                  val server = spawn PingServer();
                   val client = spawn Client();
+                  await server.get_ready();
                   await client.get_ready();
-                  client.send("start");
+                  client.send(server);
                   val result = (await client.outputs.next()).value.unwrap();
                   stdio.stdout.write(result.value);
                   await client.get_done();
@@ -52,16 +54,17 @@ final class SourceActorUnaryRequestExecutionTest {
                   run(String request): String { return "pong"; }
                 end
                 define actor Client as
-                  receive(ActorMail<String> mail): void {
-                    val server = spawn PingServer();
+                  receive(ActorMail<ActorRef<PingServer>> mail): void {
+                    val server = mail.value;
                     val invalid = server.request(42);
                     self.end();
                     return;
                   }
                 end
                 pub async routine main(): void {
+                  val s = spawn PingServer();
                   val c = spawn Client();
-                  c.send("go");
+                  c.send(s);
                   await c.get_done();
                   return;
                 }
