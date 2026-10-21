@@ -20,6 +20,7 @@ ROOT_TREE = "b" * 40
 COMMIT = "c" * 40
 BASE = "d" * 40
 WORKFLOW = "e" * 40
+CODEOWNERS_BLOB = "7" * 40
 PLAN_BLOB = "f" * 40
 PROTECTED = "1" * 40
 POLICY = b"p" * 32
@@ -50,6 +51,8 @@ def contract():
         "base_sha": BASE,
         "workflow_path": ".github/workflows/oreslang-exact-tree-carrier.yml",
         "workflow_blob_sha": WORKFLOW,
+        "codeowners_path": ".github/CODEOWNERS",
+        "codeowners_blob_sha": CODEOWNERS_BLOB,
         "test_plan_path": "ci/test-plans/java-pr1482.json",
         "test_plan_blob_sha": PLAN_BLOB,
     }
@@ -156,6 +159,8 @@ class PrivateCiV3Test(unittest.TestCase):
                         "base_sha": BASE,
                         "workflow_path": ".github/workflows/oreslang-exact-tree-carrier.yml",
                         "workflow_blob_sha": WORKFLOW,
+                        "codeowners_path": ".github/CODEOWNERS",
+                        "codeowners_blob_sha": CODEOWNERS_BLOB,
                         "test_plans": {
                             "ci/test-plans/java-pr1482.json": {
                                 "blob_sha": PLAN_BLOB,
@@ -172,6 +177,8 @@ class PrivateCiV3Test(unittest.TestCase):
         self.assertEqual(got["repository_id"], 42)
         self.assertEqual(got["base_sha"], BASE)
         self.assertEqual(got["workflow_blob_sha"], WORKFLOW)
+        self.assertEqual(got["codeowners_path"], ".github/CODEOWNERS")
+        self.assertEqual(got["codeowners_blob_sha"], CODEOWNERS_BLOB)
         self.assertEqual(got["test_plan_blob_sha"], PLAN_BLOB)
         with self.assertRaisesRegex(v3.Denied, "not authorized"):
             v3.parse_contract(
@@ -184,6 +191,8 @@ class PrivateCiV3Test(unittest.TestCase):
             '"repository_id":42,"base_sha":"' + BASE + '",'
             '"workflow_path":".github/workflows/x.yml",'
             '"workflow_blob_sha":"' + WORKFLOW + '",'
+            '"codeowners_path":".github/CODEOWNERS",'
+            '"codeowners_blob_sha":"' + CODEOWNERS_BLOB + '",'
             '"test_plans":{}}}}'
         ).encode()
         with self.assertRaisesRegex(v3.Denied, "duplicate JSON key"):
@@ -196,6 +205,12 @@ class PrivateCiV3Test(unittest.TestCase):
                 return protected_carrier_branch()
             if route == "repos/trusted/ci/branches/main/protection":
                 return protected_carrier_settings()
+            if route == "repos/trusted/ci/contents/.github/CODEOWNERS?ref=" + BASE:
+                return {
+                    "path": ".github/CODEOWNERS",
+                    "type": "file",
+                    "sha": CODEOWNERS_BLOB,
+                }
             if route == "repos/trusted/ci/git/ref/heads/main":
                 return {"object": {"sha": BASE}}
             if route == "repos/trusted/ci/git/commits/" + BASE:
@@ -228,6 +243,41 @@ class PrivateCiV3Test(unittest.TestCase):
             },
         ), patch.object(v3.legacy, "gh_api", side_effect=api):
             with self.assertRaisesRegex(v3.Denied, "not source-free"):
+                v3.checked_destination("trusted/ci", carrier)
+
+    def test_checked_destination_rejects_codeowners_blob_mismatch(self):
+        carrier = contract()
+        def api(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/branches/main":
+                return protected_carrier_branch()
+            if route == "repos/trusted/ci/branches/main/protection":
+                return protected_carrier_settings()
+            if route == "repos/trusted/ci/contents/.github/CODEOWNERS?ref=" + BASE:
+                return {
+                    "path": ".github/CODEOWNERS",
+                    "type": "file",
+                    "sha": "8" * 40,
+                }
+            raise AssertionError(route)
+
+        with (
+            patch.object(
+                v3.legacy,
+                "checked_repo",
+                return_value={
+                    "id": carrier["repository_id"],
+                    "private": True,
+                    "visibility": "private",
+                    "archived": False,
+                    "disabled": False,
+                    "fork": False,
+                    "default_branch": "main",
+                },
+            ),
+            patch.object(v3.legacy, "gh_api", side_effect=api),
+        ):
+            with self.assertRaisesRegex(
+                    v3.Denied, "CODEOWNERS differs from protected contract"):
                 v3.checked_destination("trusted/ci", carrier)
 
     def test_checked_destination_rejects_unprotected_carrier_main(self):
