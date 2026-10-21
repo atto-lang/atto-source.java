@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -40,11 +41,16 @@ final class ActorArenaRef32Test {
             throws Exception {
         AtomicReference<Throwable> failure = new AtomicReference<>();
         AtomicReference<ActorRuntime.PrivateMemoryBlock> retained = new AtomicReference<>();
+        CountDownLatch verified = new CountDownLatch(1);
         try (ActorRuntime runtime = new ActorRuntime()) {
             var actor = runtime.<Integer>spawnPrivate(context -> {
                 var block = context.privateMemory().orElseThrow().allocatePrivateBytes(24);
                 retained.set(block);
                 return (message, turn) -> {
+                    if (message == 0) {
+                        turn.self().stop();
+                        return;
+                    }
                     try {
                         int ref0 = ActorArenaRef32.at(block, 0);
                         int ref16 = ActorArenaRef32.at(block, 16);
@@ -69,18 +75,25 @@ final class ActorArenaRef32Test {
                     } catch (Throwable ex) {
                         failure.set(ex);
                     } finally {
-                        turn.self().stop();
+                        verified.countDown();
                     }
                 };
             });
             actor.send(41);
-            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(verified.await(5, TimeUnit.SECONDS));
             assertNull(failure.get(), "owner-checked compressed-region roundtrip");
-            assertEquals(0L, runtime.privateMemoryBytes());
+            // The region is still live; host code outside the actor may not
+            // use either a valid encoded word or issue a new local reference.
             assertThrows(IllegalStateException.class,
                     () -> ActorArenaRef32.readInt(retained.get(), 1));
             assertThrows(IllegalStateException.class,
                     () -> ActorArenaRef32.at(retained.get(), 0));
+            actor.send(0);
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0L, runtime.privateMemoryBytes());
+            // A stale block remains revoked even after actor finalization.
+            assertThrows(IllegalStateException.class,
+                    () -> ActorArenaRef32.readInt(retained.get(), 1));
         }
     }
 }
