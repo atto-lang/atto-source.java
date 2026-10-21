@@ -86,6 +86,71 @@ final class AsyncBoundaryHostCarrierTest {
     }
 
     @Test
+    void diagnosticRenderingKeepsHostCollectionsOpaqueWithoutCallbacks() {
+        AtomicInteger callbacks = new AtomicInteger();
+
+        final class HostileList extends ArrayList<Object> {
+            @Override public int size() {
+                callbacks.incrementAndGet();
+                throw new AssertionError("host List.size invoked");
+            }
+            @Override public java.util.Iterator<Object> iterator() {
+                callbacks.incrementAndGet();
+                throw new AssertionError("host List.iterator invoked");
+            }
+            @Override public String toString() {
+                callbacks.incrementAndGet();
+                throw new AssertionError("host List.toString invoked");
+            }
+        }
+
+        final class HostileMap extends LinkedHashMap<Object, Object> {
+            @Override public int size() {
+                callbacks.incrementAndGet();
+                throw new AssertionError("host Map.size invoked");
+            }
+            @Override public Set<Map.Entry<Object, Object>> entrySet() {
+                callbacks.incrementAndGet();
+                throw new AssertionError("host Map.entrySet invoked");
+            }
+            @Override public String toString() {
+                callbacks.incrementAndGet();
+                throw new AssertionError("host Map.toString invoked");
+            }
+        }
+
+        HostileList list = new HostileList();
+        list.add("x");
+        HostileMap map = new HostileMap();
+        map.put("k", "v");
+
+        String listRendered = OresEvalRootNode.CycleSafeDisplay.render(list);
+        String mapRendered = OresEvalRootNode.CycleSafeDisplay.render(map);
+
+        assertTrue(listRendered.startsWith("<opaque-host-collection:"), listRendered);
+        assertTrue(mapRendered.startsWith("<opaque-host-collection:"), mapRendered);
+        assertEquals(0, callbacks.get());
+    }
+
+    @Test
+    void trustedTraversalCarrierPredicateRejectsHostSubclassesBeforeUse() {
+        final class HostileList extends ArrayList<Object> { }
+        final class HostileSet extends LinkedHashSet<Object> { }
+        final class HostileMap extends LinkedHashMap<Object, Object> { }
+
+        assertFalse(OresEvalRootNode.isTrustedTraversalCollectionCarrier(new HostileList()));
+        assertFalse(OresEvalRootNode.isTrustedTraversalCollectionCarrier(new HostileSet()));
+        assertFalse(OresEvalRootNode.isTrustedTraversalCollectionCarrier(new HostileMap()));
+
+        assertTrue(OresEvalRootNode.isTrustedTraversalCollectionCarrier(
+                new ArrayList<>(List.of(1, 2))));
+        assertTrue(OresEvalRootNode.isTrustedTraversalCollectionCarrier(
+                new LinkedHashSet<>(List.of(1, 2))));
+        assertTrue(OresEvalRootNode.isTrustedTraversalCollectionCarrier(
+                new LinkedHashMap<>(Map.of("x", 1))));
+    }
+
+    @Test
     void subclassedBigIntegerIsNotAnAsyncScalar() {
         final class HostileBigInteger extends BigInteger {
             HostileBigInteger() {
