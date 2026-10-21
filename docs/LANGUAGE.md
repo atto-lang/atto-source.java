@@ -151,18 +151,23 @@ fnc log_once() -> void
   const int marker = 1
 end
 
-// Optional explicit body boundary; same AST/semantics as the form above.
+// Optional explicit body boundaries; both have the same AST/semantics.
 fnc log_once_explicit() -> void as
+  const int marker = 1
+end
+
+fnc log_once_colon_boundary() -> void ::
   const int marker = 1
 end
 ```
 
 The end-delimited form never infers its return type: `-> ReturnType` is
 mandatory. Without `as`, the first body token must begin on a later source
-line. An optional semantics-free separator `as` is recognized only when it is
-on the same physical source line as the completed return type; when present it
-also permits compact/minified same-line bodies, for example
-`fnc identity(int x) -> int as return x; end`. The separator is deliberately
+line. Optional semantics-free separators `as` and `::` are recognized only when they
+are on the same physical source line as the completed return type; when present
+they also permit compact/minified same-line bodies, for example
+`fnc identity(int x) -> int as return x; end` or
+`fnc identity(int x) -> int :: return x; end`. The separator is deliberately
 `as`, not `do`, so body statements such as `do select { ... }` and
 `do match ...` remain ordinary executable syntax with no header ambiguity.
 Non-`void` callables
@@ -170,7 +175,7 @@ still require an explicit return on every reachable normal completion path;
 `void` may fall through the closing `end`.
 
 Because the return type is parsed completely before the optional separator,
-higher-order returns remain unambiguous: `fnc callback() -> () => void as ... end`
+higher-order returns remain unambiguous: `fnc callback() -> () => void :: ... end`
 means a named function whose return type is `() => void`.
 
 A semicolon after the return type is **not** a body separator. In declaration
