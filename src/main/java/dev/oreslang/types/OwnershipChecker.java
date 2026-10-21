@@ -2205,6 +2205,16 @@ public final class OwnershipChecker {
                 }
                 return new ValueInfo(jsonValue, ValueKind.MOVE_ONLY, null);
             }
+            case "stringify" -> {
+                if (call.arguments().size() != 1) {
+                    throw error("Json.stringify expects exactly one argument");
+                }
+                // Synchronous compiler intrinsic: this is a scoped read, not a
+                // transfer. TypeChecker proves JsonValue or Map<String, JsonValue>.
+                checkExpr(call.arguments().getFirst(), scope, false);
+                return new ValueInfo(
+                        Ast.TypeRef.simple("String"), ValueKind.COPY, null);
+            }
             case "null" -> throw error("Json.null is a value, not a function");
             default -> throw error(
                     "unknown compiler-owned Json factory '" + member.member() + "'");
