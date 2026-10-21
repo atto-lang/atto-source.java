@@ -1,5 +1,6 @@
 package dev.oreslang.runtime;
 
+import dev.oreslang.compiler.OresCompiler;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
@@ -45,11 +46,35 @@ final class StrictNonblockingStdlibIoTest {
                 text);
     }
 
+    private static void assertCompilerRejected(String program) {
+        Exception failure = assertThrows(Exception.class, () -> OresCompiler.parseAndTypeCheck(program));
+        String text = failureText(failure);
+        assertTrue(
+                text.contains("unknown strict stdlib member")
+                        || text.contains("unknown")
+                        || text.contains("function"),
+                text);
+    }
+
+    private static void assertCompilerAccepts(String program) {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+    }
+
     @Test
-    void synchronousFilesystemCannotReachLegacyHostIo() throws Exception {
-        assertStrictlyUnsupported("""
+    void bareSynchronousFilesystemNameIsCompilerRejected() {
+        assertCompilerRejected("""
                 pub routine main(): void {
                   fs.read_text("definitely-not-read");
+                  return;
+                }
+                """);
+    }
+
+    @Test
+    void blockingSuffixIsNotAdmittedUntilContinuationLoweringExists() {
+        assertCompilerRejected("""
+                pub routine main(): void {
+                  fs.read_text_blocking("definitely-not-read");
                   return;
                 }
                 """);
@@ -96,18 +121,14 @@ final class StrictNonblockingStdlibIoTest {
     }
 
     @Test
-    void stdoutCannotReachPrintWriter() throws Exception {
-        assertStrictlyUnsupported("""
+    void bareStdoutAndStdinNamesAreCompilerRejected() {
+        assertCompilerRejected("""
                 pub routine main(): void {
                   stdio.stdout.write("must-not-be-written");
                   return;
                 }
                 """);
-    }
-
-    @Test
-    void stdinCannotReachBufferedReader() throws Exception {
-        assertStrictlyUnsupported("""
+        assertCompilerRejected("""
                 pub routine main(): void {
                   stdio.stdin.read_line();
                   return;
@@ -116,10 +137,35 @@ final class StrictNonblockingStdlibIoTest {
     }
 
     @Test
-    void globalPrintCannotBypassStrictStdlibBoundary() throws Exception {
+    void asynchronousStdoutCannotFallBackToPrintWriter() throws Exception {
         assertStrictlyUnsupported("""
+                pub async routine main(): void {
+                  await stdio.stdout.write_async("must-not-be-written");
+                  return;
+                }
+                """);
+    }
+
+    @Test
+    void globalPrintIsNotAnAmbientIoBuiltin() {
+        assertCompilerRejected("""
                 pub routine main(): void {
                   print("must-not-be-written");
+                  return;
+                }
+                """);
+    }
+
+    @Test
+    void asyncSurfaceTypechecksWithFutureResults() {
+        assertCompilerAccepts("""
+                pub async routine main(): void {
+                  val Future<String> read = fs.read_text_async("x");
+                  val Future<bool> exists = fs.exists_async("x");
+                  val Future<TcpConnection> connected = network.connect_async("127.0.0.1", 9);
+                  val Future<String> get = http.get_text_async("http://127.0.0.1:9/");
+                  val Future<void> out = stdio.stdout.write_async("x");
+                  val Future<Option<String>> input = stdio.stdin.read_line_async();
                   return;
                 }
                 """);
