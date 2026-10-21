@@ -123,6 +123,224 @@ final class IncrementalFunctorStaticTest {
     }
 
     @Test
+    void actorImportKindIsValidatedAtLinkTime() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+
+        assertThrows(IllegalArgumentException.class, () -> compiler.compile(Map.of(
+                "plain.ores", """
+                        define class Plain as
+                        end
+                        """,
+                "app.ores", """
+                        import actor Plain from "./plain.ores";
+                        pub routine main() -> void { return; }
+                        """)));
+
+        assertThrows(IllegalArgumentException.class, () -> compiler.compile(Map.of(
+                "worker.ores", """
+                        define actor Worker as
+                          pub receive(message: int): void { return; }
+                        end
+                        """,
+                "app.ores", """
+                        import class Worker from "./worker.ores";
+                        pub routine main() -> void { return; }
+                        """)));
+    }
+
+    @Test
+    void actorReplyErrorContractChangesInvalidateImporters() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> first = Map.of(
+                "worker.ores", """
+                        define class Worker extends Actor<int, String, String> as
+                          pub receive(message: int): void { return; }
+                        end
+                        """,
+                "app.ores", """
+                        import actor Worker from "./worker.ores";
+                        pub routine main() -> void { return; }
+                        """);
+
+        compiler.compile(first);
+
+        Map<String, String> changed = Map.of(
+                "worker.ores", """
+                        define class Worker extends Actor<int, int, String> as
+                          pub receive(message: int): void { return; }
+                        end
+                        """,
+                "app.ores", first.get("app.ores"));
+
+        var result = compiler.compile(changed);
+        assertTrue(result.rebuilt("worker.ores"));
+        assertTrue(result.rebuilt("app.ores"),
+                "Reply/Error actor ABI changes must invalidate actor importers");
+    }
+
+    @Test
+    void entryImportsRequireExactlyOneEntryExport() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+
+        assertThrows(IllegalArgumentException.class, () -> compiler.compile(Map.of(
+                "plugin.ores", """
+                        pub fnc first() -> void { return; }
+                        pub fnc second() -> void { return; }
+                        export entry first;
+                        export entry second;
+                        """,
+                "app.ores", """
+                        import entry as Plugin from "./plugin.ores";
+                        pub routine main() -> void { return; }
+                        """)));
+    }
+
+    @Test
+    void linkedNamedActorImportChecksConstructorAndMailboxMessage() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+
+        Map<String, String> valid = Map.of(
+                "worker.ores", """
+                        define actor Worker as
+                          let int seed = 0;
+
+                          constructor(initial: int) {
+                            self.seed = initial;
+                          }
+
+                          pub receive(message: String): void {
+                            stdio.println(message);
+                            return;
+                          }
+                        end
+                        """,
+                "app.ores", """
+                        import actor (Worker as W) from "./worker.ores";
+
+                        pub routine main() -> void {
+                          val worker = spawn W(1);
+                          worker.send("ok");
+                          return;
+                        }
+                        """);
+
+        assertDoesNotThrow(() -> compiler.compile(valid));
+
+        Map<String, String> badConstructor = Map.of(
+                "worker.ores", valid.get("worker.ores"),
+                "app.ores", """
+                        import actor (Worker as W) from "./worker.ores";
+
+                        pub routine main() -> void {
+                          val worker = spawn W("wrong");
+                          return;
+                        }
+                        """);
+        assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(badConstructor));
+
+        Map<String, String> badMessage = Map.of(
+                "worker.ores", valid.get("worker.ores"),
+                "app.ores", """
+                        import actor {Worker: W} from "./worker.ores";
+
+                        pub routine main() -> void {
+                          val worker = spawn W(1);
+                          worker.send(42);
+                          return;
+                        }
+                        """);
+        assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(badMessage));
+    }
+
+    @Test
+    void linkedWildcardActorNamespaceKeepsTypedMailboxContract() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+
+        Map<String, String> valid = Map.of(
+                "worker.ores", """
+                        define actor Worker as
+                          constructor(initial: int) { }
+                          pub receive(message: String): void { return; }
+                        end
+                        """,
+                "app.ores", """
+                        import actor * as Actors from "./worker.ores";
+
+                        pub routine main() -> void {
+                          val worker = spawn Actors.Worker(1);
+                          worker.send("ok");
+                          return;
+                        }
+                        """);
+
+        assertDoesNotThrow(() -> compiler.compile(valid));
+
+        Map<String, String> invalid = Map.of(
+                "worker.ores", valid.get("worker.ores"),
+                "app.ores", """
+                        import actor * as Actors from "./worker.ores";
+
+                        pub routine main() -> void {
+                          val worker = spawn Actors.Worker(1);
+                          worker.send(false);
+                          return;
+                        }
+                        """);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(invalid));
+    }
+
+    @Test
+    void linkedGenericActorImportPreservesTypeArguments() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+
+        Map<String, String> valid = Map.of(
+                "worker.ores", """
+                        define actor Box<T> as
+                          let T value;
+
+                          constructor(initial: T) {
+                            self.value = initial;
+                          }
+
+                          pub receive(message: T): void {
+                            self.value = message;
+                            return;
+                          }
+                        end
+                        """,
+                "app.ores", """
+                        import actor {Box as RemoteBox} from "./worker.ores";
+
+                        pub routine main() -> void {
+                          val box = spawn RemoteBox<String>("initial");
+                          box.send("next");
+                          return;
+                        }
+                        """);
+
+        assertDoesNotThrow(() -> compiler.compile(valid));
+
+        Map<String, String> invalid = Map.of(
+                "worker.ores", valid.get("worker.ores"),
+                "app.ores", """
+                        import actor * as Actors from "./worker.ores";
+
+                        pub routine main() -> void {
+                          val box = spawn Actors.Box<String>("initial");
+                          box.send(42);
+                          return;
+                        }
+                        """);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(invalid));
+    }
+
+    @Test
     void compiledUnitsCanStageDirectlyAsIndependentHotReloadGenerations() {
         IncrementalCompiler compiler = new IncrementalCompiler();
         var build = compiler.compile(Map.of(
