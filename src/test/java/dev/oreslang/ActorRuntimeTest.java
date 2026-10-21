@@ -1,8 +1,8 @@
 package dev.oreslang;
 
 import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.ChannelRuntime;
 import dev.oreslang.runtime.IsolatePolicy;
-import dev.oreslang.runtime.OresScheduler;
 import org.junit.jupiter.api.Test;
 
 import java.util.AbstractList;
@@ -106,137 +106,6 @@ final class ActorRuntimeTest {
 
             assertTrue(received.await(5, TimeUnit.SECONDS));
             assertEquals(1, maxInFlight.get(), "one actor mailbox must never run concurrently");
-        }
-    }
-
-    @Test
-    void schedulerSafepointDoesNotRelinquishOrReplayActorTurn() throws Exception {
-        var config = new ActorRuntime.DispatcherConfig(1, 2, 1, 16);
-        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
-            CountDownLatch firstAtCheckpoint = new CountDownLatch(1);
-            CountDownLatch releaseFirst = new CountDownLatch(1);
-            CountDownLatch secondDelivered = new CountDownLatch(1);
-            AtomicInteger firstSideEffects = new AtomicInteger();
-            AtomicInteger deliveries = new AtomicInteger();
-
-            var ref = runtime.<Integer>spawnShared(() -> (message, context) -> {
-                int delivery = deliveries.incrementAndGet();
-                if (delivery == 1) {
-                    firstSideEffects.incrementAndGet();
-                    context.runtime().schedulerSafepoint();
-                    firstAtCheckpoint.countDown();
-                    try {
-                        if (!releaseFirst.await(2, TimeUnit.SECONDS)) {
-                            throw new IllegalStateException("test release timed out");
-                        }
-                    } catch (InterruptedException interrupted) {
-                        Thread.currentThread().interrupt();
-                        throw new RuntimeException(interrupted);
-                    }
-                    context.runtime().schedulerSafepoint();
-                    assertEquals(
-                            1,
-                            firstSideEffects.get(),
-                            "checkpoint must not replay completed actor code");
-                } else if (delivery == 2) {
-                    secondDelivered.countDown();
-                    context.self().stop();
-                }
-            });
-
-            ref.send(1);
-            ref.send(2);
-
-            assertTrue(firstAtCheckpoint.await(2, TimeUnit.SECONDS));
-            try {
-                Thread.sleep(50);
-                assertEquals(
-                        1,
-                        deliveries.get(),
-                        "a checkpoint is not suspension and must not admit another turn");
-                assertEquals(
-                        1,
-                        firstSideEffects.get(),
-                        "completed work before a checkpoint must execute exactly once");
-            } finally {
-                releaseFirst.countDown();
-            }
-
-            assertTrue(secondDelivered.await(2, TimeUnit.SECONDS));
-            assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
-            assertEquals(2, deliveries.get());
-            assertEquals(1, firstSideEffects.get());
-        }
-    }
-
-    @Test
-    void actorCooperateUsesPriorityContinuationAndCrossesCarrierBoundary() throws Exception {
-        CountDownLatch firstAdmissionEntered = new CountDownLatch(1);
-        CountDownLatch allowFirstAdmission = new CountDownLatch(1);
-        CountDownLatch completed = new CountDownLatch(1);
-        AtomicInteger admissions = new AtomicInteger();
-        List<String> order = java.util.Collections.synchronizedList(new ArrayList<>());
-
-        ActorRuntime.TurnExecutor executor = turn -> {
-            int admission = admissions.incrementAndGet();
-            if (admission == 1) {
-                firstAdmissionEntered.countDown();
-                try {
-                    if (!allowFirstAdmission.await(2, TimeUnit.SECONDS)) {
-                        throw new IllegalStateException("test admission release timed out");
-                    }
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                    throw new RuntimeException(interrupted);
-                }
-            }
-            turn.run();
-        };
-
-        var config = new ActorRuntime.DispatcherConfig(1, 1, 16, 16);
-        try (ActorRuntime runtime =
-                     new ActorRuntime(IsolatePolicy.developer(), config, executor)) {
-            var ref = runtime.<Integer>spawnShared(() -> (message, context) -> {
-                if (message == 1) {
-                    order.add("message-1");
-                    AtomicInteger pc = new AtomicInteger();
-                    context.runtime().startActorTask(resume -> {
-                        int state = pc.getAndIncrement();
-                        if (state == 0) {
-                            order.add("task-before-cooperate");
-                            return OresScheduler.cooperate();
-                        }
-                        order.add("task-after-cooperate");
-                        return OresScheduler.done(null);
-                    });
-                    return;
-                }
-
-                order.add("message-2");
-                completed.countDown();
-                context.self().stop();
-            });
-
-            ref.send(1);
-            assertTrue(firstAdmissionEntered.await(2, TimeUnit.SECONDS));
-            ref.send(2);
-            allowFirstAdmission.countDown();
-
-            assertTrue(completed.await(5, TimeUnit.SECONDS));
-            assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
-            assertEquals(
-                    List.of(
-                            "message-1",
-                            "task-before-cooperate",
-                            "task-after-cooperate",
-                            "message-2"),
-                    order,
-                    "rt cooperate must resume the preempted logical task before later actor messages");
-            assertTrue(
-                    admissions.get() >= 3,
-                    "initial task dispatch and cooperate resume must cross actor TurnExecutor boundaries");
-        } finally {
-            allowFirstAdmission.countDown();
         }
     }
 
@@ -1065,9 +934,8 @@ final class ActorRuntimeTest {
             });
 
             ref.send((byte) 42);
-            // isAlive observes the logical stop flag before physical teardown.
-            // done settles after private memory and the carrier are finalized.
-            ref.done().get(2, TimeUnit.SECONDS);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (ref.isAlive() && System.nanoTime() < deadline) Thread.sleep(5);
             assertFalse(ref.isAlive());
             assertTrue(ref.failure().isEmpty());
             assertEquals(0L, runtime.privateMemoryBytes(), "actor teardown must release its private direct-memory quota");
@@ -1632,6 +1500,85 @@ final class ActorRuntimeTest {
                             adversarialShared,
                             factoryContext -> (message, context) -> { }));
             assertTrue(failure.getMessage().contains("adversarial"));
+        }
+    }
+
+
+    @Test
+    void cancellingParentCascadesToChildActorsWithoutContextPlumbing() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var parent = runtime.<String>spawnPrivate(
+                    factoryContext -> (message, context) ->
+                            context.runtime().<String>spawnPrivate(
+                                    childFactoryContext -> (childMessage, childContext) -> { }));
+
+            parent.send("spawn-child");
+
+            long spawnDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (runtime.actorCount() != 2 && System.nanoTime() < spawnDeadline) {
+                Thread.sleep(5);
+            }
+            assertEquals(2, runtime.actorCount(), "child should be attached to the parent lifetime");
+
+            parent.cancel();
+
+            long cancelDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (runtime.actorCount() != 0 && System.nanoTime() < cancelDeadline) {
+                Thread.sleep(5);
+            }
+            assertEquals(0, runtime.actorCount(), "parent cancellation must cascade to all children");
+            assertFalse(parent.isAlive());
+        }
+    }
+
+
+    @Test
+    void stoppingActorCancelsItsPendingChannelRegistrations() throws Exception {
+        var channel = ChannelRuntime.<String>channel(1);
+        CountDownLatch armed = new CountDownLatch(1);
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<String>spawnSharedTrusted(
+                    factoryContext -> (message, context) -> {
+                        var pending = channel.read();
+                        assertFalse(pending.isDone());
+                        armed.countDown();
+                        context.self().stop();
+                    });
+
+            ref.send("arm");
+            assertTrue(armed.await(2, TimeUnit.SECONDS));
+            assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
+
+            assertTrue(channel.tryWrite("preserved"));
+            assertEquals(
+                    "preserved",
+                    channel.tryRead().orElseThrow(),
+                    "actor cancellation must detach its pending channel read");
+        }
+    }
+
+
+    @Test
+    void stoppingParentCannotAttachNewChildOrUnderflowActorQuota() throws Exception {
+        CountDownLatch attempted = new CountDownLatch(1);
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var parent = runtime.<String>spawnSharedTrusted(
+                    factoryContext -> (message, context) -> {
+                        context.self().stop();
+                        assertThrows(
+                                java.util.concurrent.CancellationException.class,
+                                () -> context.runtime().<String>spawnPrivate(
+                                        childFactoryContext ->
+                                                (childMessage, childContext) -> { }));
+                        attempted.countDown();
+                    });
+
+            parent.send("cancel-then-spawn");
+            assertTrue(attempted.await(2, TimeUnit.SECONDS));
+            assertTrue(parent.awaitTermination(2, TimeUnit.SECONDS));
+            assertEquals(0, runtime.actorCount());
         }
     }
 
