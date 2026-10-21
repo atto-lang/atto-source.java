@@ -190,6 +190,21 @@ public final class ActorRuntime implements AutoCloseable {
     public enum ActorKind { PRIVATE, SHARED, UNTRUSTED }
 
     /**
+     * GraalVM actor scheduler domains. PRIVATE is the source/runtime spelling
+     * for an isolated actor; it never shares its carrier pool with SHARED or
+     * UNTRUSTED actors.
+     */
+    public enum ActorThreadPoolDomain { ISOLATED, SHARED, UNTRUSTED }
+
+    public static ActorThreadPoolDomain threadPoolDomain(ActorKind kind) {
+        return switch (Objects.requireNonNull(kind, "kind")) {
+            case PRIVATE -> ActorThreadPoolDomain.ISOLATED;
+            case SHARED -> ActorThreadPoolDomain.SHARED;
+            case UNTRUSTED -> ActorThreadPoolDomain.UNTRUSTED;
+        };
+    }
+
+    /**
      * Requested physical heap placement is a requirement, not an assertion of
      * physical isolation. VM_ISOLATE needs a verified external Graal supervisor.
      */
@@ -484,8 +499,11 @@ public final class ActorRuntime implements AutoCloseable {
     private volatile ForceCancellationHook forceCancellationHook =
             request -> false;
 
+    /** Eager pool object for isolated/private actors; owns zero workers at startup. */
     private final ExecutorService privateDispatcher;
+    /** Eager pool object for shared actors; owns zero workers at startup. */
     private final ExecutorService sharedDispatcher;
+    /** Eager pool object for untrusted actors; owns zero workers at startup. */
     private final ExecutorService untrustedDispatcher;
     private final ActorPhysicalTurnGate physicalTurnGate;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
@@ -555,7 +573,7 @@ public final class ActorRuntime implements AutoCloseable {
         ExecutorService untrustedPool;
         try {
             privatePool = newActorDispatcher(dispatcherConfig.privateParallelism(),
-                    dispatcherConfig.maxActors(), "ores-private-actor-dispatcher-");
+                    dispatcherConfig.maxActors(), "ores-isolated-actor-dispatcher-");
             sharedPool = newActorDispatcher(dispatcherConfig.sharedParallelism(),
                     dispatcherConfig.maxActors(), "ores-shared-actor-dispatcher-");
             untrustedPool = newActorDispatcher(Math.max(1, dispatcherConfig.privateParallelism()),
@@ -6882,8 +6900,8 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private ExecutorService dispatcherFor(ActorKind kind) {
-        return switch (kind) {
-            case PRIVATE -> privateDispatcher;
+        return switch (threadPoolDomain(kind)) {
+            case ISOLATED -> privateDispatcher;
             case SHARED -> sharedDispatcher;
             case UNTRUSTED -> untrustedDispatcher;
         };
