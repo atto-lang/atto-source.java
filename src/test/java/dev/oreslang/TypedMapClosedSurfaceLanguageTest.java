@@ -514,9 +514,79 @@ final class TypedMapClosedSurfaceLanguageTest {
         assertThrows(IllegalArgumentException.class, () ->
                 OresCompiler.parseAndTypeCheck("""
                         pub fnc main(): void {
-                          val Map<string, int> values =
+                          const Map<string, int> values =
                               new Map<string, int>();
                           values.take("x");
+                          return;
+                        }
+                        """));
+    }
+
+    @Test
+    void takeAndRemoveRequireOwnerAuthorityAndPreserveAbsence() {
+        String source = """
+                pub fnc main(): void {
+                  val Map<string, int> values = new Map<string, int>();
+                  values["a"] = 10;
+                  values["b"] = 20;
+                  stdio.println(values.take("a").unwrap());
+                  stdio.println(values.take("a").is_none());
+                  stdio.println(values.remove("b"));
+                  stdio.println(values.remove("b"));
+                  stdio.println(values.size);
+                  return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source program = assertDoesNotThrow(() ->
+                Source.newBuilder(
+                                OresLanguage.ID,
+                                source,
+                                "typed-map-take-remove.ores")
+                        .mimeType(OresLanguage.MIME_TYPE)
+                        .build());
+        assertDoesNotThrow(() -> {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false)
+                    .out(output)
+                    .build()) {
+                context.eval(program);
+            }
+        });
+        assertEquals(
+                "10\ntrue\ntrue\nfalse\n0\n",
+                output.toString(StandardCharsets.UTF_8)
+                        .replace("\r\n", "\n"));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheck("""
+                        pub fnc main(): void {
+                          let Map<string, int> values =
+                              new Map<string, int>();
+                          values.remove("x");
+                          return;
+                        }
+                        """));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheck("""
+                        pub fnc main(): void {
+                          val Map<string, int> values =
+                              new Map<string, int>();
+                          const remover = values.remove;
+                          return;
+                        }
+                        """));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheck("""
+                        pub fnc main(): void {
+                          val Map<string, int> values =
+                              new Map<string, int>();
+                          (rt borrow mut values).take("x");
                           return;
                         }
                         """));
