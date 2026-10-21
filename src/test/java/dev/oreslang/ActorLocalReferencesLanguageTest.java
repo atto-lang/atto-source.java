@@ -148,7 +148,7 @@ final class ActorLocalReferencesLanguageTest {
                         define actor Worker as
                           receive(ActorMail<string> mail): void {
                             val value = 7;
-                            val &int view = rt borrow value;
+                            val borrow int view = rt borrow value;
                             rt cooperate;
                             self.send(view);
                             return;
@@ -213,7 +213,7 @@ final class ActorLocalReferencesLanguageTest {
                 define actor Worker as
                   receive(ActorMail<string> mail): void {
                     val value = 3;
-                    val cell = Ref.new(&value);
+                    val cell = Ref.new(rt borrow value);
                     return;
                   }
                 end
