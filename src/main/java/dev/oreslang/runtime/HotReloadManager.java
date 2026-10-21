@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import dev.oreslang.OresLanguage;
+import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.IncrementalCompiler;
 import dev.oreslang.compiler.OresCompiler;
 import org.graalvm.polyglot.Context;
@@ -17,6 +18,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -178,8 +180,46 @@ public final class HotReloadManager implements AutoCloseable {
     public synchronized Generation load(String name, String sourceText) {
         ensureOpen();
         validateStageInput(name, sourceText);
-        OresCompiler.validateForIsolate(sourceText, guestPolicy);
-        return stage(name, digest(sourceText), sourceText);
+        Ast.Program program = OresCompiler.validateForIsolate(sourceText, guestPolicy);
+        Ast.EntryExportDecl entry = entryExport(program).orElse(null);
+        rejectActorEntryWithoutContract(program, entry);
+        return stage(name, digest(sourceText), sourceText, entry, null);
+    }
+
+    /**
+     * Stage a code unit through its explicit non-actor `export entry Name;`
+     * metadata. Persistent actors must use {@link #loadActorEntry}.
+     */
+    public synchronized Generation loadEntry(String name, String sourceText) {
+        ensureOpen();
+        validateStageInput(name, sourceText);
+        Ast.Program program = OresCompiler.validateForIsolate(sourceText, guestPolicy);
+        Ast.EntryExportDecl entry = requireEntryExport(program);
+        rejectActorEntryWithoutContract(program, entry);
+        return stage(name, digest(sourceText), sourceText, entry, null);
+    }
+
+    /**
+     * Verify and stage a persistent actor entry without executing guest code.
+     * ABI and execution-domain checks happen before generation allocation.
+     */
+    public synchronized Generation loadActorEntry(
+            String name,
+            String sourceText,
+            ActorEntryContract contract) {
+        ensureOpen();
+        validateStageInput(name, sourceText);
+        Objects.requireNonNull(contract, "contract");
+        Ast.Program program = OresCompiler.validateForIsolate(sourceText, guestPolicy);
+        Ast.EntryExportDecl entry = requireEntryExport(program);
+        ActorEntryContract.Verification verification = contract.verify(program, entry);
+        validateActorEntryExecutionDomain(verification.actorKind());
+        return stage(
+                name,
+                digest(sourceText),
+                sourceText,
+                entry,
+                verification.abiDigest());
     }
 
     /**
@@ -192,10 +232,49 @@ public final class HotReloadManager implements AutoCloseable {
         Objects.requireNonNull(unit, "unit");
         validateStageInput(unit.unitId(), unit.sourceText());
         CapabilityChecker.check(unit.program(), guestPolicy);
-        return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText());
+        Ast.EntryExportDecl entry = entryExport(unit.program()).orElse(null);
+        rejectActorEntryWithoutContract(unit.program(), entry);
+        return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText(), entry, null);
     }
 
-    private Generation stage(String codeUnitId, String sourceDigest, String sourceText) {
+    /** Contract-checked non-actor entry load from an already compiled unit. */
+    public synchronized Generation loadEntry(IncrementalCompiler.CompiledUnit unit) {
+        ensureOpen();
+        Objects.requireNonNull(unit, "unit");
+        validateStageInput(unit.unitId(), unit.sourceText());
+        CapabilityChecker.check(unit.program(), guestPolicy);
+        Ast.EntryExportDecl entry = requireEntryExport(unit.program());
+        rejectActorEntryWithoutContract(unit.program(), entry);
+        return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText(), entry, null);
+    }
+
+    /** Contract-checked persistent actor entry load from a compiled unit. */
+    public synchronized Generation loadActorEntry(
+            IncrementalCompiler.CompiledUnit unit,
+            ActorEntryContract contract) {
+        ensureOpen();
+        Objects.requireNonNull(unit, "unit");
+        Objects.requireNonNull(contract, "contract");
+        validateStageInput(unit.unitId(), unit.sourceText());
+        CapabilityChecker.check(unit.program(), guestPolicy);
+        Ast.EntryExportDecl entry = requireEntryExport(unit.program());
+        ActorEntryContract.Verification verification = contract.verify(unit.program(), entry);
+        validateActorEntryExecutionDomain(verification.actorKind());
+        return stage(
+                unit.unitId(),
+                unit.sourceDigest(),
+                unit.sourceText(),
+                entry,
+                verification.abiDigest());
+    }
+
+    private Generation stage(
+            String codeUnitId,
+            String sourceDigest,
+            String sourceText,
+            Ast.EntryExportDecl entryExport,
+            String actorEntryAbiDigest) {
+        requireCompatibleWithLiveGenerations(codeUnitId, actorEntryAbiDigest);
         enforceGenerationQuota(codeUnitId);
 
         long id = PROCESS_GENERATION_SEQUENCE.incrementAndGet();
@@ -233,7 +312,9 @@ public final class HotReloadManager implements AutoCloseable {
                     executionProfile,
                     executionDomain,
                     guestPolicy,
-                    generationBindingToken);
+                    generationBindingToken,
+                    entryExport,
+                    actorEntryAbiDigest);
             generations.put(id, generation);
             boundGeneration.set(generation);
             return generation;
@@ -252,6 +333,23 @@ public final class HotReloadManager implements AutoCloseable {
         Generation generation = load(name, sourceText);
         // Never hold the manager monitor across guest evaluation. Actor startup
         // may acquire/release generation leases on different carrier threads.
+        generation.start();
+        activate(generation);
+        return generation;
+    }
+
+    public Generation loadEntryAndStart(String name, String sourceText) {
+        Generation generation = loadEntry(name, sourceText);
+        generation.start();
+        activate(generation);
+        return generation;
+    }
+
+    public Generation loadActorEntryAndStart(
+            String name,
+            String sourceText,
+            ActorEntryContract contract) {
+        Generation generation = loadActorEntry(name, sourceText, contract);
         generation.start();
         activate(generation);
         return generation;
@@ -276,7 +374,9 @@ public final class HotReloadManager implements AutoCloseable {
                         "generation must be STARTED before activation; current state=" + state);
             }
 
-            Generation previous = activeByCodeUnit.put(generation.codeUnitId(), generation);
+            Generation previous = activeByCodeUnit.get(generation.codeUnitId());
+            requireCompatibleReplacement(previous, generation);
+            activeByCodeUnit.put(generation.codeUnitId(), generation);
             generation.transition(GenerationState.STARTED, GenerationState.ACTIVE);
             active.set(generation);
 
@@ -314,17 +414,17 @@ public final class HotReloadManager implements AutoCloseable {
 
     /**
      * Internal actor birth pin. Generation startup code may create actors before
-     * activation, and already-running old actors may finish their lifecycle
-     * while the generation is draining. No new actor may be born from a staged,
-     * failed, or closed generation.
+     * activation. Once draining begins, existing actor/request leases remain
+     * valid, but the generation is closed to new actor births so drain converges
+     * monotonically. No new actor may be born from a staged, draining, failed,
+     * or closed generation.
      */
     private synchronized GenerationLease acquireActorLease(Generation generation) {
         ensureOpen();
         requireOwned(generation);
         GenerationState state = generation.state();
         if (state != GenerationState.STARTED
-                && state != GenerationState.ACTIVE
-                && state != GenerationState.DRAINING) {
+                && state != GenerationState.ACTIVE) {
             throw new IllegalStateException(
                     "generation " + generation.id()
                             + " cannot admit an actor while " + state);
@@ -439,6 +539,107 @@ public final class HotReloadManager implements AutoCloseable {
             synchronized (this) {
                 generations.remove(generation.id(), generation);
             }
+        }
+    }
+
+    private static Optional<Ast.EntryExportDecl> entryExport(Ast.Program program) {
+        Ast.EntryExportDecl found = null;
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (!(declaration instanceof Ast.EntryExportDecl entry)) continue;
+                if (found != null) {
+                    throw new IllegalArgumentException(
+                            "a code unit may declare at most one export entry");
+                }
+                found = entry;
+            }
+        }
+        return Optional.ofNullable(found);
+    }
+
+    private static Ast.EntryExportDecl requireEntryExport(Ast.Program program) {
+        return entryExport(program).orElseThrow(() ->
+                new IllegalArgumentException(
+                        "hot-load entry requested but code unit declares no 'export entry Name;' marker"));
+    }
+
+    private static void rejectActorEntryWithoutContract(
+            Ast.Program program,
+            Ast.EntryExportDecl entry) {
+        if (entry == null) return;
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.ClassDecl klass
+                        && klass.name().equals(entry.name())
+                        && klass.actorKind() != Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "actor export entries require loadActorEntry(...) with an exact ActorEntryContract");
+                }
+            }
+        }
+    }
+
+    private void validateActorEntryExecutionDomain(Ast.ActorKind actorKind) {
+        ExecutionDomain required = switch (actorKind) {
+            case SHARED -> ExecutionDomain.TRUSTED_JIT;
+            case PRIVATE -> ExecutionDomain.TRUSTED_ISOACTOR_JIT;
+            case UNTRUSTED -> ExecutionDomain.UNTRUSTED_JIT;
+            case NONE -> throw new IllegalArgumentException(
+                    "actor entry contract cannot use non-actor isolation");
+        };
+        if (executionDomain != required) {
+            throw new SecurityException(
+                    "actor entry isolation " + actorKind
+                            + " requires execution domain " + required
+                            + ", found " + executionDomain);
+        }
+    }
+
+    /**
+     * Replacing one active code unit is ABI-preserving by default. Actor/non-actor
+     * role changes and actor ABI drift require a future explicit migration path;
+     * they can never happen as an ordinary hot swap.
+     */
+    private void requireCompatibleWithLiveGenerations(
+            String codeUnitId,
+            String nextActorEntryAbiDigest) {
+        for (Generation generation : generations.values()) {
+            if (!generation.codeUnitId().equals(codeUnitId)) continue;
+            GenerationState state = generation.state();
+            if (state == GenerationState.CLOSED || state == GenerationState.FAILED) continue;
+            requireCompatibleCandidate(
+                    generation,
+                    codeUnitId,
+                    nextActorEntryAbiDigest);
+        }
+    }
+
+    private static void requireCompatibleReplacement(
+            Generation previous,
+            Generation next) {
+        if (previous == next) return;
+        requireCompatibleCandidate(
+                previous,
+                next.codeUnitId(),
+                next.actorEntryAbiDigest);
+    }
+
+    private static void requireCompatibleCandidate(
+            Generation previous,
+            String codeUnitId,
+            String nextActorEntryAbiDigest) {
+        if (previous == null) return;
+        Optional<String> before = previous.actorEntryAbiDigest();
+        Optional<String> after = Optional.ofNullable(nextActorEntryAbiDigest);
+        if (before.isPresent() != after.isPresent()) {
+            throw new IllegalStateException(
+                    "hot reload cannot change code unit '" + codeUnitId
+                            + "' between persistent-actor and non-actor entry ABI without explicit migration");
+        }
+        if (before.isPresent() && !before.get().equals(after.orElseThrow())) {
+            throw new IllegalStateException(
+                    "hot reload rejected actor ABI drift for code unit '" + codeUnitId
+                            + "': active=" + before.get() + ", candidate=" + after.orElseThrow());
         }
     }
 
@@ -590,6 +791,8 @@ public final class HotReloadManager implements AutoCloseable {
         private final ExecutionDomain executionDomain;
         private final IsolatePolicy guestPolicy;
         private final String generationBindingToken;
+        private final Ast.EntryExportDecl entryExport;
+        private final String actorEntryAbiDigest;
         private final AtomicReference<GenerationState> state =
                 new AtomicReference<>(GenerationState.STAGED);
         private final AtomicInteger pins = new AtomicInteger();
@@ -605,7 +808,9 @@ public final class HotReloadManager implements AutoCloseable {
                 ExecutionProfile executionProfile,
                 ExecutionDomain executionDomain,
                 IsolatePolicy guestPolicy,
-                String generationBindingToken) {
+                String generationBindingToken,
+                Ast.EntryExportDecl entryExport,
+                String actorEntryAbiDigest) {
             this.owner = owner;
             this.id = id;
             this.codeUnitId = codeUnitId;
@@ -617,6 +822,8 @@ public final class HotReloadManager implements AutoCloseable {
             this.guestPolicy = guestPolicy;
             this.generationBindingToken =
                     Objects.requireNonNull(generationBindingToken, "generationBindingToken");
+            this.entryExport = entryExport;
+            this.actorEntryAbiDigest = actorEntryAbiDigest;
         }
 
         public long id() { return id; }
@@ -627,6 +834,12 @@ public final class HotReloadManager implements AutoCloseable {
         public ExecutionProfile executionProfile() { return executionProfile; }
         public ExecutionDomain executionDomain() { return executionDomain; }
         public IsolatePolicy guestPolicy() { return guestPolicy; }
+        public Optional<Ast.EntryExportDecl> entryExport() {
+            return Optional.ofNullable(entryExport);
+        }
+        public Optional<String> actorEntryAbiDigest() {
+            return Optional.ofNullable(actorEntryAbiDigest);
+        }
         public GenerationState state() { return state.get(); }
         public int pinCount() { return pins.get(); }
         public boolean started() {
