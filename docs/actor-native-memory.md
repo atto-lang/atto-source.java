@@ -117,6 +117,12 @@ revokes all pages and refunds their native-byte reservations.
   ranges. Both validate the full destination span and every page's borrow
   status **before** modifying any bytes. `copy` also checks the full source
   range. These are baseline scalar kernels, not vectorized bulk copies.
+* Native `Region.ReadOnlyLease` now supports checked `readByte` and
+  `readUnsignedByte`, in addition to eight-byte word/double reads. Every
+  byte is validated against the borrowed slice and owning actor; no mutable
+  array or `ByteBuffer` escapes. The native linear-memory tests include
+  a deterministic 600-operation differential oracle for `fill` and
+  overlapping `copy` around page boundaries.
 * `leaseReadOnlyPage(pageIndex, offset, length)` borrows native page storage
   within the owning actor. It blocks all writes to that page while borrowed;
   a primitive write crossing two pages preflights both before mutating either.
