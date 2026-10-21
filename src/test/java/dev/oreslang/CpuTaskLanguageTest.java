@@ -203,6 +203,21 @@ final class CpuTaskLanguageTest {
                 """));
     }
 
+    @Test void affineFutureMovesIntoSecondTaskWithoutRuntimeCloning() throws Exception {
+        assertEquals("42", run("""
+                pub async fnc main(): void {
+                  let Future<int> first = task {
+                    return 41;
+                  };
+                  let Future<int> second = task {
+                    return await first + 1;
+                  };
+                  stdio.stdout.write(await second);
+                  return;
+                }
+                """));
+    }
+
     @Test void copiedScalarCaptureIsFrozenAtSubmission() throws Exception {
         assertEquals("41|99", run("""
                 pub async fnc main(): void {
