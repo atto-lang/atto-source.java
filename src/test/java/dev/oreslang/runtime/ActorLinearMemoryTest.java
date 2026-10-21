@@ -233,6 +233,33 @@ final class ActorLinearMemoryTest {
     }
 
     @Test
+    void canonicalArenaAddressesAreProvenanceNotLinearPointerArithmetic() {
+        AtomicLong charged = new AtomicLong();
+        int page = ActorLinearMemory.PAGE_BYTES;
+        try (ActorNativeArena arena = arena(3L * page, charged)) {
+            ActorLinearMemory memory = arena.linearMemory(1, 2);
+            long firstPageBase = memory.actorOffset(0);
+
+            // Interleave an ordinary actor-native allocation before a later
+            // linear-memory grow. The guest address space remains contiguous,
+            // while canonical arena identity addresses need not be.
+            var interleaved = arena.region(64);
+            long interleavedBase = interleaved.nativeOffset();
+            assertTrue(interleavedBase >= firstPageBase + page);
+
+            assertEquals(1, memory.grow(1));
+            long secondPageBase = memory.actorOffset(page);
+            assertNotEquals(firstPageBase + page, secondPageBase,
+                    "canonical arena offsets must not be treated as linear pointer arithmetic");
+
+            memory.writeLong(page - 4L, 0x0102030405060708L);
+            assertEquals(0x0102030405060708L, memory.readLong(page - 4L),
+                    "guest linear offsets remain contiguous across the page boundary");
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
     void failedInitialCommitDoesNotPublishOrChargeLinearMemory() {
         AtomicLong charged = new AtomicLong();
         try (ActorNativeArena arena = arena(ActorLinearMemory.PAGE_BYTES - 1L, charged)) {
