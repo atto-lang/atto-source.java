@@ -1,0 +1,114 @@
+package dev.oreslang;
+
+import dev.oreslang.ast.Ast;
+import dev.oreslang.parser.Parser;
+import dev.oreslang.types.OwnershipChecker;
+import dev.oreslang.types.TypeChecker;
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/**
+ * Imported actor metadata is a checked mailbox protocol type, NOT an
+ * actor-state instance and never a loose name-based Send permission.
+ */
+final class LinkedActorTaskCaptureV2Test {
+    private static Ast.ClassDecl remoteActor(
+            Ast.Visibility visibility, Ast.ActorKind kind) {
+        return new Ast.ClassDecl(
+                "RemoteWorker", visibility, false, kind,
+                List.of(), List.of(), List.of(), List.of(),
+                null, List.of());
+    }
+
+    private static Ast.Program source(String importedKind) {
+        return Parser.parse("import " + importedKind
+                + " RemoteWorker from \"remote-worker.ores\";\n"
+                + """
+                  pub async fnc forward(ActorRef<RemoteWorker> mailbox): void {
+                    let Future<void> child = task {
+                      val preserved = mailbox;
+                      return;
+                    };
+                    await child;
+                    return;
+                  }
+                  """);
+    }
+
+    @Test
+    void exactImportedActorSignatureAllowsCheckedMailboxTaskCapture() {
+        Ast.Program imported = source("actor");
+        Map<String, Ast.ClassDecl> signatures =
+                Map.of("RemoteWorker",
+                        remoteActor(Ast.Visibility.PUBLIC, Ast.ActorKind.SHARED));
+        TypeChecker.TypeCheckResult typed =
+                TypeChecker.checkTypesWithImportedClassesWithDiagnostics(
+                        imported, signatures, Map.of());
+        Ast.Program checked = OwnershipChecker.checkWithImportedClasses(
+                typed.program(), signatures, typed.shortInferredAliases());
+
+        Ast.TaskExpr child = null;
+        for (Ast.ModuleDecl module : checked.modules()) {
+            for (Ast.Decl decl : module.declarations()) {
+                if (decl instanceof Ast.FunctionDecl function
+                        && function.name().equals("forward")) {
+                    for (Ast.Stmt stmt : function.body()) {
+                        if (stmt instanceof Ast.BindingStmt binding
+                                && binding.initializer() instanceof Ast.TaskExpr task) {
+                            child = task;
+                        }
+                    }
+                }
+            }
+        }
+        assertNotNull(child, "test must locate the independently scheduled Task");
+        long epoch = Ast.CheckedTaskCaptures.requireProgramEpoch(checked);
+        assertEquals(
+                Map.of("mailbox", Ast.TaskCaptureTransfer.COPY),
+                Ast.CheckedTaskCaptures.require(
+                        checked, child, epoch).captureTransfers());
+    }
+
+    @Test
+    void actorMetadataCannotBeLinkedThroughClassImport() {
+        Ast.Program program = source("class");
+        Map<String, Ast.ClassDecl> metadata =
+                Map.of("RemoteWorker",
+                        remoteActor(Ast.Visibility.PUBLIC, Ast.ActorKind.SHARED));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypesWithImportedClassesWithDiagnostics(
+                        program, metadata, Map.of()));
+        assertThrows(IllegalArgumentException.class,
+                () -> OwnershipChecker.checkWithImportedClasses(program, metadata));
+    }
+
+    @Test
+    void ordinaryClassCannotMasqueradeAsImportedActorSignature() {
+        Ast.Program program = source("actor");
+        Map<String, Ast.ClassDecl> metadata =
+                Map.of("RemoteWorker",
+                        remoteActor(Ast.Visibility.PUBLIC, Ast.ActorKind.NONE));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypesWithImportedClassesWithDiagnostics(
+                        program, metadata, Map.of()));
+        assertThrows(IllegalArgumentException.class,
+                () -> OwnershipChecker.checkWithImportedClasses(program, metadata));
+    }
+
+    @Test
+    void privateLinkedActorIsNotAnAuthorizedPublicImport() {
+        Ast.Program program = source("actor");
+        Map<String, Ast.ClassDecl> metadata =
+                Map.of("RemoteWorker",
+                        remoteActor(Ast.Visibility.PRIVATE, Ast.ActorKind.PRIVATE));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypesWithImportedClassesWithDiagnostics(
+                        program, metadata, Map.of()));
+        assertThrows(IllegalArgumentException.class,
+                () -> OwnershipChecker.checkWithImportedClasses(program, metadata));
+    }
+}
