@@ -1732,6 +1732,14 @@ public final class ActorRuntime implements AutoCloseable {
     public interface ActorCodeExecutor {
         SharedCodeImageStore.CodeImage codeImage();
 
+        /** Closed-world, VM-only representation witness from the declared
+         * unary run(Request)->Response method. Object.class is forbidden:
+         * source reply staging must not bypass response-type admission. */
+        default Class<?> sourceUnaryReplyClass(String actorTypeName) {
+            throw new UnsupportedOperationException(
+                    "source unary response schema not lowered for " + actorTypeName);
+        }
+
         ActorOwnedGuestState initializeActor(
                 String actorTypeName,
                 ActorContext<Object> context) throws Exception;
@@ -1939,6 +1947,26 @@ public final class ActorRuntime implements AutoCloseable {
         if (caller == destination) {
             throw new IllegalArgumentException("actor cannot request itself");
         }
+        // Resolve a callee-incarnation-bound runtime witness independently of
+        // the guest request payload. A static Future<R> is insufficient if a
+        // buggy or hot-reloaded callee returns a different Java representation.
+        ActorCell<?> target = actors.get(destination.id());
+        if (target == null || target.ref != destination
+                || target.codeExecutor == null || target.codeActorType == null) {
+            throw new SecurityException(
+                    "source unary request requires a live source actor incarnation");
+        }
+        Class<?> declaredReply = Objects.requireNonNull(
+                target.codeExecutor.sourceUnaryReplyClass(target.codeActorType),
+                "source unary reply representation witness");
+        if (declaredReply == Object.class || declaredReply == Void.class
+                || declaredReply == Void.TYPE) {
+            throw new IllegalArgumentException(
+                    "source unary request requires a concrete response witness");
+        }
+        @SuppressWarnings("unchecked")
+        Class<Object> responseType = (Class<Object>) declaredReply;
+
         GenerationalReplyRegistry registry = sourceUnaryRegistryFor(caller);
         GenerationalReplyRegistry.Endpoint callerEndpoint =
                 sourceUnaryEndpoint(caller, registry, true);
@@ -1946,7 +1974,7 @@ public final class ActorRuntime implements AutoCloseable {
                 sourceUnaryEndpoint(destination, registry, false);
         return ActorReplySchedulerBridge.requestCurrentActor(
                 this, registry, callerEndpoint, calleeEndpoint,
-                destination, message, Object.class, java.time.Duration.ofSeconds(5),
+                destination, message, responseType, java.time.Duration.ofSeconds(5),
                 sourceUnaryTimer);
     }
 
