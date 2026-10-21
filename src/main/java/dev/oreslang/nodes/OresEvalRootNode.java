@@ -10508,7 +10508,7 @@ public final class OresEvalRootNode extends RootNode {
     private record ImportedNamespace(Evaluator owner, Ast.ImportKind kind) { }
     private record ModuleFacade(Evaluator owner, Ast.ModuleDecl module) { }
     private record ClassFacade(Evaluator owner, Ast.ClassDecl klass) { }
-    private record HostClassFacade(String className, Object symbol, boolean constructible) {
+    record HostClassFacade(String className, Object symbol, boolean constructible) {
         private HostClassFacade {
             Objects.requireNonNull(className, "host class name");
             Objects.requireNonNull(symbol, "host class symbol");
