@@ -55,6 +55,56 @@ final class ActorReplySchedulerBridgeTest {
     }
 
     @Test
+    void invalidRequestDependenciesNeverConsumeCallerPendingSlots() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             var timers = Executors.newSingleThreadScheduledExecutor()) {
+            var registry = new GenerationalReplyRegistry(1);
+            var caller = new AtomicReference<GenerationalReplyRegistry.Endpoint>();
+            var callee = new AtomicReference<GenerationalReplyRegistry.Endpoint>();
+            var done = new CountDownLatch(1);
+            var failure = new AtomicReference<Throwable>();
+            var destination = runtime.<String>spawn(() -> (message, context) ->
+                    fail("invalid request must never reach the callee"));
+            var source = runtime.<String>spawn(() -> (message, context) -> {
+                try {
+                    assertThrows(NullPointerException.class,
+                            () -> ActorReplySchedulerBridge.requestCurrentActor(
+                                    runtime, registry, caller.get(), callee.get(),
+                                    destination, "hello", String.class,
+                                    Duration.ofSeconds(1), null));
+                    assertEquals(0, registry.pendingCount(),
+                            "invalid timer must not reserve a reply slot");
+                    assertThrows(NullPointerException.class,
+                            () -> ActorReplySchedulerBridge.requestCurrentActor(
+                                    runtime, registry, caller.get(), callee.get(),
+                                    destination, "hello", String.class, null, timers));
+                    assertEquals(0, registry.pendingCount(),
+                            "invalid timeout must not reserve a reply slot");
+                    assertThrows(NullPointerException.class,
+                            () -> ActorReplySchedulerBridge.requestCurrentActor(
+                                    runtime, registry, caller.get(), callee.get(),
+                                    destination, "hello", null,
+                                    Duration.ofSeconds(1), timers));
+                    assertEquals(0, registry.pendingCount(),
+                            "invalid response type must not reserve a reply slot");
+                } catch (Throwable thrown) {
+                    failure.set(thrown);
+                } finally {
+                    done.countDown();
+                }
+            });
+            caller.set(runtime.bindActorReplyEndpoint(registry, source));
+            callee.set(runtime.bindActorReplyEndpoint(registry, destination));
+            source.send("start");
+            assertTrue(done.await(3, TimeUnit.SECONDS));
+            if (failure.get() != null) throw new AssertionError(
+                    "unary pre-admission checks failed", failure.get());
+            assertEquals(0, registry.pendingCount());
+            registry.close();
+        }
+    }
+
+    @Test
     void deadlineResumesOnCallerLaneAndFencesLateSuccess() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime();
              var timers = Executors.newSingleThreadScheduledExecutor()) {
