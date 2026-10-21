@@ -1864,7 +1864,7 @@ public final class OwnershipChecker {
                         && scope.lookup(receiverName.name()) != null) {
                     // The implicit mutable receiver is the first live exclusive
                     // argument, even though it is not in call.arguments().
-                    // Otherwise q.method(rt borrow mut q) aliases a writable
+                    // Otherwise q.method(rt mut borrow q) aliases a writable
                     // receiver within one invocation.
                     VarState receiver = requireState(scope, receiverName.name());
                     beginPersistentBorrow(receiver, true);
@@ -2428,6 +2428,12 @@ public final class OwnershipChecker {
             // argument is already borrowed. In particular, an opaque call
             // returning a borrow cannot silently lose its original owner and
             // then allow a later call argument to move that owner.
+            if (isBorrowValue(argument) && (argument.kind == ValueKind.MUT_BORROW
+                    || (argument.type != null && argument.type.isBorrow()
+                            && argument.type.mutableBorrow()))) {
+                throw error(callable + " argument " + position
+                        + " cannot forward a mutable borrow as a readonly structural view");
+            }
             if (isBorrowValue(argument) && argument.borrowSource == null) {
                 throw error(callable + " argument " + position
                         + " has no proven borrow provenance for a structural parameter");
@@ -2447,7 +2453,7 @@ public final class OwnershipChecker {
             boolean mutable = param.type().mutableBorrow();
             if (arg instanceof Ast.UnaryExpr unary && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
                 if (mutable && !unary.operator().equals("&mut")) {
-                    throw error(callable + " argument " + position + " requires rt borrow mut");
+                    throw error(callable + " argument " + position + " requires rt mut borrow");
                 }
                 BorrowPlace place = borrowPlace(unary.operand(), scope);
                 if (mutable && !(unary.operand() instanceof Ast.NameExpr)) {
