@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -119,4 +120,62 @@ final class OresKeyedMapNominalEntrySnapshotTest {
         assertTrue(snapshot.isEmpty(),
                 "a detached empty snapshot must not become a live view");
     }
+    @Test
+    void snapshotDetachesMappingButDeliberatelyDoesNotDeepFreezeValues() {
+        OresKeyedMap<String, Object> map =
+                OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.ANY);
+        ArrayList<Object> mutable = new ArrayList<>();
+        mutable.add("before");
+        map.put("payload", mutable);
+
+        List<OresEntry> snapshot = map.nominalEntrySnapshot();
+        assertSame(mutable, snapshot.getFirst().value());
+
+        map.remove("payload");
+        mutable.add("after");
+
+        assertEquals(1, snapshot.size(),
+                "mapping cardinality is detached from later Map mutation");
+        assertEquals(List.of("before", "after"), snapshot.getFirst().value(),
+                "value graphs stay local references in this non-transport API");
+    }
+
+    @Test
+    void concurrentValueReplacementCannotCorruptNominalSnapshotOrder() throws Exception {
+        OresKeyedMap<String, Integer> map =
+                OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.INT);
+        List<String> expectedKeys = java.util.stream.IntStream.range(0, 64)
+                .mapToObj(i -> "k" + i)
+                .toList();
+        for (int i = 0; i < expectedKeys.size(); i++) {
+            map.put(expectedKeys.get(i), i);
+        }
+
+        var workers = java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            var writer = workers.submit(() -> {
+                for (int round = 0; round < 1_000; round++) {
+                    for (int i = 0; i < expectedKeys.size(); i++) {
+                        map.put(expectedKeys.get(i), round + i);
+                    }
+                }
+            });
+            var reader = workers.submit(() -> {
+                for (int round = 0; round < 1_000; round++) {
+                    List<OresEntry> snapshot = map.nominalEntrySnapshot();
+                    assertEquals(expectedKeys,
+                            snapshot.stream().map(OresEntry::key).toList());
+                    assertEquals(expectedKeys.size(), snapshot.size());
+                    assertTrue(snapshot.stream().allMatch(entry -> entry.value() != null));
+                }
+            });
+
+            writer.get(10, java.util.concurrent.TimeUnit.SECONDS);
+            reader.get(10, java.util.concurrent.TimeUnit.SECONDS);
+        } finally {
+            workers.shutdownNow();
+        }
+    }
+
+
 }
