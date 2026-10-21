@@ -19,10 +19,11 @@ final class TypedMapClosedSurfaceLanguageTest {
     @Test
     void ownershipCheckerRestoresTerminalIndexedMoveOnlyMapCandidateOnCatchEdge() {
         String source = """
-                pub fnc main(): void {
+                import class JsonValue from "alloc/json";
+
+                fnc stage(JsonValue item): void {
                   val Map<string, JsonValue> values =
                       new Map<string, JsonValue>();
-                  val JsonValue item = new JsonValue();
 
                   try {
                     values["x"] = item;
@@ -40,10 +41,11 @@ final class TypedMapClosedSurfaceLanguageTest {
     @Test
     void ownershipCheckerRestoresTerminalNamedPutCandidateOnCatchEdge() {
         String source = """
-                pub fnc main(): void {
+                import class JsonValue from "alloc/json";
+
+                fnc stage(JsonValue item): void {
                   val Map<string, JsonValue> values =
                       new Map<string, JsonValue>();
-                  val JsonValue item = new JsonValue();
 
                   try {
                     const Option<JsonValue> previous =
@@ -62,10 +64,11 @@ final class TypedMapClosedSurfaceLanguageTest {
     @Test
     void ownershipCheckerKeepsTerminalCandidateMovedAfterNormalTryExit() {
         String source = """
-                pub fnc main(): void {
+                import class JsonValue from "alloc/json";
+
+                fnc stage(JsonValue item): void {
                   val Map<string, JsonValue> values =
                       new Map<string, JsonValue>();
-                  val JsonValue item = new JsonValue();
 
                   try {
                     values["x"] = item;
@@ -85,10 +88,11 @@ final class TypedMapClosedSurfaceLanguageTest {
     @Test
     void ownershipCheckerDoesNotRestoreMoveWhenMapWriteIsNotTerminal() {
         String source = """
-                pub fnc main(): void {
+                import class JsonValue from "alloc/json";
+
+                fnc stage(JsonValue item): void {
                   val Map<string, JsonValue> values =
                       new Map<string, JsonValue>();
-                  val JsonValue item = new JsonValue();
 
                   try {
                     values["x"] = item;
@@ -108,10 +112,11 @@ final class TypedMapClosedSurfaceLanguageTest {
     @Test
     void outerCatchKeepsInnerCommittedRecoverableMapMoveConservative() {
         String source = """
-                pub fnc main(): void {
+                import class JsonValue from "alloc/json";
+
+                fnc stage(JsonValue item): void {
                   val Map<string, JsonValue> values =
                       new Map<string, JsonValue>();
-                  val JsonValue item = new JsonValue();
 
                   try {
                     try {
@@ -136,10 +141,11 @@ final class TypedMapClosedSurfaceLanguageTest {
                 define class JsonValue as
                 end
 
-                pub fnc main(): void {
+                import class JsonValue from "alloc/json";
+
+                fnc stage(JsonValue item): void {
                   val Map<string, JsonValue> values =
                       new Map<string, JsonValue>();
-                  val JsonValue item = new JsonValue();
 
                   try {
                     values["x"] = item;
@@ -158,6 +164,8 @@ final class TypedMapClosedSurfaceLanguageTest {
     @Test
     void ownershipCheckerFailsClosedOnTypedMapMutatorArity() {
         String source = """
+                import class JsonValue from "alloc/json";
+
                 pub fnc main(): void {
                   val Map<string, JsonValue> values =
                       new Map<string, JsonValue>();
