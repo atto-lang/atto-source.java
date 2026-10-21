@@ -3685,14 +3685,16 @@ public final class OwnershipChecker {
 
     /**
      * Minimal explicit forbidden-capability backstop for independently
-     * scheduled Tasks. This is NOT a full nominal Send derivation: the type
-     * checker and runtime detacher remain independent admission authorities.
+     * scheduled Tasks. This is NOT a full nominal Send derivation. Future<T>
+     * is intentionally not on this list: OresFuture is runtime-thread-safe,
+     * cross-scheduler await is supported, and Future is affine so Task capture
+     * transfers it with MOVE rather than copying cancellation/consumer authority.
      */
     private static boolean forbiddenTaskCapability(Ast.TypeRef type) {
         if (type == null) return false;
         if (type.isBorrow()) return false; // dedicated borrow diagnostic below
         if (switch (type.name()) {
-            case "Future", "Task", "TaskHandle", "TaskScope",
+            case "Task", "TaskHandle", "TaskScope",
                     "Mutex", "MutexGuard", "Rc", "RefCell",
                     "ActorMail", "ActorOutput", "ActorOutputStream",
                     "TcpConnection", "HttpExchange", "HttpServer",
