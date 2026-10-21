@@ -160,4 +160,20 @@ final class ImplicitAnonymousStructuralParameterTest {
         assertDoesNotThrow(() -> OwnershipChecker.check(typed));
     }
 
+
+    @Test
+    void implicitShapesNeverWidenRawFieldStorageOrReadPrivateClassMembers() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc read(struct{value: float} row): float { return row.value; }
+                fnc bad(): float { return read(record{value: 1}); }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class Secret as
+                  val int id = 1;
+                end
+                fnc read(struct{id: int} row): int { return row.id; }
+                fnc bad(): int { return read(new Secret()); }
+                """)));
+    }
+
 }
