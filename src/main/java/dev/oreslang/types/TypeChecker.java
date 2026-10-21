@@ -2487,7 +2487,13 @@ public final class TypeChecker {
             } else throw new IllegalArgumentException("unsupported assignment target");
             Type value = typeOf(assignment.value(), env, generics, self);
             requireReadonlyCapabilityPreserved(value, targetType, "assignment to " + where);
-            if (!(isJsonValueType(targetType) && isJsonScalarLiftable(value))) {
+            if (isJsonValueType(targetType)) {
+                if (!isJsonScalarLiftable(value)) {
+                    throw new IllegalArgumentException(
+                            "JSON Map insertion currently accepts scalar values only; "
+                                    + "moving an existing JsonValue requires rollback-safe owned-put lowering");
+                }
+            } else {
                 requireAssignable(value, targetType, "assignment to " + where);
             }
             for (Type slot : dynamicFixedSlots) {
@@ -3234,13 +3240,19 @@ public final class TypeChecker {
                                 actualArgument,
                                 expectedArgument,
                                 "collection member argument " + (i + 1));
-                        boolean jsonPutScalar =
+                        boolean jsonPutValue =
                                 isTypedMapType(receiver)
                                         && member.member().equals("put")
                                         && i == 1
-                                        && isJsonValueType(expectedArgument)
-                                        && isJsonScalarLiftable(actualArgument);
-                        if (!jsonPutScalar) {
+                                        && isJsonValueType(expectedArgument);
+                        if (jsonPutValue) {
+                            if (!isJsonScalarLiftable(actualArgument)) {
+                                throw new IllegalArgumentException(
+                                        "Map<String, JsonValue>.put currently accepts scalar "
+                                                + "values only; owned JsonValue transfer awaits "
+                                                + "rollback-safe lowering");
+                            }
+                        } else {
                             requireAssignable(
                                     actualArgument,
                                     expectedArgument,
