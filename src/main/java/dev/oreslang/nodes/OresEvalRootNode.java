@@ -99,6 +99,23 @@ public final class OresEvalRootNode extends RootNode {
         return Set.copyOf(classes);
     }
 
+    static boolean isTrustedHostScalarResult(Object value) {
+        if (value == null
+                || value instanceof String
+                || value instanceof Boolean
+                || value instanceof Character
+                || value instanceof Byte
+                || value instanceof Short
+                || value instanceof Integer
+                || value instanceof Long
+                || value instanceof Float
+                || value instanceof Double) {
+            return true;
+        }
+        return value.getClass() == java.math.BigInteger.class
+                || value.getClass() == java.math.BigDecimal.class;
+    }
+
     static boolean isTrustedAsyncScalar(Object value) {
         if (value == null
                 || value instanceof String
@@ -8029,8 +8046,7 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof CompletionStage<?> stage) {
                 return OresFuture.from(stage);
             }
-            if (value instanceof Number || value instanceof Boolean || value instanceof String
-                    || value instanceof Character || value instanceof OresFuture<?>) {
+            if (isTrustedHostScalarResult(value) || value instanceof OresFuture<?>) {
                 return value;
             }
             return new HostObjectFacade(value);
