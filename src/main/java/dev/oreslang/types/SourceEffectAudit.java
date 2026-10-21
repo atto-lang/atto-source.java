@@ -28,25 +28,62 @@ public final class SourceEffectAudit {
     private static final int MAX_DEPTH = 128;
     private static final int MAX_DECLARATIONS = 1024;
 
-    public record Report(Map<String, Set<EffectContracts.Effect>> functions,
-                         List<String> unsupportedDeclarations) {
-        public Report {
+    /**
+     * Compiler-produced inspection result. No public constructor: a caller
+     * must not mint a syntactically pure report from arbitrary map values.
+     * The source digest is an identity binding, NOT a signed codegen proof.
+     */
+    public static final class Report {
+        private final Map<String, Set<EffectContracts.Effect>> functions;
+        private final List<String> unsupportedDeclarations;
+        private final String sourceSha256;
+
+        private Report(Map<String, Set<EffectContracts.Effect>> functions,
+                List<String> unsupportedDeclarations, String sourceSha256) {
             Map<String, Set<EffectContracts.Effect>> snapshot = new LinkedHashMap<>();
             functions.forEach((key, value) -> snapshot.put(key, Set.copyOf(value)));
-            functions = Collections.unmodifiableMap(snapshot);
-            unsupportedDeclarations = List.copyOf(unsupportedDeclarations);
+            this.functions = Collections.unmodifiableMap(snapshot);
+            this.unsupportedDeclarations = List.copyOf(unsupportedDeclarations);
+            this.sourceSha256 = sourceSha256;
         }
 
-        /** Never a substitute for signed codegen/effect receipts. */
+        public Map<String, Set<EffectContracts.Effect>> functions() { return functions; }
+        public List<String> unsupportedDeclarations() { return unsupportedDeclarations; }
+        public String sourceSha256() { return sourceSha256; }
+
+        /** A limited source-analysis fact, not authority to execute effects. */
         public boolean conservativelyEffectFree() {
-            return unsupportedDeclarations.isEmpty()
+            return sourceSha256 != null
+                    && !functions.isEmpty()
+                    && unsupportedDeclarations.isEmpty()
                     && functions.values().stream().allMatch(Set::isEmpty);
+        }
+
+        @Override
+        public String toString() {
+            return "SourceEffectAudit.Report{sourceSha256=" + sourceSha256
+                    + ", functions=" + functions
+                    + ", unsupportedDeclarations=" + unsupportedDeclarations + "}";
         }
     }
 
-    /** Do not accept an unchecked user-provided AST as a trusted source fact. */
+    /** Parse, typecheck and ownership-check before attaching source identity. */
     public static Report inspect(String source) {
-        return inspectChecked(OresCompiler.parseAndTypeCheck(source));
+        java.util.Objects.requireNonNull(source, "source");
+        Ast.Program checked = OresCompiler.parseAndTypeCheck(source);
+        Report facts = inspectChecked(checked);
+        return new Report(facts.functions, facts.unsupportedDeclarations,
+                sourceDigest(source));
+    }
+
+    private static String sourceDigest(String source) {
+        try {
+            byte[] hash = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(source.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(hash);
+        } catch (java.security.NoSuchAlgorithmException unavailable) {
+            throw new IllegalStateException("mandatory SHA-256 digest unavailable", unavailable);
+        }
     }
 
     private static Report inspectChecked(Ast.Program checked) {
@@ -112,7 +149,7 @@ public final class SourceEffectAudit {
                 }
             }
         }
-        return new Report(functions, unsupported);
+        return new Report(functions, unsupported, null);
     }
 
     private static final class VisitBudget {
