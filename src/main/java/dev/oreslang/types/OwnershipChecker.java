@@ -3475,7 +3475,8 @@ public final class OwnershipChecker {
     private Ast.TypeRef channelElementType(Ast.TypeRef type) {
         if (type == null) return Ast.TypeRef.inferred();
         Ast.TypeRef concrete = type.isBorrow() ? type.borrowedTarget() : type;
-        if (concrete.name().equals("Channel") && concrete.arguments().size() == 1) {
+        if ((concrete.name().equals("Channel") || concrete.name().equals("Stream"))
+                && concrete.arguments().size() == 1) {
             return concrete.arguments().getFirst();
         }
         return Ast.TypeRef.inferred();
@@ -3789,7 +3790,7 @@ public final class OwnershipChecker {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
                     "bool","Bool","string","String","void","SharedMutex",
-                    "Channel","SelectCase","SelectSet","OptionUnwrapError" -> true;
+                    "Channel","Stream","SelectCase","SelectSet","OptionUnwrapError" -> true;
             case "Option" -> type.arguments().size() == 1 && isCopyType(type.arguments().getFirst());
             case "Result" -> type.arguments().size() == 2
                     && isCopyType(type.arguments().get(0))
