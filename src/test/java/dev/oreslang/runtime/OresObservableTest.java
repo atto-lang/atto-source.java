@@ -761,6 +761,9 @@ final class OresObservableTest {
         };
         OresSubscription<Integer> subscription = OresObservable.fromIterable(broken).subscribe();
         assertSame(fatal, assertThrows(LinkageError.class, () -> subscription.next()));
+        assertTrue(subscription.isTerminated(),
+                "host-fatal exit must retire the in-flight pull reservation");
+        assertTrue(subscription.next().join().isComplete());
 
         OresSubscription<Integer> direct = new OresSubscription<>() {
             @Override
@@ -769,6 +772,8 @@ final class OresObservableTest {
             }
         };
         assertSame(fatal, assertThrows(LinkageError.class, () -> direct.next()));
+        assertTrue(direct.isTerminated());
+        assertTrue(direct.next().join().isComplete());
     }
 
 }
