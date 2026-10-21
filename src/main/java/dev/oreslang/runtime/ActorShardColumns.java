@@ -139,6 +139,50 @@ public final class ActorShardColumns implements AutoCloseable {
     }
 
     /**
+     * A zero-copy, owner-scoped read lease of a contiguous SoA column.
+     * The entire underlying native region becomes immutable until all leases
+     * are closed. This is not an inter-actor pointer or a transferable borrow.
+     */
+    public static final class ReadOnlyColumnLease implements AutoCloseable {
+        private final ActorRuntime.ActorShardLease owner;
+        private final ActorNativeArena.Region.ReadOnlyLease slice;
+        private final int length;
+
+        private ReadOnlyColumnLease(ActorRuntime.ActorShardLease owner,
+                ActorNativeArena.Region.ReadOnlyLease slice, int length) {
+            this.owner = owner;
+            this.slice = slice;
+            this.length = length;
+        }
+
+        public int length() { return length; }
+
+        public double read(int row) {
+            owner.requireOwner();
+            if (row < 0 || row >= length) throw new IndexOutOfBoundsException("column row");
+            return slice.readDouble(Math.multiplyExact(row, Double.BYTES));
+        }
+
+        @Override public void close() {
+            owner.requireOwner();
+            slice.close();
+        }
+    }
+
+    public ReadOnlyColumnLease leaseColumnReadOnly(int field) {
+        requireOwner();
+        if (field < 0 || field >= fields) throw new IndexOutOfBoundsException("field");
+        if (layout != Layout.SOA) {
+            throw new UnsupportedOperationException(
+                    "contiguous zero-copy column leases currently require SoA layout");
+        }
+        int columnBytes = Math.multiplyExact(rows, Double.BYTES);
+        int columnOffset = Math.multiplyExact(field, columnBytes);
+        return new ReadOnlyColumnLease(reservation,
+                reservation.leaseReadOnly(columnOffset, columnBytes), rows);
+    }
+
+    /**
      * Quota-charged immutable snapshot handle. Its byte reservation persists
      * until close(), or the owner's actor is physically finalized. An
      * outside-actor trusted host may read it; foreign actor turns cannot.
