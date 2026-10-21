@@ -1,6 +1,6 @@
 # Placed CPU/GPU Tasks — Java source implementation and remaining device gates
 
-Status: **Synchronous CPU regions and asynchronous CPU Task source lowering are implemented on the stacked Java Task draft; GPU placement is only recognized and always rejected at type check/runtime.** No GPU device backend is connected. This branch is stacked on Java PR #1468, not merged to main.
+Status: **Synchronous CPU regions and asynchronous CPU Task source lowering are implemented on the stacked Java Task draft; GPU task and eager GPU region placements are parsed but rejected by type checking and runtime until verified device execution exists.** No GPU device backend is connected. This branch is stacked on Java PR #1468, not merged to main.
 
 ## Canonical source surface
 
@@ -12,7 +12,8 @@ let Task<int> cpu = cpu task { return 42; };
 let Future<int> compatible = cpu task { return 42; };
 let int result = await cpu;
 
-// Reserved/parsed but rejected by type checker until device backend release:
+// Recognized as GPU work; both forms fail closed until device backend release:
+gpu { kernel_write(deviceBuffer); };
 let Task<GpuBuffer<float>> device = gpu task { return kernel(); };
 ```
 
@@ -33,13 +34,13 @@ CPU synchronous region calls from actors run **inline within the existing actor 
 
 ## Preserved fail-closed regions
 
-`gpu { ... }`, `nb cpu { ... }`, `nb gpu { ... }` and `quantum` remain rejected at source preflight until compatible graph/effect/backend lowering is landed. `gpu task { ... }` is parsed as an explicit GPU Task AST but type checking rejects it with an exact no-fallback diagnostic. Runtime rejects the same AST before consuming Task capture ownership, independent of compile-time checking. No CPU emulation silently satisfies GPU placement.
+`gpu { ... }` parses as a distinct eager GPU region but is rejected by type and runtime checks until a real device backend exists. `nb cpu { ... }`, `nb gpu { ... }` and `quantum` remain rejected at source preflight until compatible graph/effect/backend lowering is landed. `gpu task { ... }` is parsed as an explicit GPU Task AST but type checking rejects it with an exact no-fallback diagnostic. Runtime rejects the same AST before consuming Task capture ownership, independent of compile-time checking. No CPU emulation silently satisfies GPU placement.
 
 `gpu { ... }` previously meant a zero-argument anonymous GPU callable in an older, unmerged branch; the CPU/GPU v1 proposal chooses eager regions and instead requires `gpu () { ... }` for callable kernels. Do not enable both interpretations without migrating the prior fixtures.
 
 ## GPU device implementation gates (not yet met)
 
-1. **Syntax/AST/typing:** GPU synchronous execution regions, device-effect restrictions, full device-call graph validation, and explicit geometry/SIMT mapping. CPU eager expressions are already represented separately, but no cross-domain execution graph is enabled.
+1. **Syntax/AST/typing:** eager GPU region AST is now distinct from CPU, but device-effect restrictions, complete GPU type checking, a device call graph and explicit geometry/SIMT mapping still need implementation. CPU eager expressions are represented separately; cross-domain execution graph is not enabled.
 2. **Executable device backend:** approved OpenCL/target backend capable of launching real kernels, with opaque `GpuBuffer<T>`, owned transfers, layouts, alias admission, resource lifetime and device capability discovery. Missing devices fail explicitly.
 3. **Nonblocking completion:** a real GPU stream/fence/event drives one `OresFuture<T>` settlement from a host completion reactor; do not block actor or CPU scheduler carriers while waiting. Completion never runs arbitrary guest code directly.
 4. **Safe teardown:** cancellation is intent, not device quiescence. All buffers/transfers/permits stay alive until the GPU fence is physically complete, including device-loss and canceled/late-completion paths. Keep credits and TaskScope lifetime bound to actual completion.
@@ -51,4 +52,4 @@ Related existing drafts: Java Task #1468, CPU/GPU contract #1096, CPU host graph
 
 ## Java tests in this branch
 
-`PlacedTaskLanguageTest`: source/guest tests for CPU `Task<T>`, inferred `Task<T>`, explicit `Future<T>`, eager `cpu { }` values, return isolation, effects-only blocks, missing return/type mismatches, suspension rejection, GPU fail-closed placement, and actor CPU Task offload denial. These are checked-in tests, **not claims of executed CI**.
+`PlacedTaskLanguageTest`: source/guest tests for CPU `Task<T>`, inferred `Task<T>`, explicit `Future<T>`, eager `cpu { }` values, return isolation, effects-only blocks, missing return/type mismatches, suspension rejection, GPU fail-closed task and eager region placement, nested CPU Task captures, and actor CPU Task offload denial. These are checked-in tests, **not claims of executed CI**.
