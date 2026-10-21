@@ -380,16 +380,29 @@ public final class Ast {
             List<FieldDecl> fields,
             ConstructorDecl constructor,
             List<MethodDecl> methods,
-            MaxActorThreads maxActorThreads) implements Decl {
+            MaxActorThreads maxActorThreads,
+            boolean supervisor) implements Decl {
         public ClassDecl {
             java.util.Objects.requireNonNull(maxActorThreads, "maxActorThreads");
             if (actorKind == ActorKind.NONE && maxActorThreads != MaxActorThreads.LOW)
                 throw new IllegalArgumentException("non-actor classes cannot have parallel actor turns");
+            if (supervisor && actorKind == ActorKind.NONE)
+                throw new IllegalArgumentException("only actors can be supervisors");
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+        }
+
+        /** Preserve the pre-supervisor canonical constructor ABI. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods, MaxActorThreads maxActorThreads) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods, maxActorThreads, false);
         }
 
         /** Existing AST producers and unannotated actors remain single-flight. */
@@ -399,7 +412,7 @@ public final class Ast {
                          List<FieldDecl> fields, ConstructorDecl constructor,
                          List<MethodDecl> methods) {
             this(name, visibility, isAbstract, actorKind, genericParameters,
-                    parents, interfaces, fields, constructor, methods, MaxActorThreads.LOW);
+                    parents, interfaces, fields, constructor, methods, MaxActorThreads.LOW, false);
         }
 
         /** Compatibility constructor for pre-constructor AST producers. */
@@ -596,8 +609,17 @@ public final class Ast {
     public enum BindingKind { CONST, VAL, LET }
 
     public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
-            BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
+            TerminalEffectStmt, BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
             ForOfStmt, ForOfDestructureStmt, ForStmt, DoWhileStmt, LoopStmt, SelectStmt { }
+
+    public enum TerminalEffectKind { THROW, RAISE, PANIC }
+
+    public record TerminalEffectStmt(TerminalEffectKind kind, Expr value) implements Stmt {
+        public TerminalEffectStmt {
+            java.util.Objects.requireNonNull(kind, "kind");
+            java.util.Objects.requireNonNull(value, "value");
+        }
+    }
 
     /**
      * Binding rebinding and mutable access to the referent are independent capabilities.
