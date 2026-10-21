@@ -344,6 +344,36 @@ final class ActorNativeArenaTest {
     }
 
     @Test
+    void capabilityIssuanceUsesObjectIdentityNotForgedEqualsAndCannotExhaustQuota() {
+        AtomicLong charged = new AtomicLong();
+        Object marker = new Object();
+        try (ActorNativeArena arena = arena(8192, charged)) {
+            class EqualCapability implements ActorNativeArena.NativeCapability {
+                @Override public ActorNativeArena nativeArena() { return arena; }
+                @Override public boolean equals(Object other) { return other instanceof EqualCapability; }
+                @Override public int hashCode() { return 1; }
+            }
+            var issued = new EqualCapability();
+            var forged = new EqualCapability();
+            Map<String, Object> fields = arena.fields(List.of("handle"), marker);
+            arena.issueNativeCapability(issued);
+            long allocated = arena.allocatedBytes();
+            for (int attempt = 0; attempt < 100; attempt++) {
+                assertThrows(SecurityException.class, () -> fields.put("handle", forged),
+                        "equal() must not impersonate another issued capability");
+                assertEquals(0, arena.capabilityCount());
+                assertEquals(allocated, arena.allocatedBytes(),
+                        "denied host wrappers cannot consume native quota");
+            }
+            fields.put("handle", issued);
+            assertSame(issued, fields.get("handle"));
+            fields.put("handle", null);
+            assertEquals(0, arena.capabilityCount());
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
     void referencesStayInTheirArenaAndCyclesDoNotPreventReclamation() {
         AtomicLong charged = new AtomicLong();
         ActorNativeArena first = arena(8192, charged);
