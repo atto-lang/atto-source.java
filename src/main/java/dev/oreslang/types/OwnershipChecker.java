@@ -1191,8 +1191,14 @@ public final class OwnershipChecker {
             if (member.member().equals("value")) {
                 Ast.TypeRef valueType = receiverType(member.receiver(), scope);
                 if (valueType != null && valueType.name().equals("SelectResult")) {
-                    // A result may own a move-only channel payload. A repeated
-                    // projection would copy it without a second message.
+                    // A result may own a move-only payload; a borrowed result
+                    // cannot transfer ownership of its value, even once.
+                    if (member.receiver() instanceof Ast.NameExpr name) {
+                        VarState owner = scope.lookup(name.name());
+                        if (owner != null && owner.type != null && owner.type.isBorrow()) {
+                            throw error("SelectResult.value cannot be moved out of a borrowed result");
+                        }
+                    }
                     checkExpr(member.receiver(), scope, true);
                     return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
                 }
@@ -1569,6 +1575,20 @@ public final class OwnershipChecker {
             Ast.TypeRef receiverType = receiverType(dynamicMethod.receiver(), scope);
             if (receiverType != null
                     && receiverType.name().equals("DynamicSelectPlan")) {
+                // receiverType() unwraps borrow wrappers for method lookup;
+                // preserve the original ownership capability before allowing
+                // mutating methods. A shared &Plan must never gain .put/.remove
+                // merely because the runtime object exposes those members.
+                if ((dynamicMethod.member().equals("put")
+                            || dynamicMethod.member().equals("remove"))
+                        && dynamicMethod.receiver() instanceof Ast.NameExpr name) {
+                    VarState owner = scope.lookup(name.name());
+                    if (owner != null && owner.type != null
+                            && owner.type.isBorrow()) {
+                        ensureMutableReceiver(dynamicMethod.receiver(), scope,
+                                "DynamicSelectPlan." + dynamicMethod.member());
+                    }
+                }
                 checkExpr(dynamicMethod.receiver(), scope, false);
                 if (!call.arguments().isEmpty()) {
                     checkExpr(call.arguments().getFirst(), scope, false);
