@@ -26,7 +26,16 @@ public final class OresTuple implements Iterable<Object>, OresMutex.SharedState 
         // Never trust a caller-supplied List to honor the toArray() freshness
         // contract: a custom host List can return its own mutable backing array.
         // Force a distinct Object[] before exposing the nominal Tuple value.
+        int declaredSize = values.size();
+        if (declaredSize < 0) {
+            throw new IllegalArgumentException("tuple source list reported a negative size");
+        }
         Object[] snapshot = Objects.requireNonNull(values.toArray(), "tuple snapshot");
+        if (snapshot.length != declaredSize) {
+            throw new IllegalArgumentException(
+                    "tuple source list violated toArray size contract: size="
+                            + declaredSize + ", snapshot=" + snapshot.length);
+        }
         this.elements = Arrays.copyOf(snapshot, snapshot.length, Object[].class);
         for (Object element : elements) {
             Objects.requireNonNull(element, "tuple element");

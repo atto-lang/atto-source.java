@@ -105,6 +105,28 @@ final class OresTupleRuntimeTest {
     }
 
     @Test
+    void hostileListCannotForgeTupleArityThroughMalformedToArray() {
+        List<Object> hostile = new java.util.AbstractList<>() {
+            @Override public Object get(int index) {
+                return index == 0 ? "logical" : null;
+            }
+
+            @Override public int size() {
+                return 1;
+            }
+
+            @Override public Object[] toArray() {
+                return new Object[] {"logical", "forged"};
+            }
+        };
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> new OresTuple(hostile));
+        assertTrue(failure.getMessage().contains("toArray size contract"));
+    }
+
+    @Test
     void hostCallbacksNeverDefineTupleEqualityHashOrLogging() {
         OresTuple a = new OresTuple(List.of(new Hostile()));
         OresTuple b = new OresTuple(List.of(new Hostile()));
