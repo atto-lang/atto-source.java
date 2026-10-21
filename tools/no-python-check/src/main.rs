@@ -9,6 +9,11 @@ fn forbidden_path(path: &str) -> bool {
         || p.ends_with("/pyproject.toml") || p == "pyproject.toml"
         || p.ends_with("/uv.lock") || p == "uv.lock"
         || p.ends_with("/setup.py") || p == "setup.py"
+        || p.ends_with("/pipfile.lock") || p == "pipfile.lock"
+        || p.ends_with("/.python-version") || p == ".python-version"
+        || p.ends_with("/tox.ini") || p == "tox.ini"
+        || p.ends_with("/setup.cfg") || p == "setup.cfg"
+        || p.rsplit('/').next().is_some_and(|name| name.starts_with("requirements") && name.ends_with(".txt"))
 }
 
 fn forbidden_workflow_line(line: &str) -> bool {
@@ -19,13 +24,19 @@ fn forbidden_workflow_line(line: &str) -> bool {
     }
     ["actions/setup-python@", "python -m ", "python3 -m ", "python -c ", "python3 -c ",
      "python ", "python3 ", "pip install", "pip3 install", "uv run ",
-     "pytest ", "poetry run "].iter().any(|s| l.contains(s))
+     "pytest ", "poetry run ", "/usr/bin/python", "/usr/local/bin/python",
+     "env python", "env python3"].iter().any(|s| l.contains(s))
 }
 
 fn inspect_commands(path: &str) -> bool {
     let p = path.to_ascii_lowercase();
     (p.starts_with(".github/workflows/") && (p.ends_with(".yaml") || p.ends_with(".yml")))
         || p == "makefile" || p.ends_with("/makefile") || p.ends_with(".sh")
+        || p == "dockerfile" || p.ends_with("/dockerfile")
+        || p == "containerfile" || p.ends_with("/containerfile")
+        || p == "justfile" || p.ends_with("/justfile")
+        || p == "taskfile.yml" || p == "taskfile.yaml"
+        || p.ends_with("/taskfile.yml") || p.ends_with("/taskfile.yaml")
 }
 
 fn violation(path: &str, body: &str) -> Vec<String> {
@@ -97,6 +108,9 @@ mod tests {
         assert!(forbidden_path("tool/doit.py"));
         assert!(forbidden_path("pyproject.toml"));
         assert!(forbidden_path("tests/a.ipynb"));
+        assert!(forbidden_path("requirements-dev.txt"));
+        assert!(forbidden_path(".python-version"));
+        assert!(forbidden_path("tools/tox.ini"));
         assert!(!forbidden_path("README.md"));
         assert!(!forbidden_path("src/main.rs"));
     }
@@ -109,7 +123,12 @@ mod tests {
         assert!(!forbidden_workflow_line("name: Python policy"));
         assert!(inspect_commands(".github/workflows/no-python-policy.yml"));
         assert!(inspect_commands("scripts/build.sh"));
+        assert!(inspect_commands("Dockerfile"));
+        assert!(inspect_commands("infra/Justfile"));
+        assert!(inspect_commands("Taskfile.yml"));
         assert!(!inspect_commands("README.md"));
         assert!(forbidden_workflow_line("- run: python3 -m pytest"));
+        assert!(forbidden_workflow_line("RUN /usr/bin/python tool.py"));
+        assert!(forbidden_workflow_line("env python3 tool.py"));
     }
 }
