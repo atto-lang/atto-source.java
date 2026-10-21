@@ -216,6 +216,27 @@ final class ReplySlotRegistry implements AutoCloseable {
                 new TimeoutException("actor request reply deadline elapsed"));
     }
 
+    /**
+     * A verified transport disconnected. Fail only calls bound to that exact
+     * peer/session, never other tenants or sessions sharing this origin.
+     * This O(capacity) teardown is not on the hot reply path.
+     */
+    synchronized int failDisconnectedSession(
+            AuthenticatedPeer verifiedPeer, Throwable cause) {
+        Objects.requireNonNull(verifiedPeer, "verifiedPeer");
+        Objects.requireNonNull(cause, "cause");
+        int failed = 0;
+        for (int i = 0; i < nextUnused; i++) {
+            Slot slot = slots[i];
+            if (slot != null && slot.future != null
+                    && verifiedPeer.equals(slot.responder)
+                    && slot.future.failFromRuntime(cause)) {
+                failed++;
+            }
+        }
+        return failed;
+    }
+
     synchronized int pendingCount() { return active; }
     synchronized int highWaterMark() { return highWater; }
     synchronized int capacity() { return slots.length; }
