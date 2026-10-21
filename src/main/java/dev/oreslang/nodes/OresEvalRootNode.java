@@ -5313,6 +5313,11 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.NewExpr created,
                 List<Object> args,
                 Env env) {
+            if (created.type().name().equals("JsonValue")
+                    && compilerJsonValueImported) {
+                throw new IllegalArgumentException(
+                        "JsonValue is an opaque alloc/json value; construct it through Json.* APIs");
+            }
             if (created.type().name().equals("Map") && findClass("Map") == null) {
                 if (!args.isEmpty()) {
                     throw new IllegalArgumentException(
@@ -7199,6 +7204,11 @@ public final class OresEvalRootNode extends RootNode {
                         indexed.receiver());
             }
             if (expr instanceof Ast.NewExpr created) {
+                if (created.type().name().equals("JsonValue")
+                        && compilerJsonValueImported) {
+                    throw new IllegalArgumentException(
+                            "JsonValue is an opaque alloc/json value; construct it through Json.* APIs");
+                }
                 if (created.type().name().equals("Map") && findClass("Map") == null) {
                     if (!created.arguments().isEmpty()) {
                         throw new IllegalArgumentException(
