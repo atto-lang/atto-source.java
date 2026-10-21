@@ -992,6 +992,7 @@ public final class TypeChecker {
      */
     private boolean fieldInitializerMaySuspend(Ast.Expr expr) {
         if (expr instanceof Ast.AwaitExpr
+                || expr instanceof Ast.TaskExpr
                 || expr instanceof Ast.ChannelOpExpr
                 || expr instanceof Ast.DynamicSelectExpr
                 || expr instanceof Ast.AssignExpr) return true;
@@ -4015,6 +4016,18 @@ public final class TypeChecker {
             }
             return nominal;
         }
+        if (expr instanceof Ast.TaskExpr task) {
+            // A value-producing task needs contextual Future<T> information so
+            // every return path can be checked without guessing a result type.
+            // A no-value task is unambiguously Future<void>.
+            if (taskHasValueReturn(task.body())) {
+                throw new IllegalArgumentException(
+                        "value-producing task blocks require a contextual Future<T> type; "
+                                + "for example: let Future<int> t = cpu task { return 42; }");
+            }
+            checkTaskExpression(task, Primitive.VOID, env, generics, self);
+            return new Named("Future", List.of(Primitive.VOID));
+        }
         if (expr instanceof Ast.AwaitExpr awaited) {
             Type awaitedType = typeOf(awaited.expression(), env, generics, self);
             if (awaitedType instanceof Named named
@@ -4513,7 +4526,85 @@ public final class TypeChecker {
         return Primitive.BOOL;
     }
 
+    private Type checkTaskExpression(
+            Ast.TaskExpr task,
+            Type result,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        if (task.domain() == Ast.ExecutionDomain.GPU) {
+            throw new IllegalArgumentException(
+                    "gpu task is parsed and typed as an execution-domain boundary, "
+                            + "but physical GPU dispatch is not enabled on this backend; "
+                            + "no implicit CPU fallback");
+        }
+        if (currentActorKind != Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException(
+                    "task blocks inside actor state are not enabled until captured actor-state "
+                            + "authority is proven; launch a task from ordinary owned data instead");
+        }
+        validateAsyncBoundaryType(result, true, "CPU task result");
+
+        Map<Env.Binding, Set<String>> before = env.initializationSnapshot();
+        boolean previousGenerator = currentGenerator;
+        boolean previousAsync = currentAsyncCallable;
+        boolean previousMaySuspend = currentMaySuspend;
+        try {
+            Env taskEnv = new Env(env, env.descendantsNonLexical(), true);
+            currentGenerator = false;
+            currentAsyncCallable = true;
+            currentMaySuspend = true;
+            checkBlock(task.body(), taskEnv, generics, result, self);
+            if (result != Primitive.VOID && !definitelyReturns(task.body())) {
+                throw new IllegalArgumentException(
+                        "non-void CPU task must explicitly return on every path");
+            }
+        } finally {
+            env.restoreInitialization(before);
+            currentGenerator = previousGenerator;
+            currentAsyncCallable = previousAsync;
+            currentMaySuspend = previousMaySuspend;
+        }
+        return new Named("Future", List.of(result));
+    }
+
+    private boolean taskHasValueReturn(List<Ast.Stmt> body) {
+        for (Ast.Stmt stmt : body) {
+            if (stmt instanceof Ast.ReturnStmt ret && ret.value() != null) return true;
+            if (stmt instanceof Ast.BlockStmt block && taskHasValueReturn(block.body())) return true;
+            if (stmt instanceof Ast.LoopStmt loop && taskHasValueReturn(loop.body())) return true;
+            if (stmt instanceof Ast.IfStmt conditional) {
+                for (Ast.IfBranch branch : conditional.branches()) {
+                    if (taskHasValueReturn(branch.body())) return true;
+                }
+                if (taskHasValueReturn(conditional.elseBody())) return true;
+            } else if (stmt instanceof Ast.MatchStmt matched) {
+                for (Ast.MatchArm arm : matched.arms()) {
+                    if (taskHasValueReturn(arm.body())) return true;
+                }
+            } else if (stmt instanceof Ast.SwitchStmt switched) {
+                for (Ast.SwitchCase arm : switched.cases()) {
+                    if (taskHasValueReturn(arm.body())) return true;
+                }
+                if (taskHasValueReturn(switched.defaultBody())) return true;
+            } else if (stmt instanceof Ast.TryStmt attempted) {
+                if (taskHasValueReturn(attempted.body())
+                        || taskHasValueReturn(attempted.catchBody())
+                        || taskHasValueReturn(attempted.finallyBody())) return true;
+            }
+        }
+        return false;
+    }
+
     private Type typeOfAgainstExpected(Ast.Expr expr, Type expected, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.TaskExpr task
+                && expected instanceof Named future
+                && future.name().equals("Future")
+                && future.arguments().size() == 1) {
+            Type result = future.arguments().getFirst();
+            checkTaskExpression(task, result, env, generics, self);
+            return future;
+        }
         if (expr instanceof Ast.LambdaExpr lambda && expected instanceof Function fn) {
             validateLambdaAgainstExpected(lambda, fn, env, generics, self);
             return fn;
