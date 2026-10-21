@@ -3725,6 +3725,14 @@ public final class OwnershipChecker {
             for (Set<VarState> observer : tryMoveObservers) {
                 observer.add(root);
             }
+        } else {
+            // Only the innermost catch is allowed to recover this exact
+            // admission-time candidate. Any enclosing try can observe a later
+            // throw after the inner try completed normally, so outer catches
+            // must conservatively retain the committed move.
+            for (int i = 0; i + 1 < tryMoveObservers.size(); i++) {
+                tryMoveObservers.get(i).add(root);
+            }
         }
         root.moved = true;
     }
