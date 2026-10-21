@@ -9758,8 +9758,23 @@ public final class OresEvalRootNode extends RootNode {
             Objects.requireNonNull(admissions, "Task capture admissions");
             preflightTaskCaptures(admissions);
             ArrayList<MovedTaskSlot> moved = new ArrayList<>();
-            Env detached = detachedTaskSnapshotUnchecked(admissions, moved);
-            return new DetachedTaskSnapshot(detached, moved);
+            try {
+                Env detached =
+                        detachedTaskSnapshotUnchecked(admissions, moved);
+                return new DetachedTaskSnapshot(detached, moved);
+            } catch (RuntimeException | Error failure) {
+                // Snapshot materialization is part of the submission
+                // transaction. Even an allocation/runtime failure after the
+                // first MOVE must restore every already-poisoned parent slot.
+                for (int i = moved.size() - 1; i >= 0; i--) {
+                    MovedTaskSlot movedSlot = moved.get(i);
+                    if (movedSlot.slot().value == MOVED_TASK_CAPTURE) {
+                        movedSlot.slot().value = movedSlot.value();
+                    }
+                }
+                moved.clear();
+                throw failure;
+            }
         }
 
         private void preflightTaskCaptures(
