@@ -238,6 +238,65 @@ final class ActorUnaryMailboxRequestTest {
     }
 
     @Test
+    void endpointImpersonationAndCalleeRedirectionAreDeniedBeforeReservation() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             var timer = Executors.newSingleThreadScheduledExecutor()) {
+            var registry = new GenerationalReplyRegistry(4);
+            var checked = new CountDownLatch(1);
+            var denied = new AtomicReference<Throwable>();
+            var target = runtime.<String>spawn(() ->
+                    (message, ctx) -> fail("forged request must not execute"));
+            var other = runtime.<String>spawn(() -> (message, ctx) -> { });
+            var caller = runtime.<String>spawn(() -> (message, ctx) -> {
+                try {
+                    var own = runtime.bindActorReplyEndpoint(registry, ctx.self());
+                    var foreign = runtime.bindActorReplyEndpoint(registry, other);
+                    var callee = runtime.bindActorReplyEndpoint(registry, target);
+                    assertThrows(SecurityException.class, () ->
+                            ActorReplySchedulerBridge.requestCurrentActor(
+                                    runtime, registry, foreign, callee, target, "work",
+                                    String.class, Duration.ofSeconds(3), timer));
+                    assertThrows(SecurityException.class, () ->
+                            ActorReplySchedulerBridge.requestCurrentActor(
+                                    runtime, registry, own, foreign, target, "work",
+                                    String.class, Duration.ofSeconds(3), timer));
+                    assertThrows(SecurityException.class, () ->
+                            runtime.bindSupervisorApplicationReplyEndpoint(registry, ctx.self()));
+                } catch (Throwable failure) {
+                    denied.set(failure);
+                } finally {
+                    checked.countDown();
+                }
+            });
+            caller.send("audit");
+            assertTrue(checked.await(3, TimeUnit.SECONDS));
+            assertNull(denied.get(), "actor must not be able to impersonate either endpoint");
+            assertEquals(0, registry.pendingCount());
+            registry.close();
+        }
+    }
+
+    @Test
+    void retiringCallerIncarnationRejectsLateResponseAndFreesSlot() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var registry = new GenerationalReplyRegistry(1);
+            var source = runtime.<String>spawn(() -> (message, ctx) -> { });
+            var target = runtime.<String>spawn(() -> (message, ctx) -> { });
+            var caller = runtime.bindActorReplyEndpoint(registry, source);
+            var callee = runtime.bindActorReplyEndpoint(registry, target);
+            var ticket = registry.reserve(caller, callee, String.class);
+            assertEquals(1, registry.pendingCount());
+            source.stop();
+            source.done().get(3, TimeUnit.SECONDS);
+            assertEquals(0, registry.pendingCount());
+            assertFalse(ticket.reply(callee, "late"));
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> ticket.result().toCompletableFuture().get(3, TimeUnit.SECONDS));
+            registry.close();
+        }
+    }
+
+    @Test
     void ordinarySendHasNoForgedReplyCapability() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var received = new CountDownLatch(1);
