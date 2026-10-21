@@ -117,6 +117,14 @@ def strict_json_loads(text, label):
         raise Denied(label) from exc
 
 
+def canonical_security_lines(contents, label):
+    """Accept only printable ASCII records separated by LF."""
+    if (not isinstance(contents, bytes)
+            or any(byte != 10 and not 32 <= byte <= 126 for byte in contents)):
+        raise Denied(label + " contains noncanonical ASCII LF bytes")
+    return contents.decode("ascii").split("\n")
+
+
 def safe_policy_path(value, prefix, suffix):
     if not isinstance(value, str):
         raise Denied("invalid protected carrier path")
@@ -579,7 +587,7 @@ def require_destination_main_governance(repository, expected_base_sha):
             )):
         raise Denied("carrier CODEOWNERS digest is not authenticated")
     rules = [
-        line for line in legacy.canonical_security_lines(
+        line for line in canonical_security_lines(
             raw, "carrier CODEOWNERS"
         ) if line and not line.startswith("#")
     ]
