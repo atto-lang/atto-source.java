@@ -12,7 +12,7 @@ calling `gc()`, but **99% is a product goal, not a measured guarantee**.
 
 - `rt take`: moves ownership; compiler invalidates the old binding.
 - `rt borrow`: read-only, lifetime-bounded, non-escaping view.
-- `rt borrow mut`: exclusive mutable borrow.
+- `rt mut borrow`: exclusive mutable borrow.
 - `rt copy`: independently allocates an owned copy of the supported acyclic
   data graph; unsupported host/capability objects fail closed.
 - `rt share`: constructs a detached deeply immutable snapshot of a proven
@@ -30,7 +30,7 @@ capabilities remain explicit, core-gated and synchronized.
 
 Compiler-owned call loans now have explicit **argument-list lifetimes**.
 A structural argument observes a read-only borrowed view; `rt borrow`
-provides an explicit immutable view, and `rt borrow mut` requires exclusive
+provides an explicit immutable view, and `rt mut borrow` requires exclusive
 authority. A loan remains active while all later arguments are evaluated,
 including in first-class `Fnc<...>` calls and class method receiver dispatch.
 This rejects operations such as `inspect(box, rt take box)` and
@@ -53,7 +53,7 @@ argument admission; failed admission releases them as well.
   retain non-`Copy` caller loans; untyped host/dynamic calls cannot consume
   borrowed values at all. True task-lifetime loans are deferred.
 - Actor `self` is a runtime-scoped capability, not a freely transferable
-  `&mut` pointer. Its resumed continuation must re-enter the owning actor
+  mutable borrowed value. Its resumed continuation must re-enter the owning actor
   under the exclusive native carrier lease. **Only the canonical compiler-
   provided `self` parameter**, not `val alias = rt borrow self`, may cross a
   deferred `nb select` or an actor-local async receiver boundary. Other
