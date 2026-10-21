@@ -7,7 +7,6 @@ import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
-import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -26,7 +25,10 @@ final class TaskCaptureAdmissionIdentityTest {
                 """);
 
         Ast.TaskExpr task = firstTask(checked);
-        assertEquals(Set.of("value"), Ast.CheckedTaskCaptures.require(task));
+        assertEquals(
+                java.util.Map.of(
+                        "value", Ast.TaskCaptureTransfer.COPY),
+                Ast.CheckedTaskCaptures.require(task));
 
         Ast.TaskExpr clone =
                 new Ast.TaskExpr(task.domain(), task.body(), task.legacyNb());
