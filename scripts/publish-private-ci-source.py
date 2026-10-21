@@ -548,6 +548,9 @@ def publish(repository, source, branch, trusted_root, source_commit):
     base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
     base_tree = valid_sha(base_commit.get("tree", {}).get("sha"))
     def authorize_write():
+        # Incident closure is mutable: a P0 can reopen after preflight.
+        # Guard every blob/tree/commit/ref write, not only the first one.
+        require_resolved_blocking_incidents()
         if checked_policy_approval(trusted_root, repository) != (
                 approved_policy, approved_repository_id):
             raise Denied("private CI destination approval policy changed during transfer")
