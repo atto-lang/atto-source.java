@@ -53,6 +53,82 @@ final class ActorMessageScratchTest {
     }
 
     @Test
+    void checkedReadBorrowsPinTheEpochAndRejectConcurrentWrites() {
+        AtomicLong charged = new AtomicLong();
+        try (ActorNativeArena arena = new ActorNativeArena(8192, () -> {}, bytes -> {
+            charged.addAndGet(bytes);
+            return () -> charged.addAndGet(-bytes);
+        })) {
+            ActorMessageScratch scratch = new ActorMessageScratch(arena, 8192);
+            scratch.beginMessage();
+            var first = scratch.allocate(16);
+            first.writeLong(0, 0x1122334455667788L);
+            var borrow = first.borrowReadOnly();
+            assertEquals(0x1122334455667788L, borrow.readLong(0));
+            assertThrows(IndexOutOfBoundsException.class, () -> borrow.readLong(9));
+            assertThrows(IllegalStateException.class,
+                    () -> first.writeLong(0, 7),
+                    "native memory cannot be modified under an immutable borrow");
+            assertThrows(IllegalStateException.class,
+                    scratch::finishMessage,
+                    "the entire logical handler remains live while a read borrow exists");
+            assertEquals(0x1122334455667788L, borrow.readLong(0),
+                    "failed epoch closure cannot invalidate a live borrow");
+            borrow.close();
+            borrow.close(); // idempotent release must not underflow the pin count
+            assertThrows(IllegalStateException.class, () -> borrow.readByte(0));
+            first.writeLong(0, 0x6A6B6C6D6E6F7071L);
+            scratch.finishMessage();
+            assertThrows(IllegalStateException.class, () -> first.readLong(0));
+            scratch.beginMessage();
+            var second = scratch.allocate(16);
+            assertEquals(0L, second.readLong(0),
+                    "completion must scrub the old native allocation before reuse");
+            assertEquals(4096L, scratch.reservedBytes());
+            scratch.finishMessage();
+        }
+        assertEquals(0L, charged.get());
+    }
+
+    @Test
+    void readBorrowCannotBeReleasedByForeignActorOwner() throws Exception {
+        AtomicLong charged = new AtomicLong();
+        AtomicReference<Thread> owner = new AtomicReference<>(Thread.currentThread());
+        try (ActorNativeArena arena = new ActorNativeArena(8192, () -> {
+            if (Thread.currentThread() != owner.get()) {
+                throw new SecurityException("wrong message owner");
+            }
+        }, bytes -> {
+            charged.addAndGet(bytes);
+            return () -> charged.addAndGet(-bytes);
+        })) {
+            ActorMessageScratch scratch = new ActorMessageScratch(arena, 8192);
+            scratch.beginMessage();
+            var slice = scratch.allocate(16);
+            slice.writeLong(0, 99L);
+            var borrow = slice.borrowReadOnly();
+            AtomicReference<Throwable> stolenRelease = new AtomicReference<>();
+            Thread foreign = new Thread(() -> {
+                try {
+                    borrow.close();
+                } catch (Throwable error) {
+                    stolenRelease.set(error);
+                }
+            });
+            foreign.start();
+            foreign.join(3000);
+            assertFalse(foreign.isAlive());
+            assertInstanceOf(SecurityException.class, stolenRelease.get());
+            assertThrows(IllegalStateException.class, scratch::finishMessage,
+                    "failed foreign close must not silently unpin the native region");
+            assertEquals(99L, borrow.readLong(0));
+            borrow.close();
+            scratch.finishMessage();
+        }
+        assertEquals(0L, charged.get());
+    }
+
+    @Test
     void invalidOffsetsAndEpochsFailBeforeNativeAccess() {
         AtomicLong charged = new AtomicLong();
         try (ActorNativeArena arena = new ActorNativeArena(8192, () -> {}, bytes -> {
