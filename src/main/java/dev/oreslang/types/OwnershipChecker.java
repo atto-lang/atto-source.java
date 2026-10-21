@@ -3754,8 +3754,8 @@ public final class OwnershipChecker {
     /**
      * Check one lexical try body and grant catch-side ownership recovery only
      * to a direct final commit-aware Map write. Top-level defer registrations
-     * disable the proof because their cleanup executes after the write while
-     * still inside the try's catch boundary.
+     * and live MutexGuards disable the proof because their cleanup executes
+     * after the write while still inside the try's catch boundary.
      */
     private void checkTryBodyWithTerminalCommitProof(
             List<Ast.Stmt> body,
@@ -3770,6 +3770,7 @@ public final class OwnershipChecker {
                 boolean terminalCandidate =
                         commitAwareMapWrites
                                 && !hasTopLevelDefer
+                                && !local.hasLiveMutexGuard()
                                 && i == body.size() - 1
                                 && isDirectCommitAwareMapWriteStatement(statement);
                 if (terminalCandidate) terminalCommitAwareTryWriteDepth++;
