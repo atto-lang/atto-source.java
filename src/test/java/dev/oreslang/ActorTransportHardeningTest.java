@@ -76,16 +76,26 @@ final class ActorTransportHardeningTest {
     }
 
     @Test
-    void hostileContainerSizeCannotForceEagerAllocation() {
+    void hostileContainerIsRejectedBeforeSizeOrIterationCallbacks() {
+        java.util.concurrent.atomic.AtomicInteger callbacks =
+                new java.util.concurrent.atomic.AtomicInteger();
         List<Object> hostile = new AbstractList<>() {
             @Override
             public Object get(int index) {
-                throw new AssertionError("oversized container must be rejected before iteration");
+                callbacks.incrementAndGet();
+                throw new AssertionError("host List.get invoked");
             }
 
             @Override
             public int size() {
-                return Integer.MAX_VALUE;
+                callbacks.incrementAndGet();
+                throw new AssertionError("host List.size invoked");
+            }
+
+            @Override
+            public java.util.Iterator<Object> iterator() {
+                callbacks.incrementAndGet();
+                throw new AssertionError("host List.iterator invoked");
             }
         };
 
@@ -93,7 +103,8 @@ final class ActorTransportHardeningTest {
                 IllegalArgumentException.class,
                 () -> ActorRuntime.freeze(hostile));
 
-        assertTrue(error.getMessage().contains("maximum node count"));
+        assertTrue(error.getMessage().contains("not Sendable"), error.getMessage());
+        assertEquals(0, callbacks.get());
     }
 
     @Test
