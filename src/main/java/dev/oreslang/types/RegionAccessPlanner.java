@@ -54,7 +54,13 @@ public final class RegionAccessPlanner {
             if (byteBase != null) {
                 // Reject impossible compiler metadata now, rather than during
                 // a hot scheduling decision.
-                Math.addExact(byteBase, Math.multiplyExact(until, (long) elementBytes));
+                try {
+                    Math.addExact(byteBase,
+                            Math.multiplyExact(until, (long) elementBytes));
+                } catch (ArithmeticException overflow) {
+                    throw new IllegalArgumentException(
+                            "physical region geometry overflows byte address space", overflow);
+                }
             }
         }
         public boolean conflicts(Access other) {
@@ -265,7 +271,8 @@ public final class RegionAccessPlanner {
     private static long nextAlignedElement(
             long byteBase, long atLeast, long length, int elementBytes,
             int cacheLineBytes, long period) {
-        long limit = Math.min(length, Math.addExact(atLeast, period));
+        long search = Math.min(period, length - atLeast);
+        long limit = atLeast + search;
         for (long element = atLeast; element < limit; element++) {
             long offset = Math.addExact(
                     byteBase, Math.multiplyExact(element, (long) elementBytes));
