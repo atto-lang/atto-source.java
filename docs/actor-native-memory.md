@@ -32,6 +32,34 @@ process-local memory, not the stable MessagePack/wire representation.
   Replacing that allocator with stable FFM requires a deliberate JDK 22+ baseline
   change, not reflective access or preview APIs in this patch.
 
+## GraalVM actor worker-pool domains
+
+`ActorRuntime` eagerly constructs exactly three execution pool domains:
+`sharedDispatcher` for SHARED actors, `privateDispatcher` for PRIVATE/isolated
+actors, and `untrustedDispatcher` for UNTRUSTED actors. Each domain may be
+split into CPU-affinity lanes, but it is still one logical pool. Pool
+construction starts **zero** physical workers. Java workers start lazily on the
+first admitted turn. Native pthread carriers are now initialized on first
+accepted dispatch rather than during `NativeCarrierExecutor` construction;
+closing an unused native pool creates no pthread and no reaper. Use the host-only
+`ActorRuntime.dispatcherWorkerCounts()` snapshot to audit the live shared,
+isolated, and untrusted carrier counts.
+
+Worker pools belong to actor *classes*, not individual actors. An actor's
+`ActorNativeArena` is independently owned and persists across its mailbox
+turns and physical worker migration. A Future completion only enqueues an
+actor-owned continuation; the producer's thread must never enter the actor
+arena. At physical actor finalization, quiescence and native memory reclamation
+must happen after all entered turns and pending actor-scoped operations retire.
+
+The existing `OresScheduler.TaskRunner`, Future waiter registrations, and
+compiler-generated async frames are still JVM objects. **Native async frame
+lowering is not yet complete**: generated continuation program counters, local
+slots, reference IDs, and cleanup maps must eventually live in the owning
+actor's arena, with generation-fenced handles and safe terminal reclamation.
+These pool changes establish scheduling and initialization guarantees, not
+strict zero-managed-allocation execution.
+
 ## Per-actor native linear address space (GraalVM/JNI)
 
 Every logical actor already owns one `ActorNativeArena` in its `ActorCell`,
