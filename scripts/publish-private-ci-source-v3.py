@@ -57,6 +57,7 @@ MAX_PLAN = 64 * 1024
 RECEIPT_TTL = dt.timedelta(hours=24)
 SOURCE_REPOSITORY_ID = 1400792274
 TRUSTED_SOURCE_REVIEWER = "ORESoftware"
+TRUSTED_SOURCE_REVIEWER_USER_ID = REVIEW_AUTHORITY_USER_ID
 MAX_PR_REVIEWS = 100
 CONTROL_PLANE_PATHS = (
     "scripts/check-private-ci-destination.sh",
@@ -648,12 +649,16 @@ def checked_destination(repository, contract):
     return repo, base_tree, plan_bytes
 
 
-def require_source_codeowner_approval(source_pr, source_commit, author):
+def require_source_codeowner_approval(
+        source_pr, source_commit, author, author_id):
     """Require the independent source CODEOWNER to approve this exact PR head."""
     source_commit = valid_sha(source_commit, "invalid source commit")
-    if not isinstance(author, str) or not author:
+    if (not isinstance(author, str) or not author
+            or not isinstance(author_id, int) or isinstance(author_id, bool)
+            or author_id <= 0):
         raise Denied("source PR author identity is missing")
-    if author.casefold() == TRUSTED_SOURCE_REVIEWER.casefold():
+    if (author.casefold() == TRUSTED_SOURCE_REVIEWER.casefold()
+            or author_id == TRUSTED_SOURCE_REVIEWER_USER_ID):
         raise Denied("source PR author cannot self-authorize private CI export")
     response = legacy.gh_api(
         f"repos/{legacy.SOURCE_REPO}/pulls/{source_pr}/reviews?per_page=100"
@@ -672,6 +677,9 @@ def require_source_codeowner_approval(source_pr, source_commit, author):
         if (not isinstance(review_id, int) or isinstance(review_id, bool)
                 or not isinstance(user, dict)
                 or not isinstance(user.get("login"), str)
+                or not isinstance(user.get("id"), int)
+                or isinstance(user.get("id"), bool)
+                or user["id"] <= 0
                 or not isinstance(submitted, str)):
             raise Denied("source PR review identity or chronology is invalid")
         if review_id in seen_ids:
@@ -679,6 +687,8 @@ def require_source_codeowner_approval(source_pr, source_commit, author):
         seen_ids.add(review_id)
         if user["login"].casefold() != TRUSTED_SOURCE_REVIEWER.casefold():
             continue
+        if user["id"] != TRUSTED_SOURCE_REVIEWER_USER_ID:
+            raise Denied("source CODEOWNER numeric identity mismatch")
         try:
             instant = dt.datetime.fromisoformat(submitted.replace("Z", "+00:00"))
         except ValueError as exc:
@@ -720,16 +730,22 @@ def verify_source_pr(source_pr, source_commit):
             or pr.get("draft") is not False
             or not isinstance(user, dict)
             or not isinstance(user.get("login"), str)
+            or not isinstance(user.get("id"), int)
+            or isinstance(user.get("id"), bool)
+            or user["id"] <= 0
             or not isinstance(head, dict)
             or head.get("sha") != source_commit
             or not isinstance(head.get("repo"), dict)
             or head["repo"].get("full_name") != legacy.SOURCE_REPO
+            or head["repo"].get("id") != SOURCE_REPOSITORY_ID
             or not isinstance(base, dict)
             or not isinstance(base.get("repo"), dict)
             or base["repo"].get("full_name") != legacy.SOURCE_REPO
+            or base["repo"].get("id") != SOURCE_REPOSITORY_ID
             or base.get("ref") != legacy.SOURCE_PROTECTED_BRANCH):
         raise Denied("source commit is not the exact reviewed open PR head against main")
-    require_source_codeowner_approval(source_pr, source_commit, user["login"])
+    require_source_codeowner_approval(
+        source_pr, source_commit, user["login"], user["id"])
     return repo_id
 
 

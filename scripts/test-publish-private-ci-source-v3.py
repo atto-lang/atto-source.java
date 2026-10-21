@@ -877,14 +877,20 @@ class PrivateCiV3Test(unittest.TestCase):
                     "number": 1482,
                     "state": "open",
                     "draft": False,
-                    "user": {"login": "contributor"},
+                    "user": {"login": "contributor", "id": 424242},
                     "head": {
                         "sha": head_sha,
-                        "repo": {"full_name": v3.legacy.SOURCE_REPO},
+                        "repo": {
+                            "full_name": v3.legacy.SOURCE_REPO,
+                            "id": v3.SOURCE_REPOSITORY_ID,
+                        },
                     },
                     "base": {
                         "ref": "main",
-                        "repo": {"full_name": v3.legacy.SOURCE_REPO},
+                        "repo": {
+                            "full_name": v3.legacy.SOURCE_REPO,
+                            "id": v3.SOURCE_REPOSITORY_ID,
+                        },
                     },
                 }
             if route == reviews_route:
@@ -894,7 +900,10 @@ class PrivateCiV3Test(unittest.TestCase):
                         "state": "APPROVED",
                         "commit_id": head_sha,
                         "submitted_at": "2026-10-20T18:00:00Z",
-                        "user": {"login": v3.TRUSTED_SOURCE_REVIEWER},
+                        "user": {
+                            "login": v3.TRUSTED_SOURCE_REVIEWER,
+                            "id": v3.TRUSTED_SOURCE_REVIEWER_USER_ID,
+                        },
                     }]
                 }
             raise AssertionError(route)
@@ -909,8 +918,23 @@ class PrivateCiV3Test(unittest.TestCase):
         reviews_route = (
             f"repos/{v3.legacy.SOURCE_REPO}/pulls/1482/reviews?per_page=100"
         )
-        def make_api(state="APPROVED", commit_id=None, author="contributor"):
+        def make_api(
+                state="APPROVED", commit_id=None, author="contributor",
+                author_id=424242, reviewer_id=None, head_repo_id=None,
+                base_repo_id=None):
             commit_id = head_sha if commit_id is None else commit_id
+            reviewer_id = (
+                v3.TRUSTED_SOURCE_REVIEWER_USER_ID
+                if reviewer_id is None else reviewer_id
+            )
+            head_repo_id = (
+                v3.SOURCE_REPOSITORY_ID
+                if head_repo_id is None else head_repo_id
+            )
+            base_repo_id = (
+                v3.SOURCE_REPOSITORY_ID
+                if base_repo_id is None else base_repo_id
+            )
             def api(route, method="GET", payload=None):
                 if route == "repos/" + v3.legacy.SOURCE_REPO:
                     return {
@@ -927,14 +951,20 @@ class PrivateCiV3Test(unittest.TestCase):
                         "number": 1482,
                         "state": "open",
                         "draft": False,
-                        "user": {"login": author},
+                        "user": {"login": author, "id": author_id},
                         "head": {
                             "sha": head_sha,
-                            "repo": {"full_name": v3.legacy.SOURCE_REPO},
+                            "repo": {
+                                "full_name": v3.legacy.SOURCE_REPO,
+                                "id": head_repo_id,
+                            },
                         },
                         "base": {
                             "ref": "main",
-                            "repo": {"full_name": v3.legacy.SOURCE_REPO},
+                            "repo": {
+                                "full_name": v3.legacy.SOURCE_REPO,
+                                "id": base_repo_id,
+                            },
                         },
                     }
                 if route == reviews_route:
@@ -944,7 +974,10 @@ class PrivateCiV3Test(unittest.TestCase):
                             "state": state,
                             "commit_id": commit_id,
                             "submitted_at": "2026-10-20T18:00:00Z",
-                            "user": {"login": v3.TRUSTED_SOURCE_REVIEWER},
+                            "user": {
+                            "login": v3.TRUSTED_SOURCE_REVIEWER,
+                            "id": reviewer_id,
+                        },
                         }]
                     }
                 raise AssertionError(route)
@@ -966,6 +999,39 @@ class PrivateCiV3Test(unittest.TestCase):
         ):
             with self.assertRaisesRegex(v3.Denied, "self-authorize"):
                 v3.verify_source_pr(1482, head_sha)
+
+        with patch.object(
+            v3.legacy,
+            "gh_api",
+            side_effect=make_api(
+                author="renamed-reviewer-account",
+                author_id=v3.TRUSTED_SOURCE_REVIEWER_USER_ID,
+            ),
+        ):
+            with self.assertRaisesRegex(v3.Denied, "self-authorize"):
+                v3.verify_source_pr(1482, head_sha)
+
+        with patch.object(
+            v3.legacy,
+            "gh_api",
+            side_effect=make_api(
+                reviewer_id=v3.TRUSTED_SOURCE_REVIEWER_USER_ID + 1
+            ),
+        ):
+            with self.assertRaisesRegex(v3.Denied, "numeric identity mismatch"):
+                v3.verify_source_pr(1482, head_sha)
+
+        for label, kwargs in (
+            ("head", {"head_repo_id": v3.SOURCE_REPOSITORY_ID + 1}),
+            ("base", {"base_repo_id": v3.SOURCE_REPOSITORY_ID + 1}),
+        ):
+            with self.subTest(repo=label), patch.object(
+                v3.legacy, "gh_api", side_effect=make_api(**kwargs)
+            ):
+                with self.assertRaisesRegex(
+                    v3.Denied, "exact reviewed open PR head"
+                ):
+                    v3.verify_source_pr(1482, head_sha)
 
     def test_authorize_write_rechecks_carrier_eligibility(self):
         carrier = contract()
