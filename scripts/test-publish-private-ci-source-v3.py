@@ -888,6 +888,10 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3, "verify_published_root_and_commit"),
                 patch.object(v3, "require_handoff_refs_absent"),
                 patch.object(v3, "require_exact_ref") as require_exact_ref,
+                patch.object(
+                    v3.legacy, "checked_repo",
+                    return_value={"id": carrier["repository_id"]},
+                ),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
             ):
                 result = v3.publish(
@@ -1027,6 +1031,10 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3, "verify_published_root_and_commit"),
                 patch.object(v3, "require_handoff_refs_absent"),
                 patch.object(v3, "require_exact_ref"),
+                patch.object(
+                    v3.legacy, "checked_repo",
+                    return_value={"id": carrier["repository_id"]},
+                ),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
             ):
@@ -1092,6 +1100,10 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3, "verify_published_root_and_commit"),
                 patch.object(v3, "require_handoff_refs_absent"),
                 patch.object(v3, "require_exact_ref"),
+                patch.object(
+                    v3.legacy, "checked_repo",
+                    return_value={"id": carrier["repository_id"]},
+                ),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
             ):
@@ -1159,6 +1171,10 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3, "verify_published_root_and_commit"),
                 patch.object(v3, "require_handoff_refs_absent"),
                 patch.object(v3, "require_exact_ref"),
+                patch.object(
+                    v3.legacy, "checked_repo",
+                    return_value={"id": carrier["repository_id"]},
+                ),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
             ):
@@ -1229,6 +1245,10 @@ class PrivateCiV3Test(unittest.TestCase):
                 patch.object(v3, "verify_published_root_and_commit"),
                 patch.object(v3, "require_handoff_refs_absent"),
                 patch.object(v3, "require_exact_ref"),
+                patch.object(
+                    v3.legacy, "checked_repo",
+                    return_value={"id": carrier["repository_id"]},
+                ),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
             ):
@@ -1341,7 +1361,12 @@ class PrivateCiV3Test(unittest.TestCase):
                         ),
                         patch.object(v3, "authorize_write"),
                         patch.object(v3, "verify_published_root_and_commit"),
+                        patch.object(v3, "require_handoff_refs_absent"),
                         patch.object(v3, "require_exact_ref"),
+                        patch.object(
+                            v3.legacy, "checked_repo",
+                            return_value={"id": carrier["repository_id"]},
+                        ),
                         patch.object(v3.legacy, "gh_api", side_effect=api),
                         patch.object(v3, "delete_exact_ref") as cleanup,
                     ):
