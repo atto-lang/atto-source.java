@@ -1428,6 +1428,34 @@ public final class Ast {
             return epoch;
         }
 
+        /**
+         * A new ownership check revokes every older Task execution proof for
+         * the same exact Program before validation begins. Failed rechecks
+         * must not leave previously admitted Tasks executable. The negative
+         * epoch records an in-progress attempt and prevents a slower,
+         * superseded concurrent checker from publishing stale authority.
+         */
+        public static synchronized void beginCheck(
+                Program program, long checkEpoch) {
+            java.util.Objects.requireNonNull(program, "Task program");
+            if (checkEpoch <= 0) {
+                throw new IllegalArgumentException(
+                        "Task ownership check epoch must be positive");
+            }
+            expunge();
+            Long existing = PROGRAM_EPOCHS.get(
+                    new ProgramIdentityKey(program, null));
+            if (existing != null
+                    && Math.abs(existing) >= checkEpoch) {
+                throw new IllegalStateException(
+                        "Task ownership check epoch is not newer than the latest attempt");
+            }
+            CAPTURES.keySet().removeIf(key -> key.program() == program);
+            PROGRAM_EPOCHS.put(
+                    new ProgramIdentityKey(program, CLEARED_PROGRAMS),
+                    -checkEpoch);
+        }
+
         public static synchronized void publish(
                 Program program,
                 long checkEpoch,
@@ -1460,9 +1488,16 @@ public final class Ast {
             }
 
             expunge();
+            Long currentAttempt = PROGRAM_EPOCHS.get(
+                    new ProgramIdentityKey(program, null));
+            if (currentAttempt == null
+                    || currentAttempt.longValue() != -checkEpoch) {
+                throw new IllegalStateException(
+                        "Task ownership check was superseded before publication");
+            }
 
-            // One successful ownership pass supersedes every earlier
-            // admission for this exact Program identity.
+            // Only the current successful ownership attempt can publish
+            // execution authority for this exact Program identity.
             CAPTURES.keySet().removeIf(key -> key.program() == program);
             for (java.util.Map.Entry<TaskExpr, TaskCaptureAdmission> entry
                     : normalized.entrySet()) {
@@ -1504,9 +1539,9 @@ public final class Ast {
             expunge();
             Long epoch = PROGRAM_EPOCHS.get(
                     new ProgramIdentityKey(program, null));
-            if (epoch == null) {
+            if (epoch == null || epoch <= 0) {
                 throw new IllegalStateException(
-                        "Task execution requires the exact ownership-checked Program");
+                        "Task execution requires the latest successfully ownership-checked Program");
             }
             return epoch;
         }
