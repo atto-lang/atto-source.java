@@ -9180,7 +9180,7 @@ public final class TypeChecker {
         return env.lookup("Json") == null;
     }
 
-    private static boolean isJsonObjectMapType(Type type) {
+    private boolean isJsonObjectMapType(Type type) {
         Type concrete = type instanceof Borrow borrow ? borrow.target() : type;
         if (!isTypedMapType(concrete)) return false;
         return typedMapKeyType(concrete) == Primitive.STRING
