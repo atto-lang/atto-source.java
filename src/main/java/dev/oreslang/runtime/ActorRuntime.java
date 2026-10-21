@@ -2874,6 +2874,7 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public interface ActorOwnedGuestState {
         ActorId ownerActorId();
+        long ownerGeneration();
     }
 
     /**
@@ -9527,12 +9528,14 @@ public final class ActorRuntime implements AutoCloseable {
                                                 codeActorType,
                                                 sourceContext),
                                         "source actor executor returned null state");
-                        if (!created.ownerActorId().equals(ref.id())) {
+                        if (!created.ownerActorId().equals(ref.id())
+                                || created.ownerGeneration() != ref.generation()) {
                             throw new SecurityException(
                                     "source actor state owner "
-                                            + created.ownerActorId()
+                                            + created.ownerActorId() + "#"
+                                            + created.ownerGeneration()
                                             + " does not match actor "
-                                            + ref.id());
+                                            + ref.id() + "#" + ref.generation());
                         }
                         codeActorState = created;
                     } else {
@@ -9619,9 +9622,10 @@ public final class ActorRuntime implements AutoCloseable {
                             try {
                                 if (codeExecutor != null) {
                                     if (codeActorState == null
-                                            || !codeActorState.ownerActorId().equals(ref.id())) {
+                                            || !codeActorState.ownerActorId().equals(ref.id())
+                                            || codeActorState.ownerGeneration() != ref.generation()) {
                                         throw new SecurityException(
-                                                "source actor state lost actor ownership before mailbox dispatch");
+                                                "source actor state lost actor-incarnation ownership before mailbox dispatch");
                                     }
                                     @SuppressWarnings("unchecked")
                                     ActorInboxMail<Object> sourceMail =

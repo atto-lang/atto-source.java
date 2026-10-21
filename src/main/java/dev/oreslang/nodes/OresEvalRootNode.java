@@ -609,6 +609,7 @@ public final class OresEvalRootNode extends RootNode {
 
             return new SourceActorState(
                     actorContext.self().id(),
+                    actorContext.self().generation(),
                     actorTypeName,
                     object);
         }
@@ -625,6 +626,7 @@ public final class OresEvalRootNode extends RootNode {
                             : null;
             if (state == null
                     || !state.ownerActorId().equals(actorContext.self().id())
+                    || state.ownerGeneration() != actorContext.self().generation()
                     || !state.actorTypeName().equals(actorTypeName)
                     || !mail.recipient().equals(actorContext.self().id())) {
                 throw new SecurityException(
@@ -9971,11 +9973,16 @@ public final class OresEvalRootNode extends RootNode {
 
     private record SourceActorState(
             ActorRuntime.ActorId ownerActorId,
+            long ownerGeneration,
             String actorTypeName,
             OresObject object)
             implements ActorRuntime.ActorOwnedGuestState {
         private SourceActorState {
             Objects.requireNonNull(ownerActorId, "ownerActorId");
+            if (ownerGeneration <= 0) {
+                throw new IllegalArgumentException(
+                        "source actor owner generation must be positive");
+            }
             if (actorTypeName == null || actorTypeName.isBlank()) {
                 throw new IllegalArgumentException(
                         "source actor type name cannot be blank");
