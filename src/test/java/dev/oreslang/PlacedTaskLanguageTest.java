@@ -147,6 +147,21 @@ final class PlacedTaskLanguageTest {
     }
 
     @Test
+    void cpuRegionInsideTaskPreservesTransitiveCaptureProof() throws Exception {
+        assertEquals("42", run("""
+                pub routine main(): void {
+                    let int source = 41;
+                    let Task<int> worker = task {
+                        return cpu { return source + 1; };
+                    };
+                    let int result = await worker;
+                    stdio.stdout.write(result);
+                    return;
+                }
+                """));
+    }
+
+    @Test
     void eagerCpuRegionCannotReturnWrongTypeOrFallThrough() {
         assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
