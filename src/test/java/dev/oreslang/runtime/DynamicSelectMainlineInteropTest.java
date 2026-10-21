@@ -14,6 +14,28 @@ import java.util.concurrent.CancellationException;
 final class DynamicSelectMainlineInteropTest {
 
     @Test
+    void pendingFutureAliasesHaveOnePriorityWinnerAndReleaseLosingChannel() {
+        var producer = new OresFuture<Integer>();
+        var rendezvous = new ChannelRuntime.Channel<Integer>(0);
+        var set = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.await(producer),
+                ChannelRuntime.await(producer),
+                ChannelRuntime.read(rendezvous));
+
+        var pending = set.selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+        assertFalse(pending.isDone());
+        assertTrue(producer.completeFromRuntime(89));
+        var selected = pending.join();
+        assertEquals(0, selected.index(),
+                "duplicate Future readiness must prefer the first source arm");
+        assertEquals(89, selected.value());
+        assertFalse(rendezvous.tryWrite(42),
+                "the losing rendezvous reader must be revoked on Future completion");
+        assertFalse(producer.isCancelled(),
+                "a select winner must not cancel or consume the producer capability");
+    }
+
+    @Test
     void channelOnlyPendingRendezvousNeedsNoFutureListener() {
         var rendezvous = new ChannelRuntime.Channel<Integer>(0);
         var other = new ChannelRuntime.Channel<Integer>(0);
