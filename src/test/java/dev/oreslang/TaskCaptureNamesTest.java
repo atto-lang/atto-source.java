@@ -89,6 +89,36 @@ final class TaskCaptureNamesTest {
     }
 
     @Test
+    void classicForInitializerCapturesOuterButLoopBindingShadowsBody() {
+        Ast.ForStmt loop = new Ast.ForStmt(
+                new Ast.BindingStmt(
+                        Ast.BindingKind.VAL,
+                        null,
+                        "item",
+                        new Ast.NameExpr("source")),
+                new Ast.LiteralExpr(false),
+                null,
+                List.of(new Ast.ExprStmt(new Ast.NameExpr("item"))));
+        assertEquals(Set.of("source"),
+                TaskCaptureNames.referencedIn(List.of(loop)));
+    }
+
+    @Test
+    void recursiveLambdaBindingDoesNotCaptureSameNamedParentSlot() {
+        Ast.LambdaExpr recursive = new Ast.LambdaExpr(
+                List.of(),
+                new Ast.NameExpr("worker"),
+                null);
+        Ast.BindingStmt binding = new Ast.BindingStmt(
+                Ast.BindingKind.VAL,
+                null,
+                "worker",
+                recursive);
+        assertEquals(Set.of(),
+                TaskCaptureNames.referencedIn(List.of(binding)));
+    }
+
+    @Test
     void nestedTaskNameInventoryDoesNotRequireStartingTheChild() {
         // A capture inventory cannot run task code, schedule work, or await.
         Ast.TaskExpr nested = new Ast.TaskExpr(Ast.ExecutionDomain.GPU,
