@@ -99,6 +99,17 @@ final class TaskStreamReturnTest {
     }
 
     @Test
+    void nestedTransportPayloadsDoNotAcquireAccidentalSendAuthority() {
+        for (String type : new String[] {"Stream<int>", "Channel<int>"}) {
+            String source = "pub routine main(): void { "
+                    + "let Stream<" + type + "> x = Stream.new<" + type + ">(1);"
+                    + " return; }";
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source), type);
+        }
+    }
+
+    @Test
     void explicitStreamAndChannelAreNotImplicitlyInterchangeableTypes() {
         assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
