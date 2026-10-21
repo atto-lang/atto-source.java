@@ -55,7 +55,8 @@ public final class OwnershipChecker {
      * from retaining executable authority when a later statement/declaration
      * makes the enclosing program invalid.
      */
-    private final IdentityHashMap<Ast.TaskExpr, Set<String>> pendingTaskCaptures =
+    private final IdentityHashMap<
+            Ast.TaskExpr, Map<String, Ast.TaskCaptureTransfer>> pendingTaskCaptures =
             new IdentityHashMap<>();
 
     private OwnershipChecker(Ast.Program program) {
@@ -119,7 +120,7 @@ public final class OwnershipChecker {
     }
 
     private void publishTaskAdmissions() {
-        for (Map.Entry<Ast.TaskExpr, Set<String>> entry
+        for (Map.Entry<Ast.TaskExpr, Map<String, Ast.TaskCaptureTransfer>> entry
                 : pendingTaskCaptures.entrySet()) {
             Ast.CheckedTaskCaptures.record(entry.getKey(), entry.getValue());
         }
@@ -1336,11 +1337,23 @@ public final class OwnershipChecker {
                 discardingSelectReturn = savedDiscard;
                 taskScope.close();
             }
-            Set<String> admittedNames = Set.copyOf(captured.values.keySet());
-            Set<String> previousAdmission =
-                    pendingTaskCaptures.putIfAbsent(task, admittedNames);
+            LinkedHashMap<String, Ast.TaskCaptureTransfer> admitted =
+                    new LinkedHashMap<>();
+            for (Capture capture : captured.values.values()) {
+                Ast.TaskCaptureTransfer transfer =
+                        capture.source.kind == ValueKind.COPY
+                                ? Ast.TaskCaptureTransfer.COPY
+                                : Ast.TaskCaptureTransfer.MOVE;
+                admitted.put(capture.name, transfer);
+            }
+            Map<String, Ast.TaskCaptureTransfer> immutableAdmission =
+                    java.util.Collections.unmodifiableMap(
+                            new LinkedHashMap<>(admitted));
+            Map<String, Ast.TaskCaptureTransfer> previousAdmission =
+                    pendingTaskCaptures.putIfAbsent(
+                            task, immutableAdmission);
             if (previousAdmission != null
-                    && !previousAdmission.equals(admittedNames)) {
+                    && !previousAdmission.equals(immutableAdmission)) {
                 throw error(
                         "same Task expression produced inconsistent capture admission");
             }
