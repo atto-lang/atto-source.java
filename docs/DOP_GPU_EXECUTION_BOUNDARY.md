@@ -41,7 +41,7 @@ fallback.
 ## Paired fence claim (implemented in this branch)
 
 After typed kernel/layout preflight, `DopGpuAdmission.claim` (Java) or
-`dop::claim_gpu` (LLVM) invokes an atomic **two-buffer fence claim**.
+`dop::claim_gpu` (LLVM) invokes an atomic **two-buffer fence reservation**.
 The allocation locks are acquired in stable order (Java monotonic allocation
 ranks; native ordered owner and state pointers). Single-buffer `take`,
 `begin_command`, completion, cancellation and retirement synchronize
@@ -51,9 +51,15 @@ generations, tenant/device equality, `IDLE` and backend quiescence, and
 nonwrapping ticket sequences. Only after both return tickets have been
 created do the statuses change to `IN_FLIGHT` together.
 
-Failed validation does not partly claim either buffer. A successful claim
-blocks reuse/ownership transfer until corresponding authenticated device
-events are acknowledged. Reversed-order concurrent pair claims are covered
+Failed validation does not partly claim either buffer. A successful Java
+claim blocks reuse/ownership transfer but remains **RESERVED**, with the
+backend still physically quiescent. `markPairEnqueued` transitions both
+allocations together only after trusted-provider submission; completion and
+cancellation reject a reservation that has not crossed that boundary.
+`abortPairBeforeEnqueue` returns both reservations to IDLE atomically when
+submission never occurred, without rewinding ticket sequences. After enqueue,
+abort is forbidden and corresponding authenticated device events are required
+before the buffers can become reusable. Reversed-order concurrent pair claims are covered
 by regression tests. Java additionally preconstructs single-buffer tickets
 and successors before changing their state.
 
