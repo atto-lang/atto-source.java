@@ -1542,6 +1542,51 @@ public final class OwnershipChecker {
         }
 
         if (call.callee() instanceof Ast.MemberExpr member) {
+            if (member.receiver() instanceof Ast.NameExpr receiverName
+                    && receiverName.name().equals("self")
+                    && member.member().equals("handle_state")) {
+                VarState actorSelf = scope.lookup("self");
+                if (actorSelf == null || !isActorConfinedBorrow(actorSelf)) {
+                    throw error("self.handle_state requires an actor-confined self capability");
+                }
+                if (call.arguments().size() != 1
+                        || !(call.arguments().getFirst() instanceof Ast.LambdaExpr lambda)) {
+                    throw error(
+                            "self.handle_state requires exactly one inline lambda");
+                }
+                if (lambda.parameters().size() != 1) {
+                    throw error(
+                            "self.handle_state callback must accept exactly one state parameter");
+                }
+
+                Ast.TypeRef selfType = actorSelf.type.isBorrow()
+                        ? actorSelf.type.borrowedTarget()
+                        : actorSelf.type;
+                Ast.ClassDecl actor = findClass(selfType.name());
+                if (actor == null || actor.actorKind() == Ast.ActorKind.NONE) {
+                    throw error("self.handle_state requires an actor instance");
+                }
+
+                Ast.Param original = lambda.parameters().getFirst();
+                Ast.Param stateParam = new Ast.Param(
+                        Ast.TypeRef.borrowed(actorStateOwnershipProjection(actor), true),
+                        original.name(),
+                        false,
+                        false);
+                Ast.LambdaExpr stateLambda = new Ast.LambdaExpr(
+                        List.of(stateParam),
+                        lambda.expressionBody(),
+                        lambda.blockBody());
+
+                // The callback executes immediately inside the current actor
+                // turn. Preserve self as an actor-confined borrow for output/
+                // lifecycle intrinsics, while the synthetic state parameter
+                // carries the exclusive mutable loan.
+                checkLambda(stateLambda, scope, null, true);
+                return new ValueInfo(
+                        Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+            }
+
             ValueInfo sumCall = checkBuiltinSumCall(member, call.arguments(), scope);
             if (sumCall != null) return sumCall;
             ValueInfo stringCall = checkBuiltinStringCall(member, call.arguments(), scope);
@@ -3930,6 +3975,38 @@ public final class OwnershipChecker {
             if (containsAcquiredMutexGuardType(argument)) return true;
         }
         return false;
+    }
+
+    private static boolean isActorStateSchemaField(Ast.FieldDecl field) {
+        return field.annotations().stream()
+                .anyMatch(annotation ->
+                        annotation.name().equals("__actor_state_schema"));
+    }
+
+    private Ast.TypeRef actorStateOwnershipProjection(Ast.ClassDecl actor) {
+        LinkedHashMap<String, Ast.TypeRef> members = new LinkedHashMap<>();
+        for (Ast.FieldDecl field : actor.fields()) {
+            if (!isActorStateSchemaField(field)) continue;
+            if (field.bindingKind() != Ast.BindingKind.LET) {
+                throw error(
+                        "self.handle_state M1 cannot project immutable state field '"
+                                + actor.name() + "." + field.name() + "'");
+            }
+            Ast.TypeRef type = ownershipFieldType(field);
+            if (type == null || type.name().equals("$infer$")) {
+                throw error(
+                        "self.handle_state requires a concrete ownership type for state field '"
+                                + actor.name() + "." + field.name() + "'");
+            }
+            if (members.putIfAbsent(field.name(), type) != null) {
+                throw error(
+                        "duplicate sealed actor state field '" + field.name() + "'");
+            }
+        }
+        if (members.isEmpty()) {
+            throw error("self.handle_state requires an actor state { ... } schema");
+        }
+        return Ast.TypeRef.structType(members);
     }
 
     private Ast.TypeRef ownershipFieldType(Ast.FieldDecl field) {
