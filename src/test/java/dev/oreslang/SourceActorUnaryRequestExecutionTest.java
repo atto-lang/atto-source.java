@@ -15,16 +15,14 @@ final class SourceActorUnaryRequestExecutionTest {
     @Test
     void sourceActorRequestsTypedUnaryRunAndAwaitsOnItsOwnSchedulerLane() throws Exception {
         String program = """
-                define actor PingServer as
+                define actor Worker as
                   run(String request): String {
                     return "pong";
                   }
-                end
 
-                define actor Client as
-                  receive(ActorMail<ActorRef<PingServer>> mail): void {
-                    val server = mail.value;
-                    val answer = server.request("ping");
+                  receive(ActorMail<ActorRef<Worker>> mail): void {
+                    val peer = mail.value;
+                    val answer = peer.request("ping");
                     val response = await answer;
                     self.send(response);
                     self.end();
@@ -33,8 +31,8 @@ final class SourceActorUnaryRequestExecutionTest {
                 end
 
                 pub async routine main(): void {
-                  val server = spawn PingServer();
-                  val client = spawn Client();
+                  val server = spawn Worker();
+                  val client = spawn Worker();
                   await server.get_ready();
                   await client.get_ready();
                   client.send(server);
@@ -50,22 +48,22 @@ final class SourceActorUnaryRequestExecutionTest {
     @Test
     void incorrectRequestTypeIsRejectedByClosedWorldTypeChecker() {
         String program = """
-                define actor PingServer as
+                define actor Worker as
                   run(String request): String { return "pong"; }
-                end
-                define actor Client as
-                  receive(ActorMail<ActorRef<PingServer>> mail): void {
-                    val server = mail.value;
-                    val invalid = server.request(42);
+
+                  receive(ActorMail<ActorRef<Worker>> mail): void {
+                    val peer = mail.value;
+                    val invalid = peer.request(42);
                     self.end();
                     return;
                   }
                 end
+
                 pub async routine main(): void {
-                  val s = spawn PingServer();
-                  val c = spawn Client();
-                  c.send(s);
-                  await c.get_done();
+                  val server = spawn Worker();
+                  val client = spawn Worker();
+                  client.send(server);
+                  await client.get_done();
                   return;
                 }
                 """;
