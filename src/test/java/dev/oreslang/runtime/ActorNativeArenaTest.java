@@ -140,6 +140,47 @@ final class ActorNativeArenaTest {
     }
 
     @Test
+    void rejectedNativeListAppendsDoNotConsumeArenaQuotaOrPublishSlots() {
+        AtomicLong charged = new AtomicLong();
+        Object marker = new Object();
+        try (ActorNativeArena arena = arena(4096, charged);
+             ActorNativeArena foreign = arena(4096, new AtomicLong())) {
+            ActorNativeArena.NativeList list = arena.nativeList();
+            Object invalid = new Object();
+            Map<String, Object> foreignObject = foreign.fields(List.of("value"), marker);
+            long emptyAllocated = arena.allocatedBytes();
+            long emptyCommitted = arena.committedBytes();
+
+            // Every rejected first-element append previously reserved an orphan
+            // chunk before noticing that the payload could not be native.
+            for (int attempt = 0; attempt < 64; attempt++) {
+                assertThrows(IllegalArgumentException.class, () -> list.add(invalid));
+                assertThrows(SecurityException.class, () -> list.add(foreignObject));
+            }
+            assertEquals(0, list.size());
+            assertEquals(emptyAllocated, arena.allocatedBytes());
+            assertEquals(emptyCommitted, arena.committedBytes());
+
+            for (int i = 0; i < 16; i++) list.add((long) i);
+            long fullAllocated = arena.allocatedBytes();
+            long fullCommitted = arena.committedBytes();
+            // Reject at the 16-element chunk boundary before allocating chunk 2.
+            for (int attempt = 0; attempt < 64; attempt++) {
+                assertThrows(IllegalArgumentException.class, () -> list.add(invalid));
+                assertThrows(SecurityException.class, () -> list.add(foreignObject));
+            }
+            assertEquals(16, list.size());
+            assertEquals(15L, list.get(15));
+            assertEquals(fullAllocated, arena.allocatedBytes());
+            assertEquals(fullCommitted, arena.committedBytes());
+            list.add(16L);
+            assertEquals(17, list.size());
+            assertEquals(16L, list.get(16));
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
     void clearingAndRefillingNativeListReusesItsHistoricalChunkCapacity() {
         AtomicLong charged = new AtomicLong();
         try (ActorNativeArena arena = arena(8192, charged)) {
