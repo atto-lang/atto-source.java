@@ -7125,8 +7125,10 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof StdioFacade stdio) {
                 return switch (name) {
-                    case "print" -> (Invokable) stdio::print;
-                    case "println" -> (Invokable) stdio::println;
+                    case "print", "println" -> (Invokable) args ->
+                            strictNonblockingIoRejected("stdio." + name);
+                    case "print_async", "println_async" -> (Invokable) args ->
+                            strictNonblockingIoFuture("stdio." + name);
                     case "stdout" -> new StdoutFacade(stdio.context());
                     case "stdin" -> new StdinFacade(stdio.context());
                     default -> throw new IllegalArgumentException("unknown stdio member " + name);
@@ -7134,111 +7136,48 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof StdoutFacade stdout) {
                 return switch (name) {
-                    case "write" -> (Invokable) stdout::write;
-                    case "println" -> (Invokable) stdout::println;
-                    case "log" -> (Invokable) stdout::log;
-                    case "logList" -> (Invokable) stdout::logList;
+                    case "write", "println", "log", "logList" -> (Invokable) args ->
+                            strictNonblockingIoRejected("stdio.stdout." + name);
+                    case "write_async", "println_async", "log_async", "log_list_async" ->
+                            (Invokable) args -> strictNonblockingIoFuture("stdio.stdout." + name);
                     default -> throw new IllegalArgumentException("unknown stdout member " + name);
                 };
             }
             if (receiver instanceof StdinFacade stdin) {
                 return switch (name) {
-                    case "read_line" -> (Invokable) stdin::readLine;
+                    case "read_line" -> (Invokable) args ->
+                            strictNonblockingIoRejected("stdio.stdin.read_line");
+                    case "read_line_async" -> (Invokable) args ->
+                            strictNonblockingIoFuture("stdio.stdin.read_line_async");
                     default -> throw new IllegalArgumentException("unknown stdin member " + name);
                 };
             }
             if (receiver instanceof FileSystemFacade fs) {
                 return switch (name) {
-                    case "read_text" -> (Invokable) fs::readText;
-                    case "read_text_async" -> (Invokable) args -> {
-                        List<Object> values = immutableIoStrings(args);
-                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.READ,
-                                "fs.read_text_async", () -> fs.readText(values));
-                    };
-                    case "write_text" -> (Invokable) fs::writeText;
-                    case "write_text_atomic" -> (Invokable) fs::writeTextAtomic;
-                    case "write_text_async" -> (Invokable) args -> {
-                        List<Object> values = immutableIoStrings(args);
-                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
-                                "fs.write_text_async", () -> fs.writeText(values));
-                    };
-                    case "append_text" -> (Invokable) fs::appendText;
-                    case "append_text_async" -> (Invokable) args -> {
-                        List<Object> values = immutableIoStrings(args);
-                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
-                                "fs.append_text_async", () -> fs.appendText(values));
-                    };
-                    case "list_dir" -> (Invokable) fs::listDir;
-                    case "is_dir" -> (Invokable) fs::isDir;
-                    case "is_symlink" -> (Invokable) fs::isSymlink;
-                    case "exists" -> (Invokable) fs::exists;
-                    case "exists_async" -> (Invokable) args -> {
-                        List<Object> values = immutableIoStrings(args);
-                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.READ,
-                                "fs.exists_async", () -> fs.exists(values));
-                    };
-                    case "remove" -> (Invokable) fs::remove;
-                    case "remove_async" -> (Invokable) args -> {
-                        List<Object> values = immutableIoStrings(args);
-                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
-                                "fs.remove_async", () -> fs.remove(values));
-                    };
-                    case "mkdir_all" -> (Invokable) fs::mkdirAll;
-                    case "mkdir_all_async" -> (Invokable) args -> {
-                        List<Object> values = immutableIoStrings(args);
-                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
-                                "fs.mkdir_all_async", () -> fs.mkdirAll(values));
-                    };
+                    case "read_text", "write_text", "write_text_atomic", "append_text",
+                            "list_dir", "is_dir", "is_symlink", "exists", "remove", "mkdir_all" ->
+                            (Invokable) args -> strictNonblockingIoRejected("fs." + name);
+                    case "read_text_async", "write_text_async", "append_text_async",
+                            "exists_async", "remove_async", "mkdir_all_async" ->
+                            (Invokable) args -> strictNonblockingIoFuture("fs." + name);
                     default -> throw new IllegalArgumentException("unknown filesystem member " + name);
                 };
             }
             if (receiver instanceof NetworkFacade network) {
                 return switch (name) {
-                    case "connect" -> (Invokable) network::connect;
-                    case "connect_async" -> (Invokable) args -> {
-                        requireTwo(args, "network.connect_async");
-                        String host = requireString(args.get(0), "host");
-                        if (!(args.get(1) instanceof Number port)) throw new IllegalArgumentException("port must be an integer");
-                        List<Object> values = List.of(host, port.intValue());
-                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
-                                "network.connect_async", () -> network.connect(values));
-                    };
+                    case "connect" -> (Invokable) args ->
+                            strictNonblockingIoRejected("network.connect");
+                    case "connect_async" -> (Invokable) args ->
+                            strictNonblockingIoFuture("network.connect_async");
                     default -> throw new IllegalArgumentException("unknown network member " + name);
                 };
             }
             if (receiver instanceof NativeIo.TcpConnection socket) {
                 return switch (name) {
-                    case "read_line_async" -> (Invokable) args -> {
-                        requireZero(args, "socket.read_line_async");
-                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
-                                "socket.read_line_async", () -> {
-                                    String value = socket.readLine();
-                                    return new OptionValue(value != null, value);
-                                });
-                    };
-                    case "write_text_async" -> (Invokable) args -> {
-                        String value = requireStringArg(args, "socket.write_text_async");
-                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
-                                "socket.write_text_async", () -> { socket.writeText(value); return null; });
-                    };
-                    case "close_async" -> (Invokable) args -> {
-                        requireZero(args, "socket.close_async");
-                        return context.nativeIo().submitClose(context, () -> { socket.close(); return null; });
-                    };
-                    case "read_line" -> (Invokable) args -> {
-                        requireZero(args, "network.socket.read_line");
-                        String value = socket.readLine();
-                        return value == null ? new OptionValue(false, null) : new OptionValue(true, value);
-                    };
-                    case "write_text" -> (Invokable) args -> {
-                        socket.writeText(requireStringArg(args, "network.socket.write_text"));
-                        return null;
-                    };
-                    case "close" -> (Invokable) args -> {
-                        requireZero(args, "network.socket.close");
-                        socket.close();
-                        return null;
-                    };
+                    case "read_line", "write_text", "close" -> (Invokable) args ->
+                            strictNonblockingIoRejected("network.socket." + name);
+                    case "read_line_async", "write_text_async", "close_async" ->
+                            (Invokable) args -> strictNonblockingIoFuture("network.socket." + name);
                     default -> throw new IllegalArgumentException("unknown network socket member " + name);
                 };
             }
@@ -7363,12 +7302,10 @@ public final class OresEvalRootNode extends RootNode {
                         };
                         return context.http().handler(this, type, kind);
                     };
-                    case "listen" -> (Invokable) args -> {
-                        if (args.size() != 5) throw new IllegalArgumentException("http.listen(host, port, capacity, body_limit, deadline_ms)");
-                        return context.http().listen(requireString(args.get(0), "host"),
-                            ((Number) args.get(1)).intValue(), ((Number) args.get(2)).intValue(),
-                            ((Number) args.get(3)).intValue(), ((Number) args.get(4)).intValue());
-                    };
+                    case "listen" -> (Invokable) args ->
+                            strictNonblockingIoRejected("http.listen");
+                    case "listen_async" -> (Invokable) args ->
+                            strictNonblockingIoFuture("http.listen_async");
                     case "claim" -> (Invokable) args -> context.http().claim(requireStringArg(args, "http.claim"));
                     case "response_empty" -> (Invokable) args -> {
                         if (args.size() != 1 || !(args.get(0) instanceof Number status) || !isIntegral(status))
@@ -7389,18 +7326,10 @@ public final class OresEvalRootNode extends RootNode {
                         return HttpResponseDraft.text(body, (int) code,
                                 List.of(Map.entry("Content-Type", contentType)));
                     };
-                    case "get_text" -> (Invokable) http::getText;
-                    case "get_text_async" -> (Invokable) args -> {
-                        List<Object> values = immutableIoStrings(args);
-                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
-                                "http.get_text_async", () -> http.getText(values));
-                    };
-                    case "post_text" -> (Invokable) http::postText;
-                    case "post_text_async" -> (Invokable) args -> {
-                        List<Object> values = immutableIoStrings(args);
-                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
-                                "http.post_text_async", () -> http.postText(values));
-                    };
+                    case "get_text", "post_text" -> (Invokable) args ->
+                            strictNonblockingIoRejected("http." + name);
+                    case "get_text_async", "post_text_async" -> (Invokable) args ->
+                            strictNonblockingIoFuture("http." + name);
                     default -> throw new IllegalArgumentException("unknown http member " + name);
                 };
             }
@@ -10174,85 +10103,24 @@ public final class OresEvalRootNode extends RootNode {
     private static final class OresCastError extends RuntimeException {
         private OresCastError(String message) { super(message, null, false, false); }
     }
+    private static Object strictNonblockingIoRejected(String operation) {
+        throw new UnsupportedOperationException(
+                operation + " is disabled until a strict readiness/completion I/O provider is installed");
+    }
+
+    private static OresFuture<Object> strictNonblockingIoFuture(String operation) {
+        return OresFuture.failed(new UnsupportedOperationException(
+                operation + " is unsupported on this backend until a strict nonblocking I/O provider is installed"));
+    }
+
     private static List<Object> immutableIoStrings(List<Object> args) {
         // Only immutable host values may cross into an I/O worker.
         return args.stream().map(value -> (Object) requireString(value, "I/O argument")).toList();
     }
 
-    private record FileSystemFacade(OresContext context) {
-        private Object readText(List<Object> args) {
-            return NativeIo.readText(context, requireStringArg(args, "fs.read_text"));
-        }
-        private Object writeText(List<Object> args) {
-            requireTwo(args, "fs.write_text");
-            NativeIo.writeText(
-                    context,
-                    requireString(args.get(0), "fs.write_text path"),
-                    requireString(args.get(1), "fs.write_text value"));
-            return null;
-        }
-        private Object writeTextAtomic(List<Object> args) {
-            requireTwo(args, "fs.write_text_atomic");
-            NativeIo.writeTextAtomic(
-                    context,
-                    requireString(args.get(0), "fs.write_text_atomic path"),
-                    requireString(args.get(1), "fs.write_text_atomic value"));
-            return null;
-        }
-        private Object appendText(List<Object> args) {
-            requireTwo(args, "fs.append_text");
-            NativeIo.appendText(
-                    context,
-                    requireString(args.get(0), "fs.append_text path"),
-                    requireString(args.get(1), "fs.append_text value"));
-            return null;
-        }
-        private Object exists(List<Object> args) {
-            return NativeIo.exists(context, requireStringArg(args, "fs.exists"));
-        }
-        private Object listDir(List<Object> args) {
-            return NativeIo.listDir(context, requireStringArg(args, "fs.list_dir"));
-        }
-        private Object isDir(List<Object> args) {
-            return NativeIo.isDir(context, requireStringArg(args, "fs.is_dir"));
-        }
-        private Object isSymlink(List<Object> args) {
-            return NativeIo.isSymlink(context, requireStringArg(args, "fs.is_symlink"));
-        }
-        private Object remove(List<Object> args) {
-            NativeIo.remove(context, requireStringArg(args, "fs.remove"));
-            return null;
-        }
-        private Object mkdirAll(List<Object> args) {
-            NativeIo.createDirectories(context, requireStringArg(args, "fs.mkdir_all"));
-            return null;
-        }
-    }
-
-    private record NetworkFacade(OresContext context) {
-        private Object connect(List<Object> args) {
-            requireTwo(args, "network.connect");
-            String host = requireString(args.get(0), "network.connect host");
-            Object portValue = args.get(1);
-            if (!(portValue instanceof Number number)) {
-                throw new IllegalArgumentException("network.connect port must be an integer");
-            }
-            return NativeIo.connect(context, host, number.intValue());
-        }
-    }
-
-    private record HttpFacade(OresContext context) {
-        private Object getText(List<Object> args) {
-            return NativeIo.httpGetText(context, requireStringArg(args, "http.get_text"));
-        }
-        private Object postText(List<Object> args) {
-            requireTwo(args, "http.post_text");
-            return NativeIo.httpPostText(
-                    context,
-                    requireString(args.get(0), "http.post_text url"),
-                    requireString(args.get(1), "http.post_text body"));
-        }
-    }
+    private record FileSystemFacade(OresContext context) { }
+    private record NetworkFacade(OresContext context) { }
+    private record HttpFacade(OresContext context) { }
 
     private record EnvFacade(OresContext context) {
         private Object get(List<Object> args) {
@@ -10264,63 +10132,9 @@ public final class OresEvalRootNode extends RootNode {
         }
     }
 
-    private record StdioFacade(OresContext context) {
-        private Object print(List<Object> args) {
-            return emitStdout(context, args, "stdio.print", false);
-        }
-        private Object println(List<Object> args) {
-            return emitStdout(context, args, "stdio.println", true);
-        }
-    }
-    private static Object emitStdout(OresContext context, List<Object> args, String operation, boolean newline) {
-        context.requireCapability(IsolatePolicy.Capability.STDOUT, operation);
-        requireOne(args, operation);
-        String value = CycleSafeDisplay.render(args.getFirst());
-        long started = dev.oreslang.runtime.CorePerf.start();
-        try {
-            if (newline) {
-                context.output().println(value);
-            } else {
-                context.output().print(value);
-                context.output().flush();
-            }
-        } finally {
-            dev.oreslang.runtime.CorePerf.end(dev.oreslang.runtime.CorePerf.STDIO_WRITE, started);
-        }
-        return null;
-    }
-    private record StdoutFacade(OresContext context) {
-        private Object write(List<Object> args) {
-            return emitStdout(context, args, "stdio.stdout.write", false);
-        }
-        private Object println(List<Object> args) {
-            return emitStdout(context, args, "stdio.stdout.println", true);
-        }
-        private Object log(List<Object> args){
-            context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.stdout.log");
-            for(Object arg:args)context.output().print(CycleSafeDisplay.render(arg));
-            context.output().println();
-            context.output().flush();
-            return null;
-        }
-        private Object logList(List<Object> args){
-            context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.stdout.logList");
-            requireOne(args,"stdio.stdout.logList");
-            return log(expandArgumentSequence(args.getFirst(),"stdio.stdout.logList"));
-        }
-    }
-    private record StdinFacade(OresContext context) {
-        private Object readLine(List<Object> args) {
-            context.requireCapability(IsolatePolicy.Capability.STDIN, "stdio.stdin.read_line");
-            requireZero(args, "stdio.stdin.read_line");
-            try {
-                String value = context.input().readLine();
-                return value == null ? new OptionValue(false, null) : new OptionValue(true, value);
-            } catch (java.io.IOException failure) {
-                throw new IllegalStateException("stdin read failed: " + failure.getMessage(), failure);
-            }
-        }
-    }
+    private record StdioFacade(OresContext context) { }
+    private record StdoutFacade(OresContext context) { }
+    private record StdinFacade(OresContext context) { }
     private record StdFacade(OresContext context) { }
     private record ProcessFacade(OresContext context) {
         private Object exit(List<Object> args) {
