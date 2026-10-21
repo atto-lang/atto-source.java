@@ -72,6 +72,14 @@ final class SourceEffectAuditShapeTest {
         assertTrue(row.contains(EffectContracts.Effect.UNKNOWN_CALL));
     }
 
+    @Test void syntacticTrapIsNotProofOfCheckedHandlerOrAllocationFreedom()
+            throws Exception {
+        var row = effects(new Ast.TrapExpr(new Ast.LiteralExpr(42)),
+                false, false, false);
+        assertTrue(row.contains(EffectContracts.Effect.UNKNOWN_CALL));
+        assertTrue(row.contains(EffectContracts.Effect.ALLOC));
+    }
+
     @Test void unprovenCallableModifiersDoNotMintPurity() throws Exception {
         var literal = new Ast.LiteralExpr(42);
         assertTrue(effects(literal, true, false, false)
