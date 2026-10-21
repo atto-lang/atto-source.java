@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.*;
@@ -104,6 +105,35 @@ final class ActorNativeArenaTest {
             holder.put("left", child);
             assertEquals(1, arena.nativeReferenceCount());
             assertSame(child, holder.get("left"));
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
+    void staleNativeCapabilityCanBeOverwrittenAndRetired() {
+        AtomicLong charged = new AtomicLong();
+        AtomicBoolean revoked = new AtomicBoolean();
+        Object marker = new Object();
+        try (ActorNativeArena arena = arena(16 * 1024, charged)) {
+            Map<String, Object> fields = arena.fields(List.of("request"), marker);
+            ActorNativeArena.NativeCapability capability = () -> {
+                if (revoked.get()) throw new IllegalStateException("capability is terminal");
+                return arena;
+            };
+
+            fields.put("request", capability);
+            assertEquals(1, arena.capabilityCount());
+            assertSame(capability, fields.get("request"));
+
+            revoked.set(true);
+            assertThrows(IllegalStateException.class, () -> fields.get("request"),
+                    "normal reads must still revalidate a terminal capability");
+
+            assertSame(capability, fields.put("request", null),
+                    "overwrite may retire a stale handle without re-authorizing it");
+            assertNull(fields.get("request"));
+            assertEquals(0, arena.capabilityCount(),
+                    "overwriting the last stale handle must release registry retention");
         }
         assertEquals(0, charged.get());
     }
