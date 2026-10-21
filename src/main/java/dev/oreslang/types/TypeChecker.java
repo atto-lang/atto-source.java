@@ -9103,6 +9103,22 @@ public final class TypeChecker {
                 }
                 yield jsonValue;
             }
+            case "stringify" -> {
+                if (call.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "Json.stringify expects exactly one JsonValue or Map<String, JsonValue> argument");
+                }
+                Type actual = deref(typeOf(
+                        call.arguments().getFirst(), env, generics, self));
+                boolean jsonObjectMap = isTypedMapType(actual)
+                        && typedMapKeyType(actual) == Primitive.STRING
+                        && isCompilerJsonValueType(typedMapValueType(actual));
+                if (!isCompilerJsonValueType(actual) && !jsonObjectMap) {
+                    throw new IllegalArgumentException(
+                            "Json.stringify requires JsonValue or Map<String, JsonValue>");
+                }
+                yield Primitive.STRING;
+            }
             case "null" -> throw new IllegalArgumentException(
                     "Json.null is a value, not a function");
             default -> throw new IllegalArgumentException(
