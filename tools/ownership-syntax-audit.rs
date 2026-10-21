@@ -114,7 +114,8 @@ fn run() -> Result<i32, String> {
         }
     }
     if roots.is_empty() {
-        roots = ["src", "stdlib", "examples", "docs", ".github", "scripts", "tests"]
+        roots = ["src", "stdlib", "examples", "docs", "contracts", "formal",
+            ".github", ".oreslang", "scripts", "tests", "tools", "README.md"]
             .iter().map(PathBuf::from).filter(|p| p.exists()).collect();
     }
     if roots.is_empty() {
