@@ -51,6 +51,8 @@ public final class OwnershipChecker {
     private final List<Set<VarState>> tryMoveObservers = new ArrayList<>();
     /** Exact compiler-owned alloc/json JsonValue type import for this unit. */
     private final boolean compilerJsonValueImported;
+    /** Exact compiler-owned alloc/json Json construction namespace import. */
+    private final boolean compilerJsonFactoryImported;
     /**
      * One narrowly proven terminal Map insertion may move normally while
      * excluding only that exact transfer from the enclosing catch observer.
@@ -69,6 +71,8 @@ public final class OwnershipChecker {
         this.validatedShortAliases = new IdentityHashMap<>(validatedShortAliases);
         this.compilerJsonValueImported = program.imports().stream()
                 .anyMatch(ImportRules::isAllocJsonValueImport);
+        this.compilerJsonFactoryImported = program.imports().stream()
+                .anyMatch(ImportRules::isAllocJsonFactoryImport);
         index(program);
     }
 
@@ -1272,6 +1276,12 @@ public final class OwnershipChecker {
             return checkCall(call, scope);
         }
         if (expr instanceof Ast.MemberExpr member) {
+            if (isCompilerJsonNullMember(member, scope)) {
+                return new ValueInfo(
+                        Ast.TypeRef.simple("JsonValue"),
+                        ValueKind.MOVE_ONLY,
+                        null);
+            }
             if (member.receiver() instanceof Ast.NameExpr receiverName) {
                 VarState receiverState = scope.lookup(receiverName.name());
                 if (receiverState != null && isScopedMutexReceiver(receiverState)) {
@@ -1554,6 +1564,9 @@ public final class OwnershipChecker {
                 }
             }
         }
+        ValueInfo jsonFactory = checkCompilerJsonFactoryCall(call, scope);
+        if (jsonFactory != null) return jsonFactory;
+
         if (isBooleanIntrinsicCall(call, scope)) {
             for (Ast.Expr argument : call.arguments()) {
                 checkExpr(argument, scope, false);
@@ -2128,6 +2141,68 @@ public final class OwnershipChecker {
             return null;
         }
         return new RecoverableOwnedMapMove(value, sourceRoot);
+    }
+
+    private boolean isCompilerJsonFactoryName(
+            Ast.Expr receiver,
+            Scope scope) {
+        return compilerJsonFactoryImported
+                && compilerJsonValueImported
+                && receiver instanceof Ast.NameExpr name
+                && name.name().equals("Json")
+                && scope.lookup("Json") == null;
+    }
+
+    private boolean isCompilerJsonNullMember(
+            Ast.MemberExpr member,
+            Scope scope) {
+        return member.member().equals("null")
+                && isCompilerJsonFactoryName(member.receiver(), scope);
+    }
+
+    private ValueInfo checkCompilerJsonFactoryCall(
+            Ast.CallExpr call,
+            Scope scope) {
+        if (!(call.callee() instanceof Ast.MemberExpr member)
+                || !isCompilerJsonFactoryName(member.receiver(), scope)) {
+            return null;
+        }
+        if (call.typeArgumentsPresent()) {
+            throw error("compiler-owned Json factories do not accept type arguments");
+        }
+
+        Ast.TypeRef jsonValue = Ast.TypeRef.simple("JsonValue");
+        switch (member.member()) {
+            case "of" -> {
+                if (call.arguments().size() != 1) {
+                    throw error("Json.of expects exactly one scalar argument");
+                }
+                // TypeChecker proves the scalar domain. Scalars are copy-safe,
+                // so constructing a JsonValue never consumes the source scalar.
+                checkExpr(call.arguments().getFirst(), scope, false);
+                return new ValueInfo(jsonValue, ValueKind.MOVE_ONLY, null);
+            }
+            case "array", "object" -> {
+                if (call.arguments().size() != 1) {
+                    throw error("Json." + member.member()
+                            + " expects exactly one owned container argument");
+                }
+                ValueInfo container =
+                        checkExpr(call.arguments().getFirst(), scope, true);
+                if (container.type != null && container.type.isBorrow()) {
+                    throw error("Json." + member.member()
+                            + " requires an owned container, not a borrow");
+                }
+                if (containsMutexGuardType(container.type)) {
+                    throw error("Json." + member.member()
+                            + " cannot capture guard-bearing state");
+                }
+                return new ValueInfo(jsonValue, ValueKind.MOVE_ONLY, null);
+            }
+            case "null" -> throw error("Json.null is a value, not a function");
+            default -> throw error(
+                    "unknown compiler-owned Json factory '" + member.member() + "'");
+        }
     }
 
     private boolean isBooleanIntrinsicCall(Ast.CallExpr call, Scope scope) {
