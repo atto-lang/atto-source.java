@@ -33,6 +33,18 @@ final class TaskBorrowBoundaryV2Test {
         assertTrue(matched, () -> "missing ownership diagnostic: " + failure.getMessage());
     }
 
+    private static void rejectsRawWith(String program, String... fragments) {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(program));
+        String message = failure.getMessage().toLowerCase();
+        boolean matched = false;
+        for (String fragment : fragments) {
+            matched |= message.contains(fragment.toLowerCase());
+        }
+        assertTrue(matched, () -> "missing ownership diagnostic: " + failure.getMessage());
+    }
+
     @Test
     void ordinaryImmutableBorrowCannotEscapeIntoEagerTask() {
         rejectsWith("""
@@ -186,22 +198,41 @@ final class TaskBorrowBoundaryV2Test {
     }
 
     @Test
-    void taskCannotCaptureMutexWithoutSpecificCrossLaneProof() {
-        var parsed = Parser.parse("""
+    void uniquelyOwnedMutexMayMoveWhenPayloadIsSend() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 pub async fnc main(): void {
                   let Mutex<int> mutex = Mutex.new(41);
                   let Future<void> child = task {
                     val grabbed = mutex;
                     return;
                   };
+                  await child;
                   return;
                 }
-                """);
-        var failure = assertThrows(
-                IllegalArgumentException.class,
-                () -> OwnershipChecker.check(parsed));
-        assertTrue(failure.getMessage().contains("non-Send execution capability"),
-                failure::getMessage);
+                """));
+    }
+
+    @Test
+    void rcAndUnconstrainedGenericCapturesFailSendProof() {
+        rejectsRawWith("""
+                pub fnc moveRc(Rc<int> owner): Future<void> {
+                  let Future<void> child = task {
+                    val grabbed = owner;
+                    return;
+                  };
+                  return child;
+                }
+                """, "non-Send", "capability");
+
+        rejectsRawWith("""
+                pub fnc moveGeneric<T>(T owner): Future<void> {
+                  let Future<void> child = task {
+                    val grabbed = owner;
+                    return;
+                  };
+                  return child;
+                }
+                """, "non-Send", "capability");
     }
 
     @Test
@@ -223,21 +254,21 @@ final class TaskBorrowBoundaryV2Test {
     }
 
     @Test
-    void nonSendCapabilityCannotBeLaunderedThroughOwnedClass() {
-        rejectsWith("""
-                define class UnsafeWrapper as
+    void sendSafeCapabilityMayMoveThroughOwnedClass() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(BOX + """
+                define class SendWrapper as
                   pub let Mutex<Box> lock = Mutex.new(new Box());
                 end
                 pub async fnc main(): void {
-                  let UnsafeWrapper wrapper = new UnsafeWrapper();
+                  let SendWrapper wrapper = new SendWrapper();
                   let Future<int> child = task {
-                    let UnsafeWrapper moved = wrapper;
+                    let SendWrapper moved = wrapper;
                     return 1;
                   };
                   stdio.stdout.write(await child);
                   return;
                 }
-                """, "non-Send", "capability");
+                """));
     }
 
     @Test
