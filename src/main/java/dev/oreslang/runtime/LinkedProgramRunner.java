@@ -215,6 +215,11 @@ public final class LinkedProgramRunner {
                         effectiveHostClasses,
                         permissions,
                         permissionCheckMode);
+                // The explicit runner environment is part of the embedding
+                // contract, not just project discovery. Install exactly that
+                // map on the Polyglot context so guest env.get/env.has observe
+                // per-context values rather than ambient host process state.
+                builder.environment(Map.copyOf(environment));
                 if (out != null) builder.out(forwardingStream(out));
                 if (err != null) builder.err(forwardingStream(err));
 
