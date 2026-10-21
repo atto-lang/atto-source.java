@@ -138,6 +138,73 @@ final class OresEntryTransportTest {
     }
 
     @Test
+    void hostileHostCollectionsAreRejectedWithoutCallbacks() {
+        java.util.concurrent.atomic.AtomicInteger callbacks =
+                new java.util.concurrent.atomic.AtomicInteger();
+
+        final class HostileList extends ArrayList<Object> {
+            @Override public int size() {
+                callbacks.incrementAndGet();
+                throw new AssertionError("host List.size invoked");
+            }
+            @Override public java.util.Iterator<Object> iterator() {
+                callbacks.incrementAndGet();
+                throw new AssertionError("host List.iterator invoked");
+            }
+        }
+
+        final class HostileMap extends java.util.LinkedHashMap<Object, Object> {
+            @Override public int size() {
+                callbacks.incrementAndGet();
+                throw new AssertionError("host Map.size invoked");
+            }
+            @Override public java.util.Set<java.util.Map.Entry<Object, Object>> entrySet() {
+                callbacks.incrementAndGet();
+                throw new AssertionError("host Map.entrySet invoked");
+            }
+        }
+
+        HostileList hostileList = new HostileList();
+        hostileList.add("x");
+        HostileMap hostileMap = new HostileMap();
+        hostileMap.put("k", "v");
+
+        for (Object hostile : List.of(hostileList, hostileMap)) {
+            OresEntry entry = new OresEntry("payload", hostile);
+            IllegalArgumentException frozen = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> ActorRuntime.freeze(entry));
+            assertTrue(frozen.getMessage().contains("not Sendable"), frozen.getMessage());
+            assertEquals(0, callbacks.get());
+
+            try (ActorRuntime runtime = new ActorRuntime()) {
+                var target = runtime.<OresEntry>spawnPrivate(
+                        IsolatePolicy.strictFaas(),
+                        context -> (message, actor) -> actor.self().stop());
+                IllegalArgumentException sent = assertThrows(
+                        IllegalArgumentException.class,
+                        () -> target.send(entry));
+                assertTrue(sent.getMessage().contains("not Sendable"), sent.getMessage());
+                assertEquals(0, callbacks.get());
+                target.stop();
+            }
+        }
+    }
+
+    @Test
+    void exactJdkGuestCollectionCarriersRemainSendable() {
+        java.util.LinkedHashMap<String, Object> payload = new java.util.LinkedHashMap<>();
+        payload.put("list", new ArrayList<>(List.of(1, 2, 3)));
+        payload.put("set", new java.util.LinkedHashSet<>(List.of("a", "b")));
+
+        OresEntry frozen = assertInstanceOf(
+                OresEntry.class,
+                ActorRuntime.freeze(new OresEntry("containers", payload)));
+        assertEquals("containers", frozen.key());
+        assertInstanceOf(ActorRuntime.FrozenGuestMap.class, frozen.value());
+    }
+
+    @Test
     void cyclicHostPayloadIsRejectedBeforeActorFreezeRatherThanOverflowing() {
         ArrayList<Object> cyclic = new ArrayList<>();
         OresEntry entry = new OresEntry(cyclic, "payload");
