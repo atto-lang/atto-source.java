@@ -5234,8 +5234,11 @@ public final class TypeChecker {
                 case "list_dir": return new Function(List.of(string), new ListType(string));
                 case "is_dir", "is_symlink", "exists": return new Function(List.of(string), booleanType);
                 case "read_text": return new Function(List.of(string), string);
-                case "write_text", "write_text_atomic", "append_text":
-                    return new Function(List.of(string, string), Primitive.VOID);
+                case "write_text", "write_text_atomic",
+                        "write_text_atomic_durable", "append_text",
+                        "append_text_durable":
+                    return new Function(
+                            List.of(string, string), Primitive.VOID);
                 case "remove", "mkdir_all": return new Function(List.of(string), Primitive.VOID);
                 default: break;
             }
