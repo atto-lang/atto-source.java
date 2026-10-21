@@ -55,7 +55,7 @@ public final class Ast {
         public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) { this(name, annotations, List.of(), declarations); }
     }
 
-    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
+    public sealed interface Decl permits FunctionDecl, KernelDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
 
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }
@@ -358,6 +358,19 @@ public final class Ast {
                             List<Param> parameters, TypeRef returnType, List<Annotation> annotations, List<Stmt> body) {
             this(name, CallableKind.FNC, visibility, async, false, false, false, false, ActorKind.NONE,
                     genericParameters, parameters, returnType, annotations, body);
+        }
+    }
+
+    /** A compiler-owned heterogeneous kernel container. Kernel entries are not ordinary host callables. */
+    public record KernelDecl(
+            String name,
+            Visibility visibility,
+            List<FunctionDecl> entries) implements Decl {
+        public KernelDecl {
+            if (name == null || name.isBlank()) {
+                throw new IllegalArgumentException("kernel name cannot be blank");
+            }
+            entries = List.copyOf(entries);
         }
     }
 
