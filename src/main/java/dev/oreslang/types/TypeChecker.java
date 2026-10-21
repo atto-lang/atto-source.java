@@ -106,6 +106,12 @@ public final class TypeChecker {
     private boolean currentGenerator;
     private boolean currentAsyncCallable;
     private boolean currentMaySuspend;
+    /**
+     * Non-zero only while statically checking the inline callback passed to
+     * self.handle_state(...). M1 state loans are deliberately synchronous:
+     * no await/select/channel suspension and no nested loan acquisition.
+     */
+    private int actorStateLoanDepth;
     private int loopDepth;
     private boolean inDiscardingSelectArm;
     private final List<String> warnings = new ArrayList<>();
@@ -1771,6 +1777,15 @@ public final class TypeChecker {
     }
 
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
+        if (actorStateLoanDepth > 0
+                && (stmt instanceof Ast.ForStmt
+                    || stmt instanceof Ast.ForOfStmt
+                    || stmt instanceof Ast.ForOfDestructureStmt
+                    || stmt instanceof Ast.DoWhileStmt
+                    || stmt instanceof Ast.LoopStmt)) {
+            throw new IllegalArgumentException(
+                    "actor state loan callback cannot contain cooperative loops in M1; end the loan before looping");
+        }
         if (stmt instanceof Ast.BindingStmt binding) {
             String inferredName = binding.inferredTypeName() != null
                     ? binding.inferredTypeName() : shortInferredTypeNames.get(binding);
@@ -2571,6 +2586,10 @@ public final class TypeChecker {
                     "spread expressions are only valid as arguments to a variadic callable");
         }
         if (expr instanceof Ast.RuntimeCallExpr runtime) {
+            if (actorStateLoanDepth > 0) {
+                throw new IllegalArgumentException(
+                        "actor state loan callback cannot execute rt intrinsics in M1; end the loan before runtime effects");
+            }
             if (runtime.operation().equals("spawn")) {
                 if (runtime.arguments().size() != 1
                         || !(runtime.arguments().getFirst() instanceof Ast.NewExpr created)) {
@@ -2966,11 +2985,35 @@ public final class TypeChecker {
                 boolean actorSelf = currentActorKind != Ast.ActorKind.NONE
                         && member.receiver() instanceof Ast.NameExpr selfName
                         && selfName.name().equals("self");
+                if (actorSelf && member.member().equals("handle_state")) {
+                    if (call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException(
+                                "self.handle_state does not accept call-site type arguments");
+                    }
+                    if (actorStateLoanDepth > 0) {
+                        throw new IllegalArgumentException(
+                                "nested self.handle_state loans are not supported; the active actor state loan must end first");
+                    }
+                    if (call.arguments().size() != 1
+                            || !(call.arguments().getFirst() instanceof Ast.LambdaExpr lambda)) {
+                        throw new IllegalArgumentException(
+                                "self.handle_state requires exactly one inline one-argument lambda so the mutable state borrow cannot escape");
+                    }
+                    validateActorStateCallback(lambda, env, generics, self);
+                    return Primitive.VOID;
+                }
                 if (actorSelf && (member.member().equals("on_start")
                         || member.member().equals("receive"))) {
                     throw new IllegalArgumentException(
                             member.member()
                                     + " is a reserved actor lifecycle hook and cannot be called directly");
+                }
+                if (actorSelf
+                        && actorStateLoanDepth > 0
+                        && (member.member().equals("end")
+                            || member.member().equals("endWithCleanup"))) {
+                    throw new IllegalArgumentException(
+                            "actor state loan callback cannot terminate the actor in M1; end the loan first");
                 }
                 if (actorSelf
                         && (member.member().equals("send")
@@ -4030,6 +4073,10 @@ public final class TypeChecker {
             return nominal;
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
+            if (actorStateLoanDepth > 0) {
+                throw new IllegalArgumentException(
+                        "actor state loan callback cannot await or suspend in M1; end the loan before awaiting");
+            }
             Type awaitedType = typeOf(awaited.expression(), env, generics, self);
             if (awaitedType instanceof Named named
                     && named.name().equals("Future")
@@ -4047,6 +4094,10 @@ public final class TypeChecker {
                     "await requires Future<T> or ActorRef<T>; got " + awaitedType);
         }
         if (expr instanceof Ast.ChannelOpExpr channelOp) {
+            if (actorStateLoanDepth > 0) {
+                throw new IllegalArgumentException(
+                        "actor state loan callback cannot perform channel operations in M1; end the loan before yielding");
+            }
             Type element = channelElementType(
                     typeOf(channelOp.channel(), env, generics, self),
                     channelOp.operation() == Ast.ChannelOperation.READ ? "readch" : "writech");
@@ -4153,6 +4204,10 @@ public final class TypeChecker {
             }
         }
         if (expr instanceof Ast.DynamicSelectExpr selected) {
+            if (actorStateLoanDepth > 0) {
+                throw new IllegalArgumentException(
+                        "actor state loan callback cannot select or suspend in M1; end the loan before selecting");
+            }
             // Dynamic select accepts a SelectSet directly or a runtime
             // list/map of SelectCase values. The exact case element type may
             // remain Unknown until collection generic constraints are richer.
@@ -4921,6 +4976,65 @@ public final class TypeChecker {
         }
         throw new IllegalArgumentException(
                 "object rest destructuring requires a statically known record type");
+    }
+
+    private Record actorStateProjection(Ast.ClassDecl actor) {
+        if (actor == null || actor.actorKind() == Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException(
+                    "self.handle_state is available only inside an actor instance");
+        }
+        Map<String, Type> members = new LinkedHashMap<>();
+        for (Ast.FieldDecl field : actor.fields()) {
+            if (!isActorStateSchemaField(field)) continue;
+            if (field.bindingKind() != Ast.BindingKind.LET) {
+                throw new IllegalArgumentException(
+                        "self.handle_state M1 requires mutable state slots; immutable state field '"
+                                + actor.name() + "." + field.name()
+                                + "' cannot be projected without per-slot borrow capabilities");
+            }
+            if (members.putIfAbsent(field.name(), classFieldType(actor, field)) != null) {
+                throw new IllegalArgumentException(
+                        "duplicate sealed actor state field '" + field.name() + "'");
+            }
+        }
+        if (members.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "self.handle_state requires an actor state { ... } schema");
+        }
+        return Record.struct(members);
+    }
+
+    private void validateActorStateCallback(
+            Ast.LambdaExpr lambda,
+            Env parent,
+            Set<String> generics,
+            Type self) {
+        if (lambda.nonLexical()) {
+            throw new IllegalArgumentException(
+                    "self.handle_state callback must be lexical; nlex would sever actor state-loan authority");
+        }
+        if (lambda.parameters().size() != 1) {
+            throw new IllegalArgumentException(
+                    "self.handle_state callback must accept exactly one state parameter");
+        }
+        Ast.Param parameter = lambda.parameters().getFirst();
+        if (!parameter.type().name().equals("$infer$")) {
+            throw new IllegalArgumentException(
+                    "self.handle_state state parameter type is compiler-owned; use an inferred inline parameter");
+        }
+        Type loan = new Borrow(actorStateProjection(currentClassOwner), true);
+        Function expected = new Function(List.of(loan), Primitive.VOID);
+
+        boolean previousMaySuspend = currentMaySuspend;
+        actorStateLoanDepth++;
+        currentMaySuspend = false;
+        try {
+            validateLambdaAgainstExpected(
+                    lambda, expected, parent, generics, self);
+        } finally {
+            currentMaySuspend = previousMaySuspend;
+            actorStateLoanDepth--;
+        }
     }
 
     private void validateMutexCallback(Ast.LambdaExpr lambda, Type expectedParameter, Env parent, Set<String> generics, Type self) {
