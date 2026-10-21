@@ -263,6 +263,12 @@ public final class ActorNativeArena implements AutoCloseable {
                             "native actor List currently supports append insertion only");
                 }
 
+                // Reject unsupported or foreign payloads before reserving a
+                // new native chunk. Otherwise each rejected append can consume
+                // lifetime arena budget without changing the list length.
+                if (!supportsValue(value, null)) {
+                    throw new IllegalArgumentException("native actor List element requires native value lowering");
+                }
                 int inChunk = currentSize % LIST_CHUNK_SLOTS;
                 long chunk = read(header, 24);
                 if (inChunk == 0) {
