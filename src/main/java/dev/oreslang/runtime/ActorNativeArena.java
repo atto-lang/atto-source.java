@@ -190,6 +190,12 @@ public final class ActorNativeArena implements AutoCloseable {
                 || value instanceof BigDecimal || value instanceof OresSymbol) {
             return true;
         }
+        if (value instanceof NativeCapability capability) {
+            if (capability.nativeArena() != this) {
+                throw new SecurityException("foreign actor capability");
+            }
+            return true;
+        }
         if (value instanceof NativeValue nativeValue) {
             if (nativeValue.nativeArena() != this) {
                 throw new SecurityException("foreign actor arena reference");
