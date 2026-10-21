@@ -168,6 +168,16 @@ final class EndDelimitedFunctionCurrentMainTest {
     }
 
     @Test
+    void sameLineBodySyntaxCannotImpersonateOptionalSeparator() {
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("fnc bad() -> int Math::answer(); end"));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("routine bad() -> Result<int, string> Math::answer(); end"));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("fnc bad() -> int value as Foo; end"));
+    }
+
+    @Test
     void existingBracedFormsRemainAccepted() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc colon(int x): int {
