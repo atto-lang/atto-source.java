@@ -1,7 +1,9 @@
 package dev.oreslang.nodes;
 
+import dev.oreslang.runtime.OresEntry;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.AbstractList;
 import java.util.ArrayList;
@@ -206,6 +208,29 @@ final class AsyncBoundaryHostCarrierTest {
 
         assertTrue(OresEvalRootNode.isTrustedAsyncScalar(BigInteger.valueOf(7)));
         assertFalse(OresEvalRootNode.isTrustedAsyncScalar(new HostileBigInteger()));
+    }
+
+    @Test
+    void sharedStateRejectsHostileScalarsNestedInEntry() {
+        final class HostileBigInteger extends BigInteger {
+            HostileBigInteger() {
+                super("7");
+            }
+        }
+        final class HostileBigDecimal extends BigDecimal {
+            HostileBigDecimal() {
+                super("7.5");
+            }
+        }
+
+        assertTrue(OresEvalRootNode.isRuntimeSharedSafe(
+                new OresEntry(BigInteger.valueOf(7), new BigDecimal("7.5"))));
+        assertFalse(OresEvalRootNode.isRuntimeSharedSafe(
+                new OresEntry(new HostileBigInteger(), 1)));
+        assertFalse(OresEvalRootNode.isRuntimeSharedSafe(
+                new OresEntry(1, new HostileBigDecimal())));
+        assertFalse(OresEvalRootNode.isRuntimeSharedSafe(
+                new OresEntry(java.time.DayOfWeek.MONDAY, 1)));
     }
 
     @Test
