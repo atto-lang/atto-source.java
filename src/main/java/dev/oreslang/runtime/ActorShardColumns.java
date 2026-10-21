@@ -122,8 +122,11 @@ public final class ActorShardColumns implements AutoCloseable {
 
     /**
      * Dense column update, one physical actor turn for arbitrarily many
-     * logical entities. Field columns may be distinct; no per-row actors or
-     * Futures are created. This is not yet a parallel borrowed Task kernel.
+     * logical entities. Each physical layout has a specialized traversal so
+     * SoA/AoSoA stay contiguous and AoS/SoAoS use fixed strides without
+     * per-row generic offset division/modulo. Field columns may be distinct;
+     * no per-row actors or Futures are created. This is not yet a parallel
+     * borrowed Task kernel.
      */
     public void integrate(int position, int velocity, double dt) {
         requireOwner();
@@ -132,9 +135,47 @@ public final class ActorShardColumns implements AutoCloseable {
             throw new IllegalArgumentException("requires distinct valid position/velocity fields");
         }
         if (!Double.isFinite(dt)) throw new IllegalArgumentException("nonfinite dt");
-        for (int row = 0; row < rows; row++) {
-            int p = offset(row, position);
-            put(p, get(p) + get(offset(row, velocity)) * dt);
+        switch (layout) {
+            case AOS -> {
+                int p = position;
+                int v = velocity;
+                for (int row = 0; row < rows; row++, p += fields, v += fields) {
+                    put(p, get(p) + get(v) * dt);
+                }
+            }
+            case SOA -> {
+                int p = position * rows;
+                int v = velocity * rows;
+                int end = p + rows;
+                while (p < end) {
+                    put(p, get(p) + get(v) * dt);
+                    p++;
+                    v++;
+                }
+            }
+            case SOAOS -> {
+                int stride = groupWidth;
+                int p = (position / groupWidth) * rows * groupWidth
+                        + position % groupWidth;
+                int v = (velocity / groupWidth) * rows * groupWidth
+                        + velocity % groupWidth;
+                for (int row = 0; row < rows; row++, p += stride, v += stride) {
+                    put(p, get(p) + get(v) * dt);
+                }
+            }
+            case AOSOA -> {
+                int tileStride = fields * lanes;
+                int tileBase = 0;
+                for (int rowBase = 0; rowBase < rows;
+                        rowBase += lanes, tileBase += tileStride) {
+                    int activeLanes = Math.min(lanes, rows - rowBase);
+                    int p = tileBase + position * lanes;
+                    int v = tileBase + velocity * lanes;
+                    for (int lane = 0; lane < activeLanes; lane++) {
+                        put(p + lane, get(p + lane) + get(v + lane) * dt);
+                    }
+                }
+            }
         }
     }
 

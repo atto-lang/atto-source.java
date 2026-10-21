@@ -118,6 +118,12 @@ final class ActorShardColumnsTest {
                                         first.countDown();
                                     } else {
                                         store[0].integrate(0, 1, 1);
+                                        for (int i = 0; i < 65; i++) {
+                                            assertEquals(2.0 * i, store[0].read(i, 1),
+                                                    "velocity field must remain unchanged");
+                                            assertEquals(-1.0, store[0].read(i, 2),
+                                                    "unrelated field must remain unchanged");
+                                        }
                                         result.set(store[0].snapshotColumn(0));
                                         second.countDown();
                                     }

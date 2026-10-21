@@ -270,6 +270,9 @@ final class ActorNativeArenaTest {
                 return arena;
             };
 
+            assertThrows(SecurityException.class, () -> fields.put("request", capability),
+                    "same-arena claim is not sufficient without trusted issuance");
+            arena.issueNativeCapability(capability);
             fields.put("request", capability);
             assertEquals(1, arena.capabilityCount());
             assertSame(capability, fields.get("request"));
@@ -299,6 +302,13 @@ final class ActorNativeArenaTest {
             ActorNativeArena.NativeCapability foreign = () -> foreignArena;
 
             assertEquals(0, arena.capabilityCount());
+            assertThrows(SecurityException.class, () -> fields.put("left", capability),
+                    "unissued, host-implemented capability must not mint an actor handle");
+            assertThrows(SecurityException.class,
+                    () -> arena.canStorePersistentValue(capability, marker),
+                    "preflight must reject unissued capabilities, not just slot publication");
+            assertEquals(0, arena.capabilityCount());
+            arena.issueNativeCapability(capability);
             fields.put("left", capability);
             assertEquals(1, arena.capabilityCount());
             assertSame(capability, fields.get("left"));
@@ -317,6 +327,11 @@ final class ActorNativeArenaTest {
 
             assertThrows(SecurityException.class, () -> fields.put("left", foreign));
             assertEquals(0, arena.capabilityCount());
+            // Even a malicious host wrapper claiming the correct arena needs
+            // an explicit issuance by the trusted core.
+            ActorNativeArena.NativeCapability forged = () -> arena;
+            assertThrows(SecurityException.class, () -> fields.put("left", forged));
+            assertEquals(0, arena.capabilityCount());
 
             assertThrows(IllegalArgumentException.class,
                     () -> arena.valueCell(capability, marker),
@@ -326,6 +341,36 @@ final class ActorNativeArenaTest {
         }
         assertEquals(0, charged.get());
         assertEquals(0, foreignCharged.get());
+    }
+
+    @Test
+    void capabilityIssuanceUsesObjectIdentityNotForgedEqualsAndCannotExhaustQuota() {
+        AtomicLong charged = new AtomicLong();
+        Object marker = new Object();
+        try (ActorNativeArena arena = arena(8192, charged)) {
+            class EqualCapability implements ActorNativeArena.NativeCapability {
+                @Override public ActorNativeArena nativeArena() { return arena; }
+                @Override public boolean equals(Object other) { return other instanceof EqualCapability; }
+                @Override public int hashCode() { return 1; }
+            }
+            var issued = new EqualCapability();
+            var forged = new EqualCapability();
+            Map<String, Object> fields = arena.fields(List.of("handle"), marker);
+            arena.issueNativeCapability(issued);
+            long allocated = arena.allocatedBytes();
+            for (int attempt = 0; attempt < 100; attempt++) {
+                assertThrows(SecurityException.class, () -> fields.put("handle", forged),
+                        "equal() must not impersonate another issued capability");
+                assertEquals(0, arena.capabilityCount());
+                assertEquals(allocated, arena.allocatedBytes(),
+                        "denied host wrappers cannot consume native quota");
+            }
+            fields.put("handle", issued);
+            assertSame(issued, fields.get("handle"));
+            fields.put("handle", null);
+            assertEquals(0, arena.capabilityCount());
+        }
+        assertEquals(0, charged.get());
     }
 
     @Test

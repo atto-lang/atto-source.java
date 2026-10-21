@@ -78,6 +78,29 @@ exit. Foreign-arena native objects/capabilities are still rejected rather than
 downgraded to managed aliases. Reads may still materialize boxed/String evaluator
 values.
 
+**Opaque capability issuance is separate from Java interface implementation.**
+The arena's `NativeCapability` interface is a *description*, not an admission
+credential. The package-internal, actor-owner-checked
+`issueNativeCapability` records provenance by object identity before any
+capability can be persisted into a guest-native field. The trusted HTTP core's
+`NativeHttp.Exchange.nativeArena()` validates its owner and generation,
+releases the HTTP `State` monitor, and only then issues the current exchange
+to that actor. This avoids an arena/State monitor lock-order inversion with
+concurrent actor handlers; the generation/owner is revalidated on subsequent
+storage reads and moves. Arbitrary host wrappers that merely
+return the same `ActorNativeArena` are rejected in both preflight and storage.
+Opaque handle reference counts still drop the strong host handle after the last
+slot overwrite; issuance uses weak keys and is cleared at actor teardown.
+Future core/stdlib resources must have their own trusted issuance path.
+This is not an operating-system sandbox for Java host code with privileged
+runtime-package access; untrusted Oreslang guest code still has no general Java
+FFI/host-class capability.
+
+**Verification status:** the new issuance commits and negative JUnit cases must
+run against their exact PR head. Previously reported JDK21/25 test totals below
+do not certify these later changes. The latest inspected source-org Actions
+native-memory job failed before starting any test steps.
+
 Native facade provenance uses weak identity keys rather than structural equality
 or strong actor-lifetime references. A separate reference-counted lookup retains
 a facade only while one or more native slots contain its actor-relative address;
