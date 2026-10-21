@@ -27,6 +27,27 @@ public final class ImportRules {
         return isExactAllocJsonClassImport(imported, "Json");
     }
 
+    /** Selection identity allows an alias; intrinsic authority does not. */
+    public static boolean isAllocJsonValueSelection(Ast.ImportDecl imported) {
+        return isAllocJsonClassSelection(imported, "JsonValue");
+    }
+
+    /** Selection identity allows an alias; intrinsic authority does not. */
+    public static boolean isAllocJsonFactorySelection(Ast.ImportDecl imported) {
+        return isAllocJsonClassSelection(imported, "Json");
+    }
+
+    private static boolean isAllocJsonClassSelection(
+            Ast.ImportDecl imported,
+            String className) {
+        return imported != null
+                && ALLOC_JSON_PATH.equals(imported.path())
+                && imported.kind() == Ast.ImportKind.CLASS
+                && !imported.wildcard()
+                && imported.names().size() == 1
+                && imported.names().getFirst().equals(className);
+    }
+
     private static boolean isExactAllocJsonClassImport(
             Ast.ImportDecl imported,
             String className) {
@@ -123,6 +144,16 @@ public final class ImportRules {
                 if (imported.names().size() != 1) {
                     throw new IllegalArgumentException("named import aliases require exactly one selected name");
                 }
+            }
+        }
+
+        if (ALLOC_JSON_PATH.equals(imported.path())) {
+            boolean admittedClass =
+                    isAllocJsonValueSelection(imported)
+                            || isAllocJsonFactorySelection(imported);
+            if (!admittedClass) {
+                throw new IllegalArgumentException(
+                        "alloc/json currently exposes only class JsonValue and class Json");
             }
         }
 
