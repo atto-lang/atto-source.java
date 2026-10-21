@@ -1202,6 +1202,21 @@ public final class ActorRuntime implements AutoCloseable {
             requireOwner();
             nativeRegion.writeDouble(Math.multiplyExact(element, Double.BYTES), value);
         }
+        void integrateDoubleStridedBlocks(
+                int positionBaseElement,
+                int velocityBaseElement,
+                int rows,
+                int rowStrideElements,
+                int blockRows,
+                int blockStrideElements,
+                double dt) {
+            // Authenticate the logical actor once at the lease boundary. Region
+            // then keeps one arena critical section for the entire dense kernel.
+            requireOwner();
+            nativeRegion.integrateDoubleStridedBlocks(
+                    positionBaseElement, velocityBaseElement, rows,
+                    rowStrideElements, blockRows, blockStrideElements, dt);
+        }
         ActorNativeArena.Region.ReadOnlyLease leaseReadOnly(int byteOffset, int byteLength) {
             requireOwner();
             return nativeRegion.leaseReadOnly(byteOffset, byteLength);
