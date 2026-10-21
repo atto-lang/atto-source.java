@@ -4,12 +4,13 @@
 // buffers, queues, fences and kernel values are compiler/runtime-owned opaque
 // capabilities; vendor backends live outside the standard library.
 //
-// v0 is fail-closed: source kernel execution remains disabled until typed kernel
-// IR, ownership/effect admission and explicit backend lowering are enabled.
+// v1 admits compiler-validated scalar portable kernel IR and a CPU reference
+// executor. Vendor/device execution remains fail-closed until ownership/effect
+// admission, explicit transfers and backend lowering are enabled.
 
 define module hat as
 
-  // Version of the source-visible HAT contract.
+  // Version of the source-visible HAT contract and portable kernel IR.
   pub fnc abi_version(): int {
     return 1;
   }
