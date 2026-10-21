@@ -204,7 +204,7 @@ final class GenerationalGraphArenaTest {
                 assertEquals(2, graph.size());
             });
             assertEquals(1, visited);
-            assertThrows(IllegalArgumentException.class, () ->
+            assertThrows(NullPointerException.class, () ->
                     graph.visitLiveNeighbors(root, null));
             assertThrows(IllegalStateException.class, () ->
                     graph.visitLiveNeighbors(root, (slot, generation, value) -> {
