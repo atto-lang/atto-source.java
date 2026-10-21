@@ -7058,6 +7058,17 @@ public final class OresEvalRootNode extends RootNode {
                                 "dynamic select"));
             }
             if (expr instanceof Ast.ListExpr list) {
+                ActorNativeArena arena = ActorRuntime.currentNativeArena();
+                if (arena != null) {
+                    // Actor list literals are persistent guest values, not
+                    // evaluator scratch storage. Keep their authoritative
+                    // elements in the actor arena just like new List<T>().
+                    ActorNativeArena.NativeList result = arena.nativeList();
+                    for (Ast.Expr item : list.elements()) {
+                        result.add(eval(item, env));
+                    }
+                    return result;
+                }
                 ArrayList<Object> result = new ArrayList<>(list.elements().size());
                 for (Ast.Expr item : list.elements()) result.add(eval(item, env));
                 return result;
