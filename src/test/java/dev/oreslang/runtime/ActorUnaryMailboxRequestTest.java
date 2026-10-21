@@ -299,16 +299,31 @@ final class ActorUnaryMailboxRequestTest {
             var caller = runtime.bindActorReplyEndpoint(registry, source);
             var callee = runtime.bindActorReplyEndpoint(registry, target);
             var ticket = registry.reserve(caller, callee, String.class);
+            var stopped = new AtomicReference<Throwable>();
+            var stopThread = new Thread(() -> {
+                try {
+                    source.stop();
+                } catch (Throwable failure) {
+                    stopped.set(failure);
+                }
+            }, "test-stop-while-actor-turn-active");
             try {
                 source.send("hold");
                 assertTrue(running.await(3, TimeUnit.SECONDS));
-                source.stop();
+                stopThread.start();
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                while (registry.pendingCount() != 0 && System.nanoTime() < deadline) {
+                    Thread.sleep(2);
+                }
                 assertEquals(0, registry.pendingCount(),
-                        "stop must revoke even when the actor has not exited its carrier");
+                        "stop must revoke before the active actor carrier exits");
                 assertFalse(ticket.reply(callee, "stale"));
             } finally {
                 allowExit.countDown();
             }
+            stopThread.join(3_000);
+            assertFalse(stopThread.isAlive(), "stop must complete after carrier quiescence");
+            assertNull(stopped.get(), "stop should complete normally");
             source.done().get(3, TimeUnit.SECONDS);
             registry.close();
         }
