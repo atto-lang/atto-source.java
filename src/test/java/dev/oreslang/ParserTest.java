@@ -1338,6 +1338,18 @@ final class ParserTest {
                 }
                 """,
                 """
+                pub fnc main(): void {
+                  val value = 1;
+                  val invalid = *value;
+                  return;
+                }
+                """,
+                """
+                pub fnc main(int* value): void {
+                  return;
+                }
+                """,
+                """
                 pub fnc leak(borrow Account account): &Account {
                   return account;
                 }
