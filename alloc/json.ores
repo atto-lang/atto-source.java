@@ -1,0 +1,13 @@
+// Canonical allocator-backed JSON library namespace.
+//
+// This source unit establishes the reserved alloc/json module boundary.
+// Owned JSON runtime storage already exists in the backend, but JsonValue and
+// Json.* are deliberately not declared here until the compiler can bind the
+// recursive runtime descriptor and generated codecs without making them
+// ambient core types or fabricating an ordinary user class.
+//
+// alloc/* is capability-neutral heap code: no std/*, Java host, filesystem,
+// network, process, clock, or ambient OS dependency is permitted.
+
+define module json as
+end
