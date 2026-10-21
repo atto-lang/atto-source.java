@@ -141,6 +141,9 @@ final class ImportGraph {
                             && fn.actorKind() == Ast.ActorKind.NONE
                             && fn.genericParameters().isEmpty()
                             && fn.name().equals(name);
+                    case KERNEL -> decl instanceof Ast.KernelDecl kernel
+                            && kernel.visibility() == Ast.Visibility.PUBLIC
+                            && kernel.name().equals(name);
                     case ACTOR -> decl instanceof Ast.ClassDecl klass
                             && klass.actorKind() != Ast.ActorKind.NONE
                             && klass.visibility() == Ast.Visibility.PUBLIC
@@ -172,7 +175,10 @@ final class ImportGraph {
                                     && fn.name().equals(name))
                             || (decl instanceof Ast.ClassDecl klass
                                     && klass.visibility() == Ast.Visibility.PUBLIC
-                                    && klass.name().equals(name));
+                                    && klass.name().equals(name))
+                            || (decl instanceof Ast.KernelDecl kernel
+                                    && kernel.visibility() == Ast.Visibility.PUBLIC
+                                    && kernel.name().equals(name));
                     case MODULE -> false;
                 };
                 if (matched) matches++;
