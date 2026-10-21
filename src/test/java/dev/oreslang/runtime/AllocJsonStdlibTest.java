@@ -248,6 +248,55 @@ final class AllocJsonStdlibTest {
     }
 
     @Test
+    void sourceStringifyIsStableAndNonConsuming() throws Exception {
+        Path entry = temp.resolve("stringify.ores");
+        Files.writeString(entry, """
+                import class JsonValue from "alloc/json";
+                import class Json from "alloc/json";
+
+                pub routine main(): void {
+                  val Map<string, JsonValue> fields =
+                      new Map<string, JsonValue>();
+                  fields.put("name", Json.of("Ada"));
+                  fields.put("enabled", Json.of(true));
+                  fields.put("count", Json.of(7));
+                  fields.put("missing", Json.null);
+
+                  stdio.println(Json.stringify(fields));
+
+                  // Stringify is a read boundary, not an ownership transfer.
+                  fields.put("after", Json.of("still-owned"));
+                  stdio.println(fields.size());
+
+                  val List<JsonValue> items = [
+                    Json.of("a"),
+                    Json.of(2),
+                    Json.null
+                  ];
+                  val JsonValue array = Json.array(items);
+                  stdio.println(Json.stringify(array));
+                  return;
+                }
+                """);
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                entry,
+                IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(),
+                out,
+                new ByteArrayOutputStream());
+
+        assertEquals(
+                "{\"name\":\"Ada\",\"enabled\":true,\"count\":7,\"missing\":null}"
+                        + System.lineSeparator()
+                        + "5"
+                        + System.lineSeparator()
+                        + "[\"a\",2,null]",
+                out.toString(StandardCharsets.UTF_8).trim());
+    }
+
+    @Test
     void rejectedIndexedJsonWriteRestoresMoveOnlyCandidateInCatch() throws Exception {
         Path entry = temp.resolve("indexed-rollback.ores");
         Files.writeString(entry, """
