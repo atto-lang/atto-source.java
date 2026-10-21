@@ -98,8 +98,49 @@ The next implementation slice should introduce the alloc module/resolver
 boundary and compiler-generated/static JSON constructors/codecs, then bind
 source `JsonValue` to this runtime descriptor.
 
-Source `Map<String, JsonValue>` mutation remains additionally gated on
+Source `Map<String, JsonValue>` mutation remains gated on
 commit-aware ownership transfer. A recursive JSON insertion can fail on graph,
-quota, or policy admission; move-only input must not be irreversibly consumed
-before the write commits (or else the failure result must return the
-uncommitted value).
+quota, or policy admission, so ordinary eager argument consumption is not
+sound for a move-only value.
+
+The runtime foundation now provides
+`OresKeyedMap.attemptOwnedPut(key, value)`. Its result is **linear** and has
+exactly two states:
+
+- **committed** — the offered value is published and
+  `takePrevious()` transfers the previous mapping exactly once;
+- **rejected** — the live Map is unchanged and
+  `takeUncommittedValue()` transfers the exact offered value by identity
+  exactly once.
+
+The rejection is not exposed as ordinary data. On a rejected result,
+`rethrowAfterRecovery()` refuses to propagate the original admission failure
+until the uncommitted value has been taken back. This prevents runtime lowering
+from throwing away the only owner while reporting an otherwise recoverable
+cycle/quota/policy error.
+
+The implementation has an explicit preflight/commit boundary. Key/value-domain
+checks, JSON graph admission, key/count/byte quotas, and compiler-owned policy
+validation all run before publication and are the only RuntimeException paths
+converted into a rejected ownership result. The final canonical Map publication
+occurs outside that rejection catch; an internal failure after publication must
+never masquerade as a rejection that returns the candidate.
+
+This is intentionally a compiler/runtime lowering primitive rather than the
+guest API. Source lowering must evaluate the owned RHS into a temporary without
+committing the source move, perform `attemptOwnedPut`, and:
+
+1. on **committed**, mark the source moved and consume `takePrevious()`;
+2. on **rejected**, consume `takeUncommittedValue()`, restore/retain the
+   original owner, then call `rethrowAfterRecovery()` or translate the error.
+
+The compiler must not implement this by calling ordinary `put`, eagerly
+marking the source moved, and then attempting ownership recovery from an
+exception.
+
+Source `Map<String, JsonValue>` is still deliberately gated. The current
+ownership checker conservatively treats every move observed anywhere inside a
+`try` as moved on the catch edge, because a later operation may throw after a
+successful move. The next compiler slice must model this insertion's explicit
+commit/rejection edges (or lower it to a non-throwing internal result branch)
+before a catch body may safely observe the restored source owner.
