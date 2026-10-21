@@ -16,6 +16,8 @@ java -cp "$work" dev.oreslang.runtime.accel.AcceleratorSafetySmoke
 for call in 'beginCommand(id)' 'complete(t, true)' 'cancelPending(t)' \
             'acknowledgeCancelledDeviceEvent(t, id)' \
             'retireAfterBackendRelease(id)' 'claimPair(fence, fence, 1024)' \
+            'markPairEnqueued(fence, fence, null)' \
+            'abortPairBeforeEnqueue(fence, fence, null)' \
             'completePair(fence, fence, null, true)' \
             'cancelPair(fence, fence, null)' \
             'acknowledgeCancelledPair(fence, fence, null)'; do
