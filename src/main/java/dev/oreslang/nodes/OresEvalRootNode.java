@@ -521,6 +521,38 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         @Override
+        public Class<?> sourceUnaryReplyClass(String actorTypeName) {
+            // This method is invoked by the runtime against the destination
+            // incarnation's exact immutable code executor, not by guest code.
+            Ast.ClassDecl actorClass = requireLocalActorClass(actorTypeName);
+            Ast.MethodDecl unary = findMethod(
+                    actorClass, CallableSelector.instance("run", 1));
+            if (unary == null || unary.returnType() == null) {
+                throw new IllegalStateException(
+                        "source unary actor has no declared return type: " + actorTypeName);
+            }
+            Ast.TypeRef result = unary.returnType();
+            if (!result.arguments().isEmpty() || result.inferArguments()) {
+                throw new UnsupportedOperationException(
+                        "generic source unary runtime response witness is not lowered: "
+                                + result.name());
+            }
+            // No Object.class fallback: every supported primitive is checked
+            // before a staged mailbox response can settle a caller's ticket.
+            // Nominal/structural and generic reply witnesses require a separate
+            // generated runtime-schema descriptor, not Java reflection.
+            return switch (result.name()) {
+                case "String", "string" -> String.class;
+                case "bool", "Bool" -> Boolean.class;
+                case "int", "Int", "i64" -> Long.class;
+                case "float", "Float", "f64" -> Double.class;
+                default -> throw new UnsupportedOperationException(
+                        "source unary runtime response witness is not lowered for "
+                                + result.name());
+            };
+        }
+
+        @Override
         public ActorRuntime.ActorOwnedGuestState initializeActor(
                 String actorTypeName,
                 ActorRuntime.ActorContext<Object> actorContext) {
