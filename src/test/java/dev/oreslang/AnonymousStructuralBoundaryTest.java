@@ -34,8 +34,8 @@ final class AnonymousStructuralBoundaryTest {
     @Test
     void allAnonymousSpellingsRejectMailboxBoundaries() {
         for (String shape : SHAPES) {
-            String source = "define module app\\n actor fnc invalid(" + shape
-                    + "): void { return; }\\nend";
+            String source = "define module app\n actor fnc invalid(" + shape
+                    + "): void { return; }\nend";
             var parsed = assertDoesNotThrow(() -> Parser.parse(source), source);
             assertThrows(IllegalArgumentException.class,
                     () -> TypeChecker.check(parsed), source);
