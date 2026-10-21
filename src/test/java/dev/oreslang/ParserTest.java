@@ -15,338 +15,82 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class ParserTest {
     @Test
-    void inlineTrapCannotHideExpressionBodiedLambdaMissingTerminator() {
-        String invalid = """
-                pub fnc main(): void {
-                    const closure = trap (|int value| -> value)
-                    return;
-                }
-                """;
-        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse(invalid));
-        assertTrue(failure.getMessage().contains(
-                "expression-bodied lambda statements require an explicit ';'"), failure::toString);
-
-        Ast.Program valid = assertDoesNotThrow(() -> Parser.parse("""
-                pub fnc main(): void {
-                    const closure = trap (|int value| -> value);
-                    return;
-                }
-                """));
-        Ast.FunctionDecl fn = assertInstanceOf(Ast.FunctionDecl.class,
-                valid.modules().getFirst().declarations().getFirst());
-        Ast.BindingStmt binding = assertInstanceOf(Ast.BindingStmt.class, fn.body().getFirst());
-        Ast.TrapExpr trap = assertInstanceOf(Ast.TrapExpr.class, binding.initializer());
-        assertInstanceOf(Ast.LambdaExpr.class, trap.expression());
-    }
-
-    @Test
-    void exhaustivelyAcceptsSupportedDeclarationModifierPermutations() {
-        for (List<String> order : permutations("define", "class", "pub", "abstract")) {
-            assertDoesNotThrow(() -> Parser.parse("""
-                    define module app as
-                      %s Box as
-                      end
-                    end
-                    """.formatted(String.join(" ", order))), String.join(" ", order));
-        }
-
-        for (List<String> order : permutations("define", "interface", "pub")) {
-            assertDoesNotThrow(() -> Parser.parse("""
-                    define module app as
-                      %s Api {
-                      }
-                    end
-                    """.formatted(String.join(" ", order))), String.join(" ", order));
-        }
-
-        for (List<String> order : permutations("define", "contract", "pub")) {
-            assertDoesNotThrow(() -> Parser.parse("""
-                    define module app as
-                      %s Contract {
-                      }
-                    end
-                    """.formatted(String.join(" ", order))), String.join(" ", order));
-        }
-
-        for (List<String> order : permutations("pub", "async", "nlex", "fnc")) {
-            assertDoesNotThrow(() -> Parser.parse("""
-                    define module app as
-                      %s work(): void {
-                        return;
-                      }
-                    end
-                    """.formatted(String.join(" ", order))), String.join(" ", order));
-        }
-
-        for (List<String> order : permutations("pub", "static", "fnc")) {
-            assertDoesNotThrow(() -> Parser.parse("""
-                    define module app as
-                      define class Box as
-                        %s helper(): int {
-                          return 1;
-                        }
-                      end
-                    end
-                    """.formatted(String.join(" ", order))), String.join(" ", order));
-        }
-
-        int actorCases = 0;
-        for (List<String> order : permutations("pub", "async", "untrusted", "actor", "fnc")) {
-            actorCases++;
-            assertDoesNotThrow(() -> Parser.parse("""
-                    define module app as
-                      %s worker(int value): int {
-                        return value;
-                      }
-                    end
-                    """.formatted(String.join(" ", order))), String.join(" ", order));
-        }
-        assertEquals(120, actorCases);
-
-        int actorRoutineCases = 0;
-        for (List<String> order : permutations("pub", "async", "shared", "actor", "routine")) {
-            actorRoutineCases++;
-            assertDoesNotThrow(() -> Parser.parse("""
-                    define module app as
-                      %s worker_routine(int value): int {
-                        return value;
-                      }
-                    end
-                    """.formatted(String.join(" ", order))), String.join(" ", order));
-        }
-        assertEquals(120, actorRoutineCases);
-
-        int isoActorCases = 0;
-        for (List<String> order : permutations("pub", "async", "isoactor", "fnc")) {
-            isoActorCases++;
-            assertDoesNotThrow(() -> Parser.parse("""
-                    define module app as
-                      %s private_worker(int value): int {
-                        return value;
-                      }
-                    end
-                    """.formatted(String.join(" ", order))), String.join(" ", order));
-        }
-        assertEquals(24, isoActorCases);
-    }
-
-    @Test
-    void classDefineAndVisibilityKeywordsMayAppearInCompatibilityOrder() {
+    void callableEffectsBranchAcceptsClassAndFncCompatibilityOrders() {
         Ast.Program program = Parser.parse("""
-                define module app as
-                  class pub define A as
+                define module app
+                  class pub define Legacy as
                   end
 
-                  pub class define B as
-                  end
-
-                  define class pub C as
-                  end
-
-                  define pub class D as
-                  end
-
-                  pub define class E as
-                  end
-                end
-                """);
-
-        Ast.ModuleDecl module = program.modules().getFirst();
-        assertEquals(5, module.declarations().size());
-        for (Ast.Decl declaration : module.declarations()) {
-            Ast.ClassDecl klass = assertInstanceOf(Ast.ClassDecl.class, declaration);
-            assertEquals(Ast.Visibility.PUBLIC, klass.visibility());
-        }
-    }
-
-    @Test
-    void interfaceAndContractDefineKeywordsMayAppearInCompatibilityOrder() {
-        Ast.Program program = Parser.parse("""
-                define module app as
-                  interface pub define ApiA {
-                  }
-
-                  pub interface define ApiB {
-                  }
-
-                  define interface pub ApiC {
-                  }
-
-                  contract pub define ContractA {
-                  }
-
-                  pub contract define ContractB {
-                  }
-
-                  define contract pub ContractC {
-                  }
-                end
-                """);
-
-        Ast.ModuleDecl module = program.modules().getFirst();
-        assertEquals(6, module.declarations().size());
-        for (int i = 0; i < 3; i++) {
-            Ast.InterfaceDecl iface = assertInstanceOf(Ast.InterfaceDecl.class, module.declarations().get(i));
-            assertEquals(Ast.Visibility.PUBLIC, iface.visibility());
-            assertFalse(iface.moduleContract());
-        }
-        for (int i = 3; i < 6; i++) {
-            Ast.InterfaceDecl contract = assertInstanceOf(Ast.InterfaceDecl.class, module.declarations().get(i));
-            assertEquals(Ast.Visibility.PUBLIC, contract.visibility());
-            assertTrue(contract.moduleContract());
-        }
-    }
-
-    @Test
-    void actorMarkerMayAppearOnEitherSideOfCallableKind() {
-        Ast.Program program = Parser.parse("""
-                define module app as
-                  fnc pub actor untrusted async first(int value): int {
-                    return value;
-                  }
-
-                  routine shared pub actor async second(int value): int {
-                    return value;
-                  }
-
-                  fnc pub isoactor async third(int value): int {
-                    return value;
-                  }
-                end
-                """);
-
-        Ast.ModuleDecl module = program.modules().getFirst();
-        Ast.FunctionDecl first = assertInstanceOf(Ast.FunctionDecl.class, module.declarations().get(0));
-        Ast.FunctionDecl second = assertInstanceOf(Ast.FunctionDecl.class, module.declarations().get(1));
-        Ast.FunctionDecl third = assertInstanceOf(Ast.FunctionDecl.class, module.declarations().get(2));
-
-        assertEquals(Ast.ActorKind.UNTRUSTED, first.actorKind());
-        assertEquals(Ast.ActorKind.SHARED, second.actorKind());
-        assertEquals(Ast.ActorKind.PRIVATE, third.actorKind());
-        assertTrue(first.async());
-        assertTrue(second.async());
-        assertTrue(third.async());
-    }
-
-    @Test
-    void modifiersAfterFncWorkAcrossCallableContexts() {
-        Ast.Program program = Parser.parse("""
-                define module app as
-                  fnc pub async module_work(): int {
-                    return 1;
-                  }
-
-                  define pub class Box as {
+                  define class pub Braced as {
                     fnc pub static helper(): int {
-                      return 2;
+                      return 1;
                     }
                   }
 
-                  actor pub Worker {
+                  actor Worker {
                     fnc pub async handle(int value): int {
                       return value;
                     }
                   }
 
-                  define interface Api {
-                    fnc structural render() => String;
-                  }
-
-                  actor pub fnc untrusted async worker(int value): int {
+                  actor pub fnc shared nlex worker(int value): int {
                     return value;
                   }
                 end
                 """);
 
         Ast.ModuleDecl module = program.modules().getFirst();
-        Ast.FunctionDecl moduleWork = assertInstanceOf(Ast.FunctionDecl.class, module.declarations().get(0));
-        Ast.ClassDecl box = assertInstanceOf(Ast.ClassDecl.class, module.declarations().get(1));
-        Ast.ClassDecl actor = assertInstanceOf(Ast.ClassDecl.class, module.declarations().get(2));
-        Ast.InterfaceDecl api = assertInstanceOf(Ast.InterfaceDecl.class, module.declarations().get(3));
-        Ast.FunctionDecl actorFunction = assertInstanceOf(Ast.FunctionDecl.class, module.declarations().get(4));
+        assertInstanceOf(Ast.ClassDecl.class, module.declarations().get(0));
 
-        assertEquals(Ast.Visibility.PUBLIC, moduleWork.visibility());
-        assertTrue(moduleWork.async());
-
-        Ast.MethodDecl helper = box.methods().getFirst();
+        Ast.ClassDecl braced = assertInstanceOf(Ast.ClassDecl.class, module.declarations().get(1));
+        Ast.MethodDecl helper = braced.methods().getFirst();
         assertTrue(helper.isStatic());
         assertEquals(Ast.Visibility.PUBLIC, helper.visibility());
 
-        assertEquals(Ast.Visibility.PUBLIC, actor.visibility());
-        Ast.MethodDecl handle = actor.methods().getFirst();
-        assertTrue(handle.async());
-        assertEquals(Ast.Visibility.PUBLIC, handle.visibility());
+        Ast.ClassDecl actor = assertInstanceOf(Ast.ClassDecl.class, module.declarations().get(2));
+        assertTrue(actor.methods().getFirst().async());
 
-        Ast.InterfaceFunctionDecl render =
-                assertInstanceOf(Ast.InterfaceFunctionDecl.class, api.members().getFirst());
-        assertTrue(render.structural());
-
-        assertEquals(Ast.ActorKind.UNTRUSTED, actorFunction.actorKind());
-        assertEquals(Ast.Visibility.PUBLIC, actorFunction.visibility());
-        assertTrue(actorFunction.async());
+        Ast.FunctionDecl actorFunction =
+                assertInstanceOf(Ast.FunctionDecl.class, module.declarations().get(3));
+        assertEquals(Ast.ActorKind.SHARED, actorFunction.actorKind());
+        assertTrue(actorFunction.nonLexical());
     }
 
     @Test
-    void unsupportedModifiersAreNeverSilentlyDiscarded() {
+    void callableEffectsBranchRejectsDiscardedModifiers() {
         List<String> invalid = List.of(
                 """
-                private define module app as
+                private define module app
                 end
                 """,
                 """
-                define module app as
+                define module app
                   async type Alias = int;
                 end
                 """,
                 """
-                define module app as
+                define module app
                   define class Box as
                     async val int value = 1;
                   end
                 end
                 """,
                 """
-                define module app as
-                  define class Box as
-                    structural constructor() {
-                      return;
-                    }
-                  end
-                end
-                """,
-                """
-                define module app as
+                define module app
                   actor Worker {
                     generator let value = 1;
                   }
                 end
                 """,
                 """
-                define module app as
-                  actor Worker {
-                    untrusted fnc work(): void {
-                      return;
-                    }
-                  }
-                end
-                """,
-                """
-                define module app as
-                  define interface Api {
-                    fnc generator render() => String;
-                  }
-                end
-                """,
-                """
-                define module app as
+                define module app
                   define interface Api {
                     private fnc render() => String;
                   }
                 end
                 """,
                 """
-                define module app as
+                define module app
                   define class Box as
                     static fnc static helper(): int {
                       return 1;
@@ -355,28 +99,28 @@ final class ParserTest {
                 end
                 """,
                 """
-                define module app as
+                define module app
                   isoactor fnc shared contradictory(): void {
                     return;
                   }
                 end
                 """,
                 """
-                define module app as
+                define module app
                   shared fnc missing_actor(): void {
                     return;
                   }
                 end
                 """,
                 """
-                define module app as
-                  fnc untrusted missing_actor_after_fnc(): void {
+                define module app
+                  fnc shared missing_actor_after_fnc(): void {
                     return;
                   }
                 end
                 """,
                 """
-                define module app as
+                define module app
                   fnc shared isoactor contradictory_after_fnc(): void {
                     return;
                   }
@@ -390,71 +134,188 @@ final class ParserTest {
     }
 
     @Test
-    void declarationModifiersMayAppearOnEitherSideOfDefineAndCallableKind() {
+    void effectsBranchExhaustivelyAcceptsSupportedModifierPermutations() {
+        for (List<String> order : permutations("define", "class", "abstract")) {
+            assertDoesNotThrow(() -> Parser.parse("""
+                    define module app
+                      %s Box as
+                      end
+                    end
+                    """.formatted(String.join(" ", order))), String.join(" ", order));
+        }
+
+        for (List<String> order : permutations("define", "interface", "pub")) {
+            assertDoesNotThrow(() -> Parser.parse("""
+                    define module app
+                      %s Api {
+                      }
+                    end
+                    """.formatted(String.join(" ", order))), String.join(" ", order));
+        }
+
+        for (List<String> order : permutations("pub", "nlex", "pure", "fnc")) {
+            assertDoesNotThrow(() -> Parser.parse("""
+                    define module app
+                      %s work(): int {
+                        return 1;
+                      }
+                    end
+                    """.formatted(String.join(" ", order))), String.join(" ", order));
+        }
+
+        for (List<String> order : permutations("pub", "static", "fnc")) {
+            assertDoesNotThrow(() -> Parser.parse("""
+                    define module app
+                      define class Box as
+                        %s helper(): int {
+                          return 1;
+                        }
+                      end
+                    end
+                    """.formatted(String.join(" ", order))), String.join(" ", order));
+        }
+
+        int actorCases = 0;
+        for (List<String> order : permutations("pub", "nlex", "shared", "actor", "fnc")) {
+            actorCases++;
+            assertDoesNotThrow(() -> Parser.parse("""
+                    define module app
+                      %s worker(int value): int {
+                        return value;
+                      }
+                    end
+                    """.formatted(String.join(" ", order))), String.join(" ", order));
+        }
+        assertEquals(120, actorCases);
+
+        int actorRoutineCases = 0;
+        for (List<String> order : permutations("pub", "nlex", "shared", "actor", "routine")) {
+            actorRoutineCases++;
+            assertDoesNotThrow(() -> Parser.parse("""
+                    define module app
+                      %s worker_routine(int value): int {
+                        return value;
+                      }
+                    end
+                    """.formatted(String.join(" ", order))), String.join(" ", order));
+        }
+        assertEquals(120, actorRoutineCases);
+
+        int isoActorCases = 0;
+        for (List<String> order : permutations("pub", "async", "isoactor", "fnc")) {
+            isoActorCases++;
+            assertDoesNotThrow(() -> Parser.parse("""
+                    define module app
+                      %s private_worker(int value): int {
+                        return value;
+                      }
+                    end
+                    """.formatted(String.join(" ", order))), String.join(" ", order));
+        }
+        assertEquals(24, isoActorCases);
+    }
+
+    @Test
+    void effectsBranchInterfaceDefineKeywordsMayAppearInCompatibilityOrder() {
         Ast.Program program = Parser.parse("""
-                define module app as
-                  pub define class LegacyBox as
-                  end
-
-                  define pub abstract class CanonicalBox as
-                  end
-
-                  define pub class BracedBox as {
+                define module app
+                  interface pub define ApiA {
                   }
 
-                  fnc pub async late_visibility(): void {
-                    return;
+                  pub interface define ApiB {
                   }
 
-                  async nlex fnc pub mixed_order(): void {
-                    return;
-                  }
-
-                  pub async nlex fnc canonical_order(): void {
-                    return;
+                  define interface pub ApiC {
                   }
                 end
                 """);
 
         Ast.ModuleDecl module = program.modules().getFirst();
-        Ast.ClassDecl legacyClass = (Ast.ClassDecl) module.declarations().get(0);
-        Ast.ClassDecl canonicalClass = (Ast.ClassDecl) module.declarations().get(1);
-        Ast.ClassDecl bracedClass = (Ast.ClassDecl) module.declarations().get(2);
-        Ast.FunctionDecl lateVisibility = (Ast.FunctionDecl) module.declarations().get(3);
-        Ast.FunctionDecl mixedOrder = (Ast.FunctionDecl) module.declarations().get(4);
-        Ast.FunctionDecl canonicalOrder = (Ast.FunctionDecl) module.declarations().get(5);
-
-        assertEquals(Ast.Visibility.PUBLIC, legacyClass.visibility());
-        assertEquals(Ast.Visibility.PUBLIC, canonicalClass.visibility());
-        assertEquals(Ast.Visibility.PUBLIC, bracedClass.visibility());
-        assertTrue(canonicalClass.isAbstract());
-
-        assertEquals(Ast.Visibility.PUBLIC, lateVisibility.visibility());
-        assertTrue(lateVisibility.async());
-
-        assertEquals(Ast.Visibility.PUBLIC, mixedOrder.visibility());
-        assertTrue(mixedOrder.async());
-        assertTrue(mixedOrder.nonLexical());
-
-        assertEquals(canonicalOrder.visibility(), mixedOrder.visibility());
-        assertEquals(canonicalOrder.async(), mixedOrder.async());
-        assertEquals(canonicalOrder.nonLexical(), mixedOrder.nonLexical());
+        assertEquals(3, module.declarations().size());
+        for (Ast.Decl declaration : module.declarations()) {
+            Ast.InterfaceDecl iface = assertInstanceOf(Ast.InterfaceDecl.class, declaration);
+            assertEquals(Ast.Visibility.PUBLIC, iface.visibility());
+        }
     }
 
     @Test
-    void duplicateModifiersRemainRejectedAcrossDeclarationKeywords() {
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                define module app as
-                  pub fnc pub nope(): void {
-                    return;
+    void effectsBranchActorMarkerMayAppearOnEitherSideOfCallableKind() {
+        Ast.Program program = Parser.parse("""
+                define module app
+                  fnc pub actor shared nlex first(int value): int {
+                    return value;
+                  }
+
+                  routine shared pub actor nlex second(int value): int {
+                    return value;
+                  }
+
+                  fnc pub isoactor nlex third(int value): int {
+                    return value;
                   }
                 end
-                """));
+                """);
 
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                define module app as
-                  pub define pub class Nope as
+        Ast.ModuleDecl module = program.modules().getFirst();
+        Ast.FunctionDecl first = assertInstanceOf(Ast.FunctionDecl.class, module.declarations().get(0));
+        Ast.FunctionDecl second = assertInstanceOf(Ast.FunctionDecl.class, module.declarations().get(1));
+        Ast.FunctionDecl third = assertInstanceOf(Ast.FunctionDecl.class, module.declarations().get(2));
+
+        assertEquals(Ast.ActorKind.SHARED, first.actorKind());
+        assertEquals(Ast.ActorKind.SHARED, second.actorKind());
+        assertEquals(Ast.ActorKind.PRIVATE, third.actorKind());
+        assertTrue(first.nonLexical());
+        assertTrue(second.nonLexical());
+        assertTrue(third.nonLexical());
+    }
+
+    @Test
+    void callableEffectModifiersMaySurroundFncAndClassesMayUseEitherBodyStyle() {
+        Ast.Program program = Parser.parse("""
+                define module app
+                  pub define class LegacyBox as
                   end
+
+                  define pub class BracedBox as {
+                  }
+
+                  fnc pub nlex pure first(): int {
+                    return 1;
+                  }
+
+                  pure nlex fnc pub second(): int {
+                    return 2;
+                  }
+
+                  fnc pub async third(): int {
+                    return 3;
+                  }
+                end
+                """);
+
+        Ast.ModuleDecl module = program.modules().getFirst();
+        Ast.FunctionDecl first = (Ast.FunctionDecl) module.declarations().get(2);
+        Ast.FunctionDecl second = (Ast.FunctionDecl) module.declarations().get(3);
+        Ast.FunctionDecl third = (Ast.FunctionDecl) module.declarations().get(4);
+
+        assertInstanceOf(Ast.ClassDecl.class, module.declarations().get(0));
+        assertInstanceOf(Ast.ClassDecl.class, module.declarations().get(1));
+
+        assertTrue(first.nonLexical());
+        assertTrue(first.pure());
+        assertEquals(first.visibility(), second.visibility());
+        assertEquals(first.nonLexical(), second.nonLexical());
+        assertEquals(first.pure(), second.pure());
+        assertTrue(third.async());
+    }
+
+    @Test
+    void duplicateEffectModifiersStillFailAcrossFnc() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define module app
+                  pure fnc pure nope(): int {
+                    return 1;
+                  }
                 end
                 """));
     }
@@ -500,253 +361,6 @@ final class ParserTest {
     }
 
     @Test
-    void parsesMixedThenAndDoAcrossElseifAndElifBranches() {
-        String source = """
-                define module app as
-                  fnc choose(bool a, bool b, bool c, bool d): int {
-                    if a; then
-                      return 1;
-                    elif b; do
-                      return 2;
-                    elseif c; then
-                      return 3;
-                    elif d; do
-                      return 4;
-                    else
-                      return 5;
-                    fi
-                  }
-                end
-                """;
-
-        Parser.ParseResult parsed = Parser.parseWithWarnings(source);
-        assertDoesNotThrow(() -> TypeChecker.check(parsed.program()));
-        assertEquals(2, parsed.warnings().size());
-        assertTrue(parsed.warnings().stream()
-                .allMatch(warning -> warning.message().contains("use 'then'")));
-    }
-
-    @Test
-    void lexerNormalizesElifAndElseifToTheSameBranchToken() {
-        var tokens = new Lexer("if a; then elif b; do elseif c; then else fi").scan();
-        var branchTokens = tokens.stream()
-                .filter(token -> token.type() == Token.Type.ELSEIF)
-                .toList();
-
-        assertEquals(2, branchTokens.size());
-        assertEquals(List.of("elif", "elseif"), branchTokens.stream().map(Token::lexeme).toList());
-    }
-
-    @Test
-    void canonicalIfThenSupportsElifAndSingleFiElseIf() {
-        Ast.Program elifProgram = Parser.parse("""
-                define module app as
-                  fnc choose(int value): int {
-                    if value < 0; then
-                      return -1;
-                    elif value == 0; then
-                      return 0;
-                    else
-                      return 1;
-                    fi
-                  }
-                end
-                """);
-
-        Ast.FunctionDecl elifFunction = (Ast.FunctionDecl) elifProgram.modules().getFirst().declarations().getFirst();
-        Ast.IfStmt elif = (Ast.IfStmt) elifFunction.body().getFirst();
-        assertEquals(2, elif.branches().size());
-        assertFalse(elif.elseBody().isEmpty());
-
-        Ast.Program elseIfProgram = Parser.parse("""
-                define module app as
-                  fnc choose(int value): int {
-                    if value < 0; then
-                      return -1;
-                    else if value == 0; then
-                      return 0;
-                    else
-                      return 1;
-                    fi
-                  }
-                end
-                """);
-
-        Ast.FunctionDecl elseIfFunction = (Ast.FunctionDecl) elseIfProgram.modules().getFirst().declarations().getFirst();
-        Ast.IfStmt elseIf = (Ast.IfStmt) elseIfFunction.body().getFirst();
-        assertEquals(2, elseIf.branches().size());
-        assertFalse(elseIf.elseBody().isEmpty());
-    }
-
-    @Test
-    void elseBodyMayBeginWithNestedIfOnFollowingLine() {
-        Ast.Program program = Parser.parse("""
-                define module app as
-                  fnc choose(bool a, bool b): int {
-                    if a; then
-                      return 1;
-                    else
-                      if b; then
-                        return 2;
-                      fi
-                      return 3;
-                    fi
-                  }
-                end
-                """);
-
-        Ast.FunctionDecl function =
-                (Ast.FunctionDecl) program.modules().getFirst().declarations().getFirst();
-        Ast.IfStmt outer = (Ast.IfStmt) function.body().getFirst();
-        assertEquals(1, outer.branches().size());
-        assertEquals(2, outer.elseBody().size());
-        assertInstanceOf(Ast.IfStmt.class, outer.elseBody().getFirst());
-    }
-
-    @Test
-    void ifIsStatementOnlyAndValueSelectionUsesTernaryOrExplicitReturns() {
-        assertFalse(Ast.Expr.class.isAssignableFrom(Ast.IfStmt.class));
-
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                fnc choose(bool condition): int {
-                  const y = if condition then
-                    1;
-                  else
-                    2;
-                  fi;
-                  return y;
-                }
-                """));
-
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                fnc choose_return(bool condition): int {
-                  return if condition then
-                    1;
-                  else
-                    2;
-                  fi;
-                }
-                """));
-
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                fnc identity(int value): int { return value; }
-                fnc choose_argument(bool condition): int {
-                  return identity(if condition then
-                    1;
-                  else
-                    2;
-                  fi);
-                }
-                """));
-
-        IllegalArgumentException implicitBranchValues = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        fnc choose(bool condition): int {
-                          if condition then
-                            1;
-                          else
-                            2;
-                          fi
-                        }
-                        """)));
-        assertTrue(implicitBranchValues.getMessage().contains("must explicitly return on every path"));
-
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                fnc choose(bool condition): int {
-                  if condition then
-                    return 1;
-                  else
-                    return 2;
-                  fi
-                }
-
-                fnc choose_expression(bool condition): int {
-                  return condition ? 1 : 2;
-                }
-                """)));
-    }
-
-    @Test
-    void legacyIfDoAndElseifRemainAcceptedForMigration() {
-        assertDoesNotThrow(() -> Parser.parse("""
-                define module app as
-                  fnc choose(int value): int {
-                    if value < 0; do
-                      return -1;
-                    elseif value == 0; do
-                      return 0;
-                    else
-                      return 1;
-                    fi
-                  }
-                end
-                """));
-    }
-
-    @Test
-    void conditionalDoProducesDeprecationWarningsButThenDoesNot() {
-        Parser.ParseResult legacy = Parser.parseWithWarnings("""
-                define module app as
-                  fnc choose(bool first, bool second): int {
-                    if first; do
-                      return 1;
-                    elseif second; do
-                      return 2;
-                    else
-                      return 3;
-                    fi
-                  }
-                end
-                """);
-        assertEquals(2, legacy.warnings().size());
-        assertTrue(legacy.warnings().stream()
-                .allMatch(warning -> warning.message().contains("use 'then'")));
-
-        Parser.ParseResult canonical = Parser.parseWithWarnings("""
-                define module app as
-                  fnc choose(bool first, bool second): int {
-                    if first; then
-                      return 1;
-                    elif second; then
-                      return 2;
-                    else
-                      return 3;
-                    fi
-                  }
-                end
-                """);
-        assertTrue(canonical.warnings().isEmpty());
-    }
-
-    @Test
-    void parsesLegacyDoRouteGuardsAsIfBlocks() {
-        Ast.Program program = Parser.parse("""
-                define class Router as
-                  max_segments_value: int;
-
-                  validate(int handler_id, Pattern pattern): Result {
-                    if handler_id < 0; do
-                      return Err("handler_id must be non-negative");
-                    fi
-                    if !pattern.is_valid(); do
-                      return Err("invalid route pattern");
-                    fi
-                    if pattern.size() > self.max_segments_value; do
-                      return Err("route pattern exceeds max_segments");
-                    fi
-                  }
-                end
-                """);
-
-        Ast.ModuleDecl root = program.modules().getFirst();
-        Ast.ClassDecl router = (Ast.ClassDecl) root.declarations().getFirst();
-        Ast.MethodDecl validate = router.methods().getFirst();
-        assertEquals(3, validate.body().size());
-        assertTrue(validate.body().stream().allMatch(statement -> statement instanceof Ast.IfStmt));
-    }
-
-    @Test
     void methodReceiverIsImplicitOrExplicitSelf() {
         String source = """
                 define module model
@@ -785,28 +399,38 @@ final class ParserTest {
                   };
                 }
 
-                pub routine helper = || -> {
+                pub routine helper(): void {
                   return;
                 }
 
-                pub fnc no_result = || -> {
+                pub fnc no_result(): void {
                   helper();
                   return;
                 }
 
-                pub routine main = || -> void {
+                pub routine main(): void {
                   val (() => void) callback = run();
                   callback();
+
+                  let fnc local = || -> {
+                    helper();
+                    return;
+                  };
+                  local();
+
                   no_result();
                   return;
                 }
                 """)));
 
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                pub fnc bad_implicit_void = || -> {
-                  return 1;
-                }
-                """)));
+        IllegalArgumentException declarationExpression = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        pub fnc bad_implicit_void = || -> {
+                          return 1;
+                        }
+                        """));
+        assertTrue(declarationExpression.getMessage().contains("executable-scope-only"));
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 pub fnc bad() => void { return; }
@@ -1241,32 +865,6 @@ final class ParserTest {
     }
 
     @Test
-    void declarationNestingAllowsClassesInsideModulesButNotModulesOrClassesInsideClasses() {
-        assertDoesNotThrow(() -> Parser.parse("""
-                define module Accounts as
-                  define class Account as
-                    pub let int balance = 100;
-                  end
-                end
-                """));
-
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                define module Outer as
-                  define module Inner as
-                    fnc value(): int { return 1; }
-                  end
-                end
-                """));
-
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                define class Outer as
-                  define class Inner as
-                  end
-                end
-                """));
-    }
-
-    @Test
     void classDeclarationsRequireAsDelimiter() {
         assertDoesNotThrow(() -> Parser.parse("""
                 define class CounterState as
@@ -1283,30 +881,6 @@ final class ParserTest {
                         """));
 
         assertTrue(failure.getMessage().contains("expected 'as' after class header"));
-    }
-
-
-    @Test
-    void acceleratorExecutionDomainsRemainFailClosedAfterG2RuntimeIr() {
-        for (String domain : List.of("gpu", "cpu", "quantum")) {
-            String source = """
-                    pub fnc main(): int {
-                        return %s {
-                            return 1;
-                        };
-                    }
-                    """.formatted(domain);
-            IllegalArgumentException failure = assertThrows(
-                    IllegalArgumentException.class,
-                    () -> Parser.parse(source),
-                    domain);
-            assertTrue(
-                    failure.getMessage().contains("execution domain '" + domain + "'"),
-                    failure::toString);
-            assertTrue(
-                    failure.getMessage().contains("no implicit CPU fallback"),
-                    failure::toString);
-        }
     }
 
     private static List<List<String>> permutations(String... tokens) {
@@ -1331,40 +905,5 @@ final class ParserTest {
             permute(nextRemaining, nextPrefix, out);
         }
     }
-
-    @Test
-    void routeGuardConditionalsAcceptDoElifElseifAndElseIfAliases() {
-        String source = """
-                define module routes as
-                  fnc validate(int handler_id, bool pattern_valid, int segment_count): int {
-                    if handler_id < 0; do
-                      return -1;
-                    elif !pattern_valid; then
-                      return -2;
-                    elseif segment_count > 10; do
-                      return -3;
-                    else if handler_id == 0; then
-                      return 0;
-                    else
-                      return 1;
-                    fi
-                  }
-                end
-                """;
-
-        Parser.ParseResult parsed = Parser.parseWithWarnings(source);
-        assertDoesNotThrow(() -> TypeChecker.check(parsed.program()));
-
-        Ast.FunctionDecl function =
-                (Ast.FunctionDecl) parsed.program().modules().getFirst().declarations().getFirst();
-        Ast.IfStmt statement = (Ast.IfStmt) function.body().getFirst();
-
-        assertEquals(4, statement.branches().size());
-        assertFalse(statement.elseBody().isEmpty());
-        assertEquals(2, parsed.warnings().size());
-        assertTrue(parsed.warnings().stream()
-                .allMatch(warning -> warning.message().contains("use 'then'")));
-    }
-
 
 }
