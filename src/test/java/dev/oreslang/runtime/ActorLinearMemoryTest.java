@@ -29,8 +29,14 @@ final class ActorLinearMemoryTest {
                     () -> arena.linearMemory(0, ActorLinearMemory.MAX_PAGES + 1));
             ActorLinearMemory memory = arena.linearMemory(1, 3);
             assertSame(memory, arena.linearMemory(1, 3));
+            assertThrows(IllegalArgumentException.class, () -> arena.linearMemory(-1, 3));
+            assertThrows(IllegalArgumentException.class, () -> arena.linearMemory(4, 3));
+            assertThrows(IllegalArgumentException.class, () -> arena.linearMemory(1, -1));
+            assertThrows(IllegalArgumentException.class,
+                    () -> arena.linearMemory(1, ActorLinearMemory.MAX_PAGES + 1));
             assertThrows(IllegalArgumentException.class, () -> arena.linearMemory(1, 2));
             assertEquals(1, memory.pages());
+            assertEquals(3, memory.maxPages());
             assertEquals(page, memory.byteLength());
             assertEquals(0, memory.readUnsignedByte(0));
             memory.writeByte(0, (byte) 0xe7);
@@ -69,6 +75,7 @@ final class ActorLinearMemoryTest {
             memory.writeLong(page - 4L, 0x1020304050607080L);
             assertEquals(0x1020304050607080L, memory.readLong(page - 4L));
             try (var lease = memory.leaseReadOnlyPage(1, 0, 8)) {
+                assertEquals(8, lease.length());
                 assertEquals(0x10203040L, Integer.toUnsignedLong(
                         (int) (memory.readLong(page - 4L) >>> 32)));
                 assertThrows(IllegalStateException.class,
