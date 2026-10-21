@@ -191,4 +191,43 @@ final class ActorNativeObjectAllocationTest {
         assertEquals("99", output.toString(StandardCharsets.UTF_8));
     }
 
+
+    @Test
+    void primitiveActorArrayLivesInArenaAcrossCooperate() throws Exception {
+        String program = """
+                define actor Worker as
+                  let mut Array<int> values;
+
+                  on_start(): void {
+                    self.values = new Array<int>();
+                    self.values.add(40);
+                    return;
+                  }
+
+                  receive(ActorMail<String> mail): void {
+                    self.values.add(2);
+                    rt cooperate;
+                    self.send(self.values.get(0) + self.values.get(1));
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = await spawn Worker();
+                  worker.send("go");
+                  val result = (await worker.outputs.next()).value.unwrap();
+                  stdio.stdout.write(result.value);
+                  await worker.get_done();
+                  return;
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Path entry = temp.resolve("actor-native-array.ores");
+        Files.writeString(entry, program);
+        LinkedProgramRunner.run(entry, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                Set.of(), Map.of(), output, new ByteArrayOutputStream());
+        assertEquals("42", output.toString(StandardCharsets.UTF_8));
+    }
+
 }
