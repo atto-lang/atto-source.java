@@ -5088,6 +5088,12 @@ public final class TypeChecker {
         validateActorCallableBoundaryType(
                 response, actorClass.actorKind(), false,
                 "ActorRef.request response");
+        if (response instanceof Named nestedFuture
+                && nestedFuture.name().equals("Future")) {
+            throw new IllegalArgumentException(
+                    "unary run(Request)->Response must return a concrete response, not Future<T>; "
+                            + "suspending unary reply-port lowering is not enabled");
+        }
         return response;
     }
 
