@@ -4,3 +4,6 @@
 # Format: one exact owner/repo per uncommented line, no whitespace or wildcards.
 # Proposed narrow private carrier for v3 exact-tree tests; requires CODEOWNER review and protected merge.
 # Review-only candidate (NOT an approved destination): ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra
+
+# Narrow private carrier for Java PR #1746; immutable details live in the carrier contract.
+sonus-auris-test/clients-api-contract
