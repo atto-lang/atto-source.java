@@ -357,6 +357,8 @@ final class EndDelimitedFunctionCurrentMainTest {
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("fnc bad() -> {foo: int, bar: string :: return value; end"));
         assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("fnc bad() -> struct {foo: int :: return value; end"));
+        assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("fnc bad() -> Thing> :: return value; end"));
     }
 
