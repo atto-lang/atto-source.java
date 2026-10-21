@@ -44,6 +44,45 @@ public final class ScopedTaskReadRuntime {
         Objects.requireNonNull(program, "checked Program");
         Objects.requireNonNull(taskBoundary, "checked Task boundary");
 
+        ReadLease lease = acquireRead(
+                authority,
+                program,
+                taskBoundary,
+                ownershipEpoch,
+                allocationId,
+                generation);
+        try {
+            // The scheduler callback is the physical lifetime edge. A Future
+            // may settle/cancel earlier; the read claim intentionally survives.
+            return scheduler.start(task, lease::close);
+        } catch (RuntimeException | Error failure) {
+            // start() can throw only before a tracked Task is successfully
+            // admitted. If publication happened, the scheduler owns callback
+            // retirement and start() returns the failed/cancelled Future.
+            lease.close();
+            throw failure;
+        }
+    }
+
+    /**
+     * Mint one exact compiler-proven READ lease without scheduling work.
+     *
+     * <p>The caller must bind {@link ReadLease#close()} to a physical child
+     * quiescence edge. Closing on Future settlement is insufficient. This
+     * split form is used by structured {@link TaskScope}, whose TaskHandle
+     * already owns the exact physical child lifetime.</p>
+     */
+    public static ReadLease acquireRead(
+            ScopedTaskReadAuthority authority,
+            Ast.Program program,
+            Ast.TaskExpr taskBoundary,
+            long ownershipEpoch,
+            long allocationId,
+            long generation) {
+        Objects.requireNonNull(authority, "scoped READ authority");
+        Objects.requireNonNull(program, "checked Program");
+        Objects.requireNonNull(taskBoundary, "checked Task boundary");
+
         authority.require(
                 program,
                 taskBoundary,
@@ -58,19 +97,8 @@ public final class ScopedTaskReadRuntime {
                 allocation.ownerId(),
                 allocationId,
                 generation);
-
-        Lease lease = register(key);
-        try {
-            // The scheduler callback is the physical lifetime edge. A Future
-            // may settle/cancel earlier; the read claim intentionally survives.
-            return scheduler.start(task, lease::retireAtPhysicalQuiescence);
-        } catch (RuntimeException | Error failure) {
-            // start() can throw only before a tracked Task is successfully
-            // admitted. If publication happened, the scheduler owns callback
-            // retirement and start() returns the failed/cancelled Future.
-            lease.retireBeforeAdmission();
-            throw failure;
-        }
+        register(key);
+        return new ReadLease(key);
     }
 
     /**
@@ -177,7 +205,39 @@ public final class ScopedTaskReadRuntime {
             throw new IllegalStateException(
                     "scoped Task READ registration failed");
         }
-        return new Lease(key);
+        return new ReadLease(key);
+    }
+
+    public static final class ReadLease implements AutoCloseable {
+        private final AllocationKey key;
+        private final AtomicBoolean retired = new AtomicBoolean();
+
+        private ReadLease(AllocationKey key) {
+            this.key = key;
+        }
+
+        @Override
+        public void close() {
+            retire("physical/pre-admission close");
+        }
+
+        private void retire(String edge) {
+            if (!retired.compareAndSet(false, true)) {
+                throw new IllegalStateException(
+                        "scoped Task READ lease retired more than once at " + edge);
+            }
+            Integer after = ACCESS.compute(key, (ignored, counter) -> {
+                if (counter == null || counter <= 0) {
+                    return POISONED;
+                }
+                int remaining = counter - 1;
+                return remaining == 0 ? null : remaining;
+            });
+            if (Integer.valueOf(POISONED).equals(after)) {
+                throw new IllegalStateException(
+                        "scoped Task READ ledger entry missing/corrupt at " + edge);
+            }
+        }
     }
 
     public static final class WriteLease implements AutoCloseable {
@@ -207,38 +267,4 @@ public final class ScopedTaskReadRuntime {
         }
     }
 
-    private static final class Lease {
-        private final AllocationKey key;
-        private final AtomicBoolean retired = new AtomicBoolean();
-
-        private Lease(AllocationKey key) {
-            this.key = key;
-        }
-
-        private void retireBeforeAdmission() {
-            retire("pre-admission");
-        }
-
-        private void retireAtPhysicalQuiescence() {
-            retire("physical quiescence");
-        }
-
-        private void retire(String edge) {
-            if (!retired.compareAndSet(false, true)) {
-                throw new IllegalStateException(
-                        "scoped Task READ lease retired more than once at " + edge);
-            }
-            Integer after = ACCESS.compute(key, (ignored, counter) -> {
-                if (counter == null || counter <= 0) {
-                    return POISONED;
-                }
-                int remaining = counter - 1;
-                return remaining == 0 ? null : remaining;
-            });
-            if (Integer.valueOf(POISONED).equals(after)) {
-                throw new IllegalStateException(
-                        "scoped Task READ ledger entry missing/corrupt at " + edge);
-            }
-        }
-    }
 }
