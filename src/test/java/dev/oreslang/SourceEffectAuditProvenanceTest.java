@@ -33,6 +33,17 @@ final class SourceEffectAuditProvenanceTest {
         assertTrue(changed.conservativelyEffectFree());
     }
 
+    @Test void malformedUtf16CannotCollapseToReplacementByteDigest() throws Exception {
+        var method = SourceEffectAudit.class.getDeclaredMethod("sourceDigest", String.class);
+        method.setAccessible(true);
+        for (String malformed : new String[]{"\\uD800", "\\uDC00", "a\\uD800b"}) {
+            var error = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                    () -> method.invoke(null, malformed));
+            assertInstanceOf(IllegalArgumentException.class, error.getCause());
+            assertTrue(error.getCause().getMessage().contains("UTF-16"));
+        }
+    }
+
     @Test void clientsCannotInstantiateOrModifyAClaimOfPurity() {
         assertEquals(0, SourceEffectAudit.Report.class.getConstructors().length,
                 "public record constructor would allow forging a pure source report");
