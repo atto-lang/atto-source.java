@@ -29,6 +29,7 @@ SOURCE_REPO = "ores-truffle-oreslang/oreslang-source.java"
 SOURCE_REPOSITORY_ID = 1400792274
 BLOCKING_INCIDENT_REPO = "ores-truffle-oreslang/oreslang-platform-conformance"
 BLOCKING_INCIDENT_REPOSITORY_ID = 1413795502
+BLOCKING_INCIDENT_IDS = {22: 5832921751, 77: 5904679716}
 BLOCKING_INCIDENTS = (22, 77)
 SOURCE_PROTECTED_BRANCH = "main"
 POLICY_PATH = ".github/private-ci-approved-repositories.txt"
@@ -147,8 +148,15 @@ def require_resolved_blocking_incidents():
         issue = gh_api(
             "repos/" + BLOCKING_INCIDENT_REPO + "/issues/" + str(number)
         )
-        if (issue.get("number") != number
-                or issue.get("repository_url") not in (None, expected_repository_url)
+        expected_issue_url = expected_repository_url + "/issues/" + str(number)
+        expected_html_url = (
+            "https://github.com/" + BLOCKING_INCIDENT_REPO + "/issues/" + str(number)
+        )
+        if (issue.get("id") != BLOCKING_INCIDENT_IDS[number]
+                or issue.get("number") != number
+                or issue.get("repository_url") != expected_repository_url
+                or issue.get("url") != expected_issue_url
+                or issue.get("html_url") != expected_html_url
                 or "pull_request" in issue):
             raise Denied("blocking P0 incident identity invalid")
         if (issue.get("state") != "closed"
