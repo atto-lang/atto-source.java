@@ -35,6 +35,12 @@ public final class OresTimers implements AutoCloseable {
             ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final Semaphore GLOBAL_SLOTS =
             new Semaphore(MAX_GLOBAL_ACTIVE_TIMERS);
+    private static final Semaphore GLOBAL_CALLBACK_SLOTS =
+            new Semaphore(MAX_GLOBAL_ACTIVE_TIMERS);
+
+    static int availableGlobalCallbackSlots() {
+        return GLOBAL_CALLBACK_SLOTS.availablePermits();
+    }
 
     static int availableGlobalTimerSlots() {
         return GLOBAL_SLOTS.availablePermits();
@@ -142,8 +148,11 @@ public final class OresTimers implements AutoCloseable {
             if (callbackTimers.size() >= MAX_ACTIVE_PER_OWNER) {
                 throw new RejectedExecutionException("timer callback owner admission is full");
             }
-            callbackTimers.add(handle);
+            if (!GLOBAL_CALLBACK_SLOTS.tryAcquire()) {
+                throw new RejectedExecutionException("global callback admission is full");
+            }
             try {
+                callbackTimers.add(handle);
                 // Reentrant owner admission lock: afterNanos acquires the same
                 // monitor and registers the monotonic deadline atomically
                 // against concurrent owner close.
@@ -151,6 +160,7 @@ public final class OresTimers implements AutoCloseable {
                 handle.deadline = deadline;
             } catch (RuntimeException | Error failure) {
                 callbackTimers.remove(handle);
+                GLOBAL_CALLBACK_SLOTS.release();
                 throw failure;
             }
         }
@@ -193,6 +203,7 @@ public final class OresTimers implements AutoCloseable {
                 synchronized (admission) {
                     callbackTimers.remove(this);
                 }
+                GLOBAL_CALLBACK_SLOTS.release();
             });
         }
 
