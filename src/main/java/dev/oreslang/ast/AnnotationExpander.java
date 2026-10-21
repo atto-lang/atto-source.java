@@ -15,6 +15,7 @@ import java.util.Map;
  */
 public final class AnnotationExpander {
     public static final String FROM_JSON = "FromJson";
+    public static final String JSON_FACTORY = "JsonFactory";
 
     /** Internal-only markers. '$' cannot be written as an Oreslang identifier. */
     public static final String GENERATED_FROM_JSON_GETTER = "$generated.fromJson.getter";
@@ -33,6 +34,43 @@ public final class AnnotationExpander {
         List<Ast.ModuleDecl> modules = new ArrayList<>(program.modules().size());
         for (Ast.ModuleDecl module : program.modules()) modules.add(expandModule(module));
         return new Ast.Program(program.namespace(), program.imports(), modules);
+    }
+
+    /**
+     * Return the one explicitly selected class JSON factory, or null when the
+     * class has not opted into nominal decoding.
+     *
+     * <p>Shape/type validation belongs to TypeChecker; this pass owns only
+     * annotation identity/cardinality so every compiler phase sees the same
+     * selected method.</p>
+     */
+    public static Ast.MethodDecl jsonFactoryMethod(Ast.ClassDecl klass) {
+        Ast.MethodDecl selected = null;
+        for (Ast.MethodDecl method : klass.methods()) {
+            Ast.Annotation marker = null;
+            for (Ast.Annotation annotation : method.annotations()) {
+                if (!annotation.name().equals(JSON_FACTORY)) continue;
+                if (marker != null) {
+                    throw new IllegalArgumentException(
+                            "method '" + klass.name() + "." + method.name()
+                                    + "' has duplicate @JsonFactory annotations");
+                }
+                marker = annotation;
+            }
+            if (marker == null) continue;
+            if (!marker.arguments().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "@JsonFactory on '" + klass.name() + "." + method.name()
+                                + "' does not accept arguments");
+            }
+            if (selected != null) {
+                throw new IllegalArgumentException(
+                        "class '" + klass.name()
+                                + "' has multiple @JsonFactory methods; exactly one is allowed");
+            }
+            selected = method;
+        }
+        return selected;
     }
 
     public static boolean isGeneratedFromJsonSetter(Ast.MethodDecl method) {
@@ -115,6 +153,9 @@ public final class AnnotationExpander {
         List<Ast.MethodDecl> methods = new ArrayList<>(klass.methods());
         Map<String, Ast.MethodDecl> signatures = new HashMap<>();
         for (Ast.MethodDecl method : methods) {
+            // Parse/cardinality validation is centralized even before the
+            // type checker validates the selected factory signature.
+            jsonFactoryMethod(klass);
             if (hasAnnotation(method.annotations(), FROM_JSON)) {
                 throw new IllegalArgumentException("@FromJson is only valid on class fields, not method '" + klass.name() + "." + method.name() + "'");
             }
