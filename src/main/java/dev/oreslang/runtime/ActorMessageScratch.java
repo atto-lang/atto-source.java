@@ -101,17 +101,33 @@ public final class ActorMessageScratch {
         int start;
         while (true) {
             if (index == blocks.size()) {
-                long capacity = Math.max(alignedBytes, Math.min(DEFAULT_CHUNK_BYTES, maximumChunkBytes));
-                // Reserve before publishing any cursor/epoch state; failure
-                // leaves the prior allocations and next slot intact.
-                ActorNativeArena.Region block = arena.region(Math.toIntExact(capacity));
+                long headroom = maximumChunkBytes - arena.committedBytes();
+                if (headroom < alignedBytes) {
+                    throw new IllegalStateException("actor scratch memory quota exhausted");
+                }
+                long capacity = Math.min(
+                        Math.max(alignedBytes, Math.min(DEFAULT_CHUNK_BYTES, maximumChunkBytes)),
+                        headroom);
+                // A large preferred chunk may fail because other actor quotas
+                // (including queued mail) reserve headroom. Retry just the
+                // requested span instead of failing an otherwise admissible
+                // small allocation. Both attempts are quota charged.
+                ActorNativeArena.Region block;
                 try {
+                    block = arena.region(Math.toIntExact(capacity));
+                } catch (IllegalArgumentException | IllegalStateException preferredFailure) {
+                    if (capacity == alignedBytes) throw preferredFailure;
+                    capacity = alignedBytes;
+                    block = arena.region(Math.toIntExact(capacity));
+                }
+                try {
+                    long nextReserved = Math.addExact(reservedBytes, capacity);
                     blocks.add(block);
+                    reservedBytes = nextReserved;
                 } catch (RuntimeException | Error failure) {
                     block.close();
                     throw failure;
                 }
-                reservedBytes = Math.addExact(reservedBytes, capacity);
             }
             ActorNativeArena.Region region = blocks.get(index);
             long proposed = ((index == cursorBlock ? (long) cursorByte : 0L)
