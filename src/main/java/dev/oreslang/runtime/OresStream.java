@@ -1,7 +1,5 @@
 package dev.oreslang.runtime;
 
-import java.util.Objects;
-
 /**
  * Oreslang-owned, bounded unicast stream transport (v1).
  *
