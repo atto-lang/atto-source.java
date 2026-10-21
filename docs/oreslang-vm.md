@@ -57,6 +57,54 @@ carrier threads. A logical actor or mailman does not own an OS thread.
 The production default keeps the elastic carrier policy: a small floor with
 bounded headroom. The control pool is physically distinct from all actor pools.
 
+## VM startup and root event loop
+
+VM startup is an implicit runtime operation; Oreslang source does not start its
+own async scheduler.
+
+Before an OresContext can admit guest execution, OresVM prestarts the CONTROL
+carrier pool used by the implicit ROOT_TASK scheduler. The context constructor
+asserts this startup barrier, so `pub routine main()` can never be the operation
+that lazily creates the scheduler.
+
+The startup ordering is therefore:
+
+```text
+OresVM bootstrap
+    ↓
+prestart CONTROL/root event-loop carriers
+    ↓
+create OresContext / attach ActorRuntime
+    ↓
+link + initialize program
+    ↓
+schedule pub routine main() on ROOT_TASK
+    ↓
+run main and all async continuations on VM-owned carriers
+```
+
+`await` and future completion are scheduler operations. A producer, timer, I/O,
+JNI/FFM callback, or future/channel/select notifier may settle a Future, but it
+only makes the owning logical continuation runnable; it never executes guest
+code inline. Channel/select integration uses the same rule: readiness produces a
+scheduler wakeup, and the ROOT_TASK/owning actor scheduler performs the guest
+turn.
+
+The control pool is prestarted deliberately rather than relying on
+`ThreadPoolExecutor`'s default lazy carrier creation. This removes a startup
+race between the first guest `main` turn and the runtime's async scheduling
+infrastructure while preserving the existing CONTROL reservation for
+supervision and ActorGroup mailmen.
+
+Startup is a hard barrier, not a best-effort hint. OresVM publishes its opaque
+context binding only after the CONTROL pool reports the complete configured
+carrier floor as live. If the host cannot create that floor, VM construction
+fails closed and no guest context or `main` routine is admitted.
+
+Timers remain independently lazy where appropriate: creating a timer driver is
+allowed to allocate a host service thread only when actual timer work exists,
+which keeps native-image build-time state free of live runtime threads.
+
 ## Control plane authority
 
 Supervision and ordinary actor execution do not share an actor scheduling queue.
