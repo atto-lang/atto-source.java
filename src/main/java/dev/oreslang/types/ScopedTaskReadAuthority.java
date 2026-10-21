@@ -94,12 +94,12 @@ public final class ScopedTaskReadAuthority {
             long ownershipEpoch,
             AllocationIdentity allocation,
             List<Projection> projections,
-            AutoTraitRules.Capabilities referentCapabilities) {
+            Types.Type referentType) {
         Objects.requireNonNull(program, "checked Program");
         Objects.requireNonNull(task, "checked TaskExpr");
         Objects.requireNonNull(allocation, "allocation identity");
         Objects.requireNonNull(projections, "READ projections");
-        Objects.requireNonNull(referentCapabilities, "referent capabilities");
+        Objects.requireNonNull(referentType, "referent type");
 
         // Bind this proof to the exact successfully ownership-checked Task-v2
         // boundary. Reparsed/cloned/stale Tasks cannot inherit READ authority.
@@ -109,9 +109,11 @@ public final class ScopedTaskReadAuthority {
             throw new IllegalArgumentException(
                     "scoped Task READ requires CPU execution until device-fence authority exists");
         }
+        AutoTraitRules.Capabilities referentCapabilities =
+                TypeAutoTraits.inferClosed(referentType);
         if (!referentCapabilities.sync()) {
             throw new IllegalArgumentException(
-                    "scoped Task READ referent requires compiler-derived Sync proof");
+                    "scoped Task READ referent requires canonical compiler-derived Sync proof");
         }
         if (projections.size() > MAX_PROJECTION_DEPTH) {
             throw new IllegalArgumentException(
