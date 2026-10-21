@@ -4309,7 +4309,7 @@ public final class ActorRuntime implements AutoCloseable {
                 stoppingWorkers.remove(actor);
             }
             leaveId(actor.id());
-            if (Objects.equals(creator, actorId)) closeFromRuntime();
+            if (Objects.equals(creator, actor.id())) closeFromRuntime();
         }
 
         private void requireOpen() {
