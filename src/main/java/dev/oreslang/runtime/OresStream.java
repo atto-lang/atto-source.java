@@ -64,6 +64,17 @@ public final class OresStream<T> implements AutoCloseable {
         return channel.isClosed();
     }
 
+    /**
+     * Runtime-only producer failure handoff. The underlying channel retains
+     * committed buffered items, then exposes the original cause on its
+     * ChannelClosedException after drain. This does not itself bind a Task
+     * lifetime to this Stream or grant actor-message transport rights.
+     */
+    public void close(Throwable producerFailure) {
+        channel.close(java.util.Objects.requireNonNull(
+                producerFailure, "producer failure"));
+    }
+
     @Override
     public void close() {
         channel.close();
