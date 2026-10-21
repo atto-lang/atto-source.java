@@ -241,6 +241,35 @@ final class TaskBorrowBoundaryV2Test {
     }
 
     @Test
+    void nestedLoanInOwnedContainerCannotLaunderTaskSendProof() throws Exception {
+        // Exercise the compiler's recursive Send backstop directly. Source
+        // construction is irrelevant to this property: any frontend may
+        // elaborate a borrowed value inside Option/Future/Channel/Result.
+        var program = Parser.parse("pub fnc main(): void { return; }");
+        var constructor = OwnershipChecker.class.getDeclaredConstructor(
+                dev.oreslang.ast.Ast.Program.class);
+        constructor.setAccessible(true);
+        var checker = constructor.newInstance(program);
+        var gate = OwnershipChecker.class.getDeclaredMethod(
+                "forbiddenTaskCapability", dev.oreslang.ast.Ast.TypeRef.class);
+        gate.setAccessible(true);
+
+        var loan = dev.oreslang.ast.Ast.TypeRef.borrowed(
+                dev.oreslang.ast.Ast.TypeRef.simple("int"), false);
+        for (String outer : new String[] {"Option", "Future", "Channel"}) {
+            var container = new dev.oreslang.ast.Ast.TypeRef(
+                    outer, java.util.List.of(loan), false);
+            assertTrue((Boolean) gate.invoke(checker, container),
+                    () -> outer + " must not launder a nested Task loan");
+        }
+        var safe = new dev.oreslang.ast.Ast.TypeRef(
+                "Option", java.util.List.of(
+                        dev.oreslang.ast.Ast.TypeRef.simple("int")), false);
+        assertFalse((Boolean) gate.invoke(checker, safe),
+                "owned scalar Option remains Send-safe");
+    }
+
+    @Test
     void canonicalRtCopyAndRtShareScalarsRemainSafeInTasks() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 pub async fnc main(): void {
