@@ -78,6 +78,14 @@ export MOCK_API_FAILURE=true
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
 unset MOCK_API_FAILURE
+export MOCK_EXTRA_LINE=$'\t'
+expect_fail trusted/ci
+expect_wrapper_reject trusted/ci
+unset MOCK_EXTRA_LINE
+export MOCK_EXTRA_LINE=$'\t\t'
+expect_fail trusted/ci
+expect_wrapper_reject trusted/ci
+unset MOCK_EXTRA_LINE
 export MOCK_EXTRA_LINE=$'\tunexpected-field'
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
