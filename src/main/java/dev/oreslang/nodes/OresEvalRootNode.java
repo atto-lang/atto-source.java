@@ -1118,6 +1118,8 @@ public final class OresEvalRootNode extends RootNode {
             private Env initialBlockEnv;
 
             private SourceValueCont awaitingContinuation;
+            private ActorNativeArena.SuspensionKind awaitingKind;
+            private long awaitingTicket;
             private OresScheduler.Step<Object> nextStep;
 
             private SourceTask(
@@ -1162,11 +1164,23 @@ public final class OresEvalRootNode extends RootNode {
             public OresScheduler.Step<Object> resume(
                     OresScheduler.Resume resume)
                     throws Exception {
-                if (nativeFrame != null) nativeFrame.beginResume(resume.initial());
+                if (nativeFrame != null) {
+                    if (resume.initial()) {
+                        nativeFrame.beginInitialResume();
+                    } else {
+                        if (awaitingContinuation == null || awaitingKind == null || awaitingTicket <= 0L) {
+                            throw new IllegalStateException(
+                                    "managed source continuation lacks native suspension authority");
+                        }
+                        nativeFrame.beginResume(awaitingKind, awaitingTicket);
+                    }
+                }
                 try {
                     return resumeSource(resume);
                 } catch (RuntimeException failure) {
                     awaitingContinuation = null;
+                    awaitingKind = null;
+                    awaitingTicket = 0L;
                     pendingLoopContinuation = null;
                     pendingLoopGuardEnv = null;
                     nextStep = null;
@@ -1248,6 +1262,8 @@ public final class OresEvalRootNode extends RootNode {
                 } else {
                     SourceValueCont continuation = awaitingContinuation;
                     awaitingContinuation = null;
+                    awaitingKind = null;
+                    awaitingTicket = 0L;
                     if (continuation == null) {
                         throw new IllegalStateException(
                                 "source task resumed without a pending source continuation");
@@ -1328,7 +1344,8 @@ public final class OresEvalRootNode extends RootNode {
                             "source continuation attempted two terminal steps in one turn");
                 }
                 awaitingContinuation = continuation;
-                if (nativeFrame != null) nativeFrame.awaiting();
+                awaitingKind = ActorNativeArena.SuspensionKind.AWAIT;
+                awaitingTicket = nativeFrame == null ? 0L : nativeFrame.awaiting();
                 nextStep = OresScheduler.await(future);
             }
 
@@ -1339,7 +1356,8 @@ public final class OresEvalRootNode extends RootNode {
                             "source continuation attempted two terminal steps in one turn");
                 }
                 awaitingContinuation = continuation;
-                if (nativeFrame != null) nativeFrame.cooperating();
+                awaitingKind = ActorNativeArena.SuspensionKind.COOPERATE;
+                awaitingTicket = nativeFrame == null ? 0L : nativeFrame.cooperating();
                 nextStep = OresScheduler.cooperate();
                 cooperationQuantum.recordedCooperate();
             }
