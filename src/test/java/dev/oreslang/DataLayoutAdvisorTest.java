@@ -42,6 +42,33 @@ final class DataLayoutAdvisorTest {
         assertFalse(has(region(Layout.AOSOA, new Hints(null, null, null, 256, null), false),
                 "ORES-LAYOUT133"));
     }
+    @Test void advisesNarrowerSoaosGroupsWhenSelectiveStrideExceedsCacheLine() {
+        var wide = new Region("ecs.transform", Layout.SOAOS, 10_000,
+                List.of(32, 32, 32, 32, 8, 8, 8, 8), List.of(0), true,
+                true, true, false, false, true, false,
+                new Hints(null, null, null, null, null, 4, 64));
+        assertTrue(has(wide, "ORES-LAYOUT136"));
+
+        var narrow = new Region("ecs.transform", Layout.SOAOS, 10_000,
+                List.of(8, 8, 8, 8, 8, 8, 8, 8), List.of(0, 1), true,
+                true, true, false, false, true, false,
+                new Hints(true, null, null, null, null, 4, 64));
+        assertFalse(has(narrow, "ORES-LAYOUT136"));
+        assertTrue(has(narrow, "ORES-LAYOUT132"),
+                "SoAoS random gathers should remain visible to the advisor");
+    }
+
+    @Test void rejectsMalformedSoaosAndCacheLineEvidence() {
+        assertThrows(IllegalArgumentException.class, () ->
+                region(Layout.AOS, new Hints(null, null, null, null, null, 2, 64), false));
+        assertThrows(IllegalArgumentException.class, () -> new Region(
+                "s", Layout.SOAOS, 1000, List.of(8, 8, 8, 8, 8, 8),
+                List.of(0), true, true, true, false, false, true, false,
+                new Hints(null, null, null, null, null, 4, 64)));
+        assertThrows(IllegalArgumentException.class, () ->
+                new Hints(null, null, null, null, null, 2, 48));
+    }
+
     @Test void rejectsMalformedEvidenceAndCopiesCallerCollections() {
         assertThrows(IllegalArgumentException.class, () -> new Region(
                 "s", Layout.AOS, 128, List.of(4, 4), List.of(0, 0),
