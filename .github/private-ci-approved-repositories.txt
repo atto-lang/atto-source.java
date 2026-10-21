@@ -4,3 +4,4 @@
 # Format: one exact owner/repo per uncommented line, no whitespace or wildcards.
 # Proposed narrow private carrier for v3 exact-tree tests; requires CODEOWNER review and protected merge.
 # Review-only candidate (NOT an approved destination): ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra
+streempilot-test/browser-studio-e2e
