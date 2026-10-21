@@ -94,9 +94,11 @@ They become legal only when imported/resolved through `alloc/json`. This
 prevents an allocator-backed type from accidentally becoming an ambient
 `core` builtin merely because the runtime descriptor landed first.
 
-The next implementation slice should introduce the alloc module/resolver
-boundary and compiler-generated/static JSON constructors/codecs, then bind
-source `JsonValue` to this runtime descriptor.
+The reserved `alloc/json` module/resolver boundary now lives in the
+compiler-owned packaged-library tier. It is deliberately an empty source
+namespace until compiler-generated/static JSON constructors/codecs can bind
+source `JsonValue` to this runtime descriptor without making it ambient.
+Project source and `ORESLANG_PATH` cannot shadow that reserved module.
 
 Source `Map<String, JsonValue>` mutation remains gated on
 commit-aware ownership transfer. A recursive JSON insertion can fail on graph,
