@@ -21,6 +21,22 @@ final class AllocJsonStdlibTest {
     @TempDir Path temp;
 
     @Test
+    void nativeImageMetadataIncludesAllocOresResources() throws Exception {
+        String path =
+                "META-INF/native-image/dev.oreslang/oreslang/reachability-metadata.json";
+        try (var input =
+                AllocJsonStdlibTest.class.getClassLoader().getResourceAsStream(path)) {
+            if (input == null) {
+                throw new AssertionError("missing Native Image reachability metadata");
+            }
+            String metadata =
+                    new String(input.readAllBytes(), StandardCharsets.UTF_8);
+            assertTrue(metadata.contains("dev/oreslang/alloc/*.ores"));
+            assertTrue(metadata.contains("dev/oreslang/alloc/**/*.ores"));
+        }
+    }
+
+    @Test
     void jsonDescriptorIsPackagedPureOreslang() throws Exception {
         String source = AllocLibrarySources.source("alloc/json");
         MixedSourceUnit parsed = MixedSourceUnit.parse(
