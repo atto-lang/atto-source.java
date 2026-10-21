@@ -13,6 +13,7 @@ import datetime as dt
 import hashlib
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -90,18 +91,42 @@ def unique_object(pairs):
     result = {}
     for key, value in pairs:
         if key in result:
-            raise Denied("carrier contract contains duplicate JSON key")
+            raise Denied("duplicate JSON key: " + key)
         result[key] = value
     return result
+
+
+def strict_json_loads(text, label):
+    def reject_constant(_value):
+        raise Denied(label + " contains nonfinite JSON constant")
+
+    def finite_float(value):
+        number = float(value)
+        if not math.isfinite(number):
+            raise Denied(label + " contains nonfinite JSON number")
+        return number
+
+    try:
+        return json.loads(
+            text,
+            object_pairs_hook=unique_object,
+            parse_constant=reject_constant,
+            parse_float=finite_float,
+        )
+    except (json.JSONDecodeError, RecursionError, OverflowError) as exc:
+        raise Denied(label) from exc
 
 
 def safe_policy_path(value, prefix, suffix):
     if not isinstance(value, str):
         raise Denied("invalid protected carrier path")
     parts = PurePosixPath(value).parts
-    if (not value.startswith(prefix) or not value.endswith(suffix)
-            or not parts or ".." in parts or ".git" in parts
-            or "\\" in value or value.startswith("/")):
+    if (not re.fullmatch(r"[A-Za-z0-9._/-]+", value)
+            or PurePosixPath(value).as_posix() != value
+            or not value.startswith(prefix) or not value.endswith(suffix)
+            or not parts or any(part in (".", "..") for part in parts)
+            or any(part.casefold() == ".git" for part in parts)
+            or value.startswith("/")):
         raise Denied("invalid protected carrier path")
     return value
 
@@ -170,7 +195,7 @@ def gh_api_list(route):
     if completed.returncode != 0:
         raise Denied("authenticated GitHub list request failed")
     try:
-        data = json.loads(completed.stdout)
+        data = strict_json_loads(completed.stdout, "invalid GitHub list JSON response")
     except json.JSONDecodeError as exc:
         raise Denied("invalid GitHub list JSON response") from exc
     if not isinstance(data, list):
@@ -420,7 +445,7 @@ def remote_file_at_source_main(path, main_sha, max_bytes):
 
 def parse_contract(raw, repository, source_pr, test_plan):
     try:
-        doc = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object)
+        doc = strict_json_loads(raw.decode("utf-8"), "invalid carrier contract JSON")
     except (UnicodeError, ValueError, RecursionError) as exc:
         raise Denied("invalid carrier contract JSON") from exc
     if not isinstance(doc, dict) or doc.get("schema") != CONTRACT_SCHEMA:
@@ -624,6 +649,8 @@ def checked_destination(repository, contract):
         raise Denied("carrier test plan has invalid base64") from exc
     if not plan_bytes or len(plan_bytes) > MAX_PLAN:
         raise Denied("carrier test plan missing or oversized")
+    if git_blob_sha(plan_bytes) != contract["test_plan_blob_sha"]:
+        raise Denied("carrier test plan blob digest mismatch")
     return repo, base_tree, plan_bytes
 
 
@@ -655,7 +682,7 @@ def verify_source_pr(source_pr, source_commit):
 
 def validate_test_plan(plan_bytes, source_pr):
     try:
-        plan = json.loads(plan_bytes.decode("utf-8"), object_pairs_hook=unique_object)
+        plan = strict_json_loads(plan_bytes.decode("utf-8"), "invalid reviewed carrier test plan")
     except (UnicodeError, ValueError, RecursionError) as exc:
         raise Denied("invalid reviewed carrier test plan") from exc
     if (not isinstance(plan, dict)
@@ -808,7 +835,7 @@ def live_ref_sha(repository, ref_name, expected_repository_id):
             return None
         raise Denied("carrier ref lookup failed")
     try:
-        payload = json.loads(result.stdout)
+        payload = strict_json_loads(result.stdout, "carrier ref lookup returned invalid JSON")
     except json.JSONDecodeError as exc:
         raise Denied("carrier ref lookup returned invalid JSON") from exc
     if (not isinstance(payload, dict)
