@@ -124,7 +124,8 @@ final class LambdaParameterOrderTest {
             Ast.BindingStmt binding = (Ast.BindingStmt) main.body().getFirst();
             Ast.LambdaExpr lambda = (Ast.LambdaExpr) binding.initializer();
             assertEquals("candidate", lambda.parameters().getFirst().name());
-            assertNotNull(lambda.parameters().getFirst().type());
+            assertTrue(lambda.parameters().getFirst().type().isUnion());
+            assertEquals(2, lambda.parameters().getFirst().type().arguments().size());
         }
     }
 
