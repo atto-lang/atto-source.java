@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Publish a snapshot branch ONLY into a reviewed private GitHub repository.
-
-No arbitrary command execution or user-selectable GitHub API endpoints. All
-writes target the exact repository checked by the private-source policy.
-"""
+"""Audited private-CI helpers used only by the v3 dispatcher.\n\nThe legacy export entry point is disabled; v3 is the only source-transfer path.\n"""
 import argparse
 import base64
 import hashlib
@@ -19,6 +15,7 @@ import sys
 import tempfile
 
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
+APPROVAL = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*) ([1-9][0-9]*)$")
 BRANCH = re.compile(r"^ci/oreslang-[A-Za-z0-9][A-Za-z0-9_.-]{0,70}$")
 SHA = re.compile(r"^[a-f0-9]{40}$")
 MAX_FILES = 1024
@@ -29,18 +26,59 @@ MAX_DIRECTORIES = 1024
 MAX_GH_API_RESPONSE_CHARS = 24 * 1024 * 1024
 PREFIX = "private-oreslang-source"
 SOURCE_REPO = "ores-truffle-oreslang/oreslang-source.java"
+SOURCE_REPOSITORY_ID = 1400792274
 SOURCE_PROTECTED_BRANCH = "main"
 POLICY_PATH = ".github/private-ci-approved-repositories.txt"
+CODEOWNERS_PATH = ".github/CODEOWNERS"
+SECURITY_CODEOWNER_PATHS = (
+    "/.github/CODEOWNERS",
+    "/.github/private-ci-approved-repositories.txt",
+    "/.github/private-ci-carrier-contracts.json",
+    "/scripts/check-private-ci-destination.sh",
+    "/scripts/run-in-private-ci-destination.sh",
+    "/scripts/publish-private-ci-source.py",
+    "/scripts/publish-private-ci-source-v3.py",
+)
+SECURITY_CODEOWNER = "@ORESoftware"
 
 
 class Denied(RuntimeError):
     pass
 
-
 class GitHubWriteRejected(Denied):
     """GitHub definitively rejected a write; no remote object was created."""
     pass
 
+
+def safe_descriptor_flags_available():
+    """Require distinct positive descriptor-safety flag bits."""
+    flags = tuple(
+        getattr(os, name, None)
+        for name in ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")
+    )
+    if not all(type(value) is int and value > 0 for value in flags):
+        return False
+    return all(
+        (left & right) == 0
+        for index, left in enumerate(flags)
+        for right in flags[index + 1:]
+    )
+
+
+def require_security_codeowners(contents):
+    """Require terminal exact rules owned by the independent security owner."""
+    lines = canonical_security_lines(contents, "protected CODEOWNERS")
+    rules = [line.strip() for line in lines if line.strip() and not line.startswith("#")]
+    if len(rules) < len(SECURITY_CODEOWNER_PATHS):
+        raise Denied("protected CODEOWNERS lacks terminal export rules")
+    tail = rules[-len(SECURITY_CODEOWNER_PATHS):]
+    for expected_path, rule in zip(SECURITY_CODEOWNER_PATHS, tail):
+        fields = rule.split()
+        if (len(fields) < 2 or fields[0] != expected_path
+                or SECURITY_CODEOWNER not in fields[1:]):
+            raise Denied(
+                "protected CODEOWNERS must end with exact export rules owned by the independent security owner"
+            )
 
 def valid_sha(value):
     if not isinstance(value, str) or not SHA.fullmatch(value):
@@ -68,7 +106,6 @@ def trusted_github_cli():
         raise Denied("trusted GitHub CLI executable is not root-controlled")
     return target
 
-
 def github_api_environment():
     """Build a minimal environment for authenticated GitHub API subprocesses."""
     provided = [
@@ -86,7 +123,6 @@ def github_api_environment():
         "XDG_CONFIG_HOME": "/nonexistent",
         "LC_ALL": "C.UTF-8",
     }
-
 
 def strict_json_loads(text, label="invalid GitHub API JSON response"):
     """Reject duplicate keys and non-finite numbers in security metadata."""
@@ -116,14 +152,12 @@ def strict_json_loads(text, label="invalid GitHub API JSON response"):
     except (json.JSONDecodeError, RecursionError, OverflowError) as exc:
         raise Denied(label) from exc
 
-
 def canonical_security_lines(contents, label):
     """Accept only printable ASCII records separated by LF."""
     if not isinstance(contents, bytes) or any(
             byte != 10 and not 32 <= byte <= 126 for byte in contents):
         raise Denied(label + " contains noncanonical ASCII LF bytes")
     return contents.decode("ascii").split("\n")
-
 
 def run_bounded_gh(argv, *, input=None, env=None, timeout=45):
     """Run the authenticated CLI with an OS-enforced output-file byte cap.
@@ -168,7 +202,6 @@ def run_bounded_gh(argv, *, input=None, env=None, timeout=45):
     except UnicodeError as exc:
         raise Denied("authenticated GitHub API response is not UTF-8") from exc
     return subprocess.CompletedProcess(argv, result.returncode, stdout, stderr)
-
 
 def gh_api(route, method="GET", payload=None):
     argv = [trusted_github_cli(), "api", "--method", method, route,
@@ -215,36 +248,51 @@ def gh_api(route, method="GET", payload=None):
         raise Denied("unexpected GitHub response shape")
     return data
 
-
-def checked_repo(repository):
+def checked_repo(repository, expected_repository_id=None):
     result = gh_api("repos/" + repository)
     if (not isinstance(result.get("full_name"), str)
             or result["full_name"].casefold() != repository.casefold()
             or result.get("visibility") != "private"
             or result.get("private") is not True):
         raise Denied("destination identity or private visibility changed")
+    if expected_repository_id is not None:
+        if (type(expected_repository_id) is not int
+                or expected_repository_id <= 0
+                or type(result.get("id")) is not int
+                or result["id"] != expected_repository_id):
+            raise Denied("destination numeric repository ID differs from reviewed approval")
     return result
 
 
 def require_preflight(repository, root):
-    """Perform only data checks before protected-source authorization.
+    """Perform data-only approval checks before trusting checkout-executable code."""
+    _digest, approved_repository_id = checked_policy_approval(root, repository)
+    checked_repo(repository, approved_repository_id)
 
-    The checkout under test may be an unreviewed PR. Executing its shell guard
-    here would run attacker-controlled code with the operator's GitHub token
-    before protected main has authenticated the control plane.
-    """
-    checked_policy_fingerprint(root, repository)
-    checked_repo(repository)
+def _parse_policy_approval(contents, repository, label):
+    lines = canonical_security_lines(contents, label)
+    approved_id = None
+    seen = set()
+    for line in lines:
+        if not line or line.startswith("#"):
+            continue
+        match = APPROVAL.fullmatch(line)
+        if match is None:
+            raise Denied(label + " requires exact owner/repo numeric-id pairs")
+        slug, numeric_id = match.groups()
+        key = slug.casefold()
+        if key in seen:
+            raise Denied(label + " contains duplicate repository identities")
+        seen.add(key)
+        if key == repository.casefold():
+            approved_id = int(numeric_id)
+    if approved_id is None:
+        raise Denied("destination approval was revoked or absent")
+    return approved_id
 
-
-def checked_policy_fingerprint(root, repository):
-    """Read approval only through directory descriptors and O_NOFOLLOW.
-
-    A pathname symlink check followed by read_bytes() can be raced: the
-    unapproved file can briefly be replaced with an approved symlink.
-    """
-    if (not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW")
-            or not hasattr(os, "O_NONBLOCK")):
+def checked_policy_approval(root, repository):
+    """Return the exact policy digest and immutable approved repository ID."""
+    if not safe_descriptor_flags_available():
         raise Denied("OS cannot safely read the destination approval policy")
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     policy_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
@@ -273,22 +321,17 @@ def checked_policy_fingerprint(root, repository):
         raise Denied("private CI approval policy cannot be opened safely") from exc
     if len(contents) > 16 * 1024:
         raise Denied("private CI approval policy exceeds size limit")
-    lines = canonical_security_lines(
-        contents, "private CI approval policy"
+    approved_id = _parse_policy_approval(
+        contents, repository, "private CI approval policy"
     )
-    approved = False
-    for line in lines:
-        if not line or line.startswith("#"):
-            continue
-        if not NAME.fullmatch(line):
-            raise Denied("private CI approval policy contains an invalid entry")
-        if line.casefold() == repository.casefold():
-            approved = True
-    if not approved:
-        raise Denied("destination approval was revoked or absent")
-    return hashlib.sha256(contents).digest()
+    return hashlib.sha256(contents).digest(), approved_id
 
-def verify_protected_origin(repository, expected_policy_digest):
+
+def checked_policy_fingerprint(root, repository):
+    """Compatibility wrapper returning the reviewed policy fingerprint."""
+    return checked_policy_approval(root, repository)[0]
+
+def verify_protected_origin(repository, expected_policy_digest, expected_repository_id=None):
     """Fail closed unless local policy matches CODEOWNER-controlled protected main.
 
     An unreviewed test checkout can add its own allowlist line; consulting
@@ -299,6 +342,7 @@ def verify_protected_origin(repository, expected_policy_digest):
     """
     origin = gh_api(f"repos/{SOURCE_REPO}")
     if (origin.get("full_name") != SOURCE_REPO
+            or origin.get("id") != SOURCE_REPOSITORY_ID
             or origin.get("private") is not True):
         raise Denied("cannot attest identity and privacy of source origin")
     branch = gh_api(f"repos/{SOURCE_REPO}/branches/{SOURCE_PROTECTED_BRANCH}")
@@ -312,15 +356,27 @@ def verify_protected_origin(repository, expected_policy_digest):
     protection = gh_api(
         f"repos/{SOURCE_REPO}/branches/{SOURCE_PROTECTED_BRANCH}/protection")
     reviews = protection.get("required_pull_request_reviews")
+    checks = protection.get("required_status_checks")
     administrators = protection.get("enforce_admins")
     force_pushes = protection.get("allow_force_pushes")
     deletions = protection.get("allow_deletions")
+    contexts = checks.get("contexts") if isinstance(checks, dict) else None
+    named_checks = checks.get("checks") if isinstance(checks, dict) else None
     if (not isinstance(reviews, dict)
             or reviews.get("require_code_owner_reviews") is not True
             or reviews.get("dismiss_stale_reviews") is not True
             or not isinstance(reviews.get("required_approving_review_count"), int)
             or isinstance(reviews["required_approving_review_count"], bool)
             or reviews["required_approving_review_count"] < 1
+            or not isinstance(checks, dict)
+            or checks.get("strict") is not True
+            or not isinstance(contexts, list)
+            or not isinstance(named_checks, list)
+            or not (contexts or named_checks)
+            or any(not isinstance(name, str) or not name.strip() for name in contexts)
+            or any(not isinstance(item, dict)
+                   or not isinstance(item.get("context"), str)
+                   or not item["context"].strip() for item in named_checks)
             or not isinstance(administrators, dict)
             or administrators.get("enabled") is not True
             or not isinstance(force_pushes, dict)
@@ -329,7 +385,7 @@ def verify_protected_origin(repository, expected_policy_digest):
             or deletions.get("enabled") is not False):
         raise Denied(
             "origin main must enforce CODEOWNER approvals, stale-review dismissal, "
-            "administrator protection and deny forced pushes/deletions")
+            "strict required CI, administrator protection and deny forced pushes/deletions")
     bypasses = reviews.get("bypass_pull_request_allowances")
     if bypasses is not None:
         if (not isinstance(bypasses, dict)
@@ -356,20 +412,30 @@ def verify_protected_origin(repository, expected_policy_digest):
         raise Denied("protected origin approval policy exceeds size limit")
     if hashlib.sha256(remote_contents).digest() != expected_policy_digest:
         raise Denied("source policy diverges from reviewed protected main")
+    remote_repository_id = _parse_policy_approval(
+        remote_contents, repository, "protected origin approval policy"
+    )
+    if (expected_repository_id is not None
+            and remote_repository_id != expected_repository_id):
+        raise Denied("protected origin repository ID differs from local reviewed approval")
+
+    codeowners = gh_api(
+        f"repos/{SOURCE_REPO}/contents/{CODEOWNERS_PATH}?ref={commit_sha}"
+    )
+    if (codeowners.get("path") != CODEOWNERS_PATH
+            or codeowners.get("type") != "file"
+            or codeowners.get("encoding") != "base64"):
+        raise Denied("protected CODEOWNERS has invalid metadata")
+    codeowners_encoded = codeowners.get("content")
+    if not isinstance(codeowners_encoded, str):
+        raise Denied("protected CODEOWNERS has no content")
     try:
-        lines = remote_contents.decode("utf-8").splitlines()
-    except UnicodeDecodeError as exc:
-        raise Denied("protected origin approval policy is not UTF-8") from exc
-    approved = False
-    for line in lines:
-        if not line or line.startswith("#"):
-            continue
-        if not NAME.fullmatch(line):
-            raise Denied("protected origin approval policy has an invalid entry")
-        if line.casefold() == repository.casefold():
-            approved = True
-    if not approved:
-        raise Denied("destination absent from protected origin allowlist")
+        codeowners_contents = base64.b64decode(
+            "".join(codeowners_encoded.split()), validate=True
+        )
+    except (ValueError, base64.binascii.Error) as exc:
+        raise Denied("protected CODEOWNERS has invalid base64") from exc
+    require_security_codeowners(codeowners_contents)
     return commit_sha
 
 
@@ -381,8 +447,7 @@ def collect_source(root, trusted_root):
     descendants are opened relative to directory descriptors anchored at
     the trusted checkout, so a rename cannot redirect them outside it.
     """
-    if (not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY")
-            or not hasattr(os, "O_NONBLOCK")):
+    if not safe_descriptor_flags_available():
         raise Denied("OS cannot enforce descriptor-relative no-follow reads")
     if root.is_symlink() or not root.is_dir():
         raise Denied("source path must be a real directory")
@@ -545,7 +610,6 @@ def publish(repository, source, branch, trusted_root, source_commit):
         "scripts/run-in-private-ci-destination.sh (v3)"
     )
 
-
 def main(argv=None):
     # This module remains importable by the v3 dispatcher for its audited
     # traversal, exact-tree and GitHub API helpers.  It is intentionally not
@@ -558,7 +622,6 @@ def main(argv=None):
         file=sys.stderr,
     )
     return 1
-
 
 if __name__ == "__main__":
     sys.exit(main())

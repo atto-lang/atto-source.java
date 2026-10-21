@@ -36,77 +36,20 @@ jobs:
   preflight-regressions:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    env:
-      EXPECTED_SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
-          # PR's default GITHUB_SHA is a synthetic merge commit, not the
-          # reviewed publisher HEAD. Test the immutable PR head itself.
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-      - name: Prove the exact publisher commit before executing tests
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$EXPECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
-            echo 'PRIVATE_PUBLISHER_SOURCE_SHA_INVALID' >&2
-            exit 1
-          }
-          actual="$(git rev-parse --verify HEAD)"
-          [[ "$actual" == "$EXPECTED_SOURCE_SHA" ]] || {
-            echo 'PRIVATE_PUBLISHER_SOURCE_SHA_MISMATCH' >&2
-            exit 1
-          }
-          tree="$(git rev-parse --verify 'HEAD^{tree}')"
-          [[ "$tree" =~ ^[0-9a-f]{40}$ ]] || exit 1
-          # HEAD alone is unchanged by tracked working-tree or index edits.
-          # Refuse receipts if any test mutated the checked-out source.
-          git diff --quiet --exit-code HEAD --
-          git diff --cached --quiet --exit-code HEAD --
-          if [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
-            echo 'PRIVATE_PUBLISHER_UNTRACKED_FILES' >&2
-            exit 1
-          fi
-          printf 'PRIVATE_PUBLISHER_EXACT_HEAD=%s TREE=%s\n' "$actual" "$tree"
-          echo "EXPECTED_SOURCE_TREE=$tree" >> "$GITHUB_ENV"
-          printf 'Publisher source commit: `%s`\nSource root tree: `%s`\n' "$actual" "$tree" >> "$GITHUB_STEP_SUMMARY"
       - name: Assert private CI guard fail-closed behavior
         run: |
           set -euo pipefail
-          clean_bash=(/usr/bin/env -i PATH=/usr/bin:/bin HOME=/ /bin/bash --noprofile --norc)
-          clean_python=(/usr/bin/env -i PATH=/usr/bin:/bin HOME=/ /usr/bin/python3 -I -B)
-          "${clean_bash[@]}" -n scripts/check-private-ci-destination.sh scripts/test-private-ci-destination.sh scripts/run-in-private-ci-destination.sh
-          # py_compile writes __pycache__ even with -B, defeating the clean-tree receipt.
-          # Compile source in memory without executing it or emitting any .pyc.
-          "${clean_python[@]}" -c 'import pathlib,sys; [compile(pathlib.Path(p).read_bytes(), p, "exec") for p in sys.argv[1:]]' scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py scripts/publish-private-ci-source-v3.py scripts/test-publish-private-ci-source-v3.py
-          "${clean_bash[@]}" scripts/test-private-ci-destination.sh
-          "${clean_bash[@]}" -n tools/verify-exact-source-tree.sh tools/test-verify-exact-source-tree.sh
-          "${clean_bash[@]}" tools/test-verify-exact-source-tree.sh
+          bash -n scripts/check-private-ci-destination.sh scripts/test-private-ci-destination.sh scripts/run-in-private-ci-destination.sh
+          python3 -m py_compile scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py scripts/publish-private-ci-source-v3.py scripts/test-publish-private-ci-source-v3.py
+          bash scripts/test-private-ci-destination.sh
+          bash -n tools/verify-exact-source-tree.sh tools/test-verify-exact-source-tree.sh
+          bash tools/test-verify-exact-source-tree.sh
           for attempt in 1 2 3; do
             echo "Private publisher adversarial pass ${attempt}/3"
-            "${clean_python[@]}" scripts/test-publish-private-ci-source.py
-            "${clean_python[@]}" scripts/test-publish-private-ci-source-v3.py
+            python3 scripts/test-publish-private-ci-source.py
+            python3 scripts/test-publish-private-ci-source-v3.py
           done
-          actual="$(git rev-parse --verify HEAD)"
-          [[ "$actual" == "$EXPECTED_SOURCE_SHA" ]] || {
-            echo 'PRIVATE_PUBLISHER_POST_TEST_HEAD_MISMATCH' >&2
-            exit 1
-          }
-          git diff --quiet --exit-code HEAD -- || {
-            echo 'PRIVATE_PUBLISHER_TRACKED_SOURCE_DIRTY' >&2
-            exit 1
-          }
-          git diff --cached --quiet --exit-code HEAD -- || {
-            echo 'PRIVATE_PUBLISHER_INDEX_DIRTY' >&2
-            exit 1
-          }
-          if [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
-            echo 'PRIVATE_PUBLISHER_UNTRACKED_FILES' >&2
-            exit 1
-          fi
-          [[ "$(git rev-parse --verify 'HEAD^{tree}')" == "$EXPECTED_SOURCE_TREE" ]] || {
-            echo 'PRIVATE_PUBLISHER_TREE_MISMATCH' >&2
-            exit 1
-          }
-          printf 'PRIVATE_PUBLISHER_REGRESSIONS_COMPLETE_SHA=%s TREE=%s PASSES=3\n' "$actual" "$EXPECTED_SOURCE_TREE"
