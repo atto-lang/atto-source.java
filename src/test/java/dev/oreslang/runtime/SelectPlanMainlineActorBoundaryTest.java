@@ -10,6 +10,21 @@ import static org.junit.jupiter.api.Assertions.*;
 /** Java host values cannot bypass Oreslang's actor-local select capability rules. */
 final class SelectPlanMainlineActorBoundaryTest {
     @Test
+    void freezeCannotLaunderPlanCapabilitiesIntoShareableData() {
+        var channel = new ChannelRuntime.Channel<Integer>(1);
+        var fixed = ChannelRuntime.SelectPlan.of(ChannelRuntime.read(channel));
+        var dynamic = new ChannelRuntime.DynamicSelectPlan<String>();
+        dynamic.put("read", ChannelRuntime.read(channel));
+
+        assertThrows(SecurityException.class, () -> ActorRuntime.freeze(fixed));
+        assertThrows(SecurityException.class, () -> ActorRuntime.freeze(dynamic));
+        assertThrows(SecurityException.class,
+                () -> ActorRuntime.freeze(List.of(fixed)));
+        assertThrows(SecurityException.class,
+                () -> ActorRuntime.freeze(Map.of("plan", dynamic)));
+    }
+
+    @Test
     void directAndNestedSelectPlansAreRejectedBeforeMailboxAdmission() {
         var channel = new ChannelRuntime.Channel<Integer>(1);
         var fixed = ChannelRuntime.SelectPlan.of(ChannelRuntime.read(channel));
