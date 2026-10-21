@@ -10330,54 +10330,62 @@ public final class OresEvalRootNode extends RootNode {
             // semantics that are intentionally not part of the current model.
             if (value instanceof OresMutex.Shared<?>) return false;
 
-            if (!seen.add(value)) return true;
-
-            if (value instanceof OresEntry entry) {
-                return runtimeSharedSafe(entry.key(), seen)
-                        && runtimeSharedSafe(entry.value(), seen);
-            }
-            if (value instanceof OptionValue option) {
-                return !option.present() || runtimeSharedSafe(option.value(), seen);
-            }
-            if (value instanceof GeneratorRuntime.Step<?> step) {
-                return step.done() || runtimeSharedSafe(step.value(), seen);
-            }
-            if (value instanceof ResultValue result) {
-                return runtimeSharedSafe(result.value(), seen);
-            }
-            if (value instanceof OptionUnwrapError) return true;
-            if (value instanceof ActorRuntime.Shared<?> readonly) {
-                return runtimeSharedSafe(readonly.value(), seen);
-            }
-            if (value instanceof OresObject object) {
-                for (Object field : object.fields.values()) {
-                    if (!runtimeSharedSafe(field, seen)) return false;
+            // This is an active recursion stack, not a global visited set.
+            // Repeated aliases in an acyclic object graph are valid shared state,
+            // but a back-edge would make publication/traversal semantics ambiguous
+            // and must fail closed just like ActorRuntime transport validation.
+            if (!seen.add(value)) return false;
+            try {
+                if (value instanceof OresEntry entry) {
+                    return runtimeSharedSafe(entry.key(), seen)
+                            && runtimeSharedSafe(entry.value(), seen);
                 }
-                return true;
-            }
-            if (value instanceof OresTuple tuple) {
-                for (Object item : tuple) if (!runtimeSharedSafe(item, seen)) return false;
-                return true;
-            }
-            if (value instanceof List<?> list) {
-                for (Object item : list) if (!runtimeSharedSafe(item, seen)) return false;
-                return true;
-            }
-            if (value instanceof Map<?, ?> map) {
-                for (Map.Entry<?, ?> entry : map.entrySet()) {
-                    if (!runtimeSharedSafe(entry.getKey(), seen) || !runtimeSharedSafe(entry.getValue(), seen)) return false;
+                if (value instanceof OptionValue option) {
+                    return !option.present() || runtimeSharedSafe(option.value(), seen);
                 }
-                return true;
-            }
-            if (value instanceof Object[] array) {
-                for (Object item : array) if (!runtimeSharedSafe(item, seen)) return false;
-                return true;
-            }
+                if (value instanceof GeneratorRuntime.Step<?> step) {
+                    return step.done() || runtimeSharedSafe(step.value(), seen);
+                }
+                if (value instanceof ResultValue result) {
+                    return runtimeSharedSafe(result.value(), seen);
+                }
+                if (value instanceof OptionUnwrapError) return true;
+                if (value instanceof ActorRuntime.Shared<?> readonly) {
+                    return runtimeSharedSafe(readonly.value(), seen);
+                }
+                if (value instanceof OresObject object) {
+                    for (Object field : object.fields.values()) {
+                        if (!runtimeSharedSafe(field, seen)) return false;
+                    }
+                    return true;
+                }
+                if (value instanceof OresTuple tuple) {
+                    for (Object item : tuple) if (!runtimeSharedSafe(item, seen)) return false;
+                    return true;
+                }
+                if (value instanceof List<?> list) {
+                    for (Object item : list) if (!runtimeSharedSafe(item, seen)) return false;
+                    return true;
+                }
+                if (value instanceof Map<?, ?> map) {
+                    for (Map.Entry<?, ?> entry : map.entrySet()) {
+                        if (!runtimeSharedSafe(entry.getKey(), seen)
+                                || !runtimeSharedSafe(entry.getValue(), seen)) return false;
+                    }
+                    return true;
+                }
+                if (value instanceof Object[] array) {
+                    for (Object item : array) if (!runtimeSharedSafe(item, seen)) return false;
+                    return true;
+                }
 
-            // Guest code has no unrestricted host access. Reject unknown host
-            // values rather than silently turning SharedMutex into an escape
-            // hatch for Java references.
-            return false;
+                // Guest code has no unrestricted host access. Reject unknown host
+                // values rather than silently turning SharedMutex into an escape
+                // hatch for Java references.
+                return false;
+            } finally {
+                seen.remove(value);
+            }
         }
     }
     private record OptionValue(boolean present, Object value) implements OresMutex.SharedState {
