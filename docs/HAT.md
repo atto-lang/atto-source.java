@@ -1,6 +1,6 @@
 # Oreslang HAT
 
-Status: **v0 contract + reserved syntax; execution remains fail-closed**.
+Status: **v1 portable scalar kernel IR + CPU reference execution; device/provider execution remains fail-closed**.
 
 Oreslang HAT is the standard heterogeneous-compute boundary. The language and
 compiler own kernel syntax, typed kernel IR, ownership/effect checking and
@@ -16,9 +16,21 @@ define pub kernel VectorAdd as
 end
 ```
 
-`kernel` is a reserved keyword. In v0 the compiler rejects every occurrence
-before execution. This prevents an unsupported kernel declaration from being
-reinterpreted as an ordinary CPU declaration. There is no implicit CPU fallback.
+`kernel` is a reserved keyword and a real AST declaration. The first executable
+source subset is a kernel container with exactly one synchronous scalar entry:
+
+```oreslang
+define pub kernel Add as
+  fnc main(int left, int right): int {
+    return left + right;
+  }
+end
+```
+
+HAT v1 lowers only immutable `int` parameters, integer literals, unary `-`,
+and `+`, `-`, `*` into versioned portable IR. Unsupported statements, calls,
+state, effects, generics, annotations, actor callables, async/suspension and
+non-`int` types reject deterministically. There is no implicit CPU fallback.
 
 ## Boundary split
 
@@ -34,7 +46,7 @@ The standard rule is: **standardize accelerator semantics, not accelerator imple
 
 ## Required kernel admission
 
-Before v0 syntax can execute, a kernel must be proven to:
+Before a device/provider backend may execute a kernel, it must additionally be proven to:
 
 1. access only device-safe values and operations;
 2. carry no ordinary host/actor heap pointer into device code;
@@ -63,23 +75,29 @@ part of the typed kernel contract and includes field shape, scalar widths,
 alignment, lanes, address width and ownership generation. Equal byte length is
 not sufficient evidence of layout compatibility.
 
-## v0 stdlib surface
+## v1 stdlib and compiler surface
 
-`std/hat` currently exposes contract introspection only:
+`std/hat` exposes backend-neutral contract introspection:
 
 - `hat.abi_version()`
 - `hat.allows_implicit_cpu_fallback()`
 - `hat.requires_explicit_transfer()`
 - `hat.requires_completion_fence()`
 
-Opaque `Device`, `DeviceBuffer<T>`, `DeviceView<T>`, `Queue`, `Fence`
-and `Kernel` capabilities will be added only together with compiler/runtime
-enforcement. They must not be forgeable as ordinary structs/classes.
+The compiler now exposes a provider-neutral `HatKernelIr.Kernel` artifact with
+ABI version 1, deterministic canonical serialization and SHA-256 digesting.
+`HatCpuReferenceExecutor` executes that scalar IR for differential testing.
+This reference path is explicit compiler tooling; ordinary call dispatch does
+not reinterpret a kernel as a CPU function.
+
+Opaque `Device`, `DeviceBuffer<T>`, `DeviceView<T>`, `Queue`, `Fence` and runtime
+`Kernel` capabilities will be added only together with ownership/fence enforcement.
+They must not be forgeable as ordinary structs/classes.
 
 ## Follow-on implementation order
 
-1. kernel AST + versioned portable IR;
-2. CPU reference executor and differential tests;
+1. **done:** kernel AST + versioned portable scalar IR;
+2. **done:** checked CPU reference executor and differential tests;
 3. opaque typed buffers/views + ownership/fence admission;
 4. asynchronous queue/dispatch primitives;
 5. explicit upload/download/device transfer;
