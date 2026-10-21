@@ -93,7 +93,39 @@ final class OresJsonValueTest {
     }
 
     @Test
-    void ownedPutAttemptReturnsExactOfferedValueOnRejection() {
+    void ownedPutAttemptTransfersCommittedPreviousStateExactlyOnce() {
+        OresKeyedMap<String, OresJsonValue> fields =
+                OresJsonValue.objectMap();
+        OresJsonValue first = OresJsonValue.of("first");
+        OresJsonValue second = OresJsonValue.of("second");
+
+        OresKeyedMap.OwnedPutAttempt<OresJsonValue> inserted =
+                fields.attemptOwnedPut("value", first);
+        assertTrue(inserted.committed());
+        assertFalse(inserted.takePrevious().present());
+        assertThrows(IllegalStateException.class, inserted::takePrevious);
+        assertThrows(
+                IllegalStateException.class,
+                inserted::takeUncommittedValue);
+        assertDoesNotThrow(inserted::rethrowAfterRecovery);
+        assertSame(first, fields.getRequired("value"));
+
+        OresKeyedMap.OwnedPutAttempt<OresJsonValue> replaced =
+                fields.attemptOwnedPut("value", second);
+        assertTrue(replaced.committed());
+        OresKeyedMap.Lookup<OresJsonValue> previous =
+                replaced.takePrevious();
+        assertTrue(previous.present());
+        assertSame(first, previous.value());
+        assertThrows(IllegalStateException.class, replaced::takePrevious);
+        assertThrows(
+                IllegalStateException.class,
+                replaced::takeUncommittedValue);
+        assertSame(second, fields.getRequired("value"));
+    }
+
+    @Test
+    void ownedPutAttemptRecoversExactCycleCandidateBeforeFailurePropagates() {
         OresKeyedMap<String, OresJsonValue> fields =
                 OresJsonValue.objectMap();
         OresJsonValue kept = OresJsonValue.of("kept");
@@ -104,25 +136,49 @@ final class OresJsonValueTest {
                 fields.attemptOwnedPut("self", self);
 
         assertFalse(rejected.committed());
-        assertNull(rejected.previous());
-        assertSame(self, rejected.rejectedValue(),
+        assertThrows(
+                IllegalStateException.class,
+                rejected::rethrowAfterRecovery,
+                "failure must not discard an unrecovered move-only owner");
+        assertSame(self, rejected.takeUncommittedValue(),
                 "rollback must return the exact offered move-only value");
-        assertNotNull(rejected.rejection());
-        assertTrue(rejected.rejection().getMessage().contains("cyclic"),
-                rejected.rejection().getMessage());
+        assertThrows(
+                IllegalStateException.class,
+                rejected::takeUncommittedValue,
+                "candidate recovery must be one-shot");
+        assertThrows(IllegalStateException.class, rejected::takePrevious);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                rejected::rethrowAfterRecovery);
+        assertTrue(failure.getMessage().contains("cyclic"),
+                failure.getMessage());
         assertFalse(fields.containsKey("self"));
         assertSame(kept, fields.getRequired("x"),
                 "rejected insertion must preserve previous live storage");
+    }
 
-        OresJsonValue replacement = OresJsonValue.of("replacement");
-        OresKeyedMap.OwnedPutAttempt<OresJsonValue> committed =
-                fields.attemptOwnedPut("x", replacement);
+    @Test
+    void ownedPutAttemptRecoversExactPolicyCandidateBeforeFailurePropagates() {
+        OresKeyedMap<String, OresJsonValue> fields =
+                OresKeyedMap.stringKeys(
+                        OresKeyedMap.ValueDomain.JSON,
+                        (key, value) -> {
+                            throw new IllegalStateException("policy rejected");
+                        });
+        OresJsonValue offered = OresJsonValue.of("candidate");
 
-        assertTrue(committed.committed());
-        assertSame(kept, committed.previous());
-        assertNull(committed.rejectedValue());
-        assertNull(committed.rejection());
-        assertSame(replacement, fields.getRequired("x"));
+        OresKeyedMap.OwnedPutAttempt<OresJsonValue> rejected =
+                fields.attemptOwnedPut("value", offered);
+
+        assertFalse(rejected.committed());
+        assertThrows(IllegalStateException.class, rejected::rethrowAfterRecovery);
+        assertSame(offered, rejected.takeUncommittedValue());
+        IllegalStateException failure = assertThrows(
+                IllegalStateException.class,
+                rejected::rethrowAfterRecovery);
+        assertEquals("policy rejected", failure.getMessage());
+        assertTrue(fields.isEmpty());
     }
 
     @Test
