@@ -103,7 +103,8 @@ final class StreamConcurrencyTest {
                 assertTrue(stream.isClosed());
                 assertTrue(waiter.isDone());
                 assertEquals(0, stream.channel().pendingRegistrations());
-                assertFalse(stream.channel().tryWrite(round));
+                final int item = round;
+                assertClosed(() -> stream.channel().tryWrite(item));
             }
         } finally {
             workers.shutdownNow();
