@@ -1539,8 +1539,13 @@ public final class ChannelRuntime {
     static <T> OresFuture<T> mapSelection(
             OresFuture<SelectResult> source,
             Function<SelectResult, T> mapper) {
+        // A keyed wrapper must not cancel after its source select already
+        // committed a winner. The two-Runnable constructor admits cancellation
+        // unconditionally: using the source cancellation as a mere hook could
+        // report a cancelled keyed select AFTER consuming a channel value.
+        // Admission instead delegates to the source's atomic arbitration.
         OresFuture<T> result = new OresFuture<>(
-                () -> source.cancel(false),
+                (java.util.function.BooleanSupplier) () -> source.cancel(false),
                 () -> { });
 
         source.whenCompleteRuntime((selected, failure) -> {
