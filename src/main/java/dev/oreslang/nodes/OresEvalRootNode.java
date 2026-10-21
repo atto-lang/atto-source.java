@@ -10473,8 +10473,8 @@ public final class OresEvalRootNode extends RootNode {
     private record ModuleFacade(Evaluator owner, Ast.ModuleDecl module) { }
     private record ClassFacade(Evaluator owner, Ast.ClassDecl klass) { }
     private record HostClassFacade(String className, Object symbol, boolean constructible) { }
-    private record HostObjectFacade(Object value) {
-        private HostObjectFacade {
+    record HostObjectFacade(Object value) {
+        HostObjectFacade {
             Objects.requireNonNull(value, "host object");
         }
 
