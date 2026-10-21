@@ -20,13 +20,23 @@ public final class ImportRules {
     public static final String ALLOC_JSON_PATH = "alloc/json";
 
     public static boolean isAllocJsonValueImport(Ast.ImportDecl imported) {
+        return isExactAllocJsonClassImport(imported, "JsonValue");
+    }
+
+    public static boolean isAllocJsonFactoryImport(Ast.ImportDecl imported) {
+        return isExactAllocJsonClassImport(imported, "Json");
+    }
+
+    private static boolean isExactAllocJsonClassImport(
+            Ast.ImportDecl imported,
+            String className) {
         return imported != null
                 && imported.path().equals(ALLOC_JSON_PATH)
                 && imported.kind() == Ast.ImportKind.CLASS
                 && !imported.wildcard()
                 && imported.namespace() == null
                 && imported.names().size() == 1
-                && imported.names().getFirst().equals("JsonValue");
+                && imported.names().getFirst().equals(className);
     }
 
 
