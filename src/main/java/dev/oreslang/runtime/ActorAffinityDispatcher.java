@@ -8,6 +8,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicIntegerArray;
@@ -47,6 +48,21 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
     int cpuForLane(int lane) { return cpus.length == 0 ? -1 : cpus[lane % cpus.length]; }
     boolean nativeCarriers() { return lanes.stream().allMatch(NativeCarrierExecutor.class::isInstance); }
     long softSpills() { return spills.get(); }
+
+    /** Observed physical workers across all lanes; constructing lanes starts none. */
+    int liveWorkerCount() {
+        int total = 0;
+        for (ExecutorService lane : lanes) {
+            if (lane instanceof NativeCarrierExecutor nativePool) {
+                total += nativePool.getLiveCarrierCount();
+            } else if (lane instanceof ThreadPoolExecutor javaPool) {
+                total += javaPool.getPoolSize();
+            } else {
+                throw new IllegalStateException("unknown actor carrier backend");
+            }
+        }
+        return total;
+    }
 
     private int selectLane(int preferred) {
         if (preferred < 0 || preferred >= lanes.size()) {
