@@ -977,7 +977,7 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.UnaryExpr op) {
             // Borrowing a constructor parameter is a lifetime operation, not
-            // a pure scalar read. A nested & / &mut must not bypass the
+            // a pure scalar read. A nested internal borrow marker must not bypass the
             // partial-construction ownership boundary.
             if (op.operator().equals("&") || op.operator().equals("&mut")) return true;
             return fieldInitializerMaySuspend(op.operand(), scalarInitializerArgs);
