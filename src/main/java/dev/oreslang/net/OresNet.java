@@ -1,6 +1,5 @@
 package dev.oreslang.net;
 
-import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.BuiltinCallable;
 import dev.oreslang.runtime.BuiltinValue;
 import dev.oreslang.runtime.IsolatePolicy;
@@ -22,69 +21,12 @@ import java.util.Objects;
 /**
  * Oreslang native networking package.
  *
- * The public guest surface intentionally mirrors useful JDK networking API
- * shapes, while all transport I/O is implemented by liboresnet through the
- * privileged JNI boundary rather than JDK networking transports.
+ * The public guest surface intentionally mirrors the useful Java java.net and
+ * java.net.http shapes, while transport I/O is implemented by liboresnet via
+ * JNI rather than java.net.Socket/ServerSocket/HttpClient.
  */
 public final class OresNet {
-    private static final String HTTP_WIRE_STDLIB = "/stdlib/net/http.ores";
-    private static final String URI_WIRE_STDLIB = "/stdlib/net/uri.ores";
-
     private OresNet() { }
-
-    private static Object httpWire(
-            OresContext context,
-            String function,
-            Object... callArguments) {
-        return context.invokeStdlib(
-                HTTP_WIRE_STDLIB,
-                "http_wire",
-                function,
-                callArguments);
-    }
-
-    private static boolean httpWireBool(
-            OresContext context,
-            String function,
-            Object... callArguments) {
-        Object result = httpWire(context, function, callArguments);
-        if (result instanceof Boolean value) return value;
-        throw new IllegalStateException(
-                "http_wire." + function + " did not return bool");
-    }
-
-    private static String httpWireString(
-            OresContext context,
-            String function,
-            Object... callArguments) {
-        Object result = httpWire(context, function, callArguments);
-        if (result instanceof String value) return value;
-        throw new IllegalStateException(
-                "http_wire." + function + " did not return string");
-    }
-
-    private static int httpWireInt(
-            OresContext context,
-            String function,
-            Object... callArguments) {
-        Object result = httpWire(context, function, callArguments);
-        if (result instanceof Number value) {
-            return Math.toIntExact(value.longValue());
-        }
-        throw new IllegalStateException(
-                "http_wire." + function + " did not return int");
-    }
-
-    private static Object uriWire(
-            OresContext context,
-            String function,
-            Object... callArguments) {
-        return context.invokeStdlib(
-                URI_WIRE_STDLIB,
-                "uri_wire",
-                function,
-                callArguments);
-    }
 
     public static BuiltinValue netPackage(OresContext context) {
         return new NetPackage(context);
@@ -103,10 +45,6 @@ public final class OresNet {
 
         final void requireNetwork(String api) {
             context.requireCapability(IsolatePolicy.Capability.NETWORK, api);
-        }
-
-        final void requireRawNetwork(String api) {
-            NetworkAdmission.requireRawNetwork(context, api);
         }
     }
 
@@ -134,7 +72,7 @@ public final class OresNet {
         public Object member(String name) {
             if (!name.equals("new")) throw unknown("net.Socket", name);
             return (BuiltinCallable) args -> {
-                requireRawNetwork("net.Socket.new");
+                requireNetwork("net.Socket.new");
                 if (args.isEmpty()) return SocketValue.unconnected(context);
                 if (args.size() == 2) {
                     return SocketValue.connect(
@@ -155,7 +93,7 @@ public final class OresNet {
         public Object member(String name) {
             if (!name.equals("new")) throw unknown("net.ServerSocket", name);
             return (BuiltinCallable) args -> {
-                requireRawNetwork("net.ServerSocket.new");
+                requireNetwork("net.ServerSocket.new");
                 if (args.isEmpty()) return ServerSocketValue.unbound(context);
                 if (args.size() == 1) {
                     return ServerSocketValue.bound(context, "", intArg(args, 0, "net.ServerSocket.new"), 50);
@@ -183,7 +121,7 @@ public final class OresNet {
         public Object member(String name) {
             return switch (name) {
                 case "getByName" -> (BuiltinCallable) args -> {
-                    requireRawNetwork("net.InetAddress.getByName");
+                    requireNetwork("net.InetAddress.getByName");
                     requireArity(args, 1, "net.InetAddress.getByName");
                     String host = stringArg(args, 0, "net.InetAddress.getByName");
                     String[] values = io(() -> NativeSocketBridge.resolveAll(host));
@@ -191,7 +129,7 @@ public final class OresNet {
                     return new InetAddressValue(context, host, values[0]);
                 };
                 case "getAllByName" -> (BuiltinCallable) args -> {
-                    requireRawNetwork("net.InetAddress.getAllByName");
+                    requireNetwork("net.InetAddress.getAllByName");
                     requireArity(args, 1, "net.InetAddress.getAllByName");
                     String host = stringArg(args, 0, "net.InetAddress.getAllByName");
                     String[] values = io(() -> NativeSocketBridge.resolveAll(host));
@@ -230,7 +168,7 @@ public final class OresNet {
             if (!name.equals("create")) throw unknown("net.URI", name);
             return (BuiltinCallable) args -> {
                 requireArity(args, 1, "net.URI.create");
-                return new UriValue(context, ParsedUri.parse(context, stringArg(args, 0, "net.URI.create")));
+                return new UriValue(context, ParsedUri.parse(stringArg(args, 0, "net.URI.create")));
             };
         }
     }
@@ -293,7 +231,7 @@ public final class OresNet {
                 case "getAddress" ->
                         (BuiltinCallable) args -> {
                             requireArity(args, 0, "InetSocketAddress.getAddress");
-                            requireRawNetwork("InetSocketAddress.getAddress");
+                            requireNetwork("InetSocketAddress.getAddress");
                             String[] values = io(() -> NativeSocketBridge.resolveAll(host));
                             return values.length == 0 ? OresNull.INSTANCE : new InetAddressValue(context, host, values[0]);
                         };
@@ -313,27 +251,27 @@ public final class OresNet {
     }
 
     private static final class SocketValue extends NetworkValue {
-        private volatile NativeSocketHandle handle;
-        private volatile boolean connected;
-        private volatile boolean inputShutdown;
-        private volatile boolean outputShutdown;
-        private volatile boolean closed;
+        private long fd;
+        private boolean connected;
+        private boolean inputShutdown;
+        private boolean outputShutdown;
+        private boolean closed;
 
-        private SocketValue(OresContext context, NativeSocketHandle handle, boolean connected) {
+        private SocketValue(OresContext context, long fd, boolean connected) {
             super(context);
-            this.handle = handle;
+            this.fd = fd;
             this.connected = connected;
         }
 
         static SocketValue unconnected(OresContext context) {
-            return new SocketValue(context, null, false);
+            return new SocketValue(context, -1, false);
         }
 
         static SocketValue connect(OresContext context, String host, int port, int timeoutMillis) {
-            NetworkAdmission.requireRawNetwork(context, "net.Socket.connect");
+            context.requireCapability(IsolatePolicy.Capability.NETWORK, "net.Socket.connect");
             checkPort(port, "net.Socket.connect");
-            NativeSocketHandle handle = io(() -> NativeSocketBridge.connectHandle(host, port, timeoutMillis));
-            return new SocketValue(context, handle, true);
+            long fd = io(() -> NativeSocketBridge.connect(host, port, timeoutMillis));
+            return new SocketValue(context, fd, true);
         }
 
         @Override
@@ -358,16 +296,16 @@ public final class OresNet {
                 case "shutdownInput" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "Socket.shutdownInput");
                     ensureConnected();
-                    requireRawNetwork("Socket.shutdownInput");
-                    ioVoid(() -> NativeSocketBridge.shutdownInput(handle));
+                    requireNetwork("Socket.shutdownInput");
+                    ioVoid(() -> NativeSocketBridge.shutdownInput(fd));
                     inputShutdown = true;
                     return OresNull.INSTANCE;
                 };
                 case "shutdownOutput" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "Socket.shutdownOutput");
                     ensureConnected();
-                    requireRawNetwork("Socket.shutdownOutput");
-                    ioVoid(() -> NativeSocketBridge.shutdownOutput(handle));
+                    requireNetwork("Socket.shutdownOutput");
+                    ioVoid(() -> NativeSocketBridge.shutdownOutput(fd));
                     outputShutdown = true;
                     return OresNull.INSTANCE;
                 };
@@ -390,53 +328,53 @@ public final class OresNet {
                 case "getInetAddress" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "Socket.getInetAddress");
                     ensureConnected();
-                    String address = io(() -> NativeSocketBridge.remoteAddress(handle));
+                    String address = io(() -> NativeSocketBridge.remoteAddress(fd));
                     return new InetAddressValue(context, address, address);
                 };
                 case "getLocalAddress" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "Socket.getLocalAddress");
                     ensureConnected();
-                    String address = io(() -> NativeSocketBridge.localAddress(handle));
+                    String address = io(() -> NativeSocketBridge.localAddress(fd));
                     return new InetAddressValue(context, address, address);
                 };
                 case "getPort" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "Socket.getPort");
                     ensureConnected();
-                    return (long) io(() -> NativeSocketBridge.remotePort(handle));
+                    return (long) io(() -> NativeSocketBridge.remotePort(fd));
                 };
                 case "getLocalPort" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "Socket.getLocalPort");
                     ensureConnected();
-                    return (long) io(() -> NativeSocketBridge.localPort(handle));
+                    return (long) io(() -> NativeSocketBridge.localPort(fd));
                 };
                 case "getRemoteSocketAddress" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "Socket.getRemoteSocketAddress");
                     ensureConnected();
                     return new InetSocketAddressValue(
                             context,
-                            io(() -> NativeSocketBridge.remoteAddress(handle)),
-                            io(() -> NativeSocketBridge.remotePort(handle)));
+                            io(() -> NativeSocketBridge.remoteAddress(fd)),
+                            io(() -> NativeSocketBridge.remotePort(fd)));
                 };
                 case "getLocalSocketAddress" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "Socket.getLocalSocketAddress");
                     ensureConnected();
                     return new InetSocketAddressValue(
                             context,
-                            io(() -> NativeSocketBridge.localAddress(handle)),
-                            io(() -> NativeSocketBridge.localPort(handle)));
+                            io(() -> NativeSocketBridge.localAddress(fd)),
+                            io(() -> NativeSocketBridge.localPort(fd)));
                 };
-                case "setTcpNoDelay" -> boolSetter("Socket.setTcpNoDelay", value -> NativeSocketBridge.setTcpNoDelay(handle, value));
-                case "getTcpNoDelay" -> boolGetter("Socket.getTcpNoDelay", () -> NativeSocketBridge.getTcpNoDelay(handle));
-                case "setKeepAlive" -> boolSetter("Socket.setKeepAlive", value -> NativeSocketBridge.setKeepAlive(handle, value));
-                case "getKeepAlive" -> boolGetter("Socket.getKeepAlive", () -> NativeSocketBridge.getKeepAlive(handle));
-                case "setReuseAddress" -> boolSetter("Socket.setReuseAddress", value -> NativeSocketBridge.setReuseAddress(handle, value));
-                case "getReuseAddress" -> boolGetter("Socket.getReuseAddress", () -> NativeSocketBridge.getReuseAddress(handle));
-                case "setReceiveBufferSize" -> intSetter("Socket.setReceiveBufferSize", value -> NativeSocketBridge.setReceiveBufferSize(handle, value));
-                case "getReceiveBufferSize" -> intGetter("Socket.getReceiveBufferSize", () -> NativeSocketBridge.getReceiveBufferSize(handle));
-                case "setSendBufferSize" -> intSetter("Socket.setSendBufferSize", value -> NativeSocketBridge.setSendBufferSize(handle, value));
-                case "getSendBufferSize" -> intGetter("Socket.getSendBufferSize", () -> NativeSocketBridge.getSendBufferSize(handle));
-                case "setSoTimeout" -> intSetter("Socket.setSoTimeout", value -> NativeSocketBridge.setSoTimeout(handle, value));
-                case "getSoTimeout" -> intGetter("Socket.getSoTimeout", () -> NativeSocketBridge.getSoTimeout(handle));
+                case "setTcpNoDelay" -> boolSetter("Socket.setTcpNoDelay", value -> NativeSocketBridge.setTcpNoDelay(fd, value));
+                case "getTcpNoDelay" -> boolGetter("Socket.getTcpNoDelay", () -> NativeSocketBridge.getTcpNoDelay(fd));
+                case "setKeepAlive" -> boolSetter("Socket.setKeepAlive", value -> NativeSocketBridge.setKeepAlive(fd, value));
+                case "getKeepAlive" -> boolGetter("Socket.getKeepAlive", () -> NativeSocketBridge.getKeepAlive(fd));
+                case "setReuseAddress" -> boolSetter("Socket.setReuseAddress", value -> NativeSocketBridge.setReuseAddress(fd, value));
+                case "getReuseAddress" -> boolGetter("Socket.getReuseAddress", () -> NativeSocketBridge.getReuseAddress(fd));
+                case "setReceiveBufferSize" -> intSetter("Socket.setReceiveBufferSize", value -> NativeSocketBridge.setReceiveBufferSize(fd, value));
+                case "getReceiveBufferSize" -> intGetter("Socket.getReceiveBufferSize", () -> NativeSocketBridge.getReceiveBufferSize(fd));
+                case "setSendBufferSize" -> intSetter("Socket.setSendBufferSize", value -> NativeSocketBridge.setSendBufferSize(fd, value));
+                case "getSendBufferSize" -> intGetter("Socket.getSendBufferSize", () -> NativeSocketBridge.getSendBufferSize(fd));
+                case "setSoTimeout" -> intSetter("Socket.setSoTimeout", value -> NativeSocketBridge.setSoTimeout(fd, value));
+                case "getSoTimeout" -> intGetter("Socket.getSoTimeout", () -> NativeSocketBridge.getSoTimeout(fd));
                 case "setPerformancePreferences" -> (BuiltinCallable) args -> {
                     requireArity(args, 3, "Socket.setPerformancePreferences");
                     return OresNull.INSTANCE;
@@ -446,7 +384,7 @@ public final class OresNet {
         }
 
         private Object connect(List<Object> args) {
-            requireRawNetwork("Socket.connect");
+            requireNetwork("Socket.connect");
             if (connected || closed) throw new IllegalStateException("socket is already connected or closed");
             InetSocketAddressValue endpoint;
             int timeout = 0;
@@ -457,7 +395,7 @@ public final class OresNet {
                 throw arity("Socket.connect", "1 or 2", args.size());
             }
             final int connectTimeout = timeout;
-            handle = io(() -> NativeSocketBridge.connectHandle(endpoint.host, endpoint.port, connectTimeout));
+            fd = io(() -> NativeSocketBridge.connect(endpoint.host, endpoint.port, connectTimeout));
             connected = true;
             return OresNull.INSTANCE;
         }
@@ -503,18 +441,14 @@ public final class OresNet {
         }
 
         private void ensureConnected() {
-            if (!connected || closed || handle == null || !handle.isOpen()) {
-                throw new IllegalStateException("socket is not connected");
-            }
+            if (!connected || closed || fd < 0) throw new IllegalStateException("socket is not connected");
         }
 
         private void close() {
             if (closed) return;
-            requireRawNetwork("Socket.close");
-            NativeSocketHandle current = handle;
-            if (current != null && current.isOpen()) {
-                ioVoid(() -> NativeSocketBridge.close(current));
-            }
+            requireNetwork("Socket.close");
+            if (fd >= 0) ioVoid(() -> NativeSocketBridge.close(fd));
+            fd = -1;
             closed = true;
         }
     }
@@ -534,8 +468,8 @@ public final class OresNet {
                 case "available" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "InputStream.available");
                     socket.ensureConnected();
-                    requireRawNetwork("InputStream.available");
-                    return (long) io(() -> NativeSocketBridge.available(socket.handle));
+                    requireNetwork("InputStream.available");
+                    return (long) io(() -> NativeSocketBridge.available(socket.fd));
                 };
                 case "close" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "InputStream.close");
@@ -548,10 +482,10 @@ public final class OresNet {
 
         private Object read(List<Object> args) {
             socket.ensureConnected();
-            requireRawNetwork("InputStream.read");
+            requireNetwork("InputStream.read");
             if (args.isEmpty()) {
                 byte[] one = new byte[1];
-                int count = io(() -> NativeSocketBridge.read(socket.handle, one, 0, 1));
+                int count = io(() -> NativeSocketBridge.read(socket.fd, one, 0, 1));
                 return count < 0 ? -1L : (long) (one[0] & 0xff);
             }
 
@@ -564,7 +498,7 @@ public final class OresNet {
             checkRange(target.size(), offset, length, "InputStream.read");
 
             byte[] bytes = new byte[target.size()];
-            int count = io(() -> NativeSocketBridge.read(socket.handle, bytes, offset, length));
+            int count = io(() -> NativeSocketBridge.read(socket.fd, bytes, offset, length));
             if (count > 0) {
                 for (int i = 0; i < count; i++) {
                     target.set(offset + i, (long) (bytes[offset + i] & 0xff));
@@ -606,7 +540,7 @@ public final class OresNet {
 
         private Object write(List<Object> args) {
             socket.ensureConnected();
-            requireRawNetwork("OutputStream.write");
+            requireNetwork("OutputStream.write");
             if (args.size() == 1 && args.getFirst() instanceof Number number) {
                 writeAll(new byte[] {(byte) (number.intValue() & 0xff)});
                 return OresNull.INSTANCE;
@@ -631,7 +565,7 @@ public final class OresNet {
             while (written < length) {
                 int at = offset + written;
                 int remaining = length - written;
-                int count = io(() -> NativeSocketBridge.write(socket.handle, bytes, at, remaining));
+                int count = io(() -> NativeSocketBridge.write(socket.fd, bytes, at, remaining));
                 if (count <= 0) throw new IllegalStateException("native send returned " + count);
                 written += count;
             }
@@ -639,25 +573,25 @@ public final class OresNet {
     }
 
     private static final class ServerSocketValue extends NetworkValue {
-        private volatile NativeSocketHandle handle;
-        private volatile boolean bound;
-        private volatile boolean closed;
+        private long fd;
+        private boolean bound;
+        private boolean closed;
 
-        private ServerSocketValue(OresContext context, NativeSocketHandle handle, boolean bound) {
+        private ServerSocketValue(OresContext context, long fd, boolean bound) {
             super(context);
-            this.handle = handle;
+            this.fd = fd;
             this.bound = bound;
         }
 
         static ServerSocketValue unbound(OresContext context) {
-            return new ServerSocketValue(context, null, false);
+            return new ServerSocketValue(context, -1, false);
         }
 
         static ServerSocketValue bound(OresContext context, String host, int port, int backlog) {
-            NetworkAdmission.requireRawNetwork(context, "net.ServerSocket.bind");
+            context.requireCapability(IsolatePolicy.Capability.NETWORK, "net.ServerSocket.bind");
             checkPort(port, "net.ServerSocket.bind");
-            NativeSocketHandle handle = io(() -> NativeSocketBridge.listenHandle(host, port, backlog, true));
-            return new ServerSocketValue(context, handle, true);
+            long fd = io(() -> NativeSocketBridge.listen(host, port, backlog, true));
+            return new ServerSocketValue(context, fd, true);
         }
 
         @Override
@@ -667,8 +601,8 @@ public final class OresNet {
                 case "accept" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "ServerSocket.accept");
                     ensureBound();
-                    requireRawNetwork("ServerSocket.accept");
-                    NativeSocketHandle accepted = io(() -> NativeSocketBridge.accept(handle));
+                    requireNetwork("ServerSocket.accept");
+                    long accepted = io(() -> NativeSocketBridge.accept(fd));
                     return new SocketValue(context, accepted, true);
                 };
                 case "close" -> (BuiltinCallable) args -> {
@@ -687,89 +621,85 @@ public final class OresNet {
                 case "getInetAddress" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "ServerSocket.getInetAddress");
                     ensureBound();
-                    String address = io(() -> NativeSocketBridge.localAddress(handle));
+                    String address = io(() -> NativeSocketBridge.localAddress(fd));
                     return new InetAddressValue(context, address, address);
                 };
                 case "getLocalPort" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "ServerSocket.getLocalPort");
                     ensureBound();
-                    return (long) io(() -> NativeSocketBridge.localPort(handle));
+                    return (long) io(() -> NativeSocketBridge.localPort(fd));
                 };
                 case "getLocalSocketAddress" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "ServerSocket.getLocalSocketAddress");
                     ensureBound();
                     return new InetSocketAddressValue(
                             context,
-                            io(() -> NativeSocketBridge.localAddress(handle)),
-                            io(() -> NativeSocketBridge.localPort(handle)));
+                            io(() -> NativeSocketBridge.localAddress(fd)),
+                            io(() -> NativeSocketBridge.localPort(fd)));
                 };
                 case "setReuseAddress" -> (BuiltinCallable) args -> {
                     requireArity(args, 1, "ServerSocket.setReuseAddress");
                     ensureBound();
-                    ioVoid(() -> NativeSocketBridge.setReuseAddress(handle, boolArg(args, 0, "ServerSocket.setReuseAddress")));
+                    ioVoid(() -> NativeSocketBridge.setReuseAddress(fd, boolArg(args, 0, "ServerSocket.setReuseAddress")));
                     return OresNull.INSTANCE;
                 };
                 case "getReuseAddress" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "ServerSocket.getReuseAddress");
                     ensureBound();
-                    return io(() -> NativeSocketBridge.getReuseAddress(handle));
+                    return io(() -> NativeSocketBridge.getReuseAddress(fd));
                 };
                 case "setReceiveBufferSize" -> (BuiltinCallable) args -> {
                     requireArity(args, 1, "ServerSocket.setReceiveBufferSize");
                     ensureBound();
-                    ioVoid(() -> NativeSocketBridge.setReceiveBufferSize(handle, intArg(args, 0, "ServerSocket.setReceiveBufferSize")));
+                    ioVoid(() -> NativeSocketBridge.setReceiveBufferSize(fd, intArg(args, 0, "ServerSocket.setReceiveBufferSize")));
                     return OresNull.INSTANCE;
                 };
                 case "getReceiveBufferSize" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "ServerSocket.getReceiveBufferSize");
                     ensureBound();
-                    return (long) io(() -> NativeSocketBridge.getReceiveBufferSize(handle));
+                    return (long) io(() -> NativeSocketBridge.getReceiveBufferSize(fd));
                 };
                 case "setSoTimeout" -> (BuiltinCallable) args -> {
                     requireArity(args, 1, "ServerSocket.setSoTimeout");
                     ensureBound();
-                    ioVoid(() -> NativeSocketBridge.setSoTimeout(handle, intArg(args, 0, "ServerSocket.setSoTimeout")));
+                    ioVoid(() -> NativeSocketBridge.setSoTimeout(fd, intArg(args, 0, "ServerSocket.setSoTimeout")));
                     return OresNull.INSTANCE;
                 };
                 case "getSoTimeout" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "ServerSocket.getSoTimeout");
                     ensureBound();
-                    return (long) io(() -> NativeSocketBridge.getSoTimeout(handle));
+                    return (long) io(() -> NativeSocketBridge.getSoTimeout(fd));
                 };
                 default -> throw unknown("ServerSocket", name);
             };
         }
 
         private Object bind(List<Object> args) {
-            requireRawNetwork("ServerSocket.bind");
+            requireNetwork("ServerSocket.bind");
             if (bound || closed) throw new IllegalStateException("server socket is already bound or closed");
             if (args.size() != 1 && args.size() != 2) throw arity("ServerSocket.bind", "1 or 2", args.size());
             InetSocketAddressValue endpoint = addressArg(args, 0, "ServerSocket.bind");
             int backlog = args.size() == 2 ? intArg(args, 1, "ServerSocket.bind") : 50;
-            handle = io(() -> NativeSocketBridge.listenHandle(endpoint.host, endpoint.port, backlog, true));
+            fd = io(() -> NativeSocketBridge.listen(endpoint.host, endpoint.port, backlog, true));
             bound = true;
             return OresNull.INSTANCE;
         }
 
         private void ensureBound() {
-            if (!bound || closed || handle == null || !handle.isOpen()) {
-                throw new IllegalStateException("server socket is not bound");
-            }
+            if (!bound || closed || fd < 0) throw new IllegalStateException("server socket is not bound");
         }
 
         private void close() {
             if (closed) return;
-            requireRawNetwork("ServerSocket.close");
-            NativeSocketHandle current = handle;
-            if (current != null && current.isOpen()) {
-                ioVoid(() -> NativeSocketBridge.close(current));
-            }
+            requireNetwork("ServerSocket.close");
+            if (fd >= 0) ioVoid(() -> NativeSocketBridge.close(fd));
+            fd = -1;
             closed = true;
         }
     }
 
     // ---------------------------------------------------------------------
-    // JDK-HTTP-compatible surface, backed by the native TCP transport.
+    // java.net.http-compatible surface, backed by the JNI TCP transport.
     // ---------------------------------------------------------------------
 
     private static final class HttpPackage extends NetworkValue {
@@ -1047,7 +977,7 @@ public final class OresNet {
                 case "build" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "HttpRequest.Builder.build");
                     if (uri == null || uri.isBlank()) throw new IllegalStateException("HttpRequest requires a URI");
-                    ParsedUri.parse(context, uri);
+                    ParsedUri.parse(uri);
                     return snapshot();
                 };
                 case "copy" -> (BuiltinCallable) args -> {
@@ -1076,11 +1006,8 @@ public final class OresNet {
         }
 
         private void addHeader(String name, String value, boolean replace) {
-            String key = httpWireString(
-                    context,
-                    "canonical_request_header",
-                    name,
-                    value);
+            validateHeader(name, value);
+            String key = canonicalHeaderName(name);
             if (replace) headers.put(key, new ArrayList<>(List.of(value)));
             else headers.computeIfAbsent(key, ignored -> new ArrayList<>()).add(value);
         }
@@ -1125,7 +1052,7 @@ public final class OresNet {
         @Override
         public Object member(String name) {
             return switch (name) {
-                case "uri" -> noArg("HttpRequest.uri", new UriValue(context, ParsedUri.parse(context, uri)));
+                case "uri" -> noArg("HttpRequest.uri", new UriValue(context, ParsedUri.parse(uri)));
                 case "method" -> noArg("HttpRequest.method", method);
                 case "headers" -> noArg("HttpRequest.headers", new HttpHeadersValue(context, headers));
                 case "expectContinue" -> noArg("HttpRequest.expectContinue", expectContinue);
@@ -1140,7 +1067,6 @@ public final class OresNet {
 
     private static final class HttpClientValue extends NetworkValue {
         private static final int MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
-        private static final int MAX_ADVERSARIAL_IO_TIMEOUT_MILLIS = 5_000;
         private final HttpVersion version;
         private final Redirect redirects;
         private final int connectTimeoutMillis;
@@ -1199,60 +1125,36 @@ public final class OresNet {
                 HttpResponseValue previous,
                 int redirectCount) {
             HttpResponseValue response = sendOnce(request, handler, previous);
-            if (redirectCount >= httpWireInt(context, "max_redirects")
-                    || !httpWireBool(context, "is_redirect", (long) response.statusCode)) {
-                return response;
-            }
+            if (redirects == Redirect.NEVER || redirectCount >= 5 || !isRedirect(response.statusCode)) return response;
 
             String location = response.headers.firstRaw("location");
             if (location == null) return response;
 
-            ParsedUri currentUri = ParsedUri.parse(context, request.uri);
-            String nextUri = httpWireString(
-                    context,
-                    "resolve_redirect",
-                    currentUri.scheme,
-                    currentUri.hostHeader(),
-                    currentUri.path,
-                    location);
-            ParsedUri redirectUri = ParsedUri.parse(context, nextUri);
-            boolean secureDowngrade = currentUri.scheme.equals("https")
-                    && !redirectUri.scheme.equals("https");
-            if (!httpWireBool(
-                    context,
-                    "redirect_policy_allows",
-                    redirects.name(),
-                    secureDowngrade)) {
+            String nextUri = resolveRedirect(request.uri, location);
+            ParsedUri currentUri = ParsedUri.parse(request.uri);
+            ParsedUri redirectUri = ParsedUri.parse(nextUri);
+            if (redirects == Redirect.NORMAL
+                    && currentUri.scheme.equals("https")
+                    && !redirectUri.scheme.equals("https")) {
                 return response;
             }
-
             String nextMethod = request.method;
             byte[] nextBody = request.body;
-            if (httpWireBool(
-                    context,
-                    "redirect_rewrites_to_get",
-                    (long) response.statusCode,
-                    request.method)) {
+            if (response.statusCode == 303
+                    || ((response.statusCode == 301 || response.statusCode == 302)
+                    && request.method.equals("POST"))) {
                 nextMethod = "GET";
                 nextBody = new byte[0];
             }
 
             Map<String, List<String>> nextHeaders = request.headers;
-            if (!httpWireBool(
-                    context,
-                    "same_authority",
-                    currentUri.scheme,
-                    currentUri.host,
-                    (long) currentUri.port,
-                    redirectUri.scheme,
-                    redirectUri.host,
-                    (long) redirectUri.port)) {
+            if (!sameAuthority(currentUri, redirectUri)) {
                 LinkedHashMap<String, List<String>> sanitized = new LinkedHashMap<>();
                 request.headers.forEach((name, values) -> {
-                    if (!httpWireBool(
-                            context,
-                            "sensitive_redirect_header",
-                            name)) {
+                    String lower = name.toLowerCase(Locale.ROOT);
+                    if (!lower.equals("authorization")
+                            && !lower.equals("proxy-authorization")
+                            && !lower.equals("cookie")) {
                         sanitized.put(name, values);
                     }
                 });
@@ -1268,51 +1170,31 @@ public final class OresNet {
                 HttpRequestValue request,
                 BodyHandlerValue handler,
                 HttpResponseValue previous) {
-            ParsedUri uri = ParsedUri.parse(context, request.uri);
+            ParsedUri uri = ParsedUri.parse(request.uri);
             if (!uri.scheme.equals("http")) {
                 if (uri.scheme.equals("https")) {
                     throw new UnsupportedOperationException(
-                            "HTTPS requires the native TLS backend; a JDK HTTP transport fallback is forbidden");
+                            "HTTPS requires the native TLS backend; java.net.http is intentionally not used as a fallback");
                 }
                 throw new IllegalArgumentException("unsupported URI scheme: " + uri.scheme);
-            }
-
-            if (request.expectContinue) {
-                throw new UnsupportedOperationException(
-                        "Expect: 100-continue requires interim-response parsing, which is not implemented yet");
             }
 
             int connectTimeout = request.timeoutMillis > 0
                     ? request.timeoutMillis
                     : connectTimeoutMillis;
-            NativeSocketHandle handle =
-                    io(() -> NativeSocketBridge.connectHandle(uri.host, uri.port, connectTimeout));
+            long fd = io(() -> NativeSocketBridge.connect(uri.host, uri.port, connectTimeout));
+            if (request.timeoutMillis > 0) {
+                ioVoid(() -> NativeSocketBridge.setSoTimeout(fd, request.timeoutMillis));
+            }
             try {
-                int ioTimeout = request.timeoutMillis;
-                if (ioTimeout <= 0 && adversarialExecution(context)) {
-                    long policyMillis = context.isolatePolicy().maxWallTime().toMillis();
-                    IsolatePolicy actorPolicy = ActorRuntime.currentActorPolicy();
-                    if (actorPolicy != null) {
-                        policyMillis = Math.min(policyMillis, actorPolicy.maxWallTime().toMillis());
-                    }
-                    ioTimeout = (int) Math.max(
-                            1L,
-                            Math.min(
-                                    (long) MAX_ADVERSARIAL_IO_TIMEOUT_MILLIS,
-                                    Math.min((long) Integer.MAX_VALUE, policyMillis)));
-                }
-                if (ioTimeout > 0) {
-                    int boundedIoTimeout = ioTimeout;
-                    ioVoid(() -> NativeSocketBridge.setActorIoTimeout(handle, boundedIoTimeout));
+                if (request.timeoutMillis > 0) {
+                    ioVoid(() -> NativeSocketBridge.setSoTimeout(fd, request.timeoutMillis));
                 }
 
-                byte[] wireRequest = serializeRequest(context, request, uri);
-                writeAll(handle, wireRequest);
-                byte[] wireResponse = readToEof(handle, MAX_RESPONSE_BYTES);
-                ParsedResponse parsed = parseResponseWithStdlib(
-                        context,
-                        wireResponse,
-                        request.method);
+                byte[] wireRequest = encodeRequest(request, uri);
+                writeAll(fd, wireRequest);
+                byte[] wireResponse = readToEof(fd, MAX_RESPONSE_BYTES);
+                ParsedResponse parsed = parseResponse(wireResponse);
 
                 Object body = switch (handler.kind()) {
                     case STRING -> new String(parsed.body, StandardCharsets.UTF_8);
@@ -1330,51 +1212,54 @@ public final class OresNet {
                         request.uri,
                         HttpVersion.HTTP_1_1);
             } finally {
-                ioVoid(() -> NativeSocketBridge.close(handle));
+                ioVoid(() -> NativeSocketBridge.close(fd));
             }
         }
 
-        private static byte[] serializeRequest(
-                OresContext context,
-                HttpRequestValue request,
-                ParsedUri uri) {
-            ArrayList<Object> headerNames = new ArrayList<>();
-            ArrayList<Object> headerValues = new ArrayList<>();
+        private static byte[] encodeRequest(HttpRequestValue request, ParsedUri uri) {
+            StringBuilder head = new StringBuilder();
+            head.append(request.method).append(' ').append(uri.requestTarget()).append(" HTTP/1.1\r\n");
+            head.append("Host: ").append(uri.hostHeader()).append("\r\n");
+            head.append("Connection: close\r\n");
+
+            boolean hasContentType = false;
             for (Map.Entry<String, List<String>> entry : request.headers.entrySet()) {
+                String lower = entry.getKey().toLowerCase(Locale.ROOT);
+                if (lower.equals("host") || lower.equals("content-length") || lower.equals("connection")) continue;
+                if (lower.equals("content-type")) hasContentType = true;
                 for (String value : entry.getValue()) {
-                    headerNames.add(entry.getKey());
-                    headerValues.add(value);
+                    head.append(entry.getKey()).append(": ").append(value).append("\r\n");
                 }
             }
 
-            Object encoded = httpWire(
-                    context,
-                    "serialize_request",
-                    request.method,
-                    uri.requestTarget(),
-                    uri.hostHeader(),
-                    headerNames,
-                    headerValues,
-                    bytesToList(request.body),
-                    request.expectContinue);
-            return bytesArg(encoded, "http_wire.serialize_request");
+            if (request.body.length > 0 || request.method.equals("POST") || request.method.equals("PUT")) {
+                head.append("Content-Length: ").append(request.body.length).append("\r\n");
+                if (!hasContentType) head.append("Content-Type: application/octet-stream\r\n");
+            }
+            if (request.expectContinue) head.append("Expect: 100-continue\r\n");
+            head.append("\r\n");
+
+            byte[] header = head.toString().getBytes(StandardCharsets.ISO_8859_1);
+            byte[] result = Arrays.copyOf(header, header.length + request.body.length);
+            System.arraycopy(request.body, 0, result, header.length, request.body.length);
+            return result;
         }
 
-        private static void writeAll(NativeSocketHandle handle, byte[] bytes) {
+        private static void writeAll(long fd, byte[] bytes) {
             int offset = 0;
             while (offset < bytes.length) {
                 int at = offset;
-                int count = io(() -> NativeSocketBridge.write(handle, bytes, at, bytes.length - at));
+                int count = io(() -> NativeSocketBridge.write(fd, bytes, at, bytes.length - at));
                 if (count <= 0) throw new IllegalStateException("native send returned " + count);
                 offset += count;
             }
         }
 
-        private static byte[] readToEof(NativeSocketHandle handle, int limit) {
+        private static byte[] readToEof(long fd, int limit) {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             byte[] buffer = new byte[16 * 1024];
             while (true) {
-                int count = io(() -> NativeSocketBridge.read(handle, buffer, 0, buffer.length));
+                int count = io(() -> NativeSocketBridge.read(fd, buffer, 0, buffer.length));
                 if (count < 0) break;
                 if (out.size() + count > limit) {
                     throw new IllegalStateException("HTTP response exceeds " + limit + " bytes");
@@ -1425,7 +1310,7 @@ public final class OresNet {
                         previous == null
                                 ? new OptionalValue(OresNull.INSTANCE, false)
                                 : new OptionalValue(previous, true));
-                case "uri" -> noArg("HttpResponse.uri", new UriValue(context, ParsedUri.parse(context, uri)));
+                case "uri" -> noArg("HttpResponse.uri", new UriValue(context, ParsedUri.parse(uri)));
                 case "version" -> noArg("HttpResponse.version", version.name());
                 case "sslSession" -> noArg("HttpResponse.sslSession", new OptionalValue(OresNull.INSTANCE, false));
                 default -> throw unknown("HttpResponse", name);
@@ -1541,9 +1426,7 @@ public final class OresNet {
                 case "getHost" -> noArg("URI.getHost", uri.host);
                 case "getPort" -> noArg("URI.getPort", (long) uri.explicitPort);
                 case "getPath" -> noArg("URI.getPath", uri.path);
-                case "getQuery" -> noArg(
-                        "URI.getQuery",
-                        uri.hasQuery ? uri.query : OresNull.INSTANCE);
+                case "getQuery" -> noArg("URI.getQuery", uri.query == null ? OresNull.INSTANCE : uri.query);
                 case "toString" -> noArg("URI.toString", uri.raw);
                 default -> throw unknown("URI", name);
             };
@@ -1560,124 +1443,224 @@ public final class OresNet {
             int explicitPort,
             int port,
             String path,
-            String query,
-            boolean hasQuery,
-            String requestTarget,
-            String hostHeader) {
+            String query) {
 
-        static ParsedUri parse(
-                OresContext context,
-                String raw) {
-            Object result = uriWire(
-                    context,
-                    "parse_absolute",
-                    raw);
-            if (!(result instanceof Map<?, ?> parsed)) {
-                throw new IllegalStateException(
-                        "uri_wire.parse_absolute did not return a structural URI");
+        static ParsedUri parse(String raw) {
+            if (raw == null || raw.isBlank()) throw new IllegalArgumentException("URI cannot be blank");
+            int schemeAt = raw.indexOf("://");
+            if (schemeAt <= 0) throw new IllegalArgumentException("absolute URI required: " + raw);
+            String scheme = raw.substring(0, schemeAt).toLowerCase(Locale.ROOT);
+            int authorityStart = schemeAt + 3;
+            int pathStart = raw.indexOf('/', authorityStart);
+            int queryOnly = raw.indexOf('?', authorityStart);
+            int authorityEnd;
+            if (pathStart < 0) authorityEnd = queryOnly < 0 ? raw.length() : queryOnly;
+            else if (queryOnly >= 0 && queryOnly < pathStart) authorityEnd = queryOnly;
+            else authorityEnd = pathStart;
+
+            String authority = raw.substring(authorityStart, authorityEnd);
+            if (authority.isBlank()) throw new IllegalArgumentException("URI host is required: " + raw);
+
+            String host;
+            int explicitPort = -1;
+            if (authority.startsWith("[")) {
+                int closing = authority.indexOf(']');
+                if (closing < 0) throw new IllegalArgumentException("invalid IPv6 URI authority: " + raw);
+                host = authority.substring(1, closing);
+                if (closing + 1 < authority.length()) {
+                    if (authority.charAt(closing + 1) != ':') throw new IllegalArgumentException("invalid URI authority: " + raw);
+                    explicitPort = Integer.parseInt(authority.substring(closing + 2));
+                }
+            } else {
+                int colon = authority.lastIndexOf(':');
+                if (colon > 0 && authority.indexOf(':') == colon) {
+                    host = authority.substring(0, colon);
+                    explicitPort = Integer.parseInt(authority.substring(colon + 1));
+                } else {
+                    host = authority;
+                }
             }
+            if (host.isBlank()) throw new IllegalArgumentException("URI host is required: " + raw);
+            if (explicitPort != -1) checkPort(explicitPort, "URI");
 
-            return new ParsedUri(
-                    mapString(parsed, "raw"),
-                    mapString(parsed, "scheme"),
-                    mapString(parsed, "host"),
-                    mapInt(parsed, "explicit_port"),
-                    mapInt(parsed, "port"),
-                    mapString(parsed, "path"),
-                    mapString(parsed, "query"),
-                    mapBool(parsed, "has_query"),
-                    mapString(parsed, "request_target"),
-                    mapString(parsed, "host_header"));
-        }
+            int defaultPort = scheme.equals("https") ? 443 : 80;
+            int port = explicitPort == -1 ? defaultPort : explicitPort;
 
-        private static String mapString(
-                Map<?, ?> parsed,
-                String field) {
-            Object value = parsed.get(field);
-            if (value instanceof String string) return string;
-            throw new IllegalStateException(
-                    "uri_wire.parse_absolute returned invalid " + field);
-        }
-
-        private static int mapInt(
-                Map<?, ?> parsed,
-                String field) {
-            Object value = parsed.get(field);
-            if (value instanceof Number number) {
-                return Math.toIntExact(number.longValue());
+            String pathAndQuery = authorityEnd >= raw.length() ? "" : raw.substring(authorityEnd);
+            String path;
+            String query = null;
+            int queryAt = pathAndQuery.indexOf('?');
+            if (queryAt >= 0) {
+                path = pathAndQuery.substring(0, queryAt);
+                query = pathAndQuery.substring(queryAt + 1);
+            } else {
+                path = pathAndQuery;
             }
-            throw new IllegalStateException(
-                    "uri_wire.parse_absolute returned invalid " + field);
+            if (path.isEmpty()) path = "/";
+            return new ParsedUri(raw, scheme, host, explicitPort, port, path, query);
         }
 
-        private static boolean mapBool(
-                Map<?, ?> parsed,
-                String field) {
-            Object value = parsed.get(field);
-            if (value instanceof Boolean bool) return bool;
-            throw new IllegalStateException(
-                    "uri_wire.parse_absolute returned invalid " + field);
+        String requestTarget() {
+            return query == null ? path : path + "?" + query;
         }
 
-    }
-
-    private static ParsedResponse parseResponseWithStdlib(
-            OresContext context,
-            byte[] wire,
-            String requestMethod) {
-        Object result = httpWire(
-                context,
-                "parse_response",
-                bytesToList(wire),
-                requestMethod);
-        if (!(result instanceof Map<?, ?> parsed)) {
-            throw new IllegalStateException(
-                    "http_wire.parse_response did not return a structural response");
+        String hostHeader() {
+            boolean ipv6 = host.indexOf(':') >= 0;
+            String rendered = ipv6 ? "[" + host + "]" : host;
+            boolean defaultPort = (scheme.equals("http") && port == 80) || (scheme.equals("https") && port == 443);
+            return defaultPort ? rendered : rendered + ":" + port;
         }
-
-        Object statusValue = parsed.get("status_code");
-        if (!(statusValue instanceof Number statusNumber)) {
-            throw new IllegalStateException(
-                    "http_wire.parse_response returned invalid status_code");
-        }
-        int statusCode = Math.toIntExact(statusNumber.longValue());
-
-        Object namesValue = parsed.get("header_names");
-        Object valuesValue = parsed.get("header_values");
-        if (!(namesValue instanceof List<?> names)
-                || !(valuesValue instanceof List<?> values)
-                || names.size() != values.size()) {
-            throw new IllegalStateException(
-                    "http_wire.parse_response returned invalid header arrays");
-        }
-
-        LinkedHashMap<String, List<String>> headers = new LinkedHashMap<>();
-        for (int i = 0; i < names.size(); i++) {
-            if (!(names.get(i) instanceof String name)
-                    || !(values.get(i) instanceof String value)) {
-                throw new IllegalStateException(
-                        "http_wire.parse_response returned non-string header data");
-            }
-            headers.computeIfAbsent(name, ignored -> new ArrayList<>()).add(value);
-        }
-
-        LinkedHashMap<String, List<String>> frozen = new LinkedHashMap<>();
-        headers.forEach((key, valuesForKey) ->
-                frozen.put(key, List.copyOf(valuesForKey)));
-
-        byte[] body = bytesArg(
-                parsed.get("body"),
-                "http_wire.parse_response.body");
-        return new ParsedResponse(
-                statusCode,
-                Collections.unmodifiableMap(frozen),
-                body);
     }
 
     private record ParsedResponse(
             int statusCode,
             Map<String, List<String>> headers,
             byte[] body) { }
+
+    private static ParsedResponse parseResponse(byte[] wire) {
+        int headerEnd = indexOf(wire, new byte[] {'\r','\n','\r','\n'}, 0);
+        if (headerEnd < 0) throw new IllegalStateException("malformed HTTP response: missing header terminator");
+
+        String head = new String(wire, 0, headerEnd, StandardCharsets.ISO_8859_1);
+        String[] lines = head.split("\\r\\n");
+        if (lines.length == 0) throw new IllegalStateException("malformed HTTP response");
+        String[] status = lines[0].split(" ", 3);
+        if (status.length < 2 || !status[0].startsWith("HTTP/")) {
+            throw new IllegalStateException("malformed HTTP status line: " + lines[0]);
+        }
+        int statusCode = Integer.parseInt(status[1]);
+
+        LinkedHashMap<String, List<String>> headers = new LinkedHashMap<>();
+        for (int i = 1; i < lines.length; i++) {
+            int colon = lines[i].indexOf(':');
+            if (colon <= 0) throw new IllegalStateException("malformed HTTP header: " + lines[i]);
+            String name = canonicalHeaderName(lines[i].substring(0, colon).trim());
+            String value = lines[i].substring(colon + 1).trim();
+            headers.computeIfAbsent(name, ignored -> new ArrayList<>()).add(value);
+        }
+
+        byte[] body = Arrays.copyOfRange(wire, headerEnd + 4, wire.length);
+        String transferEncoding = firstHeader(headers, "transfer-encoding");
+        List<String> contentLengths = headers.getOrDefault("content-length", List.of());
+        if (transferEncoding != null && !contentLengths.isEmpty()) {
+            throw new IllegalStateException("ambiguous HTTP response framing: Transfer-Encoding with Content-Length");
+        }
+        if (contentLengths.size() > 1) {
+            String expected = contentLengths.getFirst().trim();
+            for (String value : contentLengths) {
+                if (!expected.equals(value.trim())) {
+                    throw new IllegalStateException("conflicting Content-Length response headers");
+                }
+            }
+        }
+        if (transferEncoding != null) {
+            String normalized = transferEncoding.trim().toLowerCase(Locale.ROOT);
+            if (!normalized.equals("chunked")) {
+                throw new IllegalStateException("unsupported HTTP Transfer-Encoding: " + transferEncoding);
+            }
+            body = decodeChunked(body);
+        } else if (!contentLengths.isEmpty()) {
+            long parsedLength;
+            try {
+                parsedLength = Long.parseLong(contentLengths.getFirst().trim());
+            } catch (NumberFormatException error) {
+                throw new IllegalStateException("invalid Content-Length response header", error);
+            }
+            if (parsedLength < 0 || parsedLength > Integer.MAX_VALUE) {
+                throw new IllegalStateException("invalid Content-Length response header");
+            }
+            int length = (int) parsedLength;
+            if (length < body.length) body = Arrays.copyOf(body, length);
+            if (length > body.length) {
+                throw new IllegalStateException("truncated HTTP response body");
+            }
+        }
+
+        LinkedHashMap<String, List<String>> frozen = new LinkedHashMap<>();
+        headers.forEach((key, values) -> frozen.put(key, List.copyOf(values)));
+        return new ParsedResponse(statusCode, Collections.unmodifiableMap(frozen), body);
+    }
+
+    private static byte[] decodeChunked(byte[] body) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        int offset = 0;
+        while (true) {
+            int lineEnd = indexOf(body, new byte[] {'\r','\n'}, offset);
+            if (lineEnd < 0) throw new IllegalStateException("malformed chunked response");
+            String sizeLine = new String(body, offset, lineEnd - offset, StandardCharsets.US_ASCII);
+            int semicolon = sizeLine.indexOf(';');
+            if (semicolon >= 0) sizeLine = sizeLine.substring(0, semicolon);
+            int size = Integer.parseInt(sizeLine.trim(), 16);
+            offset = lineEnd + 2;
+            if (size == 0) break;
+            if (offset + size + 2 > body.length) throw new IllegalStateException("truncated chunked response");
+            out.write(body, offset, size);
+            offset += size;
+            if (body[offset] != '\r' || body[offset + 1] != '\n') {
+                throw new IllegalStateException("malformed chunk terminator");
+            }
+            offset += 2;
+        }
+        return out.toByteArray();
+    }
+
+    private static int indexOf(byte[] source, byte[] needle, int start) {
+        outer:
+        for (int i = Math.max(0, start); i <= source.length - needle.length; i++) {
+            for (int j = 0; j < needle.length; j++) {
+                if (source[i + j] != needle[j]) continue outer;
+            }
+            return i;
+        }
+        return -1;
+    }
+
+    private static String firstHeader(Map<String, List<String>> headers, String name) {
+        for (Map.Entry<String, List<String>> entry : headers.entrySet()) {
+            if (entry.getKey().equalsIgnoreCase(name) && !entry.getValue().isEmpty()) {
+                return entry.getValue().getFirst();
+            }
+        }
+        return null;
+    }
+
+    private static boolean isRedirect(int status) {
+        return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
+    }
+
+    private static boolean sameAuthority(ParsedUri left, ParsedUri right) {
+        return left.scheme.equals(right.scheme)
+                && left.host.equalsIgnoreCase(right.host)
+                && left.port == right.port;
+    }
+
+    private static String resolveRedirect(String base, String location) {
+        if (location.contains("://")) return location;
+        ParsedUri parsed = ParsedUri.parse(base);
+        String origin = parsed.scheme + "://" + parsed.hostHeader();
+        if (location.startsWith("/")) return origin + location;
+        String basePath = parsed.path;
+        int slash = basePath.lastIndexOf('/');
+        String prefix = slash < 0 ? "/" : basePath.substring(0, slash + 1);
+        return origin + prefix + location;
+    }
+
+    private static void validateHeader(String name, String value) {
+        if (name == null || name.isBlank()) throw new IllegalArgumentException("HTTP header name cannot be blank");
+        if (value == null) throw new IllegalArgumentException("HTTP header value cannot be null");
+        if (name.indexOf('\r') >= 0 || name.indexOf('\n') >= 0 || value.indexOf('\r') >= 0 || value.indexOf('\n') >= 0) {
+            throw new IllegalArgumentException("HTTP headers cannot contain CR/LF");
+        }
+        String lower = name.toLowerCase(Locale.ROOT);
+        if (lower.equals("connection") || lower.equals("content-length") || lower.equals("expect")
+                || lower.equals("host") || lower.equals("upgrade")) {
+            throw new IllegalArgumentException("restricted HTTP request header: " + name);
+        }
+    }
+
+    private static String canonicalHeaderName(String name) {
+        return name.toLowerCase(Locale.ROOT);
+    }
 
     private static HttpVersion parseVersion(Object value) {
         String raw = String.valueOf(value).toUpperCase(Locale.ROOT).replace('.', '_');
@@ -1709,12 +1692,6 @@ public final class OresNet {
         Object value = args.get(index);
         if (value instanceof InetSocketAddressValue address) return address;
         throw new IllegalArgumentException(api + " expects net.InetSocketAddress at argument " + (index + 1));
-    }
-
-    private static boolean adversarialExecution(OresContext context) {
-        IsolatePolicy actorPolicy = ActorRuntime.currentActorPolicy();
-        return context.isolatePolicy().adversarial()
-                || (actorPolicy != null && actorPolicy.adversarial());
     }
 
     private static BuiltinCallable noArg(String api, Object result) {
