@@ -472,11 +472,32 @@ public final class OresKeyedMap<K, V> {
         return Collections.unmodifiableMap(new LinkedHashMap<>(entries));
     }
 
-    /** Detached immutable entry pairs, in deterministic insertion order. */
+    /** Detached immutable host entry pairs, in deterministic insertion order. */
     public synchronized List<Map.Entry<K, V>> entrySnapshot() {
         List<Map.Entry<K, V>> result = new ArrayList<>(entries.size());
         for (Map.Entry<K, V> entry : entries.entrySet()) {
             result.add(Map.entry(entry.getKey(), entry.getValue()));
+        }
+        return List.copyOf(result);
+    }
+
+    /**
+     * Detached nominal Oreslang Entry values in deterministic insertion order.
+     *
+     * <p>The snapshot is captured atomically under this Map's monitor. Later
+     * puts/removes/clear operations cannot alter its cardinality or ordering.
+     * Existing-key replacement preserves the original insertion slot; removing
+     * and reinserting a key gives it a new slot at the end.
+     *
+     * <p>The list and Entry carriers are immutable at the top level, but value
+     * graphs are not recursively frozen or copied. This method is therefore a
+     * local guest-value projection only, not an actor/interop transport API.
+     * Construction performs no guest equality/hash/render callbacks.
+     */
+    public synchronized List<OresEntry> nominalEntrySnapshot() {
+        List<OresEntry> result = new ArrayList<>(entries.size());
+        for (Map.Entry<K, V> entry : entries.entrySet()) {
+            result.add(new OresEntry(entry.getKey(), entry.getValue()));
         }
         return List.copyOf(result);
     }
