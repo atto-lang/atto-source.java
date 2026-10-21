@@ -39,7 +39,7 @@ a structurally identical record/object, a Java `Throwable`, a string,
 integer, bool, or a null/optional value. `Any`/`Unknown` values must
 first be narrowed to a concrete proven Error type, not silently cast at the
 effect site. A union is eligible only if **every** union alternative is a
-nominal Error subtype. Borrowed `&Error`/`&mut Error` payloads are rejected:
+nominal Error subtype. Borrowed `borrow Error`/`borrow mut Error` payloads are rejected:
 exceptional effects can outlive the originating lexical borrow and are
 potentially routed to a different actor/supervisor.
 
