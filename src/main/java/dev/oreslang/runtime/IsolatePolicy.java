@@ -45,8 +45,11 @@ public record IsolatePolicy(
         FILESYSTEM_WRITE,
         ENVIRONMENT,
         HOT_CODE_LOAD,
+        /** Host/runtime-internal authority; never grants guest source Java imports. */
         JAVA_INTEROP,
+        /** Host/runtime-internal authority; never grants guest java { } islands. */
         JAVA_SOURCE_INTEROP,
+        /** Core/stdlib runtime implementation authority; ffi.* is not a guest API. */
         FFI,
         NATIVE,
         REFLECTION,
