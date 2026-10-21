@@ -60,18 +60,19 @@ final class ActorNativeArenaTest {
 
             Map<String, Object> object = arena.fields(List.of("value"), marker);
             object.put("value", 7L);
-            assertTrue(cell.trySet(object));
-            assertSame(object, cell.get());
+            assertFalse(cell.trySet(object),
+                    "actor-object payload is already native; its lexical facade stays managed until scope-drop lowering");
+            assertEquals("native-local", cell.get(),
+                    "unsupported facade lowering must not corrupt the previous native local");
 
             assertFalse(cell.trySet(List.of(1, 2, 3)),
                     "managed-only collection fallback must be explicit");
-            assertSame(object, cell.get(),
-                    "unsupported lowering must not corrupt the previous native local");
+            assertEquals("native-local", cell.get());
 
             Map<String, Object> foreign = foreignArena.fields(List.of("value"), marker);
             assertThrows(SecurityException.class, () -> cell.trySet(foreign),
                     "a lexical slot must never downgrade a foreign arena reference to managed storage");
-            assertSame(object, cell.get());
+            assertEquals("native-local", cell.get());
         }
         assertEquals(0, charged.get());
     }
