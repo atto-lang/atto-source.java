@@ -344,7 +344,8 @@ primary         = literal
 
 lambda          = [ "nlex" ] ( pipe_lambda | typed_legacy_lambda ) ;
 pipe_lambda     = "|" [ lambda_param { "," lambda_param } ] "|" "->" lambda_body ;
-lambda_param    = IDENT | type_ref IDENT ;
+(* "const fnc name = |...| -> ...;" declares an immutable inferred callable binding. *)
+lambda_param    = IDENT | type_ref IDENT | IDENT ":" type_ref ;
 typed_legacy_lambda
                 = "(" [ param_list ] ")" "->" lambda_body ;
 lambda_body     = block | expression ;
