@@ -152,14 +152,15 @@ end
 
 The keyword-delimited form requires `-> ReturnType`. Without an explicit
 body separator, its first body token starts on a later source line. An optional
-semantics-free `as` may appear immediately after the complete return type on
+semantics-free `as` or `::` may appear immediately after the complete return type on
 the same physical source line:
 
 ```ores
 fnc identity(int x) -> int as return x; end
+fnc identity2(int x) -> int :: return x; end
 ```
 
-A next-line `as` is not a header separator, and callable-header `do` is
+A next-line `as` or `::` is not a header separator, and callable-header `do` is
 retired: every `do` belongs to executable body syntax such as `do select`
 or `do match`. The complete recursive return type is parsed before optional
 `as`, including function-valued returns. Indentation is presentation only;
