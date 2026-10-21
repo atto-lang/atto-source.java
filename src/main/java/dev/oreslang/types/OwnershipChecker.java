@@ -1184,9 +1184,9 @@ public final class OwnershipChecker {
                 }
                 LinkedHashMap<String, Ast.TypeRef> members =
                         new LinkedHashMap<>(base.type.recordMembers());
-                // Existing fields retain their position; replacement changes
-                // only the field type. New fields append in update source
-                // order, matching LinkedHashMap runtime construction.
+                // Static aggregate types canonicalize member order; row
+                // identity is name/type based. Runtime source-order retention
+                // is handled independently by ReadonlyRecordValue.
                 for (Map.Entry<String, Ast.TypeRef> field :
                         updates.type.recordMembers().entrySet()) {
                     members.put(field.getKey(), field.getValue());
