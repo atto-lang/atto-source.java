@@ -244,6 +244,54 @@ def checked_contract(root, repository, source_pr, test_plan, main_sha):
     return parse_contract(remote, repository, source_pr, test_plan)
 
 
+def verify_protected_carrier(repository, expected_base_sha):
+    """Require the destination main branch to enforce the reviewed carrier base.
+
+    Pinning a carrier SHA is necessary but not sufficient: without branch
+    protection, an unreviewed actor can replace trusted workflow/test-plan
+    bytes on main and race a later contract refresh. Match the source-side
+    review guarantees before any private source bytes are copied.
+    """
+    expected_base_sha = valid_sha(
+        expected_base_sha, "carrier protected base SHA invalid"
+    )
+    branch = legacy.gh_api(f"repos/{repository}/branches/main")
+    if (branch.get("name") != "main"
+            or branch.get("protected") is not True
+            or branch.get("commit", {}).get("sha") != expected_base_sha):
+        raise Denied("carrier main is not protected at the reviewed base")
+
+    protection = legacy.gh_api(f"repos/{repository}/branches/main/protection")
+    reviews = protection.get("required_pull_request_reviews")
+    administrators = protection.get("enforce_admins")
+    force_pushes = protection.get("allow_force_pushes")
+    deletions = protection.get("allow_deletions")
+    if (not isinstance(reviews, dict)
+            or reviews.get("require_code_owner_reviews") is not True
+            or reviews.get("dismiss_stale_reviews") is not True
+            or not isinstance(reviews.get("required_approving_review_count"), int)
+            or isinstance(reviews["required_approving_review_count"], bool)
+            or reviews["required_approving_review_count"] < 1
+            or not isinstance(administrators, dict)
+            or administrators.get("enabled") is not True
+            or not isinstance(force_pushes, dict)
+            or force_pushes.get("enabled") is not False
+            or not isinstance(deletions, dict)
+            or deletions.get("enabled") is not False):
+        raise Denied(
+            "carrier main must enforce CODEOWNER approvals, stale-review "
+            "dismissal, administrator protection and deny forced pushes/deletions"
+        )
+    bypasses = reviews.get("bypass_pull_request_allowances")
+    if bypasses is not None:
+        if (not isinstance(bypasses, dict)
+                or any(not isinstance(bypasses.get(category, []), list)
+                       or bypasses.get(category)
+                       for category in ("users", "teams", "apps"))):
+            raise Denied("carrier main has PR review bypass allowances")
+    return expected_base_sha
+
+
 def checked_destination(repository, contract):
     repo = legacy.checked_repo(repository)
     if (repo.get("id") != contract["repository_id"]
@@ -252,6 +300,7 @@ def checked_destination(repository, contract):
             or repo.get("fork") is not False
             or repo.get("default_branch") != "main"):
         raise Denied("carrier identity/state differs from protected contract")
+    verify_protected_carrier(repository, contract["base_sha"])
     ref = legacy.gh_api(f"repos/{repository}/git/ref/heads/main")
     base_sha = valid_sha(ref.get("object", {}).get("sha"),
                          "carrier main ref invalid")
