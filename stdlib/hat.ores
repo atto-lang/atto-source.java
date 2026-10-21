@@ -1,0 +1,234 @@
+// HAT (Heterogeneous Accelerator Toolkit) portable contracts.
+//
+// This module is deliberately backend-neutral and source-first. It defines the
+// stable descriptors and admission helpers shared by compiler/runtime HAT
+// support and userland accelerator backends.
+//
+// It does NOT provide dispatch, upload/download, opaque device handles, or an
+// implicit host fallback. Execution-domain syntax remains compiler-gated until
+// ownership, effects, transfer, fence, and backend lowering are implemented.
+
+define module hat as
+
+  pub fnc api_version(): int {
+    return 1;
+  }
+
+  pub define class DeviceInfo as
+    pub val String backend;
+    pub val String name;
+    pub val int ordinal;
+    pub val int address_bits;
+    pub val int max_workgroup_size;
+    pub val int max_buffer_bytes;
+    pub val bool fp64;
+    pub val bool unified_memory;
+  end
+
+  pub define class BufferLayout as
+    // Stable portable layout vocabulary: scalar, aos, soa, aosoa.
+    pub val String kind;
+    pub val int element_count;
+    pub val int element_bytes;
+    pub val int alignment;
+    pub val int lanes;
+  end
+
+  pub define class WorkShape as
+    pub val int dimensions;
+    pub val int global_x;
+    pub val int global_y;
+    pub val int global_z;
+    pub val int local_x;
+    pub val int local_y;
+    pub val int local_z;
+  end
+
+  pub define class Requirements as
+    pub val int minimum_address_bits;
+    pub val int minimum_buffer_bytes;
+    pub val bool require_fp64;
+    pub val bool require_unified_memory;
+  end
+
+  fnc valid_layout_kind(String kind): bool {
+    return kind == "scalar"
+        || kind == "aos"
+        || kind == "soa"
+        || kind == "aosoa";
+  }
+
+  fnc require_positive(String label, int value): void {
+    if value <= 0; do
+      rt fail("hat: " + label + " must be positive");
+    fi
+    return;
+  }
+
+  fnc require_local_not_larger(
+    String axis,
+    int global_size,
+    int local_size
+  ): void {
+    if local_size > global_size; do
+      rt fail("hat: local " + axis + " size exceeds global size");
+    fi
+    return;
+  }
+
+  pub fnc device_info(
+    String backend,
+    String name,
+    int ordinal,
+    int address_bits,
+    int max_workgroup_size,
+    int max_buffer_bytes,
+    bool fp64,
+    bool unified_memory
+  ): DeviceInfo {
+    if backend == ""; do
+      rt fail("hat: backend must not be empty");
+    fi
+    if name == ""; do
+      rt fail("hat: device name must not be empty");
+    fi
+    if ordinal < 0; do
+      rt fail("hat: device ordinal must be non-negative");
+    fi
+    if !(address_bits == 32 || address_bits == 64); do
+      rt fail("hat: address_bits must be 32 or 64");
+    fi
+    require_positive("max_workgroup_size", max_workgroup_size);
+    require_positive("max_buffer_bytes", max_buffer_bytes);
+
+    return new DeviceInfo(
+      backend,
+      name,
+      ordinal,
+      address_bits,
+      max_workgroup_size,
+      max_buffer_bytes,
+      fp64,
+      unified_memory
+    );
+  }
+
+  pub fnc buffer_layout(
+    String kind,
+    int element_count,
+    int element_bytes,
+    int alignment,
+    int lanes
+  ): BufferLayout {
+    if !valid_layout_kind(kind); do
+      rt fail("hat: unsupported buffer layout kind");
+    fi
+    require_positive("element_count", element_count);
+    require_positive("element_bytes", element_bytes);
+    require_positive("alignment", alignment);
+    require_positive("lanes", lanes);
+
+    if kind == "scalar" && lanes != 1; do
+      rt fail("hat: scalar layout requires exactly one lane");
+    fi
+    if kind == "aosoa" && lanes <= 1; do
+      rt fail("hat: aosoa layout requires more than one lane");
+    fi
+
+    return new BufferLayout(
+      kind,
+      element_count,
+      element_bytes,
+      alignment,
+      lanes
+    );
+  }
+
+  pub fnc work_1d(int global_x, int local_x): WorkShape {
+    require_positive("global_x", global_x);
+    require_positive("local_x", local_x);
+    require_local_not_larger("x", global_x, local_x);
+    return new WorkShape(1, global_x, 1, 1, local_x, 1, 1);
+  }
+
+  pub fnc work_2d(
+    int global_x,
+    int global_y,
+    int local_x,
+    int local_y
+  ): WorkShape {
+    require_positive("global_x", global_x);
+    require_positive("global_y", global_y);
+    require_positive("local_x", local_x);
+    require_positive("local_y", local_y);
+    require_local_not_larger("x", global_x, local_x);
+    require_local_not_larger("y", global_y, local_y);
+    return new WorkShape(2, global_x, global_y, 1, local_x, local_y, 1);
+  }
+
+  pub fnc work_3d(
+    int global_x,
+    int global_y,
+    int global_z,
+    int local_x,
+    int local_y,
+    int local_z
+  ): WorkShape {
+    require_positive("global_x", global_x);
+    require_positive("global_y", global_y);
+    require_positive("global_z", global_z);
+    require_positive("local_x", local_x);
+    require_positive("local_y", local_y);
+    require_positive("local_z", local_z);
+    require_local_not_larger("x", global_x, local_x);
+    require_local_not_larger("y", global_y, local_y);
+    require_local_not_larger("z", global_z, local_z);
+    return new WorkShape(
+      3,
+      global_x,
+      global_y,
+      global_z,
+      local_x,
+      local_y,
+      local_z
+    );
+  }
+
+  pub fnc requirements(
+    int minimum_address_bits,
+    int minimum_buffer_bytes,
+    bool require_fp64,
+    bool require_unified_memory
+  ): Requirements {
+    if !(minimum_address_bits == 32 || minimum_address_bits == 64); do
+      rt fail("hat: minimum_address_bits must be 32 or 64");
+    fi
+    require_positive("minimum_buffer_bytes", minimum_buffer_bytes);
+    return new Requirements(
+      minimum_address_bits,
+      minimum_buffer_bytes,
+      require_fp64,
+      require_unified_memory
+    );
+  }
+
+  pub fnc device_satisfies(
+    &DeviceInfo device,
+    &Requirements requested
+  ): bool {
+    if device.address_bits < requested.minimum_address_bits; do
+      return false;
+    fi
+    if device.max_buffer_bytes < requested.minimum_buffer_bytes; do
+      return false;
+    fi
+    if requested.require_fp64 && !device.fp64; do
+      return false;
+    fi
+    if requested.require_unified_memory && !device.unified_memory; do
+      return false;
+    fi
+    return true;
+  }
+
+end
