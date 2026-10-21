@@ -5958,6 +5958,10 @@ public final class ActorRuntime implements AutoCloseable {
             int depth) {
         requireGraphDepth(depth);
         if (value == null || isScalar(value)) return;
+        if (value instanceof ActorNativeArena.NativeValue) {
+            throw new SecurityException(
+                    "actor-native arena values cannot be frozen or exported by reference");
+        }
         if (value instanceof ActorRuntime.ActorRef<?> ref) {
             if (!ref.ownedBy(this)) {
                 throw new IllegalArgumentException(
@@ -6213,6 +6217,10 @@ public final class ActorRuntime implements AutoCloseable {
             int depth) {
         requireGraphDepth(depth);
         if (value == null || isScalar(value) || value instanceof ActorRuntime.ActorRef<?>) return;
+        if (value instanceof ActorNativeArena.NativeValue) {
+            throw new SecurityException(
+                    "actor-native arena values cannot be wrapped as shared immutable data");
+        }
         if (value instanceof ActorRuntime.ActorHandle<?>
                 || value instanceof ActorRuntime.ActorControlHandle
                 || value instanceof ActorRuntime.ContinuationTarget
@@ -6273,6 +6281,11 @@ public final class ActorRuntime implements AutoCloseable {
         if (++nodes[0] > MAX_MESSAGE_GRAPH_NODES) {
             throw new IllegalArgumentException(
                     "actor message graph exceeds maximum node count " + MAX_MESSAGE_GRAPH_NODES);
+        }
+        if (value instanceof ActorNativeArena.NativeValue) {
+            throw new SecurityException(
+                    "actor-native arena values cannot cross actor boundaries by reference; "
+                            + "copy/serialize guest data or use an explicit transfer capability");
         }
         if (value instanceof ActorRuntime.ActorHandle<?>
                 || value instanceof ActorRuntime.ActorControlHandle
@@ -6410,6 +6423,10 @@ public final class ActorRuntime implements AutoCloseable {
             int depth) {
         requireGraphDepth(depth);
         if (isScalar(value)) return value;
+        if (value instanceof ActorNativeArena.NativeValue) {
+            throw new SecurityException(
+                    "actor-native arena values require explicit copy/serialization before shared transport");
+        }
         if (value instanceof Shared<?> shared) {
             shared.value();
             return shared;
@@ -6472,6 +6489,10 @@ public final class ActorRuntime implements AutoCloseable {
             int depth) {
         requireGraphDepth(depth);
         if (isScalar(value)) return value;
+        if (value instanceof ActorNativeArena.NativeValue) {
+            throw new SecurityException(
+                    "actor-native arena values require explicit copy/serialization before private transport");
+        }
         if (value instanceof ActorRuntime.SyncCell<?>) {
             throw new IllegalArgumentException("private actors cannot receive shared SyncCell values");
         }
@@ -6531,6 +6552,10 @@ public final class ActorRuntime implements AutoCloseable {
 
         long scalar = scalarLogicalBytes(value);
         if (scalar >= 0) return requireWithinLimit(scalar, limit);
+        if (value instanceof ActorNativeArena.NativeValue) {
+            throw new SecurityException(
+                    "actor-native arena values cannot be sized for cross-actor transport by reference");
+        }
         if (value instanceof Shared<?>) return requireWithinLimit(48L, limit);
         if (value instanceof ActorRuntime.SyncCell<?>) return requireWithinLimit(64L, limit);
         if (value instanceof OresMutex.Shared<?>) return requireWithinLimit(64L, limit);
@@ -6651,6 +6676,10 @@ public final class ActorRuntime implements AutoCloseable {
         long scalar = scalarLogicalBytes(value);
         if (scalar >= 0) return requireWithinLimit(scalar, limit);
 
+        if (value instanceof ActorNativeArena.NativeValue) {
+            throw new SecurityException(
+                    "actor-native arena values cannot be sized for private transport by reference");
+        }
         if (value instanceof ActorRuntime.SyncCell<?>) {
             throw new IllegalArgumentException("private actors cannot receive shared SyncCell values");
         }
