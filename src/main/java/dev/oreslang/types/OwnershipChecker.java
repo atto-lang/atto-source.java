@@ -3989,10 +3989,14 @@ public final class OwnershipChecker {
         }
 
         if (!visitingClasses.add(klass)) {
-            // Recursive nominal ownership does not by itself introduce a
-            // non-Send capability; concrete outgoing fields are checked at the
-            // first visit. Nominal classes are not inferred Sync/Share.
-            return new AutoTraitRules.Capabilities(true, false, false);
+            // A nominal cycle is not a Send proof. In particular, a generic
+            // recursion can revisit the SAME declaration with DIFFERENT
+            // type arguments and hide a nested non-Send capability:
+            // Node<T> -> Node<Rc<T>>. Until we have a coinductive proof
+            // keyed by fully substituted nominal instantiations, reject.
+            // Recursive values may still be represented via checked
+            // indirections; never infer safety from class identity alone.
+            return none;
         }
         try {
             if (type.arguments().size()
