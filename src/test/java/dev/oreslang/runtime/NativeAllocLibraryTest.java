@@ -167,7 +167,7 @@ final class NativeAllocLibraryTest {
     }
 
     @Test
-    void allocImportPathsAndDependencyTierFailClosed() {
+    void allocImportPathsAndDependencyTierFailClosed() throws Exception {
         for (String invalid : List.of(
                 "alloc/../secret",
                 "alloc/./json",
@@ -191,8 +191,8 @@ final class NativeAllocLibraryTest {
                 PortableLibrarySources.unitId("alloc/json"),
                 PortableLibrarySources.unitId("alloc/json.ores"));
         assertEquals(
-                PortableLibrarySources.sourceUncheckedForTest("alloc/json"),
-                PortableLibrarySources.sourceUncheckedForTest("alloc/json.ores"));
+                PortableLibrarySources.source("alloc/json"),
+                PortableLibrarySources.source("alloc/json.ores"));
 
         assertTrue(PortableLibrarySources.mayImport(
                 PortableLibrarySources.Tier.ALLOC,
