@@ -4004,6 +4004,11 @@ public final class TypeChecker {
             }
             return new Record(members, object.inferredStruct());
         }
+        if (expr instanceof Ast.GpuRegionExpr) {
+            throw new IllegalArgumentException(
+                    "gpu { } requires a verified device backend, typed launch geometry, "
+                    + "owned buffers and completion fences; CPU fallback is forbidden");
+        }
         if (expr instanceof Ast.CpuRegionExpr cpu) {
             return checkCpuRegion(cpu, Unknown.INSTANCE, env, generics, self);
         }
