@@ -83,6 +83,34 @@ final class ActorMessageScratchTest {
     }
 
     @Test
+    void scratchUsesRemainingBudgetWithoutStealingPersistentStorage() {
+        AtomicLong charged = new AtomicLong();
+        try (ActorNativeArena arena = new ActorNativeArena(8192, () -> {}, bytes -> {
+            charged.addAndGet(bytes);
+            return () -> charged.addAndGet(-bytes);
+        })) {
+            // Simulate a long-lived actor field/SoA allocation before the
+            // first scratch message. We must not require a whole 4096B page.
+            var persistent = arena.region(8000);
+            persistent.writeLong(0, 0x1122334455667788L);
+            ActorMessageScratch scratch = new ActorMessageScratch(arena, 8192);
+            scratch.beginMessage();
+            var small = scratch.allocate(16);
+            small.writeLong(0, 42);
+            assertEquals(42L, small.readLong(0));
+            assertEquals(192, scratch.reservedBytes());
+            assertEquals(0x1122334455667788L, persistent.readLong(0));
+            assertThrows(IllegalStateException.class, () -> scratch.allocate(193));
+            scratch.finishMessage();
+            scratch.beginMessage();
+            assertEquals(0, scratch.allocate(16).readLong(0));
+            scratch.finishMessage();
+            persistent.close();
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
     @Timeout(15)
     void actorScratchResetsButEachPersistentDopLayoutSurvivesAcrossMessages() throws Exception {
         for (ActorShardColumns.Layout layout : ActorShardColumns.Layout.values()) {
