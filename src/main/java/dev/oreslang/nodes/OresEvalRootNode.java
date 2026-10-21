@@ -4840,7 +4840,7 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof ClassFacade klass) {
                 if (isCompilerJsonFactoryFacade(klass)) {
                     return compilerJsonFactoryInvocation(
-                            member.member(), args);
+                            call, member.member(), args);
                 }
                 Ast.MethodDecl method =
                         klass.owner().findStaticFunction(
@@ -4888,6 +4888,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation compilerJsonFactoryInvocation(
+                Ast.CallExpr call,
                 String member,
                 List<Object> args) {
             return invokableInvocation(
@@ -4950,6 +4951,18 @@ public final class OresEvalRootNode extends RootNode {
                             yield dev.oreslang.runtime.AllocJsonText.parse(
                                     requireString(args.getFirst(), "Json.parse input"));
                         }
+                        case "decode" -> {
+                            requireOne(args, "Json.decode");
+                            OresJsonValue parsed =
+                                    dev.oreslang.runtime.AllocJsonText.parse(
+                                            requireString(
+                                                    args.getFirst(),
+                                                    "Json.decode input"));
+                            yield decodeJsonValue(
+                                    parsed,
+                                    Ast.CheckedJsonDecodeTarget.require(call),
+                                    "$");
+                        }
                         case "stringify" -> {
                             requireOne(args, "Json.stringify");
                             Object raw = args.getFirst();
@@ -4973,6 +4986,161 @@ public final class OresEvalRootNode extends RootNode {
                                 "unknown compiler-owned Json factory " + member);
                     },
                     List.of());
+        }
+
+        private Object decodeJsonValue(
+                OresJsonValue raw,
+                Ast.TypeRef target,
+                String path) {
+            if (target.name().equals("JsonValue")
+                    && target.arguments().isEmpty()) {
+                return raw;
+            }
+
+            if (target.name().equals("String")
+                    || target.name().equals("string")) {
+                if (raw instanceof OresJsonValue.StringValue string) {
+                    return string.value();
+                }
+                throw jsonDecodeTypeError(path, "String", raw);
+            }
+
+            if (target.name().equals("bool")
+                    || target.name().equals("Bool")) {
+                if (raw instanceof OresJsonValue.BoolValue bool) {
+                    return bool.value();
+                }
+                throw jsonDecodeTypeError(path, "bool", raw);
+            }
+
+            if (target.name().equals("int")) {
+                if (!(raw instanceof OresJsonValue.NumberValue number)) {
+                    throw jsonDecodeTypeError(path, "int", raw);
+                }
+                try {
+                    return number.value().longValueExact();
+                } catch (ArithmeticException invalidInteger) {
+                    throw new IllegalArgumentException(
+                            "JSON value at " + path
+                                    + " must be an integral signed 64-bit int",
+                            invalidInteger);
+                }
+            }
+
+            if ((target.name().equals("List")
+                    || target.name().equals("Array"))
+                    && target.arguments().size() == 1) {
+                if (!(raw instanceof OresJsonValue.ArrayValue array)) {
+                    throw jsonDecodeTypeError(path, "array", raw);
+                }
+                ArrayList<Object> result =
+                        new ArrayList<>(array.values().size());
+                for (int i = 0; i < array.values().size(); i++) {
+                    result.add(
+                            decodeJsonValue(
+                                    array.values().get(i),
+                                    target.arguments().getFirst(),
+                                    path + "[" + i + "]"));
+                }
+                return result;
+            }
+
+            if (target.isTupleType()) {
+                if (!(raw instanceof OresJsonValue.ArrayValue array)) {
+                    throw jsonDecodeTypeError(path, "array", raw);
+                }
+                if (array.values().size() != target.arguments().size()) {
+                    throw new IllegalArgumentException(
+                            "JSON array at " + path + " has "
+                                    + array.values().size() + " element(s), expected "
+                                    + target.arguments().size());
+                }
+                ArrayList<Object> result =
+                        new ArrayList<>(array.values().size());
+                for (int i = 0; i < target.arguments().size(); i++) {
+                    result.add(
+                            decodeJsonValue(
+                                    array.values().get(i),
+                                    target.arguments().get(i),
+                                    path + "[" + i + "]"));
+                }
+                return List.copyOf(result);
+            }
+
+            if (target.isClosedAggregateType()) {
+                if (!(raw instanceof OresJsonValue.ObjectValue object)) {
+                    throw jsonDecodeTypeError(path, "object", raw);
+                }
+
+                Map<String, Ast.TypeRef> members = target.aggregateMembers();
+                Map<String, OresJsonValue> fields =
+                        jsonObjectSnapshot(object, path);
+                LinkedHashSet<String> expected =
+                        new LinkedHashSet<>(members.keySet());
+                LinkedHashSet<String> actual =
+                        new LinkedHashSet<>(fields.keySet());
+                if (!actual.equals(expected)) {
+                    LinkedHashSet<String> missing =
+                            new LinkedHashSet<>(expected);
+                    missing.removeAll(actual);
+                    LinkedHashSet<String> unknown =
+                            new LinkedHashSet<>(actual);
+                    unknown.removeAll(expected);
+                    throw new IllegalArgumentException(
+                            "JSON object at " + path
+                                    + " does not match the checked closed shape; missing="
+                                    + missing + ", unknown=" + unknown);
+                }
+
+                LinkedHashMap<String, Object> decoded =
+                        new LinkedHashMap<>();
+                for (Map.Entry<String, Ast.TypeRef> member
+                        : members.entrySet()) {
+                    decoded.put(
+                            member.getKey(),
+                            decodeJsonValue(
+                                    fields.get(member.getKey()),
+                                    member.getValue(),
+                                    path + "." + member.getKey()));
+                }
+                return target.isStructType()
+                        ? new MutableStructValue(decoded)
+                        : new ReadonlyRecordValue(decoded);
+            }
+
+            // The type checker currently rejects class/Map/other nominal
+            // targets. Keep a runtime backstop so stale metadata cannot acquire
+            // construction authority.
+            throw new IllegalArgumentException(
+                    "unsupported checked Json.decode target at runtime: " + target);
+        }
+
+        private static Map<String, OresJsonValue> jsonObjectSnapshot(
+                OresJsonValue.ObjectValue object,
+                String path) {
+            LinkedHashMap<String, OresJsonValue> result =
+                    new LinkedHashMap<>();
+            for (Map.Entry<String, OresJsonValue> field
+                    : object.fields().entrySnapshot()) {
+                if (result.putIfAbsent(field.getKey(), field.getValue()) != null) {
+                    throw new IllegalStateException(
+                            "canonical JSON object at " + path
+                                    + " contains a duplicate key");
+                }
+            }
+            return Map.copyOf(result);
+        }
+
+        private static IllegalArgumentException jsonDecodeTypeError(
+                String path,
+                String expected,
+                OresJsonValue raw) {
+            String actual = raw instanceof OresJsonValue.NullValue
+                    ? "null"
+                    : raw.getClass().getSimpleName();
+            return new IllegalArgumentException(
+                    "JSON value at " + path + " must be "
+                            + expected + ", got " + actual);
         }
 
         private static int sequenceIndex(Object value) {
@@ -6825,7 +6993,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (receiver instanceof ClassFacade klass) {
                     if (isCompilerJsonFactoryFacade(klass)) {
                         return compilerJsonFactoryInvocation(
-                                methodCall.member(), args);
+                                call, methodCall.member(), args);
                     }
                     Ast.MethodDecl fn = klass.owner().findStaticFunction(
                             klass.klass(), CallableSelector.staticFunction(methodCall.member(), args.size()));
