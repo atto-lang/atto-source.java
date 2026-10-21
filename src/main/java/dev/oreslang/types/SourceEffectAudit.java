@@ -90,7 +90,9 @@ public final class SourceEffectAudit {
                 if (fn.async() || fn.suspends() || fn.generator()) {
                     direct.add(EffectContracts.Effect.SCHEDULER);
                 }
-                if (!fn.annotations().isEmpty() || fn.kind() != Ast.CallableKind.FNC) {
+                if (!fn.annotations().isEmpty() || fn.kind() != Ast.CallableKind.FNC
+                        || fn.structural() || fn.nonLexical()
+                        || !fn.genericParameters().isEmpty() || !fn.genericSpecs().isEmpty()) {
                     // Annotation and routine semantics are not yet certified
                     // by the closed-subset effect elaborator.
                     direct.add(EffectContracts.Effect.UNKNOWN_CALL);
@@ -134,7 +136,25 @@ public final class SourceEffectAudit {
                 for (Object child : nodes) walk(child, depth + 1);
                 return;
             }
-            if (node instanceof Ast.LiteralExpr) return;
+            if (node instanceof Ast.LiteralExpr literal) {
+                // Parser-supplied primitive constants are the only audited
+                // zero-effect literals. All other values, including aggregate
+                // or runtime objects carried by a synthetic literal, require
+                // an explicit compiler lowering proof before treating them
+                // as effect-free. String/big-number materialization may alloc.
+                Object value = literal.value();
+                if (value instanceof String || value instanceof java.math.BigInteger
+                        || value instanceof java.math.BigDecimal) {
+                    direct.add(EffectContracts.Effect.ALLOC);
+                } else if (value != null
+                        && !(value instanceof Boolean || value instanceof Character
+                        || value instanceof Byte || value instanceof Short
+                        || value instanceof Integer || value instanceof Long
+                        || value instanceof Float || value instanceof Double)) {
+                    direct.add(EffectContracts.Effect.UNKNOWN_CALL);
+                }
+                return;
+            }
 
             // No symbolic-name resolution occurs in this audit. An unrelated
             // declaration with the same spelling cannot launder a callback.
@@ -192,6 +212,12 @@ public final class SourceEffectAudit {
                 // constant; never certify a generator's body as effect-free.
                 direct.add(EffectContracts.Effect.SCHEDULER);
                 direct.add(EffectContracts.Effect.SUSPEND);
+            }
+            if (node instanceof Ast.ListExpr || node instanceof Ast.TupleExpr
+                    || node instanceof Ast.ObjectExpr) {
+                // Aggregate creation can allocate even if its elements are
+                // themselves literal constants. This is not a no-heap proof.
+                direct.add(EffectContracts.Effect.ALLOC);
             }
             if (node instanceof Ast.CastExpr || node instanceof Ast.SpreadExpr) {
                 // Conversion, iteration and generic spreads may invoke
