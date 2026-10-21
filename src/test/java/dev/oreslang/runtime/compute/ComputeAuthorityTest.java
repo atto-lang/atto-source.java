@@ -16,7 +16,8 @@ final class ComputeAuthorityTest {
         for (Class<?> type : new Class<?>[] {
                 ComputeDeviceHandle.class,
                 ComputeBufferHandle.class,
-                ComputeFenceHandle.class
+                ComputeFenceHandle.class,
+                ComputeQueueHandle.class
         }) {
             for (var constructor : type.getDeclaredConstructors()) {
                 assertFalse(Modifier.isPublic(constructor.getModifiers()),
