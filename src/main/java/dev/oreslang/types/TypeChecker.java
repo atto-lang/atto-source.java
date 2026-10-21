@@ -9136,7 +9136,18 @@ public final class TypeChecker {
 
                 Type target = resolve(
                         call.typeArguments().getFirst(), generics, self);
-                requireJsonDecodeV1Type(target);
+                JsonClassFactoryCheck classFactory =
+                        checkedJsonClassFactory(target);
+                if (classFactory == null) {
+                    requireJsonDecodeV1Type(target);
+                } else {
+                    Ast.CheckedJsonClassFactory.record(
+                            call,
+                            new Ast.JsonClassFactoryPlan(
+                                    classFactory.klass().name(),
+                                    classFactory.method().name(),
+                                    jsonDecodeDescriptor(classFactory.input())));
+                }
                 Ast.CheckedJsonDecodeTarget.record(
                         call, jsonDecodeDescriptor(target));
                 yield target;
@@ -9162,6 +9173,81 @@ public final class TypeChecker {
             default -> throw new IllegalArgumentException(
                     "unknown compiler-owned Json factory '" + member.member() + "'");
         };
+    }
+
+    private record JsonClassFactoryCheck(
+            Ast.ClassDecl klass,
+            Ast.MethodDecl method,
+            Type input) { }
+
+    private JsonClassFactoryCheck checkedJsonClassFactory(Type type) {
+        Type concrete = deref(type);
+        if (!(concrete instanceof Named named)) return null;
+        Ast.ClassDecl klass = findClass(named.name());
+        if (klass == null) return null;
+
+        Ast.MethodDecl factory = AnnotationExpander.jsonFactoryMethod(klass);
+        if (factory == null) {
+            throw new IllegalArgumentException(
+                    "Json.decode<class> requires exactly one explicit @JsonFactory "
+                            + "static method on class '" + klass.name() + "'");
+        }
+        if (klass.actorKind() != Ast.ActorKind.NONE || klass.isAbstract()) {
+            throw new IllegalArgumentException(
+                    "@JsonFactory is not valid for actor or abstract class '"
+                            + klass.name() + "'");
+        }
+        if (!klass.genericParameters().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "@JsonFactory v1 does not support generic class '"
+                            + klass.name() + "'");
+        }
+        if (!factory.isStatic() || factory.isAbstract()
+                || factory.async() || factory.suspends()) {
+            throw new IllegalArgumentException(
+                    "@JsonFactory '" + klass.name() + "." + factory.name()
+                            + "' must be a concrete synchronous static function");
+        }
+        if (!factory.genericParameters().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "@JsonFactory '" + klass.name() + "." + factory.name()
+                            + "' cannot be generic in v1");
+        }
+        if (factory.parameters().size() != 1) {
+            throw new IllegalArgumentException(
+                    "@JsonFactory '" + klass.name() + "." + factory.name()
+                            + "' must accept exactly one closed record DTO");
+        }
+        if (factory.parameters().getFirst().mutable()) {
+            throw new IllegalArgumentException(
+                    "@JsonFactory DTO parameter must not be mutable");
+        }
+
+        Type classSelf = nominalClassType(klass);
+        Type input = resolve(
+                factory.parameters().getFirst().type(),
+                Set.of(),
+                classSelf);
+        if (!(deref(input) instanceof Record dto)
+                || dto.kind() != AggregateKind.RECORD
+                || !dto.readOnly()) {
+            throw new IllegalArgumentException(
+                    "@JsonFactory '" + klass.name() + "." + factory.name()
+                            + "' parameter must be a closed readonly record type");
+        }
+        requireJsonDecodeV1Type(input);
+
+        Type result = resolve(
+                factory.returnType(),
+                Set.of(),
+                classSelf);
+        if (!deref(result).equals(concrete)) {
+            throw new IllegalArgumentException(
+                    "@JsonFactory '" + klass.name() + "." + factory.name()
+                            + "' must return exactly " + concrete
+                            + ", got " + result);
+        }
+        return new JsonClassFactoryCheck(klass, factory, input);
     }
 
     private void requireJsonDecodeV1Type(Type type) {
@@ -9195,8 +9281,7 @@ public final class TypeChecker {
         }
         if (concrete instanceof Named named && findClass(named.name()) != null) {
             throw new IllegalArgumentException(
-                    "Json.decode<class> requires an explicit alloc/json constructor/factory codec; "
-                            + "direct class construction is intentionally unavailable");
+                    "class JSON targets require checked @JsonFactory admission");
         }
         throw new IllegalArgumentException(
                 "Json.decode<T> v1 supports JsonValue, int, bool, String, "
@@ -9231,6 +9316,15 @@ public final class TypeChecker {
             return record.kind() == AggregateKind.STRUCT
                     ? Ast.TypeRef.structType(members)
                     : Ast.TypeRef.readonlyRecordType(members);
+        }
+        if (concrete instanceof Named named
+                && findClass(named.name()) != null) {
+            return new Ast.TypeRef(
+                    named.name(),
+                    named.arguments().stream()
+                            .map(this::jsonDecodeDescriptor)
+                            .toList(),
+                    false);
         }
         throw new IllegalStateException(
                 "checked Json.decode target has no runtime descriptor: " + concrete);
