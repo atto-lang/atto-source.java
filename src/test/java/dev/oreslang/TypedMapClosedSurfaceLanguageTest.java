@@ -462,4 +462,65 @@ final class TypedMapClosedSurfaceLanguageTest {
     }
 
 
+    @Test
+    void readOnlyMapMembersPreservePresenceAndKeyTyping() {
+        String source = """
+                pub fnc main(): void {
+                  val Map<string, int> values = new Map<string, int>();
+                  values["answer"] = 42;
+                  stdio.println(values.size);
+                  stdio.println(values.has("answer"));
+                  stdio.println(values.has("missing"));
+                  stdio.println(values.get("answer").unwrap());
+                  stdio.println(values.get("missing").is_none());
+                  return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source program = assertDoesNotThrow(() ->
+                Source.newBuilder(
+                                OresLanguage.ID,
+                                source,
+                                "typed-map-read-members.ores")
+                        .mimeType(OresLanguage.MIME_TYPE)
+                        .build());
+        assertDoesNotThrow(() -> {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false)
+                    .out(output)
+                    .build()) {
+                context.eval(program);
+            }
+        });
+
+        assertEquals(
+                "1\ntrue\nfalse\n42\ntrue\n",
+                output.toString(StandardCharsets.UTF_8)
+                        .replace("\r\n", "\n"));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheck("""
+                        pub fnc main(): void {
+                          val Map<string, int> values =
+                              new Map<string, int>();
+                          values.has(#wrong);
+                          return;
+                        }
+                        """));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheck("""
+                        pub fnc main(): void {
+                          val Map<string, int> values =
+                              new Map<string, int>();
+                          values.take("x");
+                          return;
+                        }
+                        """));
+    }
+
+
 }
