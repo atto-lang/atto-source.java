@@ -1,6 +1,8 @@
 package dev.oreslang;
 
 import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.parser.Parser;
+import dev.oreslang.types.OwnershipChecker;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -83,6 +85,26 @@ final class TaskBorrowBoundaryV2Test {
                   return;
                 }
                 """, "moved", "capture");
+    }
+
+    @Test
+    void independentTaskCannotInheritMailboxSelfEvenIfTypePassIsBypassed() {
+        var program = Parser.parse("""
+                define actor Worker as
+                  receive(ActorMail<int> mail): void {
+                    let Future<void> child = task {
+                      self.end();
+                      return;
+                    };
+                    return;
+                  }
+                end
+                """);
+        var failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(program));
+        assertTrue(failure.getMessage().contains("independent task cannot capture actor self"),
+                failure::getMessage);
     }
 
     @Test
