@@ -1312,7 +1312,9 @@ public final class Parser {
             if (!structural && check(IDENT) && checkNext(COLON)) {
                 String name = advance().lexeme();
                 consume(COLON, "expected ':' after compatibility parameter name");
-                Ast.TypeRef type = parseTypeRef();
+                // The trailing '|' closes the parameter list, not a union type.
+                // Parenthesized union types remain available through parseTypeAtom.
+                Ast.TypeRef type = parseTypeAtom();
                 boolean mutable = match(MUT);
                 params.add(new Ast.Param(type, name, false, mutable));
                 continue;
@@ -1423,7 +1425,9 @@ public final class Parser {
             if (!structural && check(IDENT) && checkNext(COLON)) {
                 String name = advance().lexeme();
                 consume(COLON, "expected ':' after compatibility parameter name");
-                Ast.TypeRef type = parseTypeRef();
+                // The trailing '|' closes the parameter list, not a union type.
+                // Parenthesized union types remain available through parseTypeAtom.
+                Ast.TypeRef type = parseTypeAtom();
                 boolean mutable = match(MUT);
                 params.add(new Ast.Param(type, name, false, mutable));
                 continue;
