@@ -12,7 +12,7 @@ arguments and must not be confused with a class namespace.
 ## Runtime ownership operations
 
 - `rt borrow x`: temporary immutable borrow under lexical lifetime checking.
-- `rt borrow mut x`: exclusive mutable borrow, no cross-suspension escape.
+- `rt mut borrow x`: exclusive mutable borrow, no cross-suspension escape.
 - `rt take x`: consumes a named owner and invalidates it, even for scalar
   bindings. Projected moves (`rt take object.field`, `rt take array[i]`)
   reject until source-slot invalidation/rollback is correctly lowered.
