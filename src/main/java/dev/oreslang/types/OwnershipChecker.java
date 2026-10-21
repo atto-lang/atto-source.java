@@ -1284,6 +1284,16 @@ public final class OwnershipChecker {
             }
             CaptureSet captured = new CaptureSet();
             scanStatements(task.body(), Set.of(), scope, null, captured);
+            // Deferred select/channel callbacks execute under the owning
+            // mailbox continuation and may retain its exact self capability.
+            // A new Task is independently scheduled: it must never inherit
+            // mailbox self or mutate actor state outside the actor turn.
+            for (Capture capture : captured.values.values()) {
+                if (isDirectActorSelfCapture(capture)
+                        && isActorConfinedBorrow(capture.source)) {
+                    throw error("independent task cannot capture actor self; send a message or pass owned data instead");
+                }
+            }
             validateDeferredCaptures(captured);
             Scope taskScope = deferredSelectArmScope(captured);
             int savedLoopDepth = loopDepth;
