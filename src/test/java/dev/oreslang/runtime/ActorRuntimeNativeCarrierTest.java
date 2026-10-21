@@ -26,6 +26,10 @@ final class ActorRuntimeNativeCarrierTest {
                         ActorRuntime.CarrierBackend.NATIVE_PTHREAD,
                         runtime.carrierBackend());
 
+                assertEquals(new ActorRuntime.DispatcherWorkerCounts(0, 0, 0),
+                        runtime.dispatcherWorkerCounts(),
+                        "all shared, isolated and untrusted pools must start with zero threads");
+
                 CountDownLatch delivered = new CountDownLatch(32);
                 Set<Long> nativeThreads = ConcurrentHashMap.newKeySet();
 
@@ -47,6 +51,9 @@ final class ActorRuntimeNativeCarrierTest {
                         1,
                         nativeThreads.size(),
                         "one shared actor must multiplex its turns onto the configured native carrier");
+                assertEquals(1, runtime.dispatcherWorkerCounts().shared());
+                assertEquals(0, runtime.dispatcherWorkerCounts().isolated());
+                assertEquals(0, runtime.dispatcherWorkerCounts().untrusted());
             }
         } finally {
             if (previous == null) System.clearProperty("ores.runtime.carriers");
