@@ -183,9 +183,19 @@ public final class TypeChecker {
                     || declaration.visibility() != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("invalid linked public class: " + name);
             }
+            // A checked actor signature is transport/protocol metadata, not
+            // a transferable actor instance. Link it only through an exact
+            // named actor import; class imports cannot silently reclassify
+            // actor objects as mailbox-safe references (or vice versa).
+            Ast.ImportKind expectedKind = declaration.actorKind()
+                    == Ast.ActorKind.NONE
+                    ? Ast.ImportKind.CLASS
+                    : Ast.ImportKind.ACTOR;
             boolean imported = program.imports().stream().anyMatch(use ->
-                    use.kind() == Ast.ImportKind.CLASS && !use.wildcard()
-                            && use.names().contains(name));
+                    use.kind() == expectedKind && !use.wildcard()
+                            && use.names().contains(name)
+                            && (use.namespace() == null
+                                    || use.namespace().equals(name)));
             if (!imported || checker.classes.containsKey(name)
                     || checker.ambiguousClasses.contains(name)) {
                 throw new IllegalArgumentException(
