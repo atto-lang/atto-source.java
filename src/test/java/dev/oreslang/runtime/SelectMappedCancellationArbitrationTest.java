@@ -82,6 +82,47 @@ final class SelectMappedCancellationArbitrationTest {
     }
 
     @Test
+    void keyedSelectCancellationVsRendezvousHasExactlyOneOwner() throws Exception {
+        var workers = Executors.newFixedThreadPool(2);
+        try {
+            for (int round = 0; round < 128; round++) {
+                var channel = new ChannelRuntime.Channel<Integer>(0);
+                var plan = new ChannelRuntime.DynamicSelectPlan<String>();
+                plan.put("input", ChannelRuntime.read(channel));
+                var pending = plan.selectKeyedAsync(ChannelRuntime.SelectPolicy.FAIR);
+                var start = new CountDownLatch(1);
+                var writing = workers.submit(() -> {
+                    start.await();
+                    return channel.writeAsync(77);
+                });
+                var cancelling = workers.submit(() -> {
+                    start.await();
+                    return pending.cancel(false);
+                });
+                start.countDown();
+                var outbound = writing.get(5, TimeUnit.SECONDS);
+                boolean cancelled = cancelling.get(5, TimeUnit.SECONDS);
+                channel.close();
+                assertTrue(pending.isDone());
+                assertTrue(outbound.isDone());
+                if (cancelled) {
+                    assertTrue(pending.isCancelled());
+                    assertThrows(CancellationException.class, pending::join);
+                    assertThrows(java.util.concurrent.CompletionException.class,
+                            outbound::join,
+                            "writer may not commit after mapped read cancellation");
+                } else {
+                    assertEquals("input", pending.join().key());
+                    assertEquals(77, pending.join().selection().value());
+                    assertNull(outbound.join());
+                }
+            }
+        } finally {
+            workers.shutdownNow();
+        }
+    }
+
+    @Test
     void cancellationOfPendingReadRevokesRendezvousArm() {
         var channel = new ChannelRuntime.Channel<Integer>(0);
         var pendingRead = channel.readAsync();
