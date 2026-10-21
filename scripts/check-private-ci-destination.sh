@@ -37,32 +37,11 @@ metadata="$(GH_HOST=github.com gh api "repos/$target" --jq '[.full_name, .visibi
   fail 'cannot verify repository identity and visibility from live GitHub API'
 [[ -n "$metadata" && "$metadata" != *$'\n'* ]] ||
   fail 'API returned empty or multiline repository metadata'
-IFS=
-[[ "$visibility" == private && "$private_flag" == true ]] || fail 'destination is not private'
-[[ "$actual_id" =~ ^[1-9][0-9]*$ && "$actual_id" == "$approved_id" ]] ||
-  fail 'GitHub numeric repository ID differs from independently reviewed approval'
-printf 'PRIVATE_CI_DESTINATION_APPROVED: %s (private id=%s)\n' "$target" "$approved_id"
-\t' read -r actual_name visibility private_flag actual_id <<< "$metadata"
-# Bash collapses adjacent IFS whitespace. Without reconstruction, a malformed
-# response containing an empty TSV field could be misread as four valid fields.
-# Require exactly four nonempty values separated by precisely three tabs.
-[[ "$metadata" == "$actual_name"
-[[ "$visibility" == private && "$private_flag" == true ]] || fail 'destination is not private'
-[[ "$actual_id" =~ ^[1-9][0-9]*$ && "$actual_id" == "$approved_id" ]] ||
-  fail 'GitHub numeric repository ID differs from independently reviewed approval'
-printf 'PRIVATE_CI_DESTINATION_APPROVED: %s (private id=%s)\n' "$target" "$approved_id"
-\t'"$visibility"
-[[ "$visibility" == private && "$private_flag" == true ]] || fail 'destination is not private'
-[[ "$actual_id" =~ ^[1-9][0-9]*$ && "$actual_id" == "$approved_id" ]] ||
-  fail 'GitHub numeric repository ID differs from independently reviewed approval'
-printf 'PRIVATE_CI_DESTINATION_APPROVED: %s (private id=%s)\n' "$target" "$approved_id"
-\t'"$private_flag"
-[[ "$visibility" == private && "$private_flag" == true ]] || fail 'destination is not private'
-[[ "$actual_id" =~ ^[1-9][0-9]*$ && "$actual_id" == "$approved_id" ]] ||
-  fail 'GitHub numeric repository ID differs from independently reviewed approval'
-printf 'PRIVATE_CI_DESTINATION_APPROVED: %s (private id=%s)\n' "$target" "$approved_id"
-\t'"$actual_id" ]] ||
-  fail 'API metadata must be exactly four nonempty tab-separated fields'
+IFS=$'\t' read -r actual_name visibility private_flag actual_id <<< "$metadata"
+# Reject Bash IFS whitespace collapsing missing TSV values into valid fields.
+tab="$(printf '\\t')"
+[[ "$metadata" == "$actual_name$tab$visibility$tab$private_flag$tab$actual_id" ]] ||
+  fail 'API metadata must have exactly four nonempty fields'
 [[ "${actual_name,,}" == "${target,,}" ]] || fail 'API identity differs from requested destination'
 [[ "$visibility" == private && "$private_flag" == true ]] || fail 'destination is not private'
 [[ "$actual_id" =~ ^[1-9][0-9]*$ && "$actual_id" == "$approved_id" ]] ||
