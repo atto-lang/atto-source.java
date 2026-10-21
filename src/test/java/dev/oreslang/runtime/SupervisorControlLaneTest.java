@@ -70,7 +70,6 @@ final class SupervisorControlLaneTest {
                                     throw new ActorFailure.Panic("boom");
                                 });
                         child.set(created);
-                        created.send("fail");
                     }
                 };
             });
@@ -81,12 +80,13 @@ final class SupervisorControlLaneTest {
 
             ActorRuntime.ActorRef<String> failed = child.get();
             assertNotNull(failed);
+            supervisor.send("block");
+            assertTrue(ordinaryEntered.await(3, TimeUnit.SECONDS));
+
+            failed.send("fail");
             assertThrows(
                     ExecutionException.class,
                     () -> failed.getDone().get(5, TimeUnit.SECONDS));
-
-            supervisor.send("block");
-            assertTrue(ordinaryEntered.await(3, TimeUnit.SECONDS));
             Thread.sleep(25);
             assertEquals(1L, controlObserved.getCount(),
                     "CONTROL must not re-enter while ordinary actor code owns the lane");
@@ -154,11 +154,17 @@ final class SupervisorControlLaneTest {
                     ExecutionException.class,
                     () -> failed.getDone().get(5, TimeUnit.SECONDS));
 
-            ActorRuntime.ActorRef<?> replacement = null;
+            ActorRuntime.ActorControlHandle replacement = null;
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
             while (replacement == null && System.nanoTime() < deadline) {
                 try {
-                    replacement = runtime.controlHandle(failed.id()).ref();
+                    ActorRuntime.ActorControlHandle candidate =
+                            runtime.controlHandle(failed.id());
+                    if (candidate.generation() > failed.generation()) {
+                        replacement = candidate;
+                    } else {
+                        Thread.sleep(1);
+                    }
                 } catch (IllegalArgumentException ignored) {
                     Thread.sleep(1);
                 }
@@ -172,7 +178,7 @@ final class SupervisorControlLaneTest {
             assertEquals(0, runtime.supervisorControlBacklog());
 
             replacement.stop();
-            replacement.getDone().get(3, TimeUnit.SECONDS);
+            assertTrue(replacement.awaitTermination(3, TimeUnit.SECONDS));
             supervisor.stop();
             supervisor.getDone().get(3, TimeUnit.SECONDS);
         }

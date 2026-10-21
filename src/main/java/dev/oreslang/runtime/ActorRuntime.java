@@ -262,9 +262,9 @@ public final class ActorRuntime implements AutoCloseable {
             Objects.requireNonNull(actorKind, "actorKind");
             parentId = parentId == null ? Optional.empty() : parentId;
             Objects.requireNonNull(parentId, "parentId");
-            if (parentId.isPresent() && parentGeneration <= 0) {
+            if (parentGeneration < 0) {
                 throw new IllegalArgumentException(
-                        "supervisor CONTROL parent generation must be positive when parent exists");
+                        "supervisor CONTROL parent generation cannot be negative");
             }
             if (parentId.isEmpty() && parentGeneration != 0L) {
                 throw new IllegalArgumentException(
@@ -3982,6 +3982,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         public ActorId id() { return ref.id(); }
         public ActorKind kind() { return ref.kind(); }
+        public long generation() { return ref.generation(); }
         public boolean isAlive() { return ref.isAlive(); }
         public Optional<Throwable> failure() { return ref.failure(); }
 
