@@ -2809,17 +2809,25 @@ public final class TypeChecker {
 
             if (call.callee() instanceof Ast.MemberExpr selectSetCall
                     && selectSetCall.receiver() instanceof Ast.NameExpr factory
-                    && factory.name().equals("SelectSet")
+                    && (factory.name().equals("SelectSet")
+                            || factory.name().equals("SelectPlan")
+                            || factory.name().equals("DynamicSelectPlan"))
                     && selectSetCall.member().equals("new")) {
                 if (call.typeArgumentsPresent()) {
-                    throw new IllegalArgumentException("SelectSet.new does not accept type arguments");
-                }
-                if (call.arguments().size() != 1) {
                     throw new IllegalArgumentException(
-                            "SelectSet.new expects one list/map of SelectCase values");
+                            factory.name() + ".new does not accept type arguments");
                 }
-                typeOf(call.arguments().getFirst(), env, generics, self);
-                return new Named("SelectSet", List.of());
+                int expected = factory.name().equals("DynamicSelectPlan") ? 0 : 1;
+                if (call.arguments().size() != expected) {
+                    throw new IllegalArgumentException(
+                            factory.name() + ".new expects " + expected + " argument(s)");
+                }
+                if (expected == 1) {
+                    Type source = typeOf(
+                            call.arguments().getFirst(), env, generics, self);
+                    validateSelectCaseSource(source, false, factory.name() + ".new");
+                }
+                return new Named(factory.name(), List.of());
             }
 
             if (call.callee() instanceof Ast.MemberExpr futureCall
@@ -3109,6 +3117,43 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "unknown ActorOutputStream callable member '"
                                     + member.member() + "'");
+                }
+
+                if (receiver instanceof Named plan
+                        && plan.name().equals("DynamicSelectPlan")
+                        && plan.arguments().isEmpty()) {
+                    if (call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException(
+                                "DynamicSelectPlan methods do not accept type arguments");
+                    }
+                    String method = member.member();
+                    int expected = switch (method) {
+                        case "put" -> 2;
+                        case "remove" -> 1;
+                        case "size", "version" -> 0;
+                        default -> throw new IllegalArgumentException(
+                                "unknown DynamicSelectPlan method " + method);
+                    };
+                    if (call.arguments().size() != expected) {
+                        throw new IllegalArgumentException(
+                                "DynamicSelectPlan." + method
+                                        + " expects " + expected + " argument(s)");
+                    }
+                    if (expected >= 1) {
+                        requireAssignable(
+                                typeOf(call.arguments().getFirst(), env, generics, self),
+                                Primitive.STRING, "DynamicSelectPlan key");
+                    }
+                    if (expected == 2) {
+                        requireAssignable(
+                                typeOf(call.arguments().get(1), env, generics, self),
+                                new Named("SelectCase", List.of()), "DynamicSelectPlan case");
+                    }
+                    return switch (method) {
+                        case "put" -> Primitive.VOID;
+                        case "remove" -> Primitive.BOOL;
+                        default -> Primitive.INT;
+                    };
                 }
 
                 Type collectionBuiltin = builtinCollectionMember(receiver, member.member());
@@ -4139,10 +4184,10 @@ public final class TypeChecker {
             }
         }
         if (expr instanceof Ast.DynamicSelectExpr selected) {
-            // Dynamic select accepts a SelectSet directly or a runtime
-            // list/map of SelectCase values. The exact case element type may
-            // remain Unknown until collection generic constraints are richer.
-            typeOf(selected.cases(), env, generics, self);
+            // Fail closed on non-case lists, unrelated capabilities, and
+            // untyped host collections rather than waiting for runtime casts.
+            Type source = typeOf(selected.cases(), env, generics, self);
+            validateSelectCaseSource(source, true, "select from");
             Type result = new Named("SelectResult", List.of());
             Type optional = new Named("Option", List.of(result));
             return switch (selected.mode()) {
@@ -4263,6 +4308,44 @@ public final class TypeChecker {
             return new Function(parameters, result);
         }
         return Unknown.INSTANCE;
+    }
+
+    /**
+     * A reusable descriptor must be sourced from a statically typed case
+     * collection. Never accept Unknown as a proof of a safe capability.
+     */
+    private void validateSelectCaseSource(
+            Type source, boolean permitPlan, String where) {
+        Type type = deref(source);
+        if (permitPlan && type instanceof Named named
+                && Set.of("SelectSet", "SelectPlan", "DynamicSelectPlan")
+                        .contains(named.name())
+                && named.arguments().isEmpty()) {
+            return;
+        }
+        if (type instanceof ListType list && isSelectCaseType(list.element())) {
+            return;
+        }
+        if (type instanceof Record record && !record.members().isEmpty()
+                && record.members().values().stream().allMatch(this::isSelectCaseType)) {
+            return;
+        }
+        if (type instanceof Named map && map.name().equals("Map")
+                && map.arguments().size() == 2
+                && isSelectCaseType(map.arguments().get(1))) {
+            return;
+        }
+        throw new IllegalArgumentException(where
+                + " requires a typed list/map of SelectCase values"
+                + (permitPlan ? " or a SelectSet/SelectPlan/DynamicSelectPlan" : "")
+                + "; got " + type);
+    }
+
+    private boolean isSelectCaseType(Type type) {
+        type = deref(type);
+        return type instanceof Named named
+                && named.name().equals("SelectCase")
+                && named.arguments().isEmpty();
     }
 
     private Type channelElementType(Type channel, String where) {
@@ -5350,7 +5433,8 @@ public final class TypeChecker {
                 || named.name().equals("RefCell") || named.name().equals("RwLock")
                 || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
                 || named.name().equals("Channel") || named.name().equals("SelectCase")
-                || named.name().equals("SelectSet") || named.name().equals("SelectResult")
+                || named.name().equals("SelectSet") || named.name().equals("SelectPlan")
+                || named.name().equals("DynamicSelectPlan") || named.name().equals("SelectResult")
                 || named.name().equals("Iterator") || named.name().equals("AsyncIterator")) {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name()
