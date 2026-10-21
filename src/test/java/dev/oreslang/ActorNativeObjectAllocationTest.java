@@ -151,4 +151,44 @@ final class ActorNativeObjectAllocationTest {
         return false;
     }
 
+
+    @Test
+    void actorAsyncOwnedObjectTransferStaysUsableAcrossAwait() throws Exception {
+        String program = """
+                define pub class AsyncArenaBox as
+                  pub let int value = 1;
+                end
+
+                async fnc change(AsyncArenaBox mut box): AsyncArenaBox {
+                  box.value = 99;
+                  return box;
+                }
+
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    let original = new AsyncArenaBox();
+                    val changed = await change(original);
+                    self.send(changed.value);
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = await spawn Worker();
+                  worker.send("go");
+                  val result = (await worker.outputs.next()).value.unwrap();
+                  stdio.stdout.write(result.value);
+                  await worker.get_done();
+                  return;
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Path entry = temp.resolve("actor-async-native-object.ores");
+        Files.writeString(entry, program);
+        LinkedProgramRunner.run(entry, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                Set.of(), Map.of(), output, new ByteArrayOutputStream());
+        assertEquals("99", output.toString(StandardCharsets.UTF_8));
+    }
+
 }
