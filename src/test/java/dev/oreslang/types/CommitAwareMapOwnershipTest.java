@@ -128,6 +128,89 @@ final class CommitAwareMapOwnershipTest {
     }
 
     @Test
+    void topLevelDeferDisablesCatchSideRecoveryEvenForFinalWrite() {
+        String source = """
+                define class Payload as
+                end
+
+                pub fnc main(): void {
+                  val Map<string, Payload> values =
+                      new Map<string, Payload>();
+                  val Payload item = new Payload();
+
+                  try {
+                    defer stdio.println("cleanup");
+                    values.put("x", item);
+                  } catch (err) {
+                    val Payload invalid = item;
+                  }
+
+                  return;
+                }
+                """;
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.checkWithCommitAwareMapWritesForTesting(
+                        Parser.parse(source)));
+    }
+
+    @Test
+    void nestedFinalWriteDoesNotGainTerminalTryRecoveryPrivilege() {
+        String source = """
+                define class Payload as
+                end
+
+                pub fnc main(): void {
+                  val Map<string, Payload> values =
+                      new Map<string, Payload>();
+                  val Payload item = new Payload();
+
+                  try {
+                    if true then
+                      values.put("x", item);
+                    fi
+                  } catch (err) {
+                    val Payload invalid = item;
+                  }
+
+                  return;
+                }
+                """;
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.checkWithCommitAwareMapWritesForTesting(
+                        Parser.parse(source)));
+    }
+
+    @Test
+    void laterReturnKeepsEarlierCommittedWriteMovedOnCatchEdge() {
+        String source = """
+                define class Payload as
+                end
+
+                fnc exercise(): void {
+                  val Map<string, Payload> values =
+                      new Map<string, Payload>();
+                  val Payload item = new Payload();
+
+                  try {
+                    values.put("x", item);
+                    return;
+                  } catch (err) {
+                    val Payload invalid = item;
+                  }
+                }
+                """;
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.checkWithCommitAwareMapWritesForTesting(
+                        Parser.parse(source)));
+    }
+
+    @Test
     void candidateIsStillMovedAfterTryBecauseCommitMayHaveSucceeded() {
         String source = """
                 define class Payload as
