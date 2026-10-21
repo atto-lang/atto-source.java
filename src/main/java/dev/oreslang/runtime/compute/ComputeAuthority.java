@@ -12,6 +12,14 @@ final class ComputeAuthority {
         return new ComputeDeviceHandle(backendId, deviceId, providerGeneration, tenantDomain);
     }
 
+    static ComputeQueueHandle issueQueue(
+            ComputeDeviceHandle device,
+            long queueId,
+            long generation,
+            int maximumInFlight) {
+        return new ComputeQueueHandle(device, queueId, generation, maximumInFlight);
+    }
+
     static <T> ComputeBufferHandle<T> bindBuffer(
             ComputeDeviceHandle device,
             long allocationGeneration,
