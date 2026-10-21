@@ -6423,17 +6423,21 @@ public final class OresEvalRootNode extends RootNode {
 
             if (call.callee() instanceof Ast.MemberExpr methodCall) {
                 Object receiver = eval(methodCall.receiver(), env);
-                List<Object> args = evaluateArguments(call.arguments(), env);
 
                 if (receiver instanceof OresKeyedMap<?, ?> rawMap
                         && (methodCall.member().equals("take")
                                 || methodCall.member().equals("remove"))) {
+                    // Prove mutation authority before evaluating a possibly
+                    // effectful key expression. Runtime backstops must not run
+                    // attacker-controlled argument effects and reject only
+                    // afterwards.
                     if (!(methodCall.receiver() instanceof Ast.NameExpr owner)
                             || !env.canWriteMap(owner.name(), rawMap)) {
                         throw new SecurityException(
                                 "Map." + methodCall.member()
                                         + " requires a directly owned mutable local binding");
                     }
+                    List<Object> args = evaluateArguments(call.arguments(), env);
                     if (args.size() != 1) {
                         throw new IllegalArgumentException(
                                 "Map." + methodCall.member() + " expects exactly 1 argument");
@@ -6451,6 +6455,7 @@ public final class OresEvalRootNode extends RootNode {
                     }, List.of());
                 }
 
+                List<Object> args = evaluateArguments(call.arguments(), env);
                 if (receiver instanceof OptionValue option
                         && methodCall.member().equals("unwrap_all")) {
                     int depth = checkedOptionDepth(call);
