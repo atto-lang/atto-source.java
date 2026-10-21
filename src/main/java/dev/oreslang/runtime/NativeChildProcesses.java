@@ -65,7 +65,7 @@ public final class NativeChildProcesses implements AutoCloseable {
 
         ProcessBuilder builder = new ProcessBuilder(
                 executable.toString(), argument);
-        builder.redirectInput(ProcessBuilder.Redirect.DISCARD);
+        builder.redirectInput(ProcessBuilder.Redirect.PIPE);
         builder.redirectOutput(ProcessBuilder.Redirect.DISCARD);
         builder.redirectError(ProcessBuilder.Redirect.DISCARD);
         builder.environment().clear();
@@ -77,6 +77,15 @@ public final class NativeChildProcesses implements AutoCloseable {
             throw new IllegalStateException(
                     "process.spawn failed for " + executable,
                     failure);
+        }
+
+        try {
+            process.getOutputStream().close();
+        } catch (IOException closeFailure) {
+            process.destroyForcibly();
+            throw new IllegalStateException(
+                    "process.spawn failed to close child stdin for " + executable,
+                    closeFailure);
         }
 
         String handle = UUID.randomUUID().toString();

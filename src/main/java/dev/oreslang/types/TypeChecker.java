@@ -3616,10 +3616,14 @@ public final class TypeChecker {
                 }
                 if (member.member().equals("running")
                         || member.member().equals("stop")) {
-                    return new Function(List.of(Primitive.STRING), Primitive.BOOL);
+                    return new Function(
+                            List.of(new Borrow(Primitive.STRING, false)),
+                            Primitive.BOOL);
                 }
                 if (member.member().equals("pid")) {
-                    return new Function(List.of(Primitive.STRING), Primitive.INT);
+                    return new Function(
+                            List.of(new Borrow(Primitive.STRING, false)),
+                            Primitive.INT);
                 }
             }
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("stdio")
