@@ -99,7 +99,7 @@ likewise permitted if they contain no unowned or unsafe capabilities.
 An explicitly qualified `structural T` parameter is different: it is a
 borrowed, read-only *view*, valid only for the synchronous call. Actor
 mailboxes, async, suspend/suspends, and generators must reject this
-view. Explicit `&T` or `&mut T` references, even when nested inside
+view. Explicit `borrow T` or `borrow mut T` loans, even when nested inside
 records, tuples, lists, unions, callbacks or generic wrappers, are also
 borrowed and must not escape via suspension or mailbox transport.
 
