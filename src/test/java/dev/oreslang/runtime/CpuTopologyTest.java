@@ -122,6 +122,40 @@ final class CpuTopologyTest {
     }
 
     @Test
+    void duplicateSysfsCpuAliasesFailClosed(@TempDir Path root) throws IOException {
+        cpuFixture(root, 0, "0", "Unified", "3", "7", "0");
+        Path alias = root.resolve("cpu00");
+        Path cache = alias.resolve("cache/index0");
+        Files.createDirectories(cache);
+        Files.createDirectories(alias.resolve("node0"));
+        Files.createDirectories(alias.resolve("topology"));
+        Files.writeString(alias.resolve("topology/physical_package_id"), "0");
+        Files.writeString(cache.resolve("level"), "3");
+        Files.writeString(cache.resolve("id"), "7");
+        Files.writeString(cache.resolve("type"), "Unified");
+
+        CpuTopology topology = CpuTopology.discoverAt(root);
+        assertEquals(3, topology.localityRank(0, 1),
+                "ambiguous logical CPU aliases must degrade the whole snapshot to unknown");
+        assertFalse(topology.hasKnownLocality(0));
+    }
+
+    @Test
+    void excessiveNumaAliasesDegradeThatCpuToUnknownNuma(@TempDir Path root)
+            throws IOException {
+        cpuFixture(root, 0, "0", "Unified", "3", "7", "0");
+        cpuFixture(root, 1, "0", "Unified", "3", "8", "0");
+        Path cpu0 = root.resolve("cpu0");
+        for (int node = 1; node <= 256; node++) {
+            Files.createDirectories(cpu0.resolve("node" + node));
+        }
+
+        CpuTopology topology = CpuTopology.discoverAt(root);
+        assertEquals(3, topology.localityRank(0, 1),
+                "overlarge NUMA alias sets must not manufacture same-node locality");
+    }
+
+    @Test
     void regionTaskPrefersKnownNumaAndFallsBackWithoutTopology() {
         CpuTopology topology = CpuTopology.of(
                 new CpuTopology.Location(10, 12, 0, 3, 0),
