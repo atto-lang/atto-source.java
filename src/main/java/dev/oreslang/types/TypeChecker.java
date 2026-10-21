@@ -9041,9 +9041,9 @@ public final class TypeChecker {
             Set<String> generics,
             Type self) {
         if (!isCompilerJsonFactoryNamespace(namespace)) return null;
-        if (call.typeArgumentsPresent()) {
+        if (call.typeArgumentsPresent() && !member.member().equals("decode")) {
             throw new IllegalArgumentException(
-                    "compiler-owned Json factories do not accept type arguments");
+                    "only Json.decode<T> accepts compiler-owned Json type arguments");
         }
 
         Type jsonValue = compilerJsonValueType();
@@ -9117,6 +9117,30 @@ public final class TypeChecker {
                 }
                 yield jsonValue;
             }
+            case "decode" -> {
+                if (!call.typeArgumentsPresent()
+                        || call.typeArguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "Json.decode<T> requires exactly one explicit target type");
+                }
+                if (call.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "Json.decode<T> expects exactly one String argument");
+                }
+                Type input = deref(typeOf(
+                        call.arguments().getFirst(), env, generics, self));
+                if (input != Primitive.STRING && !(input instanceof StringLiteral)) {
+                    throw new IllegalArgumentException(
+                            "Json.decode<T> requires a String argument");
+                }
+
+                Type target = resolve(
+                        call.typeArguments().getFirst(), generics, self);
+                requireJsonDecodeV1Type(target);
+                Ast.CheckedJsonDecodeTarget.record(
+                        call, jsonDecodeDescriptor(target));
+                yield target;
+            }
             case "stringify" -> {
                 if (call.arguments().size() != 1) {
                     throw new IllegalArgumentException(
@@ -9138,6 +9162,78 @@ public final class TypeChecker {
             default -> throw new IllegalArgumentException(
                     "unknown compiler-owned Json factory '" + member.member() + "'");
         };
+    }
+
+    private void requireJsonDecodeV1Type(Type type) {
+        Type concrete = deref(type);
+        if (concrete == Primitive.INT
+                || concrete == Primitive.BOOL
+                || concrete == Primitive.STRING
+                || concrete instanceof StringLiteral) {
+            return;
+        }
+        if (isCompilerJsonValueType(concrete)) return;
+        if (concrete instanceof ListType list) {
+            requireJsonDecodeV1Type(list.element());
+            return;
+        }
+        if (concrete instanceof Tuple tuple) {
+            for (Type element : tuple.elements()) {
+                requireJsonDecodeV1Type(element);
+            }
+            return;
+        }
+        if (concrete instanceof Record record) {
+            if (record.kind() == AggregateKind.CONTRACT) {
+                throw new IllegalArgumentException(
+                        "Json.decode<T> cannot construct a structural contract view");
+            }
+            for (Type field : record.members().values()) {
+                requireJsonDecodeV1Type(field);
+            }
+            return;
+        }
+        if (concrete instanceof Named named && findClass(named.name()) != null) {
+            throw new IllegalArgumentException(
+                    "Json.decode<class> requires an explicit alloc/json constructor/factory codec; "
+                            + "direct class construction is intentionally unavailable");
+        }
+        throw new IllegalArgumentException(
+                "Json.decode<T> v1 supports JsonValue, int, bool, String, "
+                        + "List/tuple, and closed record/struct targets; got " + concrete);
+    }
+
+    private Ast.TypeRef jsonDecodeDescriptor(Type type) {
+        Type concrete = deref(type);
+        if (concrete == Primitive.INT) return Ast.TypeRef.simple("int");
+        if (concrete == Primitive.BOOL) return Ast.TypeRef.simple("bool");
+        if (concrete == Primitive.STRING || concrete instanceof StringLiteral) {
+            return Ast.TypeRef.simple("String");
+        }
+        if (isCompilerJsonValueType(concrete)) {
+            return Ast.TypeRef.simple("JsonValue");
+        }
+        if (concrete instanceof ListType list) {
+            return new Ast.TypeRef(
+                    "List", List.of(jsonDecodeDescriptor(list.element())), false);
+        }
+        if (concrete instanceof Tuple tuple) {
+            return Ast.TypeRef.tupleType(
+                    tuple.elements().stream()
+                            .map(this::jsonDecodeDescriptor)
+                            .toList());
+        }
+        if (concrete instanceof Record record) {
+            LinkedHashMap<String, Ast.TypeRef> members = new LinkedHashMap<>();
+            for (Map.Entry<String, Type> field : record.members().entrySet()) {
+                members.put(field.getKey(), jsonDecodeDescriptor(field.getValue()));
+            }
+            return record.kind() == AggregateKind.STRUCT
+                    ? Ast.TypeRef.structType(members)
+                    : Ast.TypeRef.readonlyRecordType(members);
+        }
+        throw new IllegalStateException(
+                "checked Json.decode target has no runtime descriptor: " + concrete);
     }
 
     private String qualifiedClassName(Ast.ClassDecl klass) {
