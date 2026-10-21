@@ -383,13 +383,13 @@ public final class NativeIo {
     public static String envGet(OresContext context, String name) {
         validateEnvName(name);
         context.requirePermission(RuntimePermissions.Permission.ENV, name, "env.get");
-        return System.getenv(name);
+        return context.env().getEnvironment().get(name);
     }
 
     public static boolean envHas(OresContext context, String name) {
         validateEnvName(name);
         context.requirePermission(RuntimePermissions.Permission.ENV, name, "env.has");
-        return System.getenv().containsKey(name);
+        return context.env().getEnvironment().containsKey(name);
     }
 
     public static String httpGetText(OresContext context, String rawUri) {
