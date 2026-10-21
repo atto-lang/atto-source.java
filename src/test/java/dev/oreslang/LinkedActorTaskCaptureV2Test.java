@@ -131,6 +131,51 @@ final class LinkedActorTaskCaptureV2Test {
     }
 
     @Test
+    void localAliasesCannotAcquireBuiltinMailboxOrChannelAuthority()
+            throws Exception {
+        Ast.Program source = Parser.parse("""
+                define actor Worker as
+                  receive(ActorMail<int> mail): void { return; }
+                end
+                pub fnc main(): void { return; }
+                """);
+        var modules = new java.util.ArrayList<Ast.ModuleDecl>();
+        for (Ast.ModuleDecl module : source.modules()) {
+            var decls = new java.util.ArrayList<Ast.Decl>(
+                    module.declarations());
+            decls.add(new Ast.TypeAliasDecl("ActorRef",
+                    Ast.Visibility.PRIVATE, List.of(),
+                    Ast.TypeRef.simple("int")));
+            decls.add(new Ast.TypeAliasDecl("Channel",
+                    Ast.Visibility.PRIVATE, List.of(),
+                    Ast.TypeRef.simple("int")));
+            modules.add(new Ast.ModuleDecl(
+                    module.name(), module.annotations(),
+                    module.contracts(), decls));
+        }
+        Ast.Program withAliases = new Ast.Program(
+                source.namespace(), source.imports(), modules);
+        var ctor = OwnershipChecker.class.getDeclaredConstructor(
+                Ast.Program.class, Map.class);
+        ctor.setAccessible(true);
+        var checker = ctor.newInstance(withAliases, Map.of());
+        var copy = OwnershipChecker.class.getDeclaredMethod(
+                "isCopyType", Ast.TypeRef.class);
+        copy.setAccessible(true);
+        var send = OwnershipChecker.class.getDeclaredMethod(
+                "forbiddenTaskCapability", Ast.TypeRef.class);
+        send.setAccessible(true);
+
+        Ast.TypeRef claimedMailbox = new Ast.TypeRef("ActorRef",
+                List.of(Ast.TypeRef.simple("Worker")), false);
+        Ast.TypeRef claimedChannel = new Ast.TypeRef("Channel",
+                List.of(Ast.TypeRef.simple("int")), false);
+        assertEquals(false, copy.invoke(checker, claimedMailbox));
+        assertEquals(true, send.invoke(checker, claimedMailbox));
+        assertEquals(true, send.invoke(checker, claimedChannel));
+    }
+
+    @Test
     void privateLinkedActorIsNotAnAuthorizedPublicImport() {
         Ast.Program program = source("actor");
         Map<String, Ast.ClassDecl> metadata =
