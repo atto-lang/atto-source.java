@@ -1,7 +1,22 @@
 # Oreslang core / alloc / actor / std library boundary (proposal v1)
 
-Status: **architecture contract proposed 2026-10-16; not yet a compiler, runtime, or backend implementation**.
+Status: **architecture contract with partial Java/Graal namespace enforcement**.
 This document specifies the eventual source-level and runtime dependency policy. It does not claim that the Java/Truffle host is bare-metal capable.
+
+As of the alloc/json boundary stack, the Java/Graal multi-file loader reserves
+compiler-owned `std/*` and `alloc/*` package prefixes before project or
+`ORESLANG_PATH` resolution. Packaged source is closed-registry, strict UTF-8,
+duplicate-resource checked, traversal/control-character hardened, and cannot
+contain Java source islands. `alloc/*` currently may depend only on other
+registered `alloc/*` modules; this intentionally remains stricter than the
+eventual `core <- alloc` DAG until canonical `core/*` packaging exists.
+`core/*` and `actor/*` canonical loaders, target library profiles, and the
+explicit allocator ABI remain future work.
+
+The first reserved alloc unit is `alloc/json`. It establishes namespace and
+packaging authority only; it deliberately does **not** fabricate a source
+`JsonValue` class/type while the compiler/runtime recursive descriptor binding
+and codec generation are still gated.
 
 ## Motivation
 
