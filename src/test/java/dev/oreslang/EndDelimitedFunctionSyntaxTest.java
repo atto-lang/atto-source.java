@@ -12,6 +12,61 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class EndDelimitedFunctionSyntaxTest {
     @Test
+    void doubleColonSeparatorNormalizesToAsAndSeparatorFreeForms() {
+        var withoutSeparator = Parser.parse("""
+                fnc identity(int x) -> int
+                    return x
+                end
+                """);
+        var withAs = Parser.parse("""
+                fnc identity(int x) -> int as
+                    return x
+                end
+                """);
+        var withDoubleColon = Parser.parse("""
+                fnc identity(int x) -> int ::
+                    return x
+                end
+                """);
+
+        assertEquals(withoutSeparator, withDoubleColon);
+        assertEquals(withAs, withDoubleColon);
+        assertDoesNotThrow(() -> TypeChecker.check(withDoubleColon));
+    }
+
+    @Test
+    void doubleColonProvidesCompactSameLineBodyBoundaryForFncAndRoutine() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
+                "fnc identity(int x) -> int :: return x; end")));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
+                "routine identity(int x) -> int :: return x; end")));
+    }
+
+    @Test
+    void doubleColonFollowsTheCompleteHigherOrderReturnType() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
+                "fnc callback() -> () => void :: return || -> { return; }; end")));
+    }
+
+    @Test
+    void doubleColonBodySeparatorDoesNotStealQualifiedMemberSyntax() {
+        assertDoesNotThrow(() -> Parser.parse(
+                "fnc lookup() -> int :: return namespace::value; end"));
+    }
+
+    @Test
+    void doubleColonSeparatorObeysArrowAndSameHeaderLineAdmission() {
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("fnc malformed() : int :: return 1; end"));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc malformed() -> int
+                ::
+                    return 1
+                end
+                """));
+    }
+
+    @Test
     void freeFunctionUsesArrowIfFiAndEndWithoutSemicolons() {
         String source = """
                 fnc classify(int x) -> int
