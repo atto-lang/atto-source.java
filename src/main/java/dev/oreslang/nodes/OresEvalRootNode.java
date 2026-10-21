@@ -7207,11 +7207,8 @@ public final class OresEvalRootNode extends RootNode {
                     case "accepted" -> server.accepted();
                     case "rejected" -> server.rejected();
                     case "completed" -> server.completed();
-                    case "accept" -> (Invokable) args -> { requireZero(args, "http.accept"); return server.accept(); };
-                    case "shutdown" -> (Invokable) args -> {
-                        if (args.size() != 1) throw new IllegalArgumentException("shutdown requires grace milliseconds");
-                        return server.shutdown(((Number) args.get(0)).intValue());
-                    };
+                    case "accept", "shutdown" -> (Invokable) args ->
+                            strictNonblockingIoFuture("http.server." + name);
                     default -> throw new IllegalArgumentException("unknown HTTP server member " + name);
                 };
             }
@@ -7257,34 +7254,9 @@ public final class OresEvalRootNode extends RootNode {
                             throw new IllegalArgumentException("move_to requires actor reference");
                         return exchange.moveTo(ref);
                     };
-                    case "read_chunk" -> (Invokable) args -> {
-                        if (args.size() != 1) throw new IllegalArgumentException("read_chunk requires maximum byte count");
-                        return exchange.readChunk(((Number) args.get(0)).intValue());
-                    };
-                    case "write_bytes" -> (Invokable) args -> {
-                        if (args.size() != 1 || !(args.get(0) instanceof List<?> bytes)) throw new IllegalArgumentException("write_bytes requires byte array");
-                        return exchange.writeBytes(bytes);
-                    };
-                    case "respond_bytes" -> (Invokable) args -> {
-                        if (args.size() != 3 || !(args.get(2) instanceof List<?> bytes)) throw new IllegalArgumentException("respond_bytes requires status, content type, byte array");
-                        return exchange.respondBytes(((Number) args.get(0)).intValue(), requireString(args.get(1), "content type"), bytes);
-                    };
-                    case "body_text" -> (Invokable) args -> { requireZero(args, "body_text"); return exchange.bodyText(); };
-                    case "respond_response" -> (Invokable) args -> {
-                        if (args.size() != 1 || !(args.get(0) instanceof HttpResponseDraft response))
-                            throw new IllegalArgumentException("respond_response requires exactly one owned HttpResponseDraft");
-                        return exchange.respond(response);
-                    };
-                    case "respond" -> (Invokable) args -> {
-                        if (args.size() != 3) throw new IllegalArgumentException("respond requires status, content type, body");
-                        return exchange.respond(((Number) args.get(0)).intValue(), requireString(args.get(1), "content type"), requireString(args.get(2), "body"));
-                    };
-                    case "start" -> (Invokable) args -> {
-                        requireTwo(args, "start"); return exchange.start(((Number) args.get(0)).intValue(), requireString(args.get(1), "content type"));
-                    };
-                    case "write" -> (Invokable) args -> exchange.write(requireStringArg(args, "write"));
-                    case "finish" -> (Invokable) args -> { requireZero(args, "finish"); return exchange.finish(); };
-                    case "abort" -> (Invokable) args -> { requireZero(args, "abort"); exchange.abort(); return null; };
+                    case "read_chunk", "write_bytes", "respond_bytes", "body_text",
+                            "respond_response", "respond", "start", "write", "finish", "abort" ->
+                            (Invokable) args -> strictNonblockingIoFuture("http.exchange." + name);
                     default -> throw new IllegalArgumentException("unknown HTTP exchange member " + name);
                 };
             }
