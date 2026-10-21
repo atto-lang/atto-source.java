@@ -259,6 +259,14 @@ public final class ActorNativeArena implements AutoCloseable {
                 || value instanceof BigDecimal || value instanceof OresSymbol) {
             return true;
         }
+        if (value instanceof NativeCapability capability) {
+            if (capability.nativeArena() != this) {
+                throw new SecurityException("foreign actor capability");
+            }
+            // Lexical capability handles remain managed until scope-drop
+            // lowering can retire opaque native handle references exactly.
+            return false;
+        }
         if (value instanceof NativeValue nativeValue) {
             if (nativeValue.nativeArena() != this) {
                 throw new SecurityException("foreign actor arena reference");
@@ -268,7 +276,9 @@ public final class ActorNativeArena implements AutoCloseable {
             if (address < 0 || issued == null || issued.longValue() != address) {
                 throw new SecurityException("actor-native reference was not issued by this arena");
             }
-            return true;
+            // The payload is already native; keep only its non-authoritative
+            // facade in Env until captured-scope/drop lifetime lowering exists.
+            return false;
         }
         return false;
     }
