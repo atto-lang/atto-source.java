@@ -17,6 +17,19 @@ public final class ImportRules {
         return path != null && path.startsWith(JAVA_PREFIX);
     }
 
+    public static final String ALLOC_JSON_PATH = "alloc/json";
+
+    public static boolean isAllocJsonValueImport(Ast.ImportDecl imported) {
+        return imported != null
+                && imported.path().equals(ALLOC_JSON_PATH)
+                && imported.kind() == Ast.ImportKind.CLASS
+                && !imported.wildcard()
+                && imported.namespace() == null
+                && imported.names().size() == 1
+                && imported.names().getFirst().equals("JsonValue");
+    }
+
+
     public static String javaClassName(String path) {
         if (!isJavaPath(path)) throw new IllegalArgumentException("not a Java host import path: " + path);
         String className = path.substring(JAVA_PREFIX.length());
