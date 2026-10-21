@@ -65,6 +65,20 @@ final class TemplateLiteralContractTest {
     }
 
     @Test
+    void localConstFncTemplateCanBeTypecheckedAndInvoked() throws Exception {
+        String program = """
+                pub fnc main(): void {
+                  const fnc foo = |string bar, string star| -> {
+                    return `${bar} is ${star}`;
+                  };
+                  stdio.stdout.write(foo("Mars", "bright"));
+                  return;
+                }
+                """;
+        assertEquals("Mars is bright", run(program));
+    }
+
+    @Test
     void interpolationMustBeCompleteExpressionWithStringType() {
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("pub fnc main(): void { const bad = `${1; 2}`; return; }"));
