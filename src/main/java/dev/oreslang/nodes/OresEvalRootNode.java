@@ -10053,28 +10053,82 @@ public final class OresEvalRootNode extends RootNode {
      * static binding/borrow checker decides whether a particular reference may write.
      */
     /** Runtime tag for closed mutable struct values; never conflated with generic maps. */
-    private static final class MutableStructValue
-            extends LinkedHashMap<String, Object> {
-        private MutableStructValue(Map<String, Object> initial) {
-            super(initial);
-        }
-    }
+    private static class MutableStructValue
+            extends java.util.AbstractMap<String, Object> {
+        protected final Map<String, Object> fields;
 
-    private static final class ReadonlyRecordValue
-            extends java.util.AbstractMap<String, Object>
-            implements OresMutex.SharedState {
-        private final Map<String, Object> fields;
-        private ReadonlyRecordValue(Map<String, Object> initial) {
-            // Preserve declaration/inference order deterministically for AOT
-            // layout, diagnostics and structural traversal.
-            this.fields = java.util.Collections.unmodifiableMap(
-                    new LinkedHashMap<>(initial));
+        private MutableStructValue(Map<String, Object> initial) {
+            this.fields = initial instanceof ActorNativeArena.NativeValue
+                    ? initial
+                    : new LinkedHashMap<>(initial);
         }
+
         @Override public Set<Entry<String, Object>> entrySet() { return fields.entrySet(); }
         @Override public Object get(Object key) { return fields.get(key); }
         @Override public boolean containsKey(Object key) { return fields.containsKey(key); }
+        @Override public int size() { return fields.size(); }
+        @Override public Object put(String key, Object value) { return fields.put(key, value); }
+    }
+
+    private static final class NativeMutableStructValue
+            extends MutableStructValue
+            implements ActorNativeArena.NativeValue {
+        private final ActorNativeArena.NativeValue backing;
+
+        private NativeMutableStructValue(Map<String, Object> initial) {
+            super(initial);
+            if (!(initial instanceof ActorNativeArena.NativeValue nativeBacking)) {
+                throw new IllegalArgumentException("native struct requires actor-native backing");
+            }
+            this.backing = nativeBacking;
+            ActorNativeArena arena = nativeBacking.nativeArena();
+            arena.registerNativeFacade(this, nativeBacking);
+        }
+
+        @Override public ActorNativeArena nativeArena() { return backing.nativeArena(); }
+        @Override public long nativeOffset() { return backing.nativeOffset(); }
+    }
+
+    private static class ReadonlyRecordValue
+            extends java.util.AbstractMap<String, Object>
+            implements OresMutex.SharedState {
+        protected final Map<String, Object> fields;
+
+        private ReadonlyRecordValue(Map<String, Object> initial) {
+            // Preserve declaration/inference order deterministically for AOT
+            // layout, diagnostics and structural traversal. Native fixed-field
+            // maps already preserve the declared layout and are exposed only
+            // through this read-only facade.
+            this.fields = initial instanceof ActorNativeArena.NativeValue
+                    ? initial
+                    : java.util.Collections.unmodifiableMap(new LinkedHashMap<>(initial));
+        }
+
+        @Override public Set<Entry<String, Object>> entrySet() { return fields.entrySet(); }
+        @Override public Object get(Object key) { return fields.get(key); }
+        @Override public boolean containsKey(Object key) { return fields.containsKey(key); }
+        @Override public int size() { return fields.size(); }
         @Override public Iterable<?> sharedStateChildren() { return fields.values(); }
         @Override public String toString() { return CycleSafeDisplay.render(this); }
+    }
+
+    private static final class NativeReadonlyRecordValue
+            extends ReadonlyRecordValue
+            implements ActorNativeArena.NativeValue {
+        private final ActorNativeArena.NativeValue backing;
+
+        private NativeReadonlyRecordValue(Map<String, Object> initial) {
+            super(initial);
+            if (!(initial instanceof ActorNativeArena.NativeValue nativeBacking)) {
+                throw new IllegalArgumentException("native record requires actor-native backing");
+            }
+            this.backing = nativeBacking;
+            ActorNativeArena arena = nativeBacking.nativeArena();
+            arena.registerNativeFacade(this, nativeBacking);
+        }
+
+        @Override public ActorNativeArena nativeArena() { return backing.nativeArena(); }
+        @Override public long nativeOffset() { return backing.nativeOffset(); }
     }
 
     private record SourceActorState(
