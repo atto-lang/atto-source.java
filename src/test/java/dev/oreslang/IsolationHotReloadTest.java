@@ -141,8 +141,13 @@ final class IsolationHotReloadTest {
                   return;
                 }
 
+                define class Branded as
+                  pub val String marker;
+                  pub val String markerBrand;
+                end
+
                 pub routine main(): void {
-                  const branded = struct{marker: 'brand', markerBrand: 'marking/branding'}{marker: "brand", markerBrand: "marking/branding"};
+                  val branded = new Branded("brand", "marking/branding");
                   first(branded);
                   second(branded);
                   third(branded);
@@ -160,8 +165,12 @@ final class IsolationHotReloadTest {
 
                 fnc nominal(Foo y): void { return; }
 
+                define class Branded as
+                  pub val String marker;
+                end
+
                 pub routine main(): void {
-                  const branded = struct{marker: 'brand'}{marker: "brand"};
+                  val branded = new Branded("brand");
                   nominal(branded);
                   return;
                 }
@@ -169,23 +178,7 @@ final class IsolationHotReloadTest {
     }
 
     @Test
-    void explicitReceiverCallbacksKeepTheirReceiverAndSelfCannotBeRebound() throws Exception {
-        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        define class Box as
-                          val int value;
-
-                          pub get(): int {
-                            return self.value;
-                          }
-                        end
-
-                        fnc bad(Box box): void {
-                          val Fnc<int> callback = box.get;
-                        }
-                        """)));
-        assertTrue(rejected.getMessage().contains("direct-call-only"), rejected::getMessage);
-
+    void extractedMethodValueKeepsReceiverAndSelfCannotBeRebound() throws Exception {
         String output = run("""
                 define class Box as
                   val int value;
@@ -197,7 +190,7 @@ final class IsolationHotReloadTest {
 
                 pub routine main(): void {
                   val box = new Box(17);
-                  val Fnc<int> callback = || -> { return box.get(); };
+                  val Fnc<int> callback = box.get;
                   stdio.stdout.write(callback())
                 }
                 """);

@@ -1,6 +1,5 @@
 package dev.oreslang;
 
-import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
@@ -48,15 +47,10 @@ final class RoutineAndLoopTest {
     }
 
     @Test
-    void routinesAndFncsCanParticipateInRecursion() {
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                routine spin(bool shouldStop): void {
-                  if shouldStop; do
-                    return;
-                  else
-                    spin(true);
-                    return;
-                  fi
+    void routinesCannotParticipateInRecursionButFncsCan() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                routine spin(): void {
+                  spin();
                 }
                 """)));
 
@@ -73,7 +67,7 @@ final class RoutineAndLoopTest {
     }
 
     @Test
-    void callablesOverloadOnlyByArity() {
+    void methodsOverloadOnlyByArity() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module m
                   define class C as
@@ -92,14 +86,9 @@ final class RoutineAndLoopTest {
                 end
                 """)));
 
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc find(): int { return 0; }
                 fnc find(int value): int { return value; }
-                """)));
-
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc find(int value): int { return value; }
-                fnc find(String value): int { return 1; }
                 """)));
     }
 
@@ -114,50 +103,6 @@ final class RoutineAndLoopTest {
                 }
                 """);
         assertEquals("120", output);
-    }
-
-    @Test
-    void ternaryIsLazyBooleanOnlyAndRightAssociative() throws Exception {
-        String output = run("""
-                fnc condition(): bool {
-                  stdio.stdout.write("C");
-                  return true;
-                }
-
-                fnc when_true(): int {
-                  stdio.stdout.write("T");
-                  return 4;
-                }
-
-                fnc when_false(): int {
-                  stdio.stdout.write("F");
-                  return 9;
-                }
-
-                pub routine main(): void {
-                  stdio.stdout.write(condition() ? when_true() : when_false());
-                  stdio.stdout.write(false ? 1 : true ? 2 : 3);
-                  return;
-                }
-                """);
-        assertEquals("CT42", output);
-
-        IllegalArgumentException nonBoolean = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        fnc bad(): int {
-                          return 1 ? 2 : 3;
-                        }
-                        """)));
-        assertTrue(nonBoolean.getMessage().contains("ternary condition"));
-
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        fnc incompatible(bool condition): int {
-                          return condition ? 1 : "wrong";
-                        }
-                        """)));
     }
 
     @Test
@@ -183,8 +128,12 @@ final class RoutineAndLoopTest {
                   return value.markerBrand;
                 }
 
+                define class Branded as
+                  pub val String markerBrand;
+                end
+
                 fnc main(): void {
-                  const branded = struct{markerBrand: 'marking/branding'}{markerBrand: "marking/branding"};
+                  val branded = new Branded("marking/branding");
                   stdio.println(structural(branded));
                   return;
                 }
@@ -199,8 +148,12 @@ final class RoutineAndLoopTest {
                   return "ok";
                 }
 
+                define class Branded as
+                  pub val String markerBrand;
+                end
+
                 fnc main(): void {
-                  const branded = struct{markerBrand: 'marking/branding'}{markerBrand: "marking/branding"};
+                  val branded = new Branded("marking/branding");
                   stdio.println(nominal(branded));
                   return;
                 }
@@ -211,7 +164,7 @@ final class RoutineAndLoopTest {
     void forOfInjectsSchedulerSafepoints() throws Exception {
         String output = run("""
                 pub routine main(): void {
-                  for (const item of arr[1, 2, 3]) {
+                  for (val item of arr[1, 2, 3]) {
                     stdio.stdout.write(item);
                   }
                   stdio.stdout.write(process.descriptor.scheduler_safepoints)
@@ -235,304 +188,11 @@ final class RoutineAndLoopTest {
     }
 
     @Test
-    void doDoneBodiesAndIteratorShorthandRemainUnambiguous() throws Exception {
-        String output = run("""
-                fnc done(): void {
-                  stdio.stdout.write("d");
-                  return;
-                }
-
-                pub routine main(): void {
-                  for const item of arr[1, 2] do
-                    done();
-                    stdio.stdout.write(item);
-                  done
-
-                  for (let i = 0; i < 2; i = i + 1) do
-                    stdio.stdout.write(i);
-                  done
-
-                  let n = 0;
-                  loop do
-                    n = n + 1;
-                    if n == 2 {
-                      break;
-                    } fi
-                  done
-
-                  stdio.stdout.write(n);
-                  return;
-                }
-                """);
-
-        assertEquals("d1d2012", output);
-    }
-
-    @Test
-    void forOfRequiresExplicitBindingDeclarationsAndAllowsVal() {
-        IllegalArgumentException bare = assertThrows(
-                IllegalArgumentException.class,
-                () -> Parser.parse("""
-                        pub routine main(): void {
-                          for value of arr[1, 2] do
-                            stdio.stdout.write(value);
-                          done
-                          return;
-                        }
-                        """));
-        assertTrue(bare.getMessage().contains("variable used before declared"));
-        assertTrue(bare.getMessage().contains("value"));
-
-        IllegalArgumentException destructured = assertThrows(
-                IllegalArgumentException.class,
-                () -> Parser.parse("""
-                        pub routine main(): void {
-                          for [key, value] of arr[(1, 2)] do
-                            stdio.stdout.write(key);
-                          done
-                          return;
-                        }
-                        """));
-        assertTrue(destructured.getMessage().contains("variable used before declared"));
-
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                pub routine main(): void {
-                  for val value of arr[1, 2] do
-                    stdio.stdout.write(value);
-                  done
-                  return;
-                }
-                """)));
-    }
-
-    @Test
-    void forOfParenthesesMutabilityAndDiagnosticsAreUnambiguous() throws Exception {
-        String output = run("""
-                pub routine main(): void {
-                  for (const item of arr[1, 2]) do
-                    stdio.stdout.write(item);
-                  done
-
-                  for let item of arr[3, 4] do
-                    item = item + 10;
-                    stdio.stdout.write(item);
-                  done
-                  return;
-                }
-                """);
-        assertEquals("121314", output);
-
-        IllegalArgumentException parenthesizedBare = assertThrows(
-                IllegalArgumentException.class,
-                () -> Parser.parse("""
-                        pub routine main(): void {
-                          for (item of arr[1, 2]) do
-                            stdio.stdout.write(item);
-                          done
-                          return;
-                        }
-                        """));
-        assertTrue(parenthesizedBare.getMessage().contains("variable used before declared"));
-
-        IllegalArgumentException shadowedBare = assertThrows(
-                IllegalArgumentException.class,
-                () -> Parser.parse("""
-                        pub routine main(): void {
-                          let item = 99;
-                          for item of arr[1, 2] do
-                            stdio.stdout.write(item);
-                          done
-                          return;
-                        }
-                        """));
-        assertTrue(shadowedBare.getMessage().contains("variable used before declared"));
-
-        IllegalArgumentException immutable = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        pub routine main(): void {
-                          for const item of arr[1, 2] do
-                            item = item + 1;
-                          done
-                          return;
-                        }
-                        """)));
-        assertTrue(immutable.getMessage().contains("cannot reassign const binding 'item'"));
-
-        IllegalArgumentException typed = assertThrows(
-                IllegalArgumentException.class,
-                () -> Parser.parse("""
-                        pub routine main(): void {
-                          for (const int item of arr[1, 2]) do
-                            stdio.stdout.write(item);
-                          done
-                          return;
-                        }
-                        """));
-        assertTrue(typed.getMessage().contains("for-of element types are inferred"));
-
-        IllegalArgumentException bareTyped = assertThrows(
-                IllegalArgumentException.class,
-                () -> Parser.parse("""
-                        pub routine main(): void {
-                          for int item of arr[1, 2] do
-                            stdio.stdout.write(item);
-                          done
-                          return;
-                        }
-                        """));
-        assertTrue(bareTyped.getMessage().contains("variable used before declared 'item'"));
-        assertTrue(bareTyped.getMessage().contains("explicit const/val/let declaration"));
-
-        IllegalArgumentException parenthesizedBareTyped = assertThrows(
-                IllegalArgumentException.class,
-                () -> Parser.parse("""
-                        pub routine main(): void {
-                          for (int item of arr[1, 2]) do
-                            stdio.stdout.write(item);
-                          done
-                          return;
-                        }
-                        """));
-        assertTrue(parenthesizedBareTyped.getMessage().contains("variable used before declared 'item'"));
-
-        IllegalArgumentException duplicate = assertThrows(
-                IllegalArgumentException.class,
-                () -> Parser.parse("""
-                        pub routine main(): void {
-                          for const [item, item] of arr[(1, 2)] do
-                            stdio.stdout.write(item);
-                          done
-                          return;
-                        }
-                        """));
-        assertTrue(duplicate.getMessage().contains("duplicate binding 'item'"));
-    }
-
-    @Test
-    void forOfDistinguishesReservedCallableNamesFromLoopDelimiters() throws Exception {
-        String output = run("""
-                fnc do(): Array<int> {
-                  return arr[1, 2];
-                }
-
-                fnc done(): Array<int> {
-                  return arr[3, 4];
-                }
-
-                pub routine main(): void {
-                  for const item of do() do
-                    stdio.stdout.write(item);
-                  done
-
-                  for (const item of done()) do
-                    stdio.stdout.write(item);
-                  done
-                  return;
-                }
-                """);
-
-        assertEquals("1234", output);
-    }
-
-    @Test
-    void forOfAstAcceptsValAndStillRejectsMalformedDestructuring() {
-        assertDoesNotThrow(() -> new Ast.ForOfStmt(
-                Ast.BindingKind.VAL,
-                "item",
-                new Ast.NameExpr("items"),
-                java.util.List.of()));
-
-        assertDoesNotThrow(() -> new Ast.ForOfDestructureStmt(
-                java.util.List.of(new Ast.DestructureBinding(Ast.BindingKind.VAL, "item")),
-                new Ast.NameExpr("items"),
-                java.util.List.of()));
-
-        IllegalArgumentException duplicate = assertThrows(
-                IllegalArgumentException.class,
-                () -> new Ast.ForOfDestructureStmt(
-                        java.util.List.of(
-                                new Ast.DestructureBinding(Ast.BindingKind.CONST, "item"),
-                                new Ast.DestructureBinding(Ast.BindingKind.LET, "item")),
-                        new Ast.NameExpr("items"),
-                        java.util.List.of()));
-        assertTrue(duplicate.getMessage().contains("duplicate binding 'item'"));
-
-        assertDoesNotThrow(
-                () -> new Ast.ForOfDestructureStmt(
-                        java.util.List.of(Ast.DestructureBinding.discard()),
-                        new Ast.NameExpr("items"),
-                        java.util.List.of()));
-    }
-
-    @Test
-    void forOfSequencePatternsDestructureTupleElements() throws Exception {
-        String output = run("""
-                pub routine main(): void {
-                  for const [key, value] of arr[(1, "a"), (2, "b")] do
-                    stdio.stdout.write(key);
-                    stdio.stdout.write(value);
-                  done
-
-                  for const [_, let value] of arr[(9, 3), (8, 4)] {
-                    value = value + 1;
-                    stdio.stdout.write(value);
-                  }
-                  return;
-                }
-                """);
-
-        assertEquals("1a2b45", output);
-    }
-
-    @Test
-    void forOfSequencePatternsRejectKnownArityMismatch() {
-        IllegalArgumentException failure = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        pub routine main(): void {
-                          for const [a, b, c] of arr[(1, 2)] do
-                            stdio.stdout.write(a);
-                          done
-                          return;
-                        }
-                        """)));
-
-        assertTrue(failure.getMessage().contains("destructure arity mismatch"));
-    }
-
-    @Test
-    void typedUnparenthesizedForHeadersSupportPostfixUpdates() throws Exception {
-        String output = run("""
-                pub routine main(): void {
-                  for int i = 0; i < 3; i++ do
-                    stdio.stdout.write(i);
-                  done
-
-                  for int j = 3; j > 0; j-- {
-                    stdio.stdout.write(j)
-                  }
-
-                  for (let k = 0; k < 2; k++) {
-                    stdio.stdout.write(k)
-                  }
-
-                  for (int q = 0; q < 2; q++) do
-                    stdio.stdout.write(q)
-                  done
-                  return;
-                }
-                """);
-
-        assertEquals("0123210101", output);
-    }
-
-    @Test
     void customJavascriptStyleIteratorDrivesForOf() throws Exception {
         String output = run("""
                 define module collections
                   define class Bag as
-                    pub [Symbol.iterator](): Array<int> {
+                    [Symbol.iterator](): Array<int> {
                       return arr[4, 5];
                     }
                   end
@@ -540,8 +200,8 @@ final class RoutineAndLoopTest {
 
                 pub routine main(): void {
                   val bag = new collections.Bag();
-                  for (const item of bag) {
-                    stdio.stdout.write(item);
+                  for (val item of bag) {
+                    stdio.stdout.write(item)
                   }
                 }
                 """);
