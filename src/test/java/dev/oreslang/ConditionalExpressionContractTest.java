@@ -29,12 +29,12 @@ final class ConditionalExpressionContractTest {
     @Test
     void executesPortableConditionalContractVectors() throws Exception {
         String json = Files.readString(CONTRACT, StandardCharsets.UTF_8);
-        assertTrue(json.contains("\\"schema\": \\"oreslang.conditional-expression.v1\\""));
-        assertTrue(json.contains("\\"produces_value\": false"));
-        assertTrue(json.contains("\\"condition_type\": \\"bool\\""));
-        assertTrue(json.contains("\\"truthiness_coercion\": false"));
-        assertTrue(json.contains("\\"associativity\": \\"right\\""));
-        assertTrue(json.contains("\\"branches\": \\"selected_arm_only\\""));
+        assertTrue(json.contains("\"schema\": \"oreslang.conditional-expression.v1\""));
+        assertTrue(json.contains("\"produces_value\": false"));
+        assertTrue(json.contains("\"condition_type\": \"bool\""));
+        assertTrue(json.contains("\"truthiness_coercion\": false"));
+        assertTrue(json.contains("\"associativity\": \"right\""));
+        assertTrue(json.contains("\"branches\": \"selected_arm_only\""));
 
         Matcher matcher = VECTOR.matcher(json);
         int vectors = 0;
