@@ -25,6 +25,11 @@ final class ActorRuntimeNativeCarrierTest {
                 assertEquals(
                         ActorRuntime.CarrierBackend.NATIVE_PTHREAD,
                         runtime.carrierBackend());
+                assertEquals(3, runtime.actorThreadPoolStatus().size());
+                assertTrue(
+                        runtime.actorThreadPoolStatus().stream()
+                                .allMatch(pool -> pool.workerThreads() == 0),
+                        "native actor pool objects must exist before any pthread carrier is created");
 
                 CountDownLatch delivered = new CountDownLatch(32);
                 Set<Long> nativeThreads = ConcurrentHashMap.newKeySet();
