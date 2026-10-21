@@ -526,6 +526,16 @@ final class ActorNativeArenaTest {
         assertThrows(IndexOutOfBoundsException.class, () -> region.leaseReadOnly(60, 8));
         assertThrows(IllegalStateException.class, () -> region.writeLong(8, 100L));
         assertThrows(IllegalStateException.class, () -> region.writeDouble(8, 1.0));
+        // Borrowed [8,24); exactly adjacent writes may proceed.
+        region.writeLong(0, 12L);
+        region.writeLong(24, 99L);
+        assertEquals(12L, region.readLong(0));
+        assertEquals(99L, region.readLong(24));
+        assertThrows(IllegalStateException.class, () -> region.writeLong(1, 12L),
+                "partially overlapping word must fail before any byte changes");
+        assertEquals(12L, region.readLong(0));
+        assertThrows(IllegalStateException.class, () -> region.writeByte(23, (byte) 5));
+        assertEquals(0, region.readByte(23));
         assertThrows(IllegalStateException.class, region::close);
         AtomicReference<Throwable> foreign = new AtomicReference<>();
         Thread other = new Thread(() -> {
@@ -541,7 +551,11 @@ final class ActorNativeArenaTest {
         assertThrows(IllegalStateException.class, () -> first.readByte(0));
         assertThrows(IllegalStateException.class, () -> region.writeLong(8, 100L));
         second.close();
+        // Zero-length leases freeze no bytes but still retain region lifetime.
+        var empty = region.leaseReadOnly(8, 0);
         region.writeLong(8, 100L);
+        assertThrows(IllegalStateException.class, region::close);
+        empty.close();
         assertEquals(100L, region.readLong(8));
         var outstanding = region.leaseReadOnly(8, 8);
         arena.close();
