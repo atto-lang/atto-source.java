@@ -1121,7 +1121,7 @@ actor mailbox boundary, or turn an actor reference into an ordinary object.
 A direct `inspect(value)` call to a `structural T` parameter temporarily
 read-borrows `value` instead of moving it. `inspect(rt borrow value)` is
 equivalent. A structural call rejects `rt take value` (ownership transfer)
-and `rt borrow mut value` (unnecessary mutable authority). Call-scoped loans
+and `rt mut borrow value` (unnecessary mutable authority). Call-scoped loans
 last through evaluation of all arguments, preventing a later argument from
 moving or mutably borrowing the same owner; they end after the call.
 A structural field/index projection such as `read(container.inner)` also loans the
@@ -1754,7 +1754,7 @@ fnc inspect(borrow Bar value): void {
 }
 ```
 
-Exclusive mutable borrowing uses `rt borrow mut value` and `borrow mut T`:
+Exclusive mutable borrowing uses `rt mut borrow value` and `borrow mut T`:
 
 ```ores
 fnc change(borrow mut Bar value): void {
@@ -1764,7 +1764,7 @@ fnc change(borrow mut Bar value): void {
 
 fnc example(): void {
   val Bar b = new Bar();
-  change(rt borrow mut b);
+  change(rt mut borrow b);
   stdio.println(b.foo);
   return;
 }
