@@ -63,12 +63,15 @@ public sealed interface OresJsonValue
         return new NumberValue(value);
     }
 
+    /**
+     * Binary floating-point input is intentionally not admitted. Converting a
+     * double through its shortest decimal spelling would manufacture a decimal
+     * value that is not the exact source numeric carrier promised by alloc/json.
+     * Keep the signature fail-closed for host callers as well as guest lowering.
+     */
     public static OresJsonValue of(double value) {
-        if (!Double.isFinite(value)) {
-            throw new IllegalArgumentException(
-                    "JSON numbers cannot be NaN or infinite");
-        }
-        return new NumberValue(BigDecimal.valueOf(value));
+        throw new IllegalArgumentException(
+                "JSON floating input is fail-closed until an exact decimal carrier is supplied");
     }
 
     public static OresJsonValue array(Iterable<? extends OresJsonValue> source) {
