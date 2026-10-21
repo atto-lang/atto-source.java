@@ -29,15 +29,28 @@ final class CpuTopology {
     /* The cache ID alone is not globally unique across packages or levels.
      * Three-argument synthetic locations deliberately carry no proof of LLC
      * sharing, regardless of a matching numeric cache ID. */
-    record Location(int cpu, int llc, int numa, int llcLevel, int packageId) {
+    record Location(int cpu, int llc, int numa, int llcLevel, int packageId,
+                    int l2, int coreId, int cacheLineBytes) {
         Location(int cpu, int llc, int numa) {
-            this(cpu, llc, numa, UNKNOWN, UNKNOWN);
+            this(cpu, llc, numa, UNKNOWN, UNKNOWN,
+                    UNKNOWN, UNKNOWN, UNKNOWN);
+        }
+        Location(int cpu, int llc, int numa, int llcLevel, int packageId) {
+            this(cpu, llc, numa, llcLevel, packageId,
+                    UNKNOWN, UNKNOWN, UNKNOWN);
         }
         Location {
             if (cpu < 0 || llc < UNKNOWN || numa < UNKNOWN
                     || llcLevel < UNKNOWN || packageId < UNKNOWN
+                    || l2 < UNKNOWN || coreId < UNKNOWN
+                    || cacheLineBytes < UNKNOWN
                     || ((llcLevel == UNKNOWN) != (packageId == UNKNOWN))
-                    || (llcLevel >= 0 && (llc < 0 || llcLevel < 2))) {
+                    || (llcLevel >= 0 && (llc < 0 || llcLevel < 2))
+                    || (l2 >= 0 && packageId < 0)
+                    || (coreId >= 0 && packageId < 0)
+                    || (cacheLineBytes != UNKNOWN
+                        && (cacheLineBytes < 16 || cacheLineBytes > 4096
+                            || (cacheLineBytes & (cacheLineBytes - 1)) != 0))) {
                 throw new IllegalArgumentException("invalid CPU topology location");
             }
         }
@@ -89,6 +102,44 @@ final class CpuTopology {
     }
 
     /**
+     * Fine-grained CPU placement rank without changing the older coarse
+     * localityRank contract: exact logical CPU, same physical core, verified
+     * L2, verified LLC, same NUMA node, then remote/unknown.
+     *
+     * Core identity is topology evidence only. It does not claim that SMT
+     * siblings share a particular L1 implementation or that co-scheduling two
+     * busy tasks on one physical core is always faster.
+     */
+    int cpuAffinityRank(int preferredCpu, int candidateCpu) {
+        if (preferredCpu >= 0 && preferredCpu == candidateCpu) return 0;
+        Location preferred = locations.get(preferredCpu);
+        Location candidate = locations.get(candidateCpu);
+        if (preferred == null || candidate == null) return 5;
+        if (preferred.packageId() >= 0 && candidate.packageId() >= 0
+                && preferred.coreId() >= 0 && candidate.coreId() >= 0
+                && preferred.packageId() == candidate.packageId()
+                && preferred.coreId() == candidate.coreId()) return 1;
+        if (preferred.packageId() >= 0 && candidate.packageId() >= 0
+                && preferred.l2() >= 0 && candidate.l2() >= 0
+                && preferred.packageId() == candidate.packageId()
+                && preferred.l2() == candidate.l2()) return 2;
+        if (preferred.llc() >= 0 && candidate.llc() >= 0
+                && preferred.llcLevel() >= 2 && candidate.llcLevel() >= 2
+                && preferred.packageId() >= 0 && candidate.packageId() >= 0
+                && preferred.llc() == candidate.llc()
+                && preferred.llcLevel() == candidate.llcLevel()
+                && preferred.packageId() == candidate.packageId()) return 3;
+        if (preferred.numa() >= 0 && candidate.numa() >= 0
+                && preferred.numa() == candidate.numa()) return 4;
+        return 5;
+    }
+
+    int cacheLineBytes(int cpu) {
+        Location location = locations.get(cpu);
+        return location == null ? UNKNOWN : location.cacheLineBytes();
+    }
+
+    /**
      * Stable, allocation-free rendezvous score for one carrier slot.
      *
      * The previous first-local-match scan concentrated unrelated keys onto
@@ -122,15 +173,15 @@ final class CpuTopology {
         if (preferredCpu == UNKNOWN || enabled > MAX_DISCOVERED_CPUS)
             return fallback;
 
-        int bestRank = 3;
+        int bestRank = 5;
         long bestScore = 0;
         int bestSlot = fallback;
         for (int distance = 0;
                 distance < Math.min(enabled, MAX_NUMA_SLOT_PROBES);
                 distance++) {
             int slot = (int) (((long) fallback + distance) % enabled);
-            int rank = localityRank(preferredCpu, cpuForSlot.applyAsInt(slot));
-            if (rank >= 3) continue;
+            int rank = cpuAffinityRank(preferredCpu, cpuForSlot.applyAsInt(slot));
+            if (rank >= 5) continue;
             long score = slotScore(affinityKey, slot);
             if (rank < bestRank || (rank == bestRank
                     && Long.compareUnsigned(score, bestScore) > 0)) {
@@ -212,15 +263,23 @@ final class CpuTopology {
                 }
                 int packageId = readInt(cpuDir.resolve(
                         "topology/physical_package_id"));
+                int coreId = readInt(cpuDir.resolve("topology/core_id"));
                 CacheLevel cache = discoverLastLevelCache(cpuDir);
-                /* Unknown package identity cannot establish same-LLC
+                CacheLevel l2 = discoverCacheLevel(cpuDir, 2);
+                int cacheLineBytes = discoverCacheLineBytes(cpuDir);
+                /* Unknown package identity cannot establish cache/core
                  * locality across CPUs: fall back to NUMA or remote. */
                 final boolean trustedCache = packageId >= 0 && cache.id() >= 0;
+                final boolean trustedL2 = packageId >= 0 && l2.id() >= 0;
+                final boolean trustedCore = packageId >= 0 && coreId >= 0;
                 discovered.put(cpu, new Location(
                         cpu, trustedCache ? cache.id() : UNKNOWN,
                         discoverNumaNode(cpuDir),
                         trustedCache ? cache.level() : UNKNOWN,
-                        trustedCache ? packageId : UNKNOWN));
+                        packageId >= 0 ? packageId : UNKNOWN,
+                        trustedL2 ? l2.id() : UNKNOWN,
+                        trustedCore ? coreId : UNKNOWN,
+                        cacheLineBytes));
             }
         } catch (IOException | SecurityException ignored) {
             return empty();
@@ -253,6 +312,42 @@ final class CpuTopology {
             }
         }
         return new CacheLevel(bestId, bestLevel);
+    }
+
+    private static CacheLevel discoverCacheLevel(Path cpuDir, int wantedLevel) {
+        Path cacheRoot = cpuDir.resolve("cache");
+        if (!Files.isDirectory(cacheRoot) || wantedLevel < 2) {
+            return CacheLevel.unknown();
+        }
+        int result = UNKNOWN;
+        for (int index = 0; index < MAX_CACHE_INDEXES; index++) {
+            Path dir = cacheRoot.resolve("index" + index);
+            if (!Files.isDirectory(dir)) continue;
+            int level = readInt(dir.resolve("level"));
+            int id = readInt(dir.resolve("id"));
+            String type = readString(dir.resolve("type"));
+            if (level != wantedLevel || id < 0 || type == null
+                    || !type.equalsIgnoreCase("Unified")) continue;
+            if (result != UNKNOWN && result != id) return CacheLevel.unknown();
+            result = id;
+        }
+        return result == UNKNOWN
+                ? CacheLevel.unknown() : new CacheLevel(result, wantedLevel);
+    }
+
+    private static int discoverCacheLineBytes(Path cpuDir) {
+        Path cacheRoot = cpuDir.resolve("cache");
+        if (!Files.isDirectory(cacheRoot)) return UNKNOWN;
+        int result = UNKNOWN;
+        for (int index = 0; index < MAX_CACHE_INDEXES; index++) {
+            Path dir = cacheRoot.resolve("index" + index);
+            if (!Files.isDirectory(dir)) continue;
+            int line = readInt(dir.resolve("coherency_line_size"));
+            if (line < 16 || line > 4096 || (line & (line - 1)) != 0) continue;
+            if (result != UNKNOWN && result != line) return UNKNOWN;
+            result = line;
+        }
+        return result;
     }
 
     private static int discoverNumaNode(Path cpuDir) {
