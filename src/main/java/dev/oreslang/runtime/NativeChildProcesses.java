@@ -22,6 +22,9 @@ public final class NativeChildProcesses implements AutoCloseable {
             OresContext context,
             String rawExecutable,
             String argument) {
+        context.requireCapability(
+                IsolatePolicy.Capability.CHILD_PROCESS,
+                "process.spawn");
         if (rawExecutable == null || rawExecutable.isBlank()) {
             throw new IllegalArgumentException("process.spawn executable cannot be blank");
         }
