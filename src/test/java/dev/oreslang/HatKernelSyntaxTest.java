@@ -32,6 +32,17 @@ final class HatKernelSyntaxTest {
     }
 
     @Test
+    void kernelImportsHaveTheirOwnSelectorKind() {
+        Ast.Program program = Parser.parse("""
+                import kernel VectorAdd from "./vector_add.ores";
+                fnc main(): void { return; }
+                """);
+        assertEquals(1, program.imports().size());
+        assertEquals(Ast.ImportKind.KERNEL, program.imports().getFirst().kind());
+        assertEquals("VectorAdd", program.imports().getFirst().names().getFirst());
+    }
+
+    @Test
     void kernelRequiresDefineAndAsAndRejectsNonFunctionMembers() {
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("pub kernel K as end"));
