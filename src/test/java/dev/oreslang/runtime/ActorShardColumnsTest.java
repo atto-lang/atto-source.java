@@ -11,7 +11,7 @@ import org.junit.jupiter.api.Timeout;
 @Timeout(20)
 final class ActorShardColumnsTest {
     @Test
-    void zeroCopySoaLeaseEnforcesFrozenRegionAndTransactionalClose() throws Exception {
+    void zeroCopySoaLeaseProtectsDestinationAndPermitsDisjointNativeKernel() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch done = new CountDownLatch(1);
             AtomicReference<Throwable> failure = new AtomicReference<>();
@@ -29,10 +29,22 @@ final class ActorShardColumnsTest {
                     }
                     assertThrows(IndexOutOfBoundsException.class, () -> lease.read(8));
                     assertThrows(IllegalStateException.class, () -> shard.write(1, 1, 17));
-                    double beforeFailedKernel = shard.read(3, 0);
-                    assertThrows(IllegalStateException.class, () -> shard.integrate(0, 1, 0.1));
-                    assertEquals(beforeFailedKernel, shard.read(3, 0),
-                            "borrow rejection must occur before the first dense-kernel write");
+                    // The optimized native strided kernel may READ an
+                    // immutable velocity column while WRITING disjoint position.
+                    shard.write(1, 0, 12.0);
+                    shard.integrate(0, 1, 0.1);
+                    assertEquals(12.125, shard.read(1, 0));
+                    assertEquals(1.25, lease.read(1));
+
+                    // A borrow of the destination must instead reject the
+                    // complete bulk integration before ANY position changes.
+                    var positionLease = shard.leaseColumnReadOnly(0);
+                    double beforeRejectedKernel = shard.read(3, 0);
+                    assertThrows(IllegalStateException.class,
+                            () -> shard.integrate(0, 1, 0.1));
+                    assertEquals(beforeRejectedKernel, shard.read(3, 0),
+                            "borrow conflict must be rejected before first write");
+                    positionLease.close();
                     assertThrows(IllegalStateException.class, shard::close);
                     assertEquals(0.25, lease.read(0), "failed close must preserve the lease");
                     lease.close();
