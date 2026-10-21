@@ -35,8 +35,8 @@ final class StreamConcurrencyTest {
         assertFalse(stream.channel().tryWrite(3));
         assertEquals(2, stream.channel().size());
         stream.close();
-        assertEquals(1, stream.channel().tryRead().orElseThrow());
-        assertEquals(2, stream.channel().tryRead().orElseThrow());
+        assertEquals(1, stream.channel().tryRead().orElseThrow().intValue());
+        assertEquals(2, stream.channel().tryRead().orElseThrow().intValue());
         assertEquals(0, stream.channel().size());
         assertClosed(() -> stream.channel().readAsync().join());
         assertClosed(() -> stream.channel().writeAsync(4).join());
@@ -53,7 +53,7 @@ final class StreamConcurrencyTest {
         assertEquals(0, stream.channel().pendingRegistrations());
         assertFalse(stream.isClosed());
         assertTrue(stream.channel().tryWrite(8));
-        assertEquals(8, stream.channel().tryRead().orElseThrow());
+        assertEquals(8, stream.channel().tryRead().orElseThrow().intValue());
         stream.close();
     }
 
@@ -67,7 +67,7 @@ final class StreamConcurrencyTest {
         stream.close();
         assertClosed(blocked::join);
         assertEquals(0, stream.channel().pendingRegistrations());
-        assertEquals(10, stream.channel().tryRead().orElseThrow());
+        assertEquals(10, stream.channel().tryRead().orElseThrow().intValue());
     }
 
     @Test
