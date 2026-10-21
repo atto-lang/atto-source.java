@@ -52,6 +52,8 @@ public final class ActorNativeArena implements AutoCloseable {
     private long committed;
     private long allocated;
     private boolean closed;
+    /** Lazy per-actor byte-addressed guest heap; no other actor can access it. */
+    private ActorLinearMemory linearMemory;
 
     ActorNativeArena(long limit, Runnable checkOwner, Budget budget) {
         if (limit <= 0) throw new IllegalArgumentException("native arena limit must be positive");
@@ -74,6 +76,28 @@ public final class ActorNativeArena implements AutoCloseable {
     public synchronized long committedBytes() { return committed; }
     public synchronized long allocatedBytes() { return allocated; }
     public synchronized boolean closed() { return closed; }
+
+    synchronized void assertOwner() { checkAccess(); }
+
+    /**
+     * Exactly one growable linear guest address space per actor arena.
+     * Pages are physically private native allocations; guest offsets are
+     * logical addresses, never raw host pointers or JVM heap references.
+     * Memory is provisioned lazily so idle actors need no 64-KiB reservation.
+     */
+    public synchronized ActorLinearMemory linearMemory(int initialPages, int maxPages) {
+        checkAccess();
+        if (linearMemory == null) {
+            ActorLinearMemory created = new ActorLinearMemory(this, maxPages);
+            created.grow(initialPages);
+            linearMemory = created;
+        } else {
+            if (linearMemory.maxPages() != maxPages || linearMemory.pages() < initialPages) {
+                throw new IllegalArgumentException("actor linear memory configuration mismatch");
+            }
+        }
+        return linearMemory;
+    }
 
     /** Primitive access path for dense stores: no per-element Java objects or codecs. */
     public synchronized Region region(int bytes) {
@@ -118,6 +142,15 @@ public final class ActorNativeArena implements AutoCloseable {
             checkAccess();
             if (memory == null) throw new IllegalStateException("actor native region is closed");
             return memory;
+        }
+        public byte readByte(int offset) {
+            synchronized (ActorNativeArena.this) { return checked().get(offset); }
+        }
+        public void writeByte(int offset, byte value) {
+            synchronized (ActorNativeArena.this) { requireWritable().put(offset, value); }
+        }
+        void assertWritable() {
+            synchronized (ActorNativeArena.this) { requireWritable(); }
         }
         public long readLong(int offset) {
             synchronized (ActorNativeArena.this) { return checked().getLong(offset); }
@@ -434,6 +467,7 @@ public final class ActorNativeArena implements AutoCloseable {
     @Override public synchronized void close() {
         if (closed) return;
         closed = true;
+        if (linearMemory != null) linearMemory.forgetReleasedPages();
         for (Region region : regions) region.revoke();
         regions.clear();
         for (ByteBuffer slab : slabs) releaseNative(slab);
