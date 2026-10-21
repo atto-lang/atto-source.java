@@ -172,6 +172,8 @@ const FORBIDDEN_BLOCKING_IO: &[&[&str]] = &[
     &["network", "connect"],
     &["net", "connect"],
     &["http", "listen"],
+    &["http", "handler"],
+    &["http", "claim"],
     &["http", "get_text"],
     &["http", "post_text"],
 ];
@@ -357,6 +359,11 @@ mod tests {
     #[test]
     fn rejects_sync_network_connect_alias() {
         assert!(inspect("fnc f(): void { net.connect(\"x\", 80); }").is_err());
+    }
+    #[test]
+    fn rejects_legacy_http_transport_controls() {
+        assert!(inspect("fnc f(): void { http.handler(\"H\"); }").is_err());
+        assert!(inspect("fnc f(): void { http.claim(\"token\"); }").is_err());
     }
     #[test]
     fn accepts_async_io_names() {
