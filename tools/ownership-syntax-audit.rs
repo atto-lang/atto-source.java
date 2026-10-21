@@ -76,8 +76,8 @@ fn scan(path: &Path, findings: &mut Vec<(PathBuf, usize)>, depth: u32) -> io::Re
     }
     let kind = fs::symlink_metadata(path)?.file_type();
     if kind.is_symlink() {
-        // Never traverse symlinks outside the selected checkout.
-        return Ok(());
+        // A source auditor cannot silently skip paths that might hold code.
+        return Err(io::Error::other("symlink encountered in source audit scope"));
     }
     if kind.is_dir() {
         if path.file_name().and_then(|x| x.to_str())
@@ -116,7 +116,7 @@ fn run() -> Result<i32, String> {
     if roots.is_empty() {
         roots = ["src", "stdlib", "examples", "docs", "contracts", "formal",
             ".github", ".oreslang", "scripts", "tests", "tools", "README.md"]
-            .iter().map(PathBuf::from).filter(|p| p.exists()).collect();
+            .iter().map(PathBuf::from).collect();
     }
     if roots.is_empty() {
         return Err("no directories to audit; pass an explicit ROOT".into());
@@ -161,6 +161,23 @@ mod tests {
         assert!(legacy_lines("prtrt borrow mut x").is_empty());
         assert!(legacy_lines("rt borrow mutable").is_empty());
         assert!(legacy_lines("rt borrow_owner mut").is_empty());
+    }
+
+    #[test]
+    fn missing_audit_root_refuses_success() {
+        let nonexistent = std::env::temp_dir().join(format!(
+            "oreslang-audit-absent-root-{}", std::process::id()));
+        assert!(scan(&nonexistent, &mut Vec::new(), 0).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_in_audit_scope_fails_closed() {
+        let link = std::env::temp_dir().join(format!(
+            "oreslang-audit-symlink-probe-{}", std::process::id()));
+        std::os::unix::fs::symlink(std::env::temp_dir(), &link).unwrap();
+        assert!(scan(&link, &mut Vec::new(), 0).is_err());
+        std::fs::remove_file(&link).unwrap();
     }
 
     #[test]
