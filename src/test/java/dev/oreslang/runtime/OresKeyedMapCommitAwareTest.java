@@ -76,11 +76,11 @@ final class OresKeyedMapCommitAwareTest {
                 map.tryPutOwned("key", candidate);
 
         assertFalse(rejected.committed());
-        assertSame(candidate, rejected.uncommittedValue());
+        assertSame(candidate, rejected.takeUncommittedValue());
         assertSame(kept, map.getRequired("key"));
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
-                rejected::rethrowIfRejected);
+                rejected::rethrowAfterRecovery);
         assertEquals("policy rejected candidate", failure.getMessage());
     }
 
