@@ -1520,6 +1520,23 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalStateException(
                         "checked Task capture admission is inconsistent with its AST body");
             }
+            // Admission is allowed to omit global/module names, but it may
+            // never omit a lexical parent binding referenced by the Task.
+            // This is a runtime backstop against compiler/runtime capture-set
+            // drift: every free name that resolves to the parent environment
+            // must carry an explicit COPY/MOVE admission.
+            for (String freeName : syntactic) {
+                if (!admitted.containsKey(freeName)
+                        && env.lookupSlot(freeName) != null) {
+                    throw new IllegalStateException(
+                            "checked Task capture admission omitted lexical parent binding '"
+                                    + freeName + "'");
+                }
+            }
+            if (admission.domain() != taskExpr.domain()) {
+                throw new IllegalStateException(
+                        "checked Task capture admission execution domain does not match TaskExpr");
+            }
 
             TaskLaunchAuthority launchAuthority =
                     new TaskLaunchAuthority(
