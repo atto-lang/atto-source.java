@@ -2759,6 +2759,12 @@ public final class OwnershipChecker {
                 scanExpr(field.value(), locals, outer, recursiveBinding, captures, false);
             }
         }
+        else if (expr instanceof Ast.CpuRegionExpr cpu) {
+            // A synchronous region is not a closure/capture barrier: if an
+            // enclosing Task accesses x solely inside cpu { return x; },
+            // x still belongs to that Task's owned capture set.
+            scanStatements(cpu.body(), locals, outer, recursiveBinding, captures);
+        }
         else if (expr instanceof Ast.TaskExpr nested) {
             // A nested Task is a deferred closure, not a capture barrier.
             // Include its free variables transitively when proving ownership
