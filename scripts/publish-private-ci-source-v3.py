@@ -873,6 +873,15 @@ def _gh_ref_request(repository, ref_name, method):
     return result
 
 
+def require_ref_permissions(repo):
+    """Require explicit authenticated ref read/write authority before 404 logic."""
+    permissions = repo.get("permissions") if isinstance(repo, dict) else None
+    if (not isinstance(permissions, dict)
+            or permissions.get("pull") is not True
+            or permissions.get("push") is not True):
+        raise Denied("carrier token lacks explicit ref read/write permission")
+
+
 def create_handoff_ref(repository, ref_name, commit_sha, expected_repository_id):
     """Create one exact ref while distinguishing definite rejection from ambiguity."""
     commit_sha = valid_sha(commit_sha, "invalid handoff commit SHA")
@@ -881,6 +890,7 @@ def create_handoff_ref(repository, ref_name, commit_sha, expected_repository_id)
     repo = legacy.checked_repo(repository)
     if repo.get("id") != expected_repository_id:
         raise Denied("carrier repository identity changed during ref creation")
+    require_ref_permissions(repo)
     try:
         payload = legacy.gh_api(
             f"repos/{repository}/git/refs",
@@ -912,6 +922,10 @@ def live_ref_sha(repository, ref_name, expected_repository_id):
     repo = legacy.checked_repo(repository)
     if repo.get("id") != expected_repository_id:
         raise Denied("carrier repository identity changed during ref verification")
+    # Metadata visibility alone does not prove Git-ref authority. A private
+    # ref endpoint can be permission-masked as 404, so require GitHub to
+    # report explicit authenticated read+write repository permission first.
+    require_ref_permissions(repo)
     result = _gh_ref_request(repository, ref_name, "GET")
     if result.returncode != 0:
         if is_github_ref_absent_response(result):
