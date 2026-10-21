@@ -5038,7 +5038,21 @@ public final class OresEvalRootNode extends RootNode {
             ArrayList<Object> detached = new ArrayList<>(args.size());
             for (int i = 0; i < args.size(); i++) {
                 Object arg = args.get(i);
-                if (arg instanceof ChannelRuntime.Channel<?> channel) {
+                if (arg instanceof dev.oreslang.runtime.OresStream<?> stream) {
+                    // Stream is a bounded and synchronized guest-owned handle,
+                    // not a borrowed generator activation or host iterator.
+                    // A detached async callable may retain it only when the
+                    // formal explicitly admits Stream<T>.
+                    Ast.TypeRef formal = parameters.get(i).type();
+                    if (formal == null || formal.isBorrow()
+                            || !"Stream".equals(formal.name())
+                            || formal.arguments().size() != 1) {
+                        throw new IllegalArgumentException(
+                                "async task stream argument " + (i + 1)
+                                        + " requires an explicit Stream<T> parameter");
+                    }
+                    detached.add(stream);
+                } else if (arg instanceof ChannelRuntime.Channel<?> channel) {
                     // Channel<T> is an Ores-owned synchronized, copyable handle
                     // within an execution domain. Preserve its coordinator
                     // identity across local async source task arguments, but
