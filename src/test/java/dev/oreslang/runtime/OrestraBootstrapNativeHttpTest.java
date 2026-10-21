@@ -70,6 +70,7 @@ final class OrestraBootstrapNativeHttpTest {
              ExecutorService clients = Executors.newVirtualThreadPerTaskExecutor()) {
             Future<?> exercise = clients.submit(() -> {
                 try (HttpClient http = HttpClient.newBuilder()
+                        .version(HttpClient.Version.HTTP_1_1)
                         .connectTimeout(Duration.ofSeconds(3)).build()) {
                     int port = portFuture.get(12, TimeUnit.SECONDS);
                     assertTrue(port > 0 && port <= 65535);
@@ -119,6 +120,7 @@ final class OrestraBootstrapNativeHttpTest {
                 .method(method, HttpRequest.BodyPublishers.noBody()).build();
         HttpResponse<String> response = client.send(
                 request, HttpResponse.BodyHandlers.ofString());
+        assertEquals(HttpClient.Version.HTTP_1_1, response.version(), path);
         assertEquals(expectedStatus, response.statusCode(), path);
         assertEquals(expectedJson, response.body(), path);
         assertEquals("application/json",
