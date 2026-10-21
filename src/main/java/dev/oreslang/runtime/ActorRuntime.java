@@ -1809,6 +1809,48 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /** VM-only minting of an actor-incarnation reply capability.
+     * Neither guests nor arbitrary ActorId holders can obtain this endpoint. */
+    GenerationalReplyRegistry.Endpoint bindActorReplyEndpoint(
+            GenerationalReplyRegistry registry, ActorRef<?> actor) {
+        Objects.requireNonNull(registry, "reply registry");
+        requireCallerRuntimeAffinity("bind actor reply endpoint");
+        Objects.requireNonNull(actor, "actor");
+        if (!actor.ownedBy(this) || closed.get()) {
+            throw new SecurityException("reply actor belongs to foreign/closed runtime");
+        }
+        ActorCell<?> cell = actors.get(actor.id());
+        if (cell == null || cell.ref != actor || cell.stopped.get()) {
+            throw new SecurityException("reply endpoint requires a live exact actor incarnation");
+        }
+        return registry.bindActor(actor, GenerationalReplyRegistry.Role.ACTOR);
+    }
+
+    /** Explicit trusted-host enrollment of a supervisor APPLICATION service.
+     * This does not grant the actor supervisor CONTROL-plane authority. */
+    GenerationalReplyRegistry.Endpoint bindSupervisorApplicationReplyEndpoint(
+            GenerationalReplyRegistry registry, ActorRef<?> service) {
+        requireSupervisorContext("enroll supervisor application service for unary RPC");
+        Objects.requireNonNull(registry, "reply registry");
+        Objects.requireNonNull(service, "supervisor application actor");
+        if (!service.ownedBy(this) || closed.get()) {
+            throw new SecurityException("supervisor service belongs to foreign/closed runtime");
+        }
+        ActorCell<?> cell = actors.get(service.id());
+        if (cell == null || cell.ref != service || cell.stopped.get()) {
+            throw new SecurityException("supervisor service requires a live exact actor incarnation");
+        }
+        return registry.bindActor(service, GenerationalReplyRegistry.Role.SUPERVISOR_APPLICATION);
+    }
+
+    /** VM/runtime continuation-only identity; not a guest-accessible handle. */
+    ActorRef<?> currentReplyActorRef() {
+        if (!currentThreadOwnsActorExecutionLease()) {
+            throw new SecurityException("reply request requires the admitted actor turn lease");
+        }
+        return currentActor.get().ref;
+    }
+
     public ContinuationTarget captureCurrentContinuationTarget() {
         ActorCell<?> cell = currentActor.get();
         if (cell == null) {
