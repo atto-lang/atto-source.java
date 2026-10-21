@@ -285,6 +285,36 @@ final class ActorUnaryMailboxRequestTest {
     }
 
     @Test
+    void stoppingActiveActorImmediatelyRevokesPendingCallsBeforeItsCarrierExits()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var registry = new GenerationalReplyRegistry(1);
+            var running = new CountDownLatch(1);
+            var allowExit = new CountDownLatch(1);
+            var source = runtime.<String>spawn(() -> (message, ctx) -> {
+                running.countDown();
+                assertTrue(allowExit.await(3, TimeUnit.SECONDS));
+            });
+            var target = runtime.<String>spawn(() -> (message, ctx) -> { });
+            var caller = runtime.bindActorReplyEndpoint(registry, source);
+            var callee = runtime.bindActorReplyEndpoint(registry, target);
+            var ticket = registry.reserve(caller, callee, String.class);
+            try {
+                source.send("hold");
+                assertTrue(running.await(3, TimeUnit.SECONDS));
+                source.stop();
+                assertEquals(0, registry.pendingCount(),
+                        "stop must revoke even when the actor has not exited its carrier");
+                assertFalse(ticket.reply(callee, "stale"));
+            } finally {
+                allowExit.countDown();
+            }
+            source.done().get(3, TimeUnit.SECONDS);
+            registry.close();
+        }
+    }
+
+    @Test
     void retiringCallerIncarnationRejectsLateResponseAndFreesSlot() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var registry = new GenerationalReplyRegistry(1);
