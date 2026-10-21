@@ -52,7 +52,89 @@ reject "incorrect reported owner/repo" "$target" \
   $'other/clients-api-contract\tprivate\ttrue\t1323599063'
 reject "multiline response" "$target" "$valid"$'\ninjected'
 reject "missing metadata field" "$target" \
-  $'sonus-auris-test/clients-api-contract\tprivate\ttrue'
+  
+
+printf '%s\n' "$approved" "$approved" > "$policy"
+reject "duplicate approval" "$target" "$valid"
+printf '%s\n' "$approved extra" > "$policy"
+reject "suffix appended to policy ID" "$target" "$valid"
+printf '%s\n' "$approved" > "$policy"
+
+FAKE_GH_METADATA="$valid" bash "$tmp/scripts/check-private-ci-destination.sh" \
+  "$target" >"$tmp/output"
+grep -q '^PRIVATE_CI_DESTINATION_APPROVED:' "$tmp/output"
+printf 'source-free private CI guard checks passed\n'
+sonus-auris-test/clients-api-contract\tprivate\ttrue'
+reject "empty visibility field" "$target" \
+  
+
+printf '%s\n' "$approved" "$approved" > "$policy"
+reject "duplicate approval" "$target" "$valid"
+printf '%s\n' "$approved extra" > "$policy"
+reject "suffix appended to policy ID" "$target" "$valid"
+printf '%s\n' "$approved" > "$policy"
+
+FAKE_GH_METADATA="$valid" bash "$tmp/scripts/check-private-ci-destination.sh" \
+  "$target" >"$tmp/output"
+grep -q '^PRIVATE_CI_DESTINATION_APPROVED:' "$tmp/output"
+printf 'source-free private CI guard checks passed\n'
+sonus-auris-test/clients-api-contract\t\tprivate\ttrue\t1323599063'
+reject "empty boolean field" "$target" \
+  
+
+printf '%s\n' "$approved" "$approved" > "$policy"
+reject "duplicate approval" "$target" "$valid"
+printf '%s\n' "$approved extra" > "$policy"
+reject "suffix appended to policy ID" "$target" "$valid"
+printf '%s\n' "$approved" > "$policy"
+
+FAKE_GH_METADATA="$valid" bash "$tmp/scripts/check-private-ci-destination.sh" \
+  "$target" >"$tmp/output"
+grep -q '^PRIVATE_CI_DESTINATION_APPROVED:' "$tmp/output"
+printf 'source-free private CI guard checks passed\n'
+sonus-auris-test/clients-api-contract\tprivate\t\ttrue\t1323599063'
+reject "empty trailing field" "$target" \
+  
+
+printf '%s\n' "$approved" "$approved" > "$policy"
+reject "duplicate approval" "$target" "$valid"
+printf '%s\n' "$approved extra" > "$policy"
+reject "suffix appended to policy ID" "$target" "$valid"
+printf '%s\n' "$approved" > "$policy"
+
+FAKE_GH_METADATA="$valid" bash "$tmp/scripts/check-private-ci-destination.sh" \
+  "$target" >"$tmp/output"
+grep -q '^PRIVATE_CI_DESTINATION_APPROVED:' "$tmp/output"
+printf 'source-free private CI guard checks passed\n'
+sonus-auris-test/clients-api-contract\tprivate\ttrue\t1323599063\t'
+reject "extra metadata field" "$target" \
+  
+
+printf '%s\n' "$approved" "$approved" > "$policy"
+reject "duplicate approval" "$target" "$valid"
+printf '%s\n' "$approved extra" > "$policy"
+reject "suffix appended to policy ID" "$target" "$valid"
+printf '%s\n' "$approved" > "$policy"
+
+FAKE_GH_METADATA="$valid" bash "$tmp/scripts/check-private-ci-destination.sh" \
+  "$target" >"$tmp/output"
+grep -q '^PRIVATE_CI_DESTINATION_APPROVED:' "$tmp/output"
+printf 'source-free private CI guard checks passed\n'
+sonus-auris-test/clients-api-contract\tprivate\ttrue\t1323599063\textra'
+reject "trailing metadata space" "$target" \
+  
+
+printf '%s\n' "$approved" "$approved" > "$policy"
+reject "duplicate approval" "$target" "$valid"
+printf '%s\n' "$approved extra" > "$policy"
+reject "suffix appended to policy ID" "$target" "$valid"
+printf '%s\n' "$approved" > "$policy"
+
+FAKE_GH_METADATA="$valid" bash "$tmp/scripts/check-private-ci-destination.sh" \
+  "$target" >"$tmp/output"
+grep -q '^PRIVATE_CI_DESTINATION_APPROVED:' "$tmp/output"
+printf 'source-free private CI guard checks passed\n'
+sonus-auris-test/clients-api-contract\tprivate\ttrue\t1323599063 '
 
 printf '%s\n' "$approved" "$approved" > "$policy"
 reject "duplicate approval" "$target" "$valid"
