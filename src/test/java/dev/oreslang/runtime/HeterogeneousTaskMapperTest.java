@@ -139,6 +139,10 @@ final class HeterogeneousTaskMapperTest {
         assertEquals(
                 HeterogeneousTaskMapper.LayoutKind.AOSOA,
                 HeterogeneousTaskMapper.Layout.aosoa(32).kind());
+        var grouped = HeterogeneousTaskMapper.Layout.soaos(4);
+        assertEquals(HeterogeneousTaskMapper.LayoutKind.SOAOS, grouped.kind());
+        assertEquals(4, grouped.blockSize(),
+                "SoAoS blockSize is the fixed inner field-group width");
         assertEquals(
                 List.of(16, 16),
                 HeterogeneousTaskMapper.Layout.tiled(16, 16).tileShape());
@@ -146,6 +150,9 @@ final class HeterogeneousTaskMapperTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> HeterogeneousTaskMapper.Layout.aosoa(0));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> HeterogeneousTaskMapper.Layout.soaos(0));
         assertThrows(
                 IllegalArgumentException.class,
                 () -> HeterogeneousTaskMapper.Layout.tiled(16, 0));
