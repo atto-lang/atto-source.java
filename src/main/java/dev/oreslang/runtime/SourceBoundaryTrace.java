@@ -6,6 +6,8 @@ import java.util.Objects;
 public final class SourceBoundaryTrace extends RuntimeException {
     private static final int MAX_BOUNDARIES = 64;
     private static final int MAX_CODE_UNIT_LENGTH = 160;
+    // Cap untrusted source metadata *before* any path/URI scanning or slicing.
+    private static final int MAX_CODE_UNIT_INPUT_LENGTH = 4_096;
     private static final int MAX_CALLABLE_LENGTH = 96;
     private static final int MAX_BOUNDARY_LENGTH = 64;
 
@@ -65,6 +67,11 @@ public final class SourceBoundaryTrace extends RuntimeException {
     private static String sanitizedCodeUnit(String value) {
         if (value == null || value.isEmpty()) {
             return sanitized(value, MAX_CODE_UNIT_LENGTH);
+        }
+        // Input sizes, not just rendered output sizes, must be bounded on
+        // failure paths. A large secret-bearing URL is never partially echoed.
+        if (value.length() > MAX_CODE_UNIT_INPUT_LENGTH) {
+            return "<source-id-too-long>";
         }
         int scheme = value.indexOf("://");
         if (scheme >= 0) {
