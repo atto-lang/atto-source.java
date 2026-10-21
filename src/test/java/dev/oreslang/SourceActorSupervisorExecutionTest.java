@@ -214,7 +214,7 @@ final class SourceActorSupervisorExecutionTest {
                 PolyglotException.class,
                 () -> run(program, "source-panic-value-contract.ores"));
         assertTrue(
-                failure.getMessage().contains("panic currently requires a string failure value"),
+                failure.getMessage().contains("panic diagnostic"),
                 failure.getMessage());
     }
 
