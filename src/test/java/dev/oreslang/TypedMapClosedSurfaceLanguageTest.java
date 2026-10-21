@@ -19,13 +19,10 @@ final class TypedMapClosedSurfaceLanguageTest {
     @Test
     void ownershipCheckerRestoresTerminalIndexedMoveOnlyMapCandidateOnCatchEdge() {
         String source = """
-                define class Payload as
-                end
-
                 pub fnc main(): void {
-                  val Map<string, Payload> values =
-                      new Map<string, Payload>();
-                  val Payload item = new Payload();
+                  val Map<string, JsonValue> values =
+                      new Map<string, JsonValue>();
+                  val JsonValue item = new JsonValue();
 
                   try {
                     values["x"] = item;
@@ -43,16 +40,13 @@ final class TypedMapClosedSurfaceLanguageTest {
     @Test
     void ownershipCheckerRestoresTerminalNamedPutCandidateOnCatchEdge() {
         String source = """
-                define class Payload as
-                end
-
                 pub fnc main(): void {
-                  val Map<string, Payload> values =
-                      new Map<string, Payload>();
-                  val Payload item = new Payload();
+                  val Map<string, JsonValue> values =
+                      new Map<string, JsonValue>();
+                  val JsonValue item = new JsonValue();
 
                   try {
-                    const Option<Payload> previous =
+                    const Option<JsonValue> previous =
                         values.put("x", item);
                   } catch (err) {
                     rt take item;
@@ -68,13 +62,10 @@ final class TypedMapClosedSurfaceLanguageTest {
     @Test
     void ownershipCheckerKeepsTerminalCandidateMovedAfterNormalTryExit() {
         String source = """
-                define class Payload as
-                end
-
                 pub fnc main(): void {
-                  val Map<string, Payload> values =
-                      new Map<string, Payload>();
-                  val Payload item = new Payload();
+                  val Map<string, JsonValue> values =
+                      new Map<string, JsonValue>();
+                  val JsonValue item = new JsonValue();
 
                   try {
                     values["x"] = item;
@@ -94,13 +85,10 @@ final class TypedMapClosedSurfaceLanguageTest {
     @Test
     void ownershipCheckerDoesNotRestoreMoveWhenMapWriteIsNotTerminal() {
         String source = """
-                define class Payload as
-                end
-
                 pub fnc main(): void {
-                  val Map<string, Payload> values =
-                      new Map<string, Payload>();
-                  val Payload item = new Payload();
+                  val Map<string, JsonValue> values =
+                      new Map<string, JsonValue>();
+                  val JsonValue item = new JsonValue();
 
                   try {
                     values["x"] = item;
@@ -120,13 +108,10 @@ final class TypedMapClosedSurfaceLanguageTest {
     @Test
     void outerCatchKeepsInnerCommittedRecoverableMapMoveConservative() {
         String source = """
-                define class Payload as
-                end
-
                 pub fnc main(): void {
-                  val Map<string, Payload> values =
-                      new Map<string, Payload>();
-                  val Payload item = new Payload();
+                  val Map<string, JsonValue> values =
+                      new Map<string, JsonValue>();
+                  val JsonValue item = new JsonValue();
 
                   try {
                     try {
@@ -136,6 +121,47 @@ final class TypedMapClosedSurfaceLanguageTest {
                   } catch (outer) {
                     rt take item;
                   }
+                  return;
+                }
+                """;
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse(source)));
+    }
+
+    @Test
+    void ownershipCheckerDoesNotGrantRollbackToUserClassNamedJsonValue() {
+        String source = """
+                define class JsonValue as
+                end
+
+                pub fnc main(): void {
+                  val Map<string, JsonValue> values =
+                      new Map<string, JsonValue>();
+                  val JsonValue item = new JsonValue();
+
+                  try {
+                    values["x"] = item;
+                  } catch (err) {
+                    rt take item;
+                  }
+                  return;
+                }
+                """;
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse(source)));
+    }
+
+    @Test
+    void ownershipCheckerFailsClosedOnTypedMapMutatorArity() {
+        String source = """
+                pub fnc main(): void {
+                  val Map<string, JsonValue> values =
+                      new Map<string, JsonValue>();
+                  values.put("x");
                   return;
                 }
                 """;
