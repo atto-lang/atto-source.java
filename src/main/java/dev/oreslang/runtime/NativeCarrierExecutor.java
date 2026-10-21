@@ -333,6 +333,14 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     }
 
     public int getActiveCount() { return activeCount.get(); }
+    /** Physical pthreads currently attached to this native pool. */
+    public int getPoolSize() {
+        int count = 0;
+        for (int slot = 0; slot < carrierThreads.length(); slot++) {
+            if (carrierThreads.get(slot) != null) count++;
+        }
+        return count;
+    }
     public int getQueueSize() { return queue.size(); }
     public long getCompletedTaskCount() { return completedTaskCount.get(); }
     public int getLargestPoolSize() { return largestPoolSize.get(); }
