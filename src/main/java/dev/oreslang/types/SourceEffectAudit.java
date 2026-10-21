@@ -89,6 +89,7 @@ public final class SourceEffectAudit {
                         EnumSet.noneOf(EffectContracts.Effect.class);
                 if (fn.async() || fn.suspends() || fn.generator()) {
                     direct.add(EffectContracts.Effect.SCHEDULER);
+                    direct.add(EffectContracts.Effect.SUSPEND);
                 }
                 if (!fn.annotations().isEmpty() || fn.kind() != Ast.CallableKind.FNC
                         || fn.structural() || fn.nonLexical()
