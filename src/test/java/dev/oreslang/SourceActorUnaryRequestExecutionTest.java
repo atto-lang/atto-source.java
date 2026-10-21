@@ -45,6 +45,42 @@ final class SourceActorUnaryRequestExecutionTest {
     }
 
     @Test
+    void twoIndependentSourceCallersUseTheSameCalleeWithoutCrossCompletion() throws Exception {
+        String program = """
+                define actor Worker as
+                  run(String request): String {
+                    return "pong";
+                  }
+                  receive(ActorMail<ActorRef<Worker>> mail): void {
+                    val response = await mail.value.request("ping");
+                    self.send(response);
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val server = spawn Worker();
+                  val clientA = spawn Worker();
+                  val clientB = spawn Worker();
+                  await server.get_ready();
+                  await clientA.get_ready();
+                  await clientB.get_ready();
+                  clientA.send(server);
+                  clientB.send(server);
+                  val responseA = (await clientA.outputs.next()).value.unwrap();
+                  val responseB = (await clientB.outputs.next()).value.unwrap();
+                  stdio.stdout.write(responseA.value);
+                  stdio.stdout.write(responseB.value);
+                  await clientA.get_done();
+                  await clientB.get_done();
+                  return;
+                }
+                """;
+        assertEquals("pongpong", run(program, "source-unary-two-callers.ores"));
+    }
+
+    @Test
     void sourceUnaryIntegerResponseUsesExactLongRepresentationWitness() throws Exception {
         String program = """
                 define actor Worker as
