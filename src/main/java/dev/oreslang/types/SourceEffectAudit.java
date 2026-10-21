@@ -7,6 +7,7 @@ import java.lang.reflect.RecordComponent;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumSet;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -70,8 +71,8 @@ public final class SourceEffectAudit {
     /** Parse, typecheck and ownership-check before attaching source identity. */
     public static Report inspect(String source) {
         java.util.Objects.requireNonNull(source, "source");
-        Ast.Program checked = OresCompiler.parseAndTypeCheck(source);
-        Report facts = inspectChecked(checked);
+        var checked = OresCompiler.parseAndTypeCheckForEffectAudit(source);
+        Report facts = inspectChecked(checked.program(), checked.resolvedLocalCalls());
         return new Report(facts.functions, facts.unsupportedDeclarations,
                 sourceDigest(source));
     }
@@ -87,6 +88,11 @@ public final class SourceEffectAudit {
     }
 
     private static Report inspectChecked(Ast.Program checked) {
+        return inspectChecked(checked, Map.of());
+    }
+
+    private static Report inspectChecked(Ast.Program checked,
+            Map<Ast.CallExpr, Ast.FunctionDecl> resolvedLocalCalls) {
         Map<String, Set<EffectContracts.Effect>> functions = new LinkedHashMap<>();
         List<String> unsupported = new ArrayList<>();
 
@@ -102,6 +108,19 @@ public final class SourceEffectAudit {
             throw new IllegalArgumentException("effect module budget exceeded");
         }
         VisitBudget budget = new VisitBudget();
+        Map<Ast.FunctionDecl, String> symbols = new IdentityHashMap<>();
+        // Only target declarations in this exact checked compilation unit can
+        // become static graph edges. No textual name or imported declaration
+        // is sufficient for an effect-clearance fact.
+        for (Ast.ModuleDecl module : checked.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.FunctionDecl fn) {
+                    symbols.put(fn, module.name() + "." + fn.name() + "/"
+                            + fn.parameters().size() + ":" + fn.kind());
+                }
+            }
+        }
+        EffectContracts.Graph graph = new EffectContracts.Graph();
         int declarations = 0;
         for (Ast.ModuleDecl module : checked.modules()) {
             if (module.declarations().size() > MAX_DECLARATIONS - declarations) {
@@ -142,14 +161,18 @@ public final class SourceEffectAudit {
                 // Callable-level trap metadata is not a verified handler proof.
                 // Never use an annotation to subtract ordinary THROW here.
                 if (fn.trapped()) direct.add(EffectContracts.Effect.UNKNOWN_CALL);
-                Walker walker = new Walker(direct, budget);
+                List<EffectContracts.Call> calls = new ArrayList<>();
+                Walker walker = new Walker(direct, budget, calls, resolvedLocalCalls, symbols);
                 walker.walk(fn.body(), 0);
                 if (functions.putIfAbsent(symbol, Set.copyOf(direct)) != null) {
                     throw new IllegalArgumentException("effect symbol collision: " + symbol);
                 }
+                graph.add(EffectContracts.Callable.inferred(symbol, direct, calls));
             }
         }
-        return new Report(functions, unsupported, null);
+        // Fixed-point effect inference includes recursive locally bound
+        // functions; unknown callbacks never become trusted direct calls.
+        return new Report(graph.infer(), unsupported, null);
     }
 
     private static final class VisitBudget {
@@ -159,10 +182,19 @@ public final class SourceEffectAudit {
     private static final class Walker {
         private final EnumSet<EffectContracts.Effect> direct;
         private final VisitBudget budget;
+        private final List<EffectContracts.Call> calls;
+        private final Map<Ast.CallExpr, Ast.FunctionDecl> resolvedLocalCalls;
+        private final Map<Ast.FunctionDecl, String> symbols;
 
-        private Walker(EnumSet<EffectContracts.Effect> direct, VisitBudget budget) {
+        private Walker(EnumSet<EffectContracts.Effect> direct, VisitBudget budget,
+                List<EffectContracts.Call> calls,
+                Map<Ast.CallExpr, Ast.FunctionDecl> resolvedLocalCalls,
+                Map<Ast.FunctionDecl, String> symbols) {
             this.direct = direct;
             this.budget = budget;
+            this.calls = calls;
+            this.resolvedLocalCalls = resolvedLocalCalls;
+            this.symbols = symbols;
         }
 
         private void walk(Object node, int depth) {
@@ -173,6 +205,19 @@ public final class SourceEffectAudit {
             if (node instanceof List<?> nodes) {
                 for (Object child : nodes) walk(child, depth + 1);
                 return;
+            }
+            if (node instanceof Ast.CallExpr call) {
+                Ast.FunctionDecl target = resolvedLocalCalls.get(call);
+                String checkedTarget = target == null ? null : symbols.get(target);
+                if (checkedTarget != null) {
+                    // Checked direct function callee is a static slot, not
+                    // an ambient executable receiver or dynamic property.
+                    // Arguments/spreads still execute and must be audited.
+                    calls.add(EffectContracts.Call.direct(checkedTarget));
+                    walk(call.arguments(), depth + 1);
+                    return;
+                }
+                direct.add(EffectContracts.Effect.UNKNOWN_CALL);
             }
             if (node instanceof Ast.LiteralExpr literal) {
                 // Parser-supplied primitive constants are the only audited
@@ -196,8 +241,7 @@ public final class SourceEffectAudit {
 
             // No symbolic-name resolution occurs in this audit. An unrelated
             // declaration with the same spelling cannot launder a callback.
-            if (node instanceof Ast.CallExpr
-                    || node instanceof Ast.RuntimeCallExpr
+            if (node instanceof Ast.RuntimeCallExpr
                     || node instanceof Ast.NewExpr
                     || node instanceof Ast.BinaryExpr
                     || node instanceof Ast.UnaryExpr
