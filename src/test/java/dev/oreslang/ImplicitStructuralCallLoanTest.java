@@ -20,9 +20,16 @@ final class ImplicitStructuralCallLoanTest {
 
     private static void assertOwnershipRejects(String source) {
         var parsed = assertDoesNotThrow(() -> Parser.parse(PRELUDE + source));
-        assertDoesNotThrow(() -> TypeChecker.check(parsed));
-        assertThrows(IllegalArgumentException.class,
+        // TypeChecker's integrated path also invokes ownership validation.
+        // Both entrypoints must reject the unsafe argument list.
+        IllegalArgumentException integrated = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(parsed), source);
+        IllegalArgumentException standalone = assertThrows(IllegalArgumentException.class,
                 () -> OwnershipChecker.check(parsed), source);
+        assertTrue(integrated.getMessage().toLowerCase(java.util.Locale.ROOT).contains("borrow"),
+                integrated.getMessage());
+        assertTrue(standalone.getMessage().toLowerCase(java.util.Locale.ROOT).contains("borrow"),
+                standalone.getMessage());
     }
 
     private static void assertOwnershipAccepts(String source) {
