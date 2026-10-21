@@ -52,6 +52,8 @@ public final class OresEvalRootNode extends RootNode {
 
     private final Ast.Program program;
     private final String codeUnitId;
+    /** Ownership epoch captured when this executable root is created. */
+    private final long taskAdmissionEpoch;
     private volatile Evaluator evaluator;
 
     public OresEvalRootNode(OresLanguage language, Ast.Program program) {
@@ -60,8 +62,10 @@ public final class OresEvalRootNode extends RootNode {
 
     public OresEvalRootNode(OresLanguage language, Ast.Program program, String codeUnitId) {
         super(language);
-        this.program = program;
+        this.program = Objects.requireNonNull(program, "checked Oreslang program");
         this.codeUnitId = codeUnitId;
+        this.taskAdmissionEpoch =
+                Ast.CheckedTaskCaptures.requireProgramEpoch(program);
     }
 
     @Override public String getName() { return "ores-eval"; }
@@ -118,7 +122,14 @@ public final class OresEvalRootNode extends RootNode {
         if (current != null) return current;
         synchronized (this) {
             current = evaluator;
-            if (current == null) evaluator = current = new Evaluator(program, context, codeUnitId);
+            if (current == null) {
+                evaluator = current =
+                        new Evaluator(
+                                program,
+                                context,
+                                codeUnitId,
+                                taskAdmissionEpoch);
+            }
             return current;
         }
     }
@@ -132,6 +143,7 @@ public final class OresEvalRootNode extends RootNode {
         private final Ast.Program program;
         private final OresContext context;
         private final String codeUnitId;
+        private final long taskAdmissionEpoch;
         // Actor carriers may enter the same evaluator concurrently. The
         // identity map only retains call nodes already owned by this program.
         private final Map<Ast.CallExpr, Integer> optionDepthCache =
@@ -212,10 +224,15 @@ public final class OresEvalRootNode extends RootNode {
         }
 
 
-        private Evaluator(Ast.Program program, OresContext context, String codeUnitId) {
+        private Evaluator(
+                Ast.Program program,
+                OresContext context,
+                String codeUnitId,
+                long taskAdmissionEpoch) {
             this.program = program;
             this.context = context;
             this.codeUnitId = normalizeUnitId(codeUnitId);
+            this.taskAdmissionEpoch = taskAdmissionEpoch;
             indexImports();
             indexDeclarations();
             indexCallableSlots();
@@ -1429,8 +1446,13 @@ public final class OresEvalRootNode extends RootNode {
             // Execution authority comes from the exact TaskExpr admitted by
             // OwnershipChecker after the whole program passed. Re-parsed or
             // optimizer-cloned nodes have no admission and fail closed.
+            Ast.TaskCaptureAdmission admission =
+                    Ast.CheckedTaskCaptures.require(
+                            program,
+                            taskExpr,
+                            taskAdmissionEpoch);
             Map<String, Ast.TaskCaptureTransfer> admitted =
-                    Ast.CheckedTaskCaptures.require(taskExpr);
+                    admission.captureTransfers();
             Set<String> syntactic =
                     dev.oreslang.ast.TaskCaptureNames.referencedIn(
                             taskExpr.body());
