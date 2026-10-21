@@ -141,6 +141,8 @@ public final class ActorNativeArena implements AutoCloseable {
     private final WeakIdentityMap<NativeValue, Long> referenceOffsets = new WeakIdentityMap<>();
     private final Map<Long, NativeValue> referencesByOffset = new HashMap<>();
     private final Map<Long, Integer> referenceRefCounts = new HashMap<>();
+    /** Only runtime-issued capabilities may enter guest-native slots. */
+    private final WeakIdentityMap<NativeCapability, Boolean> issuedNativeCapabilities = new WeakIdentityMap<>();
     private final IdentityHashMap<NativeCapability, Long> capabilityIds = new IdentityHashMap<>();
     private final Map<Long, NativeCapability> capabilitiesById = new HashMap<>();
     private final Map<Long, Integer> capabilityRefCounts = new HashMap<>();
@@ -208,6 +210,16 @@ public final class ActorNativeArena implements AutoCloseable {
      * Size and chunk links are authoritative native words. Element payloads use
      * the same tagged slots/reference provenance as actor object fields.
      */
+    /**
+     * Package-private issuance boundary for trusted core/stdlib runtime code.
+     * Merely implementing the public NativeCapability interface or returning
+     * this actor's arena must never grant authority to guest-native storage.
+     */
+    synchronized void issueNativeCapability(NativeCapability capability) {
+        checkAccess();
+        issuedNativeCapabilities.put(Objects.requireNonNull(capability), Boolean.TRUE);
+    }
+
     public synchronized NativeList nativeList() {
         checkAccess();
         long header = allocate(LIST_HEADER_BYTES);
@@ -445,6 +457,9 @@ public final class ActorNativeArena implements AutoCloseable {
         if (value instanceof NativeCapability capability) {
             if (capability.nativeArena() != this) {
                 throw new SecurityException("foreign actor capability");
+            }
+            if (issuedNativeCapabilities.get(capability) == null) {
+                throw new SecurityException("unissued actor capability");
             }
             return true;
         }
@@ -1101,6 +1116,9 @@ public final class ActorNativeArena implements AutoCloseable {
             if (capability.nativeArena() != this) {
                 throw new SecurityException("foreign actor capability");
             }
+            if (issuedNativeCapabilities.get(capability) == null) {
+                throw new SecurityException("unissued actor capability");
+            }
             tag = CAPABILITY;
             Long id = capabilityIds.get(capability);
             if (id == null) {
@@ -1285,6 +1303,7 @@ public final class ActorNativeArena implements AutoCloseable {
         capabilityRefCounts.clear();
         capabilitiesById.clear();
         capabilityIds.clear();
+        issuedNativeCapabilities.clear();
         issuedNativeOffsets.clear();
         committed = 0;
     }
