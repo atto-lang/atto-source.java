@@ -202,8 +202,17 @@ mvn -B -ntp -Dores.runtime.carriers=native \
   -DskipTests=false -Dmaven.test.skip=false -DfailIfNoTests=true \
   '-Dtest=VmNioTcpListenerTest,NativeNetStdlibTest,NioReadinessGroupTest,NativeNioFutureReactorTest,OresSchedulerTest,OresCarrierPermitPoolTest,OresFuturesTest,OresFutureCallbackTest' \
   test 2>&1 | tee "$EVIDENCE_DIR/targeted-junit.log"
+# A targeted JUnit phase is allowed to create only ignored build output.
+# Do not launch broader compiler/runtime work if tests changed tracked bytes,
+# modes, or staged identities and merely intend to restore them later.
+stage=targeted-source-identity
+verify_raw_worktree || exit 77
 stage=targeted-report-audit
 python3 scripts/nio_verify_surefire_evidence.py "$EVIDENCE_DIR/targeted-start.marker" targeted
+# Treat the evidence parser as part of the qualification TCB as well: a
+# mutation during evidence inspection must be caught before full Maven starts.
+stage=pre-full-source-identity
+verify_raw_worktree || exit 77
 
 # The targeted suite may emit reports with arbitrarily future-dated mtimes.
 # Timestamp comparisons alone cannot prove Maven verify produced new tests.
@@ -225,6 +234,10 @@ stage=full-report-audit
 python3 scripts/nio_verify_surefire_evidence.py "$EVIDENCE_DIR/full-start.marker" full
 
 if $NATIVE_AOT; then
+  # Full verify may execute arbitrary project tests/plugins. Native AOT must
+  # start only from the same approved bytes/modes that were admitted above.
+  stage=pre-native-aot-source-identity
+  verify_raw_worktree || exit 77
   stage=graal-native-aot
   mvn -B -ntp -Pnative-aot -DskipTests package 2>&1 \
     | tee "$EVIDENCE_DIR/graal-native-aot.log"
