@@ -21,7 +21,8 @@ public final class CapabilityChecker {
                 if (declaration instanceof Ast.FunctionDecl fn) checkStatements(fn.body(), policy);
                 else if (declaration instanceof Ast.InitDecl init) checkStatements(init.body(), policy);
                 else if (declaration instanceof Ast.ClassDecl klass) {
-                    checkAggregate(klass, policy);
+                    for (Ast.FieldDecl field : klass.fields()) if (field.initializer() != null) checkExpr(field.initializer(), policy);
+                    for (Ast.MethodDecl method : klass.methods()) checkStatements(method.body(), policy);
                 } else if (declaration instanceof Ast.FieldDecl field && field.initializer() != null) {
                     checkExpr(field.initializer(), policy);
                 }
@@ -31,9 +32,7 @@ public final class CapabilityChecker {
 
     private static void checkStatements(List<Ast.Stmt> statements, IsolatePolicy policy) {
         for (Ast.Stmt stmt : statements) {
-            if (stmt instanceof Ast.TypeDeclStmt local) {
-                if (local.declaration() instanceof Ast.ClassDecl klass) checkAggregate(klass, policy);
-            } else if (stmt instanceof Ast.BindingStmt s) checkExpr(s.initializer(), policy);
+            if (stmt instanceof Ast.BindingStmt s) checkExpr(s.initializer(), policy);
             else if (stmt instanceof Ast.DestructureStmt s) checkExpr(s.initializer(), policy);
             else if (stmt instanceof Ast.ReturnStmt s && s.value() != null) checkExpr(s.value(), policy);
             else if (stmt instanceof Ast.ExprStmt s) checkExpr(s.expression(), policy);
@@ -44,6 +43,9 @@ public final class CapabilityChecker {
                     checkStatements(b.body(), policy);
                 }
                 checkStatements(s.elseBody(), policy);
+            } else if (stmt instanceof Ast.MatchStmt s) {
+                checkExpr(s.value(), policy);
+                for (Ast.MatchArm arm : s.arms()) checkStatements(arm.body(), policy);
             } else if (stmt instanceof Ast.TryStmt s) {
                 checkStatements(s.body(), policy);
                 checkStatements(s.catchBody(), policy);
@@ -60,13 +62,6 @@ public final class CapabilityChecker {
         }
     }
 
-    private static void checkAggregate(Ast.ClassDecl klass, IsolatePolicy policy) {
-        for (Ast.FieldDecl field : klass.fields()) {
-            if (field.initializer() != null) checkExpr(field.initializer(), policy);
-        }
-        for (Ast.MethodDecl method : klass.methods()) checkStatements(method.body(), policy);
-    }
-
     private static void checkExpr(Ast.Expr expr, IsolatePolicy policy) {
         if (expr instanceof Ast.NameExpr n && n.name().equals("print")) require(policy, IsolatePolicy.Capability.STDOUT, "print");
         else if (expr instanceof Ast.CallExpr c) {
@@ -78,6 +73,7 @@ public final class CapabilityChecker {
                 if (path.startsWith("stdio.") || path.equals("stdio")) require(policy, IsolatePolicy.Capability.STDOUT, path);
                 if (path.startsWith("process.descriptor") || path.equals("process.context_id")) require(policy, IsolatePolicy.Capability.PROCESS_INFO, path);
                 if (path.startsWith("process.share_readonly")) require(policy, IsolatePolicy.Capability.ACTOR_SHARE_READONLY, path);
+                if (path.startsWith("process.gc") || path.startsWith("actor.gc")) require(policy, IsolatePolicy.Capability.GC_CONTROL, path);
                 if (path.startsWith("network.")) require(policy, IsolatePolicy.Capability.NETWORK, path);
                 if (path.startsWith("fs.read")) require(policy, IsolatePolicy.Capability.FILESYSTEM_READ, path);
                 if (path.startsWith("fs.write")) require(policy, IsolatePolicy.Capability.FILESYSTEM_WRITE, path);
@@ -94,7 +90,6 @@ public final class CapabilityChecker {
         else if (expr instanceof Ast.ConditionalExpr e) { checkExpr(e.condition(), policy); checkExpr(e.whenTrue(), policy); checkExpr(e.whenFalse(), policy); }
         else if (expr instanceof Ast.IndexExpr e) { checkExpr(e.receiver(), policy); checkExpr(e.index(), policy); }
         else if (expr instanceof Ast.NewExpr e) for (Ast.Expr a : e.arguments()) checkExpr(a, policy);
-        else if (expr instanceof Ast.StructInitExpr e) for (Ast.ObjectField f : e.fields()) checkExpr(f.value(), policy);
         else if (expr instanceof Ast.AwaitExpr e) checkExpr(e.expression(), policy);
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr a : e.elements()) checkExpr(a, policy);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr a : e.elements()) checkExpr(a, policy);

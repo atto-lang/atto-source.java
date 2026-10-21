@@ -65,12 +65,6 @@ public final class Parser {
                     rootDeclarations.add(parseClass(modifiers.isAbstract || afterDefineAbstract));
                     continue;
                 }
-                if (match(STRUCT)) {
-                    if (modifiers.isAbstract || afterDefineAbstract) throw error(previous(), "structs cannot be abstract");
-                    if (modifiers.async || modifiers.isStatic) throw error(previous(), "struct declarations do not accept async/static modifiers");
-                    rootDeclarations.add(parseStruct(false));
-                    continue;
-                }
                 if (match(TRAIT)) {
                     rootDeclarations.add(parseTrait());
                     continue;
@@ -79,7 +73,7 @@ public final class Parser {
                     rootDeclarations.add(parseInterface(modifiers.visibility));
                     continue;
                 }
-                throw error(previous(), "expected module, class, struct, trait, or interface after 'define'");
+                throw error(previous(), "expected module, class, trait, or interface after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -108,9 +102,8 @@ public final class Parser {
         } else {
             if (match(MODULE)) kind = Ast.ImportKind.MODULE;
             else if (match(CLASS)) kind = Ast.ImportKind.CLASS;
-            else if (match(STRUCT)) kind = Ast.ImportKind.STRUCT;
             else if (match(FNC)) kind = Ast.ImportKind.FUNCTION;
-            else throw error(peek(), "expected module, class, struct, fnc, or * after import");
+            else throw error(peek(), "expected module, class, fnc, or * after import");
 
             if (match(STAR)) {
                 wildcard = true;
@@ -158,32 +151,22 @@ public final class Parser {
         if (match(DEFINE)) {
             boolean afterDefineAbstract = match(ABSTRACT);
             if (match(CLASS)) return parseClass(modifiers.isAbstract || afterDefineAbstract);
-            if (match(STRUCT)) {
-                if (modifiers.isAbstract || afterDefineAbstract) throw error(previous(), "structs cannot be abstract");
-                if (modifiers.async || modifiers.isStatic) throw error(previous(), "struct declarations do not accept async/static modifiers");
-                return parseStruct(false);
-            }
             if (match(TRAIT)) {
                 if (afterDefineAbstract) throw error(previous(), "traits express requirements with abstract members, not 'abstract trait'");
                 return parseTrait();
             }
             if (match(INTERFACE)) return parseInterface(modifiers.visibility);
-            throw error(previous(), "expected class, struct, trait, or interface after 'define'");
+            throw error(previous(), "expected class, trait, or interface after 'define'");
         }
 
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
         if (declaration != null) return declaration;
-        throw error(peek(), "expected function, routine, class, struct, interface, type, or binding declaration");
+        throw error(peek(), "expected function, routine, class, interface, type, or binding declaration");
     }
 
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
         if (match(FNC)) return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
         if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
-        if (match(STRUCT)) {
-            if (modifiers.isAbstract) throw error(previous(), "structs cannot be abstract");
-            if (modifiers.async || modifiers.isStatic) throw error(previous(), "struct declarations do not accept async/static modifiers");
-            return parseStruct(true);
-        }
         if (match(TRAIT)) return parseTrait();
         if (match(INTERFACE)) return parseInterface(modifiers.visibility);
         if (match(TYPE)) return parseTypeAlias();
@@ -195,9 +178,7 @@ public final class Parser {
         consume(ROUTINE, "expected 'routine' after 'init'");
         consume(LPAREN, "init routine requires '()'");
         consume(RPAREN, "init routine cannot accept parameters");
-        if (!match(ARROW, COLON)) {
-            throw error(peek(), "init routine requires explicit '-> void' or ': void'");
-        }
+        consume(FAT_ARROW, "init routine requires explicit '=> void'");
         consume(VOID, "init routine must return void");
         return new Ast.InitDecl(parseBlock());
     }
@@ -206,18 +187,12 @@ public final class Parser {
         if (modifiers.isStatic) throw error(previous(), "'static fnc' is only valid inside a class");
         if (modifiers.isAbstract) throw error(previous(), "top-level/module callables cannot be abstract");
         String name = consume(IDENT, "expected callable name").lexeme();
-        if (kind == Ast.CallableKind.ROUTINE && check(EQUAL)) {
-            throw error(peek(), "routines are declaration-only and cannot use function-expression syntax; use 'routine "
-                    + name + "(...) -> Type { ... }' or 'routine " + name + "(...) : Type { ... }'. Use 'fnc' for first-class function values");
-        }
         List<String> generics = parseGenericParameters();
         consume(LPAREN, "expected '('");
         java.util.Set<String> structuralNames = structuralAnnotationNames(annotations);
         List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN, structuralNames), annotations);
         consume(RPAREN, "expected ')' after parameters");
-        Ast.TypeRef returnType = kind == Ast.CallableKind.ROUTINE
-                ? parseRoutineReturnType(annotations)
-                : parseReturnType(annotations);
+        Ast.TypeRef returnType = parseReturnType(annotations);
         List<Ast.Stmt> body = parseBlock();
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, generics, params,
                 returnType, annotations, body);
@@ -258,128 +233,29 @@ public final class Parser {
         return new Ast.ClassDecl(name, isAbstract, generics, parents, interfaces, traits, fields, methods);
     }
 
-    private Ast.ClassDecl parseStruct(boolean compactStyle) {
-        String name = consume(IDENT, "expected struct name").lexeme();
-        List<String> generics = parseGenericParameters();
-        if (match(EXTENDS)) throw error(previous(), "structs are value types and cannot extend classes");
-        List<Ast.TypeRef> interfaces = match(IS, IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
-        List<Ast.TypeRef> traits = match(WITH) ? parseTypeRefList() : List.of();
-
-        if (compactStyle) consume(LBRACE, "compact struct declarations require '{'");
-        else consume(AS, "long struct declarations use 'define struct Name as ... end'");
-        Token.Type terminator = compactStyle ? RBRACE : END;
-
-        List<Ast.FieldDecl> fields = new ArrayList<>();
-        List<Ast.MethodDecl> methods = new ArrayList<>();
-        while (!check(terminator) && !check(EOF)) {
-            List<Ast.Annotation> annotations = parseAnnotations();
-            Modifiers mods = parseModifiers();
-            Ast.Visibility structFieldVisibility = mods.visibilityExplicit
-                    ? mods.visibility
-                    : Ast.Visibility.PUBLIC;
-
-            if (check(IDENT) && checkNext(COLON)) {
-                if (!annotations.isEmpty() || mods.isStatic || mods.async || mods.isAbstract) {
-                    throw error(peek(), "name-first struct fields do not accept annotations/static/async/abstract modifiers");
-                }
-                fields.add(parseNameFirstStructField(structFieldVisibility, terminator));
-                continue;
-            }
-
-            if (isBindingKind(peek().type()) || looksLikeStructField()) {
-                if (mods.isStatic || mods.async || mods.isAbstract) throw error(peek(), "struct fields do not accept static/async/abstract modifiers");
-                fields.add(isBindingKind(peek().type())
-                        ? parseExplicitStructField(structFieldVisibility, terminator)
-                        : parseImplicitValStructField(structFieldVisibility));
-                continue;
-            }
-
-            if (mods.isStatic) {
-                consume(FNC, "static struct functions must be declared with 'static fnc'");
-                if (mods.isAbstract) throw error(previous(), "static struct functions cannot be abstract");
-            } else if (check(FNC)) {
-                throw error(peek(), "instance methods omit 'fnc'; use 'static fnc' only for type-level functions");
-            }
-            if (mods.isAbstract) throw error(peek(), "struct methods cannot be abstract");
-            methods.add(parseMethod(annotations, mods));
-        }
-        consume(terminator, compactStyle ? "expected '}' to close struct " + name : "expected 'end' to close struct " + name);
-        return new Ast.ClassDecl(name, Ast.AggregateKind.STRUCT, false, generics, List.of(), interfaces, traits, fields, methods);
-    }
-
-    private boolean looksLikeStructField() {
-        int saved = current;
-        try {
-            parseTypeRef();
-            return check(IDENT);
-        } catch (IllegalArgumentException ignored) {
-            return false;
-        } finally {
-            current = saved;
-        }
-    }
-
-    private Ast.FieldDecl parseExplicitStructField(
-            Ast.Visibility visibility,
-            Token.Type terminator) {
-        Ast.BindingKind kind = parseBindingKind();
-
-        if (check(IDENT) && checkNext(COLON)) {
-            String name = advance().lexeme();
-            consume(COLON, "expected ':' after struct field name");
-            Ast.TypeRef type = parseTypeRef();
-            Ast.Expr initializer = match(EQUAL) ? parseExpression() : null;
-            consumeStructFieldTerminator(terminator);
-            return new Ast.FieldDecl(name, visibility, kind, type, initializer);
-        }
-
-        Ast.TypeRef type = parseTypeRef();
-        String name = consume(IDENT, "expected struct field name").lexeme();
-        Ast.Expr initializer = match(EQUAL) ? parseExpression() : null;
-        consumeStatementTerminator("struct field declaration should end with ';'");
-        return new Ast.FieldDecl(name, visibility, kind, type, initializer);
-    }
-
-    private Ast.FieldDecl parseImplicitValStructField(Ast.Visibility visibility) {
-        Ast.TypeRef type = parseTypeRef();
-        String name = consume(IDENT, "expected struct field name").lexeme();
-        Ast.Expr initializer = match(EQUAL) ? parseExpression() : null;
-        consumeStatementTerminator("struct field declaration should end with ';'");
-        return new Ast.FieldDecl(name, visibility, Ast.BindingKind.VAL, type, initializer);
-    }
-
-    private Ast.FieldDecl parseNameFirstStructField(Ast.Visibility visibility, Token.Type terminator) {
-        String name = consume(IDENT, "expected struct field name").lexeme();
-        consume(COLON, "expected ':' after struct field name");
-        Ast.TypeRef type = parseTypeRef();
-        Ast.Expr initializer = match(EQUAL) ? parseExpression() : null;
-        consumeStructFieldTerminator(terminator);
-        return new Ast.FieldDecl(name, visibility, Ast.BindingKind.VAL, type, initializer);
-    }
-
     private Ast.TraitDecl parseTrait() {
         String name = consume(IDENT, "expected trait name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> interfaces = match(IS, IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> traits = match(WITH) ? parseTypeRefList() : List.of();
-        boolean braceStyle = match(LBRACE);
-        if (!braceStyle) consume(AS, "trait declarations require 'as' before the body");
-        Token.Type terminator = braceStyle ? RBRACE : END;
+        consume(AS, "trait declarations require 'as' before the body");
 
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
-        while (!check(terminator) && !check(EOF)) {
+        while (!check(END) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
-            if (check(INIT)) throw error(peek(), "traits cannot declare init routines; traits are storage-free reusable behavior");
+            if (check(INIT)) throw error(peek(), "traits cannot declare init routines; trait state initializes as part of the host object");
             if (isBindingKind(peek().type())) {
-                throw error(peek(), "traits are storage-free reusable behavior and cannot declare instance fields; put state on the composing class/struct");
+                if (mods.isStatic) throw error(peek(), "traits cannot declare static data");
+                fields.add(parseField(mods.visibility));
+                continue;
             }
             if (mods.isStatic) throw error(peek(), "traits contain instance behavior only; static functions belong on classes or modules");
             if (check(FNC)) throw error(peek(), "trait instance methods omit 'fnc', like class instance methods");
             methods.add(parseMethod(annotations, mods));
         }
-        consume(terminator, braceStyle ? "expected '}' to close trait " + name : "expected 'end' to close trait " + name);
+        consume(END, "expected 'end' to close trait " + name);
         return new Ast.TraitDecl(name, generics, interfaces, traits, fields, methods);
     }
 
@@ -411,7 +287,20 @@ public final class Parser {
                 continue;
             }
 
-            throw error(peek(), "interfaces are storage-free contracts; put state in a class or struct and declare functions with 'fnc'");
+            if (check(IDENT) && checkNext(COLON)) {
+                String fieldName = advance().lexeme();
+                consume(COLON, "expected ':' after interface data requirement name");
+                Ast.TypeRef type = parseTypeRef();
+                consumeMemberTerminator(terminator, "interface data requirement should end with ';'");
+                members.add(new Ast.InterfaceFieldDecl(fieldName, type));
+                continue;
+            }
+
+            if (isBindingKind(peek().type())) advance();
+            Ast.TypeRef type = parseTypeRef();
+            String fieldName = consume(IDENT, "expected interface data requirement name").lexeme();
+            consumeMemberTerminator(terminator, "interface data requirement should end with ';' and cannot have an initializer");
+            members.add(new Ast.InterfaceFieldDecl(fieldName, type));
         }
 
         consume(terminator, braceStyle ? "expected '}' to close interface " + name : "expected 'end' to close interface " + name);
@@ -455,11 +344,34 @@ public final class Parser {
 
         Ast.TypeRef receiverType = null;
         List<Ast.Param> params;
-        if (mods.isStatic && check(SELF)) throw error(peek(), "static class functions do not have a self receiver");
-        if (match(SELF)) {
-            receiverType = parseTypeRef();
+        boolean mutableReceiver = check(MUT) && checkNext(SELF);
+        boolean takeReceiver = check(IDENT) && peek().lexeme().equals("take") && checkNext(SELF);
+        if (mods.isStatic && (check(SELF) || mutableReceiver || takeReceiver)) {
+            throw error(peek(), "static class functions do not have a self receiver");
+        }
+        if (takeReceiver) {
+            advance(); // contextual take
+            consume(SELF, "consuming receiver syntax is 'take self'");
+            Ast.TypeRef target = check(RPAREN) ? Ast.TypeRef.simple("self") : parseTypeRef();
+            receiverType = target; // non-borrow receiver means ownership transfer
+            consume(RPAREN, "expected ')' after consuming self receiver");
+            consume(LPAREN, "explicit receiver form is method(take self)(params)");
+            params = parseParametersUntil(RPAREN);
+            consume(RPAREN, "expected ')' after method parameters");
+        } else if (mutableReceiver) {
+            advance(); // mut
+            consume(SELF, "mutable receiver syntax is 'mut self'");
+            Ast.TypeRef target = check(RPAREN) ? Ast.TypeRef.simple("self") : parseTypeRef();
+            receiverType = Ast.TypeRef.borrowed(target, true);
+            consume(RPAREN, "expected ')' after mutable self receiver");
+            consume(LPAREN, "explicit receiver form is method(mut self)(params)");
+            params = parseParametersUntil(RPAREN);
+            consume(RPAREN, "expected ')' after method parameters");
+        } else if (match(SELF)) {
+            Ast.TypeRef target = check(RPAREN) ? Ast.TypeRef.simple("self") : parseTypeRef();
+            receiverType = Ast.TypeRef.borrowed(target, false);
             consume(RPAREN, "expected ')' after explicit self receiver");
-            consume(LPAREN, "explicit receiver form is method(self Type)(params)");
+            consume(LPAREN, "explicit receiver form is method(self)(params) or method(self Type)(params)");
             params = parseParametersUntil(RPAREN);
             consume(RPAREN, "expected ')' after method parameters");
         } else {
@@ -517,35 +429,20 @@ public final class Parser {
 
     private Modifiers parseModifiers() {
         Ast.Visibility visibility = Ast.Visibility.PRIVATE;
-        boolean visibilityExplicit = false;
         boolean async = false;
         boolean isStatic = false;
         boolean isAbstract = false;
         boolean progress;
         do {
             progress = true;
-            if (match(PUB)) {
-                visibility = Ast.Visibility.PUBLIC;
-                visibilityExplicit = true;
-            } else if (match(PRIVATE)) {
-                visibility = Ast.Visibility.PRIVATE;
-                visibilityExplicit = true;
-            } else if (match(ASYNC)) async = true;
+            if (match(PUB)) visibility = Ast.Visibility.PUBLIC;
+            else if (match(PRIVATE)) visibility = Ast.Visibility.PRIVATE;
+            else if (match(ASYNC)) async = true;
             else if (match(STATIC)) isStatic = true;
             else if (match(ABSTRACT)) isAbstract = true;
             else progress = false;
         } while (progress);
-        return new Modifiers(visibility, visibilityExplicit, async, isStatic, isAbstract);
-    }
-
-    private Ast.TypeRef parseRoutineReturnType(List<Ast.Annotation> annotations) {
-        if (!annotations.isEmpty()) {
-            throw error(peek(), "routine declarations use an explicit '-> Type' or ': Type' return type");
-        }
-        if (!match(ARROW, COLON)) {
-            throw error(peek(), "routine declarations require an explicit return type using '-> Type' or ': Type'");
-        }
-        return parseTypeRef();
+        return new Modifiers(visibility, async, isStatic, isAbstract);
     }
 
     private Ast.TypeRef parseReturnType(List<Ast.Annotation> annotations) {
@@ -584,24 +481,35 @@ public final class Parser {
         List<Ast.Param> params = new ArrayList<>();
         do {
             boolean structural = false;
+            Ast.ParamMode mode = Ast.ParamMode.BORROW;
+
+            // Ownership transfer stays contextual before the type. Mutable
+            // access is canonical in type-first form: Type mut name. Keep the
+            // older mut Type name spelling accepted during migration.
+            if (match(MUT)) mode = Ast.ParamMode.MUT;
+            else if (check(IDENT) && peek().lexeme().equals("take")) {
+                advance();
+                mode = Ast.ParamMode.TAKE;
+            }
 
             // Name-first structural spelling: y structural Foo
-            if (check(IDENT) && checkNextLexeme("structural")) {
+            if (mode == Ast.ParamMode.BORROW && check(IDENT) && checkNextLexeme("structural")) {
                 String name = advance().lexeme();
                 Token marker = consume(IDENT, "expected structural");
                 if (!marker.lexeme().equals("structural")) throw error(marker, "expected structural");
                 Ast.TypeRef type = parseTypeRef();
-                boolean mutable = match(MUT);
-                params.add(new Ast.Param(type, name, true, mutable));
+                params.add(new Ast.Param(type, name, true, Ast.ParamMode.BORROW));
                 continue;
             }
 
             // Function annotation spelling: @AllowStructural(y) fnc x(y Foo)
-            if (check(IDENT) && annotationStructuralNames.contains(peek().lexeme()) && checkNext(IDENT)) {
+            if (mode == Ast.ParamMode.BORROW
+                    && check(IDENT)
+                    && annotationStructuralNames.contains(peek().lexeme())
+                    && checkNext(IDENT)) {
                 String name = advance().lexeme();
                 Ast.TypeRef type = parseTypeRef();
-                boolean mutable = match(MUT);
-                params.add(new Ast.Param(type, name, true, mutable));
+                params.add(new Ast.Param(type, name, true, Ast.ParamMode.BORROW));
                 continue;
             }
 
@@ -611,10 +519,22 @@ public final class Parser {
                 if (!annotation.equals("Structural")) throw error(previous(), "only @Structural is currently supported on parameters");
                 structural = true;
             }
+            if (structural && mode != Ast.ParamMode.BORROW) {
+                throw error(peek(), "structural parameters are read-only views and cannot use mut or take");
+            }
+
             Ast.TypeRef type = parseTypeRef();
-            boolean mutable = match(MUT);
+            if (match(MUT)) {
+                if (mode == Ast.ParamMode.TAKE) {
+                    throw error(previous(), "a take parameter owns its value and cannot also be a temporary mut reference");
+                }
+                if (structural) {
+                    throw error(previous(), "structural parameters are read-only views and cannot use mut or take");
+                }
+                mode = Ast.ParamMode.MUT;
+            }
             String name = consume(IDENT, "expected parameter name").lexeme();
-            params.add(new Ast.Param(type, name, structural, mutable));
+            params.add(new Ast.Param(type, name, structural, mode));
         } while (match(COMMA));
         return params;
     }
@@ -640,8 +560,11 @@ public final class Parser {
         List<Ast.Param> result = new ArrayList<>(params.size());
         for (Ast.Param param : params) {
             boolean structural = param.structural() || allowed.contains(param.name());
+            if (structural && param.mode() != Ast.ParamMode.BORROW) {
+                throw error(previous(), "@AllowStructural parameters are read-only and cannot use mut or take: " + param.name());
+            }
             if (allowed.contains(param.name())) found.add(param.name());
-            result.add(new Ast.Param(param.type(), param.name(), structural, param.mutable()));
+            result.add(new Ast.Param(param.type(), param.name(), structural, param.mode()));
         }
         if (!found.equals(allowed)) {
             java.util.Set<String> missing = new java.util.HashSet<>(allowed);
@@ -652,9 +575,8 @@ public final class Parser {
     }
 
     private Ast.TypeRef parseTypeRef() {
-        if (match(AMP)) {
-            boolean mutable = match(MUT);
-            return Ast.TypeRef.borrowed(parseTypeRef(), mutable);
+        if (check(AMP)) {
+            throw error(peek(), "pointer-style '&' borrow types are not part of Oreslang; use ordinary parameters, canonical 'Type mut name', or contextual 'take Type name'");
         }
         if (match(STRING)) return Ast.TypeRef.stringLiteral(previous().lexeme());
 
@@ -732,16 +654,6 @@ public final class Parser {
     }
 
     private Ast.Stmt parseStatement() {
-        if (match(STRUCT)) return new Ast.TypeDeclStmt(parseStruct(true));
-        if (match(TRAIT)) throw error(previous(), "traits are declaration-level composition units and cannot be declared inside callables");
-        if (match(INTERFACE)) return new Ast.TypeDeclStmt(parseInterface(Ast.Visibility.PRIVATE));
-        if (match(TYPE)) return new Ast.TypeDeclStmt(parseTypeAlias());
-        if (match(DEFINE)) {
-            if (match(STRUCT)) return new Ast.TypeDeclStmt(parseStruct(false));
-            if (match(TRAIT)) throw error(previous(), "traits are declaration-level composition units and cannot be declared inside callables");
-            if (match(INTERFACE)) return new Ast.TypeDeclStmt(parseInterface(Ast.Visibility.PRIVATE));
-            throw error(previous(), "callable-local 'define' only supports struct or interface declarations; type aliases use 'type Name = ...'");
-        }
         if (isBindingKind(peek().type())) return parseBindingStatement();
         if (check(LBRACKET) && looksLikeDestructure()) return parseDestructure();
         if (match(RETURN)) {
@@ -755,6 +667,7 @@ public final class Parser {
             return new Ast.DeferStmt(expression);
         }
         if (match(IF)) return parseIf();
+        if (match(MATCH)) return parseMatch();
         if (match(TRY)) return parseTry();
         if (match(FOR)) return parseFor();
 
@@ -764,18 +677,37 @@ public final class Parser {
     }
 
     private Ast.Stmt parseFor() {
-        consume(LPAREN, "expected '(' after for");
+        if (match(LPAREN)) return parseParenthesizedFor();
+
+        // Canonical iterator forms:
+        //   for item of values do ... done
+        //   for [key, value] of entries do ... done
+        //   for [val key, let value] of entries { ... }
+        ForOfBindings parsed = parseForOfBindings();
+        consume(OF, "expected 'of' in iterator loop");
+        Ast.Expr iterable = parseExpression();
+        return new Ast.ForOfStmt(
+                parsed.bindings(),
+                parsed.destructuringPattern(),
+                iterable,
+                parseLoopBody());
+    }
+
+    private Ast.Stmt parseParenthesizedFor() {
+        if (looksLikeForOfHeader()) {
+            ForOfBindings parsed = parseForOfBindings();
+            consume(OF, "expected 'of' in for-of loop");
+            Ast.Expr iterable = parseExpression();
+            consume(RPAREN, "expected ')' after for-of header");
+            return new Ast.ForOfStmt(
+                    parsed.bindings(),
+                    parsed.destructuringPattern(),
+                    iterable,
+                    parseLoopBody());
+        }
 
         if (isBindingKind(peek().type())) {
             Ast.BindingKind kind = parseBindingKind();
-            if (check(IDENT) && checkNext(OF)) {
-                String name = advance().lexeme();
-                consume(OF, "expected 'of' in for-of loop");
-                Ast.Expr iterable = parseExpression();
-                consume(RPAREN, "expected ')' after for-of header");
-                return new Ast.ForOfStmt(kind, name, iterable, parseBlock());
-            }
-
             Ast.TypeRef type = null;
             String name;
             if (check(IDENT) && checkNext(EQUAL)) name = advance().lexeme();
@@ -791,15 +723,7 @@ public final class Parser {
             consume(SEMICOLON, "expected ';' after for condition");
             Ast.Expr update = check(RPAREN) ? null : parseExpression();
             consume(RPAREN, "expected ')' after for header");
-            return new Ast.ForStmt(init, condition, update, parseBlock());
-        }
-
-        if (check(IDENT) && checkNext(OF)) {
-            String name = advance().lexeme();
-            consume(OF, "expected 'of' in for-of loop");
-            Ast.Expr iterable = parseExpression();
-            consume(RPAREN, "expected ')' after for-of header");
-            return new Ast.ForOfStmt(Ast.BindingKind.VAL, name, iterable, parseBlock());
+            return new Ast.ForStmt(init, condition, update, parseLoopBody());
         }
 
         Ast.Stmt initializer = null;
@@ -809,7 +733,96 @@ public final class Parser {
         consume(SEMICOLON, "expected ';' after for condition");
         Ast.Expr update = check(RPAREN) ? null : parseExpression();
         consume(RPAREN, "expected ')' after for header");
-        return new Ast.ForStmt(initializer, condition, update, parseBlock());
+        return new Ast.ForStmt(initializer, condition, update, parseLoopBody());
+    }
+
+    private boolean looksLikeForOfHeader() {
+        if (check(IDENT)) return checkNext(OF);
+        if (isBindingKind(peek().type())) {
+            return current + 2 < tokens.size()
+                    && tokens.get(current + 1).type() == IDENT
+                    && tokens.get(current + 2).type() == OF;
+        }
+        if (!check(LBRACKET)) return false;
+
+        int i = current + 1;
+        boolean expectBinding = true;
+        while (i < tokens.size()) {
+            Token.Type type = tokens.get(i).type();
+            if (type == RBRACKET) {
+                return !expectBinding
+                        && i + 1 < tokens.size()
+                        && tokens.get(i + 1).type() == OF;
+            }
+            if (expectBinding) {
+                if (isBindingKind(type)) {
+                    i++;
+                    if (i >= tokens.size() || tokens.get(i).type() != IDENT) return false;
+                } else if (type != IDENT) {
+                    return false;
+                }
+                expectBinding = false;
+                i++;
+                continue;
+            }
+            if (type == COMMA) {
+                expectBinding = true;
+                i++;
+                continue;
+            }
+            return false;
+        }
+        return false;
+    }
+
+    private ForOfBindings parseForOfBindings() {
+        if (!match(LBRACKET)) {
+            Ast.BindingKind kind = isBindingKind(peek().type())
+                    ? parseBindingKind()
+                    : Ast.BindingKind.VAL;
+            String name = consume(IDENT,
+                    "expected iterator binding name or '[a, b]' destructuring pattern").lexeme();
+            return new ForOfBindings(
+                    List.of(new Ast.DestructureBinding(kind, name)),
+                    false);
+        }
+
+        List<Ast.DestructureBinding> bindings = new ArrayList<>();
+        if (check(RBRACKET)) throw error(peek(), "for-of destructuring pattern cannot be empty");
+        do {
+            Ast.BindingKind kind = isBindingKind(peek().type())
+                    ? parseBindingKind()
+                    : Ast.BindingKind.VAL;
+            Token nameToken = consume(
+                    IDENT,
+                    "expected binding name in for-of destructuring pattern");
+            String name = nameToken.lexeme();
+            for (Ast.DestructureBinding existing : bindings) {
+                if (existing.name().equals(name)) {
+                    throw error(nameToken,
+                            "duplicate binding '" + name + "' in for-of destructuring pattern");
+                }
+            }
+            bindings.add(new Ast.DestructureBinding(kind, name));
+        } while (match(COMMA));
+        consume(RBRACKET, "expected ']' after for-of destructuring pattern");
+        return new ForOfBindings(bindings, true);
+    }
+
+    private record ForOfBindings(
+            List<Ast.DestructureBinding> bindings,
+            boolean destructuringPattern) {
+        private ForOfBindings {
+            bindings = List.copyOf(bindings);
+        }
+    }
+
+    private List<Ast.Stmt> parseLoopBody() {
+        if (check(LBRACE)) return parseBlock();
+        consume(DO, "expected '{' or 'do' after for loop header");
+        List<Ast.Stmt> body = parseUntil(DONE);
+        consume(DONE, "expected 'done' to close for loop");
+        return body;
     }
 
     private Ast.BindingStmt parseBindingStatement() {
@@ -866,6 +879,44 @@ public final class Parser {
         if (match(ELSE)) elseBody = parseUntil(FI);
         consume(FI, "expected 'fi' to close if");
         return new Ast.IfStmt(branches, elseBody);
+    }
+
+    private Ast.MatchStmt parseMatch() {
+        Ast.Expr value = parseExpression();
+        consume(LBRACE, "expected '{' after match value");
+
+        List<Ast.MatchArm> arms = new ArrayList<>();
+        boolean seenSome = false;
+        boolean seenNone = false;
+
+        while (!check(RBRACE) && !check(EOF)) {
+            Token constructor = consume(IDENT, "Option match arms must be Some(name) or None");
+            Ast.OptionPattern pattern;
+            if (constructor.lexeme().equals("Some")) {
+                if (seenSome) throw error(constructor, "duplicate Some arm in Option match");
+                seenSome = true;
+                consume(LPAREN, "Some pattern requires '('");
+                String binding = consume(IDENT, "Some pattern requires a payload binding").lexeme();
+                consume(RPAREN, "Some pattern requires ')'");
+                pattern = new Ast.SomePattern(binding);
+            } else if (constructor.lexeme().equals("None")) {
+                if (seenNone) throw error(constructor, "duplicate None arm in Option match");
+                seenNone = true;
+                pattern = new Ast.NonePattern();
+            } else {
+                throw error(constructor, "Option match arms must be Some(name) or None");
+            }
+
+            consume(FAT_ARROW, "match arm requires '=>'");
+            arms.add(new Ast.MatchArm(pattern, parseBlock()));
+            match(COMMA);
+        }
+
+        consume(RBRACE, "expected '}' after match arms");
+        if (!seenSome || !seenNone) {
+            throw error(previous(), "Option match must be exhaustive with exactly one Some(...) arm and one None arm");
+        }
+        return new Ast.MatchStmt(value, arms);
     }
 
     private Ast.Expr parseCondition() {
@@ -964,12 +1015,35 @@ public final class Parser {
 
     private Ast.Expr parseUnary() {
         if (match(BANG, MINUS, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
-        if (match(AMP)) {
-            boolean mutable = match(MUT);
-            return new Ast.UnaryExpr(mutable ? "&mut" : "&", parseUnary());
+        if (check(AMP)) {
+            throw error(peek(), "pointer-style '&' borrow expressions are not part of Oreslang; calls pass references automatically, use rt borrow for an explicit stored read view");
         }
+        if (match(RT)) return parseRuntimeExpression();
         if (match(AWAIT)) return new Ast.AwaitExpr(parseUnary());
         return parsePostfix();
+    }
+
+    private Ast.Expr parseRuntimeExpression() {
+        Token operation = consume(IDENT, "expected runtime operation after 'rt'");
+        String name = operation.lexeme();
+        if (!name.equals("copy") && !name.equals("take")
+                && !name.equals("borrow") && !name.equals("share")
+                && !name.equals("ptr") && !name.equals("deref")) {
+            throw error(operation, "unknown rt operation '" + name + "'");
+        }
+
+        Ast.Expr argument;
+        if (match(LPAREN)) {
+            argument = parseExpression();
+            consume(RPAREN, "expected ')' after rt " + name + " argument");
+        } else {
+            // Command form has unary precedence. Parentheses widen the operand.
+            argument = parseUnary();
+        }
+
+        // This compiler-only spelling cannot be produced by the guest lexer.
+        String intrinsic = "$" + "rt" + "$" + name;
+        return new Ast.CallExpr(new Ast.NameExpr(intrinsic), List.of(argument));
     }
 
     private Ast.Expr parsePostfix() {
@@ -1003,21 +1077,6 @@ public final class Parser {
         if (match(FALSE)) return new Ast.LiteralExpr(Boolean.FALSE);
         if (match(NULL)) throw error(previous(), "standalone null values are forbidden; use Option<T>");
         if (match(SELF)) return new Ast.NameExpr("self");
-        if (match(SUPER)) {
-            String parent = null;
-            // super.A.foo(): consume only the direct-parent qualifier here and
-            // leave the final ".foo" for ordinary postfix/member parsing.
-            if (check(DOT) && checkAhead(1, IDENT) && checkAhead(2, DOT)) {
-                advance();
-                parent = advance().lexeme();
-            }
-            return new Ast.SuperExpr(parent);
-        }
-        if (match(STRUCT)) return parseStructInitializer(null);
-        if (check(IDENT) && looksLikeNamedStructInitializer()) {
-            Ast.TypeRef type = parseTypeRef();
-            return parseStructInitializer(type);
-        }
         if (match(IDENT)) return new Ast.NameExpr(previous().lexeme());
         if (match(NEW)) {
             Ast.TypeRef type = parseTypeRef();
@@ -1055,32 +1114,6 @@ public final class Parser {
         throw error(peek(), "expected expression");
     }
 
-    private boolean looksLikeNamedStructInitializer() {
-        int saved = current;
-        try {
-            parseTypeRef();
-            return check(LBRACE);
-        } catch (IllegalArgumentException ignored) {
-            return false;
-        } finally {
-            current = saved;
-        }
-    }
-
-    private Ast.StructInitExpr parseStructInitializer(Ast.TypeRef type) {
-        consume(LBRACE, type == null ? "expected '{' after struct" : "expected '{' after struct type");
-        List<Ast.ObjectField> fields = new ArrayList<>();
-        if (!check(RBRACE)) {
-            do {
-                String name = consume(IDENT, "expected struct field name").lexeme();
-                if (!match(EQUAL, COLON)) throw error(peek(), "expected '=' or ':' after struct field name");
-                fields.add(new Ast.ObjectField(name, parseExpression()));
-            } while (match(COMMA));
-        }
-        consume(RBRACE, "expected '}' after struct initializer");
-        return new Ast.StructInitExpr(type, fields);
-    }
-
     private Ast.ObjectExpr parseObjectLiteral() {
         consume(LBRACE, "expected '{' after obj");
         List<Ast.ObjectField> fields = new ArrayList<>();
@@ -1113,12 +1146,26 @@ public final class Parser {
             do {
                 if (check(IDENT) && (checkNext(COMMA) || checkNext(PIPE))) {
                     String name = advance().lexeme();
-                    params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, false));
+                    params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, Ast.ParamMode.BORROW));
                 } else {
+                    Ast.ParamMode mode = Ast.ParamMode.BORROW;
+                    if (match(MUT)) mode = Ast.ParamMode.MUT;
+                    else if (check(IDENT) && peek().lexeme().equals("take")) {
+                        advance();
+                        mode = Ast.ParamMode.TAKE;
+                    }
                     Ast.TypeRef type = parseTypeRef();
-                    boolean mutable = match(MUT);
+                    if (match(MUT)) {
+                        if (mode == Ast.ParamMode.TAKE) {
+                            throw error(previous(), "a take lambda parameter owns its value and cannot also be a temporary mut reference");
+                        }
+                        if (mode == Ast.ParamMode.MUT) {
+                            throw error(previous(), "duplicate mut on lambda parameter; canonical spelling is 'Type mut name'");
+                        }
+                        mode = Ast.ParamMode.MUT;
+                    }
                     String name = consume(IDENT, "expected lambda parameter name").lexeme();
-                    params.add(new Ast.Param(type, name, false, mutable));
+                    params.add(new Ast.Param(type, name, false, mode));
                 }
             } while (match(COMMA));
         }
@@ -1148,12 +1195,6 @@ public final class Parser {
         return args;
     }
 
-    private void consumeStructFieldTerminator(Token.Type structuralTerminator) {
-        if (match(SEMICOLON, COMMA) || check(structuralTerminator)) return;
-        if (check(IDENT) && checkNext(COLON)) return;
-        throw error(peek(), "name-first struct fields must be separated by ';', ',', or another name:type field");
-    }
-
     private void consumeMemberTerminator(Token.Type structuralTerminator, String message) {
         if (match(SEMICOLON) || check(structuralTerminator)) return;
         throw error(peek(), message);
@@ -1165,7 +1206,8 @@ public final class Parser {
     }
 
     private boolean isSafeStatementBoundary() {
-        return check(RBRACE) || check(FI) || check(END) || check(ELSE) || check(ELSEIF)
+        return check(RBRACE) || check(FI) || check(END) || check(DONE)
+                || check(ELSE) || check(ELSEIF)
                 || check(CATCH) || check(FINALLY) || check(EOF);
     }
 
@@ -1192,10 +1234,6 @@ public final class Parser {
 
     private boolean check(Token.Type type) { return peek().type() == type; }
     private boolean checkNext(Token.Type type) { return current + 1 < tokens.size() && tokens.get(current + 1).type() == type; }
-    private boolean checkAhead(int offset, Token.Type type) {
-        int index = current + offset;
-        return index >= 0 && index < tokens.size() && tokens.get(index).type() == type;
-    }
     private boolean checkNextLexeme(String lexeme) {
         return current + 1 < tokens.size() && tokens.get(current + 1).type() == IDENT
                 && tokens.get(current + 1).lexeme().equals(lexeme);
@@ -1208,10 +1246,5 @@ public final class Parser {
         return new IllegalArgumentException("Oreslang parse error at " + token.line() + ":" + token.column() + ": " + message);
     }
 
-    private record Modifiers(
-            Ast.Visibility visibility,
-            boolean visibilityExplicit,
-            boolean async,
-            boolean isStatic,
-            boolean isAbstract) { }
+    private record Modifiers(Ast.Visibility visibility, boolean async, boolean isStatic, boolean isAbstract) { }
 }

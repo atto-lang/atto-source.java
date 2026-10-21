@@ -31,6 +31,7 @@ public record IsolatePolicy(
         PROCESS_INFO,
         PROCESS_SINGLETON,
         ACTOR_SHARE_READONLY,
+        GC_CONTROL,
         NETWORK,
         FILESYSTEM_READ,
         FILESYSTEM_WRITE,
@@ -74,7 +75,8 @@ public record IsolatePolicy(
     public static IsolatePolicy developer() {
         return new IsolatePolicy(
                 Set.of(Capability.STDIN, Capability.STDOUT, Capability.PROCESS_INFO,
-                        Capability.PROCESS_SINGLETON, Capability.ACTOR_SHARE_READONLY, Capability.HOT_CODE_LOAD),
+                        Capability.PROCESS_SINGLETON, Capability.ACTOR_SHARE_READONLY, Capability.GC_CONTROL,
+                        Capability.HOT_CODE_LOAD),
                 512L * 1024 * 1024, 8192, Duration.ofMinutes(10), false);
     }
 
@@ -107,7 +109,6 @@ public record IsolatePolicy(
     }
 
     public Context.Builder restrictedContextBuilder(ExecutionProfile profile, String... extraArguments) {
-        validateTrustedExtraArguments(extraArguments);
         HostAccess hostAccess = adversarial
                 ? HostAccess.newBuilder(HostAccess.NONE).allowMutableTargetMappings().methodScoping(true).build()
                 : HostAccess.NONE;
@@ -149,38 +150,6 @@ public record IsolatePolicy(
         }
 
         return builder;
-    }
-
-    private static void validateTrustedExtraArguments(String[] extraArguments) {
-        if (extraArguments == null) return;
-        boolean generationSeen = false;
-        for (String argument : extraArguments) {
-            if (argument == null) {
-                throw new IllegalArgumentException("extra Oreslang context argument cannot be null");
-            }
-            if (!argument.startsWith("--ores-")) continue;
-
-            if (argument.startsWith("--ores-code-generation=")) {
-                if (generationSeen) {
-                    throw new IllegalArgumentException("duplicate --ores-code-generation context metadata");
-                }
-                long generation;
-                try {
-                    generation = Long.parseLong(argument.substring("--ores-code-generation=".length()));
-                } catch (NumberFormatException invalid) {
-                    throw new IllegalArgumentException("invalid --ores-code-generation context metadata", invalid);
-                }
-                if (generation < 0) {
-                    throw new IllegalArgumentException("ores code generation cannot be negative");
-                }
-                generationSeen = true;
-                continue;
-            }
-
-            throw new IllegalArgumentException(
-                    "reserved Oreslang policy argument cannot be overridden through extra context arguments: "
-                            + argument.substring(0, argument.indexOf('=') >= 0 ? argument.indexOf('=') : argument.length()));
-        }
     }
 
     public boolean allows(Capability capability) {

@@ -8,12 +8,10 @@ import dev.oreslang.OresLanguage;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
@@ -25,15 +23,15 @@ public final class OresContext implements AutoCloseable {
     private final BufferedReader input;
     private final PrintWriter output;
     private final ActorRuntime actors;
+    private final GcRuntime gc;
     private final UUID contextId = UUID.randomUUID();
-    private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicLong schedulerSafepoints = new AtomicLong();
-    private final Map<Object, Object> contextLocals = new LinkedHashMap<>();
-    private final Set<Object> contextLocalInitializing = new LinkedHashSet<>();
     private final IsolatePolicy isolatePolicy;
     private final ExecutionProfile executionProfile;
     private final boolean graalIsolated;
     private final long codeGeneration;
+    private final Map<Object, Object> contextLocals = new ConcurrentHashMap<>();
+    private final Set<Object> initializingContextLocals = ConcurrentHashMap.newKeySet();
 
     public OresContext(OresLanguage language, TruffleLanguage.Env env) {
         this.language = language;
@@ -44,7 +42,8 @@ public final class OresContext implements AutoCloseable {
         this.executionProfile = IsolatePolicy.executionProfileFromApplicationArguments(env.getApplicationArguments());
         this.graalIsolated = IsolatePolicy.graalIsolatedFromApplicationArguments(env.getApplicationArguments());
         this.codeGeneration = codeGenerationFromApplicationArguments(env.getApplicationArguments());
-        this.actors = new ActorRuntime(isolatePolicy);
+        this.gc = GcRuntime.fromApplicationArguments(env.getApplicationArguments());
+        this.actors = new ActorRuntime(isolatePolicy, gc);
     }
 
     public static OresContext get(Node node) {
@@ -56,42 +55,45 @@ public final class OresContext implements AutoCloseable {
     public BufferedReader input() { return input; }
     public PrintWriter output() { return output; }
     public ActorRuntime actors() { return actors; }
+    public GcRuntime gc() { return gc; }
     public UUID contextId() { return contextId; }
     public IsolatePolicy isolatePolicy() { return isolatePolicy; }
     public ExecutionProfile executionProfile() { return executionProfile; }
     public boolean graalIsolated() { return graalIsolated; }
     public long codeGeneration() { return codeGeneration; }
 
-    /**
-     * Context-lifetime storage for ordinary module state evaluated outside an
-     * actor. Initialization is serialized and recursive same-key initialization
-     * is rejected deterministically.
-     */
-    @SuppressWarnings("unchecked")
-    public synchronized <T> T contextLocal(Object key, Supplier<? extends T> initializer) {
-        requireOpen();
-        java.util.Objects.requireNonNull(key, "context-local key");
-        java.util.Objects.requireNonNull(initializer, "context-local initializer");
-        if (contextLocals.containsKey(key)) return (T) contextLocals.get(key);
-        if (!contextLocalInitializing.add(key)) {
-            throw new IllegalStateException("context-local initialization cycle for key " + key);
-        }
-        try {
-            T value = java.util.Objects.requireNonNull(initializer.get(), "context-local initializer returned null");
-            contextLocals.put(key, value);
-            return value;
-        } finally {
-            contextLocalInitializing.remove(key);
-        }
-    }
-
     public void requireCapability(IsolatePolicy.Capability capability, String api) {
-        requireOpen();
         isolatePolicy.require(capability, api);
     }
 
-    private void requireOpen() {
-        if (closed.get()) throw new ExecutionTerminated("Oreslang context is closing");
+    /**
+     * Lifetime-scoped storage for ordinary module/file state executing outside
+     * an Ores actor. Actor executions use ActorRuntime.currentActorLocal()
+     * instead, so actor state never aliases this context state.
+     */
+    @SuppressWarnings("unchecked")
+    public <T> T contextLocal(Object key, Supplier<? extends T> initializer) {
+        java.util.Objects.requireNonNull(key, "key");
+        java.util.Objects.requireNonNull(initializer, "initializer");
+
+        Object existing = contextLocals.get(key);
+        if (existing != null) return (T) existing;
+        if (!initializingContextLocals.add(key)) {
+            throw new IllegalStateException("context-local initialization cycle for " + key);
+        }
+        try {
+            // ContextPolicy.EXCLUSIVE gives guest execution one owning context,
+            // but compute under the explicit lifecycle guard for clear cycle
+            // diagnostics and future scheduler changes.
+            existing = contextLocals.get(key);
+            if (existing != null) return (T) existing;
+            T value = java.util.Objects.requireNonNull(
+                    initializer.get(), "context-local initializer returned null for " + key);
+            Object raced = contextLocals.putIfAbsent(key, value);
+            return raced == null ? value : (T) raced;
+        } finally {
+            initializingContextLocals.remove(key);
+        }
     }
 
     /**
@@ -103,6 +105,23 @@ public final class OresContext implements AutoCloseable {
         schedulerSafepoints.incrementAndGet();
         ProcessSingletonRegistry.checkExecutionBudget();
         actors.schedulerSafepoint();
+        if (actors.currentActorId() == null) {
+            gc.safepoint(GcRuntime.Scope.PROCESS,
+                    () -> GcRuntime.scavengeValues(contextLocals.values()));
+        }
+    }
+
+    /** Explicit process-scoped cleanup. Actor-owned roots are signalled, never walked cross-actor. */
+    public GcRuntime.Report processGc() {
+        requireCapability(IsolatePolicy.Capability.GC_CONTROL, "process.gc");
+        int scavenged = GcRuntime.scavengeValues(contextLocals.values());
+        actors.requestProcessGc();
+        return gc.manual(GcRuntime.Scope.PROCESS, scavenged);
+    }
+
+    /** Explicit current-actor cleanup; fails closed outside an actor turn. */
+    public GcRuntime.Report actorGc() {
+        return actors.gcCurrentActor();
     }
 
     public long schedulerSafepoints() { return schedulerSafepoints.get(); }
@@ -125,17 +144,24 @@ public final class OresContext implements AutoCloseable {
                 "execution_mode", executionProfile.mode().name(),
                 "platform", executionProfile.platform().name(),
                 "graal_isolated", graalIsolated,
-                "scheduler_safepoints", schedulerSafepoints.get());
+                "scheduler_safepoints", schedulerSafepoints.get(),
+                "gc", gc.descriptor());
     }
 
     @Override
     public void close() {
-        if (!closed.compareAndSet(false, true)) return;
         actors.close();
-        synchronized (this) {
+        RuntimeException cleanupFailure = null;
+        try {
+            GcRuntime.closeOwnedValues(contextLocals.values());
+        } catch (RuntimeException failure) {
+            cleanupFailure = failure;
+        } finally {
             contextLocals.clear();
-            contextLocalInitializing.clear();
+            initializingContextLocals.clear();
+            gc.close();
+            output.flush();
         }
-        output.flush();
+        if (cleanupFailure != null) throw cleanupFailure;
     }
 }

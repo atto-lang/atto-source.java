@@ -11,12 +11,12 @@ public final class Lexer {
     private static final Map<String, Token.Type> KEYWORDS = new HashMap<>();
 
     static {
-        KEYWORDS.put("define", DEFINE); KEYWORDS.put("class", CLASS); KEYWORDS.put("struct", STRUCT); KEYWORDS.put("trait", TRAIT); KEYWORDS.put("module", MODULE); KEYWORDS.put("singleton", SINGLETON); KEYWORDS.put("namespace", NAMESPACE);
+        KEYWORDS.put("define", DEFINE); KEYWORDS.put("class", CLASS); KEYWORDS.put("trait", TRAIT); KEYWORDS.put("module", MODULE); KEYWORDS.put("singleton", SINGLETON); KEYWORDS.put("namespace", NAMESPACE);
         KEYWORDS.put("import", IMPORT); KEYWORDS.put("from", FROM); KEYWORDS.put("as", AS); KEYWORDS.put("is", IS); KEYWORDS.put("with", WITH); KEYWORDS.put("init", INIT);
         KEYWORDS.put("extends", EXTENDS); KEYWORDS.put("implements", IMPLEMENTS);
-        KEYWORDS.put("try", TRY); KEYWORDS.put("catch", CATCH); KEYWORDS.put("finally", FINALLY);
+        KEYWORDS.put("try", TRY); KEYWORDS.put("catch", CATCH); KEYWORDS.put("finally", FINALLY); KEYWORDS.put("rt", RT);
         KEYWORDS.put("end", END); KEYWORDS.put("fi", FI); KEYWORDS.put("if", IF); KEYWORDS.put("do", DO);
-        KEYWORDS.put("else", ELSE); KEYWORDS.put("then", THEN); KEYWORDS.put("new", NEW); KEYWORDS.put("done", DONE);
+        KEYWORDS.put("else", ELSE); KEYWORDS.put("then", THEN); KEYWORDS.put("match", MATCH); KEYWORDS.put("new", NEW); KEYWORDS.put("done", DONE);
         KEYWORDS.put("await", AWAIT); KEYWORDS.put("async", ASYNC); KEYWORDS.put("def", DEF); KEYWORDS.put("fnc", FNC); KEYWORDS.put("routine", ROUTINE);
         KEYWORDS.put("for", FOR); KEYWORDS.put("of", OF); KEYWORDS.put("yield", YIELD); KEYWORDS.put("super", SUPER); KEYWORDS.put("elseif", ELSEIF); KEYWORDS.put("switch", SWITCH);
         KEYWORDS.put("type", TYPE); KEYWORDS.put("typeof", TYPEOF); KEYWORDS.put("interface", INTERFACE); KEYWORDS.put("impl", IMPL); KEYWORDS.put("abstract", ABSTRACT);

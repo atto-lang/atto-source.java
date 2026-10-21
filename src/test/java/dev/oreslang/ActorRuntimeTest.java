@@ -5,16 +5,74 @@ import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.OresValues;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 final class ActorRuntimeTest {
+    private static final class MutableBigInteger extends BigInteger {
+        private int mutableState;
+
+        MutableBigInteger() {
+            super("7");
+        }
+
+        void mutate() {
+            mutableState++;
+        }
+    }
+
+    private enum MutableHostEnum {
+        VALUE;
+
+        private int counter;
+
+        void bump() {
+            counter++;
+        }
+    }
+
+    @Test
+    void actorLocalRuntimeStatePersistsPerActorAndNeverAliasesAcrossActors() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicInteger initializations = new AtomicInteger();
+            Map<ActorRuntime.ActorId, Integer> lastValue = new ConcurrentHashMap<>();
+            CountDownLatch delivered = new CountDownLatch(3);
+
+            java.util.function.Supplier<ActorRuntime.Behavior<String>> factory = () -> (message, context) -> {
+                assertEquals(context.self().id(), context.runtime().currentActorId());
+                AtomicInteger local = context.runtime().currentActorLocal(
+                        "module:test",
+                        () -> {
+                            initializations.incrementAndGet();
+                            return new AtomicInteger();
+                        });
+                lastValue.put(context.self().id(), local.incrementAndGet());
+                delivered.countDown();
+            };
+
+            var first = runtime.<String>spawn(factory);
+            var second = runtime.<String>spawn(factory);
+
+            first.send("one");
+            first.send("two");
+            second.send("one");
+
+            assertTrue(delivered.await(2, TimeUnit.SECONDS));
+            assertEquals(2, initializations.get());
+            assertEquals(2, lastValue.get(first.id()));
+            assertEquals(1, lastValue.get(second.id()));
+        }
+    }
+
     @Test
     void freezesMessagesBeforeDelivery() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
@@ -33,6 +91,27 @@ final class ActorRuntimeTest {
             assertEquals(List.of(1, 2), observed.get());
             assertThrows(UnsupportedOperationException.class, () -> ((List<Object>) observed.get()).add(9));
         }
+    }
+
+    @Test
+    void rejectsSubclassedBigNumbersInsteadOfAssumingTheyAreImmutable() {
+        MutableBigInteger value = new MutableBigInteger();
+        value.mutate();
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> ActorRuntime.freeze(value));
+
+        assertTrue(error.getMessage().contains("not Sendable"), error.getMessage());
+    }
+
+    @Test
+    void rejectsArbitraryHostEnumsInsteadOfAssumingTheyAreImmutable() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> ActorRuntime.freeze(MutableHostEnum.VALUE));
+
+        assertTrue(error.getMessage().contains("not Sendable"), error.getMessage());
     }
 
     @Test
@@ -148,6 +227,46 @@ final class ActorRuntimeTest {
             IsolatePolicy escalated = ceiling.withCapabilities(IsolatePolicy.Capability.PROCESS_INFO);
             assertThrows(SecurityException.class, () ->
                     runtime.<String>spawn(escalated, () -> (message, context) -> { }));
+        }
+    }
+
+    @Test
+    void privateActorRejectsSharedTransportWrapper() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<ActorRuntime.Shared<List<Integer>>>spawn(
+                    () -> (message, context) -> { });
+            ActorRuntime.Shared<List<Integer>> shared =
+                    runtime.shareReadonly(new ArrayList<>(List.of(1, 2)));
+
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> ref.send(shared));
+
+            assertTrue(error.getMessage().contains("private actor"), error.getMessage());
+        }
+    }
+
+    @Test
+    void sharedActorAcceptsOnlyFrozenSharedTransportWrapper() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch received = new CountDownLatch(1);
+            AtomicReference<ActorRuntime.Shared<List<Integer>>> observed = new AtomicReference<>();
+            var ref = runtime.<ActorRuntime.Shared<List<Integer>>>spawnShared(
+                    () -> (message, context) -> {
+                        observed.set(message);
+                        received.countDown();
+                    });
+
+            ArrayList<Integer> mutable = new ArrayList<>(List.of(1, 2));
+            ActorRuntime.Shared<List<Integer>> shared = runtime.shareReadonly(mutable);
+            mutable.add(3);
+            ref.send(shared);
+
+            assertTrue(received.await(2, TimeUnit.SECONDS));
+            assertEquals(List.of(1, 2), observed.get().value());
+            assertThrows(
+                    UnsupportedOperationException.class,
+                    () -> observed.get().value().add(9));
         }
     }
 

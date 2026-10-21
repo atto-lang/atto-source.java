@@ -11,22 +11,179 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class TraitCompositionTest {
     @Test
-    void interfacesAreStorageFreeContracts() {
+    void interfaceDataMembersAreRequirementsNotStorage() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                define interface HasState as
+                  val int state;
+                end
+                """));
+
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class,
                 () -> Parser.parse("""
                         define interface Bad as
-                          val int state;
+                          val int state = 1;
                         end
                         """));
 
-        assertTrue(error.getMessage().contains("storage-free contracts"));
+        assertTrue(error.getMessage().contains("cannot have an initializer")
+                || error.getMessage().contains("interface data requirement"));
+    }
+
+    @Test
+    void traitCanCarryPrivateStateBehaviorAndAnInterfaceContract() {
+        Ast.Program checked = assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module model as
+                  define interface CounterApi as
+                    fnc current() => int;
+                  end
+
+                  define trait Counter is CounterApi as
+                    private let int count = 10;
+
+                    pub current() => int {
+                      return self.count;
+                    }
+
+                    pub bump(mut self)() => int {
+                      self.count = self.count + 1;
+                      return self.count;
+                    }
+                  end
+
+                  define class Box with Counter as
+                    pub val int value;
+                  end
+                end
+                """)));
+
+        Ast.ModuleDecl model = checked.modules().stream()
+                .filter(module -> module.name().equals("model"))
+                .findFirst()
+                .orElseThrow();
+        Ast.ClassDecl box = model.declarations().stream()
+                .filter(Ast.ClassDecl.class::isInstance)
+                .map(Ast.ClassDecl.class::cast)
+                .filter(klass -> klass.name().equals("Box"))
+                .findFirst()
+                .orElseThrow();
+
+        assertTrue(box.traits().isEmpty());
+        assertTrue(box.interfaces().stream().anyMatch(type -> type.name().equals("CounterApi")));
+        assertTrue(box.fields().stream().anyMatch(field ->
+                field.name().equals("count") && field.composed()));
+        assertTrue(box.methods().stream().anyMatch(method ->
+                method.name().equals("bump") && method.composed()));
+    }
+
+    @Test
+    void traitStateIsNotAPositionalConstructorParameter() throws Exception {
+        String program = """
+                define module model as
+                  define trait Counter as
+                    private let int count = 10;
+
+                    pub bump(mut self)() => int {
+                      self.count = self.count + 1;
+                      return self.count;
+                    }
+                  end
+
+                  define class Box with Counter as
+                    pub val int value;
+                  end
+                end
+
+                define module app as
+                  pub fnc main() => void {
+                    let box = new Box(5);
+                    stdio.println(box.value);
+                    stdio.println(box.bump());
+                    return;
+                  }
+                end
+                """;
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "traits.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+
+        String text = output.toString(StandardCharsets.UTF_8);
+        assertTrue(text.contains("5"));
+        assertTrue(text.contains("11"));
+    }
+
+    @Test
+    void mutableTraitMethodsRequireAMutableOwnerAtCallSite() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module model as
+                          define trait Counter as
+                            private let int count = 0;
+
+                            pub bump(mut self)() => int {
+                              self.count = self.count + 1;
+                              return self.count;
+                            }
+                          end
+
+                          define class Box with Counter as
+                          end
+
+                          pub fnc bad() => int {
+                            val box = new Box();
+                            return box.bump();
+                          }
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("cannot mutate method 'bump' receiver"));
+        assertTrue(error.getMessage().contains("immutable"));
+    }
+
+    @Test
+    void mutableTraitMethodsCannotBeExtractedAsBoundValues() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module model as
+                          define trait Counter as
+                            private let int count = 0;
+
+                            pub bump(mut self)() => int {
+                              self.count = self.count + 1;
+                              return self.count;
+                            }
+                          end
+
+                          define class Box with Counter as
+                          end
+
+                          pub fnc bad() => void {
+                            let box = new Box();
+                            val callback = box.bump;
+                            return;
+                          }
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("cannot be extracted"));
+        assertTrue(error.getMessage().contains("receiver ownership")
+                || error.getMessage().contains("persistent exclusive"));
     }
 
     @Test
@@ -110,7 +267,7 @@ final class TraitCompositionTest {
                 () -> TypeChecker.check(Parser.parse("""
                         define module model as
                           define trait Counter as
-                            pub value() => int { return 0; }
+                            private val int count = 0;
                           end
 
                           pub fnc make() => void {
@@ -254,9 +411,9 @@ final class TraitCompositionTest {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module model as
                   define trait Echo<T> as
-                    pub echo(T value) => T {
-                      val T copy = value;
-                      return copy;
+                    pub echo(take T value) => T {
+                      val T copied_value = value;
+                      return copied_value;
                     }
                   end
 
@@ -291,91 +448,38 @@ final class TraitCompositionTest {
     }
 
     @Test
-    void traitsCannotMasqueradeAsRuntimeValueTypes() {
-        IllegalArgumentException parameter = assertThrows(IllegalArgumentException.class,
+    void privateTraitStateStaysLexicallyOwnedByTheTrait() {
+        IllegalArgumentException leak = assertThrows(
+                IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        define module app as
-                          define trait Stateful as
-                            pub value() => int { return 1; }
+                        define module model as
+                          define trait Secret as
+                            private val int secret = 7;
+                            pub read() => int { return self.secret; }
                           end
 
-                          fnc bad(Stateful value) => void {
-                            return;
-                          }
-                        end
-                        """)));
-        assertTrue(parameter.getMessage().contains("no runtime/value type identity"));
-
-        IllegalArgumentException allocation = assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        define module app as
-                          define trait Stateful as
-                            pub value() => int { return 1; }
-                          end
-
-                          fnc bad() => void {
-                            val value = new Stateful();
-                            return;
-                          }
-                        end
-                        """)));
-        assertTrue(allocation.getMessage().contains("no runtime/value type identity"));
-    }
-
-    @Test
-    void aggregateContractTraitAndAliasNamesShareOneTypeNamespace() {
-        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        define module app as
-                          define trait Thing as
-                            pub value() => int { return 1; }
-                          end
-
-                          struct Thing {
-                            value: int;
-                          }
-                        end
-                        """)));
-
-        assertTrue(error.getMessage().contains("share one namespace"));
-    }
-    @Test
-    void privateTraitMethodsRemainOwnedByTheirTraitAfterComposition() {
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                define module app as
-                  define trait SecretMath as
-                    private helper() => int {
-                      return 41;
-                    }
-
-                    pub answer() => int {
-                      return self.helper() + 1;
-                    }
-                  end
-
-                  define class Good with SecretMath as
-                  end
-                end
-                """)));
-
-        IllegalArgumentException leak = assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        define module app as
-                          define trait SecretMath as
-                            private helper() => int {
-                              return 41;
-                            }
-                          end
-
-                          define class Bad with SecretMath as
-                            pub leak() => int {
-                              return self.helper();
-                            }
+                          define class Bad with Secret as
+                            pub leak() => int { return self.secret; }
                           end
                         end
                         """)));
 
         assertTrue(leak.getMessage().contains("private to that trait"));
-    }
 
+        IllegalArgumentException hiddenDependency = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module model as
+                          define trait HostReader as
+                            pub read() => int { return self.host_value; }
+                          end
+
+                          define class Bad with HostReader as
+                            pub val int host_value = 9;
+                          end
+                        end
+                        """)));
+
+        assertTrue(hiddenDependency.getMessage().contains("undeclared self member"));
+    }
 }

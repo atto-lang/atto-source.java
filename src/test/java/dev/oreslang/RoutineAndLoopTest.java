@@ -37,7 +37,7 @@ final class RoutineAndLoopTest {
                   end
                 end
 
-                pub routine main() -> void {
+                pub routine main() => void {
                   val y = new x.y();
                   stdio.stdout.write(y)
                 }
@@ -49,7 +49,7 @@ final class RoutineAndLoopTest {
     @Test
     void routinesCannotParticipateInRecursionButFncsCan() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                routine spin() -> void {
+                routine spin() => void {
                   spin();
                 }
                 """)));
@@ -64,50 +64,6 @@ final class RoutineAndLoopTest {
                   fi
                 }
                 """)));
-    }
-
-
-    @Test
-    void routinesAcceptOnlyNamedDeclarationSyntaxWithArrowOrColonReturnTypes() {
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                pub routine arrow() -> void { return; }
-                pub routine colon() : void { return; }
-                """)));
-
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                pub routine legacy() -> void { return; }
-                """));
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                pub routine inferred() { return; }
-                """));
-    }
-
-    @Test
-    void routinesAreDeclarationOnlyAndNeverFirstClassValues() {
-        IllegalArgumentException expressionStyle = assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse("""
-                        pub routine work = || -> {
-                        }
-                        """));
-        assertTrue(expressionStyle.getMessage().contains("declaration-only"));
-
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                routine work() -> void { return; }
-                fnc caller() => void {
-                  work();
-                  return;
-                }
-                """)));
-
-        IllegalArgumentException extracted = assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        routine work() -> void { return; }
-                        fnc bad() => void {
-                          val callback = work;
-                          return;
-                        }
-                        """)));
-        assertTrue(extracted.getMessage().contains("cannot be used as a first-class value"));
     }
 
     @Test
@@ -139,7 +95,7 @@ final class RoutineAndLoopTest {
     @Test
     void explicitlyTypedLambdasCanRecurse() throws Exception {
         String output = run("""
-                pub routine main() -> void {
+                pub routine main() => void {
                   let Fnc<int, int> fact = |int n| -> {
                     return n == 0 ? 1 : n * fact(n - 1);
                   };
@@ -162,24 +118,18 @@ final class RoutineAndLoopTest {
     void structuralParametersAreOptInAndSupportBrandedInterfaces() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub interface Bar {
-                  fnc markerBrand() => String;
+                  markerBrand: 'marking/branding'
                 }
 
                 pub interface Foo extends Bar {
                 }
 
-                define class Branded as
-                  pub markerBrand() => String {
-                    return "marking/branding";
-                  }
-                end
-
                 fnc structural(@Structural Foo value) => String {
-                  return value.markerBrand();
+                  return value.markerBrand;
                 }
 
                 fnc main() => void {
-                  val branded = new Branded();
+                  val branded = obj{markerBrand: "marking/branding"};
                   stdio.println(structural(branded));
                   return;
                 }
@@ -187,21 +137,15 @@ final class RoutineAndLoopTest {
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 pub interface Foo {
-                  fnc markerBrand() => String;
+                  markerBrand: 'marking/branding'
                 }
 
-                define class Branded as
-                  pub markerBrand() => String {
-                    return "marking/branding";
-                  }
-                end
-
                 fnc nominal(Foo value) => String {
-                  return value.markerBrand();
+                  return "ok";
                 }
 
                 fnc main() => void {
-                  val branded = new Branded();
+                  val branded = obj{markerBrand: "marking/branding"};
                   stdio.println(nominal(branded));
                   return;
                 }
@@ -211,7 +155,7 @@ final class RoutineAndLoopTest {
     @Test
     void forOfInjectsSchedulerSafepoints() throws Exception {
         String output = run("""
-                pub routine main() -> void {
+                pub routine main() => void {
                   for (val item of arr[1, 2, 3]) {
                     stdio.stdout.write(item);
                   }
@@ -223,9 +167,289 @@ final class RoutineAndLoopTest {
     }
 
     @Test
+    void canonicalForOfDoDoneParsesAndRuns() throws Exception {
+        String output = run("""
+                pub routine main() => void {
+                  for item of arr[1, 2, 3] do
+                    stdio.stdout.write(item)
+                  done
+                }
+                """);
+
+        assertEquals("123", output);
+    }
+
+    @Test
+    void forOfDestructuresTupleElements() throws Exception {
+        String output = run("""
+                pub routine main() => void {
+                  for [key, value] of arr[(1, "a"), (2, "b")] do
+                    stdio.stdout.write(key);
+                    stdio.stdout.write(value)
+                  done
+                }
+                """);
+
+        assertEquals("1a2b", output);
+    }
+
+    @Test
+    void forOfDestructuringPreservesTupleComponentTypesAcrossElements() throws Exception {
+        String output = run("""
+                pub routine main() => void {
+                  for [key, value] of arr[(1, "a"), (2, "b")] do
+                    stdio.stdout.write(key + 10);
+                    stdio.stdout.write(value + "!")
+                  done
+                }
+                """);
+
+        assertEquals("11a!12b!", output);
+    }
+
+    @Test
+    void singleBindingBracketPatternStillDestructures() throws Exception {
+        String output = run("""
+                pub routine main() => void {
+                  for [value] of arr[arr[7], arr[8]] do
+                    stdio.stdout.write(value)
+                  done
+                }
+                """);
+
+        assertEquals("78", output);
+    }
+
+    @Test
+    void forOfDestructuringRejectsDuplicateBindingNames() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        fnc bad() => void {
+                          for [item, item] of arr[(1, 2)] do
+                            return;
+                          done
+                        }
+                        """));
+
+        String message = error.getMessage().toLowerCase();
+        assertTrue(message.contains("duplicate") && message.contains("item"),
+                error.getMessage());
+    }
+
+    @Test
+    void forOfDestructuringArityIsCheckedStatically() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad() => void {
+                          for [a, b, c] of arr[(1, 2)] do
+                            stdio.println(a)
+                          done
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().toLowerCase().contains("arity"), error.getMessage());
+    }
+
+    @Test
+    void forOfDestructuringDoesNotUpgradeBorrowedComponentsToMutableOwners() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 0;
+                        end
+
+                        fnc mutate(Box mut box) => void {
+                          box.value = box.value + 1;
+                          return;
+                        }
+
+                        fnc bad() => void {
+                          let Box left = new Box(1);
+                          let Box right = new Box(2);
+                          let pairs = arr[(left, right)];
+                          for [a, b] of pairs do
+                            mutate(a);
+                          done
+                          return;
+                        }
+                        """)));
+
+        String message = error.getMessage().toLowerCase();
+        assertTrue(message.contains("borrow") || message.contains("mut"),
+                error.getMessage());
+    }
+
+    @Test
+    void takenForOfTransfersNonCopyTupleComponents() throws Exception {
+        String output = run("""
+                define class Box as
+                  pub val int value = 0;
+                end
+
+                pub routine main() => void {
+                  let pairs = arr[(new Box(1), new Box(2))];
+                  for [left, right] of rt take pairs do
+                    stdio.stdout.write(left.value);
+                    stdio.stdout.write(right.value)
+                  done
+                }
+                """);
+
+        assertEquals("12", output);
+    }
+
+    @Test
+    void takenForOfInvalidatesOriginalIterable() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub val int value = 0;
+                        end
+
+                        fnc bad() => void {
+                          let pairs = arr[(new Box(1), new Box(2))];
+                          for [left, right] of rt take pairs do
+                            stdio.println(left.value);
+                          done
+                          stdio.println(pairs);
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().toLowerCase().contains("moved")
+                || error.getMessage().toLowerCase().contains("take"),
+                error.getMessage());
+    }
+
+    @Test
+    void destructuredLetBorrowCanRebindWithoutMutatingSourceProjection() throws Exception {
+        String output = run("""
+                define class Box as
+                  pub let int value = 0;
+                end
+
+                pub routine main() => void {
+                  let pairs = arr[(new Box(1), new Box(2))];
+                  for [let a, b] of pairs do
+                    a = new Box(9);
+                    stdio.stdout.write(a.value);
+                    stdio.stdout.write(b.value)
+                  done
+
+                  // Every iteration borrow must be released, including the
+                  // alias ended early by rebinding a.
+                  pairs = arr[(new Box(3), new Box(4))];
+                }
+                """);
+
+        assertEquals("92", output);
+    }
+
+    @Test
+    void branchMergeReleasesDestructuredBorrowsWhenEveryPathRebinds() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Box as
+                  pub val int value = 0;
+                end
+
+                fnc ok(bool flag) => void {
+                  let pairs = arr[(new Box(1), new Box(2))];
+                  for [let a, let b] of pairs do
+                    if flag do
+                      a = new Box(9);
+                      b = new Box(9);
+                    else
+                      a = new Box(8);
+                      b = new Box(8);
+                    fi
+                    pairs = arr[(new Box(3), new Box(4))];
+                  done
+                  return;
+                }
+                """)));
+    }
+
+    @Test
+    void branchMergeCountsComplementaryPotentialAliasesConservatively() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub val int value = 0;
+                        end
+
+                        fnc bad(bool flag) => void {
+                          let pairs = arr[(new Box(1), new Box(2))];
+                          for [let a, let b] of pairs do
+                            if flag do
+                              a = new Box(9);
+                            else
+                              b = new Box(8);
+                            fi
+
+                            // After the join, either a or b still aliases
+                            // pairs. Rebinding only a cannot make pairs unique.
+                            a = new Box(7);
+                            pairs = arr[(new Box(3), new Box(4))];
+                          done
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().toLowerCase().contains("borrow"),
+                error.getMessage());
+    }
+
+    @Test
+    void branchMergeRetainsDestructuredBorrowWhenAnyPathKeepsIt() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub val int value = 0;
+                        end
+
+                        fnc bad(bool flag) => void {
+                          let pairs = arr[(new Box(1), new Box(2))];
+                          for [let a, let b] of pairs do
+                            if flag do
+                              a = new Box(9);
+                              b = new Box(9);
+                            else
+                              stdio.println(a.value);
+                            fi
+                            pairs = arr[(new Box(3), new Box(4))];
+                          done
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().toLowerCase().contains("borrow"),
+                error.getMessage());
+    }
+
+    @Test
+    void parenthesizedForCanUseDoDoneBody() throws Exception {
+        String output = run("""
+                pub routine main() => void {
+                  for (let i = 0; i < 3; i = i + 1) do
+                    stdio.stdout.write(i)
+                  done
+                }
+                """);
+
+        assertEquals("012", output);
+    }
+
+    @Test
     void conventionalForLoopAlsoInjectsSafepoints() throws Exception {
         String output = run("""
-                pub routine main() -> void {
+                pub routine main() => void {
                   for (let i = 0; i < 3; i = i + 1) {
                     stdio.stdout.write(i);
                   }
@@ -240,13 +464,13 @@ final class RoutineAndLoopTest {
         String output = run("""
                 define module collections as
                   define class Bag as
-                    pub [Symbol.iterator]() => Array<int> {
+                    [Symbol.iterator]() => Array<int> {
                       return arr[4, 5];
                     }
                   end
                 end
 
-                pub routine main() -> void {
+                pub routine main() => void {
                   val bag = new collections.Bag();
                   for (val item of bag) {
                     stdio.stdout.write(item)

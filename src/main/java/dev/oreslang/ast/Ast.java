@@ -14,7 +14,7 @@ public final class Ast {
         public Program(List<ModuleDecl> modules) { this(null, List.of(), modules); }
     }
 
-    public enum ImportKind { MODULE, CLASS, STRUCT, FUNCTION, ALL }
+    public enum ImportKind { MODULE, CLASS, FUNCTION, ALL }
 
     public record ImportDecl(
             ImportKind kind,
@@ -42,7 +42,6 @@ public final class Ast {
 
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }
-    public enum AggregateKind { CLASS, STRUCT }
 
     public record Annotation(String name, List<TypeRef> arguments) {
         public Annotation { arguments = List.copyOf(arguments); }
@@ -53,7 +52,13 @@ public final class Ast {
         public static TypeRef simple(String name) { return new TypeRef(name, List.of(), false); }
         public static TypeRef inferred() { return new TypeRef("$infer$", List.of(), false); }
         public static TypeRef borrowed(TypeRef target, boolean mutable) {
-            return new TypeRef(mutable ? "$borrow_mut$" : "$borrow$", List.of(target), false);
+            boolean effectiveMutable = mutable;
+            TypeRef base = target;
+            while (base.isBorrow()) {
+                effectiveMutable |= base.mutableBorrow();
+                base = base.borrowedTarget();
+            }
+            return new TypeRef(effectiveMutable ? "$borrow_mut$" : "$borrow$", List.of(base), false);
         }
         public boolean isBorrow() { return name.equals("$borrow$") || name.equals("$borrow_mut$"); }
         public boolean mutableBorrow() { return name.equals("$borrow_mut$"); }
@@ -71,9 +76,34 @@ public final class Ast {
         public String stringLiteralValue() { return name.substring("$string$".length()); }
     }
 
-    public record Param(TypeRef type, String name, boolean structural, boolean mutable) {
-        public Param(TypeRef type, String name) { this(type, name, false, false); }
-        public Param(TypeRef type, String name, boolean structural) { this(type, name, structural, false); }
+    /**
+     * Source-level parameter ownership policy. This is deliberately separate
+     * from TypeRef so borrow semantics never leak into type/ABI syntax.
+     *
+     * BORROW: ordinary read-only temporary borrow (default)
+     * MUT: exclusive temporary mutable borrow
+     * TAKE: ownership transfer into the callee
+     */
+    public enum ParamMode { BORROW, MUT, TAKE }
+
+    public record Param(TypeRef type, String name, boolean structural, ParamMode mode) {
+        public Param {
+            mode = mode == null ? ParamMode.BORROW : mode;
+        }
+        public Param(TypeRef type, String name) { this(type, name, false, ParamMode.BORROW); }
+        public Param(TypeRef type, String name, boolean structural) { this(type, name, structural, ParamMode.BORROW); }
+
+        /**
+         * Compatibility constructor for compiler code written before ParamMode.
+         * true maps to the new exclusive mutable-borrow semantics.
+         */
+        public Param(TypeRef type, String name, boolean structural, boolean mutable) {
+            this(type, name, structural, mutable ? ParamMode.MUT : ParamMode.BORROW);
+        }
+
+        public boolean mutable() { return mode == ParamMode.MUT; }
+        public boolean borrowed() { return mode == ParamMode.BORROW || mode == ParamMode.MUT; }
+        public boolean takesOwnership() { return mode == ParamMode.TAKE; }
     }
 
     /** Lifecycle routine. Scope is derived from its containing module:
@@ -106,7 +136,6 @@ public final class Ast {
 
     public record ClassDecl(
             String name,
-            AggregateKind kind,
             boolean isAbstract,
             List<String> genericParameters,
             List<TypeRef> parents,
@@ -121,28 +150,16 @@ public final class Ast {
             traits = List.copyOf(traits);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
-            if (kind == AggregateKind.STRUCT && isAbstract) {
-                throw new IllegalArgumentException("structs cannot be abstract");
-            }
-            if (kind == AggregateKind.STRUCT && !parents.isEmpty()) {
-                throw new IllegalArgumentException("structs cannot extend classes");
-            }
-        }
-        public ClassDecl(String name, boolean isAbstract, List<String> genericParameters,
-                         List<TypeRef> parents, List<TypeRef> interfaces, List<TypeRef> traits,
-                         List<FieldDecl> fields, List<MethodDecl> methods) {
-            this(name, AggregateKind.CLASS, isAbstract, genericParameters, parents, interfaces, traits, fields, methods);
         }
         public ClassDecl(String name, boolean isAbstract, List<String> genericParameters,
                          List<TypeRef> parents, List<TypeRef> interfaces,
                          List<FieldDecl> fields, List<MethodDecl> methods) {
-            this(name, AggregateKind.CLASS, isAbstract, genericParameters, parents, interfaces, List.of(), fields, methods);
+            this(name, isAbstract, genericParameters, parents, interfaces, List.of(), fields, methods);
         }
         public ClassDecl(String name, boolean isAbstract, List<String> genericParameters,
                          List<FieldDecl> fields, List<MethodDecl> methods) {
-            this(name, AggregateKind.CLASS, isAbstract, genericParameters, List.of(), List.of(), List.of(), fields, methods);
+            this(name, isAbstract, genericParameters, List.of(), List.of(), List.of(), fields, methods);
         }
-        public boolean isStruct() { return kind == AggregateKind.STRUCT; }
     }
 
     /**
@@ -178,7 +195,11 @@ public final class Ast {
         }
     }
 
-    /** Compatibility-only node; InterfaceDecl rejects data members. */
+    /**
+     * Contract-only data member requirement. This does not allocate storage;
+     * it requires a conforming structural value/class/module to expose data
+     * with this name and type.
+     */
     public record InterfaceFieldDecl(String name, TypeRef type) implements InterfaceMember { }
 
 
@@ -192,9 +213,6 @@ public final class Ast {
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             members = List.copyOf(members);
-            if (members.stream().anyMatch(member -> !(member instanceof InterfaceFunctionDecl))) {
-                throw new IllegalArgumentException("interfaces are storage-free method contracts; data members are not allowed");
-            }
         }
         public InterfaceDecl(String name, List<String> genericParameters, List<InterfaceMember> members) {
             this(name, Visibility.PRIVATE, genericParameters, List.of(), members);
@@ -258,20 +276,8 @@ public final class Ast {
 
     public enum BindingKind { CONST, VAL, LET }
 
-    public sealed interface Stmt permits TypeDeclStmt, BindingStmt, DestructureStmt, ReturnStmt, ExprStmt, DeferStmt,
-            IfStmt, TryStmt, ForOfStmt, ForStmt { }
-
-    /** Lexically scoped compile-time type declaration inside a callable/block. */
-    public record TypeDeclStmt(Decl declaration) implements Stmt {
-        public TypeDeclStmt {
-            if (!(declaration instanceof ClassDecl klass && klass.isStruct())
-                    && !(declaration instanceof InterfaceDecl)
-                    && !(declaration instanceof TraitDecl)
-                    && !(declaration instanceof TypeAliasDecl)) {
-                throw new IllegalArgumentException("callable-local type declarations are limited to struct/interface/trait/type");
-            }
-        }
-    }
+    public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, ExprStmt, DeferStmt,
+            IfStmt, MatchStmt, TryStmt, ForOfStmt, ForStmt { }
 
     public record BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer) implements Stmt { }
     public record DestructureBinding(BindingKind kind, String name) { }
@@ -295,6 +301,18 @@ public final class Ast {
         }
     }
 
+    public sealed interface OptionPattern permits SomePattern, NonePattern { }
+    public record SomePattern(String bindingName) implements OptionPattern { }
+    public record NonePattern() implements OptionPattern { }
+
+    public record MatchArm(OptionPattern pattern, List<Stmt> body) {
+        public MatchArm { body = List.copyOf(body); }
+    }
+
+    public record MatchStmt(Expr value, List<MatchArm> arms) implements Stmt {
+        public MatchStmt { arms = List.copyOf(arms); }
+    }
+
     public record TryStmt(List<Stmt> body, String errorName, List<Stmt> catchBody, List<Stmt> finallyBody) implements Stmt {
         public TryStmt {
             body = List.copyOf(body);
@@ -303,29 +321,41 @@ public final class Ast {
         }
     }
 
-    public record ForOfStmt(BindingKind bindingKind, String bindingName, Expr iterable, List<Stmt> body) implements Stmt {
-        public ForOfStmt { body = List.copyOf(body); }
+    public record ForOfStmt(
+            List<DestructureBinding> bindings,
+            boolean destructuringPattern,
+            Expr iterable,
+            List<Stmt> body) implements Stmt {
+        public ForOfStmt {
+            bindings = List.copyOf(bindings);
+            body = List.copyOf(body);
+            if (bindings.isEmpty()) throw new IllegalArgumentException("for-of requires at least one binding");
+        }
+
+        public ForOfStmt(List<DestructureBinding> bindings, Expr iterable, List<Stmt> body) {
+            this(bindings, bindings.size() > 1, iterable, body);
+        }
+
+        public ForOfStmt(BindingKind bindingKind, String bindingName, Expr iterable, List<Stmt> body) {
+            this(List.of(new DestructureBinding(bindingKind, bindingName)), false, iterable, body);
+        }
+
+        /** Compatibility helpers for single-binding loops. */
+        public BindingKind bindingKind() { return bindings.getFirst().kind(); }
+        public String bindingName() { return bindings.getFirst().name(); }
+        public boolean destructuring() { return destructuringPattern; }
     }
 
     public record ForStmt(Stmt initializer, Expr condition, Expr update, List<Stmt> body) implements Stmt {
         public ForStmt { body = List.copyOf(body); }
     }
 
-    public sealed interface Expr permits LiteralExpr, NameExpr, SuperExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
-            CallExpr, MemberExpr, IndexExpr, NewExpr, StructInitExpr, AwaitExpr, ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
+    public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
+            CallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
     public record NameExpr(String name) implements Expr { }
-
-    /**
-     * Lexical superclass receiver. A null parent means unqualified `super`,
-     * which is legal only when the enclosing class has exactly one direct
-     * class parent. A non-null parent names one direct parent explicitly, as
-     * in `super.A.foo()`.
-     */
-    public record SuperExpr(String parent) implements Expr { }
-
     public record BinaryExpr(String operator, Expr left, Expr right) implements Expr { }
     public record UnaryExpr(String operator, Expr operand) implements Expr { }
     public record AssignExpr(Expr target, Expr value) implements Expr { }
@@ -340,11 +370,6 @@ public final class Ast {
 
     public record NewExpr(TypeRef type, List<Expr> arguments) implements Expr {
         public NewExpr { arguments = List.copyOf(arguments); }
-    }
-
-    public record StructInitExpr(TypeRef type, List<ObjectField> fields) implements Expr {
-        public StructInitExpr { fields = List.copyOf(fields); }
-        public boolean anonymous() { return type == null; }
     }
 
     public record AwaitExpr(Expr expression) implements Expr { }

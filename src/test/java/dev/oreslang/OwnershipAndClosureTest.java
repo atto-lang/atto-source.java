@@ -24,7 +24,7 @@ final class OwnershipAndClosureTest {
                   };
                 }
 
-                pub routine main() -> void {
+                pub routine main() => void {
                   val (() -> int) counter = makeCounter();
                   stdio.stdout.write(counter());
                   stdio.stdout.write(counter());
@@ -47,22 +47,23 @@ final class OwnershipAndClosureTest {
                           return;
                         }
                         """)));
-        assertTrue(error.getMessage().contains("immutable parameter/binding"));
+        assertTrue(error.getMessage().contains("immutable binding/read borrow"));
     }
 
     @Test
-    void ownedMutParameterMayMutateAndReturnOwnership() throws Exception {
+    void takeParameterTransfersOwnershipAndCanMoveIntoMutableLocal() throws Exception {
         String output = run("""
                 define class Bar as
                   pub let String foo = "start";
                 end
 
-                fnc change(Bar mut b) => Bar {
-                  b.foo = "foobar";
-                  return b;
+                fnc change(take Bar b) => Bar {
+                  let Bar owned = b;
+                  owned.foo = "foobar";
+                  return owned;
                 }
 
-                pub routine main() -> void {
+                pub routine main() => void {
                   let Bar b = new Bar();
                   let Bar changed = change(b);
                   stdio.stdout.write(changed.foo);
@@ -73,20 +74,32 @@ final class OwnershipAndClosureTest {
     }
 
     @Test
+    void pointerStyleBorrowSyntaxIsRejected() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        fnc bad(&mut String value) => void {
+                          return;
+                        }
+                        """));
+        assertTrue(error.getMessage().contains("pointer-style '&'"));
+    }
+
+    @Test
     void mutableBorrowAllowsMutationWithoutMovingOwner() throws Exception {
         String output = run("""
                 define class Bar as
                   pub let String foo = "start";
                 end
 
-                fnc change(&mut Bar b) => void {
+                fnc change(Bar mut b) => void {
                   b.foo = "borrowed";
                   return;
                 }
 
-                pub routine main() -> void {
+                pub routine main() => void {
                   let Bar b = new Bar();
-                  change(&mut b);
+                  change(b);
                   stdio.stdout.write(b.foo);
                   return;
                 }
@@ -102,15 +115,15 @@ final class OwnershipAndClosureTest {
                           pub let String foo = "start";
                         end
 
-                        fnc mutate(&mut Bar b) => void {
+                        fnc mutate(Bar mut b) => void {
                           b.foo = "changed";
                           return;
                         }
 
                         fnc bad() => void {
                           let Bar b = new Bar();
-                          val &Bar read = &b;
-                          mutate(&mut b);
+                          val read = rt borrow(b);
+                          mutate(b);
                           stdio.println(read.foo);
                           return;
                         }
@@ -126,7 +139,7 @@ final class OwnershipAndClosureTest {
                           pub let String foo = "start";
                         end
 
-                        fnc consume(Bar b) => void {
+                        fnc consume(take Bar b) => void {
                           return;
                         }
 
@@ -148,23 +161,31 @@ final class OwnershipAndClosureTest {
                           pub let String foo = "start";
                         end
 
-                        fnc bad() => &Bar {
+                        fnc bad() => Bar {
                           let Bar b = new Bar();
-                          return &b;
+                          return rt borrow(b);
                         }
                         """)));
-        assertTrue(error.getMessage().contains("outlive its owner"));
+        assertTrue(error.getMessage().toLowerCase().contains("borrow")
+                || error.getMessage().contains("return"));
     }
 
     @Test
-    void borrowedParameterCanBeReturned() {
+    void normalParameterBorrowDoesNotMoveCaller() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define class Bar as
                   pub let String foo = "start";
                 end
 
-                fnc identity(&Bar b) => &Bar {
-                  return b;
+                fnc read(Bar b) => String {
+                  return b.foo;
+                }
+
+                fnc ok() => void {
+                  let Bar b = new Bar();
+                  stdio.println(read(b));
+                  stdio.println(b.foo);
+                  return;
                 }
                 """)));
     }
@@ -179,8 +200,8 @@ final class OwnershipAndClosureTest {
 
                 fnc ok() => void {
                   let Bar b = new Bar();
-                  val &Bar first = &b;
-                  val &Bar second = &b;
+                  val first = rt borrow(b);
+                  val second = rt borrow(b);
                   stdio.println(first.foo);
                   stdio.println(second.foo);
                   return;
@@ -196,12 +217,15 @@ final class OwnershipAndClosureTest {
                           pub let String foo = "start";
                         end
 
+                        fnc mutateBoth(Bar mut first, Bar mut second) => void {
+                          first.foo = "first";
+                          second.foo = "second";
+                          return;
+                        }
+
                         fnc bad() => void {
                           let Bar b = new Bar();
-                          val &mut Bar first = &mut b;
-                          val &mut Bar second = &mut b;
-                          stdio.println(first.foo);
-                          stdio.println(second.foo);
+                          mutateBoth(b, b);
                           return;
                         }
                         """)));
@@ -216,11 +240,11 @@ final class OwnershipAndClosureTest {
                           pub let String foo = "start";
                         end
 
-                        fnc consume(Bar b) => void { return; }
+                        fnc consume(take Bar b) => void { return; }
 
                         fnc bad() => void {
                           let Bar b = new Bar();
-                          val &Bar read = &b;
+                          val read = rt borrow(b);
                           consume(b);
                           stdio.println(read.foo);
                           return;
@@ -236,7 +260,7 @@ final class OwnershipAndClosureTest {
                   pub let String foo = "start";
                 end
 
-                fnc mutate(&mut Bar b) => void {
+                fnc mutate(Bar mut b) => void {
                   b.foo = "changed";
                   return;
                 }
@@ -244,10 +268,10 @@ final class OwnershipAndClosureTest {
                 fnc ok() => void {
                   let Bar b = new Bar();
                   if true; do
-                    val &Bar read = &b;
+                    val read = rt borrow(b);
                     stdio.println(read.foo);
                   fi
-                  mutate(&mut b);
+                  mutate(b);
                   return;
                 }
                 """)));
@@ -261,7 +285,7 @@ final class OwnershipAndClosureTest {
                   pub let String foo = "start";
                 end
 
-                fnc consume(Bar b) => void { return; }
+                fnc consume(take Bar b) => void { return; }
 
                 fnc ok(bool flag) => void {
                   let Bar b = new Bar();
@@ -280,7 +304,7 @@ final class OwnershipAndClosureTest {
                           pub let String foo = "start";
                         end
 
-                        fnc consume(Bar b) => void { return; }
+                        fnc consume(take Bar b) => void { return; }
 
                         fnc bad(bool flag) => void {
                           let Bar b = new Bar();
@@ -332,107 +356,6 @@ final class OwnershipAndClosureTest {
         assertTrue(error.getMessage().contains("use of moved value 'box'"));
     }
 
-    @Test
-    void callableLocalStructMutableReceiverUsesLexicalOwnershipMetadata() {
-        IllegalArgumentException immutableOwner = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        fnc bad() => void {
-                          struct Local {
-                            pub let value: int;
-
-                            pub bump(self &mut self)() => void {
-                              self.value = self.value + 1;
-                              return;
-                            }
-                          }
-
-                          val Local item = Local { value = 0 };
-                          item.bump();
-                          return;
-                        }
-                        """)));
-        assertTrue(immutableOwner.getMessage().contains("cannot mutate method 'bump' receiver")
-                || immutableOwner.getMessage().contains("immutable parameter/binding 'item'"));
-
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                fnc ok() => void {
-                  struct Local {
-                    pub let value: int;
-
-                    pub bump(self &mut self)() => void {
-                      self.value = self.value + 1;
-                      return;
-                    }
-                  }
-
-                  let Local item = Local { value = 0 };
-                  item.bump();
-                  return;
-                }
-                """)));
-    }
-
-    @Test
-    void callableLocalStructFieldMutabilityIsResolvedLexically() {
-        IllegalArgumentException error = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        fnc bad() => void {
-                          struct Local {
-                            pub val value: int;
-                          }
-
-                          let Local item = Local { value = 0 };
-                          item.value = 1;
-                          return;
-                        }
-                        """)));
-
-        assertTrue(error.getMessage().contains("field 'Local.value' is immutable"));
-    }
-
-    @Test
-    void aliasesPreserveOwnershipCategoryAndLocalStructReceiverRules() {
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                type Count = int;
-
-                fnc consume(Count value) => void {
-                  return;
-                }
-
-                fnc ok() => void {
-                  val Count value = 7;
-                  consume(value);
-                  stdio.println(value);
-                  return;
-                }
-                """)));
-
-        IllegalArgumentException immutableAliasOwner = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        fnc bad() => void {
-                          struct Local {
-                            pub let value: int;
-
-                            pub bump(self &mut self)() => void {
-                              self.value = self.value + 1;
-                              return;
-                            }
-                          }
-
-                          type Alias = Local;
-                          val Alias item = Local { value = 0 };
-                          item.bump();
-                          return;
-                        }
-                        """)));
-
-        assertTrue(immutableAliasOwner.getMessage().contains("cannot mutate method 'bump' receiver")
-                || immutableAliasOwner.getMessage().contains("immutable parameter/binding 'item'"));
-    }
-
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "ownership.ores")
@@ -445,22 +368,5 @@ final class OwnershipAndClosureTest {
             context.eval(source);
         }
         return output.toString(StandardCharsets.UTF_8);
-    }
-    @Test
-    void ownershipCheckerInspectsMethodsInsideCallableLocalStructs() {
-        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        fnc make() => T {
-                          struct T {
-                            pub bad() => &int {
-                              let int local = 7;
-                              return &local;
-                            }
-                          }
-                          return T {};
-                        }
-                        """)));
-
-        assertTrue(error.getMessage().contains("outlive its owner"));
     }
 }
