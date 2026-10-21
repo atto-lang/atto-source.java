@@ -147,3 +147,21 @@ bypass that policy. A local JDK 21 isolated compile of the exact current
 passed 18 capacity/close assertions; this **does not validate production
 ChannelRuntime, Graal interpreter, Maven or source Task integration**.
 The checked-in JUnit tests still require real exact-head CI execution.
+
+### Nested transport Send proof — fail closed
+
+`ThreadSafetyTraits` now independently rejects a `Stream<T>` payload
+that contains another `Stream` or `Channel` handle, including inside
+`Option`, `Result`, lists, tuples, records and unions. Trusting the
+inner intrinsic as `Send` does not grant the outer stream data-only
+authorization. Depth and node-count limits fail closed on adversarial
+type graphs. The public type checker separately validates resolved nominal
+class fields and rejects borrowed, unknown, and other non-data-only
+payloads.
+
+Added a source-runtime stress regression racing `close()` with cancellation
+of a pending bounded writer. The required invariant is that a buffered,
+already-committed item remains readable, the canceled/closed pending
+writer's item is never committed, and no registration remains live. This,
+like the other JUnit regressions, requires real exact-head CI to establish
+passing production behavior; merely committing the test is not a pass.
