@@ -243,7 +243,7 @@ fnc named(): {foo: int, bar: string} {
 }
 ```
 
-The `type` marker inside `Array<type intOrBoolOrString>` is accepted as an explicit alias marker; `Array<intOrBoolOrString>` is equivalent. A finite tuple type records exact arity and the type of each position even though the interpreter represents the value with a JVM `List`. The contextual spelling `tuple (T1, T2, ...)` normalizes to the same finite tuple TypeRef as the existing bracket spelling `[T1, T2, ...]`; it does not introduce a second runtime representation or a different arity policy. A record type names required members; extra members remain compatible with the structural type system.
+The `type` marker inside `Array<type intOrBoolOrString>` is accepted as an explicit alias marker; `Array<intOrBoolOrString>` is equivalent. A finite tuple type records exact arity and the type of each position even though the interpreter represents the value with a JVM `List`. The contextual spelling `tuple (T1, T2, ...)` normalizes to the same finite tuple TypeRef as the existing bracket spelling `[T1, T2, ...]`; it does not introduce a second runtime representation. Finite tuple types have one authoritative maximum arity of 64 elements, enforced by the canonical AST tuple constructor so parser, generated AST, and backend-facing compiler paths cannot disagree. A record type names required members; extra members remain compatible with the structural type system.
 
 ## Collection shapes and named type metadata
 
