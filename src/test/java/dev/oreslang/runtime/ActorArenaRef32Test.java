@@ -61,9 +61,11 @@ final class ActorArenaRef32Test {
                                 () -> ActorArenaRef32.at(block, 1));
                         assertThrows(IllegalArgumentException.class,
                                 () -> ActorArenaRef32.at(block, 24));
+                        var shortBlock = context.privateMemory().orElseThrow()
+                                .allocatePrivateBytes(20);
+                        int shortRef16 = ActorArenaRef32.at(shortBlock, 16);
                         assertThrows(IndexOutOfBoundsException.class,
-                                () -> ActorArenaRef32.readLong(block,
-                                        ManagedReferencePolicy.encodeArenaOffset32(24 - 8, 24 + 1)));
+                                () -> ActorArenaRef32.readLong(shortBlock, shortRef16));
                     } catch (Throwable ex) {
                         failure.set(ex);
                     } finally {
@@ -77,6 +79,8 @@ final class ActorArenaRef32Test {
             assertEquals(0L, runtime.privateMemoryBytes());
             assertThrows(IllegalStateException.class,
                     () -> ActorArenaRef32.readInt(retained.get(), 1));
+            assertThrows(IllegalStateException.class,
+                    () -> ActorArenaRef32.at(retained.get(), 0));
         }
     }
 }
