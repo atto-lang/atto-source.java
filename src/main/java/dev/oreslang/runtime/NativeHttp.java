@@ -448,6 +448,9 @@ public final class NativeHttp implements AutoCloseable {
                 checkOwner();
                 ActorNativeArena arena = ActorRuntime.currentNativeArena();
                 if (arena == null) throw new SecurityException("HTTP actor handle requires actor ownership");
+                // The HTTP core is the issuance authority. A generic Java
+                // wrapper reporting this arena is not a guest capability.
+                arena.issueNativeCapability(this);
                 return arena;
             }
         }
