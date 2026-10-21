@@ -238,7 +238,8 @@ public final class OresEvalRootNode extends RootNode {
         // link/init/main commands to install a full import graph before init.
         current.link();
         current.initialize();
-        return context.runRootMain(() -> current.executeMain(arguments, false));
+        Object[] normalizedArguments = current.normalizeHostArguments(arguments);
+        return context.runRootMain(() -> current.executeMain(normalizedArguments, false));
     }
 
     private Evaluator evaluator(OresContext context) {
@@ -896,8 +897,18 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("code unit '" + codeUnitId
                         + "' does not export public function '" + name + "'");
             }
-            Object result = callFunction(fn, java.util.Arrays.asList(arguments));
+            Object result = callFunction(
+                    fn,
+                    java.util.Arrays.asList(normalizeHostArguments(arguments)));
             return result instanceof HostObjectFacade host ? host.value() : result;
+        }
+
+        private Object[] normalizeHostArguments(Object[] arguments) {
+            Object[] normalized = new Object[arguments.length];
+            for (int i = 0; i < arguments.length; i++) {
+                normalized[i] = normalizeHostResult(arguments[i]);
+            }
+            return normalized;
         }
 
         private Object invoke(Invocation initial) {
