@@ -3737,6 +3737,13 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (expr instanceof Ast.AssignExpr assignment) {
+                    try {
+                        preflightDirectMapIndexedAssignment(
+                                assignment.target(), env);
+                    } catch (RuntimeException | Error failure) {
+                        continuation.accept(task, null, failure);
+                        return;
+                    }
                     evalSuspendableExpr(
                             task,
                             assignment.value(),
@@ -5013,6 +5020,22 @@ public final class OresEvalRootNode extends RootNode {
             }
             throw new IllegalArgumentException(
                     "value is not indexable");
+        }
+
+        private void preflightDirectMapIndexedAssignment(
+                Ast.Expr target,
+                Env env) {
+            if (!(target instanceof Ast.IndexExpr indexed)
+                    || !(indexed.receiver() instanceof Ast.NameExpr owner)
+                    || env == null) {
+                return;
+            }
+            Object receiver = env.lookup(owner.name());
+            if (receiver instanceof OresKeyedMap<?, ?> map
+                    && !env.canWriteMap(owner.name(), map)) {
+                throw new SecurityException(
+                        "Map<K,V> indexed mutation requires a directly owned mutable local binding");
+            }
         }
 
         private Object assignIndexValue(
@@ -6930,6 +6953,10 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("unknown name " + name.name());
             }
             if (expr instanceof Ast.AssignExpr assignment) {
+                // Assignment remains RHS-first, but a directly named Map has
+                // enough runtime metadata to reject missing mutation authority
+                // before any RHS side effect runs.
+                preflightDirectMapIndexedAssignment(assignment.target(), env);
                 Object value = eval(assignment.value(), env);
                 if (assignment.target() instanceof Ast.NameExpr target) {
                     env.assign(target.name(), value);
