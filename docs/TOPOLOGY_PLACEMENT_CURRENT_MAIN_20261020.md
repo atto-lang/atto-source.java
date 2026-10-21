@@ -36,6 +36,8 @@ The host advisory planner now considers two distinct locality requests:
   concentrates private L1/L2 working sets. Selection is allocation-free and
   retains a stable target for each key while the pool/topology are unchanged.
 
+**Current limitation:** Linux discovery records the highest known unified L2+ cache per CPU, not a complete L1D/L2/LLC hierarchy, SMT sibling map, measured cache occupancy, or cache-line size. Thus same-LLC ranking does not prove same-L2 or reduced L1D/L2 miss rates. CPU targets and system masks can change after topology discovery.
+
 These are preferences among *advertised host carrier targets*, not observations
 that the OS is currently running the task on a particular CPU. They do not
 move pages, pin pthreads, enable per-actor execution parallelism, grant Task
