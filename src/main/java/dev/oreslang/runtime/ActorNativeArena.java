@@ -659,14 +659,18 @@ public final class ActorNativeArena implements AutoCloseable {
                 throw new SecurityException("actor-native reference was not issued by this arena");
             }
             tag = REFERENCE;
-            Long prior = referenceOffsets.putIfAbsent(v, address);
+            // Validate both indexes before mutating either. A rejected alias
+            // must not leave a phantom identity entry in the actor arena.
+            Long prior = referenceOffsets.get(v);
             if (prior != null && prior.longValue() != address) {
                 throw new SecurityException("actor-native value changed logical address");
             }
-            NativeValue occupant = referencesByOffset.putIfAbsent(address, v);
+            NativeValue occupant = referencesByOffset.get(address);
             if (occupant != null && occupant != v) {
                 throw new SecurityException("duplicate actor-relative native address");
             }
+            referenceOffsets.putIfAbsent(v, address);
+            referencesByOffset.putIfAbsent(address, v);
             bits = address;
         } else {
             throw new IllegalArgumentException("actor field requires native value lowering for "
