@@ -25,7 +25,8 @@ public final class ScopedTaskReadRuntime {
             long allocationId,
             long generation) { }
 
-    private static final ConcurrentHashMap<AllocationKey, AtomicInteger> READERS =
+    private static final int WRITE_HELD = -1;
+    private static final ConcurrentHashMap<AllocationKey, Integer> ACCESS =
             new ConcurrentHashMap<>();
 
     public static <T> OresFuture<T> start(
@@ -73,38 +74,86 @@ public final class ScopedTaskReadRuntime {
     }
 
     /**
-     * Parent/runtime write barrier for the exact allocation generation.
-     * A replacement allocation with a new generation is a distinct authority.
+     * Atomically reserve parent/runtime WRITE authority for the exact
+     * allocation generation. The returned lease MUST bracket the physical
+     * write. A check-only API is insufficient because a reader could register
+     * immediately after the check and race the write.
+     */
+    public static WriteLease acquireWrite(
+            ScopedTaskReadAuthority.AllocationIdentity allocation) {
+        Objects.requireNonNull(allocation, "allocation");
+        AllocationKey key = key(allocation);
+        ACCESS.compute(key, (ignored, current) -> {
+            if (current != null) {
+                if (current == WRITE_HELD) {
+                    throw new IllegalStateException(
+                            "allocation already has live WRITE authority");
+                }
+                if (current > 0) {
+                    throw new IllegalStateException(
+                            "allocation has live scoped Task READ authority");
+                }
+                throw new IllegalStateException(
+                        "scoped Task access ledger is corrupt");
+            }
+            return WRITE_HELD;
+        });
+        return new WriteLease(key);
+    }
+
+    /**
+     * Check-only diagnostic helper. Callers that will actually mutate storage
+     * must use {@link #acquireWrite(ScopedTaskReadAuthority.AllocationIdentity)}
+     * so reader admission and WRITE acquisition are linearized.
      */
     public static void requireWritable(
             ScopedTaskReadAuthority.AllocationIdentity allocation) {
         Objects.requireNonNull(allocation, "allocation");
-        AllocationKey key = new AllocationKey(
-                allocation.domain(),
-                allocation.ownerId(),
-                allocation.allocationId(),
-                allocation.generation());
-        AtomicInteger readers = READERS.get(key);
-        if (readers != null && readers.get() > 0) {
+        Integer state = ACCESS.get(key(allocation));
+        if (state == null) return;
+        if (state == WRITE_HELD) {
+            throw new IllegalStateException(
+                    "allocation already has live WRITE authority");
+        }
+        if (state > 0) {
             throw new IllegalStateException(
                     "allocation has live scoped Task READ authority");
         }
+        throw new IllegalStateException(
+                "scoped Task access ledger is corrupt");
     }
 
     static int activeReadersForTesting(
             ScopedTaskReadAuthority.AllocationIdentity allocation) {
-        AllocationKey key = new AllocationKey(
+        Integer state = ACCESS.get(key(allocation));
+        return state != null && state > 0 ? state : 0;
+    }
+
+    static boolean writeHeldForTesting(
+            ScopedTaskReadAuthority.AllocationIdentity allocation) {
+        return Integer.valueOf(WRITE_HELD).equals(ACCESS.get(key(allocation)));
+    }
+
+    private static AllocationKey key(
+            ScopedTaskReadAuthority.AllocationIdentity allocation) {
+        return new AllocationKey(
                 allocation.domain(),
                 allocation.ownerId(),
                 allocation.allocationId(),
                 allocation.generation());
-        AtomicInteger readers = READERS.get(key);
-        return readers == null ? 0 : readers.get();
     }
 
     private static Lease register(AllocationKey key) {
-        Integer readers = READERS.compute(key, (ignored, current) -> {
+        Integer readers = ACCESS.compute(key, (ignored, current) -> {
+            if (current != null && current == WRITE_HELD) {
+                throw new IllegalStateException(
+                        "cannot admit scoped Task READ while WRITE authority is live");
+            }
             int count = current == null ? 0 : current;
+            if (count < 0) {
+                throw new IllegalStateException(
+                        "scoped Task access ledger is corrupt");
+            }
             if (count == Integer.MAX_VALUE) {
                 throw new IllegalStateException(
                         "scoped Task READ reader count overflow");
@@ -116,6 +165,30 @@ public final class ScopedTaskReadRuntime {
                     "scoped Task READ registration failed");
         }
         return new Lease(key);
+    }
+
+    public static final class WriteLease implements AutoCloseable {
+        private final AllocationKey key;
+        private final AtomicBoolean released = new AtomicBoolean();
+
+        private WriteLease(AllocationKey key) {
+            this.key = key;
+        }
+
+        @Override
+        public void close() {
+            if (!released.compareAndSet(false, true)) {
+                throw new IllegalStateException(
+                        "scoped Task WRITE lease released more than once");
+            }
+            ACCESS.compute(key, (ignored, state) -> {
+                if (state == null || state != WRITE_HELD) {
+                    throw new IllegalStateException(
+                            "scoped Task WRITE ledger entry missing/corrupt at release");
+                }
+                return null;
+            });
+        }
     }
 
     private static final class Lease {
@@ -139,7 +212,7 @@ public final class ScopedTaskReadRuntime {
                 throw new IllegalStateException(
                         "scoped Task READ lease retired more than once at " + edge);
             }
-            READERS.compute(key, (ignored, counter) -> {
+            ACCESS.compute(key, (ignored, counter) -> {
                 if (counter == null || counter <= 0) {
                     throw new IllegalStateException(
                             "scoped Task READ ledger entry missing/corrupt at " + edge);
