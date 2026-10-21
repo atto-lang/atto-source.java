@@ -1123,13 +1123,25 @@ public final class ActorNativeArena implements AutoCloseable {
 
     /**
      * Map.put needs the prior value only as an implementation return value.
-     * A moved/terminal capability must still be replaceable so its slot
-     * reference can be retired; ordinary reads continue to revalidate it.
+     * A moved/terminal capability or stale native reference must still be
+     * replaceable so its slot registry entry can be retired. Normal reads
+     * revalidate the current actor owner, native offset and capability state.
      */
     private Object loadValueForOverwrite(long slot, Object uninitialized) {
         long tag = read(slot, 0);
         if (tag == CAPABILITY) {
             return capabilitiesById.get(read(slot, 8));
+        }
+        if (tag == REFERENCE) {
+            // Do not call NativeValue.nativeOffset(): a revoked/moved facade
+            // may throw or report a different address after the original
+            // slot was stored. Looking up the existing slot identity is only
+            // allowed during overwrite; a regular get() remains fail-closed.
+            NativeValue previous = referencesByOffset.get(read(slot, 8));
+            if (previous == null) {
+                throw new SecurityException("stale actor-native slot reference has no registry entry");
+            }
+            return previous;
         }
         return loadValue(slot, uninitialized);
     }
