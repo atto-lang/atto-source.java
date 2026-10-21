@@ -8,6 +8,9 @@ on:
       - 'src/main/java/dev/oreslang/runtime/NativeHttp.java'
       - 'src/main/java/dev/oreslang/runtime/OresContext.java'
       - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'stdlib/**'
+      - 'tools/stdlib-boundary-audit/**'
       - 'tools/strict-nonblocking-io-audit.py'
       - 'docs/ASYNC_IO.md'
       - 'docs/STRICT_NONBLOCKING_STDLIB_IO.md'
@@ -21,6 +24,9 @@ on:
       - 'src/main/java/dev/oreslang/runtime/NativeHttp.java'
       - 'src/main/java/dev/oreslang/runtime/OresContext.java'
       - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'stdlib/**'
+      - 'tools/stdlib-boundary-audit/**'
       - 'tools/strict-nonblocking-io-audit.py'
       - 'docs/ASYNC_IO.md'
       - 'docs/STRICT_NONBLOCKING_STDLIB_IO.md'
@@ -42,4 +48,4 @@ jobs:
       - name: Reject blocking stdlib-reachable I/O
         run: python3 tools/strict-nonblocking-io-audit.py
       - name: Execute strict fail-closed stdlib regression
-        run: mvn -q -Dtest=dev.oreslang.runtime.StrictNonblockingStdlibIoTest test
+        run: mvn -q -Dtest=StrictNonblockingStdlibIoTest test
