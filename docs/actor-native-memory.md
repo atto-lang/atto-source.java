@@ -83,8 +83,11 @@ The arena's `NativeCapability` interface is a *description*, not an admission
 credential. The package-internal, actor-owner-checked
 `issueNativeCapability` records provenance by object identity before any
 capability can be persisted into a guest-native field. The trusted HTTP core's
-`NativeHttp.Exchange.nativeArena()` validates its owner and generation and
-issues the current exchange to that actor. Arbitrary host wrappers that merely
+`NativeHttp.Exchange.nativeArena()` validates its owner and generation,
+releases the HTTP `State` monitor, and only then issues the current exchange
+to that actor. This avoids an arena/State monitor lock-order inversion with
+concurrent actor handlers; the generation/owner is revalidated on subsequent
+storage reads and moves. Arbitrary host wrappers that merely
 return the same `ActorNativeArena` are rejected in both preflight and storage.
 Opaque handle reference counts still drop the strong host handle after the last
 slot overwrite; issuance uses weak keys and is cleared at actor teardown.
