@@ -23,7 +23,7 @@ import java.util.function.Function;
  * is still REQUIRED, since the ticket proves reply authority, not the
  * integrity or privacy of the body.</p>
  */
-final class ReplyTransportGateway<T> {
+final class ReplyTransportGateway<T> implements AutoCloseable {
     private static final int MAGIC = 0x4f525250; // ORRP
     private static final int VERSION = 1;
     private static final int HEADER = Integer.BYTES + 1 + Long.BYTES
@@ -35,6 +35,7 @@ final class ReplyTransportGateway<T> {
     private final String schemaDigest;
     private final Function<byte[], T> decoder;
     private final int maxFrameBytes;
+    private boolean closed;
 
     ReplyTransportGateway(
             ReplySlotRegistry slots,
@@ -60,7 +61,8 @@ final class ReplyTransportGateway<T> {
      * integrity-checked frame. Malformed/unauthorized frames are dropped; they
      * must not consume or fail the genuine caller's pending reply capability.
      */
-    boolean acceptAuthenticatedFrame(byte[] frame) {
+    synchronized boolean acceptAuthenticatedFrame(byte[] frame) {
+        if (closed) return false;
         if (frame == null || frame.length < HEADER || frame.length > maxFrameBytes) {
             return false;
         }
@@ -90,6 +92,18 @@ final class ReplyTransportGateway<T> {
         }
         return slots.completeRemote(
                 slots.origin(), handle, verifiedPeer, schemaDigest, ticket, decoded);
+    }
+
+    /**
+     * Runtime-owned authenticated session teardown. Exact peer/session binding
+     * ensures a stale connection cannot settle or revoke a new session.
+     * Closing does not cancel remote work already accepted for execution.
+     */
+    @Override public synchronized void close() {
+        if (closed) return;
+        closed = true;
+        slots.terminateResponder(verifiedPeer,
+                new IllegalStateException("authenticated actor reply session disconnected"));
     }
 
     /** Trusted transport serializer helper. The caller MUST authenticate the frame. */
