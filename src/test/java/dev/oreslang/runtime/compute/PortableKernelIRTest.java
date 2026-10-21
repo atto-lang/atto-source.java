@@ -110,6 +110,45 @@ final class PortableKernelIRTest {
     }
 
     @Test
+    void openClLoweringMatchesG2AdmissionAndNeverFallsBack() {
+        var plan = new Plan(Layout.AOSOA, 5, 2, 4, 16, 4);
+        var kernel = new Kernel(plan, Element.F32, Operation.SCALE_BIAS, 1.5f, -2.0f);
+        var artifact = lowerOpenCl(kernel, new GpuTarget(64, 4096, 100, true));
+
+        assertEquals("oreslang_dop_f32", artifact.kernelName());
+        assertEquals(plan.byteLength(), artifact.requiredBytes());
+        assertEquals(5, artifact.globalRows());
+        assertEquals(2, artifact.globalFields());
+        assertEquals(1, artifact.artifactAbiVersion());
+        assertEquals(64, artifact.requiredAddressBits());
+        assertTrue(artifact.requiredFloat32());
+        assertTrue(artifact.requiredLittleEndian());
+        assertTrue(artifact.deviceSource().startsWith("#pragma OPENCL FP_CONTRACT OFF\n"));
+        assertTrue(artifact.deviceSource().contains("get_global_id(1)"));
+        assertTrue(artifact.deviceSource().contains("dst[slot]"));
+        assertTrue(artifact.deviceSource().contains("1.50000000e+00f"));
+        assertTrue(artifact.deviceSource().contains("-2.00000000e+00f"));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> lowerOpenCl(kernel, new GpuTarget(32, 4096, 100, true)));
+        assertThrows(IllegalArgumentException.class,
+                () -> lowerOpenCl(kernel, new GpuTarget(64, 0, 100, true)));
+        assertThrows(IllegalArgumentException.class,
+                () -> lowerOpenCl(kernel, new GpuTarget(64, 4096, 0, true)));
+        assertThrows(IllegalArgumentException.class,
+                () -> lowerOpenCl(kernel, new GpuTarget(64, 4096, 100, false)));
+        assertThrows(IllegalArgumentException.class,
+                () -> lowerOpenCl(kernel, new GpuTarget(64, plan.byteLength() - 1, 100, true)));
+        assertThrows(IllegalArgumentException.class,
+                () -> lowerOpenCl(kernel, new GpuTarget(64, 4096, 4, true)));
+
+        var empty = new Plan(Layout.AOS, 0, 1, 4, 4, 1);
+        var emptyKernel = new Kernel(empty, Element.F32, Operation.SCALE, 1.0f, 0.0f);
+        assertThrows(IllegalArgumentException.class,
+                () -> lowerOpenCl(emptyKernel, new GpuTarget(64, 4096, 100, true)));
+    }
+
+    @Test
     void referenceProviderRejectsBuffersBeyondJavaArrayBackendLimit() {
         var huge = new Plan(Layout.AOS, ((long) Integer.MAX_VALUE / 4) + 1, 1, 4, 4, 1);
         assertThrows(IllegalArgumentException.class, () -> new HostBuffer(huge));
