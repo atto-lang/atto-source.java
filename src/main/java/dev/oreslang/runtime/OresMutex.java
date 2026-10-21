@@ -3,6 +3,8 @@ package dev.oreslang.runtime;
 import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -43,6 +45,11 @@ public final class OresMutex {
     }
 
     public static <T> Shared<T> shared(T value) {
+        if (containsActorNativeValue(value, new IdentityHashMap<>(), 0)) {
+            throw new SecurityException(
+                    "SharedMutex<T> cannot contain actor-native arena values; "
+                            + "copy data out of actor memory before explicit sharing");
+        }
         if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.PRIVATE) {
             throw new SecurityException("private actors cannot create SharedMutex<T>");
         }
@@ -53,6 +60,47 @@ public final class OresMutex {
                     "SharedMutex.new");
         }
         return new Shared<>(value);
+    }
+
+    private static boolean containsActorNativeValue(
+            Object value,
+            IdentityHashMap<Object, Boolean> seen,
+            int depth) {
+        if (value == null) return false;
+        if (value instanceof ActorNativeArena.NativeValue) return true;
+        if (depth > 128 || seen.put(value, Boolean.TRUE) != null) return false;
+        try {
+            if (value instanceof SharedState state) {
+                for (Object child : state.sharedStateChildren()) {
+                    if (containsActorNativeValue(child, seen, depth + 1)) return true;
+                }
+                return false;
+            }
+            if (value instanceof Iterable<?> iterable) {
+                for (Object child : iterable) {
+                    if (containsActorNativeValue(child, seen, depth + 1)) return true;
+                }
+                return false;
+            }
+            if (value instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    if (containsActorNativeValue(entry.getKey(), seen, depth + 1)
+                            || containsActorNativeValue(entry.getValue(), seen, depth + 1)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            if (value.getClass().isArray() && !value.getClass().getComponentType().isPrimitive()) {
+                Object[] array = (Object[]) value;
+                for (Object child : array) {
+                    if (containsActorNativeValue(child, seen, depth + 1)) return true;
+                }
+            }
+            return false;
+        } finally {
+            seen.remove(value);
+        }
     }
 
     /**
