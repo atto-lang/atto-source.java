@@ -153,6 +153,51 @@ final class CoreJsonAndStructuralUpdateTest {
     }
 
     @Test
+    void jsonDecodeSupportsClosedStructAndRecordTargets() throws Exception {
+        String program = """
+                pub fnc main(): void {
+                  const struct{id: int, name: String} asStruct =
+                    Json.decode<struct{id: int, name: String}>(
+                      "{\"id\":7,\"name\":\"Ada\"}");
+                  const record{id: int, name: String} asRecord =
+                    Json.decode<record{id: int, name: String}>(
+                      "{\"id\":8,\"name\":\"Grace\"}");
+                  stdio.stdout.write(asStruct.id);
+                  stdio.stdout.write(asStruct.name);
+                  stdio.stdout.write(asRecord.id);
+                  stdio.stdout.write(asRecord.name);
+                  return;
+                }
+                """;
+
+        TypeChecker.check(Parser.parse(program));
+        assertEquals("7Ada8Grace", run(program, "json-struct-record.ores"));
+    }
+
+    @Test
+    void closedStructuralDecodeRejectsMissingAndUnknownFields() {
+        String missing = """
+                pub fnc main(): void {
+                  const record{id: int, name: String} value =
+                    Json.decode<record{id: int, name: String}>(
+                      "{\"id\":1}");
+                  return;
+                }
+                """;
+        assertThrows(Exception.class, () -> runChecked(missing, "json-record-missing.ores"));
+
+        String unknown = """
+                pub fnc main(): void {
+                  const struct{id: int} value =
+                    Json.decode<struct{id: int}>(
+                      "{\"id\":1,\"extra\":2}");
+                  return;
+                }
+                """;
+        assertThrows(Exception.class, () -> runChecked(unknown, "json-struct-unknown.ores"));
+    }
+
+    @Test
     void jsonDecodeSupportsTypedDynamicObjectMaps() throws Exception {
         String program = """
                 pub fnc main(): void {
