@@ -46,6 +46,20 @@ fn verify(root: &Path, expected: &str) -> Result<(),String> {
             "--untracked-files=all", "--ignored=matching", "--", SUBTREE])?.is_empty() {
         return Err("nested source working tree differs from authenticated Git tree".into());
     }
+    // Git status hides changes for index entries marked assume-unchanged
+    // (lowercase tag) or skip-worktree (S). Refuse both.
+    let index = Command::new("git").arg("-C").arg(&root)
+        .args(["ls-files", "-v", "--", SUBTREE])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output().map_err(|_| "tracked source index unavailable")?;
+    if !index.status.success() || index.stdout.len() > 2_000_000 {
+        return Err("tracked source index invalid or exceeds bound".into());
+    }
+    let tags = std::str::from_utf8(&index.stdout)
+        .map_err(|_| "invalid source index encoding")?;
+    if tags.lines().any(|line| !line.starts_with("H ")) {
+        return Err("source index contains assume-unchanged or skip-worktree entries".into());
+    }
     Ok(())
 }
 fn main() -> ExitCode {
