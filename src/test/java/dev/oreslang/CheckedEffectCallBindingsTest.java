@@ -56,6 +56,18 @@ final class CheckedEffectCallBindingsTest {
         assertFalse(report.conservativelyEffectFree());
     }
 
+    @Test void checkedLocalTargetDoesNotCertifyUnverifiedSurroundingOperator() {
+        var report = SourceEffectAudit.inspect("""
+                pub fnc helper(): int { return 42; }
+                pub fnc entry(): int { return helper() + 2; }
+                """);
+        assertEquals(2, report.functions().size());
+        assertTrue(report.functions().values().stream().anyMatch(Set::isEmpty));
+        assertTrue(report.functions().values().stream().anyMatch(
+                row -> row.contains(EffectContracts.Effect.UNKNOWN_CALL)));
+        assertFalse(report.conservativelyEffectFree());
+    }
+
     @Test void sourceDigestCannotBeForgedByRenamingAnEqualProgram() {
         var report = SourceEffectAudit.inspect(SOURCE);
         var edited = SourceEffectAudit.inspect(SOURCE + "\n");
