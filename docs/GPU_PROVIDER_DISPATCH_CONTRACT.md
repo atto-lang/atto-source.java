@@ -50,13 +50,22 @@ The provider must keep an independent, non-guest-accessible operation record.
 | CANCEL_EVENT_DONE | CANCEL_ACKNOWLEDGED | Atomic paired cancellation acknowledgment; then handle retirement |
 | QUOTA_HELD / FENCES_CLAIMED | ABORT_BEFORE_ENQUEUE | Only with a provider-proved no-enqueue witness, never by pretending completion |
 
-**Known missing primitive:** after `claimPair` / `claim_pair`, the existing
-fence ledger has no separately authenticated *pre-enqueue abort* operation.
-If backend admission fails before any command was submitted, the provider
-MUST NOT call ordinary completion as a substitute for real device evidence.
-The implementation must add an unforgeable submission-state witness and
-abort path, or redesign admission into RESERVED -> ENQUEUED. Until then,
-provider dispatch remains disabled. This is an intentional fail-closed gate.
+**Java host-ledger hardening implemented on this draft:** paired fence claim
+now creates a **RESERVED** state: both exact tickets are held and ownership
+transfer is blocked, but backend quiescence remains true because no physical
+submission is claimed. A trusted provider must call `markPairEnqueued` only
+after it has durably submitted the exact native event; only then may paired
+completion or cancellation occur. If provider admission fails first,
+`abortPairBeforeEnqueue` atomically returns both fences to IDLE and retires
+the issued ticket sequences without pretending a device event happened.
+Abort is rejected after enqueue, and completion/cancellation are rejected
+before enqueue.
+
+This closes the Java ledger's pre-enqueue ambiguity, but **does not enable a
+real provider**: the mark call is still a trusted-host assertion and must be
+wired to an authenticated native provider event/queue handle. LLVM parity for
+the same RESERVED -> ENQUEUED -> terminal state machine and real device
+execution evidence remain release gates.
 
 For paired work, legacy per-buffer `complete`, `cancel`, and cancelled-event
 acknowledgment APIs reject while the allocation is paired. Only atomic paired
