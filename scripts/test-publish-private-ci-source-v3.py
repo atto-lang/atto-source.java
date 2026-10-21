@@ -855,15 +855,44 @@ class PrivateCiV3Test(unittest.TestCase):
 
     def test_publish_rolls_back_payload_if_protection_changes_before_authorization(self):
         carrier = contract()
+        blob_shas = []
 
         def api(route, method="GET", payload=None):
             if method == "POST" and route.endswith("/git/blobs"):
                 data = base64.b64decode(payload["content"], validate=True)
-                return {"sha": v3.git_blob_sha(data)}
+                sha = v3.git_blob_sha(data)
+                blob_shas.append(sha)
+                return {"sha": sha}
             if method == "POST" and route.endswith("/git/trees"):
                 return {"sha": SOURCE_TREE if payload.get("base_tree") is None else ROOT_TREE}
             if method == "POST" and route.endswith("/git/commits"):
                 return {"sha": COMMIT}
+            if method == "GET" and route.endswith("/git/commits/" + COMMIT):
+                return {
+                    "sha": COMMIT,
+                    "tree": {"sha": ROOT_TREE},
+                    "parents": [{"sha": BASE}],
+                }
+            if method == "GET" and route.endswith(
+                    "/git/trees/" + ROOT_TREE + "?recursive=1"):
+                return {
+                    "sha": ROOT_TREE,
+                    "truncated": False,
+                    "tree": [
+                        {
+                            "path": v3.legacy.PREFIX,
+                            "mode": "040000",
+                            "type": "tree",
+                            "sha": SOURCE_TREE,
+                        },
+                        {
+                            "path": v3.RECEIPT_PATH,
+                            "mode": "100644",
+                            "type": "blob",
+                            "sha": blob_shas[-1],
+                        },
+                    ],
+                }
             if method == "POST" and route.endswith("/git/refs"):
                 return {"ref": payload["ref"], "object": {"sha": payload["sha"]}}
             raise AssertionError((method, route))
@@ -902,6 +931,16 @@ class PrivateCiV3Test(unittest.TestCase):
                 ),
                 patch.object(v3.legacy, "verified_exact_source_tree", return_value=SOURCE_TREE),
                 patch.object(v3, "authorize_write"),
+                patch.object(
+                    v3, "_gh_ref_request",
+                    return_value=type(
+                        "Result", (), {
+                            "returncode": 1,
+                            "stderr": "HTTP 404",
+                            "stdout": "",
+                        },
+                    )(),
+                ),
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
@@ -920,17 +959,46 @@ class PrivateCiV3Test(unittest.TestCase):
 
     def test_publish_rolls_back_payload_if_pr_head_moves_before_authorization(self):
         carrier = contract()
+        blob_shas = []
         writes = []
 
         def api(route, method="GET", payload=None):
             writes.append((method, route, payload))
             if method == "POST" and route.endswith("/git/blobs"):
                 data = base64.b64decode(payload["content"], validate=True)
-                return {"sha": v3.git_blob_sha(data)}
+                sha = v3.git_blob_sha(data)
+                blob_shas.append(sha)
+                return {"sha": sha}
             if method == "POST" and route.endswith("/git/trees"):
                 return {"sha": SOURCE_TREE if payload.get("base_tree") is None else ROOT_TREE}
             if method == "POST" and route.endswith("/git/commits"):
                 return {"sha": COMMIT}
+            if method == "GET" and route.endswith("/git/commits/" + COMMIT):
+                return {
+                    "sha": COMMIT,
+                    "tree": {"sha": ROOT_TREE},
+                    "parents": [{"sha": BASE}],
+                }
+            if method == "GET" and route.endswith(
+                    "/git/trees/" + ROOT_TREE + "?recursive=1"):
+                return {
+                    "sha": ROOT_TREE,
+                    "truncated": False,
+                    "tree": [
+                        {
+                            "path": v3.legacy.PREFIX,
+                            "mode": "040000",
+                            "type": "tree",
+                            "sha": SOURCE_TREE,
+                        },
+                        {
+                            "path": v3.RECEIPT_PATH,
+                            "mode": "100644",
+                            "type": "blob",
+                            "sha": blob_shas[-1],
+                        },
+                    ],
+                }
             if method == "POST" and route.endswith("/git/refs"):
                 return {"ref": payload["ref"], "object": {"sha": payload["sha"]}}
             raise AssertionError((method, route))
@@ -966,6 +1034,16 @@ class PrivateCiV3Test(unittest.TestCase):
                 ),
                 patch.object(v3.legacy, "verified_exact_source_tree", return_value=SOURCE_TREE),
                 patch.object(v3, "authorize_write"),
+                patch.object(
+                    v3, "_gh_ref_request",
+                    return_value=type(
+                        "Result", (), {
+                            "returncode": 1,
+                            "stderr": "HTTP 404",
+                            "stdout": "",
+                        },
+                    )(),
+                ),
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
@@ -990,15 +1068,44 @@ class PrivateCiV3Test(unittest.TestCase):
 
     def test_publish_rolls_back_payload_if_authorization_creation_fails(self):
         carrier = contract()
+        blob_shas = []
 
         def api(route, method="GET", payload=None):
             if method == "POST" and route.endswith("/git/blobs"):
                 data = base64.b64decode(payload["content"], validate=True)
-                return {"sha": v3.git_blob_sha(data)}
+                sha = v3.git_blob_sha(data)
+                blob_shas.append(sha)
+                return {"sha": sha}
             if method == "POST" and route.endswith("/git/trees"):
                 return {"sha": SOURCE_TREE if payload.get("base_tree") is None else ROOT_TREE}
             if method == "POST" and route.endswith("/git/commits"):
                 return {"sha": COMMIT}
+            if method == "GET" and route.endswith("/git/commits/" + COMMIT):
+                return {
+                    "sha": COMMIT,
+                    "tree": {"sha": ROOT_TREE},
+                    "parents": [{"sha": BASE}],
+                }
+            if method == "GET" and route.endswith(
+                    "/git/trees/" + ROOT_TREE + "?recursive=1"):
+                return {
+                    "sha": ROOT_TREE,
+                    "truncated": False,
+                    "tree": [
+                        {
+                            "path": v3.legacy.PREFIX,
+                            "mode": "040000",
+                            "type": "tree",
+                            "sha": SOURCE_TREE,
+                        },
+                        {
+                            "path": v3.RECEIPT_PATH,
+                            "mode": "100644",
+                            "type": "blob",
+                            "sha": blob_shas[-1],
+                        },
+                    ],
+                }
             if method == "POST" and route.endswith("/git/refs"):
                 if payload["ref"].startswith("refs/heads/ci/authorized-"):
                     raise v3.Denied("authorization creation failed")
@@ -1035,6 +1142,16 @@ class PrivateCiV3Test(unittest.TestCase):
                 ),
                 patch.object(v3.legacy, "verified_exact_source_tree", return_value=SOURCE_TREE),
                 patch.object(v3, "authorize_write"),
+                patch.object(
+                    v3, "_gh_ref_request",
+                    return_value=type(
+                        "Result", (), {
+                            "returncode": 1,
+                            "stderr": "HTTP 404",
+                            "stdout": "",
+                        },
+                    )(),
+                ),
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
@@ -1062,15 +1179,44 @@ class PrivateCiV3Test(unittest.TestCase):
 
     def test_publish_rolls_back_both_refs_on_authorization_confirmation_mismatch(self):
         carrier = contract()
+        blob_shas = []
 
         def api(route, method="GET", payload=None):
             if method == "POST" and route.endswith("/git/blobs"):
                 data = base64.b64decode(payload["content"], validate=True)
-                return {"sha": v3.git_blob_sha(data)}
+                sha = v3.git_blob_sha(data)
+                blob_shas.append(sha)
+                return {"sha": sha}
             if method == "POST" and route.endswith("/git/trees"):
                 return {"sha": SOURCE_TREE if payload.get("base_tree") is None else ROOT_TREE}
             if method == "POST" and route.endswith("/git/commits"):
                 return {"sha": COMMIT}
+            if method == "GET" and route.endswith("/git/commits/" + COMMIT):
+                return {
+                    "sha": COMMIT,
+                    "tree": {"sha": ROOT_TREE},
+                    "parents": [{"sha": BASE}],
+                }
+            if method == "GET" and route.endswith(
+                    "/git/trees/" + ROOT_TREE + "?recursive=1"):
+                return {
+                    "sha": ROOT_TREE,
+                    "truncated": False,
+                    "tree": [
+                        {
+                            "path": v3.legacy.PREFIX,
+                            "mode": "040000",
+                            "type": "tree",
+                            "sha": SOURCE_TREE,
+                        },
+                        {
+                            "path": v3.RECEIPT_PATH,
+                            "mode": "100644",
+                            "type": "blob",
+                            "sha": blob_shas[-1],
+                        },
+                    ],
+                }
             if method == "POST" and route.endswith("/git/refs"):
                 if payload["ref"].startswith("refs/heads/ci/authorized-"):
                     return {"ref": payload["ref"], "object": {"sha": "9" * 40}}
@@ -1107,6 +1253,16 @@ class PrivateCiV3Test(unittest.TestCase):
                 ),
                 patch.object(v3.legacy, "verified_exact_source_tree", return_value=SOURCE_TREE),
                 patch.object(v3, "authorize_write"),
+                patch.object(
+                    v3, "_gh_ref_request",
+                    return_value=type(
+                        "Result", (), {
+                            "returncode": 1,
+                            "stderr": "HTTP 404",
+                            "stdout": "",
+                        },
+                    )(),
+                ),
                 patch.object(v3, "require_exact_ref"),
                 patch.object(v3.legacy, "gh_api", side_effect=api),
                 patch.object(v3, "delete_exact_ref") as delete_ref,
