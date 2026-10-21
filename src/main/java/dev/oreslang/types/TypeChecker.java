@@ -407,6 +407,11 @@ public final class TypeChecker {
             if (contract == null || !contract.moduleContract()) {
                 throw new IllegalArgumentException("unknown module contract '" + ref.name() + "'");
             }
+            if (contract.staticContract()) {
+                throw new IllegalArgumentException(
+                        "static contract '" + ref.name()
+                                + "' cannot be used by module conforms; it targets a class static namespace");
+            }
             Type resolvedRef = resolveModuleContractRef(ref, contract);
             if (!(resolvedRef instanceof Named namedRef)) {
                 throw new IllegalArgumentException("module contract target must be a named contract type");
@@ -547,8 +552,11 @@ public final class TypeChecker {
         for (Ast.TypeRef parentRef : iface.parents()) {
             Ast.InterfaceDecl parent = findInterface(parentRef.name());
             if (parent == null) throw new IllegalArgumentException("unknown parent interface '" + parentRef.name() + "' for " + iface.name());
-            if (iface.moduleContract() != parent.moduleContract()) {
-                throw new IllegalArgumentException("interfaces and module contracts cannot extend each other");
+            if (iface.moduleContract() != parent.moduleContract()
+                    || (iface.moduleContract()
+                        && iface.staticContract() != parent.staticContract())) {
+                throw new IllegalArgumentException(
+                        "interfaces, module contracts, and static contracts cannot extend across declaration categories");
             }
             if (iface.moduleContract()) resolveModuleContractRef(parentRef, parent, generics);
             else resolve(parentRef, generics, null);
@@ -565,6 +573,11 @@ public final class TypeChecker {
                 functionType(fn.parameters(), fn.returnType(), false, false, all, interfaceSelf);
             } else {
                 Ast.InterfaceFieldDecl field = (Ast.InterfaceFieldDecl) member;
+                if (iface.staticContract()) {
+                    throw new IllegalArgumentException(
+                            "static contract field '" + iface.name() + "." + field.name()
+                                    + "' is unsupported until class static storage is implemented");
+                }
                 if (!memberKeys.add(field.name())) throw new IllegalArgumentException("duplicate interface member '" + iface.name() + "." + field.name() + "'");
                 resolve(field.type(), generics, null);
             }
@@ -1520,7 +1533,15 @@ public final class TypeChecker {
             if (!implemented.add(interfaceRef.name())) throw new IllegalArgumentException("duplicate implemented interface '" + interfaceRef.name() + "' on " + klass.name());
             Ast.InterfaceDecl iface = findInterface(interfaceRef.name());
             if (iface == null) throw new IllegalArgumentException("unknown interface '" + interfaceRef.name() + "' implemented by " + klass.name());
-            if (iface.moduleContract()) throw new IllegalArgumentException("module contract '" + interfaceRef.name() + "' cannot be implemented by class '" + klass.name() + "'");
+            if (iface.moduleContract()) {
+                if (iface.staticContract()) {
+                    throw new IllegalArgumentException(
+                            "static contract '" + interfaceRef.name()
+                                    + "' must be implemented with 'implements static "
+                                    + interfaceRef.name() + "'");
+                }
+                throw new IllegalArgumentException("module contract '" + interfaceRef.name() + "' cannot be implemented by class '" + klass.name() + "'");
+            }
             Type resolvedInterface = resolve(interfaceRef, classGenerics, self);
             if (!(resolvedInterface instanceof Named interfaceType)) throw new IllegalArgumentException("implemented interface must resolve to a named type");
             Record expectedTemplate = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
@@ -1531,6 +1552,155 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("class '" + klass.name() + "' does not implement interface '" + interfaceRef.name() + "': expected " + expected + " but got " + actual);
             }
         }
+
+        if (!klass.staticContracts().isEmpty()) {
+            if (klass.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "actor '" + klass.name() + "' cannot implement static class contracts");
+            }
+            if (!klass.genericParameters().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "generic class '" + klass.name()
+                                + "' cannot implement static contracts in v1; static-side generic substitution is not enabled yet");
+            }
+
+            Record actualStatic = publicLocalStaticClassShape(klass);
+            Set<String> implementedStatic = new HashSet<>();
+            for (Ast.TypeRef contractRef : klass.staticContracts()) {
+                if (!implementedStatic.add(contractRef.name())) {
+                    throw new IllegalArgumentException(
+                            "duplicate static contract '" + contractRef.name() + "' on " + klass.name());
+                }
+                Ast.InterfaceDecl contract = findInterface(contractRef.name());
+                if (contract == null) {
+                    throw new IllegalArgumentException(
+                            "unknown static contract '" + contractRef.name() + "' implemented by " + klass.name());
+                }
+                if (!contract.moduleContract() || !contract.staticContract()) {
+                    if (contract.moduleContract()) {
+                        throw new IllegalArgumentException(
+                                "module contract '" + contractRef.name()
+                                        + "' cannot be implemented by a class static namespace");
+                    }
+                    throw new IllegalArgumentException(
+                            "interface '" + contractRef.name()
+                                    + "' is an instance contract; omit 'static' after implements");
+                }
+
+                Type resolvedContract = resolveModuleContractRef(contractRef, contract, Set.of());
+                if (!(resolvedContract instanceof Named namedContract)) {
+                    throw new IllegalArgumentException(
+                            "static contract target must resolve to a named contract type");
+                }
+                Record expectedTemplate = staticContractShape(
+                        contract, Set.copyOf(contract.genericParameters()), new LinkedHashSet<>());
+                Record expected = (Record) substituteGenerics(
+                        expectedTemplate,
+                        genericBindings(
+                                contract.genericParameters(),
+                                namedContract.arguments(),
+                                "static contract " + contract.name()));
+                if (!assignable(actualStatic, expected)) {
+                    throw new IllegalArgumentException(
+                            "class '" + klass.name()
+                                    + "' does not implement static contract '"
+                                    + contractRef.name() + "': expected "
+                                    + expected + " but got " + actualStatic);
+                }
+            }
+        }
+    }
+
+    private Record publicLocalStaticClassShape(Ast.ClassDecl klass) {
+        Map<String, Type> members = new LinkedHashMap<>();
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (!method.isStatic() || method.visibility() != Ast.Visibility.PUBLIC) continue;
+            mergeMember(
+                    members,
+                    methodContractKey(
+                            method.name(), method.arity(),
+                            method.genericParameters().size()),
+                    callableContractType(
+                            method.genericParameters(),
+                            method.parameters(),
+                            method.returnType(),
+                            method.async(),
+                            false,
+                            Set.of(),
+                            null),
+                    "static namespace of class " + klass.name());
+        }
+        return Record.contract(members);
+    }
+
+    private Record staticContractShape(
+            Ast.InterfaceDecl contract,
+            Set<String> generics,
+            Set<Ast.InterfaceDecl> stack) {
+        if (!contract.moduleContract() || !contract.staticContract()) {
+            throw new IllegalArgumentException(
+                    "declaration '" + contract.name() + "' is not a static contract");
+        }
+        if (!stack.add(contract)) {
+            throw new IllegalArgumentException(
+                    "static contract inheritance cycle involving '" + contract.name() + "'");
+        }
+
+        Map<String, Type> members = new LinkedHashMap<>();
+        for (Ast.TypeRef parentRef : contract.parents()) {
+            Ast.InterfaceDecl parent = findInterface(parentRef.name());
+            if (parent == null || !parent.moduleContract() || !parent.staticContract()) {
+                throw new IllegalArgumentException(
+                        "static contract '" + contract.name()
+                                + "' has non-static parent '" + parentRef.name() + "'");
+            }
+            Type resolvedParent = resolveModuleContractRef(parentRef, parent, generics);
+            if (!(resolvedParent instanceof Named namedParent)) {
+                throw new IllegalArgumentException(
+                        "static contract parent must resolve to a named contract");
+            }
+            Map<String, Type> bindings = genericBindings(
+                    parent.genericParameters(),
+                    namedParent.arguments(),
+                    "static contract " + parent.name());
+            for (Map.Entry<String, Type> inherited :
+                    staticContractShape(
+                            parent,
+                            Set.copyOf(parent.genericParameters()),
+                            stack).members().entrySet()) {
+                mergeMember(
+                        members,
+                        inherited.getKey(),
+                        substituteGenerics(inherited.getValue(), bindings),
+                        "static contract inheritance of " + contract.name());
+            }
+        }
+
+        for (Ast.InterfaceMember member : contract.members()) {
+            if (member instanceof Ast.InterfaceFieldDecl field) {
+                throw new IllegalArgumentException(
+                        "static contract field '" + contract.name() + "." + field.name()
+                                + "' is unsupported until class static storage is implemented");
+            }
+            Ast.InterfaceFunctionDecl fn = (Ast.InterfaceFunctionDecl) member;
+            mergeMember(
+                    members,
+                    methodContractKey(
+                            fn.name(), fn.parameters().size(),
+                            fn.genericParameters().size()),
+                    callableContractType(
+                            fn.genericParameters(),
+                            fn.parameters(),
+                            fn.returnType(),
+                            false,
+                            false,
+                            generics,
+                            null),
+                    "static contract " + contract.name());
+        }
+
+        stack.remove(contract);
+        return Record.contract(members);
     }
 
     /**
@@ -6966,11 +7136,12 @@ public final class TypeChecker {
         for (Ast.TypeRef parentRef : iface.parents()) {
             Ast.InterfaceDecl parent = findInterface(parentRef.name());
             if (parent == null) throw new IllegalArgumentException("unknown parent interface '" + parentRef.name() + "' for " + iface.name());
-            if (iface.moduleContract() != parent.moduleContract()) {
+            if (iface.moduleContract() != parent.moduleContract()
+                    || (iface.moduleContract()
+                        && iface.staticContract() != parent.staticContract())) {
                 throw new IllegalArgumentException(
-                        (iface.moduleContract() ? "module contract '" : "interface '") + iface.name()
-                                + "' cannot extend " + (parent.moduleContract() ? "module contract '" : "interface '")
-                                + parent.name() + "' across the interface/contract boundary");
+                        "interface/contract category mismatch between '" + iface.name()
+                                + "' and parent '" + parent.name() + "'");
             }
             Type resolvedParent = iface.moduleContract() ? resolveModuleContractRef(parentRef, parent, generics) : resolve(parentRef, generics, null);
             if (!(resolvedParent instanceof Named parentType)) {
