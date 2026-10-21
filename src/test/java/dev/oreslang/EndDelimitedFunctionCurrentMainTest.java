@@ -129,6 +129,25 @@ final class EndDelimitedFunctionCurrentMainTest {
     }
 
     @Test
+    void routineUsesTheSameDoubleColonBodySeparator() {
+        var noSeparator = Parser.parse("""
+                routine identity(int x) -> int
+                    return x
+                end
+                """);
+        var explicitDoubleColon = Parser.parse("""
+                routine identity(int x) -> int ::
+                    return x
+                end
+                """);
+        var compactDoubleColon = Parser.parse(
+                "routine identity(int x) -> int :: return x; end");
+
+        assertEquals(noSeparator, explicitDoubleColon);
+        assertEquals(noSeparator, compactDoubleColon);
+    }
+
+    @Test
     void completeHigherOrderReturnTypePrecedesOptionalBodySeparator() {
         assertDoesNotThrow(() -> Parser.parse("""
                 fnc callback() -> () => void as
