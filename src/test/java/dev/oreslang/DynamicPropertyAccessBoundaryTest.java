@@ -585,12 +585,10 @@ final class DynamicPropertyAccessBoundaryTest {
     }
 
     @Test
-    void entryIsNamedKeyValueProductAndPairShapeUsesTupleIndexing() {
+    void builtinEntryIsNominalKeyValueProductAndPairShapeUsesTupleIndexing() {
         accepted("""
-                type Entry<K,V> = {key: K, value: V};
-
                 fnc entry_key(Entry<string,int> entry): string {
-                    const key = "key";
+                    const string key = "key";
                     return entry[key];
                 }
 
@@ -600,6 +598,11 @@ final class DynamicPropertyAccessBoundaryTest {
 
                 fnc pair_slot(Tuple[string,int] pair, int index): string | int {
                     return pair[index];
+                }
+
+                fnc construct_entry(): int {
+                    const entry = Entry.of("id", 7);
+                    return entry["value"];
                 }
                 """);
     }
