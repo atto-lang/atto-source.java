@@ -57,24 +57,26 @@ trusted V3 publisher.
 - Proposed destination: private `orestra/orestra-conformance`
 - Destination repository ID: `1426277234`
 - Live destination `main` protection at audit time: `protected=false`
-- **Candidate** source-free carrier `main`:
-  `c91a3dec2cca660405506d3d85618d3393455ad1`
+- Reviewed source-free carrier `main` after merging Conformance #13:
+  `45a0b599e2dc45a57b5fed290eb03210cc8bafe0`
 - Candidate workflow:
   `.github/workflows/oreslang-exact-tree-carrier.yml`
 - Candidate workflow blob SHA:
   `f4759633e2d7bb0c528394325e770013a8cc1826`
-- Proposed trusted test plan:
-  `ci/test-plans/java-pr1711.json` in
-  `orestra/orestra-conformance` draft PR #13
-- Proposed test-plan blob SHA:
+- Trusted test plan:
+  `ci/test-plans/java-pr1711.json`, merged by
+  `orestra/orestra-conformance` PR #13
+- Test-plan blob SHA:
   `1b00f6c863b87e262b9f56990b6f22ae5d6fbecd`
 - Test command (JDK25/GraalVM):
   `mvn -B -ntp -Dores.runtime.carriers=native -Dtest=OrestraBootstrapNativeHttpTest -DfailIfNoTests=true test`
 
-These values are **not a live authorization**. In particular the test plan
-exists only on a draft review branch; its blob must be reviewed and merged
-before a protected source carrier contract can pin the final approved
-destination `main` state. If the carrier advances, re-review and re-pin.
+These values are **not a live authorization**. The source-free plan is now
+merged and pinned at the reviewed carrier base above, but the carrier `main`
+and source `main` both remain unprotected. Source authorization is staged in
+draft PR #1798 and must not merge until both protection gates are live and
+CODEOWNER/security review is enforced. If the carrier advances, re-review and
+re-pin before authorization.
 
 ## Native acceptance and rejection
 
