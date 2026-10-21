@@ -47,9 +47,14 @@ public abstract class OresSubscription<T> {
                     nextFromRuntime(),
                     "nextFromRuntime returned null Future");
         } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
-            // Host-fatal signals must not be laundered into ordinary pull
-            // Futures. In the emergency path, avoid allocating diagnostics
-            // or running arbitrary cancellation callbacks.
+            // Preserve host-fatal identity and bypass guest-visible Futures.
+            // Retire the claimed demand slot, so a containable host failure
+            // never leaves an apparently live subscription stuck in pulling.
+            // Avoid invoking arbitrary cleanup callbacks on the fatal path.
+            synchronized (gate) {
+                pulling = false;
+                terminal = true;
+            }
             throw fatal;
         } catch (Throwable failure) {
             synchronized (gate) {
