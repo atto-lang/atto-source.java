@@ -11,6 +11,7 @@ on:
       - 'tools/strict-nonblocking-io-audit.py'
       - 'docs/ASYNC_IO.md'
       - 'docs/STRICT_NONBLOCKING_STDLIB_IO.md'
+      - 'src/test/java/dev/oreslang/runtime/StrictNonblockingStdlibIoTest.java'
       - '.github/workflows/strict-nonblocking-stdlib-io.yml'
   push:
     branches: [main]
@@ -23,6 +24,7 @@ on:
       - 'tools/strict-nonblocking-io-audit.py'
       - 'docs/ASYNC_IO.md'
       - 'docs/STRICT_NONBLOCKING_STDLIB_IO.md'
+      - 'src/test/java/dev/oreslang/runtime/StrictNonblockingStdlibIoTest.java'
       - '.github/workflows/strict-nonblocking-stdlib-io.yml'
   workflow_dispatch:
 
@@ -39,3 +41,5 @@ jobs:
           persist-credentials: false
       - name: Reject blocking stdlib-reachable I/O
         run: python3 tools/strict-nonblocking-io-audit.py
+      - name: Execute strict fail-closed stdlib regression
+        run: mvn -q -Dtest=dev.oreslang.runtime.StrictNonblockingStdlibIoTest test
