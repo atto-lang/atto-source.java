@@ -11,6 +11,8 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -151,6 +153,129 @@ public final class NativeIo {
         } finally {
             if (temp != null) {
                 try { Files.deleteIfExists(temp); } catch (IOException ignored) { }
+            }
+        }
+    }
+
+    /**
+     * Durably replace a complete UTF-8 file.
+     *
+     * <p>The success contract is stronger than {@link #writeTextAtomic}: the
+     * staged file is forced before the atomic rename and the parent directory
+     * is forced after the rename. If any step fails, callers must treat the
+     * commit outcome as uncertain and reopen/reconcile before acknowledging it.
+     * Unsupported directory fsync therefore fails closed rather than silently
+     * degrading to rename-only durability.</p>
+     */
+    public static void writeTextDurableAtomic(
+            OresContext context,
+            String rawPath,
+            String value) {
+        Path lexical = lexicalPath(rawPath);
+        if (Files.isSymbolicLink(lexical)) {
+            throw new SecurityException(
+                    "fs.write_text_durable_atomic refuses symlink: " + lexical);
+        }
+        Path parent = lexical.getParent();
+        if (parent == null) {
+            throw new IllegalArgumentException(
+                    "durable atomic write path has no parent");
+        }
+        Path canonicalParent = realPath(parent);
+        Path target = canonicalParent.resolve(lexical.getFileName());
+        context.requirePermission(
+                RuntimePermissions.Permission.WRITE,
+                lexical.toString(),
+                "fs.write_text_durable_atomic");
+        context.requirePermission(
+                RuntimePermissions.Permission.WRITE,
+                target.toString(),
+                "fs.write_text_durable_atomic");
+        if (!Files.isDirectory(canonicalParent, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalArgumentException(
+                    "durable atomic write parent is not a directory: " + parent);
+        }
+        if (Files.isSymbolicLink(target)) {
+            throw new SecurityException(
+                    "fs.write_text_durable_atomic refuses destination symlink: "
+                            + target);
+        }
+
+        try {
+            replaceTextDurably(
+                    canonicalParent,
+                    target,
+                    value,
+                    HOST_DURABLE_WRITE_SYNC);
+        } catch (IOException failure) {
+            throw ioFailure("durable atomic write", target, failure);
+        }
+    }
+
+    interface DurableWriteSync {
+        void forceFile(Path path) throws IOException;
+        void forceDirectory(Path path) throws IOException;
+    }
+
+    private static final DurableWriteSync HOST_DURABLE_WRITE_SYNC =
+            new DurableWriteSync() {
+                @Override
+                public void forceFile(Path path) throws IOException {
+                    try (FileChannel channel = FileChannel.open(
+                            path, StandardOpenOption.WRITE)) {
+                        channel.force(true);
+                    }
+                }
+
+                @Override
+                public void forceDirectory(Path path) throws IOException {
+                    try (FileChannel channel = FileChannel.open(
+                            path, StandardOpenOption.READ)) {
+                        channel.force(true);
+                    }
+                }
+            };
+
+    static void replaceTextDurably(
+            Path canonicalParent,
+            Path target,
+            String value,
+            DurableWriteSync sync) throws IOException {
+        Path temp = null;
+        try {
+            temp = Files.createTempFile(
+                    canonicalParent, ".oreslang-durable-", ".tmp");
+            byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+            try (FileChannel channel = FileChannel.open(
+                    temp,
+                    StandardOpenOption.WRITE,
+                    StandardOpenOption.TRUNCATE_EXISTING)) {
+                ByteBuffer buffer = ByteBuffer.wrap(bytes);
+                while (buffer.hasRemaining()) {
+                    channel.write(buffer);
+                }
+            }
+            sync.forceFile(temp);
+            if (Files.isSymbolicLink(target)) {
+                throw new SecurityException(
+                        "fs.write_text_durable_atomic refuses destination symlink: "
+                                + target);
+            }
+            Files.move(
+                    temp,
+                    target,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            temp = null;
+            sync.forceDirectory(canonicalParent);
+        } finally {
+            if (temp != null) {
+                try {
+                    Files.deleteIfExists(temp);
+                } catch (IOException ignored) {
+                    // Preserve the primary durability failure. The staging
+                    // name is private and never becomes an acknowledged state.
+                }
             }
         }
     }
