@@ -187,7 +187,7 @@ public final class PortableLibrarySources {
                     "Oreslang packaged library import path is too long");
         }
         if (importPath.indexOf('\\') >= 0
-                || importPath.indexOf('\0') >= 0
+                || importPath.chars().anyMatch(Character::isISOControl)
                 || importPath.startsWith("/")
                 || importPath.contains("//")) {
             throw new IllegalArgumentException(
