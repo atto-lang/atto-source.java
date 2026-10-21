@@ -88,6 +88,26 @@ final class StreamConcurrencyTest {
     }
 
     @Test
+    void cancellingPendingWriterDoesNotEnqueueItsPayload() {
+        OresStream<Integer> stream = new OresStream<>(1);
+        try {
+            assertTrue(stream.channel().tryWrite(11));
+            OresFuture<Void> writer = stream.channel().writeAsync(12);
+            assertFalse(writer.isDone());
+            assertTrue(stream.channel().pendingRegistrations() > 0);
+            assertTrue(writer.cancel(false));
+            assertTrue(writer.isCancelled());
+            assertEquals(0, stream.channel().pendingRegistrations());
+            assertEquals(11, stream.channel().tryRead().orElseThrow().intValue());
+            assertTrue(stream.channel().tryRead().isEmpty());
+            assertTrue(stream.channel().tryWrite(13));
+            assertEquals(13, stream.channel().tryRead().orElseThrow().intValue());
+        } finally {
+            stream.close();
+        }
+    }
+
+    @Test
     void closingWithPendingWriteFailsWaiterButPreservesCommittedData() {
         OresStream<Integer> stream = new OresStream<>(1);
         assertTrue(stream.channel().tryWrite(10));
