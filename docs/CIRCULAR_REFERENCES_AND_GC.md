@@ -29,7 +29,7 @@ shared lifetime or lose move/borrow guarantees.
 
 ## Adopt three different ownership/lifetime regimes
 
-1. **Default, deterministic**: a single owner, with `&T` / `&mut T` lexical
+1. **Default, deterministic**: a single owner, with `borrow T` / `borrow mut T` lexical
    borrows. Enforce one live owner, no move while borrowed, and no escaping
    borrowed field or suspended borrow. Destructors/drop of ordinary owned
    native values are deterministic. No tracing GC necessary.
