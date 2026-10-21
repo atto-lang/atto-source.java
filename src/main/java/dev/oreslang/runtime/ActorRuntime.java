@@ -5559,6 +5559,7 @@ public final class ActorRuntime implements AutoCloseable {
                 || value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof ActorRuntime.ActorGroupJoinCapability) return;
         if (value instanceof ChannelRuntime.Channel<?>
+                || value instanceof OresStream<?>
                 || value instanceof ChannelRuntime.SelectCase
                 || value instanceof ChannelRuntime.SelectSet) {
             throw new IllegalArgumentException(
@@ -5965,7 +5966,8 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof ActorRuntime.ActorHandle<?>
                 || value instanceof ActorRuntime.ActorControlHandle
                 || value instanceof ActorRuntime.ContinuationTarget
-                || value instanceof ChannelRuntime.Channel<?>) {
+                || value instanceof ChannelRuntime.Channel<?>
+                || value instanceof OresStream<?>) {
             throw new SecurityException(
                     "execution-domain local capabilities cannot be wrapped as Shared");
         }
@@ -6037,9 +6039,10 @@ public final class ActorRuntime implements AutoCloseable {
             throw new SecurityException(
                     "runtime coordination handles are execution-domain local and cannot cross actor mailboxes");
         }
-        if (value instanceof ChannelRuntime.Channel<?>) {
+        if (value instanceof ChannelRuntime.Channel<?>
+                || value instanceof OresStream<?>) {
             throw new IllegalArgumentException(
-                    "channel capability is execution-domain local and cannot cross actor mailboxes");
+                    "channel/stream capability is execution-domain local and cannot cross actor mailboxes");
         }
         if (value == null || isScalar(value)
                 || value instanceof ActorRuntime.ActorRef<?>
@@ -6120,9 +6123,11 @@ public final class ActorRuntime implements AutoCloseable {
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
                 || value instanceof OresMutex.Lock<?>
-                || value instanceof OresMutex.Guard<?>) {
+                || value instanceof OresMutex.Guard<?>
+                || value instanceof ChannelRuntime.Channel<?>
+                || value instanceof OresStream<?>) {
             throw new IllegalArgumentException(
-                    "freeze() accepts data values only; live actor/shared capabilities require explicit actor transport");
+                    "freeze() accepts data values only; live actor/shared/stream capabilities require explicit actor transport");
         }
         if (visiting.put(value, Boolean.TRUE) != null) {
             throw new IllegalArgumentException("cyclic values cannot be frozen");
