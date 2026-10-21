@@ -3027,6 +3027,24 @@ public final class TypeChecker {
                                         + " does not accept call-site type arguments");
                     }
                     return switch (member.member()) {
+                        case "request" -> {
+                            if (currentActorKind == Ast.ActorKind.NONE) {
+                                throw new IllegalArgumentException(
+                                        "ActorRef.request currently requires an executing source actor");
+                            }
+                            if (currentActorKind == Ast.ActorKind.UNTRUSTED) {
+                                throw new IllegalArgumentException(
+                                        "untrusted source actor requests are not enabled");
+                            }
+                            if (call.arguments().size() != 1) {
+                                throw new IllegalArgumentException(
+                                        "ActorRef.request expects exactly one request value");
+                            }
+                            Type payload = typeOf(
+                                    call.arguments().getFirst(), env, generics, self);
+                            Type response = actorUnaryResponseType(actorRef, payload);
+                            yield new Named("Future", List.of(response));
+                        }
                         case "send" -> {
                             if (call.arguments().size() != 1) {
                                 throw new IllegalArgumentException(
@@ -3596,7 +3614,7 @@ public final class TypeChecker {
                             List.of(Unknown.INSTANCE));
                     case "id" -> new Named("ActorId", List.of());
                     case "kind" -> new Named("ActorKind", List.of());
-                    case "send", "stop", "cancel", "kill" ->
+                    case "request", "send", "stop", "cancel", "kill" ->
                             throw new IllegalArgumentException(
                                     "ActorRef." + member.member()
                                             + " is direct-call-only; invoke it with (...)");
@@ -5026,6 +5044,51 @@ public final class TypeChecker {
             return new Record(members, record.readOnly(), record.kind());
         }
         return type;
+    }
+
+    /** Statically resolve the ONLY unary run(Request)->Response handler.
+     * No runtime reflection, reply union, guest-provided type argument or
+     * unbounded overload dispatch may supply the response schema. */
+    private Type actorUnaryResponseType(Named actorRef, Type requestType) {
+        Ast.ClassDecl actorClass = actorClassForRef(actorRef);
+        Type target = receiverDispatchType(deref(actorRef.arguments().getFirst()));
+        if (!(target instanceof Named concreteActor)) {
+            throw new IllegalArgumentException("request target must be a concrete actor type");
+        }
+        ResolvedMethod unary = findMethodTarget(
+                actorClass, concreteActor, "run", 1, new LinkedHashSet<>());
+        if (unary == null) {
+            throw new IllegalArgumentException(
+                    "actor '" + actorClass.name()
+                            + "' does not declare unary run(Request)->Response");
+        }
+        Ast.MethodDecl handler = unary.method();
+        if (handler.async() || handler.suspends()) {
+            throw new IllegalArgumentException(
+                    "unary actor run cannot suspend until reply-port continuation lowering exists");
+        }
+        if (handler.returnType() == null || handler.parameters().size() != 1) {
+            throw new IllegalArgumentException(
+                    "unary actor run must declare exactly one request and explicit response");
+        }
+        Set<String> ownerGenerics = Set.copyOf(unary.owner().genericParameters());
+        Map<String, Type> bindings =
+                classGenericBindings(unary.owner(), unary.ownerType());
+        Type expectedRequest = substituteGenerics(
+                resolve(handler.parameters().getFirst().type(),
+                        ownerGenerics, unary.ownerType()), bindings);
+        Type response = substituteGenerics(
+                resolve(handler.returnType(), ownerGenerics, unary.ownerType()), bindings);
+        validateActorCallableBoundaryType(
+                requestType, actorClass.actorKind(), false,
+                "ActorRef.request payload");
+        requireAssignable(
+                requestType, expectedRequest,
+                "ActorRef.request payload for actor '" + actorClass.name() + "'");
+        validateActorCallableBoundaryType(
+                response, actorClass.actorKind(), false,
+                "ActorRef.request response");
+        return response;
     }
 
     private Type actorMailboxPayloadType(Named actorRef) {
