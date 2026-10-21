@@ -1,2 +1,2 @@
-define pub class JsonValue as
+pub define class JsonValue as
 end
