@@ -35,17 +35,41 @@ final class EffectGraphClosedWorldTest {
         assertTrue(rejected.getMessage().contains("FFI_UNKNOWN"));
     }
 
-    @Test void pureClosedWorldCyclesRemainAccepted() {
+    @Test void directGraphCyclesRemainAnalyzableButCannotClaimCompilerEvidence() {
         var graph = new EffectContracts.Graph();
         graph.add(EffectContracts.Callable.inferred("a", Set.of(),
                 List.of(EffectContracts.Call.direct("b"))));
         graph.add(EffectContracts.Callable.inferred("b", Set.of(IO),
                 List.of(EffectContracts.Call.direct("a"))));
-        var inferred = graph.validateClosedWorld();
+        var inferred = graph.validate();
         assertEquals(Set.of(IO), inferred.get("a"));
         assertEquals(Set.of(IO), inferred.get("b"));
         assertThrows(UnsupportedOperationException.class,
                 () -> inferred.put("forged", Set.of()));
+        var denied = assertThrows(IllegalArgumentException.class,
+                graph::validateClosedWorld);
+        assertTrue(denied.getMessage().contains("compiler-resolved provenance"));
+    }
+
+    @Test void forgedDirectCallToPureSymbolCannotMintAnAdmission() {
+        var graph = new EffectContracts.Graph();
+        graph.add(EffectContracts.Callable.inferred("entry", Set.of(),
+                List.of(EffectContracts.Call.direct("pure"))));
+        graph.add(EffectContracts.Callable.inferred("pure", Set.of(), List.of()));
+        assertTrue(graph.validate().get("entry").isEmpty());
+        assertThrows(IllegalArgumentException.class, graph::validateClosedWorld);
+    }
+
+    @Test void spoofedTrapCannotEraseAnExceptionWithoutCompilerProvenance() {
+        var graph = new EffectContracts.Graph();
+        graph.add(EffectContracts.Callable.trapping("handler", Set.of(THROW), List.of()));
+        assertThrows(IllegalArgumentException.class, graph::validateClosedWorld);
+    }
+
+    @Test void VerifiedCallFreeGraphStillAllowsKnownEffects() {
+        var graph = new EffectContracts.Graph();
+        graph.add(EffectContracts.Callable.inferred("allocate", Set.of(ALLOC), List.of()));
+        assertEquals(Set.of(ALLOC), graph.validateClosedWorld().get("allocate"));
     }
 
     @Test void emptyGraphCannotProveAnyProgram() {
