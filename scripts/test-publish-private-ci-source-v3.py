@@ -301,7 +301,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 v3.legacy, "github_api_environment",
                 return_value={"GH_TOKEN": "synthetic"},
             ),
-            patch.object(v3.subprocess, "run", return_value=result) as run,
+            patch.object(v3.legacy, "run_bounded_gh", return_value=result) as run,
         ):
             self.assertEqual(v3.gh_api_list("repos/trusted/ci/pulls/1/reviews"),
                              [{"state": "APPROVED"}])
@@ -316,7 +316,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 v3.legacy, "github_api_environment",
                 return_value={"GH_TOKEN": "synthetic"},
             ),
-            patch.object(v3.subprocess, "run", return_value=invalid),
+            patch.object(v3.legacy, "run_bounded_gh", return_value=invalid),
         ):
             with self.assertRaises(v3.Denied):
                 v3.gh_api_list("repos/trusted/ci/pulls/1/reviews")
@@ -331,7 +331,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 v3.legacy, "github_api_environment",
                 return_value={"GH_TOKEN": "synthetic"},
             ),
-            patch.object(v3.subprocess, "run", return_value=response) as run,
+            patch.object(v3.legacy, "run_bounded_gh", return_value=response) as run,
         ):
             self.assertIs(
                 v3._gh_ref_request("trusted/ci", "ci/authorized-" + COMMIT, "GET"),
@@ -346,7 +346,7 @@ class PrivateCiV3Test(unittest.TestCase):
             patch.object(v3.legacy, "trusted_github_cli", return_value="/usr/bin/gh"),
             patch.object(v3.legacy, "github_api_environment", return_value={}),
             patch.object(v3.legacy, "MAX_GH_API_RESPONSE_CHARS", 4),
-            patch.object(v3.subprocess, "run", return_value=invalid),
+            patch.object(v3.legacy, "run_bounded_gh", return_value=invalid),
         ):
             with self.assertRaisesRegex(v3.Denied, "response exceeds size limit"):
                 v3._gh_ref_request("trusted/ci", "ci/authorized-" + COMMIT, "GET")
@@ -1479,7 +1479,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 v3.legacy, "github_api_environment",
                 return_value={"GH_TOKEN": "synthetic"},
             ),
-            patch.object(v3.subprocess, "run", return_value=response) as run,
+            patch.object(v3.legacy, "run_bounded_gh", return_value=response) as run,
         ):
             self.assertIs(
                 v3._gh_ref_request("trusted/ci", ref_name, "GET"),
@@ -1503,7 +1503,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 v3.legacy, "github_api_environment",
                 return_value={"GH_TOKEN": "synthetic"},
             ),
-            patch.object(v3.subprocess, "run", return_value=response) as run,
+            patch.object(v3.legacy, "run_bounded_gh", return_value=response) as run,
         ):
             self.assertIs(
                 v3._gh_ref_request("trusted/ci", ref_name, "DELETE"),
