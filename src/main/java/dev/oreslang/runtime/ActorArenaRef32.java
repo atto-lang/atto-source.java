@@ -24,7 +24,9 @@ public final class ActorArenaRef32 {
         Objects.requireNonNull(block, "actor block");
         // An encoded location is not a right to access the block. Its owner
         // checks still execute on every read/write below.
-        return ManagedReferencePolicy.encodeArenaOffset32(byteOffset, block.capacity());
+        int encoded = ManagedReferencePolicy.encodeArenaOffset32(byteOffset, block.capacity());
+        block.readByte(byteOffset); // enforce actor identity and live-region admission at creation
+        return encoded;
     }
 
     private static int checkedOffset(
