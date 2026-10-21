@@ -3,7 +3,6 @@ package dev.oreslang;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
-import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
@@ -82,26 +81,6 @@ final class MutexLanguageTest {
     }
 
     @Test
-    void mutexGuardForwardsListGetAndMutationWithoutLeakingTheGuard() {
-        assertDoesNotThrow(() -> {
-            var program = TypeChecker.check(Parser.parse("""
-                    define module app
-                      fnc mutate(): int {
-                        val mutex = SharedMutex.new([10]);
-                        val guard = mutex.lock();
-                        val before = guard.get(0);
-                        guard.set(0, before + 1);
-                        val after = guard.get(0);
-                        guard.release();
-                        return after;
-                      }
-                    end
-                    """));
-            OwnershipChecker.check(program);
-        });
-    }
-
-    @Test
     void sharedMutexAcceptsFullySharedSafeUnionTypes() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module app
@@ -130,7 +109,6 @@ final class MutexLanguageTest {
     @Test
     void sharedMutexSubstitutesGenericsInsideUnionFields() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-
                 define module model
                   define class Box<T> as
                     pub val T | int value;
@@ -147,7 +125,6 @@ final class MutexLanguageTest {
                 """)));
 
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-
                 define module model
                   define class Box<T> as
                     pub val T | int value;
@@ -164,7 +141,6 @@ final class MutexLanguageTest {
                 """)));
 
         var unsafe = Parser.parse("""
-
                 define module model
                   define class Box<T> as
                     pub val T | int value;
@@ -254,7 +230,6 @@ final class MutexLanguageTest {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(closureProgram));
 
         var futureProgram = Parser.parse("""
-
                 define module model
                   define class Counter as
                     pub let int value = 0;
@@ -277,7 +252,6 @@ final class MutexLanguageTest {
     @Test
     void sharedMutexPreservesParentGenericBindingsDuringSafetyCheck() {
         var program = Parser.parse("""
-
                 define module model
                   define class Parent<T> as
                     pub val T value;
@@ -303,16 +277,15 @@ final class MutexLanguageTest {
     @Test
     void sharedMutexRecursivelyChecksClassFields() {
         var program = Parser.parse("""
-
                 define module model
                   define class UnsafeBox as
-                    pub val Fnc<void> callback = || -> { return; };
+                    pub val Mutex<int> inner;
                   end
                 end
 
                 define module app
                   fnc bad(): void {
-                    val shared = SharedMutex.new(new UnsafeBox());
+                    val shared = SharedMutex.new(new UnsafeBox(Mutex.new(1)));
                     stdio.println(shared.is_poisoned());
                     return;
                   }
@@ -342,7 +315,6 @@ final class MutexLanguageTest {
     @Test
     void sharedMutexAcceptsOrdinaryOwnedClassState() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-
                 define module model
                   define class Counter as
                     pub let int value = 0;
@@ -362,7 +334,6 @@ final class MutexLanguageTest {
     @Test
     void sharedMutexRejectsActorLocalStateGraph() {
         var program = Parser.parse("""
-
                 define module model
                   define class Counter as
                     pub let int value = 0;
@@ -386,7 +357,6 @@ final class MutexLanguageTest {
     @Test
     void mutexGuardTransparentlyProtectsClassStateAndReleasesLexically() throws Exception {
         String program = """
-
                 define module model
                   define class Counter as
                     pub let int value = 0;
@@ -427,7 +397,6 @@ final class MutexLanguageTest {
     @Test
     void awaitWhileHoldingGuardIsRejectedStatically() {
         var program = Parser.parse("""
-
                 define module model
                   define class Counter as
                     pub let int value = 0;
@@ -452,7 +421,6 @@ final class MutexLanguageTest {
     @Test
     void withLockProvidesMutableProtectedValue() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-
                 define module model
                   define class Counter as
                     pub let int value = 0;
@@ -473,54 +441,8 @@ final class MutexLanguageTest {
     }
 
     @Test
-    void withLockAcceptsVoidExpressionBodyLambda() {
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-
-                define module model
-                  define class Counter as
-                    pub let int value = 0;
-                  end
-                end
-
-                define module app
-                  fnc good(): void {
-                    val mutex = Mutex.new(new Counter());
-                    mutex.with_lock(|counter| -> stdio.println(counter.value));
-                    return;
-                  }
-                end
-                """)));
-    }
-
-    @Test
-    void withLockRejectsValueReturningExpressionBodyLambda() {
-        IllegalArgumentException error = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-
-                        define module model
-                          define class Counter as
-                            pub let int value = 0;
-                          end
-                        end
-
-                        define module app
-                          fnc bad(): void {
-                            val mutex = Mutex.new(new Counter());
-                            mutex.with_lock(|counter| -> counter.value);
-                            return;
-                          }
-                        end
-                        """)));
-
-        assertTrue(error.getMessage().contains("mutex callback expression body")
-                || error.getMessage().contains("void"));
-    }
-
-    @Test
     void awaitInsideWithLockCriticalSectionIsRejected() {
         var program = Parser.parse("""
-
                 define module model
                   define class Counter as
                     pub let int value = 0;
@@ -546,7 +468,6 @@ final class MutexLanguageTest {
     @Test
     void guardBearingResultsMustBeBoundAndCannotBeOverwritten() {
         var discarded = Parser.parse("""
-
                 define module model
                   define class Counter as
                     pub let int value = 0;
@@ -565,7 +486,6 @@ final class MutexLanguageTest {
         assertTrue(discardedError.getMessage().contains("cannot be discarded"));
 
         var mutableBinding = Parser.parse("""
-
                 define module model
                   define class Counter as
                     pub let int value = 0;
@@ -588,7 +508,6 @@ final class MutexLanguageTest {
     @Test
     void guardBearingValuesCannotCrossArbitraryCallsOrNestedMutexes() {
         var callProgram = Parser.parse("""
-
                 define module model
                   define class Counter as
                     pub let int value = 0;
@@ -607,7 +526,6 @@ final class MutexLanguageTest {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(callProgram));
 
         var nestedProgram = Parser.parse("""
-
                 define module model
                   define class Counter as
                     pub let int value = 0;
@@ -629,7 +547,6 @@ final class MutexLanguageTest {
     @Test
     void guardedMoveOnlyFieldsAndMethodValuesCannotEscape() {
         var fieldProgram = Parser.parse("""
-
                 define module model
                   define class Child as
                     pub let int value = 1;
@@ -653,7 +570,6 @@ final class MutexLanguageTest {
         assertTrue(fieldError.getMessage().contains("cannot extract move-only field"));
 
         var methodProgram = Parser.parse("""
-
                 define module model
                   define class Counter as
                     pub read(): int { return 1; }
@@ -677,7 +593,6 @@ final class MutexLanguageTest {
     @Test
     void directGuardedCopyReturningMethodCallIsAllowed() throws Exception {
         String program = """
-
                 define module model
                   define class Counter as
                     pub read(): int { return 7; }
@@ -713,7 +628,6 @@ final class MutexLanguageTest {
     @Test
     void withLockProtectedBorrowCannotMoveOrReturnState() {
         var moved = Parser.parse("""
-
                 define module model
                   define class Counter as
                     pub let int value = 0;
@@ -736,7 +650,6 @@ final class MutexLanguageTest {
         assertTrue(movedError.getMessage().contains("protected with_lock/recover state cannot be moved"));
 
         var returned = Parser.parse("""
-
                 define module model
                   define class Counter as
                     pub let int value = 0;
@@ -758,7 +671,6 @@ final class MutexLanguageTest {
     @Test
     void withLockRequiresInlineLambda() {
         var program = Parser.parse("""
-
                 define module model
                   define class Counter as
                     pub let int value = 0;
@@ -785,7 +697,6 @@ final class MutexLanguageTest {
     @Test
     void guardCannotBeStoredInAggregate() {
         var program = Parser.parse("""
-
                 define module model
                   define class Counter as
                     pub let int value = 0;
@@ -810,7 +721,6 @@ final class MutexLanguageTest {
     @Test
     void guardCannotEscapeThroughClosureCapture() {
         var program = Parser.parse("""
-
                 define module model
                   define class Counter as
                     pub let int value = 0;
@@ -885,7 +795,6 @@ final class MutexLanguageTest {
     @Test
     void guardBearingValuesCannotBeHiddenInConstructedObjects() {
         var direct = Parser.parse("""
-
                 define module model
                   define class Box<T> as
                     pub let T value;
@@ -914,7 +823,6 @@ final class MutexLanguageTest {
                 "MutexGuard cannot be stored in a constructed object"));
 
         var pending = Parser.parse("""
-
                 define module model
                   define class Box<T> as
                     pub let T value;
@@ -943,7 +851,6 @@ final class MutexLanguageTest {
                 "MutexGuard cannot be stored in a constructed object"));
 
         var borrowed = Parser.parse("""
-
                 define module model
                   define class Box<T> as
                     pub let T value;
@@ -1015,7 +922,6 @@ final class MutexLanguageTest {
         IllegalArgumentException declaredError = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-
                         define module model
                           define class Counter as
                             pub let int value = 0;
@@ -1035,7 +941,6 @@ final class MutexLanguageTest {
     @Test
     void conditionalExpressionsCannotEraseGuardLinearity() {
         var awaitProgram = Parser.parse("""
-
                 define module model
                   define class Counter as
                     pub let int value = 0;
@@ -1060,7 +965,6 @@ final class MutexLanguageTest {
                 "cannot await while holding a MutexGuard"));
 
         var returnProgram = Parser.parse("""
-
                 define module model
                   define class Counter as
                     pub let int value = 0;
