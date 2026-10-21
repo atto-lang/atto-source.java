@@ -2396,6 +2396,14 @@ public final class OwnershipChecker {
                         + "pass the value directly or use rt copy");
             }
             ValueInfo argument = checkExpr(arg, scope, false);
+            // A structural loan must have a provable owner whenever its
+            // argument is already borrowed. In particular, an opaque call
+            // returning a borrow cannot silently lose its original owner and
+            // then allow a later call argument to move that owner.
+            if (isBorrowValue(argument) && argument.borrowSource == null) {
+                throw error(callable + " argument " + position
+                        + " has no proven borrow provenance for a structural parameter");
+            }
             if (containsMutexGuardType(argument.type)
                     || (mutexCriticalSectionDepth > 0 && argument.type.isBorrow())) {
                 throw error(callable + " argument " + position
