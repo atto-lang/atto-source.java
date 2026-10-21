@@ -345,6 +345,50 @@ final class TrustedOpenClProviderTest {
     }
 
     @Test
+    void cancellationFollowedByDeviceLossStillRequiresRecoveryProof() {
+        var f = fixture();
+        var driver = new FakeDriver();
+        driver.statuses.add(TrustedOpenClProvider.EventStatus.PENDING);
+        var provider = provider(driver, f);
+        var prepared = provider.prepare(f.kernel);
+
+        var operation = provider.begin(
+                prepared, f.input, f.output, "actor:1", f.hostInput);
+        provider.requestTimeoutCancellation(operation);
+        var before = provider.usage();
+        assertEquals(
+                TrustedOpenClProvider.OperationState.CANCEL_REQUESTED,
+                provider.poll(operation));
+        assertEquals(before, provider.usage());
+        assertEquals(0, driver.releasedEvents);
+
+        driver.lastEvent.status = TrustedOpenClProvider.EventStatus.DEVICE_LOST;
+        assertEquals(
+                TrustedOpenClProvider.OperationState.DEVICE_LOST,
+                provider.poll(operation));
+        assertEquals(before, provider.usage());
+        assertEquals(0, driver.releasedEvents);
+        assertEquals(ComputeBufferHandle.State.POISONED, f.input.state());
+        assertEquals(ComputeBufferHandle.State.POISONED, f.output.state());
+
+        assertThrows(IllegalStateException.class,
+                () -> provider.recoverDeviceLoss(operation));
+        assertEquals(before, provider.usage());
+        assertEquals(0, driver.releasedEvents);
+
+        driver.deviceLossQuiescent = true;
+        provider.recoverDeviceLoss(operation);
+        assertEquals(1, driver.releasedEvents);
+        assertEquals(
+                new TrustedOpenClProvider.Usage(0, 0, 0, 0),
+                provider.usage());
+
+        ComputeAuthority.retire(f.input, f.device, "actor:1");
+        ComputeAuthority.retire(f.output, f.device, "actor:1");
+        prepared.close();
+    }
+
+    @Test
     void deviceLossRetainsResourcesUntilProviderProvesQuiescence() {
         var f = fixture();
         var driver = new FakeDriver();
@@ -362,6 +406,7 @@ final class TrustedOpenClProviderTest {
         assertEquals(ComputeBufferHandle.State.POISONED, f.output.state());
         assertTrue(provider.usage().residentBytes() > 0);
         assertEquals(1, provider.activeOperationCount());
+        assertEquals(0, driver.releasedEvents);
         assertThrows(IllegalStateException.class, prepared::close);
         assertThrows(IllegalStateException.class,
                 () -> provider.begin(
@@ -370,11 +415,13 @@ final class TrustedOpenClProviderTest {
         assertThrows(IllegalStateException.class,
                 () -> provider.recoverDeviceLoss(operation));
         assertTrue(provider.usage().residentBytes() > 0);
+        assertEquals(0, driver.releasedEvents);
         assertThrows(IllegalStateException.class,
                 () -> ComputeAuthority.retire(f.input, f.device, "actor:1"));
 
         driver.deviceLossQuiescent = true;
         provider.recoverDeviceLoss(operation);
+        assertEquals(1, driver.releasedEvents);
         assertEquals(
                 new TrustedOpenClProvider.Usage(0, 0, 0, 0),
                 provider.usage());
