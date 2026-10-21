@@ -1090,10 +1090,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         /**
-         * A heap-owned source execution frame. It contains no suspended Java
-         * interpreter stack: when a source operation becomes pending, the
-         * current continuation is stored here and OresScheduler.Task returns
-         * Await to unwind the carrier completely.
+         * Stackless source execution facade. Actor-owned lifecycle authority is
+         * mirrored in ActorNativeArena.TaskFrame; lexical environments and
+         * callback objects are still managed Java state pending full lowering.
+         * No suspended Java interpreter stack is retained across await.
          */
         private final class SourceTask implements OresScheduler.Task<Object> {
             // The trampoline prevents recursive loop iterations from retaining
@@ -1182,6 +1182,9 @@ public final class OresEvalRootNode extends RootNode {
                     throw dev.oreslang.runtime.SourceBoundaryTrace.record(failure, codeUnitId,
                             function != null ? function.name() : method != null ? method.name() : "<block>",
                             resume.initial() ? "source task" : "resumed source task");
+                } catch (Error failure) {
+                    if (nativeFrame != null) nativeFrame.failed();
+                    throw failure;
                 }
             }
 
