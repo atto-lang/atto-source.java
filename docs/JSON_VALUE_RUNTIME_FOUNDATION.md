@@ -2,17 +2,32 @@
 
 This slice is infrastructure for the `alloc/json` contract in
 `oreslang-common-source#111`. It does **not** make JSON a core language
-builtin and does not expose source `JsonValue` yet.
+builtin. The stage-one source surface now exposes only the opaque
+compiler-owned `JsonValue` type and `Map<String, JsonValue>` allocation
+through the reserved `alloc/json` import; construction/parsing/codecs remain
+separate later slices.
 
 ## Boundary
 
 `core` remains allocator-free. JSON remains an allocator-backed portable
-library feature. Until the canonical `alloc/json` module/resolver exists,
-source code spelling `JsonValue` is rejected.
+library feature. The compiler-owned source boundary is now:
 
-The Java runtime nevertheless needs a closed recursive carrier so later
-`alloc/json` lowering can use the canonical typed Map without falling back to
-host `Object`, `java.util.Map`, reflection, or guest-visible `ANY`.
+```ores
+import class JsonValue from "alloc/json";
+
+val Map<String, JsonValue> values = new Map<String, JsonValue>();
+```
+
+The `alloc/*` namespace resolves before project roots or `ORESLANG_PATH`,
+so project files cannot shadow `alloc/json`. The imported type is opaque:
+`new JsonValue()` is rejected by both the type checker and evaluator runtime
+construction paths. An aliased import does not unlock the canonical
+`JsonValue` Map domain, and a user class with the same name has no JSON
+authority.
+
+The Java runtime still uses the closed recursive `OresJsonValue` carrier so
+later `Json.*` lowering can use the canonical typed Map without falling back
+to host `Object`, `java.util.Map`, reflection, or guest-visible `ANY`.
 
 ## Runtime shape
 
@@ -82,21 +97,30 @@ and configurable decode quotas remain responsibilities of the later
 
 ## Source staging
 
-This PR deliberately leaves these source spellings unavailable:
+The resolver/type-admission slice is now present. This exact unaliased import:
 
 ```ores
-Map<String, JsonValue>
+import class JsonValue from "alloc/json";
+```
+
+admits the opaque nominal `JsonValue` type and a fresh
+`Map<String, JsonValue>`. The runtime constructs that Map with
+`OresKeyedMap.ValueDomain.JSON`; Symbol or String|Symbol key domains reject.
+
+The following are **still unavailable** in this stage:
+
+```ores
+new JsonValue()
+Json.of(...)
 Json.decode<T>(...)
 Json.stringify(...)
 ```
 
-They become legal only when imported/resolved through `alloc/json`. This
-prevents an allocator-backed type from accidentally becoming an ambient
-`core` builtin merely because the runtime descriptor landed first.
-
-The next implementation slice should introduce the alloc module/resolver
-boundary and compiler-generated/static JSON constructors/codecs, then bind
-source `JsonValue` to this runtime descriptor.
+Actual `JsonValue` instances will be produced only by compiler/runtime-owned
+`Json.*` factories, parser/decoder paths or generated codecs. This prevents
+an allocator-backed type from becoming an ambient `core` builtin and prevents
+an ordinary guest class instance from impersonating the sealed runtime JSON
+carrier.
 
 The runtime/evaluator half of commit-aware ownership transfer is now present.
 `OresKeyedMap.attemptOwnedPut` returns a linear internal result:
@@ -125,8 +149,7 @@ write remains conservative, as do top-level-defer/live-MutexGuard cases.
 Nested tries suppress recovery only for the innermost catch; every enclosing
 try still observes the committed move so a later outer failure cannot reuse it.
 
-Source `Map<String, JsonValue>` is still unavailable, but the remaining gate
-is now module/type-surface work rather than this ownership edge: `JsonValue`
-must first resolve only through `alloc/json`, and the typed-Map frontend must
-admit that recursive value descriptor without broadening the closed scalar
-surface accidentally.
+Source `Map<String, JsonValue>` is now admitted only through the exact
+compiler-owned `alloc/json` import. The remaining source work is value
+construction and externalization: `Json.*` factories, strict parse/stringify,
+and generated typed codecs. Scalar Map domains remain unchanged.
