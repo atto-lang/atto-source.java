@@ -271,7 +271,7 @@ final class AllocJsonStdlibTest {
                 new ByteArrayOutputStream());
 
         assertEquals(
-                "{\\"name\\":\\"Ada\\",\\"n\\":9007199254740993}",
+                "{\"name\":\"Ada\",\"n\":9007199254740993}",
                 out.toString(StandardCharsets.UTF_8).trim());
     }
 
