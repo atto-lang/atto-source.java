@@ -266,17 +266,28 @@ public final class ActorNativeArena implements AutoCloseable {
                 int inChunk = currentSize % LIST_CHUNK_SLOTS;
                 long chunk = read(header, 24);
                 if (inChunk == 0) {
-                    long next = allocate(LIST_CHUNK_BYTES);
-                    write(next, 0, NO_OFFSET);
-                    // Store before publishing the new chunk. Unsupported values
-                    // or quota failures leave the authoritative list unchanged.
-                    storeValue(next + LIST_CHUNK_HEADER_BYTES, value, null);
+                    // Retain the native chunk chain across clear(): clearing
+                    // logical elements must not repeatedly consume new native
+                    // memory or recycle their stable actor-relative addresses.
+                    long next;
                     if (currentSize == 0) {
-                        write(header, 16, next);
+                        next = read(header, 16);
                     } else {
                         if (chunk == NO_OFFSET) {
                             throw new IllegalStateException("native List tail is missing");
                         }
+                        next = read(chunk, 0);
+                    }
+                    if (next == NO_OFFSET) {
+                        next = allocate(LIST_CHUNK_BYTES);
+                        write(next, 0, NO_OFFSET);
+                    }
+                    // Store before publishing the newly active chunk. Invalid
+                    // values/quota failures cannot advance the logical list.
+                    storeValue(next + LIST_CHUNK_HEADER_BYTES, value, null);
+                    if (currentSize == 0) {
+                        write(header, 16, next);
+                    } else {
                         write(chunk, 0, next);
                     }
                     write(header, 24, next);
@@ -301,7 +312,8 @@ public final class ActorNativeArena implements AutoCloseable {
                     storeValue(elementSlot(i), null, null);
                 }
                 write(header, 8, 0L);
-                write(header, 16, NO_OFFSET);
+                // Preserve first-chunk ownership for bounded append reuse.
+                // Active tail resets; historical chunks remain in the chain.
                 write(header, 24, NO_OFFSET);
                 modCount++;
             }
