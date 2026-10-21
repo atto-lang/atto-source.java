@@ -81,48 +81,119 @@ public final class OresKeyedMap<K, V> {
     }
 
     /**
-     * Compiler/runtime-only result for fallible insertion of a move-only
-     * offered value.
+     * Compiler/runtime-only linear result for fallible insertion of a
+     * move-only offered value.
      *
      * <p>On commit, ownership of the offered value has transferred into this
-     * Map and {@code rejectedValue}/{@code rejection} are null. On rejection,
-     * live storage is unchanged and {@code rejectedValue} is the exact offered
-     * object by identity so lowering can restore the source owner without
-     * reconstructing or copying a move-only value.</p>
+     * Map and the result owns only the displaced mapping state. On rejection,
+     * live storage is unchanged and the result owns the exact offered object
+     * by identity until lowering takes it back. Ownership-bearing access is
+     * one-shot so runtime code cannot duplicate a move-only value by calling a
+     * Java record accessor repeatedly.</p>
+     *
+     * <p>The rejection itself is not exposed as ordinary data before recovery.
+     * Lowering must call {@link #takeUncommittedValue()} first; only then may
+     * {@link #rethrowAfterRecovery()} propagate the original admission
+     * RuntimeException.</p>
      */
-    public record OwnedPutAttempt<V>(
-            boolean committed,
-            V previous,
-            V rejectedValue,
-            RuntimeException rejection) {
-        public OwnedPutAttempt {
-            if (committed) {
-                if (rejectedValue != null || rejection != null) {
-                    throw new IllegalArgumentException(
-                            "committed owned put cannot carry rejected state");
-                }
-            } else {
-                if (previous != null) {
-                    throw new IllegalArgumentException(
-                            "rejected owned put cannot report a displaced value");
-                }
-                Objects.requireNonNull(rejectedValue, "rejected offered Map value");
-                Objects.requireNonNull(rejection, "owned put rejection");
-            }
+    public static final class OwnedPutAttempt<V> {
+        private Lookup<V> previous;
+        private V uncommitted;
+        private final RuntimeException rejection;
+        private boolean ownershipTaken;
+
+        private OwnedPutAttempt(
+                Lookup<V> previous,
+                V uncommitted,
+                RuntimeException rejection) {
+            this.previous = previous;
+            this.uncommitted = uncommitted;
+            this.rejection = rejection;
         }
 
-        public static <V> OwnedPutAttempt<V> committed(V previous) {
-            return new OwnedPutAttempt<>(true, previous, null, null);
+        private static <V> OwnedPutAttempt<V> committed(
+                Lookup<V> previous) {
+            return new OwnedPutAttempt<>(
+                    Objects.requireNonNull(
+                            previous,
+                            "committed owned put requires previous state"),
+                    null,
+                    null);
         }
 
-        public static <V> OwnedPutAttempt<V> rejected(
+        private static <V> OwnedPutAttempt<V> rejected(
                 V offered,
                 RuntimeException rejection) {
             return new OwnedPutAttempt<>(
-                    false,
                     null,
-                    Objects.requireNonNull(offered, "offered Map value"),
-                    Objects.requireNonNull(rejection, "owned put rejection"));
+                    Objects.requireNonNull(
+                            offered,
+                            "rejected owned put must return offered value"),
+                    Objects.requireNonNull(
+                            rejection,
+                            "owned put rejection"));
+        }
+
+        public boolean committed() {
+            return rejection == null;
+        }
+
+        /** Transfer the displaced mapping exactly once after a commit. */
+        public Lookup<V> takePrevious() {
+            if (!committed()) {
+                throw new IllegalStateException(
+                        "rejected owned put has no previous-state result");
+            }
+            if (ownershipTaken) {
+                throw new IllegalStateException(
+                        "committed owned put result was already consumed");
+            }
+            ownershipTaken = true;
+            Lookup<V> result = previous;
+            previous = null;
+            return result;
+        }
+
+        /** Recover the exact rejected candidate exactly once. */
+        public V takeUncommittedValue() {
+            if (committed()) {
+                throw new IllegalStateException(
+                        "committed owned put transferred the offered value");
+            }
+            if (ownershipTaken) {
+                throw new IllegalStateException(
+                        "rejected owned put candidate was already recovered");
+            }
+            ownershipTaken = true;
+            V result = uncommitted;
+            uncommitted = null;
+            return result;
+        }
+
+        /**
+         * Preserve the original admission failure only after ownership of the
+         * rejected candidate has been recovered.
+         */
+        public void rethrowAfterRecovery() {
+            if (committed()) return;
+            if (!ownershipTaken) {
+                throw new IllegalStateException(
+                        "recover rejected owned-put candidate before propagating failure");
+            }
+            throw rejection;
+        }
+
+        /**
+         * Compatibility path for the current copy-safe scalar put surface.
+         * Move-only lowering must recover the candidate instead.
+         */
+        private void discardRejectedAndRethrow() {
+            if (committed()) return;
+            if (!ownershipTaken) {
+                ownershipTaken = true;
+                uncommitted = null;
+            }
+            throw rejection;
         }
     }
 
@@ -392,32 +463,29 @@ public final class OresKeyedMap<K, V> {
         return SymbolPropertyKeyCodec.encodedWireLength(key);
     }
 
+    /**
+     * Copy-safe convenience mutation for the currently exposed scalar guest
+     * Map surface. Move-only lowering must use {@link #attemptOwnedPut}.
+     */
     public V put(K key, V value) {
-        if (valueDomain == ValueDomain.JSON) {
-            // Lock order for recursive mutable JSON graphs is global graph
-            // admission first, destination Map second. This prevents two Maps
-            // from concurrently validating opposite edges and committing a
-            // cycle after both observed an acyclic pre-state.
-            synchronized (JSON_GRAPH_ADMISSION_LOCK) {
-                synchronized (this) {
-                    return putUnderMonitor(key, value);
-                }
-            }
-        }
-        synchronized (this) {
-            return putUnderMonitor(key, value);
-        }
+        OwnedPutAttempt<V> attempt = attemptOwnedPut(key, value);
+        attempt.discardRejectedAndRethrow();
+        Lookup<V> previous = attempt.takePrevious();
+        return previous.present() ? previous.value() : null;
     }
 
     /**
-     * Internal lowering primitive for move-only values. Unlike {@link #put},
-     * preflight rejection is returned as data together with the exact offered
-     * value. Errors outside the runtime's ordinary checked/policy rejection
-     * surface (for example VM {@link Error}s) still propagate.
+     * Internal lowering primitive for fallible move-only insertion.
+     *
+     * <p>All expected guest-recoverable domain/graph/quota/policy checks occur
+     * before the publication commit point. A rejected result therefore owns
+     * the exact offered value and live storage is unchanged. Publication runs
+     * outside the rejection catch so a later internal failure can never be
+     * mislabeled as rejection that returns candidate ownership.</p>
      *
      * <p>This method is not a guest Map member. Source-level lowering may use
-     * it only after proving direct owner authority and must commit the source
-     * ownership move only when {@link OwnedPutAttempt#committed()} is true.</p>
+     * it only after proving direct owner authority. Fatal VM {@link Error}
+     * conditions remain outside recoverable guest ownership semantics.</p>
      */
     public OwnedPutAttempt<V> attemptOwnedPut(K key, V offered) {
         Objects.requireNonNull(offered, "offered Map value");
@@ -433,37 +501,62 @@ public final class OresKeyedMap<K, V> {
         }
     }
 
-    private OwnedPutAttempt<V> attemptOwnedPutUnderMonitor(K key, V offered) {
+    private OwnedPutAttempt<V> attemptOwnedPutUnderMonitor(
+            K key,
+            V offered) {
+        final Lookup<V> previous;
+        final long addedBytes;
         try {
-            return OwnedPutAttempt.committed(putUnderMonitor(key, offered));
+            rejectReentrantMutation();
+            checkKey(key);
+            checkValueDomain(offered);
+
+            boolean replacing = entries.containsKey(key);
+            previous = replacing
+                    ? Lookup.present(entries.get(key))
+                    : Lookup.missing();
+
+            if (!replacing) {
+                if (entries.size() >= MAX_ENTRIES) {
+                    throw new IllegalArgumentException(
+                            "typed Map exceeds maximum key count");
+                }
+                long candidateBytes = wireKeyBytes(key);
+                if (candidateBytes
+                        > MAX_KEY_SET_WIRE_BYTES - storedKeyWireBytes) {
+                    throw new IllegalArgumentException(
+                            "typed Map exceeds aggregate key byte budget");
+                }
+                addedBytes = candidateBytes;
+            } else {
+                addedBytes = 0L;
+            }
+
+            // Compiler-owned policy validation is the final recoverable
+            // preflight. Live storage remains untouched if it rejects.
+            runEntryValidator(key, offered);
         } catch (RuntimeException rejection) {
-            // putUnderMonitor performs all fallible structural/domain/quota
-            // and policy checks before entries.put(), so an ordinary runtime
-            // rejection here has not modified live storage.
             return OwnedPutAttempt.rejected(offered, rejection);
         }
-    }
 
-    private V putUnderMonitor(K key, V value) {
-        rejectReentrantMutation();
-        checkKey(key);
-        checkValueDomain(value);
-        long addedBytes = 0L;
-        if (!entries.containsKey(key)) {
-            if (entries.size() >= MAX_ENTRIES) {
-                throw new IllegalArgumentException("typed Map exceeds maximum key count");
+        /*
+         * Commit point. String/Symbol key hash/equality is runtime-owned and
+         * cannot dispatch guest callbacks. Any impossible RuntimeException
+         * after publication must propagate as a committed-state bug; it must
+         * never return ownership of the offered value.
+         */
+        V publishedPrevious = entries.put(key, offered);
+        if (previous.present()) {
+            if (publishedPrevious != previous.value()) {
+                throw new IllegalStateException(
+                        "typed Map changed between owned-put preflight and commit");
             }
-            addedBytes = wireKeyBytes(key);
-            if (addedBytes > MAX_KEY_SET_WIRE_BYTES - storedKeyWireBytes) {
-                throw new IllegalArgumentException("typed Map exceeds aggregate key byte budget");
-            }
+        } else if (publishedPrevious != null) {
+            throw new IllegalStateException(
+                    "typed Map unexpectedly replaced a value during owned-put commit");
         }
-        // Policy hooks are last in preflight: structurally impossible writes
-        // must not trigger validator callbacks.
-        runEntryValidator(key, value);
-        V previous = entries.put(key, value);
         storedKeyWireBytes += addedBytes;
-        return previous;
+        return OwnedPutAttempt.committed(previous);
     }
 
     /**
