@@ -1309,6 +1309,52 @@ final class ParserTest {
         }
     }
 
+    @Test
+    void acceptsCanonicalRtMutBorrowSyntax() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                pub fnc main(): void {
+                  val value = 1;
+                  val loan = rt mut borrow value;
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void rejectsPointerSigilsAndLegacyMutableBorrowSyntaxAtParseTime() {
+        List<String> invalid = List.of(
+                """
+                pub fnc main(): void {
+                  val value = 1;
+                  val loan = &value;
+                  return;
+                }
+                """,
+                """
+                pub fnc main(): void {
+                  val value = 1;
+                  val loan = &mut value;
+                  return;
+                }
+                """,
+                """
+                pub fnc leak(borrow Account account): &Account {
+                  return account;
+                }
+                """,
+                """
+                pub fnc main(): void {
+                  val value = 1;
+                  val loan = rt borrow mut value;
+                  return;
+                }
+                """
+        );
+        for (String source : invalid) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(source));
+        }
+    }
+
     private static List<List<String>> permutations(String... tokens) {
         List<List<String>> out = new ArrayList<>();
         permute(new ArrayList<>(List.of(tokens)), new ArrayList<>(), out);
