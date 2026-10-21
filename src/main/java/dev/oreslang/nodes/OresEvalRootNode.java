@@ -9693,8 +9693,13 @@ public final class OresEvalRootNode extends RootNode {
                 java.util.function.Function<Object, Object> copier) {
             Objects.requireNonNull(referencedNames, "Task referenced names");
             Objects.requireNonNull(copier, "task capture copier");
+            // Resolve a referenced identifier to the nearest lexical slot.
+            // A shadowed parent Future must not be copied merely because a
+            // child scope has a Copy value using the same identifier.
+            Set<String> unresolvedParents = new java.util.HashSet<>(referencedNames);
+            unresolvedParents.removeAll(slots.keySet());
             Env cp = new Env(
-                    parent == null ? null : parent.detachedSnapshot(referencedNames, copier),
+                    parent == null ? null : parent.detachedSnapshot(unresolvedParents, copier),
                     descendantsNonLexical,
                     accessClass,
                     null,
