@@ -8,6 +8,7 @@ import java.util.AbstractMap;
 import java.util.AbstractSet;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -26,6 +27,12 @@ public final class ActorNativeArena implements AutoCloseable {
     /** Only facades whose guest payload is in this arena may occupy reference slots. */
     public interface NativeValue {
         ActorNativeArena nativeArena();
+
+        /**
+         * Stable actor-relative logical address of this native payload.
+         * This is never a host pointer and is never recycled while the actor lives.
+         */
+        default long nativeOffset() { return -1L; }
     }
 
     @FunctionalInterface
@@ -44,10 +51,13 @@ public final class ActorNativeArena implements AutoCloseable {
     private final Budget budget;
     private final long limit;
     private final ArrayList<ByteBuffer> slabs = new ArrayList<>();
+    private final ArrayList<Long> slabBases = new ArrayList<>();
     private final ArrayList<Runnable> releases = new ArrayList<>();
-    private final IdentityHashMap<NativeValue, Integer> referenceIds = new IdentityHashMap<>();
-    private final List<NativeValue> references = new ArrayList<>();
+    private final IdentityHashMap<NativeValue, Long> referenceOffsets = new IdentityHashMap<>();
+    private final Map<Long, NativeValue> referencesByOffset = new HashMap<>();
     private final Set<Region> regions = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+    /** Monotonic actor-relative address allocator; retired addresses are never reused. */
+    private long nextActorOffset;
     private int tail;
     private long committed;
     private long allocated;
@@ -115,7 +125,8 @@ public final class ActorNativeArena implements AutoCloseable {
             NativeCarrierExecutor.ensureNativeLibraryLoaded();
             memory = allocateNative(bytes);
             if (memory == null) throw new OutOfMemoryError("native actor region allocation failed");
-            Region region = new Region(memory.order(ByteOrder.LITTLE_ENDIAN), bytes, release);
+            long baseOffset = reserveActorOffset(bytes, Long.BYTES);
+            Region region = new Region(memory.order(ByteOrder.LITTLE_ENDIAN), bytes, baseOffset, release);
             regions.add(region);
             committed += bytes;
             allocated += bytes;
@@ -130,14 +141,22 @@ public final class ActorNativeArena implements AutoCloseable {
     public final class Region implements AutoCloseable, NativeValue {
         private ByteBuffer memory;
         private final int capacity;
+        private final long baseOffset;
         private final Runnable release;
         private int readLeases;
-        private Region(ByteBuffer memory, int capacity, Runnable release) {
+        private Region(ByteBuffer memory, int capacity, long baseOffset, Runnable release) {
             this.memory = memory;
             this.capacity = capacity;
+            this.baseOffset = baseOffset;
             this.release = release;
         }
         @Override public ActorNativeArena nativeArena() { return ActorNativeArena.this; }
+        @Override public long nativeOffset() {
+            synchronized (ActorNativeArena.this) {
+                checked();
+                return baseOffset;
+            }
+        }
         public int capacity() { return capacity; }
         public boolean closed() {
             synchronized (ActorNativeArena.this) { return memory == null; }
@@ -268,6 +287,16 @@ public final class ActorNativeArena implements AutoCloseable {
         checkOwner.run();
     }
 
+    private long reserveActorOffset(int bytes, int alignment) {
+        if (bytes < 0 || alignment <= 0 || (alignment & (alignment - 1)) != 0) {
+            throw new IllegalArgumentException("invalid actor-relative allocation");
+        }
+        long mask = alignment - 1L;
+        long base = Math.addExact(nextActorOffset, mask) & ~mask;
+        nextActorOffset = Math.addExact(base, bytes);
+        return base;
+    }
+
     private long allocate(int bytes) {
         if (bytes < 0) throw new IllegalArgumentException("negative native allocation");
         // Even a zero-field object has a native identity allocation.
@@ -282,12 +311,15 @@ public final class ActorNativeArena implements AutoCloseable {
                 // Grow both metadata arrays before owning native bytes, so an
                 // OOME cannot leave a freed slab published in only one list.
                 slabs.ensureCapacity(slabs.size() + 1);
+                slabBases.ensureCapacity(slabBases.size() + 1);
                 releases.ensureCapacity(releases.size() + 1);
+                long slabBase = reserveActorOffset(capacity, Long.BYTES);
                 NativeCarrierExecutor.ensureNativeLibraryLoaded();
                 slab = allocateNative(capacity);
                 if (slab == null) throw new OutOfMemoryError("native actor arena allocation failed");
                 slab.order(ByteOrder.LITTLE_ENDIAN);
                 slabs.add(slab);
+                slabBases.add(slabBase);
                 releases.add(release);
             } catch (RuntimeException | Error failure) {
                 if (slab != null) releaseNative(slab);
@@ -297,14 +329,28 @@ public final class ActorNativeArena implements AutoCloseable {
             committed += capacity;
             tail = 0;
         }
-        long address = ((long) (slabs.size() - 1) << 32) | Integer.toUnsignedLong(tail);
+        long address = Math.addExact(slabBases.get(slabBases.size() - 1), tail);
         tail += size;
         allocated += size;
         return address;
     }
 
-    private ByteBuffer slab(long address) { return slabs.get((int) (address >>> 32)); }
-    private int offset(long address) { return (int) address; }
+    private int slabIndex(long address) {
+        for (int i = slabBases.size() - 1; i >= 0; i--) {
+            long base = slabBases.get(i);
+            if (address >= base) {
+                long relative = address - base;
+                if (relative < slabs.get(i).capacity()) return i;
+                break;
+            }
+        }
+        throw new IllegalStateException("invalid actor-relative slab offset");
+    }
+    private ByteBuffer slab(long address) { return slabs.get(slabIndex(address)); }
+    private int offset(long address) {
+        int index = slabIndex(address);
+        return Math.toIntExact(address - slabBases.get(index));
+    }
     private long read(long address, int relative) {
         return slab(address).getLong(Math.addExact(offset(address), relative));
     }
@@ -350,8 +396,10 @@ public final class ActorNativeArena implements AutoCloseable {
         if (tag == DOUBLE) return Double.longBitsToDouble(bits);
         if (tag == CHARACTER) return (char) bits;
         if (tag == REFERENCE) {
-            NativeValue value = references.get(Math.toIntExact(bits));
-            if (value.nativeArena() != this) throw new SecurityException("moved actor resource reference");
+            NativeValue value = referencesByOffset.get(bits);
+            if (value == null || value.nativeArena() != this || value.nativeOffset() != bits) {
+                throw new SecurityException("stale or moved actor resource reference");
+            }
             return value;
         }
         String text = loadText(bits, Math.toIntExact(read(slot, 16)));
@@ -384,14 +432,20 @@ public final class ActorNativeArena implements AutoCloseable {
             text = v.name();
         } else if (value instanceof NativeValue v) {
             if (v.nativeArena() != this) throw new SecurityException("foreign actor arena reference");
-            tag = REFERENCE;
-            Integer id = referenceIds.get(v);
-            if (id == null) {
-                id = references.size();
-                references.add(v);
-                referenceIds.put(v, id);
+            long address = v.nativeOffset();
+            if (address < 0) {
+                throw new SecurityException("actor-native value has no actor-relative address");
             }
-            bits = id;
+            tag = REFERENCE;
+            Long prior = referenceOffsets.putIfAbsent(v, address);
+            if (prior != null && prior.longValue() != address) {
+                throw new SecurityException("actor-native value changed logical address");
+            }
+            NativeValue occupant = referencesByOffset.putIfAbsent(address, v);
+            if (occupant != null && occupant != v) {
+                throw new SecurityException("duplicate actor-relative native address");
+            }
+            bits = address;
         } else {
             throw new IllegalArgumentException("actor field requires native value lowering for "
                     + value.getClass().getName() + "; managed guest payload fallback is disabled");
@@ -429,6 +483,12 @@ public final class ActorNativeArena implements AutoCloseable {
         }
 
         @Override public ActorNativeArena nativeArena() { return ActorNativeArena.this; }
+        @Override public long nativeOffset() {
+            synchronized (ActorNativeArena.this) {
+                checkAccess();
+                return slots;
+            }
+        }
 
         @Override public int size() {
             synchronized (ActorNativeArena.this) { checkAccess(); return names.size(); }
@@ -483,9 +543,10 @@ public final class ActorNativeArena implements AutoCloseable {
         for (ByteBuffer slab : slabs) releaseNative(slab);
         for (Runnable release : releases) release.run();
         slabs.clear();
+        slabBases.clear();
         releases.clear();
-        references.clear();
-        referenceIds.clear();
+        referencesByOffset.clear();
+        referenceOffsets.clear();
         committed = 0;
     }
 
