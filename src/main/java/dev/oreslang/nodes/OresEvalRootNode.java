@@ -7760,6 +7760,17 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("unknown static member " + klass.klass().name() + "." + name);
             }
             if (receiver instanceof OresObject object) {
+                if (object.klass.actorKind() != Ast.ActorKind.NONE
+                        && name.equals("handle_state")) {
+                    return (Invokable) args -> {
+                        if (args.size() != 1
+                                || !(args.getFirst() instanceof Invokable callback)) {
+                            throw new IllegalArgumentException(
+                                    "self.handle_state expects exactly one inline callable");
+                        }
+                        return object.owner.withActorStateLoan(object, callback);
+                    };
+                }
                 if (object.fields.containsKey(name)) {
                     OwnedField ownedField = object.owner.findField(
                             object.klass, name, new LinkedHashSet<>());
