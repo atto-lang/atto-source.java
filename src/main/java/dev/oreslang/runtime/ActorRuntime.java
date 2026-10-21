@@ -5930,7 +5930,8 @@ public final class ActorRuntime implements AutoCloseable {
                             // atomically against group close/worker transfer.
                             synchronized (inherited.authorityLock) {
                                 inherited.requireOpen();
-                                if (!inheritedId.equals(parent.managedByGroup.get())) {
+                                if (fixedManagedGroup == null
+                                        && !inheritedId.equals(parent.managedByGroup.get())) {
                                     throw new IllegalStateException(
                                             "parent's lifecycle ActorGroup changed during spawn");
                                 }
