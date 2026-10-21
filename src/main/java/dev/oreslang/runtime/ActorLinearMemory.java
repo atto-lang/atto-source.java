@@ -34,7 +34,12 @@ public final class ActorLinearMemory {
         this.maximumPages = maximumPages;
     }
 
-    public int maxPages() { return maximumPages; }
+    public int maxPages() {
+        synchronized (arena) {
+            arena.assertOwner();
+            return maximumPages;
+        }
+    }
 
     public int pages() {
         synchronized (arena) {
