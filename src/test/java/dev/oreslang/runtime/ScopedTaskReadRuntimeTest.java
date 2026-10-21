@@ -2,8 +2,8 @@ package dev.oreslang.runtime;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
-import dev.oreslang.types.AutoTraitRules;
 import dev.oreslang.types.ScopedTaskReadAuthority;
+import dev.oreslang.types.Types;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -32,7 +32,7 @@ final class ScopedTaskReadRuntimeTest {
                 epoch,
                 allocation,
                 List.of(),
-                new AutoTraitRules.Capabilities(true, true, false));
+                Types.Primitive.INT);
 
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
@@ -97,7 +97,7 @@ final class ScopedTaskReadRuntimeTest {
                 epoch,
                 allocation,
                 List.of(),
-                new AutoTraitRules.Capabilities(true, true, false));
+                Types.Primitive.INT);
 
         try (OresScheduler scheduler = new OresScheduler(1);
              ScopedTaskReadRuntime.WriteLease ignored =
@@ -139,7 +139,7 @@ final class ScopedTaskReadRuntimeTest {
                 epoch,
                 allocation,
                 List.of(),
-                new AutoTraitRules.Capabilities(true, true, false));
+                Types.Primitive.INT);
 
         for (int round = 0; round < 128; round++) {
             CountDownLatch start = new CountDownLatch(1);
