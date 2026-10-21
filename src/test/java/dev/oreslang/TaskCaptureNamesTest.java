@@ -119,6 +119,23 @@ final class TaskCaptureNamesTest {
     }
 
     @Test
+    void ifRefinementBindingIsBranchLocalNotParentCapture() {
+        Ast.TypeTestExpr condition = new Ast.TypeTestExpr(
+                new Ast.NameExpr("subject"),
+                Ast.TypeRef.simple("Box"),
+                "narrowed");
+        Ast.IfStmt statement = new Ast.IfStmt(
+                List.of(new Ast.IfBranch(
+                        condition,
+                        List.of(new Ast.ExprStmt(
+                                new Ast.NameExpr("narrowed"))))),
+                List.of());
+        assertEquals(
+                Set.of("subject"),
+                TaskCaptureNames.referencedIn(List.of(statement)));
+    }
+
+    @Test
     void nestedTaskNameInventoryDoesNotRequireStartingTheChild() {
         // A capture inventory cannot run task code, schedule work, or await.
         Ast.TaskExpr nested = new Ast.TaskExpr(Ast.ExecutionDomain.GPU,
