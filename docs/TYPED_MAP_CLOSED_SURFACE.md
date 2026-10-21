@@ -115,7 +115,18 @@ operations and are not inferred from Java collection behavior.
 
 The next closed-local additions may expose deterministic entry iteration and richer recursively reified value domains. They must preserve the same ownership and missing-value contracts.
 
-Move-only recursive values (including future `JsonValue`) remain gated beyond this scalar v1. `OresKeyedMap.put` can reject on quota, recursive-graph, or policy checks; the compiler must not permanently consume a move-only source value before such a fallible insertion commits. Enabling those value domains therefore requires transactional move/rollback lowering or an error result that returns the uncommitted value.
+Move-only recursive values (including future `JsonValue`) remain gated beyond this scalar v1, but the runtime now has the ownership-preserving commit primitive needed by that lowering.
+
+`OresKeyedMap.tryPutOwned(key, candidate)` has exactly two outcomes:
+
+- **committed** — the candidate is owned by the Map and the result exposes only the previous mapping as `Lookup<V>`;
+- **rejected** — the live Map is unchanged and the result owns the **exact candidate object** so compiler lowering can restore its source place (or return it in an error) before rethrowing the original admission failure.
+
+All recoverable domain/graph/quota/policy checks happen before the commit point. The final Map publication uses runtime-owned String/Symbol hashing and invokes no guest callbacks. Fatal VM `Error` conditions such as out-of-memory are outside recoverable guest ownership semantics.
+
+The ordinary scalar `put` API delegates to this primitive and immediately rethrows a rejected admission. Move-only source lowering must not use that convenience path because it would hide the returned candidate.
+
+The remaining compiler gate is **exceptional-flow-aware transfer**: on the normal committed edge the source becomes moved; on a caught admission-failure edge the returned candidate must restore the original owner before the catch body observes it. The existing ownership checker conservatively poisons every move seen inside a try, so source `Map<String, JsonValue>` stays disabled until that move-after-last-recoverable-throw rule is implemented and tested.
 
 `Map.from_entries` remains gated on the nominal `Entry<K,V>` stack and the
 separate `MAP_FROM_ENTRIES_CONTRACT.md` design contract.
