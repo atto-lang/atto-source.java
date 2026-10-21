@@ -65,6 +65,7 @@ public final class ActorRuntime implements AutoCloseable {
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
     private static final long MAILMAN_MAX_BATCH_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
     private static final int INTERNAL_CONTINUATION_SLOTS = 1_024;
+    private static final int INTERNAL_SUPERVISOR_CONTROL_SLOTS = 256;
     // Runtime continuations have priority, but an actor with no suspended
     // receive cannot use a self-replenishing control stream to starve user
     // mail forever. This is a scheduling fairness bound, not mailbox capacity.
@@ -86,6 +87,8 @@ public final class ActorRuntime implements AutoCloseable {
             new ThreadLocal<>();
     private static final ThreadLocal<ActorGroupMailmanExecution> CURRENT_ACTOR_GROUP_MAILMAN =
             new ThreadLocal<>();
+    private static final ThreadLocal<SupervisorControlExecution> CURRENT_SUPERVISOR_CONTROL =
+            new ThreadLocal<>();
     /**
      * Narrow internal escape hatch used only by ActorGroupContext.send().
      * A Mailman callback otherwise has no ambient ActorRuntime authority even
@@ -97,6 +100,12 @@ public final class ActorRuntime implements AutoCloseable {
     private record ActorGroupMailmanExecution(
             ActorRuntime runtime,
             ActorGroupId groupId) { }
+
+    private record SupervisorControlExecution(
+            ActorRuntime runtime,
+            ActorId supervisorId,
+            long supervisorGeneration,
+            Object executionDomain) { }
 
     private record ActorExecutionContext(
             ActorRuntime runtime,
@@ -235,13 +244,32 @@ public final class ActorRuntime implements AutoCloseable {
             long generation,
             ActorKind actorKind,
             Optional<ActorId> parentId,
+            long parentGeneration,
             ActorFailure.Kind failureKind,
             String failureType) {
+        public SupervisorControlEvent(
+                ActorId actorId,
+                long generation,
+                ActorKind actorKind,
+                Optional<ActorId> parentId,
+                ActorFailure.Kind failureKind,
+                String failureType) {
+            this(actorId, generation, actorKind, parentId, 0L, failureKind, failureType);
+        }
+
         public SupervisorControlEvent {
             Objects.requireNonNull(actorId, "actorId");
             Objects.requireNonNull(actorKind, "actorKind");
             parentId = parentId == null ? Optional.empty() : parentId;
             Objects.requireNonNull(parentId, "parentId");
+            if (parentId.isPresent() && parentGeneration <= 0) {
+                throw new IllegalArgumentException(
+                        "supervisor CONTROL parent generation must be positive when parent exists");
+            }
+            if (parentId.isEmpty() && parentGeneration != 0L) {
+                throw new IllegalArgumentException(
+                        "host-root CONTROL event cannot carry parent generation");
+            }
             Objects.requireNonNull(failureKind, "failureKind");
             if (failureKind == ActorFailure.Kind.NONE) {
                 throw new IllegalArgumentException(
@@ -249,6 +277,80 @@ public final class ActorRuntime implements AutoCloseable {
             }
             failureType = failureType == null ? "" : failureType;
         }
+    }
+
+    public enum SupervisorControlDirective {
+        RETAIN,
+        ACKNOWLEDGE,
+        RESTART,
+        ESCALATE
+    }
+
+    public interface SupervisorControlHandler {
+        default SupervisorControlDirective onThrow(
+                SupervisorControlContext context,
+                SupervisorControlEvent event) throws Exception {
+            return SupervisorControlDirective.RETAIN;
+        }
+
+        default SupervisorControlDirective onRaise(
+                SupervisorControlContext context,
+                SupervisorControlEvent event) throws Exception {
+            return SupervisorControlDirective.RETAIN;
+        }
+
+        default SupervisorControlDirective onPanic(
+                SupervisorControlContext context,
+                SupervisorControlEvent event) throws Exception {
+            return SupervisorControlDirective.RETAIN;
+        }
+
+        default SupervisorControlDirective onRuntimeFailure(
+                SupervisorControlContext context,
+                SupervisorControlEvent event) throws Exception {
+            return SupervisorControlDirective.RETAIN;
+        }
+    }
+
+    public final class SupervisorControlContext {
+        private final ActorRef<?> supervisor;
+        private final SupervisorControlEvent event;
+        private final Optional<SupervisorRestartLimiter.Decision> policyDecision;
+
+        private SupervisorControlContext(
+                ActorRef<?> supervisor,
+                SupervisorControlEvent event,
+                SupervisorRestartLimiter.Decision policyDecision) {
+            this.supervisor = Objects.requireNonNull(supervisor, "supervisor");
+            this.event = Objects.requireNonNull(event, "event");
+            this.policyDecision = Optional.ofNullable(policyDecision);
+        }
+
+        public ActorRef<?> supervisor() { return supervisor; }
+        public SupervisorControlEvent event() { return event; }
+        public Optional<SupervisorRestartLimiter.Decision> policyDecision() {
+            return policyDecision;
+        }
+    }
+
+    public static final class SupervisorEscalationException extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+        private final ActorId failedActorId;
+        private final long failedGeneration;
+        private final ActorFailure.Kind childFailureKind;
+
+        private SupervisorEscalationException(SupervisorControlEvent event) {
+            super("supervisor escalated child failure "
+                    + event.actorId() + "#" + event.generation()
+                    + " kind=" + event.failureKind());
+            this.failedActorId = event.actorId();
+            this.failedGeneration = event.generation();
+            this.childFailureKind = event.failureKind();
+        }
+
+        public ActorId failedActorId() { return failedActorId; }
+        public long failedGeneration() { return failedGeneration; }
+        public ActorFailure.Kind childFailureKind() { return childFailureKind; }
     }
 
     /**
@@ -951,12 +1053,16 @@ public final class ActorRuntime implements AutoCloseable {
     private final class PendingSupervisorControl {
         private final SupervisorControlEvent event;
         private final ActorCell<?> cell;
+        private final ActorRef<?> supervisorRef;
+        private final AtomicBoolean deliveryQueued = new AtomicBoolean();
+        private volatile long restartNotBeforeNanos;
 
         private PendingSupervisorControl(
                 SupervisorControlEvent event,
                 ActorCell<?> cell) {
             this.event = Objects.requireNonNull(event, "event");
             this.cell = Objects.requireNonNull(cell, "cell");
+            this.supervisorRef = cell.parent == null ? null : cell.parent.ref;
         }
     }
 
@@ -1247,11 +1353,13 @@ public final class ActorRuntime implements AutoCloseable {
         if (failureKind == ActorFailure.Kind.NONE) {
             failureKind = ActorFailure.Kind.RUNTIME_FAILURE;
         }
+        ActorRef<?> supervisorRef = cell.parent == null ? null : cell.parent.ref;
         SupervisorControlEvent event = new SupervisorControlEvent(
                 terminal.actorId(),
                 terminal.generation(),
                 terminal.actorKind(),
                 terminal.parentId(),
+                supervisorRef == null ? 0L : supervisorRef.generation(),
                 failureKind,
                 terminal.failureType());
 
@@ -1518,6 +1626,21 @@ public final class ActorRuntime implements AutoCloseable {
     public long supervisorControlAcknowledged() {
         requireSupervisorContext("inspect actor supervisor CONTROL acknowledgements");
         return supervisorControlAcknowledged.get();
+    }
+
+    /**
+     * Re-attempt exact-parent CONTROL delivery for a retained event. This is
+     * nonblocking and generation-bound; it is used after explicit RETAIN or
+     * after the caller's backoff timer has expired.
+     */
+    public boolean redispatchSupervisorControlEvent(
+            ActorId actorId,
+            long generation) {
+        requireSupervisorContext("redispatch actor supervisor CONTROL");
+        Objects.requireNonNull(actorId, "actorId");
+        PendingSupervisorControl pending = pendingSupervisorControls.get(actorId);
+        if (pending == null || pending.event.generation() != generation) return false;
+        return enqueueSupervisorControl(pending);
     }
 
     /** Host/supervisor nonblocking terminal-event drain.
@@ -3094,6 +3217,17 @@ public final class ActorRuntime implements AutoCloseable {
          */
         default ActorGroup actorGroup(ActorGroupId id) {
             return runtime().actorGroup(id);
+        }
+
+        /**
+         * Runtime/compiler supervision hook. Oreslang source reaches this via
+         * the hidden actor superclass; it is not an ordinary actor message API.
+         */
+        default void installSupervisorControlHandler(
+                SupervisorControlHandler handler,
+                SupervisorRestartLimiter limiter) {
+            throw new UnsupportedOperationException(
+                    "supervisor CONTROL handler installation is unavailable");
         }
     }
 
@@ -5372,8 +5506,18 @@ public final class ActorRuntime implements AutoCloseable {
         requireNoForceCancellationHookReentry(operation);
         requireNotActorGroupMailman(operation);
         if (inActorExecution()) {
-            throw new SecurityException(
-                    "actor code cannot " + operation + "; this operation belongs to the host/supervisor");
+            SupervisorControlExecution control = CURRENT_SUPERVISOR_CONTROL.get();
+            ActorCell<?> cell = currentActor.get();
+            if (control == null
+                    || cell == null
+                    || control.runtime() != this
+                    || !control.supervisorId().equals(cell.ref.id())
+                    || control.supervisorGeneration() != cell.ref.generation()
+                    || control.executionDomain() != cell.executionDomain) {
+                throw new SecurityException(
+                        "ordinary actor code cannot " + operation
+                                + "; only the runtime-injected supervisor CONTROL lane has authority");
+            }
         }
     }
 
@@ -6481,6 +6625,11 @@ public final class ActorRuntime implements AutoCloseable {
         if (!cell.lifecycleObserversRetired.compareAndSet(false, true)) {
             lifecyclePublicationFailures.incrementAndGet();
         }
+        PendingSupervisorControl pending =
+                pendingSupervisorControls.get(cell.ref.id());
+        if (pending != null && pending.event.generation() == cell.ref.generation()) {
+            enqueueSupervisorControl(pending);
+        }
         tryReleaseActorSlot(cell);
     }
 
@@ -6499,6 +6648,150 @@ public final class ActorRuntime implements AutoCloseable {
             }
         };
         lifecycleObserverDispatcher.execute(isolated);
+    }
+
+    private boolean enqueueSupervisorControl(PendingSupervisorControl pending) {
+        ActorRef<?> supervisorRef = pending.supervisorRef;
+        if (supervisorRef == null || closed.get()) return false;
+        ActorCell<?> supervisor = exactActorCell(supervisorRef);
+        if (supervisor == null
+                || supervisor.stopped.get()
+                || supervisor.supervisorControlHandler == null) {
+            return false;
+        }
+        if (!pending.deliveryQueued.compareAndSet(false, true)) return true;
+        if (!supervisor.reserveSupervisorControlSlot()) {
+            pending.deliveryQueued.set(false);
+            supervisor.fail(new RejectedExecutionException(
+                    "supervisor CONTROL lane capacity exhausted for "
+                            + supervisor.ref.id() + "#" + supervisor.ref.generation()));
+            return false;
+        }
+
+        boolean admitted = false;
+        try {
+            synchronized (supervisor.lifecycleLock) {
+                if (exactActorCell(supervisorRef) != supervisor
+                        || supervisor.stopped.get()
+                        || supervisor.finalized
+                        || supervisor.supervisorControlHandler == null
+                        || closed.get()) {
+                    return false;
+                }
+                if (!supervisor.supervisorControlMailbox.tryWrite(pending)) {
+                    throw new IllegalStateException(
+                            "supervisor CONTROL mailbox capacity invariant violated for "
+                                    + supervisor.ref.id());
+                }
+                admitted = true;
+            }
+            supervisor.schedule();
+            return true;
+        } finally {
+            if (!admitted) {
+                supervisor.releaseSupervisorControlSlot();
+                pending.deliveryQueued.set(false);
+            }
+        }
+    }
+
+    private void runSupervisorControl(
+            ActorCell<?> supervisor,
+            PendingSupervisorControl pending) throws Exception {
+        if (pendingSupervisorControls.get(pending.event.actorId()) != pending) {
+            pending.deliveryQueued.set(false);
+            return;
+        }
+        if (pending.supervisorRef != supervisor.ref
+                || exactActorCell(pending.supervisorRef) != supervisor) {
+            pending.deliveryQueued.set(false);
+            return;
+        }
+        if (CURRENT_SUPERVISOR_CONTROL.get() != null) {
+            pending.deliveryQueued.set(false);
+            throw new IllegalStateException("nested supervisor CONTROL execution is forbidden");
+        }
+
+        SupervisorControlHandler handler = supervisor.supervisorControlHandler;
+        if (handler == null) {
+            pending.deliveryQueued.set(false);
+            return;
+        }
+
+        SupervisorControlExecution execution = new SupervisorControlExecution(
+                this,
+                supervisor.ref.id(),
+                supervisor.ref.generation(),
+                supervisor.executionDomain);
+        CURRENT_SUPERVISOR_CONTROL.set(execution);
+        try {
+            SupervisorRestartLimiter.Decision policyDecision =
+                    supervisor.supervisorRestartLimiter == null
+                            ? null
+                            : supervisor.supervisorRestartLimiter.decideAuthoritative(
+                                    pending.event);
+            SupervisorControlContext context =
+                    new SupervisorControlContext(
+                            supervisor.ref,
+                            pending.event,
+                            policyDecision);
+
+            SupervisorControlDirective directive = switch (pending.event.failureKind()) {
+                case THROW -> handler.onThrow(context, pending.event);
+                case RAISE -> handler.onRaise(context, pending.event);
+                case PANIC -> handler.onPanic(context, pending.event);
+                case RUNTIME_FAILURE -> handler.onRuntimeFailure(context, pending.event);
+                case NONE -> throw new IllegalStateException(
+                        "NONE cannot enter supervisor CONTROL lane");
+            };
+            directive = Objects.requireNonNull(
+                    directive, "supervisor CONTROL handler returned null directive");
+
+            if (policyDecision != null
+                    && policyDecision.action() == SupervisorRestartLimiter.Action.ESCALATE
+                    && directive == SupervisorControlDirective.RESTART) {
+                directive = SupervisorControlDirective.ESCALATE;
+            }
+
+            if (directive == SupervisorControlDirective.RESTART
+                    && policyDecision != null
+                    && !policyDecision.backoff().isZero()) {
+                long now = System.nanoTime();
+                long due = pending.restartNotBeforeNanos;
+                if (due == 0L) {
+                    long delay = policyDecision.backoff().toNanos();
+                    long candidate;
+                    try {
+                        candidate = Math.addExact(now, delay);
+                    } catch (ArithmeticException overflow) {
+                        candidate = Long.MAX_VALUE;
+                    }
+                    pending.restartNotBeforeNanos = candidate;
+                    directive = SupervisorControlDirective.RETAIN;
+                } else if (now - due < 0L) {
+                    directive = SupervisorControlDirective.RETAIN;
+                }
+            }
+
+            switch (directive) {
+                case RETAIN -> { }
+                case ACKNOWLEDGE -> acknowledgeSupervisorControlEvent(
+                        pending.event.actorId(), pending.event.generation());
+                case RESTART -> {
+                    SupervisorRestartPermit permit =
+                            tryAcquireSupervisorRestartPermit(
+                                            pending.event.actorId(),
+                                            pending.event.generation())
+                                    .orElseThrow(() -> new IllegalStateException(
+                                            "supervisor restart attempted before physical DONE"));
+                    restartAfterFailure(permit);
+                }
+                case ESCALATE -> throw new SupervisorEscalationException(pending.event);
+            }
+        } finally {
+            CURRENT_SUPERVISOR_CONTROL.remove();
+            pending.deliveryQueued.set(false);
+        }
     }
 
     public <T> SyncCell<T> syncCell(T initialValue) {
@@ -8754,6 +9047,7 @@ public final class ActorRuntime implements AutoCloseable {
         private int queuedUserMessages;
         /** Separate control-lane quota; never borrow user mailbox headroom. */
         private int queuedContinuations;
+        private int queuedSupervisorControls;
         /** Consecutive internal continuations since the last user message. */
         private int continuationBurst;
         private long nextUserMessageSequence;
@@ -8762,9 +9056,14 @@ public final class ActorRuntime implements AutoCloseable {
         private static final int MAX_PENDING_DRAIN_WAITERS = 1_024;
         private final ArrayList<DrainWaiter> pendingDrains = new ArrayList<>();
         private ActorInboxMail<M> activeMail;
-        /** Bounded control channel: completion threads enqueue, never invoke guest code. */
+        /** Bounded runtime continuation lane: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
                 new ChannelRuntime.Channel<>(INTERNAL_CONTINUATION_SLOTS);
+        /** Correctness-critical supervisor CONTROL has independent bounded headroom. */
+        private final ChannelRuntime.Channel<PendingSupervisorControl> supervisorControlMailbox =
+                new ChannelRuntime.Channel<>(INTERNAL_SUPERVISOR_CONTROL_SLOTS);
+        private volatile SupervisorControlHandler supervisorControlHandler;
+        private volatile SupervisorRestartLimiter supervisorRestartLimiter;
         /** True while one source receive owns actor state across suspension. */
         private boolean sourceReceiveSuspended;
         private final Object lifecycleLock = new Object();
@@ -8836,6 +9135,26 @@ public final class ActorRuntime implements AutoCloseable {
             this.memorySlice = isPrivateKind(kind)
                     ? new ActorMemorySlice(ref, policy.maxHeapBytes())
                     : null;
+        }
+
+        private void installSupervisorControlHandler(
+                SupervisorControlHandler handler,
+                SupervisorRestartLimiter limiter) {
+            Objects.requireNonNull(handler, "handler");
+            if (currentActor.get() != this) {
+                throw new SecurityException(
+                        "supervisor CONTROL handler must be installed by its owning actor");
+            }
+            synchronized (lifecycleLock) {
+                if (stopped.get() || finalized) throw terminated(ref);
+                if (supervisorControlHandler != null) {
+                    throw new IllegalStateException(
+                            "supervisor CONTROL handler already installed for "
+                                    + ref.id() + "#" + ref.generation());
+                }
+                supervisorRestartLimiter = limiter;
+                supervisorControlHandler = handler;
+            }
         }
 
         private ActorSnapshot snapshot() {
@@ -8914,6 +9233,26 @@ public final class ActorRuntime implements AutoCloseable {
                 queuedContinuations++;
                 queuedMessages++;
                 return true;
+            }
+        }
+
+        private boolean reserveSupervisorControlSlot() {
+            synchronized (mailboxAccountingLock) {
+                if (queuedSupervisorControls >= INTERNAL_SUPERVISOR_CONTROL_SLOTS) {
+                    return false;
+                }
+                queuedSupervisorControls++;
+                return true;
+            }
+        }
+
+        private void releaseSupervisorControlSlot() {
+            synchronized (mailboxAccountingLock) {
+                if (queuedSupervisorControls <= 0) {
+                    throw new IllegalStateException(
+                            "actor supervisor CONTROL accounting underflow for " + ref.id());
+                }
+                queuedSupervisorControls--;
             }
         }
 
@@ -9013,7 +9352,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private boolean hasQueuedWorkLocked() {
-            return !continuationMailbox.isEmpty() || (!sourceReceiveSuspended && !mailbox.isEmpty());
+            return !supervisorControlMailbox.isEmpty()
+                    || !continuationMailbox.isEmpty()
+                    || (!sourceReceiveSuspended && !mailbox.isEmpty());
         }
 
         private OresScheduler sourceScheduler() {
@@ -9760,6 +10101,11 @@ public final class ActorRuntime implements AutoCloseable {
                     @Override public Optional<SharedCodeImageStore.CodeImage> codeImage() {
                         return Optional.ofNullable(codeImage);
                     }
+                    @Override public void installSupervisorControlHandler(
+                            SupervisorControlHandler handler,
+                            SupervisorRestartLimiter limiter) {
+                        ActorCell.this.installSupervisorControlHandler(handler, limiter);
+                    }
                 };
 
                 if (behavior == null && codeActorState == null) {
@@ -9808,27 +10154,42 @@ public final class ActorRuntime implements AutoCloseable {
 
                 int processed = 0;
                 while (processed < dispatcherConfig.throughput() && !stopped.get()) {
+                    PendingSupervisorControl supervisorControl;
                     MessageEnvelope envelope;
                     synchronized (lifecycleLock) {
-                        // Stop closes the user mailbox under this same lock.
+                        // Stop closes user/runtime lanes under this same lock.
                         if (stopped.get() || finalized) break;
 
-                        // A suspended receive owns actor state across await and
-                        // therefore gets strict continuation priority. Outside
-                        // that case, internal continuations retain low-latency
-                        // priority but cannot starve a waiting user message
-                        // beyond MAX_CONTINUATION_BURST dispatches.
-                        if (sourceReceiveSuspended) {
-                            envelope = continuationMailbox.tryRead().orElse(null);
-                        } else if (continuationBurst >= MAX_CONTINUATION_BURST) {
-                            envelope = mailbox.tryRead().orElse(null);
-                            if (envelope == null)
+                        // Correctness-critical supervisor CONTROL is separate
+                        // from ordinary mail and from Future continuations. It
+                        // still runs on this actor's single-flight carrier.
+                        supervisorControl =
+                                supervisorControlMailbox.tryRead().orElse(null);
+                        if (supervisorControl == null) {
+                            // A suspended receive owns actor state across await
+                            // and gets strict continuation priority. Outside
+                            // that case, continuations cannot starve user mail.
+                            if (sourceReceiveSuspended) {
                                 envelope = continuationMailbox.tryRead().orElse(null);
-                        } else {
-                            envelope = continuationMailbox.tryRead().orElse(null);
-                            if (envelope == null)
+                            } else if (continuationBurst >= MAX_CONTINUATION_BURST) {
                                 envelope = mailbox.tryRead().orElse(null);
+                                if (envelope == null)
+                                    envelope = continuationMailbox.tryRead().orElse(null);
+                            } else {
+                                envelope = continuationMailbox.tryRead().orElse(null);
+                                if (envelope == null)
+                                    envelope = mailbox.tryRead().orElse(null);
+                            }
+                        } else {
+                            envelope = null;
                         }
+                    }
+
+                    if (supervisorControl != null) {
+                        releaseSupervisorControlSlot();
+                        runSupervisorControl(this, supervisorControl);
+                        processed++;
+                        continue;
                     }
                     if (envelope == null) break;
                     releaseMailboxSlot(envelope.isContinuation());
@@ -9964,6 +10325,12 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void drainMailboxReservations() {
             synchronized (lifecycleLock) {
+                while (supervisorControlMailbox.drainOne(pending -> {
+                    releaseSupervisorControlSlot();
+                    pending.deliveryQueued.set(false);
+                })) {
+                    // Retained event remains in the global authoritative map.
+                }
                 while (continuationMailbox.drainOne(continuation -> {
                     releaseMailboxSlot(true);
                     continuation.close();
@@ -10016,6 +10383,7 @@ public final class ActorRuntime implements AutoCloseable {
                 if (cause == null) mailbox.close();
                 else mailbox.close(cause);
                 continuationMailbox.close(cause);
+                supervisorControlMailbox.close(cause);
                 drainMailboxReservations();
                 descendants = List.copyOf(children);
                 pending = List.copyOf(pendingOperations);
