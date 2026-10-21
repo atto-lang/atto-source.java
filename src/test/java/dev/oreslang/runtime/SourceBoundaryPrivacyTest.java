@@ -28,6 +28,29 @@ final class SourceBoundaryPrivacyTest {
     }
 
     @Test
+    void oversizedSourcePathsAndUrlsFailClosedWithoutScanningOrEchoingSecrets() {
+        String longPath = "/private/".repeat(60_000) + "do-not-leak.ores";
+        String longUrl = "https://name:secret@example.invalid/" + "p".repeat(750_000);
+        String absoluteTrace = trace(longPath);
+        String urlTrace = trace(longUrl);
+        assertTrue(absoluteTrace.endsWith("[<source-id-too-long>]"), absoluteTrace);
+        assertTrue(urlTrace.endsWith("[<source-id-too-long>]"), urlTrace);
+        assertFalse(absoluteTrace.contains("do-not-leak"));
+        assertFalse(urlTrace.contains("secret"));
+
+        String atLimit = "a".repeat(4_096);
+        String aboveLimit = atLimit + "x";
+        assertTrue(trace(atLimit).contains("[" + "a".repeat(159) + "…]"));
+        assertTrue(trace(aboveLimit).endsWith("[<source-id-too-long>]"));
+
+        for (int i = 0; i < 100; i++) {
+            assertEquals(1, SourceBoundaryTrace.record(
+                    new IllegalStateException("preserve"), longUrl, "call", "await")
+                    .getSuppressed().length);
+        }
+    }
+
+    @Test
     void sourceRedactionPreservesEffectClassificationAndTruncation() {
         var failure = new IllegalStateException("primary");
         for (int i = 0; i < 1000; i++) {
