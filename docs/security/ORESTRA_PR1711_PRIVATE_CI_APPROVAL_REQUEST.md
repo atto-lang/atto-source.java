@@ -3,9 +3,12 @@
 **Status: NO source export is authorized by this document.** The source
 repository's `.github/private-ci-approved-repositories.txt` still contains
 zero active destinations, and live origin `main` reported `protected=false`
-when checked on 2026-10-20. Do not create a private-source carrier or execute
-the exporter until both the policy and branch protections have been reviewed
-and independently verified by the trusted V3 publisher.
+when checked on 2026-10-20. The proposed carrier
+`orestra/orestra-conformance` is private and identity-pinned, but its live
+`main` also reports `protected=false`. Do not create a private-source
+carrier or execute the exporter until the policy plus **both** origin and
+carrier protections have been reviewed and independently verified by the
+trusted V3 publisher.
 
 ## Approval sequence
 
@@ -13,26 +16,36 @@ and independently verified by the trusted V3 publisher.
    dismiss stale reviews, require >=1 approving review, enforce for admins,
    prevent force push and deletion, and deny review bypass. Verify live branch
    protection API/rulesets; `CODEOWNERS` alone is not sufficient.
-2. Maintainers and security owners review an **exact** private carrier repo,
+2. Carrier repo admins independently protect the exact destination default
+   branch with equivalent review/no-bypass/no-force-push/no-delete controls.
+   A private repository with spare Actions minutes is **not** an eligible
+   carrier while its trusted base/workflow can be rewritten without review.
+3. Maintainers and security owners review an **exact** private carrier repo,
    the pinned, source-free default-branch base commit and workflow blob, and
    the reviewed test-plan Git blob. Then they authorize the destination
    through an approved protected-branch change to both
    `.github/private-ci-approved-repositories.txt` and
    `.github/private-ci-carrier-contracts.json`. No CI input/PR branch may
    authorize its own export.
-3. Revalidate the live carrier identity, private visibility, workflow blob,
-   test-plan blob and source PR head. Reject a shifted/default-branch carrier
-   until contract approval is refreshed.
-4. Transfer the **complete** original private Git tree only through the trusted
+4. Revalidate the live carrier identity, private visibility, protected default
+   branch, workflow blob, test-plan blob and source PR head. Reject a shifted
+   or unprotected carrier until contract approval is refreshed.
+5. Transfer the **complete** original private Git tree only through the trusted
    V3 exporter under the protected source policy. Preserve executable bits,
    reject symlinks/submodules and verify the mirrored subtree has exactly
    the original source root tree SHA. Never rely on a blob list from a partial
    source checkout or an unmanaged cross-org token.
-5. Use only the carrier's trusted workflow/immutable test plan. The source
+6. Use only the carrier's trusted workflow/immutable test plan. The source
    code under test may not modify the workflow or execute a caller-supplied
    command plan. Keep any source-bearing mirror private with explicit
    retention/cleanup. Native evidence requires executed JDK25/Maven steps,
    JUnit results and exact source tree hashes, not green verifier-only tests.
+7. Treat source execution itself as a confidentiality boundary. The source
+   process must receive no repository write token, checkout credential,
+   cloud credential or unrelated secret. If outbound network remains enabled,
+   security review must explicitly accept that source-controlled build/test
+   code can transmit private source bytes; otherwise use an egress-controlled
+   runner while retaining loopback for the HTTP integration test.
 
 ## Candidate metadata (for review, not an approval)
 
@@ -43,6 +56,7 @@ and independently verified by the trusted V3 publisher.
   `f603f6bb4e2ebcac05fb3f20b83df9328386d8df`
 - Proposed destination: private `orestra/orestra-conformance`
 - Destination repository ID: `1426277234`
+- Live destination `main` protection at audit time: `protected=false`
 - **Candidate** source-free carrier `main`:
   `c91a3dec2cca660405506d3d85618d3393455ad1`
 - Candidate workflow:
