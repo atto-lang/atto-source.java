@@ -126,4 +126,24 @@ final class ImplicitAnonymousStructuralParameterTest {
             assertThrows(RuntimeException.class, () -> Parser.parse(source), source);
         }
     }
+
+    @Test
+    void typedPipeAndParenthesizedLambdasUseTheSameAnonymousRule() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                fnc exercise(): void {
+                    val a = |struct{id: int} row| -> row.id;
+                    val b = |row: struct{id: int}| -> row.id;
+                    val c = |structural struct{id: int} row| -> row.id;
+                    val d = |row: structural struct{id: int}| -> row.id;
+                    val e = (struct{id: int} row) -> row.id;
+                    val f = (row: structural struct{id: int}) -> row.id;
+                }
+                """));
+        assertThrows(RuntimeException.class, () -> Parser.parse("""
+                fnc exercise(): void {
+                    val invalid = |struct{id: int} mut row| -> row.id;
+                }
+                """));
+    }
+
 }
