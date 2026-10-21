@@ -46,11 +46,21 @@ public final class Parser {
         // graph exists, interpreting these markers as CPU expressions or
         // silently skipping their bodies would violate placement semantics.
         // A token preflight also covers paths not reached by the normal parser.
-        for (Token token : tokens) {
+        for (int i = 0; i < tokens.size(); i++) {
+            Token token = tokens.get(i);
             if (token.type() == GPU || token.type() == CPU || token.type() == QUANTUM) {
                 throw error(token, "execution domain '" + token.lexeme()
                         + "' requires typed effect/ownership checking and explicit backend lowering;"
                         + " nested cpu/gpu blocks are not yet enabled; no implicit CPU fallback");
+            }
+            boolean nextIsBlock = i + 1 < tokens.size() && tokens.get(i + 1).type() == LBRACE;
+            if (nextIsBlock && token.type() == IDENT && token.lexeme().equals("task")) {
+                throw error(token, "execution task requires scheduler-aware typed lowering;"
+                        + " task submission must not run inline or wait for await; no implicit CPU fallback");
+            }
+            if (nextIsBlock && token.type() == NB) {
+                throw error(token, "legacy 'nb { ... }' task form requires scheduler-aware typed lowering;"
+                        + " canonical spelling is 'task { ... }'; no implicit CPU fallback");
             }
         }
         String namespace = null;
