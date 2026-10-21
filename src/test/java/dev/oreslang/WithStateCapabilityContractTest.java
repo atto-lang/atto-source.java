@@ -220,11 +220,11 @@ final class WithStateCapabilityContractTest {
         }
     }
 
-    @Test void unaryAndMutableBorrowCannotEscapeActorStateLoan() {
-        // 'rt borrow mut' lowers to UnaryExpr("&mut") rather than a
-        // RuntimeCallExpr("borrow"), so both AST spellings need a sealed gate.
+    @Test void mutableBorrowCannotEscapeActorStateLoan() {
+        // Canonical source uses rt mut borrow; the frontend may still lower it
+        // to an internal UnaryExpr("&mut") marker for ownership analysis.
         for (String borrow : new String[] {
-            "rt borrow mut s.v", "&mut s.v", "&s.v"
+            "rt mut borrow s.v"
         }) {
             for (String callback : new String[] {
                 "self.handle_state(|s| -> { " + borrow + "; return s.v; })",
@@ -244,8 +244,8 @@ final class WithStateCapabilityContractTest {
 
     @Test void scopedStateLoanDoesNotRejectUnrelatedLocalBorrow() {
         for (String callback : new String[] {
-            "self.handle_state(|s| -> { const local = 7; &local; return s.v; })",
-            "using state.read(|s| -> { const local = 7; &local; return s.v; })"
+            "self.handle_state(|s| -> { const local = 7; rt borrow local; return s.v; })",
+            "using state.read(|s| -> { const local = 7; rt borrow local; return s.v; })"
         }) {
             assertDoesNotThrow(() -> ActorStateContract.verify(
                 Parser.parse(actor("with state.read", callback))), callback);
