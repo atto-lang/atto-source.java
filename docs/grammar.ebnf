@@ -43,11 +43,14 @@ method_modifier   = "abstract" | "async" | "suspend" | "suspends" | "structural"
 callable_decl   = { annotation } visibility { callable_modifier } callable_kind callable_name [ generic_params ]
                   ( "(" [ param_list ] ")"
                     ( [ ":" type_ref ] block
-                    | "->" type_ref ( block | end_callable_body ) )
+                    | "->" type_ref ( block | [ "as" ] end_callable_body ) )
                   | "=" "|" [ param_list ] "|" "->" [ type_ref ] block ) ;
-(* end_callable_body is admitted only for ordinary free/module fnc/routine,
-   requires explicit -> ReturnType, and starts on a later source line.
-   Actor callables and class instance/static implementations remain braced. *)
+(* end_callable_body is admitted only for ordinary free/module fnc/routine.
+   It requires explicit -> ReturnType. Without optional "as", the first body
+   token starts on a later source line. Separator "as" is recognized only on
+   the same physical source line as the completed return type. "do" remains
+   executable body syntax and is never a callable-header separator. Actor
+   callables and class instance/static implementations remain braced. *)
 callable_kind   = "fnc" | "routine" ;
 
 actor_callable_decl
@@ -407,7 +410,8 @@ borrow_type     = "&" [ "mut" ] type_atom ;
 tuple_type      = "[" [ type_ref { "," type_ref } ] "]"
                 | "tuple" "(" [ type_ref { "," type_ref } ] ")" ;
 (* Both spellings normalize to the same finite tuple TypeRef and therefore
-   share the same 64-element representation-wide bound. *)
+   share the same existing arity and type semantics. The contextual spelling
+   introduces no new tuple-specific arity limit. *)
 record_type     = "{" [ record_type_field { "," record_type_field } ] "}" ;
 record_type_field
                 = ( IDENT | STRING_LITERAL ) ":" type_ref ;
