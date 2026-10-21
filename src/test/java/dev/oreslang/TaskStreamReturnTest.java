@@ -141,11 +141,11 @@ final class TaskStreamReturnTest {
 
     @Test
     void streamRequiresPositiveBoundedCapacityAtRuntime() {
-        assertThrows(RuntimeException.class, () -> execute("""
-                pub routine main(): void {
-                    val Stream<int> stream = Stream.new<int>(0);
-                    return;
-                }
-                """));
+        for (long capacity : new long[]{0L, -1L, 65537L}) {
+            assertThrows(RuntimeException.class, () -> execute(
+                    "pub routine main(): void { "
+                            + "val Stream<int> stream = Stream.new<int>(" + capacity + "); "
+                            + "return; }"), "capacity=" + capacity);
+        }
     }
 }
