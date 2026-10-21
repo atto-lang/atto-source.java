@@ -1308,13 +1308,26 @@ Top-level/module callables use the same **name + exact arity** overload rule. Sa
 
 ## Ternary expressions
 
-The ternary operator is right-associative and lazy in its selected branch:
+The ternary operator is the value-producing conditional form:
 
 ```ores
 fnc find(bool found): Option<int> {
   return found ? Some(42) : None;
 }
 ```
+
+Its condition must have static type `bool`; Oreslang has no integer, pointer,
+string, collection, or object truthiness conversion for ternary conditions.
+The condition is evaluated exactly once and only the selected value arm is
+evaluated at runtime. Both arms are still checked statically for type,
+ownership/borrow, capability, actor-isolation, and definite-initialization
+rules, and their post-states must admit the compiler's branch join.
+
+Ternary is right-associative, so `a ? b : c ? d : e` means
+`a ? b : (c ? d : e)`. Its precedence is below logical OR and above
+assignment. It is the conditional **expression** counterpart to
+statement-only `if ... then ... fi`; an `if` never substitutes for a
+ternary or yields a branch value.
 
 ## Standalone lexical blocks and conditional bodies
 
