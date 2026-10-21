@@ -163,6 +163,63 @@ final class TaskCaptureAdmissionIdentityTest {
                         secondEpoch).captureTransfers());
     }
 
+    @Test
+    void unsuccessfulRecheckCannotRetainPreviouslyValidTaskAuthority() {
+        Ast.Program checked = OresCompiler.parseAndTypeCheck("""
+                pub async fnc main(): void {
+                  const int value = 41;
+                  let Future<int> child = task { return value + 1; };
+                  stdio.stdout.write(await child);
+                  return;
+                }
+                """);
+        Ast.TaskExpr task = firstTask(checked);
+        long accepted = Ast.CheckedTaskCaptures.requireProgramEpoch(checked);
+        long failedAttempt = Ast.CheckedTaskCaptures.newCheckEpoch();
+        Ast.CheckedTaskCaptures.beginCheck(checked, failedAttempt);
+
+        // Simulate a checker that rejects the program after beginning a new
+        // ownership pass. No publication occurs, and old roots fail closed.
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedTaskCaptures.requireProgramEpoch(checked));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedTaskCaptures.require(checked, task, accepted));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedTaskCaptures.publish(
+                        checked, accepted, java.util.Map.of()));
+    }
+
+    @Test
+    void supersededConcurrentCheckerCannotRepublishStaleTaskAuthority() {
+        Ast.Program checked = OresCompiler.parseAndTypeCheck("""
+                pub async fnc main(): void {
+                  const int value = 41;
+                  let Future<int> child = task { return value; };
+                  stdio.stdout.write(await child);
+                  return;
+                }
+                """);
+        Ast.TaskExpr task = firstTask(checked);
+        long first = Ast.CheckedTaskCaptures.newCheckEpoch();
+        Ast.CheckedTaskCaptures.beginCheck(checked, first);
+        long replacement = Ast.CheckedTaskCaptures.newCheckEpoch();
+        Ast.CheckedTaskCaptures.beginCheck(checked, replacement);
+
+        java.util.Map<Ast.TaskExpr,
+                java.util.Map<String, Ast.TaskCaptureTransfer>> captures =
+                java.util.Map.of(task, java.util.Map.of(
+                        "value", Ast.TaskCaptureTransfer.COPY));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedTaskCaptures.publish(
+                        checked, first, captures));
+        Ast.CheckedTaskCaptures.publish(checked, replacement, captures);
+        assertEquals(replacement,
+                Ast.CheckedTaskCaptures.requireProgramEpoch(checked));
+        assertEquals(captures.get(task),
+                Ast.CheckedTaskCaptures.require(
+                        checked, task, replacement).captureTransfers());
+    }
+
     private static Ast.TaskExpr firstTask(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
