@@ -5772,7 +5772,9 @@ public final class ActorRuntime implements AutoCloseable {
                 || value instanceof ActorRuntime.ActorGroupJoinCapability) return;
         if (value instanceof ChannelRuntime.Channel<?>
                 || value instanceof ChannelRuntime.SelectCase
-                || value instanceof ChannelRuntime.SelectSet) {
+                || value instanceof ChannelRuntime.SelectSet
+                || value instanceof ChannelRuntime.SelectPlan
+                || value instanceof ChannelRuntime.DynamicSelectPlan<?>) {
             throw new IllegalArgumentException(
                     "Channel/SelectSet capabilities are execution-domain local and cannot cross actor mailboxes; "
                             + "send data through ActorRef/mailbox transport instead");
@@ -6245,7 +6247,9 @@ public final class ActorRuntime implements AutoCloseable {
                 || value instanceof ActorEventBus
                 || value instanceof ActorEventBus.Subscription<?>
                 || value instanceof ChannelRuntime.SelectSet
-                || value instanceof ChannelRuntime.SelectCase) {
+                || value instanceof ChannelRuntime.SelectCase
+                || value instanceof ChannelRuntime.SelectPlan
+                || value instanceof ChannelRuntime.DynamicSelectPlan<?>) {
             throw new SecurityException(
                     "runtime coordination handles are execution-domain local and cannot cross actor mailboxes");
         }
