@@ -1057,6 +1057,23 @@ class PrivateCiV3Test(unittest.TestCase):
                 v3.authorize_write(
                     Path("."), "trusted/ci", POLICY, carrier)
 
+        eligible_read_only = dict(
+            ineligible,
+            archived=False,
+            permissions={"pull": True, "push": False},
+        )
+        with (
+            patch.object(
+                v3.legacy,
+                "checked_policy_fingerprint",
+                return_value=POLICY,
+            ),
+            patch.object(v3.legacy, "checked_repo", return_value=eligible_read_only),
+        ):
+            with self.assertRaisesRegex(v3.Denied, "ref read/write permission"):
+                v3.authorize_write(
+                    Path("."), "trusted/ci", POLICY, carrier)
+
     def test_published_root_and_commit_readback_accepts_exact_leaves(self):
         base_tree = "7" * 40
         source_blob = "2" * 40
