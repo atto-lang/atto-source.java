@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.runtime.OresStream;
+import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.types.ThreadSafetyTraits;
 import dev.oreslang.types.Types;
 import org.junit.jupiter.api.Test;
@@ -50,6 +51,21 @@ final class StreamOwnershipProofTest {
         stream.close();
         assertTrue(stream.isClosed());
         assertEquals(42, stream.channel().tryRead().orElseThrow());
+    }
+
+    @Test
+    void streamCannotBeFrozenAsActorMessageOrNestedSharedData() {
+        OresStream<Integer> handle = new OresStream<>(1);
+        try {
+            assertThrows(IllegalArgumentException.class,
+                    () -> ActorRuntime.freeze(handle));
+            assertThrows(IllegalArgumentException.class,
+                    () -> ActorRuntime.freeze(List.of(handle)));
+            assertThrows(IllegalArgumentException.class,
+                    () -> ActorRuntime.freeze(List.of(List.of(handle))));
+        } finally {
+            handle.close();
+        }
     }
 
     @Test
