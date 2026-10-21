@@ -5389,17 +5389,34 @@ public final class OresEvalRootNode extends RootNode {
                             + "or imported alloc/json JsonValue");
         }
 
+        private boolean isOpaqueAllocJsonBinding(
+                String localName,
+                boolean jsonValue) {
+            for (Ast.ImportDecl imported : program.imports()) {
+                boolean selected = jsonValue
+                        ? ImportRules.isAllocJsonValueSelection(imported)
+                        : ImportRules.isAllocJsonFactorySelection(imported);
+                if (!selected) continue;
+                String sourceName = jsonValue ? "JsonValue" : "Json";
+                if (ImportRules.localName(imported, sourceName)
+                        .equals(localName)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         private Object instantiateEvaluated(
                 Ast.NewExpr created,
                 List<Object> args,
                 Env env) {
-            if (created.type().name().equals("JsonValue")
-                    && compilerJsonValueImported) {
+            if (isOpaqueAllocJsonBinding(
+                    created.type().name(), true)) {
                 throw new IllegalArgumentException(
                         "JsonValue is an opaque alloc/json value; construct it through Json.* APIs");
             }
-            if (created.type().name().equals("Json")
-                    && compilerJsonFactoryImported) {
+            if (isOpaqueAllocJsonBinding(
+                    created.type().name(), false)) {
                 throw new IllegalArgumentException(
                         "Json is a compiler-owned construction namespace and cannot be instantiated");
             }
@@ -7293,13 +7310,13 @@ public final class OresEvalRootNode extends RootNode {
                         indexed.receiver());
             }
             if (expr instanceof Ast.NewExpr created) {
-                if (created.type().name().equals("JsonValue")
-                        && compilerJsonValueImported) {
+                if (isOpaqueAllocJsonBinding(
+                        created.type().name(), true)) {
                     throw new IllegalArgumentException(
                             "JsonValue is an opaque alloc/json value; construct it through Json.* APIs");
                 }
-                if (created.type().name().equals("Json")
-                        && compilerJsonFactoryImported) {
+                if (isOpaqueAllocJsonBinding(
+                        created.type().name(), false)) {
                     throw new IllegalArgumentException(
                             "Json is a compiler-owned construction namespace and cannot be instantiated");
                 }
