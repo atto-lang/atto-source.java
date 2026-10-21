@@ -371,6 +371,79 @@ final class OresJsonValueTest {
     }
 
     @Test
+    void stringifyPreservesExactValuesEscapesAndInsertionOrder() {
+        OresKeyedMap<String, OresJsonValue> fields =
+                OresJsonValue.objectMap();
+        fields.put("text", OresJsonValue.of("line\n\"quoted\"\\slash\t🚀"));
+        fields.put("exact", OresJsonValue.of(
+                new BigInteger("9007199254740993")));
+        fields.put("flag", OresJsonValue.of(true));
+        fields.put("none", OresJsonValue.nullValue());
+        fields.put("items", OresJsonValue.array(List.of(
+                OresJsonValue.of("a"),
+                OresJsonValue.of(2L))));
+
+        assertEquals(
+                "{\"text\":\"line\\n\\\"quoted\\\"\\\\slash\\t🚀\","
+                        + "\"exact\":9007199254740993,"
+                        + "\"flag\":true,"
+                        + "\"none\":null,"
+                        + "\"items\":[\"a\",2]}",
+                OresJsonValue.stringifyObject(fields));
+    }
+
+    @Test
+    void stringifyCountsUtf8BytesAndFailsBeforeReturningOversizeOutput() {
+        OresJsonValue rocket = OresJsonValue.of("🚀");
+        assertEquals("\"🚀\"", OresJsonValue.stringify(rocket, 6));
+
+        IllegalArgumentException rejected = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresJsonValue.stringify(rocket, 5));
+        assertTrue(rejected.getMessage().contains("UTF-8 output quota"),
+                rejected.getMessage());
+    }
+
+    @Test
+    void concurrentJsonMutationCannotProduceTornStringifyOutput() throws Exception {
+        OresKeyedMap<String, OresJsonValue> fields =
+                OresJsonValue.objectMap();
+
+        CountDownLatch start = new CountDownLatch(1);
+        var workers = Executors.newFixedThreadPool(2);
+        try {
+            var mutator = workers.submit(() -> {
+                start.await();
+                for (int index = 0; index < 1_000; index++) {
+                    fields.put("x", OresJsonValue.of(1L));
+                    fields.remove("x");
+                    fields.put("x", OresJsonValue.of(2L));
+                    fields.clear();
+                }
+                return null;
+            });
+            var encoder = workers.submit(() -> {
+                start.await();
+                for (int index = 0; index < 1_000; index++) {
+                    String encoded = OresJsonValue.stringifyObject(fields);
+                    assertTrue(
+                            encoded.equals("{}")
+                                    || encoded.equals("{\"x\":1}")
+                                    || encoded.equals("{\"x\":2}"),
+                            "encoder observed torn JSON state: " + encoded);
+                }
+                return null;
+            });
+
+            start.countDown();
+            mutator.get(10, TimeUnit.SECONDS);
+            encoder.get(10, TimeUnit.SECONDS);
+        } finally {
+            workers.shutdownNow();
+        }
+    }
+
+    @Test
     void nestedObjectsRemainValidWhenAcyclic() {
         OresKeyedMap<String, OresJsonValue> address =
                 OresJsonValue.objectMap();
