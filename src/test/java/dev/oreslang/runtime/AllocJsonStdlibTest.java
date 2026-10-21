@@ -412,6 +412,94 @@ final class AllocJsonStdlibTest {
     }
 
     @Test
+    void linkedClassAliasUsesOnlyItsLocalBinding() throws Exception {
+        Path library = temp.resolve("alias-library.ores");
+        Files.writeString(library, """
+                pub define class Widget as
+                end
+                """);
+
+        Path accepted = temp.resolve("alias-accepted.ores");
+        Files.writeString(accepted, """
+                import class Widget as W from "./alias-library.ores";
+
+                pub routine main(): void {
+                  val W value = new W();
+                  return;
+                }
+                """);
+        assertDoesNotThrow(() -> LinkedProgramRunner.validate(accepted));
+
+        Path leaked = temp.resolve("alias-source-name-leak.ores");
+        Files.writeString(leaked, """
+                import class Widget as W from "./alias-library.ores";
+
+                pub routine main(): void {
+                  val Widget bad = new Widget();
+                  return;
+                }
+                """);
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(leaked));
+    }
+
+    @Test
+    void aliasedAllocJsonValueRemainsOpaque() throws Exception {
+        Path entry = temp.resolve("jsonvalue-alias-opaque.ores");
+        Files.writeString(entry, """
+                import class JsonValue as J from "alloc/json";
+
+                pub routine main(): void {
+                  val J bad = new J();
+                  return;
+                }
+                """);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(entry));
+        assertTrue(failure.getMessage().contains("opaque alloc/json value"),
+                failure.getMessage());
+    }
+
+    @Test
+    void aliasedJsonNamespaceRemainsUnconstructible() throws Exception {
+        Path entry = temp.resolve("json-alias-opaque.ores");
+        Files.writeString(entry, """
+                import class Json as J from "alloc/json";
+
+                pub routine main(): void {
+                  val J bad = new J();
+                  return;
+                }
+                """);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(entry));
+        assertTrue(failure.getMessage().contains(
+                        "compiler-owned construction namespace"),
+                failure.getMessage());
+    }
+
+    @Test
+    void allocJsonWildcardNamespaceImportFailsClosed() throws Exception {
+        Path entry = temp.resolve("json-wildcard.ores");
+        Files.writeString(entry, """
+                import * as json_ns from "alloc/json";
+                pub routine main(): void { return; }
+                """);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(entry));
+        assertTrue(failure.getMessage().contains(
+                        "alloc/json currently exposes only"),
+                failure.getMessage());
+    }
+
+    @Test
     void jsonFactoryAliasDoesNotAcquireCompilerAuthority() throws Exception {
         Path entry = temp.resolve("factory-alias.ores");
         Files.writeString(entry, """
