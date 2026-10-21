@@ -9900,26 +9900,7 @@ public final class OresEvalRootNode extends RootNode {
     private static final class StreamFactory {
         private Object create(List<Object> args) {
             requireOne(args, "Stream.new<T>");
-            Object requested = args.getFirst();
-            // Reject floating-point and other Number implementations: using
-            // longValue() on a Double silently truncates, violating the
-            // statically integer-only intrinsic contract under stale ASTs.
-            final int capacity;
-            try {
-                if (requested instanceof java.math.BigInteger big) {
-                    capacity = big.intValueExact();
-                } else if (requested instanceof Byte || requested instanceof Short
-                        || requested instanceof Integer || requested instanceof Long) {
-                    capacity = Math.toIntExact(((Number) requested).longValue());
-                } else {
-                    throw new IllegalArgumentException(
-                            "Stream.new<T> capacity must be an exact integer");
-                }
-            } catch (ArithmeticException outOfRange) {
-                throw new IllegalArgumentException(
-                        "Stream.new<T> capacity exceeds supported integer range", outOfRange);
-            }
-            return new dev.oreslang.runtime.OresStream<>(capacity);
+            return dev.oreslang.runtime.OresStream.fromGuestCapacity(args.getFirst());
         }
     }
 
