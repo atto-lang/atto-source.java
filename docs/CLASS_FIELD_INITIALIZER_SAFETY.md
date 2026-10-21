@@ -34,7 +34,7 @@ initializers. Resolving a module export, imported namespace, host member or
 global value can execute code outside the local initializer's effect proof;
 visiting only a member receiver is not sufficient. The only admitted direct
 value-name leaves are the constructor's checked scalar parameters. An eager
-unary borrow (`&` or `&mut`) cannot create a loan across construction.
+source borrow (`rt borrow` or `rt mut borrow`) cannot create a loan across construction.
 
 Runtime `is type` and `matches` predicates need their own eager effect
 proof, independently of evaluating their operands. Only direct primitive
