@@ -35,7 +35,15 @@ public final class TaskCaptureNames {
             Ast.Stmt stmt, Set<String> locals, Set<String> names) {
         if (stmt == null) return;
         if (stmt instanceof Ast.BindingStmt s) {
-            visitExpr(s.initializer(), locals, names);
+            // Recursive lexical lambda bindings see their own name, never an
+            // unrelated parent slot with the same identifier.
+            if (s.initializer() instanceof Ast.LambdaExpr) {
+                Set<String> recursive = new HashSet<>(locals);
+                recursive.add(s.name());
+                visitExpr(s.initializer(), recursive, names);
+            } else {
+                visitExpr(s.initializer(), locals, names);
+            }
             locals.add(s.name());
         } else if (stmt instanceof Ast.DestructureStmt s) {
             visitExpr(s.initializer(), locals, names);
