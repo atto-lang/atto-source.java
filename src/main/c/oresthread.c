@@ -39,6 +39,7 @@ struct ores_carrier_pool {
     int max_threads;
     int desired_threads;
     int started;
+    int dispatch_ready;
     int shutdown;
     int attach_ready_count;
     int attach_failures;
@@ -88,6 +89,22 @@ static void *carrier_main(void *raw) {
     pthread_cond_broadcast(&pool->condition);
     pthread_mutex_unlock(&pool->mutex);
     if (status != JNI_OK || env == NULL) return NULL;
+
+    /*
+     * Do not execute queued guest work until ALL carriers attached
+     * successfully. A failed nativeStart must never consume an admitted
+     * turn before the Java caller can reject/rollback its first dispatch.
+     */
+    pthread_mutex_lock(&pool->mutex);
+    while (!pool->dispatch_ready && !pool->shutdown) {
+        pthread_cond_wait(&pool->condition, &pool->mutex);
+    }
+    int may_dispatch = !pool->shutdown;
+    pthread_mutex_unlock(&pool->mutex);
+    if (!may_dispatch) {
+        (*pool->jvm)->DetachCurrentThread(pool->jvm);
+        return NULL;
+    }
 
     (*env)->CallVoidMethod(env, pool->executor, pool->carrier_loop, (jint)arg->slot);
 
@@ -244,6 +261,12 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeStart(
         pthread_cond_wait(&pool->condition, &pool->mutex);
     }
     int failures = pool->attach_failures;
+    if (!pool->shutdown && failures == 0 && pool->attach_ready_count == pool->max_threads) {
+        pool->dispatch_ready = 1;
+    } else {
+        pool->shutdown = 1;
+    }
+    pthread_cond_broadcast(&pool->condition);
     pthread_mutex_unlock(&pool->mutex);
     if (failures != 0) {
         throw_illegal_state(env, "one or more native carrier pthreads failed to attach to the JVM");
