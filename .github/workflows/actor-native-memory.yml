@@ -32,5 +32,5 @@ jobs:
       - name: Exercise native storage and source allocation
         run: >-
           mvn -B -ntp
-          -Dtest=ActorNativeArenaTest,ActorNativeObjectAllocationTest,ActorShardColumnsTest,ActorShardColumnCopyTest,ActorShardSnapshotLeaseTest,ActorShardStopRaceTest,ActorAsyncFinalizationBarrierTest,ActorPhysicalTurnGateTest,SourceActorSpawnExecutionTest,ClassConstructorHardeningTest,ActorDeclarationLexicalBoundaryTest
+          -Dtest=ActorLinearMemoryTest,ActorNativeArenaTest,ActorNativeObjectAllocationTest,ActorShardColumnsTest,ActorShardColumnCopyTest,ActorShardSnapshotLeaseTest,ActorShardStopRaceTest,ActorAsyncFinalizationBarrierTest,ActorPhysicalTurnGateTest,SourceActorSpawnExecutionTest,ClassConstructorHardeningTest,ActorDeclarationLexicalBoundaryTest
           test
