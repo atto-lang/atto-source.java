@@ -44,6 +44,12 @@ expect_wrapper_reject() {
   grep -q 'PRIVATE_CI_DESTINATION_REJECTED' "$work/out"
 }
 expect_ok trusted/ci
+# Incident #22 carrier must remain denied even if accidentally allowlisted.
+printf 'trusted/ci 246810\nzed-pkg-test/java-app 999999\n' > "$policy"
+expect_fail zed-pkg-test/java-app
+expect_fail ZED-PKG-TEST/JAVA-APP
+expect_wrapper_reject zed-pkg-test/java-app
+printf 'trusted/ci 246810\n' > "$policy"
 export MOCK_REPOSITORY_ID=246811
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
