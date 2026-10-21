@@ -199,9 +199,23 @@ final class PlacedTaskLanguageTest {
     }
 
     @Test
-    void unloweredGpuAndQuantumRegionsStillRejectFailClosed() {
+    void eagerGpuRegionIsParsedButRequiresRealDeviceBackend() {
+        String source = """
+                pub routine main(): void {
+                    gpu { return 1; };
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> Parser.parse(source));
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(failure.getMessage().contains("CPU fallback is forbidden"),
+                failure.getMessage());
+    }
+
+    @Test
+    void unloweredNbAndQuantumRegionsStillRejectFailClosed() {
         for (String region : new String[] {
-                "gpu { return 1; }",
                 "nb cpu { return 1; }",
                 "nb gpu { return 1; }",
                 "quantum task { return 1; }"
