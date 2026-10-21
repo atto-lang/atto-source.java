@@ -5,5 +5,5 @@
 // allocator tier explicit: importing this module must never make JSON an
 // ambient core builtin. The following stacked compiler slice will bind the
 // generated/static codec surface to this exact packaged module identity.
-define module json as
+define module Json as
 end
