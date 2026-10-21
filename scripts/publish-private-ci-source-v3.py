@@ -188,10 +188,10 @@ def gh_api_list(route):
         "--header", "Accept: application/vnd.github+json",
     ]
     try:
-        completed = subprocess.run(
-            argv, capture_output=True, text=True,
+        completed = legacy.run_bounded_gh(
+            argv,
             env=legacy.github_api_environment(),
-            timeout=45, check=False,
+            timeout=45,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Denied("authenticated GitHub list request unavailable") from exc
@@ -889,9 +889,8 @@ def _gh_ref_request(repository, ref_name, method):
     ]
     env = legacy.github_api_environment()
     try:
-        result = subprocess.run(
-            argv, capture_output=True, text=True, env=env,
-            timeout=30, check=False,
+        result = legacy.run_bounded_gh(
+            argv, env=env, timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Denied("carrier ref rollback is unavailable") from exc
