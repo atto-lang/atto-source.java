@@ -11,6 +11,8 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -151,6 +153,177 @@ public final class NativeIo {
         } finally {
             if (temp != null) {
                 try { Files.deleteIfExists(temp); } catch (IOException ignored) { }
+            }
+        }
+    }
+
+    /**
+     * Replace a file only after the new contents have reached the file's
+     * durability boundary and the containing directory has acknowledged the
+     * rename. This is intentionally synchronous: callers that use it as a
+     * transaction commit point must not observe success before both force()
+     * operations complete.
+     *
+     * <p>If the atomic replace may already have happened but directory sync
+     * fails, the method throws {@link DurabilityUncertainException}. Callers
+     * must not acknowledge the transaction; recovery must inspect durable
+     * state before retrying.</p>
+     */
+    public static void writeTextAtomicDurable(
+            OresContext context,
+            String rawPath,
+            String value) {
+        Path lexical = lexicalPath(rawPath);
+        if (Files.isSymbolicLink(lexical)) {
+            throw new SecurityException(
+                    "fs.write_text_atomic_durable refuses symlink: " + lexical);
+        }
+        Path parent = lexical.getParent();
+        if (parent == null) {
+            throw new IllegalArgumentException(
+                    "durable atomic write path has no parent");
+        }
+        Path canonicalParent = realPath(parent);
+        Path target = canonicalParent.resolve(lexical.getFileName());
+        context.requirePermission(
+                RuntimePermissions.Permission.WRITE,
+                lexical.toString(),
+                "fs.write_text_atomic_durable");
+        context.requirePermission(
+                RuntimePermissions.Permission.WRITE,
+                target.toString(),
+                "fs.write_text_atomic_durable");
+        if (!Files.isDirectory(canonicalParent, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalArgumentException(
+                    "durable atomic write parent is not a directory: " + parent);
+        }
+        if (Files.isSymbolicLink(target)) {
+            throw new SecurityException(
+                    "fs.write_text_atomic_durable refuses destination symlink: "
+                            + target);
+        }
+
+        Path temp = null;
+        boolean replaceAttempted = false;
+        try {
+            temp = Files.createTempFile(
+                    canonicalParent, ".oreslang-durable-", ".tmp");
+            byte[] encoded = value.getBytes(StandardCharsets.UTF_8);
+            try (FileChannel channel = FileChannel.open(
+                    temp,
+                    StandardOpenOption.WRITE,
+                    StandardOpenOption.TRUNCATE_EXISTING,
+                    LinkOption.NOFOLLOW_LINKS)) {
+                writeFully(channel, encoded);
+                channel.force(true);
+            }
+
+            if (Files.isSymbolicLink(target)) {
+                throw new SecurityException(
+                        "fs.write_text_atomic_durable refuses destination symlink: "
+                                + target);
+            }
+            replaceAttempted = true;
+            Files.move(
+                    temp,
+                    target,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            temp = null;
+
+            try {
+                syncDirectory(canonicalParent);
+            } catch (IOException | RuntimeException syncFailure) {
+                throw new DurabilityUncertainException(
+                        "durable atomic replace may be visible but parent directory "
+                                + "sync failed for " + target,
+                        syncFailure);
+            }
+        } catch (DurabilityUncertainException uncertain) {
+            throw uncertain;
+        } catch (IOException failure) {
+            if (replaceAttempted) {
+                throw new DurabilityUncertainException(
+                        "durable atomic replace outcome is uncertain for " + target,
+                        failure);
+            }
+            throw ioFailure("durable atomic write", target, failure);
+        } finally {
+            if (temp != null) {
+                try {
+                    Files.deleteIfExists(temp);
+                } catch (IOException ignored) { }
+            }
+        }
+    }
+
+    /**
+     * Append UTF-8 bytes and force file contents/metadata before returning.
+     * Creating a new WAL file additionally forces its parent directory so the
+     * directory entry itself is durable.
+     *
+     * <p>Existing hard-linked files are rejected on Unix: appending through one
+     * name would mutate every alias and violate a WAL's single-path authority.
+     * Platforms without Unix link-count metadata fail closed for this M1
+     * primitive rather than silently weakening that invariant.</p>
+     */
+    public static void appendTextDurable(
+            OresContext context,
+            String rawPath,
+            String value) {
+        Path lexical = lexicalPath(rawPath);
+        if (Files.isSymbolicLink(lexical)) {
+            throw new SecurityException(
+                    "fs.append_text_durable refuses symlink: " + lexical);
+        }
+        Path path = canonicalWritePath(rawPath);
+        context.requirePermission(
+                RuntimePermissions.Permission.WRITE,
+                lexical.toString(),
+                "fs.append_text_durable");
+        context.requirePermission(
+                RuntimePermissions.Permission.WRITE,
+                path.toString(),
+                "fs.append_text_durable");
+
+        Path parent = path.getParent();
+        if (parent == null) {
+            throw new IllegalArgumentException(
+                    "durable append path has no parent");
+        }
+        if (!Files.isDirectory(parent, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalArgumentException(
+                    "durable append parent is not a directory: " + parent);
+        }
+
+        boolean existed = Files.exists(path, LinkOption.NOFOLLOW_LINKS);
+        if (existed) requireSingleLink(path, "fs.append_text_durable");
+        byte[] encoded = value.getBytes(StandardCharsets.UTF_8);
+        try (FileChannel channel = FileChannel.open(
+                path,
+                StandardOpenOption.CREATE,
+                StandardOpenOption.WRITE,
+                StandardOpenOption.APPEND,
+                LinkOption.NOFOLLOW_LINKS)) {
+            writeFully(channel, encoded);
+            channel.force(true);
+        } catch (IOException | RuntimeException failure) {
+            if (failure instanceof SecurityException security) throw security;
+            throw new DurabilityUncertainException(
+                    "durable append outcome is uncertain for " + path,
+                    failure);
+        }
+
+        // Creating a new file mutates the directory entry. The file force above
+        // is not sufficient to make that new name crash-durable.
+        if (!existed) {
+            try {
+                syncDirectory(parent);
+            } catch (IOException | RuntimeException failure) {
+                throw new DurabilityUncertainException(
+                        "durable append file was forced but parent directory sync "
+                                + "failed for " + path,
+                        failure);
             }
         }
     }
@@ -400,6 +573,62 @@ public final class NativeIo {
             return path.toRealPath();
         } catch (IOException failure) {
             throw ioFailure("resolve", path, failure);
+        }
+    }
+
+    private static void writeFully(FileChannel channel, byte[] bytes)
+            throws IOException {
+        ByteBuffer buffer = ByteBuffer.wrap(bytes);
+        while (buffer.hasRemaining()) {
+            int written = channel.write(buffer);
+            if (written <= 0) {
+                throw new IOException(
+                        "file channel made no progress while writing");
+            }
+        }
+    }
+
+    private static void syncDirectory(Path directory) throws IOException {
+        try (FileChannel channel = FileChannel.open(
+                directory, StandardOpenOption.READ)) {
+            channel.force(true);
+        } catch (UnsupportedOperationException unsupported) {
+            throw new IOException(
+                    "directory force is unsupported for " + directory,
+                    unsupported);
+        }
+    }
+
+    private static void requireSingleLink(Path path, String operation) {
+        final Object raw;
+        try {
+            raw = Files.getAttribute(
+                    path, "unix:nlink", LinkOption.NOFOLLOW_LINKS);
+        } catch (UnsupportedOperationException unsupported) {
+            throw new IllegalStateException(
+                    operation
+                            + " requires Unix link-count metadata in M1; "
+                            + "durable append is unsupported on this filesystem",
+                    unsupported);
+        } catch (IOException failure) {
+            throw ioFailure("read hard-link count", path, failure);
+        }
+        if (!(raw instanceof Number number) || number.longValue() != 1L) {
+            throw new SecurityException(
+                    operation + " refuses hard-linked file: " + path);
+        }
+    }
+
+    /**
+     * The operation may have changed persistent state, but the runtime could
+     * not prove the requested durability boundary. Callers must not ACK and
+     * must recover/re-read storage before retrying.
+     */
+    public static final class DurabilityUncertainException
+            extends IllegalStateException {
+        public DurabilityUncertainException(
+                String message, Throwable cause) {
+            super(message, cause);
         }
     }
 
