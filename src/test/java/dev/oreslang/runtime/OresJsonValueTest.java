@@ -182,6 +182,26 @@ final class OresJsonValueTest {
     }
 
     @Test
+    void ownedPutAttemptRecoversExactCandidateWhenKeyAdmissionRejects() {
+        OresKeyedMap<String, OresJsonValue> fields =
+                OresJsonValue.objectMap();
+        OresJsonValue offered = OresJsonValue.of("candidate");
+
+        OresKeyedMap.OwnedPutAttempt<OresJsonValue> rejected =
+                fields.attemptOwnedPut("\uD800", offered);
+
+        assertFalse(rejected.committed());
+        assertThrows(IllegalStateException.class, rejected::rethrowAfterRecovery);
+        assertSame(offered, rejected.takeUncommittedValue());
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                rejected::rethrowAfterRecovery);
+        assertTrue(failure.getMessage().contains("Unicode"),
+                failure.getMessage());
+        assertTrue(fields.isEmpty());
+    }
+
+    @Test
     void directSelfCycleIsRejectedBeforeMutation() {
         OresKeyedMap<String, OresJsonValue> fields =
                 OresJsonValue.objectMap();
