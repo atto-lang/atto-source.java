@@ -47,11 +47,6 @@ public final class Parser {
         // silently skipping their bodies would violate placement semantics.
         // A token preflight also covers paths not reached by the normal parser.
         for (Token token : tokens) {
-            if (token.type() == KERNEL) {
-                throw error(token, "kernel declarations are reserved for Oreslang HAT; "
-                        + "typed kernel IR, effect/ownership checking and explicit backend lowering "
-                        + "must be enabled before execution; no implicit CPU fallback");
-            }
             if (token.type() == GPU || token.type() == CPU || token.type() == QUANTUM) {
                 throw error(token, "execution domain '" + token.lexeme()
                         + "' requires typed effect/ownership checking and explicit backend lowering;"
@@ -116,6 +111,10 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                if (match(KERNEL)) {
+                    rootDeclarations.add(parseKernel(modifiers, annotations));
+                    continue;
+                }
                 if (match(ACTOR, ISOACTOR)) {
                     rootDeclarations.add(parseDefinedActorClass(previous(), modifiers, annotations));
                     continue;
@@ -167,7 +166,7 @@ public final class Parser {
                     rootDeclarations.add(parseTypeAlias(modifiers.visibility));
                     continue;
                 }
-                throw error(previous(), "expected module, class, interface, trait, or type after 'define'");
+                throw error(previous(), "expected module, kernel, class, interface, trait, or type after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -257,6 +256,30 @@ public final class Parser {
         return consume(IDENT, "expected imported name").lexeme();
     }
 
+    private Ast.KernelDecl parseKernel(Modifiers modifiers, List<Ast.Annotation> annotations) {
+        validateOnlyVisibilityModifiers(modifiers, "kernels");
+        rejectCallableStructuralAnnotation(annotations, "kernel declarations");
+        rejectDiscardedDeclarationAnnotations(annotations, "kernel declarations");
+
+        String name = consume(IDENT, "expected kernel name").lexeme();
+        consume(AS, "kernel declarations use 'define [pub] kernel <Name> as ... end'");
+
+        List<Ast.FunctionDecl> entries = new ArrayList<>();
+        while (!check(END) && !check(EOF)) {
+            List<Ast.Annotation> entryAnnotations = parseAnnotations();
+            Modifiers entryModifiers = parseModifiers();
+            if (!match(FNC)) {
+                throw error(peek(), "kernel bodies currently admit only 'fnc' entry declarations");
+            }
+            entryModifiers = mergeModifiers(entryModifiers, parseModifiers());
+            validateOnlyVisibilityModifiers(entryModifiers, "kernel entries");
+            entries.add(parseFunction(entryAnnotations, entryModifiers, Ast.CallableKind.FNC));
+        }
+
+        consume(END, "expected 'end' to close kernel " + name);
+        return new Ast.KernelDecl(name, modifiers.visibility, entries);
+    }
+
     private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations) {
         String name = consume(IDENT, "expected flat module name").lexeme();
         if (check(DOT)) throw error(peek(), "modules cannot be nested or dotted");
@@ -309,6 +332,9 @@ public final class Parser {
 
         if (match(DEFINE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
+            if (match(KERNEL)) {
+                return parseKernel(modifiers, annotations);
+            }
             if (match(ACTOR, ISOACTOR)) {
                 return parseDefinedActorClass(previous(), modifiers, annotations);
             }
@@ -344,7 +370,7 @@ public final class Parser {
                 rejectDiscardedDeclarationAnnotations(annotations, "type aliases");
                 return parseTypeAlias(modifiers.visibility);
             }
-            throw error(previous(), "expected class, interface, trait, or type after 'define'");
+            throw error(previous(), "expected kernel, class, interface, trait, or type after 'define'");
         }
 
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
