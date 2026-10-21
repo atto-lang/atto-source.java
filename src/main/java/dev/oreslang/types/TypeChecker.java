@@ -3856,7 +3856,8 @@ public final class TypeChecker {
                 }
                 if (member.member().equals("of")
                         || member.member().equals("array")
-                        || member.member().equals("object")) {
+                        || member.member().equals("object")
+                        || member.member().equals("stringify")) {
                     throw new IllegalArgumentException(
                             "Json." + member.member()
                                     + " is direct-call-only; invoke it instead of extracting a callable value");
