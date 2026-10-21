@@ -394,10 +394,10 @@ public final class LinkedProgramRunner {
             ImportRules.validate(imported);
             if (ImportRules.isJavaPath(imported.path())) continue;
 
-            if (CoreLibrarySources.isCoreImport(imported.path())) {
+            if (CoreLibrarySources.isBundledImport(imported.path())) {
                 String targetId = CoreLibrarySources.unitId(imported.path());
                 recordImportResolution(importResolutions, id, imported.path(), targetId);
-                collectCoreImportClosure(imported.path(), units, importResolutions,
+                collectBundledImportClosure(imported.path(), units, importResolutions,
                         budget, depth + 1);
                 continue;
             }
@@ -430,9 +430,10 @@ public final class LinkedProgramRunner {
 
     /**
      * Collects only compiler-owned Oreslang sources under the reserved std/
-     * namespace. Neither the project manifest nor ORESLANG_PATH can override it.
+     * and alloc/ namespaces. Neither project roots nor ORESLANG_PATH can
+     * override bundled modules.
      */
-    private static void collectCoreImportClosure(
+    private static void collectBundledImportClosure(
             String importPath,
             Map<String, MixedSourceUnit> units,
             Map<String, Map<String, String>> importResolutions,
@@ -442,16 +443,18 @@ public final class LinkedProgramRunner {
         if (units.containsKey(id)) return;
         budget.checkCanAdmitUnit(depth);
 
-        String coreSource = CoreLibrarySources.source(importPath);
-        budget.admit(coreSource.getBytes(java.nio.charset.StandardCharsets.UTF_8).length, depth);
+        String librarySource = CoreLibrarySources.source(importPath);
+        budget.admit(
+                librarySource.getBytes(java.nio.charset.StandardCharsets.UTF_8).length,
+                depth);
         MixedSourceUnit mixed = MixedSourceUnit.parse(
                 id,
                 CoreLibrarySources.fileName(importPath),
-                coreSource);
+                librarySource);
         if (mixed.hasJavaSource()) {
             throw new SecurityException(
-                    "packaged std/* modules must be native Oreslang, not Java source islands: "
-                            + importPath);
+                    "packaged std/* and alloc/* modules must be native Oreslang, "
+                            + "not Java source islands: " + importPath);
         }
 
         Ast.Program program = Parser.parse(mixed.oresSource());
@@ -459,12 +462,21 @@ public final class LinkedProgramRunner {
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
             if (ImportRules.isJavaPath(imported.path())) {
-                throw new SecurityException("std/* cannot import Java host classes: "
-                        + importPath + " -> " + imported.path());
+                throw new SecurityException(
+                        "bundled std/* and alloc/* modules cannot import Java host classes: "
+                                + importPath + " -> " + imported.path());
             }
-            if (!CoreLibrarySources.isCoreImport(imported.path())) {
-                throw new IllegalArgumentException("std/* cannot import project or ambient modules: "
-                        + importPath + " -> " + imported.path());
+            if (!CoreLibrarySources.isBundledImport(imported.path())) {
+                throw new IllegalArgumentException(
+                        "bundled std/* and alloc/* modules cannot import project "
+                                + "or ambient modules: "
+                                + importPath + " -> " + imported.path());
+            }
+            if (CoreLibrarySources.isCoreImport(importPath)
+                    && CoreLibrarySources.isAllocImport(imported.path())) {
+                throw new IllegalArgumentException(
+                        "std/* bundled modules cannot depend on allocator-backed alloc/*: "
+                                + importPath + " -> " + imported.path());
             }
             CoreLibrarySources.unitId(imported.path());
         }
@@ -473,7 +485,7 @@ public final class LinkedProgramRunner {
         for (Ast.ImportDecl imported : program.imports()) {
             String targetId = CoreLibrarySources.unitId(imported.path());
             recordImportResolution(importResolutions, id, imported.path(), targetId);
-            collectCoreImportClosure(imported.path(), units, importResolutions,
+            collectBundledImportClosure(imported.path(), units, importResolutions,
                     budget, depth + 1);
         }
     }
