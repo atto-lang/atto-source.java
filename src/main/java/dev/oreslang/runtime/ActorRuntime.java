@@ -1968,8 +1968,21 @@ public final class ActorRuntime implements AutoCloseable {
         Class<Object> responseType = (Class<Object>) declaredReply;
 
         GenerationalReplyRegistry registry = sourceUnaryRegistryFor(caller);
-        GenerationalReplyRegistry.Endpoint callerEndpoint =
-                sourceUnaryEndpoint(caller, registry, true);
+        final GenerationalReplyRegistry.Endpoint callerEndpoint;
+        try {
+            callerEndpoint = sourceUnaryEndpoint(caller, registry, true);
+        } catch (RuntimeException | Error enrollmentFailure) {
+            // The actor may stop after slab creation but before the stop
+            // revoker is registered. Discard that unattached empty slab now;
+            // otherwise rapid stop/restart cycles can retain it indefinitely.
+            synchronized (sourceUnaryRegistries) {
+                if (sourceUnaryRegistries.get(caller) == registry) {
+                    sourceUnaryRegistries.remove(caller);
+                }
+            }
+            registry.close();
+            throw enrollmentFailure;
+        }
         GenerationalReplyRegistry.Endpoint calleeEndpoint =
                 sourceUnaryEndpoint(destination, registry, false);
         return ActorReplySchedulerBridge.requestCurrentActor(
