@@ -9,23 +9,22 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class OresEntryRuntimeTest {
     @Test
-    void freezePreservesNominalEntryAndDetachesNestedValues() {
+    void actorFreezeRemainsFailClosedUntilCanonicalEntryTransportIsMerged() {
         ArrayList<Object> mutableKey = new ArrayList<>();
         mutableKey.add("k");
         OresEntry source = new OresEntry(mutableKey, List.of("v"));
 
-        Object frozenValue = ActorRuntime.freeze(source);
-        OresEntry frozen = assertInstanceOf(OresEntry.class, frozenValue);
+        IllegalArgumentException denied = assertThrows(
+                IllegalArgumentException.class,
+                () -> ActorRuntime.freeze(source));
+        assertTrue(denied.getMessage().contains("not Sendable"),
+                denied.getMessage());
 
-        assertNotSame(source, frozen);
-        assertNotSame(mutableKey, frozen.key());
-        assertEquals(List.of("k"), frozen.key());
+        // This Map-iteration slice is local-only. Pulling in the canonical
+        // Entry carrier must not silently import only half of #1668's actor
+        // transport semantics.
         mutableKey.add("late");
-        assertEquals(List.of("k"), frozen.key());
-
-        @SuppressWarnings("unchecked")
-        List<Object> frozenKey = (List<Object>) frozen.key();
-        assertThrows(UnsupportedOperationException.class, () -> frozenKey.add("mutate"));
+        assertEquals(List.of("k", "late"), source.key());
     }
 
     @Test
