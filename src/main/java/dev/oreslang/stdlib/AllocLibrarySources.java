@@ -1,4 +1,4 @@
-package dev.oreslang.allocator library;
+package dev.oreslang.stdlib;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -14,11 +14,10 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Loads Oreslang-owned allocator-library source from packaged resources.
+ * Loads Oreslang-owned allocator-backed portable source from packaged resources.
  *
- * <p>The allocator library is intentionally source-first: semantics live in .ores
- * modules. This Java class is loader glue only and must never become an
- * implementation backdoor for allocator-library behavior.</p>
+ * <p>The alloc namespace is compiler-owned and cannot be shadowed by project
+ * roots or ORESLANG_PATH. This class is loader glue only.</p>
  */
 public final class AllocLibrarySources {
     private static final String IMPORT_PREFIX = "alloc/";
@@ -60,7 +59,7 @@ public final class AllocLibrarySources {
             throw new IllegalArgumentException(
                     "unknown Oreslang alloc module: " + importPath);
         }
-        // Packaged stdlib is compiler authority, not ambient classpath policy.
+        // Packaged alloc source is compiler authority, not ambient classpath policy.
         // Ambiguous duplicate resource names must never silently select a
         // user-controlled earlier classpath entry.
         Enumeration<URL> matches = loader.getResources(resource);
@@ -68,7 +67,7 @@ public final class AllocLibrarySources {
             URL candidate = matches.nextElement();
             if (!candidate.toExternalForm().equals(unique.toExternalForm())) {
                 throw new SecurityException(
-                        "duplicate packaged Oreslang allocator-library resource: " + importPath);
+                        "duplicate packaged Oreslang alloc resource: " + importPath);
             }
         }
         try (InputStream input = unique.openStream()) {
@@ -136,7 +135,7 @@ public final class AllocLibrarySources {
             }
             if (!segment.matches("[A-Za-z0-9][A-Za-z0-9_.-]*")) {
                 throw new IllegalArgumentException(
-                        "invalid allocator-library path segment '" + segment + "': " + importPath);
+                        "invalid alloc path segment '" + segment + "': " + importPath);
             }
             normalized.add(segment);
         }
