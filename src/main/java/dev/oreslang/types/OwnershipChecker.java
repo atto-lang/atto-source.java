@@ -44,22 +44,55 @@ public final class OwnershipChecker {
     private final Set<String> ambiguousClasses = new HashSet<>();
     /** Only bindings admitted as new short aliases by the type checker. */
     private final Map<Ast.BindingStmt, String> validatedShortAliases;
+    /**
+     * Staged compiler gate for move-only Map insertion. The normal compiler
+     * path leaves this false until alloc/json makes recursive JsonValue source
+     * types executable.
+     */
+    private final boolean commitAwareMapWrites;
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
-    /** Every active try records outer roots transferred anywhere inside its body. */
+    /** Every active try records roots that may already be moved on its catch edge. */
     private final List<Set<VarState>> tryMoveObservers = new ArrayList<>();
+    /**
+     * Successful fallible Map commits are normal-path moves, not moves on that
+     * operation's rejection edge. They stay pending until a later potentially
+     * throwing statement can enter the same catch after the commit.
+     */
+    private final List<Set<VarState>> tryConditionalCommitMoves = new ArrayList<>();
 
     private OwnershipChecker(Ast.Program program) {
-        this(program, Map.of());
+        this(program, Map.of(), false);
     }
 
     private OwnershipChecker(
             Ast.Program program, Map<Ast.BindingStmt, String> validatedShortAliases) {
+        this(program, validatedShortAliases, false);
+    }
+
+    private OwnershipChecker(
+            Ast.Program program,
+            Map<Ast.BindingStmt, String> validatedShortAliases,
+            boolean commitAwareMapWrites) {
         // Preserve AST declaration identity: equality-based maps can merge
         // separate bindings with identical syntax in different scopes.
         this.validatedShortAliases = new IdentityHashMap<>(validatedShortAliases);
+        this.commitAwareMapWrites = commitAwareMapWrites;
         index(program);
+    }
+
+    /**
+     * Staging entrypoint used by compiler ownership conformance tests before
+     * the public typechecker admits recursive move-only Map value domains.
+     * This does not make any new source spelling executable.
+     */
+    static Ast.Program checkWithCommitAwareMapWritesForTesting(
+            Ast.Program program) {
+        OwnershipChecker checker =
+                new OwnershipChecker(program, Map.of(), true);
+        checker.validate(program);
+        return program;
     }
 
     public static Ast.Program check(Ast.Program program) {
@@ -361,6 +394,21 @@ public final class OwnershipChecker {
     private boolean discardingSelectReturn;
 
     private void checkStatement(Ast.Stmt stmt, Scope scope, Ast.TypeRef returnType) {
+        CommitAwareMapWrite commitAwareWrite =
+                commitAwareMapWrites && stmt instanceof Ast.ExprStmt expression
+                        ? commitAwareMapWrite(expression.expression(), scope)
+                        : null;
+        if (commitAwareMapWrites
+                && !tryConditionalCommitMoves.isEmpty()
+                && (commitAwareWrite != null
+                    || statementMayRaiseAfterConditionalCommit(stmt))) {
+            promoteConditionalCommitMovesToCatchEdges();
+        }
+        if (commitAwareWrite != null) {
+            checkCommitAwareMapWrite(commitAwareWrite, scope);
+            return;
+        }
+
         if (stmt instanceof Ast.BindingStmt binding) {
             checkBinding(binding, scope);
             return;
@@ -556,11 +604,16 @@ public final class OwnershipChecker {
             // Catch can run after any throwing operation, including one after
             // a move in a nested branch or in an expression. Tracking moves
             // directly is safer than looking only at the try's final state.
-            Set<VarState> movedDuringTry = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+            Set<VarState> movedDuringTry =
+                    java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+            Set<VarState> conditionalCommits =
+                    java.util.Collections.newSetFromMap(new IdentityHashMap<>());
             tryMoveObservers.add(movedDuringTry);
+            tryConditionalCommitMoves.add(conditionalCommits);
             try {
                 checkBlock(attempted.body(), scope, returnType);
             } finally {
+                tryConditionalCommitMoves.removeLast();
                 tryMoveObservers.removeLast();
             }
             Map<VarState, StateSnapshot> normal = stateSnapshot(scope);
@@ -1140,6 +1193,12 @@ public final class OwnershipChecker {
             };
         }
         if (expr instanceof Ast.AssignExpr assignment) {
+            if (commitAwareMapWrites
+                    && commitAwareMapWrite(assignment, scope) != null) {
+                throw error(
+                        "move-only Map indexed insertion is statement-only until "
+                                + "linear assignment-result ownership is defined");
+            }
             boolean directRebind = assignment.target() instanceof Ast.NameExpr;
             // Runtime assignment is RHS-first. A projection target therefore
             // must be validated after the RHS: the RHS may move or borrow the
@@ -1473,6 +1532,13 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        if (commitAwareMapWrites
+                && commitAwareMapWrite(call, scope) != null) {
+            throw error(
+                    "move-only Map.put is direct-statement-only until "
+                            + "linear previous-value result lowering is enabled");
+        }
+
         // A constructor owns an unpublished, incompletely initialized object.
         // Calling any instance method on self can transitively read absent
         // fields, publish the receiver or invoke suspension. No transitive
@@ -3496,6 +3562,23 @@ public final class OwnershipChecker {
     }
 
     private void move(VarState state, String name) {
+        moveInternal(state, name, false);
+    }
+
+    /**
+     * Mark a move that occurs only after a fallible Map insertion has crossed
+     * its runtime commit point. The operation's own rejection edge retains the
+     * candidate; a later throwable statement promotes this move to the active
+     * catch-edge observer(s).
+     */
+    private void moveAfterFallibleMapCommit(VarState state, String name) {
+        moveInternal(state, name, true);
+    }
+
+    private void moveInternal(
+            VarState state,
+            String name,
+            boolean conditionalCommit) {
         VarState root = ownershipRoot(state);
         requireUsable(root, name, false);
         if (root.immutableBorrows > 0 || root.mutableBorrowed) {
@@ -3523,13 +3606,168 @@ public final class OwnershipChecker {
             for (VarState source : root.aggregateSources) {
                 VarState sourceRoot = ownershipRoot(source);
                 if (sourceRoot.kind == ValueKind.MOVE_ONLY) {
-                    move(sourceRoot, source.debugName);
+                    moveInternal(
+                            sourceRoot,
+                            source.debugName,
+                            conditionalCommit);
                 }
             }
         }
 
-        for (Set<VarState> observer : tryMoveObservers) observer.add(root);
+        if (conditionalCommit && !tryConditionalCommitMoves.isEmpty()) {
+            for (Set<VarState> pending : tryConditionalCommitMoves) {
+                pending.add(root);
+            }
+        } else {
+            for (Set<VarState> observer : tryMoveObservers) {
+                observer.add(root);
+            }
+        }
         root.moved = true;
+    }
+
+    private record CommitAwareMapWrite(
+            Ast.Expr mapReceiver,
+            Ast.Expr key,
+            Ast.NameExpr candidateExpression,
+            VarState candidate,
+            Ast.TypeRef valueType,
+            boolean indexed) { }
+
+    private CommitAwareMapWrite commitAwareMapWrite(
+            Ast.Expr expression,
+            Scope scope) {
+        if (!commitAwareMapWrites) return null;
+
+        Ast.Expr receiver;
+        Ast.Expr key;
+        Ast.Expr candidateExpression;
+        boolean indexed;
+
+        if (expression instanceof Ast.AssignExpr assignment
+                && assignment.target() instanceof Ast.IndexExpr target) {
+            receiver = target.receiver();
+            key = target.index();
+            candidateExpression = assignment.value();
+            indexed = true;
+        } else if (expression instanceof Ast.CallExpr call
+                && call.callee() instanceof Ast.MemberExpr member
+                && member.member().equals("put")
+                && call.arguments().size() == 2) {
+            receiver = member.receiver();
+            key = call.arguments().get(0);
+            candidateExpression = call.arguments().get(1);
+            indexed = false;
+        } else {
+            return null;
+        }
+
+        if (!(receiver instanceof Ast.NameExpr mapName)
+                || !(candidateExpression instanceof Ast.NameExpr candidateName)) {
+            return null;
+        }
+
+        VarState map = scope.lookup(mapName.name());
+        VarState candidate = scope.lookup(candidateName.name());
+        if (map == null || candidate == null) return null;
+
+        Ast.TypeRef mapType = map.type.isBorrow()
+                ? map.type.borrowedTarget()
+                : map.type;
+        if (!isTypedMapType(mapType)
+                || mapType.arguments().size() != 2) {
+            return null;
+        }
+        Ast.TypeRef valueType = mapType.arguments().get(1);
+        if (isCopyType(valueType)
+                || candidate.kind != ValueKind.MOVE_ONLY
+                || !candidate.type.equals(valueType)) {
+            return null;
+        }
+        return new CommitAwareMapWrite(
+                receiver,
+                key,
+                candidateName,
+                candidate,
+                valueType,
+                indexed);
+    }
+
+    private void checkCommitAwareMapWrite(
+            CommitAwareMapWrite write,
+            Scope scope) {
+        Ast.NameExpr mapName = (Ast.NameExpr) write.mapReceiver();
+        VarState map = requireState(scope, mapName.name());
+        requireUsable(map, mapName.name(), true);
+        ensureMutableReceiver(
+                write.mapReceiver(),
+                scope,
+                write.indexed()
+                        ? "Map indexed insertion"
+                        : "Map.put");
+
+        // Runtime ordering differs by syntax, but the candidate is a stable
+        // named owner in this staged slice. No ownership transfer happens
+        // during preflight; key evaluation may fail with the candidate live.
+        if (write.indexed()) {
+            VarState candidate =
+                    requireState(scope, write.candidateExpression().name());
+            requireUsable(
+                    candidate,
+                    write.candidateExpression().name(),
+                    false);
+            checkExpr(write.key(), scope, false);
+        } else {
+            checkExpr(write.key(), scope, false);
+            VarState candidate =
+                    requireState(scope, write.candidateExpression().name());
+            requireUsable(
+                    candidate,
+                    write.candidateExpression().name(),
+                    false);
+        }
+
+        moveAfterFallibleMapCommit(
+                write.candidate(),
+                write.candidateExpression().name());
+    }
+
+    private void promoteConditionalCommitMovesToCatchEdges() {
+        int count = Math.min(
+                tryMoveObservers.size(),
+                tryConditionalCommitMoves.size());
+        for (int i = 0; i < count; i++) {
+            Set<VarState> pending = tryConditionalCommitMoves.get(i);
+            if (pending.isEmpty()) continue;
+            tryMoveObservers.get(i).addAll(pending);
+            pending.clear();
+        }
+    }
+
+    /**
+     * Keep the no-throw whitelist intentionally tiny. False positives merely
+     * make a catch edge conservatively treat a prior committed owner as moved;
+     * false negatives could resurrect an owner after a real post-commit throw.
+     */
+    private static boolean statementMayRaiseAfterConditionalCommit(
+            Ast.Stmt stmt) {
+        if (stmt instanceof Ast.BreakStmt
+                || stmt instanceof Ast.ContinueStmt) {
+            return false;
+        }
+        if (stmt instanceof Ast.ReturnStmt returned
+                && returned.value() == null) {
+            return false;
+        }
+        if (stmt instanceof Ast.BindingStmt binding
+                && binding.initializer() instanceof Ast.LiteralExpr) {
+            return false;
+        }
+        if (stmt instanceof Ast.ExprStmt expression
+                && expression.expression() instanceof Ast.LiteralExpr) {
+            return false;
+        }
+        return true;
     }
 
     private VarState requireState(Scope scope, String name) {
