@@ -1,5 +1,7 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Lexer;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.parser.Token;
@@ -7,7 +9,6 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -21,24 +22,73 @@ final class CpuGpuTaskV2ContractTest {
         assertDoesNotThrow(() -> Parser.parse("pub fnc task(): int { return 42; }"));
     }
 
-    @Test void canonicalTaskBlocksFailClosedUntilTypedLoweringIsEnabled() {
-        for (String source : List.of(
-                "pub fnc main():int{let Future<int> f = task { 42 }; return await f;}",
-                "pub fnc main():int{let Future<int> f = cpu task { 42 }; return await f;}",
-                "pub fnc main():int{let Future<int> f = gpu task { 42 }; return await f;}")) {
-            var error = assertThrows(IllegalArgumentException.class, () -> Parser.parse(source));
-            assertTrue(error.getMessage().contains("execution"), error::getMessage);
+    @Test void canonicalAndLegacyCpuTaskSpellingsNormalizeToOneAst() {
+        var canonical = taskInitializer(
+                "pub fnc main():void{let Future<int> f = cpu task { return 42; }; return;}");
+        assertEquals(Ast.ExecutionDomain.CPU, canonical.domain());
+        assertFalse(canonical.legacyNb());
+
+        var defaultCpu = taskInitializer(
+                "pub fnc main():void{let Future<int> f = task { return 42; }; return;}");
+        assertEquals(Ast.ExecutionDomain.CPU, defaultCpu.domain());
+        assertFalse(defaultCpu.legacyNb());
+
+        var legacy = taskInitializer(
+                "pub fnc main():void{let Future<int> f = nb cpu { return 42; }; return;}");
+        assertEquals(Ast.ExecutionDomain.CPU, legacy.domain());
+        assertTrue(legacy.legacyNb());
+    }
+
+    @Test void cpuTaskTypeChecksAsFutureAndAwaitUnwrapsIt() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                pub async fnc main(): void {
+                  let Future<int> t = cpu task {
+                    return 42;
+                  };
+                  val int answer = await t;
+                  return;
+                }
+                """));
+    }
+
+    @Test void valueProducingTaskRequiresContextualFutureType() {
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub async fnc main(): void {
+                          val t = cpu task {
+                            return 42;
+                          };
+                          return;
+                        }
+                        """));
+        assertTrue(error.getMessage().contains("contextual Future<T>"), error::getMessage);
+    }
+
+    @Test void gpuTaskNeverFallsBackToCpu() {
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub async fnc main(): void {
+                          let Future<int> t = gpu task {
+                            return 42;
+                          };
+                          val int answer = await t;
+                          return;
+                        }
+                        """));
+        assertTrue(error.getMessage().contains("physical GPU dispatch"), error::getMessage);
+        assertTrue(error.getMessage().contains("no implicit CPU fallback"), error::getMessage);
+    }
+
+    @Test void bareSynchronousCpuAndGpuRegionsRemainReservedUntilContinuationLoweringLands() {
+        for (String domain : new String[]{"cpu", "gpu"}) {
+            var error = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse("pub fnc main():int{return " + domain + " { 42 };}"));
+            assertTrue(error.getMessage().contains("synchronous execution domain"), error::getMessage);
             assertTrue(error.getMessage().contains("no implicit CPU fallback"), error::getMessage);
         }
     }
 
-    @Test void legacyNbTaskBlockGetsMigrationDiagnostic() {
-        var error = assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse("pub fnc main():int{let Future<int> f = nb { 42 }; return await f;}"));
-        assertTrue(error.getMessage().contains("canonical spelling is 'task { ... }'"), error::getMessage);
-    }
-
-    @Test void pinnedV2CorpusIsExactAndEveryCaseFailsClosed() throws Exception {
+    @Test void pinnedV2CorpusDoesNotDriftWhileBackendsAdvanceAtDifferentRates() throws Exception {
         String text = Files.readString(Path.of("contracts/v2/cpu-gpu-task-unsupported-v2.json"));
         var cases = Map.ofEntries(
                 Map.entry("cpu-sync-value", "pub fnc main():int{return cpu { 42 };}"),
@@ -54,12 +104,17 @@ final class CpuGpuTaskV2ContractTest {
         );
         assertEquals(10, cases.size());
         for (var entry : cases.entrySet()) {
-            String jsonLine = "\"" + entry.getKey() + "\": \"" + entry.getValue() + "\"";
-            assertTrue(text.contains(jsonLine), "source drift: " + entry.getKey());
-            var error = assertThrows(IllegalArgumentException.class,
-                    () -> Parser.parse(entry.getValue()), entry.getKey());
-            assertTrue(error.getMessage().contains("execution"), error::getMessage);
-            assertTrue(error.getMessage().contains("no implicit CPU fallback"), error::getMessage);
+            assertTrue(
+                    text.contains("\"" + entry.getKey() + "\": \"" + entry.getValue() + "\""),
+                    "source drift: " + entry.getKey());
         }
+    }
+
+    private static Ast.TaskExpr taskInitializer(String source) {
+        Ast.Program program = Parser.parse(source);
+        Ast.FunctionDecl fn =
+                (Ast.FunctionDecl) program.modules().getFirst().declarations().getFirst();
+        Ast.BindingStmt binding = (Ast.BindingStmt) fn.body().getFirst();
+        return assertInstanceOf(Ast.TaskExpr.class, binding.initializer());
     }
 }
