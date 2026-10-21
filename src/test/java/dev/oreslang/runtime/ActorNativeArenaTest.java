@@ -140,6 +140,34 @@ final class ActorNativeArenaTest {
     }
 
     @Test
+    void clearingAndRefillingNativeListReusesItsHistoricalChunkCapacity() {
+        AtomicLong charged = new AtomicLong();
+        try (ActorNativeArena arena = arena(8192, charged)) {
+            ActorNativeArena.NativeList list = arena.nativeList();
+            for (int i = 0; i < 40; i++) list.add((long) i);
+            long allocated = arena.allocatedBytes();
+            long committed = arena.committedBytes();
+            assertTrue(committed > 0L);
+            for (int cycle = 0; cycle < 120; cycle++) {
+                list.clear();
+                assertEquals(0, list.size());
+                for (int i = 0; i < 40; i++) list.add((long) (cycle * 100 + i));
+                assertEquals(40, list.size());
+                assertEquals((long) (cycle * 100 + 39), list.get(39));
+                assertEquals(allocated, arena.allocatedBytes(),
+                        "repeated clear/refill must reuse actor-relative List chunk offsets");
+                assertEquals(committed, arena.committedBytes(),
+                        "cleared native List capacity must not leak additional arena budget");
+            }
+            list.clear();
+            list.add(42L);
+            assertEquals(42L, list.get(0));
+            assertEquals(allocated, arena.allocatedBytes());
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
     void nativeReferenceRegistryRetainsOnlyCurrentlyReferencedFacades() {
         AtomicLong charged = new AtomicLong();
         Object marker = new Object();
