@@ -356,4 +356,18 @@ final class TypedMapClosedSurfaceLanguageTest {
     }
 
 
+    @Test
+    void actorExecutionCannotAllocateLocalMapYet() {
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheck("""
+                        actor fnc work(): void {
+                          val Map<string, int> values =
+                              new Map<string, int>();
+                          values["x"] = 1;
+                          return;
+                        }
+                        """));
+    }
+
+
 }
