@@ -82,6 +82,33 @@ final class LambdaParameterOrderTest {
     }
 
     @Test
+    void mixedTypedOrdersInSameLambdaAreAccepted() {
+        Ast.Program ast = Parser.parse("""
+                pub routine main(): void {
+                  const fnc foo = |string bar, star: string| -> { return bar + star; };
+                  return;
+                }
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(ast));
+    }
+
+    @Test
+    void rejectedMalformedAnnotationsDoNotBecomeInferredParameters() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                pub routine main(): void {
+                  const fnc bad = |bar:| -> { return bar; };
+                  return;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                pub routine main(): void {
+                  const fnc bad = |bar: string, star:| -> { return bar; };
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void shorthandRequiresLambdaAndImmutableBinding() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 pub routine main(): void { const fnc bad = 42; return; }
