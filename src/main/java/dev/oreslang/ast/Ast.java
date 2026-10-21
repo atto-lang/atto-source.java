@@ -875,7 +875,7 @@ public final class Ast {
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
-            ListExpr, TupleExpr, ObjectExpr, LambdaExpr, TaskExpr, CpuRegionExpr { }
+            ListExpr, TupleExpr, ObjectExpr, LambdaExpr, TaskExpr, CpuRegionExpr, GpuRegionExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
@@ -1190,6 +1190,17 @@ public final class Ast {
                 throw new IllegalStateException("CPU region requires checked result type");
             }
             return type;
+        }
+    }
+
+    /**
+     * Eager GPU execution region, never a CPU callable. A real GPU compiler
+     * must prove device-safe effects, data ownership, launch and fences before
+     * this may execute. Presently every backend rejects this AST.
+     */
+    public record GpuRegionExpr(List<Stmt> body) implements Expr {
+        public GpuRegionExpr {
+            body = List.copyOf(body);
         }
     }
 
