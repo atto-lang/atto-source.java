@@ -1348,7 +1348,8 @@ public final class OwnershipChecker {
                     new LinkedHashMap<>();
             for (Capture capture : captured.values.values()) {
                 Ast.TaskCaptureTransfer transfer =
-                        capture.source.kind == ValueKind.COPY
+                        !capture.write
+                                && capture.source.kind == ValueKind.COPY
                                 ? Ast.TaskCaptureTransfer.COPY
                                 : Ast.TaskCaptureTransfer.MOVE;
                 admitted.put(capture.name, transfer);
