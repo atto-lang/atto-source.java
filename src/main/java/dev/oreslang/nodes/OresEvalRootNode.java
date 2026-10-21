@@ -6968,6 +6968,13 @@ public final class OresEvalRootNode extends RootNode {
                                 created.type().name()
                                         + "<T> constructor takes no positional arguments");
                     }
+                    ActorNativeArena arena = ActorRuntime.currentNativeArena();
+                    if (arena != null
+                            && created.type().arguments().size() == 1
+                            && actorNativeScalarCollectionElement(
+                                    created.type().arguments().getFirst())) {
+                        return arena.nativeList();
+                    }
                     return new ArrayList<>();
                 }
                 if (created.type().name().equals("DynamicStruct")) {
@@ -8508,6 +8515,19 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
             return object;
+        }
+
+        private static boolean actorNativeScalarCollectionElement(Ast.TypeRef type) {
+            if (type == null || !type.arguments().isEmpty()) return false;
+            return switch (type.name()) {
+                case "bool", "boolean",
+                        "byte", "short", "int", "long", "float", "double",
+                        "char", "character",
+                        "string", "String",
+                        "BigInteger", "BigDecimal",
+                        "Symbol", "symbol" -> true;
+                default -> false;
+            };
         }
 
         private Map<String, Object> objectFields(List<Ast.FieldDecl> fields) {
