@@ -122,6 +122,32 @@ final class CpuTopologyTest {
     }
 
     @Test
+    void conflictingHighestCacheIdsFailClosed(@TempDir Path root) throws IOException {
+        cpuFixture(root, 0, "0", "Unified", "3", "7", "0");
+        cpuFixture(root, 1, "0", "Unified", "3", "7", "0");
+        Path second = root.resolve("cpu1/cache/index1");
+        Files.createDirectories(second);
+        Files.writeString(second.resolve("level"), "3");
+        Files.writeString(second.resolve("id"), "9");
+        Files.writeString(second.resolve("type"), "Unified");
+
+        CpuTopology topology = CpuTopology.discoverAt(root);
+        assertEquals(2, topology.localityRank(0, 1),
+                "conflicting highest-level cache IDs must not prove same LLC");
+    }
+
+    @Test
+    void multipleNumaNodesForOneCpuFailClosed(@TempDir Path root) throws IOException {
+        cpuFixture(root, 0, "0", "Unified", "3", "7", "0");
+        cpuFixture(root, 1, "0", "Unified", "3", "8", "0");
+        Files.createDirectories(root.resolve("cpu0/node1"));
+
+        CpuTopology topology = CpuTopology.discoverAt(root);
+        assertEquals(3, topology.localityRank(0, 1),
+                "ambiguous NUMA membership must not prove same node");
+    }
+
+    @Test
     void duplicateSysfsCpuAliasesFailClosed(@TempDir Path root) throws IOException {
         cpuFixture(root, 0, "0", "Unified", "3", "7", "0");
         Path alias = root.resolve("cpu00");
