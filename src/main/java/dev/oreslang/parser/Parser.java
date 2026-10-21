@@ -1494,7 +1494,11 @@ public final class Parser {
             return marked;
         }
 
-        if (matchContextualKeyword("borrow") || match(AMP)) {
+        if (match(AMP)) {
+            throw error(previous(),
+                    "Oreslang does not use '&' for borrowed/reference types; use 'borrow T' or 'borrow mut T'");
+        }
+        if (matchContextualKeyword("borrow")) {
             boolean mutable = match(MUT);
             return Ast.TypeRef.borrowed(parseTypeAtom(), mutable);
         }
@@ -3314,8 +3318,12 @@ public final class Parser {
         }
         if (match(BANG, TILDE, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
         if (match(AMP)) {
-            boolean mutable = match(MUT);
-            return new Ast.UnaryExpr(mutable ? "&mut" : "&", parseUnary());
+            if (match(MUT)) {
+                throw error(previous(),
+                        "Oreslang does not use '&mut' for mutable borrowing; use 'rt mut borrow value'");
+            }
+            throw error(previous(),
+                    "Oreslang does not use '&' for borrowing; use 'rt borrow value'");
         }
         if (match(AWAIT)) return new Ast.AwaitExpr(parseUnary());
         // Expression-level trap is a typed Option boundary; the declaration
@@ -3367,8 +3375,17 @@ public final class Parser {
     }
 
     private Ast.Expr parseRuntimeExpression() {
+        boolean mutableBorrow = false;
         Token operation;
-        if (match(YIELD)) {
+        if (match(MUT)) {
+            Token mut = previous();
+            operation = consume(IDENT, "expected 'borrow' after 'rt mut'");
+            if (!operation.lexeme().equals("borrow")) {
+                throw error(operation,
+                        "'rt mut' only supports borrowing; use 'rt mut borrow value'");
+            }
+            mutableBorrow = true;
+        } else if (match(YIELD)) {
             operation = previous(); // compatibility spelling: rt yield
         } else {
             operation = consume(IDENT, "expected runtime operation after 'rt'");
@@ -3393,9 +3410,9 @@ public final class Parser {
                             + "'; supported operations are cooperate, copy, take, borrow, share, and fail");
         }
 
-        // Mutable borrows use the same ownership checks as the legacy spelling.
         if (name.equals("borrow") && match(MUT)) {
-            return new Ast.UnaryExpr("&mut", parseUnary());
+            throw error(previous(),
+                    "legacy 'rt borrow mut' is not valid Oreslang; use 'rt mut borrow value'");
         }
         Ast.Expr argument;
         if (match(LPAREN)) {
@@ -3407,6 +3424,10 @@ public final class Parser {
         } else {
             // Command form has unary precedence: rt borrow value.member
             argument = parseUnary();
+        }
+        if (mutableBorrow) {
+            // Internal AST marker only; '&mut' is never admitted as Oreslang source syntax.
+            return new Ast.UnaryExpr("&mut", argument);
         }
         return new Ast.RuntimeCallExpr(name, List.of(argument));
     }
