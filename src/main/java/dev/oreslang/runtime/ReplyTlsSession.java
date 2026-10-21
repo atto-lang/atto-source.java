@@ -47,6 +47,8 @@ final class ReplyTlsSession<T> implements AutoCloseable {
     private final int maxFrameBytes;
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicBoolean reading = new AtomicBoolean();
+    /** Linearizes close/disconnect against pending request registration. */
+    private final Object lifecycleLock = new Object();
 
     private ReplyTlsSession(
             SSLSocket socket, ReplySlotRegistry slots,
@@ -149,13 +151,17 @@ final class ReplyTlsSession<T> implements AutoCloseable {
 
     /** Caller-only ticket issuance. The request sender transports the ticket. */
     <R> ReplySlotRegistry.Pending<R> reservePending(Class<R> responseType) {
-        if (closed.get()) throw new IllegalStateException("reply TLS session closed");
-        return slots.reserve(responseType, responseAbi, verifiedPeer);
+        synchronized (lifecycleLock) {
+            if (closed.get()) throw new IllegalStateException("reply TLS session closed");
+            return slots.reserve(responseType, responseAbi, verifiedPeer);
+        }
     }
 
     byte[] ticketFor(long handle) {
-        if (closed.get()) throw new IllegalStateException("reply TLS session closed");
-        return slots.issueRemoteTicket(handle, verifiedPeer, responseAbi);
+        synchronized (lifecycleLock) {
+            if (closed.get()) throw new IllegalStateException("reply TLS session closed");
+            return slots.issueRemoteTicket(handle, verifiedPeer, responseAbi);
+        }
     }
 
     /**
@@ -193,8 +199,12 @@ final class ReplyTlsSession<T> implements AutoCloseable {
     }
 
     private void abort(Throwable cause) {
-        if (!closed.compareAndSet(false, true)) return;
-        slots.failDisconnectedSession(verifiedPeer, cause);
+        synchronized (lifecycleLock) {
+            if (!closed.compareAndSet(false, true)) return;
+            // No reservation can escape between the disconnect sweep and
+            // marking this session closed. Other sessions are unaffected.
+            slots.failDisconnectedSession(verifiedPeer, cause);
+        }
         try {
             socket.close();
         } catch (IOException ignored) {
