@@ -7,37 +7,41 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 class CarrierTopologyPlanTest {
-    @Test void ranksCacheBeforeNumaBeforeRemote() {
+    @Test void ranksCoreThenL2ThenLlcThenNumaThenRemote() {
         CarrierTopologyPlan p = new CarrierTopologyPlan(new CarrierTopologyPlan.Location[]{
-                new CarrierTopologyPlan.Location(0, 0, 12, 0),
-                new CarrierTopologyPlan.Location(2, 0, 12, 0),
-                new CarrierTopologyPlan.Location(4, 0, 14, 0),
-                new CarrierTopologyPlan.Location(16, 1, 12, 1),
+                new CarrierTopologyPlan.Location(0, 0, 10, 20, 30, 0),
+                new CarrierTopologyPlan.Location(1, 0, 10, 20, 30, 0),
+                new CarrierTopologyPlan.Location(2, 0, 11, 20, 30, 0),
+                new CarrierTopologyPlan.Location(3, 0, 12, 21, 30, 0),
+                new CarrierTopologyPlan.Location(4, 0, 13, 22, 31, 0),
+                new CarrierTopologyPlan.Location(16, 1, 10, 20, 30, 1),
                 CarrierTopologyPlan.Location.UNKNOWN
         });
         assertEquals(0, p.tier(0, 1));
         assertEquals(1, p.tier(0, 2));
-        // LLC IDs alone are not globally unique across packages.
         assertEquals(2, p.tier(0, 3));
-        assertEquals(2, p.tier(0, 4));
+        assertEquals(3, p.tier(0, 4));
+        // Cache/core IDs alone are not globally unique across packages.
+        assertEquals(4, p.tier(0, 5));
+        assertEquals(4, p.tier(0, 6));
         assertEquals(1, p.victimAt(0, 0, 0));
         assertEquals(2, p.victimAt(0, 1, 0));
         for (int rotation = 0; rotation < 37; rotation++) {
-            boolean[] seen = new boolean[5];
-            for (int rank = 0; rank < 4; rank++) {
+            boolean[] seen = new boolean[7];
+            for (int rank = 0; rank < 6; rank++) {
                 int candidate = p.victimAt(0, rank, rotation);
                 assertNotEquals(0, candidate);
                 assertFalse(seen[candidate]);
                 seen[candidate] = true;
             }
-            for (int i = 1; i < 5; i++) assertTrue(seen[i]);
+            for (int i = 1; i < 7; i++) assertTrue(seen[i]);
         }
     }
 
     @Test void unknownTopologyDoesNotInventAffinityAndRotatesFairly() {
         var u = CarrierTopologyPlan.Location.UNKNOWN;
         var p = new CarrierTopologyPlan(new CarrierTopologyPlan.Location[]{u, u, u, u});
-        for (int i = 1; i < 4; i++) assertEquals(2, p.tier(0, i));
+        for (int i = 1; i < 4; i++) assertEquals(4, p.tier(0, i));
         assertEquals(1, p.victimAt(0, 0, 0));
         assertEquals(2, p.victimAt(0, 0, 1));
         assertEquals(3, p.victimAt(0, 0, 2));
@@ -110,30 +114,68 @@ class CarrierTopologyPlanTest {
         }
     }
 
-    @Test void malformedOrIncompleteLinuxCacheTopologyFailsSoft(@TempDir Path root)
+    @Test void discoversCoreL2LlcAndNumaAndFailsSoftOnAmbiguity(@TempDir Path root)
             throws Exception {
         Path cpu = root.resolve("cpu7");
         Path topo = Files.createDirectories(cpu.resolve("topology"));
-        Path cache = Files.createDirectories(cpu.resolve("cache/index3"));
+        Path l2 = Files.createDirectories(cpu.resolve("cache/index2"));
+        Path l3 = Files.createDirectories(cpu.resolve("cache/index3"));
         Files.createDirectories(cpu.resolve("node2"));
         Files.writeString(topo.resolve("physical_package_id"), "4\n");
-        Files.writeString(cache.resolve("level"), "3\n");
-        Files.writeString(cache.resolve("type"), "Unified\n");
-        Files.writeString(cache.resolve("id"), "11\n");
-        assertEquals(new CarrierTopologyPlan.Location(7, 4, 11, 2),
+        Files.writeString(topo.resolve("core_id"), "6\n");
+        Files.writeString(l2.resolve("level"), "2\n");
+        Files.writeString(l2.resolve("type"), "Unified\n");
+        Files.writeString(l2.resolve("id"), "9\n");
+        Files.writeString(l3.resolve("level"), "3\n");
+        Files.writeString(l3.resolve("type"), "Unified\n");
+        Files.writeString(l3.resolve("id"), "11\n");
+        assertEquals(new CarrierTopologyPlan.Location(7, 4, 6, 9, 11, 2),
                 CarrierTopologyPlan.discoverAt(7, root));
 
-        Files.writeString(cache.resolve("type"), "Instruction\n");
-        assertEquals(-1, CarrierTopologyPlan.discoverAt(7, root).llcId());
-        Files.writeString(cache.resolve("type"), "Unified\n");
-        Files.writeString(cache.resolve("level"), "2\n");
-        assertEquals(-1, CarrierTopologyPlan.discoverAt(7, root).llcId());
-        Files.delete(cache.resolve("level"));
-        assertEquals(-1, CarrierTopologyPlan.discoverAt(7, root).llcId());
+        Files.writeString(l2.resolve("type"), "Instruction\n");
+        assertEquals(-1, CarrierTopologyPlan.discoverAt(7, root).l2Id());
+        assertEquals(11, CarrierTopologyPlan.discoverAt(7, root).llcId());
+        Files.writeString(l2.resolve("type"), "Unified\n");
+
+        Path duplicateL2 = Files.createDirectories(cpu.resolve("cache/index1"));
+        Files.writeString(duplicateL2.resolve("level"), "2\n");
+        Files.writeString(duplicateL2.resolve("type"), "Unified\n");
+        Files.writeString(duplicateL2.resolve("id"), "99\n");
+        assertEquals(-1, CarrierTopologyPlan.discoverAt(7, root).l2Id());
+        assertEquals(11, CarrierTopologyPlan.discoverAt(7, root).llcId(),
+                "ambiguous L2 should not discard independently valid LLC");
+
         Files.writeString(topo.resolve("physical_package_id"), "not an integer");
-        assertEquals(-1, CarrierTopologyPlan.discoverAt(7, root).packageId());
+        var unknownPackage = CarrierTopologyPlan.discoverAt(7, root);
+        assertEquals(-1, unknownPackage.packageId());
+        assertEquals(-1, unknownPackage.coreId());
+        assertEquals(-1, unknownPackage.l2Id());
+        assertEquals(-1, unknownPackage.llcId());
+        assertEquals(2, unknownPackage.numaNode());
+
+        Files.writeString(topo.resolve("physical_package_id"), "4\n");
+        Files.writeString(l3.resolve("type"), "X".repeat(1024));
+        assertEquals(-1, CarrierTopologyPlan.discoverAt(7, root).llcId(),
+                "oversized sysfs text cannot create cache evidence");
         assertEquals(CarrierTopologyPlan.Location.UNKNOWN,
                 CarrierTopologyPlan.discoverAt(-1, root));
+    }
+
+    @Test void ambiguousNumaMembershipFailsClosed(@TempDir Path root) throws Exception {
+        Path cpu = root.resolve("cpu2");
+        Path topo = Files.createDirectories(cpu.resolve("topology"));
+        Files.writeString(topo.resolve("physical_package_id"), "0\n");
+        Files.writeString(topo.resolve("core_id"), "1\n");
+        Files.createDirectories(cpu.resolve("node0"));
+        Files.createDirectories(cpu.resolve("node1"));
+        assertEquals(-1, CarrierTopologyPlan.discoverAt(2, root).numaNode());
+    }
+
+    @Test void cacheIdentitiesRequirePhysicalPackageQualifier() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new CarrierTopologyPlan.Location(1, -1, 1, 2, 3, 0));
+        assertThrows(IllegalArgumentException.class,
+                () -> new CarrierTopologyPlan.Location(-1, 0, -1, -1, -1, -1));
     }
 
     @Test void boundedGlobalProbesEventuallyVisitEveryRemoteLane() {
