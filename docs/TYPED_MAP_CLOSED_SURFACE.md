@@ -21,6 +21,8 @@ String and Symbol keys are distinct even when their spelling is identical.
 PROCESS and STABLE Symbols retain the runtime identity contract from the
 runtime foundation.
 
+V1 key/value descriptors must be spelled directly at the Map site. Type aliases and generic wrappers around Map, K, or V are rejected until runtime type descriptors are compiler-lowered rather than reconstructed from source AST.
+
 V1 value domains are deliberately reifiable scalars:
 
 - integer
@@ -73,6 +75,7 @@ The compiler/ownership/runtime layers fail closed on:
   generic objects;
 - callable arguments, parameters, returns and yields;
 - closure/deferred callback capture;
+- ordinary lexical closure creation while a live Map remains in the snapshotted lexical environment (even when the closure body does not reference it); `nlex` remains valid because it captures no values;
 - module/global state;
 - class or actor fields;
 - channel/select payloads;
