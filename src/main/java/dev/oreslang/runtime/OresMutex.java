@@ -67,7 +67,7 @@ public final class OresMutex {
             IdentityHashMap<Object, Boolean> seen,
             int depth) {
         if (value == null) return false;
-        if (value instanceof ActorNativeArena.NativeValue) return true;
+        if ((value instanceof ActorNativeArena.NativeValue || value instanceof ActorNativeArena.NativeCapability)) return true;
         // Depth exhaustion is a security rejection, never evidence that a
         // graph is safe to publish.
         if (depth > 128) return true;
