@@ -8178,6 +8178,10 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     yield new ClassFacade(this, klass);
                 }
+                case KERNEL ->
+                        throw new IllegalArgumentException(
+                                "import kernel cannot be evaluated before HAT effect/ownership checking "
+                                        + "and backend lowering");
                 case ACTOR, INTERFACE, CONTRACT, TRAIT, STRUCT, TYPE, TYPES ->
                         throw new IllegalArgumentException(
                                 "import " + kind.name().toLowerCase()
