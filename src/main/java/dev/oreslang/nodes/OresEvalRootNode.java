@@ -18,6 +18,7 @@ import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.HttpResponseDraft;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.OresKeyedMap;
+import dev.oreslang.runtime.OresJsonValue;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
@@ -134,6 +135,7 @@ public final class OresEvalRootNode extends RootNode {
         private final OresContext context;
         private final String codeUnitId;
         private final boolean compilerJsonValueImported;
+        private final boolean compilerJsonFactoryImported;
         // Actor carriers may enter the same evaluator concurrently. The
         // identity map only retains call nodes already owned by this program.
         private final Map<Ast.CallExpr, Integer> optionDepthCache =
@@ -220,6 +222,8 @@ public final class OresEvalRootNode extends RootNode {
             this.codeUnitId = normalizeUnitId(codeUnitId);
             this.compilerJsonValueImported = program.imports().stream()
                     .anyMatch(ImportRules::isAllocJsonValueImport);
+            this.compilerJsonFactoryImported = program.imports().stream()
+                    .anyMatch(ImportRules::isAllocJsonFactoryImport);
             indexImports();
             indexDeclarations();
             indexCallableSlots();
@@ -4834,6 +4838,10 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (receiver instanceof ClassFacade klass) {
+                if (isCompilerJsonFactoryFacade(klass)) {
+                    return compilerJsonFactoryInvocation(
+                            member.member(), args);
+                }
                 Ast.MethodDecl method =
                         klass.owner().findStaticFunction(
                                 klass.klass(),
@@ -4871,6 +4879,78 @@ public final class OresEvalRootNode extends RootNode {
                         "member is not callable: " + member.member());
             }
             return invokableInvocation(invokable, args);
+        }
+
+        private boolean isCompilerJsonFactoryFacade(ClassFacade facade) {
+            return compilerJsonFactoryImported
+                    && compilerJsonValueImported
+                    && facade.klass().name().equals("Json");
+        }
+
+        private Invocation compilerJsonFactoryInvocation(
+                String member,
+                List<Object> args) {
+            return invokableInvocation(
+                    ignored -> switch (member) {
+                        case "of" -> {
+                            requireOne(args, "Json.of");
+                            Object value = args.getFirst();
+                            if (value instanceof Boolean b) yield OresJsonValue.of(b);
+                            if (value instanceof String s) yield OresJsonValue.of(s);
+                            if (value instanceof Byte || value instanceof Short
+                                    || value instanceof Integer || value instanceof Long) {
+                                yield OresJsonValue.of(((Number) value).longValue());
+                            }
+                            if (value instanceof java.math.BigInteger integer) {
+                                yield OresJsonValue.of(integer);
+                            }
+                            if (value instanceof java.math.BigDecimal decimal) {
+                                yield OresJsonValue.of(decimal);
+                            }
+                            if (value instanceof Float || value instanceof Double) {
+                                throw new IllegalArgumentException(
+                                        "Json.of floating input is fail-closed until Oreslang carries an exact decimal scalar");
+                            }
+                            throw new IllegalArgumentException(
+                                    "Json.of accepts bool, int, String, or an exact numeric carrier");
+                        }
+                        case "array" -> {
+                            requireOne(args, "Json.array");
+                            Object raw = args.getFirst();
+                            if (!(raw instanceof Iterable<?> values)) {
+                                throw new IllegalArgumentException(
+                                        "Json.array requires an iterable JsonValue container");
+                            }
+                            ArrayList<OresJsonValue> copy = new ArrayList<>();
+                            for (Object value : values) {
+                                if (!(value instanceof OresJsonValue json)) {
+                                    throw new IllegalArgumentException(
+                                            "Json.array elements must be JsonValue");
+                                }
+                                copy.add(json);
+                            }
+                            yield OresJsonValue.array(copy);
+                        }
+                        case "object" -> {
+                            requireOne(args, "Json.object");
+                            Object raw = args.getFirst();
+                            if (!(raw instanceof OresKeyedMap<?, ?> map)
+                                    || map.keyDomain() != OresKeyedMap.KeyDomain.STRING
+                                    || map.valueDomain() != OresKeyedMap.ValueDomain.JSON) {
+                                throw new IllegalArgumentException(
+                                        "Json.object requires Map<String, JsonValue>");
+                            }
+                            @SuppressWarnings("unchecked")
+                            OresKeyedMap<String, OresJsonValue> jsonMap =
+                                    (OresKeyedMap<String, OresJsonValue>) map;
+                            yield OresJsonValue.object(jsonMap);
+                        }
+                        case "null" -> throw new IllegalArgumentException(
+                                "Json.null is a value, not a function");
+                        default -> throw new IllegalArgumentException(
+                                "unknown compiler-owned Json factory " + member);
+                    },
+                    List.of());
         }
 
         private static int sequenceIndex(Object value) {
@@ -6699,6 +6779,10 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (receiver instanceof ClassFacade klass) {
+                    if (isCompilerJsonFactoryFacade(klass)) {
+                        return compilerJsonFactoryInvocation(
+                                methodCall.member(), args);
+                    }
                     Ast.MethodDecl fn = klass.owner().findStaticFunction(
                             klass.klass(), CallableSelector.staticFunction(methodCall.member(), args.size()));
                     if (fn == null) {
@@ -7954,6 +8038,16 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof ImportedNamespace namespace) return namespace.owner().exportValue(namespace.kind(), name);
             if (receiver instanceof ModuleFacade namespace) return namespace.owner().moduleMember(namespace.module(), name);
             if (receiver instanceof ClassFacade klass) {
+                if (isCompilerJsonFactoryFacade(klass)) {
+                    if (name.equals("null")) return OresJsonValue.nullValue();
+                    if (name.equals("of") || name.equals("array") || name.equals("object")) {
+                        throw new IllegalArgumentException(
+                                "Json." + name
+                                        + " is direct-call-only; invoke it instead of extracting a callable value");
+                    }
+                    throw new IllegalArgumentException(
+                            "unknown compiler-owned Json member " + name);
+                }
                 List<Ast.MethodDecl> functions = klass.owner().findStaticFunctionsByName(klass.klass(), name, new LinkedHashSet<>());
                 if (functions.size() == 1) {
                     Ast.MethodDecl fn = functions.getFirst();
