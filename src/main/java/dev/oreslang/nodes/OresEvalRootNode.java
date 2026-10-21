@@ -4810,6 +4810,10 @@ public final class OresEvalRootNode extends RootNode {
                     || !(member.receiver() instanceof Ast.NameExpr namespace)
                     || !namespace.name().equals("Json")) return false;
             if (env.lookup("Json") != Env.MISSING) return false;
+            if (namedImports.containsKey("Json")
+                    || namespaceImports.containsKey("Json")
+                    || hostClasses.containsKey("Json")
+                    || hostFunctions.containsKey("Json")) return false;
             return findClass("Json") == null && !modules.containsKey("Json");
         }
 

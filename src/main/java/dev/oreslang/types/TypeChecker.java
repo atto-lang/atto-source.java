@@ -217,7 +217,7 @@ public final class TypeChecker {
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
                 "Box", "Arc", "Weak", "Rc", "RefCell", "Mutex", "RwLock",
                 "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult",
-                "Object", "List", "Option", "Result", "Future",
+                "Object", "List", "Map", "Json", "JsonValue", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "HttpResponse", "TcpConnection",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
@@ -2649,6 +2649,7 @@ public final class TypeChecker {
                     && jsonCall.receiver() instanceof Ast.NameExpr jsonName
                     && jsonName.name().equals("Json")
                     && env.lookup("Json") == null
+                    && !importedNames.contains("Json")
                     && findClass("Json") == null
                     && !modules.containsKey("Json")) {
                 if (call.arguments().size() != 1

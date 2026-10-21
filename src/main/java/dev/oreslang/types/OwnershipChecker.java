@@ -1476,7 +1476,9 @@ public final class OwnershipChecker {
         if (call.callee() instanceof Ast.MemberExpr jsonCall
                 && jsonCall.receiver() instanceof Ast.NameExpr jsonName
                 && jsonName.name().equals("Json")
-                && scope.lookup("Json") == null) {
+                && scope.lookup("Json") == null
+                && findClass("Json") == null
+                && !modules.contains("Json")) {
             if (call.arguments().size() != 1
                     || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
                 throw error("Json." + jsonCall.member()
