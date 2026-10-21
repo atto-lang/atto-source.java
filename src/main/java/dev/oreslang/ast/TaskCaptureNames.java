@@ -60,6 +60,8 @@ public final class TaskCaptureNames {
             visitExpr(s.expression(), locals, names);
         } else if (stmt instanceof Ast.BlockStmt s) {
             visitBody(s.body(), locals, names);
+        } else if (stmt instanceof Ast.TaskScopeStmt s) {
+            visitBody(s.body(), locals, names);
         } else if (stmt instanceof Ast.IfStmt s) {
             for (Ast.IfBranch branch : s.branches()) {
                 visitExpr(branch.condition(), locals, names);
