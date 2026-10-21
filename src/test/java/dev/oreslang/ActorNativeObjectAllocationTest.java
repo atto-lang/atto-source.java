@@ -160,7 +160,9 @@ final class ActorNativeObjectAllocationTest {
                 end
 
                 async fnc change(AsyncArenaBox mut box): AsyncArenaBox {
-                  box.value = 99;
+                  box.value = 40;
+                  rt cooperate;
+                  box.value = box.value + 2;
                   return box;
                 }
 
@@ -188,7 +190,7 @@ final class ActorNativeObjectAllocationTest {
         Files.writeString(entry, program);
         LinkedProgramRunner.run(entry, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
                 Set.of(), Map.of(), output, new ByteArrayOutputStream());
-        assertEquals("99", output.toString(StandardCharsets.UTF_8));
+        assertEquals("42", output.toString(StandardCharsets.UTF_8));
     }
 
 
