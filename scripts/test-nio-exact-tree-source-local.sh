@@ -158,6 +158,23 @@ verify_raw_worktree() {
 }
 verify_raw_worktree || exit 77
 
+# Treat the Surefire evidence parser as immutable qualification TCB too.
+# Hash its worktree/index bytes against pinned HEAD, then execute the already-
+# approved Git blob instead of reopening a mutable worktree path.
+verify_surefire_evidence() {
+  local marker="$1" phase="$2"
+  local approved_blob staged_blob actual_blob approved_source
+  approved_blob="$(git rev-parse --verify 'HEAD:scripts/nio_verify_surefire_evidence.py')" || return 77
+  staged_blob="$(git rev-parse --verify ':scripts/nio_verify_surefire_evidence.py')" || return 77
+  actual_blob="$(git hash-object --no-filters scripts/nio_verify_surefire_evidence.py)" || return 77
+  [[ "$staged_blob" == "$approved_blob" && "$actual_blob" == "$approved_blob" ]] || {
+    printf 'ERROR: Surefire evidence parser bytes/index differ from approved HEAD blob.\n' >&2
+    return 77
+  }
+  approved_source="$(git cat-file blob "$approved_blob")" || return 77
+  python3 -I -B -c "$approved_source" "$marker" "$phase"
+}
+
 stage=toolchain
 for tool in java javac mvn python3; do
   command -v "$tool" >/dev/null || { printf 'ERROR: required tool missing: %s\n' "$tool" >&2; exit 69; }
@@ -208,7 +225,7 @@ mvn -B -ntp -Dores.runtime.carriers=native \
 stage=targeted-source-identity
 verify_raw_worktree || exit 77
 stage=targeted-report-audit
-python3 scripts/nio_verify_surefire_evidence.py "$EVIDENCE_DIR/targeted-start.marker" targeted
+verify_surefire_evidence "$EVIDENCE_DIR/targeted-start.marker" targeted || exit 77
 # Treat the evidence parser as part of the qualification TCB as well: a
 # mutation during evidence inspection must be caught before full Maven starts.
 stage=pre-full-source-identity
@@ -231,7 +248,7 @@ touch "$EVIDENCE_DIR/full-start.marker"
 mvn -B -ntp -Dores.runtime.carriers=native verify 2>&1 \
   | tee "$EVIDENCE_DIR/full-maven-verify.log"
 stage=full-report-audit
-python3 scripts/nio_verify_surefire_evidence.py "$EVIDENCE_DIR/full-start.marker" full
+verify_surefire_evidence "$EVIDENCE_DIR/full-start.marker" full || exit 77
 
 if $NATIVE_AOT; then
   # Full verify may execute arbitrary project tests/plugins. Native AOT must
