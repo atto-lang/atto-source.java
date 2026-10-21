@@ -1,0 +1,82 @@
+package dev.oreslang;
+
+import dev.oreslang.ast.Ast;
+import dev.oreslang.parser.Parser;
+import dev.oreslang.types.TypeChecker;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
+import org.junit.jupiter.api.Test;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+import static org.junit.jupiter.api.Assertions.*;
+
+final class LambdaParameterOrderTest {
+    @Test
+    void bothOrdersParseWithIdenticalTypeInformation() {
+        for (String args : new String[] { "string bar, string star", "bar: string, star: string" }) {
+            Ast.Program ast = Parser.parse("""
+                    pub routine main(): void {
+                      const fnc foo = |%s| -> { return bar + star; };
+                      return;
+                    }
+                    """.formatted(args));
+            Ast.FunctionDecl main = (Ast.FunctionDecl) ast.modules().getFirst().declarations().getFirst();
+            Ast.BindingStmt binding = (Ast.BindingStmt) main.body().getFirst();
+            Ast.LambdaExpr lambda = assertInstanceOf(Ast.LambdaExpr.class, binding.initializer());
+            assertEquals("foo", binding.name());
+            assertEquals("bar", lambda.parameters().getFirst().name());
+            assertEquals("string", lambda.parameters().getFirst().type().name());
+            assertEquals("star", lambda.parameters().get(1).name());
+            assertEquals("string", lambda.parameters().get(1).type().name());
+            assertDoesNotThrow(() -> TypeChecker.check(ast));
+        }
+    }
+
+    @Test
+    void bothOrdersEvaluateWithSameClosureSemantics() throws Exception {
+        String code = """
+                pub routine main(): void {
+                  const fnc first = |string bar, string star| -> { return bar + star; };
+                  const fnc second = |bar: string, star: string| -> { return bar + star; };
+                  const third = |bar: string, star: string| -> bar + star;
+                  stdio.stdout.write(first("a", "b"));
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(second("c", "d"));
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(third("e", "f"));
+                  return;
+                }
+                """;
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        Source src = Source.newBuilder(OresLanguage.ID, code, "lambda-order.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context ctx = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).out(out).build()) {
+            ctx.eval(src);
+        }
+        assertEquals("ab:cd:ef", out.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void namedFunctionDeclarationAndModuleBindingsAcceptBothOrders() {
+        for (String args : new String[] {"string bar, string star", "bar: string, star: string"}) {
+            Ast.Program named = Parser.parse("""
+                    fnc concat = |%s| -> string { return bar + star; }
+                    """.formatted(args));
+            assertDoesNotThrow(() -> TypeChecker.check(named));
+            Ast.Program binding = Parser.parse("""
+                    const fnc concat = |%s| -> bar + star;
+                    """.formatted(args));
+            assertDoesNotThrow(() -> TypeChecker.check(binding));
+        }
+    }
+
+    @Test
+    void shorthandRequiresLambdaAndImmutableBinding() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                pub routine main(): void { const fnc bad = 42; return; }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                pub routine main(): void { let fnc bad = || -> 42; return; }
+                """));
+    }
+}
