@@ -2,9 +2,11 @@
 
 Status: **release-blocking invariant**.
 
-Oreslang standard-library I/O must never depend on a host call that parks an
-actor carrier, ROOT carrier, platform worker, pooled worker, or virtual thread.
-A worker-offloaded blocking syscall is not a compliant nonblocking backend.
+Oreslang standard-library I/O must never depend on a data-plane host call that
+parks an actor carrier, ROOT carrier, or one platform/pooled/virtual worker per
+operation. A worker-offloaded blocking syscall is not a compliant nonblocking
+backend. A bounded reactor may sleep only in a multiplexed readiness/completion
+wait such as epoll/kqueue/IOCP.
 
 ## Required architecture
 
@@ -22,9 +24,10 @@ another I/O operation, that operation must fail closed as unsupported.
 ## Java strict-boundary state
 
 The Java/Graal branch now treats the legacy blocking host adapters as
-**quarantined migration code, not a stdlib backend**. Source-visible FS/TCP/HTTP
-and terminal operations fail closed (async forms return failed Futures) until a
-strict readiness/completion provider is installed. `stdlib/testing.ores` is
+**quarantined migration code, not a stdlib backend**. Bare synchronous FS/TCP/HTTP/terminal spellings are compiler-rejected. Admitted
+async forms return failed Futures until a strict readiness/completion provider
+is installed. Canonical `*_blocking` spellings remain reserved until implicit
+continuation-suspension lowering is implemented. `stdlib/testing.ores` is
 pure and no longer writes to stdout.
 
 The release gate `tools/strict-nonblocking-io-audit.py` checks that stdlib
