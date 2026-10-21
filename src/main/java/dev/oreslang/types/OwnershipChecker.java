@@ -1629,7 +1629,8 @@ public final class OwnershipChecker {
                             "collection method '" + member.member() + "'");
                 }
                 if (isTypedMapType(concreteCollection)
-                        && (member.member().equals("take")
+                        && (member.member().equals("put")
+                                || member.member().equals("take")
                                 || member.member().equals("remove"))) {
                     if (!(member.receiver() instanceof Ast.NameExpr)) {
                         throw error("Map." + member.member()
