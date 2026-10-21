@@ -3871,7 +3871,14 @@ public final class OwnershipChecker {
         // ActorRef<T> is an explicit runtime-synchronized mailbox capability.
         // T is routing/protocol metadata, not embedded actor state.
         if (name.equals("ActorRef")) {
-            return type.arguments().size() == 1 ? scalar : none;
+            if (type.arguments().size() != 1) return none;
+            Ast.TypeRef target = type.arguments().getFirst();
+            if (target.isBorrow() || target.inferArguments()
+                    || !target.arguments().isEmpty()) return none;
+            Ast.ClassDecl actorTarget = findClass(target.name());
+            return actorTarget != null
+                    && actorTarget.actorKind() != Ast.ActorKind.NONE
+                    ? scalar : none;
         }
 
         // Task-owned authority and actor-turn/foreign capabilities do not
