@@ -16,14 +16,18 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 final class TaskBorrowBoundaryV2Test {
     @Test
-    void canonicalTaskBorrowFixturesUseRtOwnershipSyntax() throws Exception {
-        String source = java.nio.file.Files.readString(
-                java.nio.file.Path.of(
-                        "src/test/java/dev/oreslang/TaskBorrowBoundaryV2Test.java"));
-        assertFalse(source.contains("rt borrow mut"),
-                "Task borrow regressions must reject legacy 'rt borrow mut' spelling");
-        assertFalse(source.matches("(?s).*\\b(?:val|let|const)\\s+&(?:mut\\s+)?[A-Za-z_].*"),
-                "Task borrow regressions must not introduce pointer-style source borrows");
+    void canonicalTaskBorrowFixturesUseRtOwnershipSyntax() {
+        // Exercise the actual source parser. Scanning this test file for a
+        // forbidden spelling would match its own negative-test fixtures and
+        // fail regardless of compiler correctness.
+        assertDoesNotThrow(() -> Parser.parse("""
+                pub fnc main(): void {
+                  let Box owner = new Box();
+                  val shared = rt borrow owner;
+                  val exclusive = rt mut borrow owner;
+                  return;
+                }
+                """));
     }
 
     private static final String BOX = """
