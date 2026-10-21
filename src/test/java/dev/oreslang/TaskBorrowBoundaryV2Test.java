@@ -302,6 +302,52 @@ final class TaskBorrowBoundaryV2Test {
     }
 
     @Test
+    void canonicalAutoTraitsDriveTaskSendAdmission() throws Exception {
+        var program = Parser.parse("pub fnc main(): void { return; }");
+        var constructor = OwnershipChecker.class.getDeclaredConstructor(
+                dev.oreslang.ast.Ast.Program.class,
+                java.util.Map.class);
+        constructor.setAccessible(true);
+        var checker = constructor.newInstance(program, java.util.Map.of());
+        var gate = OwnershipChecker.class.getDeclaredMethod(
+                "forbiddenTaskCapability", dev.oreslang.ast.Ast.TypeRef.class);
+        gate.setAccessible(true);
+
+        java.util.function.Function<String, dev.oreslang.ast.Ast.TypeRef> one =
+                name -> new dev.oreslang.ast.Ast.TypeRef(
+                        name,
+                        java.util.List.of(
+                                dev.oreslang.ast.Ast.TypeRef.simple("int")),
+                        false);
+
+        assertFalse((Boolean) gate.invoke(checker, one.apply("Box")));
+        assertFalse((Boolean) gate.invoke(checker, one.apply("RefCell")));
+        assertFalse((Boolean) gate.invoke(checker, one.apply("Mutex")));
+        assertFalse((Boolean) gate.invoke(checker, one.apply("RwLock")));
+        assertFalse((Boolean) gate.invoke(checker, one.apply("Arc")));
+        assertFalse((Boolean) gate.invoke(checker, one.apply("Weak")));
+        assertFalse((Boolean) gate.invoke(checker, one.apply("Future")));
+        assertFalse((Boolean) gate.invoke(checker, one.apply("Channel")));
+
+        assertTrue((Boolean) gate.invoke(checker, one.apply("Rc")),
+                "Rc<T> is not Send across independently scheduled Tasks");
+
+        var refCellInt = one.apply("RefCell");
+        var arcRefCell = new dev.oreslang.ast.Ast.TypeRef(
+                "Arc", java.util.List.of(refCellInt), false);
+        assertTrue((Boolean) gate.invoke(checker, arcRefCell),
+                "Arc<T> requires T to be Sync as well as Send");
+
+        var rcInt = one.apply("Rc");
+        for (String outer : new String[] {"Box", "Future", "Channel"}) {
+            var wrapped = new dev.oreslang.ast.Ast.TypeRef(
+                    outer, java.util.List.of(rcInt), false);
+            assertTrue((Boolean) gate.invoke(checker, wrapped),
+                    () -> outer + " must propagate nested non-Send Rc");
+        }
+    }
+
+    @Test
     void unknownNominalTaskCaptureCannotAssumeSendWithoutLinkedLayout() throws Exception {
         // The missing class definition is NOT proof that a host/external
         // object is transferable. Only verified owned types can move across
