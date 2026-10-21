@@ -20,7 +20,6 @@ public final class ScopedTaskReadRuntime {
 
     private record AllocationKey(
             String domain,
-            String ownerId,
             long allocationId,
             long generation) { }
 
@@ -94,7 +93,6 @@ public final class ScopedTaskReadRuntime {
                 authority.allocation();
         AllocationKey key = new AllocationKey(
                 allocation.domain(),
-                allocation.ownerId(),
                 allocationId,
                 generation);
         register(key);
@@ -197,7 +195,6 @@ public final class ScopedTaskReadRuntime {
             ScopedTaskReadAuthority.AllocationIdentity allocation) {
         return new AllocationKey(
                 allocation.domain(),
-                allocation.ownerId(),
                 allocation.allocationId(),
                 allocation.generation());
     }
