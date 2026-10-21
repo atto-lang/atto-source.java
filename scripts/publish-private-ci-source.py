@@ -13,8 +13,10 @@ import os
 import stat
 from pathlib import Path
 import re
+import resource
 import subprocess
 import sys
+import tempfile
 
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
 APPROVAL = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*) ([1-9][0-9]*)$")
@@ -45,6 +47,11 @@ SECURITY_CODEOWNER = "@ORESoftware"
 
 
 class Denied(RuntimeError):
+    pass
+
+
+class GitHubWriteRejected(Denied):
+    """GitHub definitively rejected a ref create; this call made no ref."""
     pass
 
 
@@ -165,28 +172,92 @@ def canonical_security_lines(contents, label):
     return contents.decode("ascii").split("\n")
 
 
+def run_bounded_gh(argv, *, input=None, env=None, timeout=45):
+    """Execute gh with an OS-enforced per-stream byte cap.
+
+    capture_output=True buffers attacker-controlled output before Python can
+    reject it. Anonymous regular files plus RLIMIT_FSIZE bound stdout/stderr
+    before exec. An exact-cap stream is rejected because the child may have
+    suppressed EFBIG/SIGXFSZ.
+    """
+    limit = MAX_GH_API_RESPONSE_CHARS
+    if (not hasattr(resource, "RLIMIT_FSIZE")
+            or type(limit) is not int or limit < 2):
+        raise Denied("OS cannot safely bound GitHub CLI output")
+
+    def limit_child_files():
+        resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
+
+    try:
+        with tempfile.TemporaryFile(mode="w+b") as stdout_file, \
+                tempfile.TemporaryFile(mode="w+b") as stderr_file:
+            result = subprocess.run(
+                argv,
+                input=input,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                text=True,
+                env=env,
+                timeout=timeout,
+                check=False,
+                start_new_session=True,
+                preexec_fn=limit_child_files,
+            )
+            stdout_file.seek(0)
+            stderr_file.seek(0)
+            stdout_bytes = stdout_file.read(limit + 1)
+            stderr_bytes = stderr_file.read(limit + 1)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise Denied(
+            "authenticated GitHub CLI bounded execution unavailable"
+        ) from exc
+
+    if len(stdout_bytes) >= limit or len(stderr_bytes) >= limit:
+        raise Denied("authenticated GitHub API response exceeds size limit")
+    try:
+        stdout = stdout_bytes.decode("utf-8")
+        stderr = stderr_bytes.decode("utf-8")
+    except UnicodeError as exc:
+        raise Denied("authenticated GitHub API response is not UTF-8") from exc
+    return subprocess.CompletedProcess(argv, result.returncode, stdout, stderr)
+
+
 def gh_api(route, method="GET", payload=None):
-    """Authenticated GitHub API with a trusted executable and sealed environment."""
-    argv = [trusted_github_cli(), "api", "--method", method, route,
-            "--header", "Accept: application/vnd.github+json"]
+    """Authenticated GitHub API with bounded output and sealed environment."""
+    argv = [
+        trusted_github_cli(), "api", "--method", method, route,
+        "--header", "Accept: application/vnd.github+json",
+    ]
     if payload is not None:
         argv.extend(["--input", "-"])
     try:
-        p = subprocess.run(
+        p = run_bounded_gh(
             argv,
             input=json.dumps(payload) if payload is not None else None,
-            capture_output=True, text=True,
             env=github_api_environment(),
-            timeout=45, check=False,
+            timeout=45,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Denied("authenticated GitHub API request unavailable") from exc
-    # Never display stderr: it may contain private data or credentials.
-    if p.returncode != 0:
-        raise Denied("authenticated GitHub API request failed")
-    if (not isinstance(p.stdout, str) or len(p.stdout) > MAX_GH_API_RESPONSE_CHARS
-            or not isinstance(p.stderr, str) or len(p.stderr) > MAX_GH_API_RESPONSE_CHARS):
+
+    if (not isinstance(p.stdout, str) or not isinstance(p.stderr, str)
+            or len(p.stdout) > MAX_GH_API_RESPONSE_CHARS
+            or len(p.stderr) > MAX_GH_API_RESPONSE_CHARS):
         raise Denied("authenticated GitHub API response exceeds size limit")
+    if p.returncode != 0:
+        # Only gh's canonical first-line 422 proves this POST was rejected.
+        # Incidental error-body text must remain an ambiguous failure.
+        first_line = p.stderr.split("\n", 1)[0]
+        definite_conflict = re.fullmatch(
+            r"gh: [^\r\n]{1,4096} \(HTTP 422\)", first_line
+        )
+        if (method == "POST" and route.endswith("/git/refs")
+                and definite_conflict is not None):
+            raise GitHubWriteRejected(
+                "authenticated GitHub ref creation was rejected"
+            )
+        raise Denied("authenticated GitHub API request failed")
+
     data = strict_json_loads(p.stdout)
     if not isinstance(data, dict):
         raise Denied("unexpected GitHub response shape")
