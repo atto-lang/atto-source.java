@@ -37,9 +37,12 @@ metadata="$(GH_HOST=github.com gh api "repos/$target" --jq '[.full_name, .visibi
   fail 'cannot verify repository identity and visibility from live GitHub API'
 [[ -n "$metadata" && "$metadata" != *$'\n'* && "$metadata" != *$'\r'* ]] ||
   fail 'API returned empty or multiline repository metadata'
-IFS=$'\t' read -r actual_name visibility private_flag actual_id extra <<< "$metadata"
-[[ -z "${extra:-}" && "$actual_id" != *$'\t'* ]] ||
+# Require exactly four nonempty tab-separated API fields; Bash read/IFS alone
+# collapses empty trailing columns and is therefore not a safe TSV validator.
+metadata_pattern=$'^[^\t\r\n]+\t[^\t\r\n]+\t[^\t\r\n]+\t[^\t\r\n]+$'
+[[ "$metadata" =~ $metadata_pattern ]] ||
   fail 'API returned invalid repository metadata field count'
+IFS=$'\t' read -r actual_name visibility private_flag actual_id <<< "$metadata"
 [[ "${actual_name,,}" == "${target,,}" ]] || fail 'API identity differs from requested destination'
 [[ "$visibility" == private && "$private_flag" == true ]] || fail 'destination is not private'
 [[ "$actual_id" =~ ^[1-9][0-9]*$ && "$actual_id" == "$approved_id" ]] ||
