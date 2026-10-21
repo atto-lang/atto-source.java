@@ -162,6 +162,8 @@ public final class ReturnCleanupChecker {
                 }
             } else if (stmt instanceof Ast.BlockStmt block) {
                 statements(block.body(), scope, inFinally, inDefer, trackReturns, state);
+            } else if (stmt instanceof Ast.TaskScopeStmt taskScope) {
+                statements(taskScope.body(), scope, inFinally, inDefer, trackReturns, state);
             } else if (stmt instanceof Ast.IfStmt conditional) {
                 for (Ast.IfBranch branch : conditional.branches()) {
                     expression(branch.condition(), scope, inDefer, state);
