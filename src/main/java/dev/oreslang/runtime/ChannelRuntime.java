@@ -357,6 +357,8 @@ public final class ChannelRuntime {
         private final List<SelectCase> cases;
         private final AtomicLong fairCursor;
         private final int defaultIndex;
+        /** Immutable fast-path flag: channel-only selections need no Future listeners. */
+        private final boolean hasFutureCase;
 
         public SelectSet(Collection<? extends SelectCase> cases) {
             this(cases, 0L);
@@ -388,8 +390,11 @@ public final class ChannelRuntime {
             }
             this.cases = List.copyOf(cases);
             int firstDefault = -1;
+            boolean futureArm = false;
             for (int i = 0; i < this.cases.size(); i++) {
-                if (!(this.cases.get(i) instanceof DefaultCase)) continue;
+                SelectCase candidate = this.cases.get(i);
+                if (candidate instanceof FutureCase<?>) futureArm = true;
+                if (!(candidate instanceof DefaultCase)) continue;
                 if (firstDefault >= 0) {
                     throw new IllegalArgumentException(
                             "select permits at most one default case");
@@ -397,6 +402,7 @@ public final class ChannelRuntime {
                 firstDefault = i;
             }
             this.defaultIndex = firstDefault;
+            this.hasFutureCase = futureArm;
         }
 
         public static SelectSet of(SelectCase... cases) {
@@ -960,6 +966,10 @@ public final class ChannelRuntime {
         }
 
         private void attachFutureWaiters() {
+            // Do not allocate a registration snapshot for a pending selection
+            // comprised solely of channel/default cases. There cannot be any
+            // producer listener to arm, even if admission has not decided.
+            if (!set.hasFutureCase) return;
             List<CaseRegistration> pending;
             COORDINATOR.lock();
             try {
@@ -1350,8 +1360,7 @@ public final class ChannelRuntime {
         // COORDINATOR while we probe aliases of that producer: without an
         // identity snapshot, an earlier alias can see PENDING while a later
         // alias sees READY in the very same PRIORITY/FAIR preference pass.
-        java.util.IdentityHashMap<OresFuture<?>, Boolean> observedFutureReadiness =
-                new java.util.IdentityHashMap<>();
+        java.util.IdentityHashMap<OresFuture<?>, Boolean> observedFutureReadiness = null;
 
         for (int step = 0; step < selection.set.cases.size(); step++) {
             int index = selection.orderedIndex(step);
@@ -1363,6 +1372,9 @@ public final class ChannelRuntime {
             if (registration == null) continue;
 
             if (selectCase instanceof FutureCase<?> futureCase) {
+                if (observedFutureReadiness == null) {
+                    observedFutureReadiness = new java.util.IdentityHashMap<>();
+                }
                 OresFuture<?> producer = futureCase.future();
                 Boolean ready = observedFutureReadiness.get(producer);
                 if (ready == null) {
