@@ -33,6 +33,19 @@ fn verify(root: &Path, expected: &str) -> Result<(),String> {
         return Err("private source object is not a Git tree".into());
     }
     if actual != expected { return Err("carrier source tree differs from approved source tree".into()); }
+    // A matching committed tree does not prove that checked-out files are
+    // unchanged. Refuse all staged, unstaged, ignored and untracked changes
+    // before any Maven or Graal build executes.
+    let source_path = root.join(SUBTREE);
+    let source_kind = fs::symlink_metadata(&source_path)
+        .map_err(|_| "nested source directory is absent")?.file_type();
+    if !source_kind.is_dir() || source_kind.is_symlink() {
+        return Err("nested source checkout is not a real directory".into());
+    }
+    if !git(&root, &["status", "--porcelain=v1",
+            "--untracked-files=all", "--ignored=matching", "--", SUBTREE])?.is_empty() {
+        return Err("nested source working tree differs from authenticated Git tree".into());
+    }
     Ok(())
 }
 fn main() -> ExitCode {
