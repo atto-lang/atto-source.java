@@ -494,6 +494,9 @@ public final class CapabilityChecker {
             for (Ast.Expr a : e.arguments()) checkExpr(a, policy);
         }
         else if (expr instanceof Ast.AwaitExpr e) checkExpr(e.expression(), policy);
+        else if (expr instanceof Ast.TaskExpr e) {
+            checkStatements(e.body(), policy);
+        }
         else if (expr instanceof Ast.ChannelOpExpr e) {
             checkExpr(e.channel(), policy);
             if (e.value() != null) checkExpr(e.value(), policy);
