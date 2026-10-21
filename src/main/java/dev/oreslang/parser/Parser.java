@@ -1716,16 +1716,19 @@ public final class Parser {
                     "end-delimited actor callable bodies are not enabled; use a braced actor body");
         }
 
-        // 'as' is an optional, semantics-free body boundary only when it is
-        // written on the same source line as the completed return type. This
-        // deliberately leaves every 'do' token to ordinary body syntax such
-        // as 'do select { ... }' and 'do match ...'.
+        // 'as' and '::' are optional, semantics-free body boundaries only
+        // when written on the same source line as the completed return type.
+        // DOUBLE_COLON remains ordinary qualified-member syntax everywhere
+        // else; this branch is reached only at the callable-body boundary.
+        // Every 'do' token is deliberately left to body syntax such as
+        // 'do select { ... }' and 'do match ...'.
         Token headerEnd = previous();
-        boolean explicitBodySeparator = check(AS) && peek().line() == headerEnd.line();
+        boolean explicitBodySeparator =
+                (check(AS) || check(DOUBLE_COLON)) && peek().line() == headerEnd.line();
         if (explicitBodySeparator) advance();
         if (!explicitBodySeparator && (current == 0 || headerEnd.line() >= peek().line())) {
             throw error(peek(),
-                    "end-delimited callable body must begin on the line after its '-> ReturnType' header, or use same-line optional 'as'");
+                    "end-delimited callable body must begin on the line after its '-> ReturnType' header, or use same-line optional 'as'/'::'");
         }
 
         List<Ast.Stmt> body = new ArrayList<>();
