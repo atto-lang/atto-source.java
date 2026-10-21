@@ -21,8 +21,7 @@ final class SourceActorUnaryRequestExecutionTest {
                   }
 
                   receive(ActorMail<ActorRef<Worker>> mail): void {
-                    val peer = mail.value;
-                    val answer = peer.request("ping");
+                    val answer = mail.value.request("ping");
                     val response = await answer;
                     self.send(response);
                     self.end();
@@ -52,8 +51,7 @@ final class SourceActorUnaryRequestExecutionTest {
                   run(String request): String { return "pong"; }
 
                   receive(ActorMail<ActorRef<Worker>> mail): void {
-                    val peer = mail.value;
-                    val invalid = peer.request(42);
+                    val invalid = mail.value.request(42);
                     self.end();
                     return;
                   }
