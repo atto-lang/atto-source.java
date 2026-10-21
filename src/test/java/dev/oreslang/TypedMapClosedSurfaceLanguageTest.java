@@ -177,6 +177,37 @@ final class TypedMapClosedSurfaceLanguageTest {
         assertThrows(IllegalArgumentException.class, () ->
                 OresCompiler.parseAndTypeCheck("""
                         pub fnc main(): void {
+                          let Map<string, int> values =
+                              new Map<string, int>();
+                          values["x"] = 1;
+                          return;
+                        }
+                        """));
+
+        assertDoesNotThrow(() ->
+                OresCompiler.parseAndTypeCheck("""
+                        pub fnc main(): void {
+                          let mut Map<string, int> values =
+                              new Map<string, int>();
+                          values["x"] = 1;
+                          const int x = values["x"];
+                          return;
+                        }
+                        """));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheck("""
+                        pub fnc main(): void {
+                          let mut Map<string, int> values =
+                              new Map<string, int>();
+                          values = new Map<string, int>();
+                          return;
+                        }
+                        """));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheck("""
+                        pub fnc main(): void {
                           val Map<string, int> values =
                               new Map<string, int>();
                           (rt borrow mut values)["x"] = 1;
