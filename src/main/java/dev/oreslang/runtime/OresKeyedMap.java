@@ -495,7 +495,20 @@ public final class OresKeyedMap<K, V> {
      * Atomically remove and transfer a value while preserving key absence as
      * an explicit outer state.  No public has/get/remove sequence is needed.
      */
-    public synchronized Lookup<V> take(Object key) {
+    public Lookup<V> take(Object key) {
+        if (valueDomain == ValueDomain.JSON) {
+            synchronized (JSON_GRAPH_ADMISSION_LOCK) {
+                synchronized (this) {
+                    return takeUnderMonitor(key);
+                }
+            }
+        }
+        synchronized (this) {
+            return takeUnderMonitor(key);
+        }
+    }
+
+    private Lookup<V> takeUnderMonitor(Object key) {
         rejectReentrantMutation();
         checkKey(key);
         V existing = entries.get(key);
@@ -512,11 +525,25 @@ public final class OresKeyedMap<K, V> {
     }
 
     /** Host compatibility API; guest consuming lowering should prefer take(). */
-    public synchronized V remove(Object key) {
+    public V remove(Object key) {
         return take(key).value();
     }
 
-    public synchronized void clear() {
+    public void clear() {
+        if (valueDomain == ValueDomain.JSON) {
+            synchronized (JSON_GRAPH_ADMISSION_LOCK) {
+                synchronized (this) {
+                    clearUnderMonitor();
+                }
+            }
+            return;
+        }
+        synchronized (this) {
+            clearUnderMonitor();
+        }
+    }
+
+    private void clearUnderMonitor() {
         rejectReentrantMutation();
         entries.clear();
         storedKeyWireBytes = 0L;
