@@ -1130,6 +1130,8 @@ public final class OresEvalRootNode extends RootNode {
             private final List<?> arguments;
             private final TaskLaunchAuthority taskLaunchAuthority;
             private Env initialBlockEnv;
+            /** Independent Task launch authority is one-shot even if a scheduler mis-dispatches it. */
+            private boolean taskLaunchConsumed;
 
             private SourceValueCont awaitingContinuation;
             private OresScheduler.Step<Object> nextStep;
@@ -1198,25 +1200,41 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
 
+            private void validateTaskLaunchAuthority() {
+                if (taskLaunchAuthority == null
+                        || taskLaunchAuthority.ownershipCheckEpoch()
+                                != taskAdmissionEpoch
+                        || taskLaunchAuthority.launchId() <= 0
+                        || taskLaunchAuthority.parentScopeEpoch() <= 0
+                        || taskLaunchAuthority.domain()
+                                != Ast.ExecutionDomain.CPU) {
+                    throw new IllegalStateException(
+                            "source Task resumed with stale or invalid launch authority");
+                }
+            }
+
             private OresScheduler.Step<Object> resumeSource(OresScheduler.Resume resume) {
                 // An await starts a new physical dispatch quantum. Neither an
                 // await nor generator yield is counted as a cooperate handoff.
                 cooperationQuantum.beginDispatch();
                 nextStep = null;
 
+                // Revalidate immutable launch identity on every physical child
+                // dispatch. This is deliberately independent of scheduler trust:
+                // a malformed/replayed Resume must never turn a stale source
+                // Task into executable authority.
+                if (blockBody != null) {
+                    validateTaskLaunchAuthority();
+                }
+
                 if (resume.initial()) {
                     Env params;
                     if (blockBody != null) {
-                        if (taskLaunchAuthority == null
-                                || taskLaunchAuthority.ownershipCheckEpoch()
-                                        != taskAdmissionEpoch
-                                || taskLaunchAuthority.launchId() <= 0
-                                || taskLaunchAuthority.parentScopeEpoch() <= 0
-                                || taskLaunchAuthority.domain()
-                                        != Ast.ExecutionDomain.CPU) {
+                        if (taskLaunchConsumed) {
                             throw new IllegalStateException(
-                                    "source Task resumed with stale or invalid launch authority");
+                                    "source Task launch authority was replayed");
                         }
+                        taskLaunchConsumed = true;
                         params = initialBlockEnv != null
                                 ? initialBlockEnv
                                 : new Env(null);
