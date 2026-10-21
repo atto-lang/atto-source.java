@@ -180,7 +180,18 @@ public final class Ast {
         }
         public boolean isUnion() { return name.equals("$union$"); }
 
+        public static final int MAX_TUPLE_ARITY = 64;
+
         public static TypeRef tupleType(List<TypeRef> elements) {
+            java.util.Objects.requireNonNull(elements, "tuple type elements");
+            if (elements.size() > MAX_TUPLE_ARITY) {
+                throw new IllegalArgumentException(
+                        "finite tuple type arity " + elements.size()
+                                + " exceeds maximum " + MAX_TUPLE_ARITY);
+            }
+            for (TypeRef element : elements) {
+                java.util.Objects.requireNonNull(element, "tuple type element");
+            }
             return new TypeRef("$tuple$", List.copyOf(elements), false);
         }
         public boolean isTupleType() { return name.equals("$tuple$"); }
