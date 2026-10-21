@@ -45,6 +45,37 @@ final class ActorNativeArenaTest {
     }
 
     @Test
+    void lexicalValueCellsKeepSupportedPayloadsNativeAndRejectForeignAuthority() {
+        AtomicLong charged = new AtomicLong();
+        Object marker = new Object();
+        try (ActorNativeArena arena = arena(16 * 1024, charged);
+             ActorNativeArena foreignArena = arena(16 * 1024, new AtomicLong())) {
+            ActorNativeArena.ValueCell cell = arena.valueCell(41L, marker);
+            assertTrue(cell.nativeOffset() >= 0);
+            assertEquals(41L, cell.get());
+
+            assertTrue(cell.trySet("native-local"));
+            assertEquals("native-local", cell.get());
+
+            Map<String, Object> object = arena.fields(List.of("value"), marker);
+            object.put("value", 7L);
+            assertTrue(cell.trySet(object));
+            assertSame(object, cell.get());
+
+            assertFalse(cell.trySet(List.of(1, 2, 3)),
+                    "managed-only collection fallback must be explicit");
+            assertSame(object, cell.get(),
+                    "unsupported lowering must not corrupt the previous native local");
+
+            Map<String, Object> foreign = foreignArena.fields(List.of("value"), marker);
+            assertThrows(SecurityException.class, () -> cell.trySet(foreign),
+                    "a lexical slot must never downgrade a foreign arena reference to managed storage");
+            assertSame(object, cell.get());
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
     void referencesStayInTheirArenaAndCyclesDoNotPreventReclamation() {
         AtomicLong charged = new AtomicLong();
         ActorNativeArena first = arena(8192, charged);
