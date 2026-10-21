@@ -15,7 +15,7 @@ final class CompilerCheckModeTest {
     void validationCompilesWithoutExecutingMain() throws Exception {
         Path source = Files.createTempFile("ores-check-", ".ores");
         Files.writeString(source, """
-                pub fnc main() => void {
+                pub fnc main(): void {
                   let denominator = 0;
                   let result = 1 / denominator;
                   return;
@@ -26,6 +26,22 @@ final class CompilerCheckModeTest {
 
         assertEquals(1, result.units().size());
         assertTrue(result.units().containsKey(source.toAbsolutePath().normalize().toString().replace('\\', '/')));
+    }
+
+    @Test
+    void conditionalDoDeprecationUsesEditorDiagnosticShape() {
+        Path source = Path.of("demo.ores");
+        var warnings = OresMain.formatSyntaxWarnings(source, """
+                pub fnc main(): void {
+                  if true; do
+                    return;
+                  fi
+                }
+                """);
+
+        assertEquals(1, warnings.size());
+        assertTrue(warnings.getFirst().endsWith(
+                "demo.ores:2:12: warning: conditional 'do' is deprecated; use 'then'"));
     }
 
     @Test
