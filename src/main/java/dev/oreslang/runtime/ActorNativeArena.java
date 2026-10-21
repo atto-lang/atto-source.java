@@ -401,6 +401,42 @@ public final class ActorNativeArena implements AutoCloseable {
         }
     }
 
+    /**
+     * Preflight whether a value can be persisted in a native actor slot without
+     * mutating arena state. Foreign/forged authorities are rejected rather
+     * than reported as an ordinary unsupported value.
+     */
+    public synchronized boolean canStorePersistentValue(Object value, Object uninitialized) {
+        checkAccess();
+        if (value == null || value == uninitialized
+                || value instanceof Boolean || value instanceof Byte
+                || value instanceof Short || value instanceof Integer
+                || value instanceof Long || value instanceof Float
+                || value instanceof Double || value instanceof Character
+                || value instanceof String || value instanceof BigInteger
+                || value instanceof BigDecimal || value instanceof OresSymbol) {
+            return true;
+        }
+        if (value instanceof NativeCapability capability) {
+            if (capability.nativeArena() != this) {
+                throw new SecurityException("foreign actor capability");
+            }
+            return true;
+        }
+        if (value instanceof NativeValue nativeValue) {
+            if (nativeValue.nativeArena() != this) {
+                throw new SecurityException("foreign actor arena reference");
+            }
+            long address = nativeValue.nativeOffset();
+            Long issued = issuedNativeOffsets.get(nativeValue);
+            if (address < 0 || issued == null || issued.longValue() != address) {
+                throw new SecurityException("actor-native reference was not issued by this arena");
+            }
+            return true;
+        }
+        return false;
+    }
+
     private boolean supportsValue(Object value, Object uninitialized) {
         if (value == null || value == uninitialized
                 || value instanceof Boolean || value instanceof Byte
