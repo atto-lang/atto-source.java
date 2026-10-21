@@ -184,3 +184,11 @@ policy remains empty.
 
 Provenance/HIR implementation and accept/reject conformance matrix are
 tracked in [Java issue #1793](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/1793).
+
+
+The opt-in AST auditor also treats `Ast.TrapExpr` as
+`UNKNOWN_CALL + ALLOC` until the compiler proves actual checked-handler
+and Option construction semantics. Merely writing `trap` never discharges
+the underlying THROW effect in this conservative path. A synthetic AST
+JUnit regression checks the denial; it is **not yet executed** against
+the full Java compiler.
