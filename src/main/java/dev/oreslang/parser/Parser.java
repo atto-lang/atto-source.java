@@ -1509,9 +1509,13 @@ public final class Parser {
             return marked;
         }
 
-        if (matchContextualKeyword("borrow") || match(AMP)) {
+        if (matchContextualKeyword("borrow")) {
             boolean mutable = match(MUT);
             return Ast.TypeRef.borrowed(parseTypeAtom(), mutable);
+        }
+        if (match(AMP)) {
+            throw error(previous(),
+                    "borrowed types use 'borrow T' or 'borrow mut T'; pointer sigils are not Oreslang source syntax");
         }
         if (match(STRING)) return Ast.TypeRef.stringLiteral(previous().lexeme());
 
