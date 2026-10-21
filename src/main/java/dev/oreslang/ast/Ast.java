@@ -1171,6 +1171,9 @@ public final class Ast {
      * value-returning Task<T> need additional checked lowering.
      */
     public static final class TaskExpr implements Expr {
+        /** Physical execution placement is a compiler-owned choice, not a capture capability. */
+        public enum ExecutionDomain { DEFAULT_CPU, CPU, GPU }
+        private final ExecutionDomain executionDomain;
         private final List<Stmt> body;
         // Bound only by the ownership pass, before lowering/execution. null
         // means an unchecked AST and MUST NOT be treated as empty captures.
@@ -1180,9 +1183,15 @@ public final class Ast {
         private volatile TypeRef checkedResultType;
 
         public TaskExpr(List<Stmt> body) {
-            this.body = List.copyOf(body);
+            this(body, ExecutionDomain.DEFAULT_CPU);
         }
 
+        public TaskExpr(List<Stmt> body, ExecutionDomain executionDomain) {
+            this.body = List.copyOf(body);
+            this.executionDomain = java.util.Objects.requireNonNull(executionDomain, "Task execution domain");
+        }
+
+        public ExecutionDomain executionDomain() { return executionDomain; }
         public List<Stmt> body() { return body; }
 
         public synchronized void bindCaptures(List<String> captures) {
