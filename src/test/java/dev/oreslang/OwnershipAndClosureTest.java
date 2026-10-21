@@ -341,7 +341,7 @@ final class OwnershipAndClosureTest {
                           struct Local {
                             pub let value: int;
 
-                            pub bump(self &mut self)() => void {
+                            pub bump(mut self)() => void {
                               self.value = self.value + 1;
                               return;
                             }
@@ -360,7 +360,7 @@ final class OwnershipAndClosureTest {
                   struct Local {
                     pub let value: int;
 
-                    pub bump(self &mut self)() => void {
+                    pub bump(mut self)() => void {
                       self.value = self.value + 1;
                       return;
                     }
@@ -416,7 +416,7 @@ final class OwnershipAndClosureTest {
                           struct Local {
                             pub let value: int;
 
-                            pub bump(self &mut self)() => void {
+                            pub bump(mut self)() => void {
                               self.value = self.value + 1;
                               return;
                             }
