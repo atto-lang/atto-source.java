@@ -65,17 +65,17 @@ final class ChannelCallableTransportTest {
     @Test
     void borrowedPayloadTypesCannotOutliveChannelStorage() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc bad(Channel<&int> borrowed): void { return; }
+                fnc bad(Channel<borrow int> borrowed): void { return; }
                 """)));
     }
 
     @Test
     void nestedBorrowedPayloadsAreRejectedBeforeChannelCreation() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc bad(Channel<Option<&int>> payload): void { return; }
+                fnc bad(Channel<Option<borrow int>> payload): void { return; }
                 """)));
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc bad(Channel<Array<&int>> payload): void { return; }
+                fnc bad(Channel<Array<borrow int>> payload): void { return; }
                 """)));
     }
 

@@ -60,8 +60,8 @@ pub routine main(): void {
     arr[new TestCase("adds", adds, false, "")]
   );
   val TestOptions options = new TestOptions("", false, false);
-  val RunSummary summary = run_suite(&suite, &options);
-  require_success(&summary);
+  val RunSummary summary = run_suite(rt borrow suite, rt borrow options);
+  require_success(rt borrow summary);
   return;
 }
 ```

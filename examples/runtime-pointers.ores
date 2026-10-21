@@ -1,0 +1,23 @@
+define class Box as
+  pub let int value = 7;
+end
+
+fnc create(): Pointer<Box> {
+  return rt ref new Box();
+}
+
+pub routine main(): void {
+  const Pointer<Box> pointer = create();
+  block {
+    const Box view = rt unref pointer;
+    const same = rt deref(pointer);
+    stdio.stdout.write(view.value + same.value);
+  }
+  const moved = rt take pointer;
+  const again = rt unref moved;
+  stdio.stdout.write(again.value);
+  const Pointer<{value: int}> record = rt ref struct{value: int}{value: 11};
+  const {value: int} record_view = rt unref record;
+  stdio.stdout.write(record_view.value);
+  return;
+}

@@ -139,7 +139,7 @@ final class ActorCallableKeywordTest {
                 """)));
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                actor fnc invalid(&int value): void { return; }
+                actor fnc invalid(borrow int value): void { return; }
                 """)));
 
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
@@ -174,15 +174,11 @@ final class ActorCallableKeywordTest {
                 .mimeType(OresLanguage.MIME_TYPE)
                 .build();
 
-        Context context = Context.newBuilder(OresLanguage.ID)
+        try (Context context = Context.newBuilder(OresLanguage.ID)
                 .allowAllAccess(false)
                 .out(output)
-                .build();
-        try {
+                .build()) {
             context.eval(source);
-        } finally {
-            // Actor results can be observed before their final turn has unwound.
-            context.close(true);
         }
         return output.toString(StandardCharsets.UTF_8);
     }

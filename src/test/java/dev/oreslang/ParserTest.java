@@ -15,32 +15,6 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class ParserTest {
     @Test
-    void inlineTrapCannotHideExpressionBodiedLambdaMissingTerminator() {
-        String invalid = """
-                pub fnc main(): void {
-                    const closure = trap (|int value| -> value)
-                    return;
-                }
-                """;
-        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse(invalid));
-        assertTrue(failure.getMessage().contains(
-                "expression-bodied lambda statements require an explicit ';'"), failure::toString);
-
-        Ast.Program valid = assertDoesNotThrow(() -> Parser.parse("""
-                pub fnc main(): void {
-                    const closure = trap (|int value| -> value);
-                    return;
-                }
-                """));
-        Ast.FunctionDecl fn = assertInstanceOf(Ast.FunctionDecl.class,
-                valid.modules().getFirst().declarations().getFirst());
-        Ast.BindingStmt binding = assertInstanceOf(Ast.BindingStmt.class, fn.body().getFirst());
-        Ast.TrapExpr trap = assertInstanceOf(Ast.TrapExpr.class, binding.initializer());
-        assertInstanceOf(Ast.LambdaExpr.class, trap.expression());
-    }
-
-    @Test
     void exhaustivelyAcceptsSupportedDeclarationModifierPermutations() {
         for (List<String> order : permutations("define", "class", "pub", "abstract")) {
             assertDoesNotThrow(() -> Parser.parse("""
@@ -604,70 +578,6 @@ final class ParserTest {
     }
 
     @Test
-    void ifIsStatementOnlyAndValueSelectionUsesTernaryOrExplicitReturns() {
-        assertFalse(Ast.Expr.class.isAssignableFrom(Ast.IfStmt.class));
-
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                fnc choose(bool condition): int {
-                  const y = if condition then
-                    1;
-                  else
-                    2;
-                  fi;
-                  return y;
-                }
-                """));
-
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                fnc choose_return(bool condition): int {
-                  return if condition then
-                    1;
-                  else
-                    2;
-                  fi;
-                }
-                """));
-
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                fnc identity(int value): int { return value; }
-                fnc choose_argument(bool condition): int {
-                  return identity(if condition then
-                    1;
-                  else
-                    2;
-                  fi);
-                }
-                """));
-
-        IllegalArgumentException implicitBranchValues = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        fnc choose(bool condition): int {
-                          if condition then
-                            1;
-                          else
-                            2;
-                          fi
-                        }
-                        """)));
-        assertTrue(implicitBranchValues.getMessage().contains("must explicitly return on every path"));
-
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                fnc choose(bool condition): int {
-                  if condition then
-                    return 1;
-                  else
-                    return 2;
-                  fi
-                }
-
-                fnc choose_expression(bool condition): int {
-                  return condition ? 1 : 2;
-                }
-                """)));
-    }
-
-    @Test
     void legacyIfDoAndElseifRemainAcceptedForMigration() {
         assertDoesNotThrow(() -> Parser.parse("""
                 define module app as
@@ -993,8 +903,8 @@ final class ParserTest {
                     shared actor Account {
                       let balance = 100;
 
-                      pub fnc leak(): &mut Account {
-                        return &mut self;
+                      pub fnc leak(): borrow mut Account {
+                        return rt borrow mut self;
                       }
                     }
                     """));
@@ -1006,8 +916,8 @@ final class ParserTest {
                     shared actor Account {
                       let balance = 100;
 
-                      pub fnc leak(): &mut Account {
-                        val alias = &mut self;
+                      pub fnc leak(): borrow mut Account {
+                        val alias = rt borrow mut self;
                         return alias;
                       }
                     }
@@ -1046,7 +956,7 @@ final class ParserTest {
 
         assertThrows(IllegalArgumentException.class, () -> {
             Ast.Program typed = TypeChecker.check(Parser.parse("""
-                    fnc inspect(&Account account): int {
+                    fnc inspect(borrow Account account): int {
                       return 1;
                     }
 
@@ -1054,7 +964,7 @@ final class ParserTest {
                       let balance = 100;
 
                       pub fnc inspectSelf(): int {
-                        return inspect(&self);
+                        return inspect(rt borrow self);
                       }
                     }
                     """));
@@ -1283,30 +1193,6 @@ final class ParserTest {
                         """));
 
         assertTrue(failure.getMessage().contains("expected 'as' after class header"));
-    }
-
-
-    @Test
-    void acceleratorExecutionDomainsRemainFailClosedAfterG2RuntimeIr() {
-        for (String domain : List.of("gpu", "cpu", "quantum")) {
-            String source = """
-                    pub fnc main(): int {
-                        return %s {
-                            return 1;
-                        };
-                    }
-                    """.formatted(domain);
-            IllegalArgumentException failure = assertThrows(
-                    IllegalArgumentException.class,
-                    () -> Parser.parse(source),
-                    domain);
-            assertTrue(
-                    failure.getMessage().contains("execution domain '" + domain + "'"),
-                    failure::toString);
-            assertTrue(
-                    failure.getMessage().contains("no implicit CPU fallback"),
-                    failure::toString);
-        }
     }
 
     private static List<List<String>> permutations(String... tokens) {

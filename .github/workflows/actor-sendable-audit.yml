@@ -1,0 +1,29 @@
+name: Actor Sendable and Pointer targeted audit
+on:
+  push:
+    paths:
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/runtime/**'
+      - 'src/test/java/dev/oreslang/ActorSendabilityBoundaryTest.java'
+      - 'src/test/java/dev/oreslang/RuntimePointerTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorPointerTransportTest.java'
+      - '.github/workflows/actor-sendable-audit.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  pointer-sendable:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up GraalVM Java 25 without cross-org checkout credentials
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '25'
+          distribution: graalvm
+          version: '25.3'
+      - name: Verify full suite including Pointer and actor Sendable boundaries
+        run: mvn -B -ntp -Dores.runtime.carriers=native verify
