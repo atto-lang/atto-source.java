@@ -118,6 +118,11 @@ public final class Parser {
                 if (modifiers.shared) {
                     throw error(previous(), "'shared' must modify an actor declaration; use 'shared actor <Name>'");
                 }
+                if (match(KERNEL)) {
+                    validateOnlyVisibilityModifiers(modifiers, "kernels");
+                    rootDeclarations.add(parseKernel(modifiers.visibility, annotations));
+                    continue;
+                }
                 if (match(MODULE)) {
                     if (modifiers.visibilitySeen || modifiers.async || modifiers.suspends || modifiers.suspends || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
                             || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
@@ -162,7 +167,7 @@ public final class Parser {
                     rootDeclarations.add(parseTypeAlias(modifiers.visibility));
                     continue;
                 }
-                throw error(previous(), "expected module, class, interface, trait, or type after 'define'");
+                throw error(previous(), "expected module, kernel, class, interface, trait, or type after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -196,13 +201,14 @@ public final class Parser {
             else if (match(ACTOR)) kind = Ast.ImportKind.ACTOR;
             else if (match(CLASS)) kind = Ast.ImportKind.CLASS;
             else if (match(FNC)) kind = Ast.ImportKind.FUNCTION;
+            else if (match(KERNEL)) kind = Ast.ImportKind.KERNEL;
             else if (match(INTERFACE)) kind = Ast.ImportKind.INTERFACE;
             else if (match(CONTRACT)) kind = Ast.ImportKind.CONTRACT;
             else if (match(TRAIT)) kind = Ast.ImportKind.TRAIT;
             else if (match(STRUCT)) kind = Ast.ImportKind.STRUCT;
             else if (match(TYPE)) kind = Ast.ImportKind.TYPE;
             else if (match(TYPES)) kind = Ast.ImportKind.TYPES;
-            else throw error(peek(), "expected module, actor, class, fnc, interface, contract, trait, struct, type, types, or * after import");
+            else throw error(peek(), "expected module, actor, class, fnc, kernel, interface, contract, trait, struct, type, types, or * after import");
 
             if (match(STAR)) {
                 wildcard = true;
@@ -250,6 +256,25 @@ public final class Parser {
             return consumeCallableName("expected imported function name");
         }
         return consume(IDENT, "expected imported name").lexeme();
+    }
+
+    private Ast.KernelDecl parseKernel(Ast.Visibility visibility, List<Ast.Annotation> annotations) {
+        String name = consume(IDENT, "expected kernel name").lexeme();
+        consume(AS, "expected 'as' after kernel name");
+        List<Ast.FunctionDecl> functions = new ArrayList<>();
+        while (!check(END) && !check(EOF)) {
+            List<Ast.Annotation> functionAnnotations = parseAnnotations();
+            Modifiers modifiers = parseModifiers();
+            if (isLegacyFnSpelling()) {
+                throw error(peek(), "kernel functions are declared with 'fnc', not 'fn'");
+            }
+            consume(FNC, "kernel bodies currently admit only 'fnc' declarations");
+            modifiers = mergeModifiers(modifiers, parseModifiers());
+            validateOnlyVisibilityModifiers(modifiers, "kernel functions");
+            functions.add(parseFunction(functionAnnotations, modifiers, Ast.CallableKind.FNC));
+        }
+        consume(END, "expected 'end' to close kernel " + name);
+        return new Ast.KernelDecl(name, visibility, annotations, functions);
     }
 
     private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations) {
@@ -310,6 +335,10 @@ public final class Parser {
             if (modifiers.shared || modifiers.untrusted) {
                 throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
             }
+            if (match(KERNEL)) {
+                validateOnlyVisibilityModifiers(modifiers, "kernels");
+                return parseKernel(modifiers.visibility, annotations);
+            }
             if (match(CONTRACT)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 validateOnlyVisibilityModifiers(modifiers, "contracts");
@@ -339,7 +368,7 @@ public final class Parser {
                 rejectDiscardedDeclarationAnnotations(annotations, "type aliases");
                 return parseTypeAlias(modifiers.visibility);
             }
-            throw error(previous(), "expected class, interface, trait, or type after 'define'");
+            throw error(previous(), "expected kernel, class, interface, trait, or type after 'define'");
         }
 
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -348,6 +377,9 @@ public final class Parser {
     }
 
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
+        if (match(KERNEL)) {
+            throw error(previous(), "kernel declarations use 'define [pub|private] kernel <Name> as ... end'");
+        }
         if (isLegacyFnSpelling()) {
             throw error(peek(), "functions are declared with 'fnc', not 'fn'");
         }
