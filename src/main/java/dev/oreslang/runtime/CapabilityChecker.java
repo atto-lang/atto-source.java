@@ -163,8 +163,9 @@ public final class CapabilityChecker {
     private void checkProgram(Ast.Program program, IsolatePolicy policy) {
         for (Ast.ImportDecl imported : program.imports()) {
             if (ImportRules.isJavaPath(imported.path())) {
-                require(policy, IsolatePolicy.Capability.JAVA_INTEROP,
-                        "Java host import " + ImportRules.javaClassName(imported.path()));
+                throw new SecurityException(
+                        "guest Java/FFI imports are disabled; use compiler-owned core/stdlib APIs: "
+                                + ImportRules.javaClassName(imported.path()));
             }
         }
 
@@ -473,7 +474,10 @@ public final class CapabilityChecker {
                     require(policy, IsolatePolicy.Capability.FILESYSTEM_WRITE, path);
                 }
                 if (path.startsWith("env.")) require(policy, IsolatePolicy.Capability.ENVIRONMENT, path);
-                if (path.startsWith("ffi.")) require(policy, IsolatePolicy.Capability.FFI, path);
+                if (path.startsWith("ffi.")) {
+                    throw new SecurityException(
+                            "guest FFI namespace is disabled; use a typed core/stdlib API: " + path);
+                }
                 if (path.startsWith("polyglot.")) require(policy, IsolatePolicy.Capability.POLYGLOT, path);
                 if (path.startsWith("thread.")) require(policy, IsolatePolicy.Capability.THREAD_CREATE, path);
                 if (path.startsWith("process.spawn")) require(policy, IsolatePolicy.Capability.CHILD_PROCESS, path);
