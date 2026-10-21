@@ -67,6 +67,9 @@ public final class AcceleratorSafetySmoke {
                 () -> GpuBufferFence.claimPair(inputOwner, outputOwner, 1024));
         rejects(IllegalStateException.class,
                 () -> inputOwner.complete(pair.inputTicket(), true));
+        rejects(IllegalStateException.class,
+                () -> GpuBufferFence.completePair(inputOwner, outputOwner, pair, true));
+        GpuBufferFence.markPairEnqueued(inputOwner, outputOwner, pair);
         GpuBufferFence.completePair(inputOwner, outputOwner, pair, true);
         inputOwner.retireAfterBackendRelease(pair.input());
         outputOwner.retireAfterBackendRelease(pair.output());
