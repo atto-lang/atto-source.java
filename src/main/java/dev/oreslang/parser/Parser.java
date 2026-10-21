@@ -51,6 +51,11 @@ public final class Parser {
             // Only the exactly-delimited 'cpu task {' / 'gpu task {' syntax
             // is admitted to the typed Task AST. GPU remains compiler-rejected
             // until a real device backend can prove launch/ownership/fences.
+            if (token.type() == CPU
+                    && i + 1 < tokens.size()
+                    && tokens.get(i + 1).type() == LBRACE) {
+                continue; // eager inline CPU expression
+            }
             if ((token.type() == CPU || token.type() == GPU)
                     && i + 2 < tokens.size()
                     && tokens.get(i + 1).type() == IDENT
@@ -3288,6 +3293,10 @@ public final class Parser {
         if (match(TRAP)) return new Ast.TrapExpr(parseUnary());
         if (match(RT)) return parseRuntimeExpression();
 
+        if (check(CPU) && checkNext(LBRACE)) {
+            advance(); // synchronous CPU execution is an expression block, not a Task
+            return new Ast.CpuRegionExpr(parseBlock());
+        }
         if (check(CPU) || check(GPU)) {
             Token placement = advance();
             if (!isContextualIdentifier("task") || !checkNext(LBRACE)) {
