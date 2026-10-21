@@ -196,7 +196,7 @@ services should be exposed to guest code through typed Ores APIs and
 compiler/runtime intrinsics, never by handing guest code raw JNI/native
 addresses.
 
-## Scoped native read leases and same-size payload reuse
+## Scoped native read leases and retained text capacity
 
 `ActorNativeArena.Region.leaseReadOnly(offset, length)` provides an owner-checked,
 bounds-checked native slice. While any read lease is live, the backing region
@@ -213,11 +213,13 @@ without refunding its reservation if an immutable lease remains outstanding.
 These host-side handles are still managed facades and do not establish
 cross-actor sharing, raw-pointer validity, or allocation-free guest execution.
 
-Arena-backed object fields now overwrite supported string/numeric-text/symbol
-payloads in place when the new payload has precisely the same UTF-16 length.
-This prevents repeated fixed-width text writes from steadily consuming native
-arena bytes. Payloads that grow or change size still use actor-lifetime slab
-allocation, so general lifetime-based reclaim/reuse remains unfinished.
+Arena-backed object fields and lexical value cells retain the original native
+capacity of supported string/numeric-text/symbol payloads. Replacements may
+shrink and later regrow up to that capacity without another allocation, while
+preserving the same non-recycled actor-relative address. Growth beyond retained
+capacity allocates transactionally and leaves the previous value untouched if
+the actor quota cannot satisfy it. General lifetime-based reclamation of
+variable-size payloads remains unfinished.
 
 ## Remaining work before strict no-managed-allocation admission
 
