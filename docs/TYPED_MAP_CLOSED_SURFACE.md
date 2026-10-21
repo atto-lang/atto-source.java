@@ -55,10 +55,11 @@ The closed member surface is:
 - `map.size: int`;
 - `map.has(key): bool`;
 - `map.get(key): Option<V>`;
+- `map.put(key, value): Option<V>`;
 - `map.take(key): Option<V>`;
 - `map.remove(key): bool`.
 
-`get` and `take` preserve absence explicitly and therefore do not flatten a future nested value domain. `take` and `remove` are direct-call-only mutators: the compiler, ownership checker, and evaluator all require a directly owned mutable Map binding, and the evaluator verifies that authority before evaluating the key expression. Their bound methods cannot be extracted.
+`get`, `put` and `take` preserve absence explicitly and therefore do not flatten a future nested value domain. `put` is insert-or-replace and returns the previous value as `Option<V>` (None for a new key). `put`, `take` and `remove` are direct-call-only mutators: the compiler, ownership checker, and evaluator all require a directly owned mutable Map binding. Both synchronous and suspendable lowering verify that authority before evaluating any key/value argument expression. Their bound methods cannot be extracted.
 
 ## Ownership
 
