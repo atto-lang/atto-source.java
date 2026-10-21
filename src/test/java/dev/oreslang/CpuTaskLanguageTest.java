@@ -210,7 +210,7 @@ final class CpuTaskLanguageTest {
                     return 41;
                   };
                   let Future<int> second = task {
-                    return await first + 1;
+                    return (await first) + 1;
                   };
                   stdio.stdout.write(await second);
                   return;
