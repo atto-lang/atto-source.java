@@ -3598,10 +3598,29 @@ public final class TypeChecker {
                     && env.lookup("process") == null && member.member().equals("unique_id")) {
                 return new Function(List.of(), Primitive.STRING);
             }
-            if (member.receiver() instanceof Ast.NameExpr clockName && clockName.name().equals("process")
-                    && env.lookup("process") == null
-                    && (member.member().equals("monotonic_ns") || member.member().equals("unix_ms"))) {
-                return new Function(List.of(), Primitive.INT);
+            if (member.receiver() instanceof Ast.NameExpr processName
+                    && processName.name().equals("process")
+                    && env.lookup("process") == null) {
+                if (member.member().equals("monotonic_ns")
+                        || member.member().equals("unix_ms")
+                        || member.member().equals("argv_size")) {
+                    return new Function(List.of(), Primitive.INT);
+                }
+                if (member.member().equals("argv_at")) {
+                    return new Function(List.of(Primitive.INT), Primitive.STRING);
+                }
+                if (member.member().equals("spawn")) {
+                    return new Function(
+                            List.of(Primitive.STRING, Primitive.STRING),
+                            Primitive.STRING);
+                }
+                if (member.member().equals("running")
+                        || member.member().equals("stop")) {
+                    return new Function(List.of(Primitive.STRING), Primitive.BOOL);
+                }
+                if (member.member().equals("pid")) {
+                    return new Function(List.of(Primitive.STRING), Primitive.INT);
+                }
             }
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("stdio")
                     && env.lookup("stdio") == null) {

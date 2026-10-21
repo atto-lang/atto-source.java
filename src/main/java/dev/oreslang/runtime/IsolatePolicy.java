@@ -16,6 +16,8 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.Base64;
+import java.util.List;
 import java.util.EnumSet;
 import java.util.Locale;
 import java.util.Set;
@@ -335,10 +337,23 @@ public record IsolatePolicy(
                 PermissionCheckMode.COMPILE);
     }
 
+    private static final String GUEST_ARG_PREFIX = "--ores-guest-arg=";
+    private static final int MAX_GUEST_ARGUMENTS = 4096;
+    private static final int MAX_GUEST_ARGUMENT_BYTES = 64 * 1024;
+
     public String[] applicationArguments(
             ExecutionProfile profile,
             RuntimePermissions permissions,
             PermissionCheckMode permissionCheckMode) {
+        return applicationArguments(
+                profile, permissions, permissionCheckMode, List.of());
+    }
+
+    public String[] applicationArguments(
+            ExecutionProfile profile,
+            RuntimePermissions permissions,
+            PermissionCheckMode permissionCheckMode,
+            List<String> guestArguments) {
         String caps = capabilities.stream().map(Enum::name).sorted().collect(Collectors.joining(","));
         java.util.ArrayList<String> args = new java.util.ArrayList<>(java.util.List.of(
                 "--ores-capabilities=" + caps,
@@ -350,7 +365,48 @@ public record IsolatePolicy(
                 "--ores-platform=" + profile.platform().name(),
                 "--ores-permission-check=" + permissionCheckMode.name().toLowerCase(Locale.ROOT)));
         args.addAll(java.util.List.of(permissions.applicationArguments()));
+
+        List<String> exactGuestArguments = List.copyOf(guestArguments);
+        if (exactGuestArguments.size() > MAX_GUEST_ARGUMENTS) {
+            throw new IllegalArgumentException(
+                    "guest argv exceeds " + MAX_GUEST_ARGUMENTS + " entries");
+        }
+        Base64.Encoder encoder = Base64.getUrlEncoder().withoutPadding();
+        for (String value : exactGuestArguments) {
+            if (value == null) throw new IllegalArgumentException("guest argv cannot contain null");
+            byte[] encoded = value.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            if (encoded.length > MAX_GUEST_ARGUMENT_BYTES) {
+                throw new IllegalArgumentException(
+                        "guest argv entry exceeds " + MAX_GUEST_ARGUMENT_BYTES + " UTF-8 bytes");
+            }
+            args.add(GUEST_ARG_PREFIX + encoder.encodeToString(encoded));
+        }
         return args.toArray(String[]::new);
+    }
+
+    public static List<String> guestArgumentsFromApplicationArguments(String[] args) {
+        java.util.ArrayList<String> values = new java.util.ArrayList<>();
+        Base64.Decoder decoder = Base64.getUrlDecoder();
+        for (String arg : args) {
+            if (!arg.startsWith(GUEST_ARG_PREFIX)) continue;
+            if (values.size() >= MAX_GUEST_ARGUMENTS) {
+                throw new IllegalArgumentException(
+                        "guest argv exceeds " + MAX_GUEST_ARGUMENTS + " entries");
+            }
+            String encoded = arg.substring(GUEST_ARG_PREFIX.length());
+            final byte[] bytes;
+            try {
+                bytes = decoder.decode(encoded);
+            } catch (IllegalArgumentException invalid) {
+                throw new IllegalArgumentException("invalid encoded guest argv entry", invalid);
+            }
+            if (bytes.length > MAX_GUEST_ARGUMENT_BYTES) {
+                throw new IllegalArgumentException(
+                        "guest argv entry exceeds " + MAX_GUEST_ARGUMENT_BYTES + " UTF-8 bytes");
+            }
+            values.add(new String(bytes, java.nio.charset.StandardCharsets.UTF_8));
+        }
+        return List.copyOf(values);
     }
 
     public static IsolatePolicy fromApplicationArguments(String[] args) {

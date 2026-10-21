@@ -7507,6 +7507,12 @@ public final class OresEvalRootNode extends RootNode {
                     case "monotonic_ns" -> (Invokable) args -> { requireZero(args, "process.monotonic_ns"); return System.nanoTime(); };
                     case "unique_id" -> (Invokable) args -> { requireZero(args, "process.unique_id"); return java.util.UUID.randomUUID().toString(); };
                     case "unix_ms" -> (Invokable) args -> { requireZero(args, "process.unix_ms"); return System.currentTimeMillis(); };
+                    case "argv_size" -> (Invokable) process::argvSize;
+                    case "argv_at" -> (Invokable) process::argvAt;
+                    case "spawn" -> (Invokable) process::spawn;
+                    case "running" -> (Invokable) process::running;
+                    case "pid" -> (Invokable) process::pid;
+                    case "stop" -> (Invokable) process::stop;
                     case "context_id" -> process.contextId();
                     case "descriptor" -> process.descriptor();
                     case "share_readonly" -> (Invokable) process::shareReadonly;
@@ -10571,6 +10577,43 @@ public final class OresEvalRootNode extends RootNode {
     }
     private record StdFacade(OresContext context) { }
     private record ProcessFacade(OresContext context) {
+        private Object argvSize(List<Object> args) {
+            requireZero(args, "process.argv_size");
+            return (long) context.guestArguments().size();
+        }
+        private Object argvAt(List<Object> args) {
+            requireOne(args, "process.argv_at");
+            Object value = args.getFirst();
+            if (!(value instanceof Number number)) {
+                throw new IllegalArgumentException("process.argv_at expects an int index");
+            }
+            long index = number.longValue();
+            if (number.doubleValue() != (double) index
+                    || index < 0
+                    || index >= context.guestArguments().size()) {
+                throw new IllegalArgumentException("process.argv_at index out of range");
+            }
+            return context.guestArguments().get((int) index);
+        }
+        private Object spawn(List<Object> args) {
+            requireTwo(args, "process.spawn");
+            return context.childProcesses().spawn(
+                    context,
+                    requireString(args.get(0), "process.spawn executable"),
+                    requireString(args.get(1), "process.spawn argument"));
+        }
+        private Object running(List<Object> args) {
+            return context.childProcesses().running(
+                    context, requireStringArg(args, "process.running"));
+        }
+        private Object pid(List<Object> args) {
+            return context.childProcesses().pid(
+                    context, requireStringArg(args, "process.pid"));
+        }
+        private Object stop(List<Object> args) {
+            return context.childProcesses().stop(
+                    context, requireStringArg(args, "process.stop"));
+        }
         private Object exit(List<Object> args) {
             requireOne(args, "std.process.exit");
             if (ActorRuntime.currentActorId().isPresent() || ActorRuntime.currentActorPolicy() != null) {

@@ -476,7 +476,12 @@ public final class CapabilityChecker {
                 if (path.startsWith("ffi.")) require(policy, IsolatePolicy.Capability.FFI, path);
                 if (path.startsWith("polyglot.")) require(policy, IsolatePolicy.Capability.POLYGLOT, path);
                 if (path.startsWith("thread.")) require(policy, IsolatePolicy.Capability.THREAD_CREATE, path);
-                if (path.startsWith("process.spawn")) require(policy, IsolatePolicy.Capability.CHILD_PROCESS, path);
+                if (path.startsWith("process.spawn")
+                        || path.startsWith("process.running")
+                        || path.startsWith("process.pid")
+                        || path.startsWith("process.stop")) {
+                    require(policy, IsolatePolicy.Capability.CHILD_PROCESS, path);
+                }
             }
             checkExpr(m.receiver(), policy);
         } else if (expr instanceof Ast.SpreadExpr e) {
