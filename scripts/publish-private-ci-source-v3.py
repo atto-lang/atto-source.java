@@ -777,6 +777,8 @@ def delete_exact_ref(repository, ref_name, expected_sha, expected_repository_id)
 
 
 def publish(repository, source, source_commit, source_pr, test_plan, trusted_root, now=None):
+    if legacy.is_quarantined_destination(repository):
+        raise Denied("destination is quarantined by private-source exposure incident policy")
     if not legacy.NAME.fullmatch(repository):
         raise Denied("invalid destination repository")
     source_commit = valid_sha(source_commit, "invalid source commit")
