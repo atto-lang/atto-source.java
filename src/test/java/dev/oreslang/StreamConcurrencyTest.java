@@ -71,6 +71,46 @@ final class StreamConcurrencyTest {
     }
 
     @Test
+    void closeAndReaderCancellationRaceNeverLeavesPendingRegistration() throws Exception {
+        ExecutorService workers = Executors.newFixedThreadPool(2);
+        try {
+            for (int round = 0; round < 64; round++) {
+                OresStream<Integer> stream = new OresStream<>(1);
+                OresFuture<Integer> waiter = stream.channel().readAsync();
+                java.util.concurrent.CountDownLatch start =
+                        new java.util.concurrent.CountDownLatch(1);
+                Future<?> closing = workers.submit(() -> {
+                    try {
+                        start.await();
+                        stream.close();
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException(interrupted);
+                    }
+                });
+                Future<?> cancelling = workers.submit(() -> {
+                    try {
+                        start.await();
+                        waiter.cancel(false);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException(interrupted);
+                    }
+                });
+                start.countDown();
+                closing.get(5, TimeUnit.SECONDS);
+                cancelling.get(5, TimeUnit.SECONDS);
+                assertTrue(stream.isClosed());
+                assertTrue(waiter.isDone());
+                assertEquals(0, stream.channel().pendingRegistrations());
+                assertFalse(stream.channel().tryWrite(round));
+            }
+        } finally {
+            workers.shutdownNow();
+        }
+    }
+
+    @Test
     void concurrentConsumersDeliverEveryCommittedItemExactlyOnce() throws Exception {
         final int count = 256;
         OresStream<Integer> stream = new OresStream<>(8);
