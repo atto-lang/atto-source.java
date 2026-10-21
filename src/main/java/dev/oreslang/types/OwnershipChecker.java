@@ -2287,7 +2287,12 @@ public final class OwnershipChecker {
 
                 if (parameterIndex >= params.size()) return; // TypeChecker reports arity.
                 Ast.Param param = params.get(parameterIndex);
-                VarState loanOwner = param.type().isBorrow()
+                // Anonymous and explicitly marked structural parameters are
+                // *implicit* shared loans, despite having no written borrow type.
+                // Reserve their source owner for the whole argument evaluation,
+                // exactly as an explicit borrowed parameter does.
+                boolean structuralLoan = param.structural() && !param.type().isBorrow();
+                VarState loanOwner = (structuralLoan || param.type().isBorrow())
                         ? invocationLoanRoot(argument, scope) : null;
                 boolean mutable = param.type().isBorrow() && param.type().mutableBorrow();
                 if (loanOwner != null) {
@@ -2312,7 +2317,7 @@ public final class OwnershipChecker {
                             && runtime.arguments().size() == 1;
                     boolean forwarded = argument instanceof Ast.NameExpr name
                             && isIncomingBorrow(scope.lookup(name.name()));
-                    if (explicit || forwarded) {
+                    if (structuralLoan || explicit || forwarded) {
                         beginPersistentBorrow(loanOwner, mutable);
                         activeLoans.add(new CallArgumentLoan(ownershipRoot(loanOwner), mutable));
                     }
@@ -2349,6 +2354,13 @@ public final class OwnershipChecker {
         } else if (expression instanceof Ast.NameExpr name) {
             VarState state = scope.lookup(name.name());
             return state == null ? null : ownershipRoot(state);
+        } else if (expression instanceof Ast.MemberExpr
+                || expression instanceof Ast.IndexExpr) {
+            // An implicit structural loan of a stable projection is still a
+            // loan of the enclosing owner. Reuse borrowPlace's conservative
+            // field/index checks, so effectful or unknown projections fail
+            // closed rather than silently losing alias provenance.
+            return ownershipRoot(borrowPlace(expression, scope).owner());
         }
 
         // Resolve a simple syntactic owner without reading it first. A loan
