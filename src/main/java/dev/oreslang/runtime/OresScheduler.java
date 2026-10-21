@@ -41,12 +41,20 @@ import java.util.function.BiConsumer;
 public final class OresScheduler implements AutoCloseable {
     private static final AtomicLong NEXT_ID = new AtomicLong();
     private static final AtomicLong NEXT_DISPATCH_ID = new AtomicLong();
+
+    private static long allocatePositiveId(AtomicLong counter, String kind) {
+        long value = counter.incrementAndGet();
+        if (value <= 0) {
+            throw new IllegalStateException("OresScheduler " + kind + " id space exhausted");
+        }
+        return value;
+    }
     private static final ThreadLocal<OresScheduler> CURRENT = new ThreadLocal<>();
     /** The carrier still belongs to this scheduler during terminal callbacks. */
     private static final ThreadLocal<OresScheduler> CURRENT_CARRIER_SCHEDULER =
             new ThreadLocal<>();
     private static final ThreadLocal<Long> CURRENT_DISPATCH_ID = new ThreadLocal<>();
-    private static final ThreadLocal<Object> CURRENT_TASK_DOMAIN = new ThreadLocal<>();
+    private static final ThreadLocal<ExecutionContext> CURRENT_EXECUTION_CONTEXT = new ThreadLocal<>();
     private static final ThreadLocal<Boolean> SCHEDULER_CARRIER = new ThreadLocal<>();
     private static final ThreadLocal<ActorTurnWatchdog.Lease> CURRENT_WATCHDOG_LEASE =
             new ThreadLocal<>();
@@ -168,6 +176,8 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     private final String name;
+    private final long schedulerDomain;
+    private final AtomicLong nextExecution = new AtomicLong();
     private final int parallelism;
     private final Executor executor;
     private final ExecutorService ownedExecutor;
@@ -201,7 +211,8 @@ public final class OresScheduler implements AutoCloseable {
             throw new IllegalArgumentException("scheduler queue capacity must be positive");
         }
 
-        this.name = "ores-user-scheduler-" + NEXT_ID.incrementAndGet();
+        this.schedulerDomain = allocatePositiveId(NEXT_ID, "scheduler-domain");
+        this.name = "ores-user-scheduler-" + schedulerDomain;
         this.parallelism = parallelism;
         this.turnExecutor = Objects.requireNonNull(turnExecutor, "turnExecutor");
 
@@ -237,6 +248,7 @@ public final class OresScheduler implements AutoCloseable {
             ExecutorService ownedExecutor,
             TurnExecutor turnExecutor) {
         this.name = Objects.requireNonNull(name, "name");
+        this.schedulerDomain = allocatePositiveId(NEXT_ID, "scheduler-domain");
         if (parallelism <= 0) {
             throw new IllegalArgumentException("scheduler parallelism must be positive");
         }
@@ -349,7 +361,18 @@ public final class OresScheduler implements AutoCloseable {
      * distinct for concurrent tasks sharing the same OresScheduler.</p>
      */
     public static Object currentTaskDomain() {
-        return CURRENT_TASK_DOMAIN.get();
+        return CURRENT_EXECUTION_CONTEXT.get();
+    }
+
+    /**
+     * Stable logical execution context for the current Oreslang task.
+     *
+     * <p>This identity survives await/cooperate carrier migration. It is
+     * deliberately distinct from {@link #currentDispatchId()} and from any
+     * actor heap/allocation domain.</p>
+     */
+    public static ExecutionContext currentExecutionContext() {
+        return CURRENT_EXECUTION_CONTEXT.get();
     }
 
     /**
@@ -534,7 +557,7 @@ public final class OresScheduler implements AutoCloseable {
         OresScheduler prior = CURRENT.get();
         Long priorDispatch = CURRENT_DISPATCH_ID.get();
         CURRENT.set(this);
-        CURRENT_DISPATCH_ID.set(NEXT_DISPATCH_ID.incrementAndGet());
+        CURRENT_DISPATCH_ID.set(allocatePositiveId(NEXT_DISPATCH_ID, "dispatch"));
         try {
             turn.run();
         } finally {
@@ -652,6 +675,7 @@ public final class OresScheduler implements AutoCloseable {
         private static final int TERMINAL = 4;
 
         private final Task<T> task;
+        private final ExecutionContext executionContext;
         private final Runnable onQuiescent;
         private final AtomicBoolean quiescenceNotified = new AtomicBoolean();
         private final java.util.Map<String, dev.oreslang.interop.MixedInteropBridge.Invoker>
@@ -684,6 +708,8 @@ public final class OresScheduler implements AutoCloseable {
         private TaskRunner(Task<T> task, Runnable onQuiescent,
                 boolean timedAdmission, Runnable onNotificationDrained) {
             this.task = task;
+            long execution = allocatePositiveId(nextExecution, "execution");
+            this.executionContext = ExecutionContext.task(schedulerDomain, execution);
             this.onQuiescent = onQuiescent;
             this.timedAdmission = timedAdmission;
             this.onNotificationDrained = onNotificationDrained;
@@ -790,8 +816,8 @@ public final class OresScheduler implements AutoCloseable {
             watchdogLease = lease;
             ActorTurnWatchdog.Lease previousWatchdog = CURRENT_WATCHDOG_LEASE.get();
             CURRENT_WATCHDOG_LEASE.set(lease);
-            Object priorTaskDomain = CURRENT_TASK_DOMAIN.get();
-            CURRENT_TASK_DOMAIN.set(this);
+            ExecutionContext priorExecutionContext = CURRENT_EXECUTION_CONTEXT.get();
+            CURRENT_EXECUTION_CONTEXT.set(executionContext);
             try {
                 detachActiveAwaitRegistration();
                 Resume resume = pendingResume.getAndSet(null);
@@ -851,10 +877,10 @@ public final class OresScheduler implements AutoCloseable {
                 } else {
                     CURRENT_WATCHDOG_LEASE.set(previousWatchdog);
                 }
-                if (priorTaskDomain == null) {
-                    CURRENT_TASK_DOMAIN.remove();
+                if (priorExecutionContext == null) {
+                    CURRENT_EXECUTION_CONTEXT.remove();
                 } else {
-                    CURRENT_TASK_DOMAIN.set(priorTaskDomain);
+                    CURRENT_EXECUTION_CONTEXT.set(priorExecutionContext);
                 }
             }
         }

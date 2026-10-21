@@ -55,6 +55,35 @@ final class AsyncChannelBoundaryTest {
     }
 
     @Test
+    void asyncBoundariesUseCanonicalSmartPointerSendRules() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                async fnc accepts_box(Box<int> value): int {
+                  return 1;
+                }
+
+                async fnc accepts_arc(Arc<int> value): int {
+                  return 2;
+                }
+
+                async fnc accepts_rwlock(RwLock<RefCell<int>> value): int {
+                  return 3;
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                async fnc rejects_rc(Rc<int> value): int {
+                  return 1;
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                async fnc rejects_arc_refcell(Arc<RefCell<int>> value): int {
+                  return 1;
+                }
+                """)));
+    }
+
+    @Test
     void unrelatedUnsafeAsyncTypesStillFail() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 async fnc bad(Future<int> pending): int {
