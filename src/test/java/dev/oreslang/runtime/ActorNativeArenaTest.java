@@ -75,6 +75,13 @@ final class ActorNativeArenaTest {
                     "a lexical slot must never admit a foreign arena reference");
             assertSame(object, cell.get());
 
+            ActorNativeArena.NativeList nativeList = arena.nativeList();
+            nativeList.add(9L);
+            assertTrue(cell.trySet(nativeList),
+                    "actor-native collection locals must use the same offset reference path");
+            assertSame(nativeList, cell.get());
+            assertEquals(1, arena.nativeReferenceCount());
+
             assertTrue(cell.trySet("native-local-again"));
             assertEquals("native-local-again", cell.get());
             assertEquals(0, arena.nativeReferenceCount(),
