@@ -48,7 +48,7 @@ final class ActorLinearMemoryTest {
             assertEquals(0, memory.readUnsignedByte(page));
             assertEquals(0, memory.readUnsignedByte(2L * page - 1));
             assertEquals(0x0102030405060708L, memory.readLong(page - 8L));
-            assertEquals(0, memory.grow(0) - 2);
+            assertEquals(2, memory.grow(0));
             assertThrows(IllegalArgumentException.class, () -> memory.grow(-1));
             assertThrows(IllegalArgumentException.class, () -> memory.grow(2));
             assertThrows(IndexOutOfBoundsException.class, () -> memory.readByte(-1));
@@ -77,7 +77,7 @@ final class ActorLinearMemoryTest {
                         "cross-page write must not partially mutate first page");
                 assertThrows(IllegalStateException.class,
                         () -> memory.writeByte(page, (byte) 1));
-                assertEquals(0, memory.grow(0) - 2);
+                assertEquals(2, memory.grow(0));
             }
             memory.writeLong(page - 4L, 0x1122334455667788L);
             assertEquals(0x1122334455667788L, memory.readLong(page - 4L));
