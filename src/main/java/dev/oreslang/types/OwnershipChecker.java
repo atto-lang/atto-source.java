@@ -3951,7 +3951,7 @@ public final class OwnershipChecker {
                     taskCaptureCapabilities(
                             type.arguments().getFirst(), visitingClasses);
             AutoTraitRules.TypeModel childModel =
-                    autoTraitModel(child);
+                    TypeAutoTraits.modelFromCapabilities(child);
             boolean shareableDomain =
                     wrapperKind == AutoTraitRules.Kind.ARC
                             || wrapperKind == AutoTraitRules.Kind.WEAK;
@@ -4013,28 +4013,6 @@ public final class OwnershipChecker {
         } finally {
             visitingClasses.remove(klass);
         }
-    }
-
-    private static AutoTraitRules.TypeModel autoTraitModel(
-            AutoTraitRules.Capabilities capabilities) {
-        java.util.EnumSet<AutoTraitRules.AutoTrait> denied =
-                java.util.EnumSet.noneOf(
-                        AutoTraitRules.AutoTrait.class);
-        if (!capabilities.send()) {
-            denied.add(AutoTraitRules.AutoTrait.SEND);
-        }
-        if (!capabilities.sync()) {
-            denied.add(AutoTraitRules.AutoTrait.SYNC);
-        }
-        if (!capabilities.share()) {
-            denied.add(AutoTraitRules.AutoTrait.SHARE);
-        }
-        return new AutoTraitRules.TypeModel(
-                AutoTraitRules.Kind.NOMINAL,
-                List.of(),
-                Set.of(),
-                capabilities.share(),
-                denied);
     }
 
     private void validateDeferredCaptures(CaptureSet union) {
