@@ -398,9 +398,10 @@ public final class ActorNativeArena implements AutoCloseable {
         return cell;
     }
 
-    public final class ValueCell implements NativeValue {
+    public final class ValueCell implements NativeValue, AutoCloseable {
         private final long slot;
         private final Object uninitialized;
+        private boolean retired;
 
         private ValueCell(long slot, Object uninitialized) {
             this.slot = slot;
@@ -409,16 +410,21 @@ public final class ActorNativeArena implements AutoCloseable {
 
         @Override public ActorNativeArena nativeArena() { return ActorNativeArena.this; }
 
+        private void checkLive() {
+            checkAccess();
+            if (retired) throw new IllegalStateException("native lexical value cell was retired");
+        }
+
         @Override public long nativeOffset() {
             synchronized (ActorNativeArena.this) {
-                checkAccess();
+                checkLive();
                 return slot;
             }
         }
 
         public Object get() {
             synchronized (ActorNativeArena.this) {
-                checkAccess();
+                checkLive();
                 return loadValue(slot, uninitialized);
             }
         }
@@ -430,10 +436,23 @@ public final class ActorNativeArena implements AutoCloseable {
          */
         public boolean trySet(Object value) {
             synchronized (ActorNativeArena.this) {
-                checkAccess();
+                checkLive();
                 if (!supportsValue(value, uninitialized)) return false;
                 storeValue(slot, value, uninitialized);
                 return true;
+            }
+        }
+
+        /** Retire an owner-validated lexical slot only after ownership analysis
+         * proves the value dead. The referenced native facade root is released
+         * immediately, but the physical slab persists until actor teardown.
+         */
+        @Override public void close() {
+            synchronized (ActorNativeArena.this) {
+                checkAccess();
+                if (retired) return;
+                storeValue(slot, null, uninitialized);
+                retired = true;
             }
         }
     }
@@ -895,12 +914,8 @@ public final class ActorNativeArena implements AutoCloseable {
                 if (offset < 0 || length < 0 || offset > capacity || length > capacity - offset) {
                     throw new IndexOutOfBoundsException("read-only lease outside native region");
                 }
-                // Construct the lease before recording admission. Otherwise an
-                // allocation failure leaves a phantom outstanding reader and
-                // permanently prevents deterministic native reclamation.
-                ReadOnlyLease lease = new ReadOnlyLease(offset, length);
                 readLeases = Math.addExact(readLeases, 1);
-                return lease;
+                return new ReadOnlyLease(offset, length);
             }
         }
 
@@ -1379,14 +1394,11 @@ public final class ActorNativeArena implements AutoCloseable {
         }
     }
 
-    /**
-     * Called only after the runtime's actor/async physical quiescence barrier.
-     * Fail closed even if a buggy scheduler claims quiescence while an issued
-     * native read lease still exists. Do not partially retire any region;
-     * preserve the whole arena so its outstanding lease can release safely.
-     */
+    /** Called only after the runtime's actor/async physical quiescence barrier. */
     @Override public synchronized void close() {
         if (closed) return;
+        // Physical quiescence includes native read-lease retirement.
+        // Never partially revoke an actor arena with live immutable readers.
         for (Region region : regions) {
             if (region.readLeases != 0) {
                 throw new IllegalStateException(
