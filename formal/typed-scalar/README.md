@@ -1,0 +1,21 @@
+# Experimental typed-AST BV64 scalar verification
+
+This pilot lowers **the actual Java/Graal Oreslang compiler's checked AST** into SMT-LIB bit-vectors for exactly three scalar `pub fnc` declarations: `core.min_int`, `core.max_int`, and `core.clamp_int`. It is a stricter source-linking step than the earlier common-source text-parser prototype. `TypedScalarSmt.fromSource` first invokes `OresCompiler.parseAndTypeCheck` (parser, type checker and ownership checker), then admits only effects-free, nongeneric, nonactor `int` parameters/returns, direct parameter comparisons, branches and returns. Unrecognized statements, effects, expressions, missing return paths, or unsupported source forms must fail closed.
+
+The independent contract encodes signed-64-bit min, max and current clamp behavior for reversed bounds. Each generated SMT document asks for the existence of a counterexample to the checked AST and separately requires a SAT result from an intentionally wrong mathematical implementation. This proves an abstract source-linked AST formula **only**. It does not prove the frontend or type checker correct, source-to-Truffle lowering semantics, runtime integer bounds, LLVM parity, native-image behavior, GC freedom, race freedom, or arbitrary Oreslang programs.
+
+## Exact-head execution gate
+
+`.github/workflows/typed-scalar-smt.yml` pins the reviewed `stdlib/core.ores` Git blob and GitHub PR head, installs Z3, compiles Java/Graal source and invokes `TypedScalarSmtTest`. The JUnit tests require actual solver output `unsat\nsat` for all three real-checked-AST routines; intentionally swapped min and clamp comparisons must yield `sat\nsat`. Unsupported literal-return code and targets must reject rather than being misrepresented in the SMT model.
+
+GitHub Actions runners for this private repository have recently failed **before executing a single step**, with `runner_id:0`, zero billed milliseconds and no logs. Exact-head Java JUnit/Z3 results are therefore **pending**, not passing. The local common-source mini-parser proof and host BigInt tests do not substitute for this runtime. Keep draft until an assigned runner executes and logs the exact proof outputs.
+
+## Future integration
+
+1. Export a versioned proof IR from checked Java and LLVM frontends, including origin SHA, source-span and type/effect evidence. The current AST lacks an independently verified correspondence to target codegen.
+2. Generalize beyond this small control-flow grammar to comparisons, checked arithmetic, Option/Result and stable ownership/borrow lifetimes.
+3. Compare both compiler frontends on identical private source fixtures, and execute the same inputs on real backends.
+4. Audit SMT encoding against compiler integer semantics (i64 signedness, arithmetic overflow, exceptional control flow) and pin the solver distribution.
+5. Attach exact-head execution receipts; never count 0-step CI or silently skipped unsupported paths as proof.
+
+Related [common-source draft #126](https://github.com/ores-truffle-oreslang/oreslang-common-source/pull/126), [hand-reviewed SMT pilot #1873](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/1873), and [conformance plan #150](https://github.com/ores-truffle-oreslang/oreslang-platform-conformance/issues/150).
