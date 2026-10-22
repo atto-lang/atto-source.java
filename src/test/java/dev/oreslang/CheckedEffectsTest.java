@@ -153,4 +153,46 @@ final class CheckedEffectsTest {
                 "fnc f(): int throws string { return 1; }"
               + "fnc g(): int throws bool { return f(); }"));
     }
+
+    @Test
+    void tryCatchCannotConsumePanicOrRaiseFromDirectCallee() {
+        for (String category : new String[]{"panics", "raises"}) {
+            String leaf = "fnc leaf(): int " + category + " int { return 1; }";
+            String attempted = "try { return leaf(); } catch (err) { return 0; }";
+
+            // Even though catch has an error binding, it cannot discharge
+            // the checked panic/raise effect from leaf().
+            var missing = assertThrows(IllegalArgumentException.class, () -> checked(
+                    leaf + "fnc bad(): int { " + attempted + " }"));
+            assertTrue(missing.getMessage().contains("checked " + category));
+
+            // Keeping the category in the calling signature is permitted
+            // by today's restricted signature-only checker.
+            assertDoesNotThrow(() -> checked(
+                    leaf + "fnc forwarding(): int " + category
+                            + " int { " + attempted + " }"));
+        }
+    }
+
+    @Test
+    void routinesMustPropagateCheckedEffectsWithoutCategoryConversion() {
+        assertDoesNotThrow(() -> checked(
+                "fnc risky(): int panics int raises bool throws string { return 1; }"
+              + "routine forwarding(): int throws string raises bool panics int { return risky(); }"));
+
+        for (String category : new String[]{"throws", "raises", "panics"}) {
+            String leaf = "fnc risky(): int " + category + " int { return 1; }";
+            var missing = assertThrows(IllegalArgumentException.class, () -> checked(
+                    leaf + "routine bad(): int { return risky(); }"));
+            assertTrue(missing.getMessage().contains("checked " + category));
+        }
+    }
+
+    @Test
+    void panicEffectMustStayInCallerSignatureEvenWithUnrelatedThrows() {
+        var error = assertThrows(IllegalArgumentException.class, () -> checked(
+                "fnc risky(): int panics int { return 1; }"
+              + "fnc bad(): int throws int { return risky(); }"));
+        assertTrue(error.getMessage().contains("checked panics"));
+    }
 }
