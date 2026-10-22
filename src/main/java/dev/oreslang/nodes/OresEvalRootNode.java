@@ -4002,8 +4002,9 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.ObjectExpr object,
                 Env env,
                 SourceValueCont continuation) {
-            if (object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
-                throw new IllegalArgumentException("unverified aggregate spread cannot execute");
+            if (object.explicitStruct()
+                    && object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
+                throw new IllegalArgumentException("spread into explicitly shaped structs is not yet supported");
             }
             ArrayList<Object> values = new ArrayList<>();
             evalSuspendableObjectField(
@@ -7006,8 +7007,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().map(item -> eval(item, env)).toList();
             if (expr instanceof Ast.ObjectExpr object) {
-                if (object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
-                    throw new IllegalArgumentException("unverified aggregate spread cannot execute");
+                if (object.explicitStruct()
+                        && object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
+                    throw new IllegalArgumentException("spread into explicitly shaped structs is not yet supported");
                 }
                 LinkedHashMap<String, Object> result = new LinkedHashMap<>();
                 if (object.explicitStruct()) {
@@ -7019,8 +7021,12 @@ public final class OresEvalRootNode extends RootNode {
                     }
                 }
                 for (Ast.ObjectField field : object.fields()) {
-                    String key = field.name();
                     Object value = eval(field.value(), env);
+                    if (field.spread()) {
+                        putScalarSpreadFields(value, result);
+                        continue;
+                    }
+                    String key = field.name();
                     if (object.explicitStruct()) {
                         if (!result.containsKey(key)) {
                             throw new IllegalArgumentException(
@@ -7031,8 +7037,10 @@ public final class OresEvalRootNode extends RootNode {
                                     "duplicate explicit struct initializer field " + key);
                         }
                         result.put(key, value);
-                    } else if (result.putIfAbsent(key, value) != null) {
-                        throw new IllegalArgumentException("duplicate struct field " + key);
+                    } else {
+                        // Duplicate explicitly written fields were rejected by
+                        // the AST; a later named field overrides a spread.
+                        result.put(key, value);
                     }
                 }
                 return object.structuralRecord()
