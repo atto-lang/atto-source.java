@@ -94,6 +94,35 @@ final class ActorLexicalNativeReentryTest {
                     assertEquals(7L, lookup.invoke(env, "initiallyManaged"));
                     assertNotNull(nativeCell.get(newSlot),
                             "an initially managed binding must admit native lowering later");
+
+                    // A managed-only slot must not silently accept foreign
+                    // arena memory before it acquires its first native cell.
+                    define.invoke(env, "stillManaged", new Object(), let);
+                    AtomicReference<Long> foreignBudget = new AtomicReference<>(0L);
+                    try (ActorNativeArena foreignArena =
+                                 new ActorNativeArena(4096, () -> {},
+                                         bytes -> {
+                                             foreignBudget.updateAndGet(n -> n + bytes);
+                                             return () -> foreignBudget.updateAndGet(n -> n - bytes);
+                                         })) {
+                        Object foreignObject = foreignArena.fields(
+                                java.util.List.of("v"), new Object());
+                        InvocationTargetException denied = assertThrows(
+                                InvocationTargetException.class,
+                                () -> assign.invoke(env, "stillManaged", foreignObject));
+                        assertInstanceOf(SecurityException.class, denied.getCause());
+                        assertNull(nativeCell.get(slots.get("stillManaged")));
+                    }
+                    assertEquals(0L, foreignBudget.get());
+
+                    // Repeated transitions should reuse one native value cell,
+                    // not accumulate actor-lifetime slabs or stay managed.
+                    for (int i = 0; i < 100; i++) {
+                        assign.invoke(env, "value", new Object());
+                        assign.invoke(env, "value", (long) i);
+                    }
+                    assertSame(initialCell, nativeCell.get(slot));
+                    assertEquals(99L, lookup.invoke(env, "value"));
                 } catch (Throwable problem) {
                     failure.set(problem);
                 } finally {
