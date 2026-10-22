@@ -76,7 +76,9 @@ public final class SupervisorShutdownTree {
         }
 
         private void transition(SupervisorLifecycleFsm.Event event) {
-            lifecycle.updateAndGet(state -> SupervisorLifecycleFsm.reduce(state, event));
+            synchronized (treeLock) {
+                lifecycle.updateAndGet(state -> SupervisorLifecycleFsm.reduce(state, event));
+            }
         }
 
         /**
@@ -263,7 +265,11 @@ public final class SupervisorShutdownTree {
             timer = watchdog.schedule(() -> {
                 TimeoutException deadline = new TimeoutException(
                         "supervisor tree shutdown deadline expired; physical cleanup unverified");
-                if (bounded.failFromRuntime(deadline)) escalate(deadline);
+                if (actual.isDone()) return;
+                if (bounded.failFromRuntime(deadline)) {
+                    markDeadline();
+                    escalate(deadline);
+                }
             }, nanos, TimeUnit.NANOSECONDS);
         } catch (RuntimeException rejected) {
             bounded.failFromRuntime(rejected);
@@ -276,6 +282,28 @@ public final class SupervisorShutdownTree {
             else bounded.failFromRuntime(failure);
         });
         return bounded;
+    }
+
+    private void markDeadline() {
+        synchronized (treeLock) {
+            List<Supervisor> nodes = new ArrayList<>();
+            collect(root, nodes);
+            for (Supervisor node : nodes) {
+                node.transition(new SupervisorLifecycleFsm.DeadlineExpired(
+                        node.lifecycle.get().epoch()));
+            }
+        }
+    }
+
+    private void markCoordinatorFailed() {
+        synchronized (treeLock) {
+            List<Supervisor> nodes = new ArrayList<>();
+            collect(root, nodes);
+            for (Supervisor node : nodes) {
+                node.transition(new SupervisorLifecycleFsm.CoordinatorFailed(
+                        node.lifecycle.get().epoch()));
+            }
+        }
     }
 
     private void sealSubtree(Supervisor node) {
@@ -370,6 +398,9 @@ public final class SupervisorShutdownTree {
             work.clear();
             draining = false;
         }
+        // The status plane records CONTROL loss, but must not fake hook
+        // acknowledgments, logical termination, or native loan reclamation.
+        markCoordinatorFailed();
         // An unavailable CONTROL dispatcher must not mark the root stopped:
         // exceptional root completion is deferred until every managed group
         // has actually retired. Guest hooks are not invoked during this
