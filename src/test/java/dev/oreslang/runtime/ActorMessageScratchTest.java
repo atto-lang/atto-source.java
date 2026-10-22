@@ -129,6 +129,73 @@ final class ActorMessageScratchTest {
     }
 
     @Test
+    void burstMessageReturnsExcessNativeQuotaWithoutTouchingPersistentState() {
+        AtomicLong charged = new AtomicLong();
+        try (ActorNativeArena arena = new ActorNativeArena(256 * 1024, () -> {}, bytes -> {
+            charged.addAndGet(bytes);
+            return () -> charged.addAndGet(-bytes);
+        })) {
+            var persistent = arena.region(8192);
+            persistent.writeLong(0, 0x0102030405060708L);
+            ActorMessageScratch scratch = new ActorMessageScratch(arena, 256 * 1024);
+            scratch.beginMessage();
+            ActorMessageScratch.Slice stale = null;
+            for (int i = 0; i < 24; i++) {
+                stale = scratch.allocate(4096);
+                stale.writeLong(0, 10_000L + i);
+            }
+            assertEquals(24L * 4096, scratch.reservedBytes());
+            assertEquals(8192L + scratch.reservedBytes(), charged.get());
+            ActorMessageScratch.Slice escaped = stale;
+            scratch.finishMessage();
+            assertEquals(64 * 1024L, scratch.reservedBytes(),
+                    "a single large temporary message must not pin every native chunk");
+            assertEquals(8192L + 64 * 1024L, charged.get());
+            assertEquals(0x0102030405060708L, persistent.readLong(0));
+            assertThrows(IllegalStateException.class, () -> escaped.readLong(0),
+                    "a handle to a now-freed excess chunk must fail by message epoch first");
+            scratch.beginMessage();
+            assertThrows(IllegalStateException.class, () -> scratch.trimIdleTo(0));
+            var reused = scratch.allocate(4096);
+            assertEquals(0L, reused.readLong(0));
+            scratch.finishMessage();
+            assertThrows(IllegalArgumentException.class, () -> scratch.trimIdleTo(-1));
+            scratch.trimIdleTo(0);
+            assertEquals(0L, scratch.reservedBytes());
+            assertEquals(8192L, charged.get());
+            assertEquals(0x0102030405060708L, persistent.readLong(0));
+            persistent.close();
+        }
+        assertEquals(0L, charged.get(), "all actor-native bytes must be refunded at close");
+    }
+
+    @Test
+    void oversizedSingleScratchChunkIsReleasedAfterMessageEnds() {
+        AtomicLong charged = new AtomicLong();
+        try (ActorNativeArena arena = new ActorNativeArena(256 * 1024, () -> {}, bytes -> {
+            charged.addAndGet(bytes);
+            return () -> charged.addAndGet(-bytes);
+        })) {
+            ActorMessageScratch scratch = new ActorMessageScratch(arena, 256 * 1024);
+            scratch.beginMessage();
+            var large = scratch.allocate(100 * 1024);
+            large.writeLong(0, 123L);
+            assertEquals(100 * 1024L, scratch.reservedBytes());
+            scratch.finishMessage();
+            assertEquals(0L, scratch.reservedBytes(),
+                    "oversized one-time native scratch chunk must not remain permanently charged");
+            assertEquals(0L, charged.get());
+            assertThrows(IllegalStateException.class, () -> large.readLong(0));
+            scratch.beginMessage();
+            var small = scratch.allocate(8);
+            assertEquals(0L, small.readLong(0));
+            assertEquals(4096L, scratch.reservedBytes());
+            scratch.finishMessage();
+        }
+        assertEquals(0L, charged.get());
+    }
+
+    @Test
     void invalidOffsetsAndEpochsFailBeforeNativeAccess() {
         AtomicLong charged = new AtomicLong();
         try (ActorNativeArena arena = new ActorNativeArena(8192, () -> {}, bytes -> {
