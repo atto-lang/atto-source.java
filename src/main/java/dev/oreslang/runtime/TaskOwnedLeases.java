@@ -34,6 +34,8 @@ public final class TaskOwnedLeases {
 
     /** Exact-once handle. An explicit early close requires its owning Task turn. */
     public interface Lease extends AutoCloseable {
+        /** Enforce owning logical Task identity for any guest-visible access. */
+        void requireCurrentOwner();
         @Override void close();
     }
 
@@ -175,11 +177,15 @@ public final class TaskOwnedLeases {
                 }
             }
 
-            @Override public void close() {
+            @Override public void requireCurrentOwner() {
                 if (!TaskHandle.isCurrentLeaseOwner(owner)) {
                     throw new IllegalStateException(
-                            "only the owning Task turn may close a live lease");
+                            "mutex guard belongs to a different logical Task");
                 }
+            }
+
+            @Override public void close() {
+                requireCurrentOwner();
                 // A logical lease can be released early inside its owning
                 // Task; retirement's stack entry is safely idempotent.
                 try {
