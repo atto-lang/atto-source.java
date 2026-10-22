@@ -184,6 +184,11 @@ public final class SupervisorLifecycleFsm {
             throw new IllegalStateException("unrecognized lifecycle event");
         }
 
+        // An actor may have retired before the pre-hook or last child ack.
+        // Never require a second, fabricated ActorsFinished receipt merely
+        // to advance the shutdown automaton.
+        if (next == Phase.WAIT_ACTORS && actors) next = Phase.AFTER_HOOK;
+
         if (s.epoch() == epoch && next == p && expected.equals(s.expectedChildren())
                 && done.equals(s.completedChildren()) && pre == s.preHookDone()
                 && actors == s.actorsDone() && post == s.postHookDone()
