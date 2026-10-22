@@ -37,28 +37,31 @@ public final class ActorMessageScratch {
     private int readBorrows;
     /** Parent/child lexical scratch scopes are an exclusive LIFO stack. */
     private Scope currentScope;
-    private Scope rootScope;
+    /** Reuse the root authority across every message: no JVM Scope allocation per turn. */
+    private final Scope rootScope;
 
     ActorMessageScratch(ActorNativeArena arena, long actorLimit) {
         this.arena = Objects.requireNonNull(arena, "arena");
         if (actorLimit <= 0) throw new IllegalArgumentException("invalid actor memory limit");
         this.maximumChunkBytes = Math.min((long) Integer.MAX_VALUE, actorLimit);
+        this.rootScope = new Scope(null, 0L, 0, 0, 0);
+        this.rootScope.live = false;
     }
 
     synchronized void beginMessage() {
         arena.assertOwner();
         if (active) throw new IllegalStateException("actor already owns a logical message scratch epoch");
         if (epoch == Long.MAX_VALUE) throw new IllegalStateException("actor message epoch exhausted");
-        // Allocate the managed scope authority before changing the state. A
-        // failed JVM allocation cannot leave an active, scope-less message.
+        // The root token is reused rather than allocating JVM objects per
+        // mailbox message. Slice.issuedEpoch still rejects old root views.
         long nextEpoch = epoch + 1;
-        Scope nextRoot = new Scope(null, nextEpoch, 0, 0, 0);
+        rootScope.issuedEpoch = nextEpoch;
+        rootScope.live = true;
         epoch = nextEpoch;
         cursorBlock = 0;
         cursorByte = 0;
         usedBytes = 0;
-        currentScope = nextRoot;
-        rootScope = nextRoot;
+        currentScope = rootScope;
         active = true;
     }
 
@@ -80,7 +83,6 @@ public final class ActorMessageScratch {
         }
         rootScope.live = false;
         currentScope = null;
-        rootScope = null;
         active = false;
         usedBytes = 0;
         cursorBlock = 0;
@@ -138,7 +140,7 @@ public final class ActorMessageScratch {
 
     public final class Scope implements AutoCloseable {
         private final Scope parent;
-        private final long issuedEpoch;
+        private long issuedEpoch;
         private final int savedBlock;
         private final int savedByte;
         private final long savedUsedBytes;
