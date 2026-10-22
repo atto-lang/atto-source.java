@@ -113,6 +113,132 @@ public final class TaskOwnedLockLedgerTest {
     }
 
     @Test
+    void queuedAsyncTimeoutSettlesPhysicalWaitAndQuotaBeforePublication()
+            throws Exception {
+        OresMutex.Shared<int[]> mutex = OresMutex.shared(new int[]{0});
+        var holder = mutex.tryLock().orElseThrow();
+        AtomicReference<java.util.concurrent.CompletableFuture<OresMutex.Guard<int[]>>>
+                pending = new AtomicReference<>();
+        Thread requester = Thread.ofPlatform().start(() ->
+                pending.set(mutex.lockAsyncFor(java.time.Duration.ofMillis(100))));
+        requester.join();
+        try {
+            java.util.concurrent.atomic.AtomicBoolean settledBeforeCallback =
+                    new java.util.concurrent.atomic.AtomicBoolean();
+            java.lang.reflect.Field field =
+                    OresMutex.Shared.class.getDeclaredField("asyncWaiters");
+            field.setAccessible(true);
+            pending.get().whenComplete((ignored, failure) -> {
+                try {
+                    int queued = ((java.util.concurrent.atomic.AtomicInteger)
+                            field.get(mutex)).get();
+                    settledBeforeCallback.set(queued == 0 && failure != null);
+                } catch (IllegalAccessException error) {
+                    throw new AssertionError(error);
+                }
+            });
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> pending.get().get(3, TimeUnit.SECONDS));
+            assertTrue(settledBeforeCallback.get(),
+                    "future timeout published before physical waiter settlement");
+        } finally {
+            holder.release();
+        }
+        var next = mutex.tryLock().orElseThrow();
+        next.release();
+    }
+
+    @Test
+    void asyncCancelVsHandoffEitherGrantsOrCancelsWithoutPermitLeak()
+            throws Exception {
+        for (int round = 0; round < 100; round++) {
+            OresMutex.Shared<int[]> mutex = OresMutex.shared(new int[]{round});
+            var holder = mutex.tryLock().orElseThrow();
+            AtomicReference<java.util.concurrent.CompletableFuture<OresMutex.Guard<int[]>>>
+                    pending = new AtomicReference<>();
+            Thread requester = Thread.ofPlatform().start(() ->
+                    pending.set(mutex.lockAsync()));
+            requester.join();
+            assertFalse(pending.get().isDone());
+            CountDownLatch go = new CountDownLatch(1);
+            AtomicReference<Throwable> unexpected = new AtomicReference<>();
+            Thread cancellation = Thread.ofPlatform().start(() -> {
+                try {
+                    if (!go.await(3, TimeUnit.SECONDS))
+                        throw new IllegalStateException("cancel barrier");
+                    pending.get().cancel(false);
+                } catch (Throwable error) {
+                    unexpected.set(error);
+                }
+            });
+            Thread releaser = Thread.ofPlatform().start(() -> {
+                try {
+                    if (!go.await(3, TimeUnit.SECONDS))
+                        throw new IllegalStateException("release barrier");
+                    holder.release();
+                } catch (Throwable error) {
+                    unexpected.set(error);
+                }
+            });
+            go.countDown();
+            cancellation.join();
+            releaser.join();
+            assertNull(unexpected.get());
+            assertTrue(pending.get().isDone());
+            if (!pending.get().isCancelled()) {
+                var grant = pending.get().get(3, TimeUnit.SECONDS);
+                assertFalse(grant.released());
+                grant.release();
+            }
+            var next = mutex.tryLock().orElseThrow();
+            next.release();
+        }
+    }
+
+    @Test
+    void cancelledRunningTaskUnlinksAsyncWaiterOnlyAfterQuiescence()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresMutex.Shared<int[]> mutex = OresMutex.shared(new int[]{1});
+            var holder = mutex.tryLock().orElseThrow();
+            CountDownLatch waiting = new CountDownLatch(1);
+            CountDownLatch exit = new CountDownLatch(1);
+            AtomicReference<java.util.concurrent.CompletableFuture<OresMutex.Guard<int[]>>>
+                    pending = new AtomicReference<>();
+            TaskHandle<Void> task = scheduler.startTracked(resume -> {
+                pending.set(mutex.lockAsync());
+                waiting.countDown();
+                try {
+                    if (!exit.await(3, TimeUnit.SECONDS))
+                        throw new IllegalStateException("quiescence barrier exceeded");
+                } catch (InterruptedException failure) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(failure);
+                }
+                return OresScheduler.done(null);
+            });
+            try {
+                assertTrue(waiting.await(3, TimeUnit.SECONDS));
+                assertTrue(task.cancel("shutdown"));
+                assertFalse(task.getDone().isDone());
+                assertFalse(pending.get().isDone(),
+                        "physical Task execution must remain alive until exit");
+            } finally {
+                exit.countDown();
+                holder.release();
+            }
+            assertInstanceOf(TaskHandle.Cancelled.class,
+                    task.getDone().get(3, TimeUnit.SECONDS));
+            // Handoff may race with actor exit. Either the queued future was
+            // cancelled or a grant was rejected and failed closed; no
+            // outstanding guard or live permit may survive Task DONE.
+            assertTrue(pending.get().isDone());
+            var next = mutex.tryLock().orElseThrow();
+            next.release();
+        }
+    }
+
+    @Test
     void unreleasedSharedGuardIsRevokedAndPoisonedBeforeTaskDone() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             OresMutex.Shared<int[]> mutex = OresMutex.shared(new int[] {0});
