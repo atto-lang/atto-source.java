@@ -40,8 +40,8 @@ public final class AggregateConstructionPlanSmoke {
         check(plan.resultType().members().get("foo") == Types.Primitive.INT, "explicit override");
         check(plan.resultType().members().get("bar") == Types.Primitive.BOOL, "rightmost spread");
         check(plan.resultType().members().get("baz") == Types.Primitive.FLOAT, "appended field");
-        check(List.copyOf(plan.resolvedFields().keySet()).equals(List.of("foo", "bar", "baz")),
-                "preserve first-appearance physical field order");
+        check(List.copyOf(plan.resolvedFields().keySet()).equals(List.of("bar", "foo", "baz")),
+                "canonicalize projection slots independently of source Map iteration");
         check(plan.orderedSteps().size() == 3, "ordered source steps");
         check(plan.orderedSteps().get(0) instanceof AggregateConstructionPlan.SpreadFields,
                 "first spread step");
