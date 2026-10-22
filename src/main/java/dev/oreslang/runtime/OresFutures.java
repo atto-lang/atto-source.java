@@ -190,6 +190,23 @@ public final class OresFutures {
         return result;
     }
 
+    /**
+     * Cancellation-aware replacement for the legacy Settled(value,error)
+     * view. It preserves SUCCESS, FAILURE and runtime-authenticated CANCELLED
+     * independently, including failures whose Throwable happens to be a
+     * CancellationException. It does not cancel borrowed input sources.
+     *
+     * <p>Host-runtime staging only. The source compiler must enforce checked
+     * throws/raises/panics before exposing this as a guest allSettled: an
+     * Oreslang panic may never be reclassified as a catchable failure.</p>
+     */
+    public static <T> OresFuture<List<FutureCombinators.Outcome<T>>>
+            allSettledDetailed(List<?> awaitables) {
+        List<OresFuture<T>> children =
+                normalize(awaitables, "Futures.all_settled_detailed");
+        return FutureCombinators.allSettled(children);
+    }
+
     private static void detachAll(
             AtomicReferenceArray<OresFuture.RuntimeWaiterRegistration> waiters) {
         for (int i = 0; i < waiters.length(); i++) {
