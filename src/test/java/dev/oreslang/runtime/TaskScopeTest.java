@@ -106,6 +106,47 @@ public class TaskScopeTest {
         }
     }
 
+    @Test void finalHeldChildKeepsEntireScopeLiveAfterSiblingRetires()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            TaskScope scope = scheduler.newTaskScope();
+            TaskHandle<Integer> first = scope.startTask(r -> OresScheduler.done(1));
+            CountDownLatch afterCarrier = new CountDownLatch(1);
+            AtomicReference<Runnable> remaining = new AtomicReference<>();
+            TaskHandle<Integer> second = scope.startTask(new OresScheduler.Task<>() {
+                @Override
+                public OresScheduler.Step<Integer> resume(OresScheduler.Resume resume) {
+                    return OresScheduler.done(2);
+                }
+
+                @Override
+                public void afterCarrierQuiescent(Runnable retire) {
+                    remaining.set(retire);
+                    afterCarrier.countDown();
+                }
+            });
+            assertEquals(new TaskHandle.Success<>(1),
+                    first.getDone().get(3, TimeUnit.SECONDS));
+            assertTrue(afterCarrier.await(3, TimeUnit.SECONDS));
+            assertEquals(2, second.result().get(3, TimeUnit.SECONDS));
+            scope.seal();
+            assertEquals(1, scope.liveCancellationChildren());
+            assertFalse(scope.getDone().isDone());
+            Runnable finish = remaining.get();
+            assertNotNull(finish);
+            try {
+                finish.run();
+                finish.run();
+                assertEquals(new TaskHandle.Success<>(2),
+                        second.getDone().get(3, TimeUnit.SECONDS));
+                assertNull(scope.getDone().get(3, TimeUnit.SECONDS));
+                assertEquals(0, scope.liveCancellationChildren());
+            } finally {
+                finish.run();
+            }
+        }
+    }
+
     @Test void sealingEmptyScopeCompletesWithoutTask() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             TaskScope scope = scheduler.newTaskScope();
