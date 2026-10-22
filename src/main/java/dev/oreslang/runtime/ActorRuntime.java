@@ -924,7 +924,18 @@ public final class ActorRuntime implements AutoCloseable {
         public ActorId owner() { return owner; }
         public long limitBytes() { return limitBytes; }
         public long usedBytes() { return usedBytes.get(); }
-        public long remainingBytes() { return Math.max(0L, limitBytes - usedBytes.get()); }
+        public long remainingBytes() {
+            ActorCell<?> cell = actors.get(owner);
+            if (cell == null) return Math.max(0L, limitBytes - usedBytes.get());
+            synchronized (cell.lifecycleLock) {
+                long external = Math.addExact(
+                        cell.outputBytes.get(),
+                        cell.shardSnapshotReservedBytes);
+                return Math.max(
+                        0L,
+                        limitBytes - usedBytes.get() - external);
+            }
+        }
         public boolean closed() { return sliceClosed.get(); }
 
         /**
@@ -961,26 +972,53 @@ public final class ActorRuntime implements AutoCloseable {
             return reserve(estimateFrozenBytes(isolatedMessage), "private actor mailbox");
         }
 
-        private synchronized MemoryReservation reserve(long bytes, String purpose) {
+        private MemoryReservation reserve(long bytes, String purpose) {
             if (bytes < 0) throw new IllegalArgumentException("memory reservation cannot be negative");
-            if (sliceClosed.get()) throw new IllegalStateException("private actor memory slice is closed");
-            if (bytes == 0) return new MemoryReservation(this, 0);
-
-            long current = usedBytes.get();
-            long next;
-            try {
-                next = Math.addExact(current, bytes);
-            } catch (ArithmeticException overflow) {
-                throw new IllegalStateException(purpose + " accounting overflow");
+            ActorCell<?> cell = actors.get(owner);
+            if (cell != null) {
+                synchronized (cell.lifecycleLock) {
+                    return reserveWithActorQuota(bytes, purpose, cell);
+                }
             }
-            if (next > limitBytes) {
-                throw new IllegalStateException(purpose + " limit exceeded for " + owner
-                        + ": requested=" + bytes + " used=" + current + " limit=" + limitBytes);
+            synchronized (this) {
+                return reserveWithActorQuota(bytes, purpose, null);
             }
+        }
 
-            reservePrivateRuntimeBytes(bytes, owner, purpose);
-            usedBytes.set(next);
-            return new MemoryReservation(this, bytes);
+        private MemoryReservation reserveWithActorQuota(
+                long bytes,
+                String purpose,
+                ActorCell<?> cell) {
+            synchronized (this) {
+                if (sliceClosed.get()) {
+                    throw new IllegalStateException("private actor memory slice is closed");
+                }
+                if (bytes == 0) return new MemoryReservation(this, 0);
+
+                long current = usedBytes.get();
+                long external = cell == null
+                        ? 0L
+                        : Math.addExact(
+                                cell.outputBytes.get(),
+                                cell.shardSnapshotReservedBytes);
+                long next;
+                try {
+                    next = Math.addExact(current, bytes);
+                } catch (ArithmeticException overflow) {
+                    throw new IllegalStateException(purpose + " accounting overflow");
+                }
+                if (next > limitBytes - external) {
+                    throw new IllegalStateException(purpose + " limit exceeded for " + owner
+                            + ": requested=" + bytes
+                            + " used=" + current
+                            + " external=" + external
+                            + " limit=" + limitBytes);
+                }
+
+                reservePrivateRuntimeBytes(bytes, owner, purpose);
+                usedBytes.set(next);
+                return new MemoryReservation(this, bytes);
+            }
         }
 
         private void requireCurrentOwner() {
@@ -7613,7 +7651,7 @@ public final class ActorRuntime implements AutoCloseable {
                 }
 
                 long actorAvailable = isPrivateKind(kind)
-                        ? Math.max(0L, memorySlice.remainingBytes() - current)
+                        ? memorySlice.remainingBytes()
                         : Math.max(
                                 0L,
                                 policy.maxHeapBytes()
