@@ -15,6 +15,56 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class TreeShakerTest {
     @Test
+    void aggregateSpreadSurvivesRewriteAndConstantCallSpecialization() {
+        // The ordinary rewrite and the constant-call inlining/substitution
+        // path both reconstruct aggregate AST nodes. Neither may turn a
+        // spread item (name == null) into a named initializer.
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                fnc extend(int n): record{foo: int, bar: int} {
+                    return record{...record{foo: 5}, bar: n};
+                }
+
+                pub fnc main(): void {
+                    const base = record{foo: 1};
+                    const copy = record{...base, bar: 2};
+                    const inlined = extend(9);
+                    stdio.println(copy.foo);
+                    stdio.println(inlined.bar);
+                    return;
+                }
+                """, BuildOptions.executable(Map.of()));
+
+        Ast.FunctionDecl main = result.program().modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(function -> function.name().equals("main"))
+                .findFirst().orElseThrow();
+
+        Ast.BindingStmt copy = main.body().stream()
+                .filter(Ast.BindingStmt.class::isInstance)
+                .map(Ast.BindingStmt.class::cast)
+                .filter(binding -> binding.name().equals("copy"))
+                .findFirst().orElseThrow();
+        Ast.ObjectExpr copied = assertInstanceOf(Ast.ObjectExpr.class, copy.initializer());
+        assertEquals(2, copied.fields().size());
+        assertTrue(copied.fields().getFirst().spread());
+        assertNull(copied.fields().getFirst().name());
+        assertEquals("bar", copied.fields().get(1).name());
+
+        Ast.BindingStmt inlined = main.body().stream()
+                .filter(Ast.BindingStmt.class::isInstance)
+                .map(Ast.BindingStmt.class::cast)
+                .filter(binding -> binding.name().equals("inlined"))
+                .findFirst().orElseThrow();
+        Ast.ObjectExpr specialized = assertInstanceOf(Ast.ObjectExpr.class, inlined.initializer(),
+                "constant-call inlining should retain aggregate literal identity");
+        assertTrue(specialized.fields().getFirst().spread());
+        assertNull(specialized.fields().getFirst().name());
+        assertEquals("bar", specialized.fields().get(1).name());
+    }
+
+    @Test
     void cliDefinesOverrideEnvironmentDefinesDeterministically() {
         Map<String, String> merged = BuildOptions.mergeDefines(
                 Map.of(
