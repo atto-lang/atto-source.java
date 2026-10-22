@@ -81,11 +81,30 @@ final class CheckedEffectsTest {
     }
 
     @Test
-    void effectfulFunctionsCannotEraseEffectsThroughFunctionValues() {
-        var error = assertThrows(IllegalArgumentException.class, () -> checked(
+    void checkedFunctionValuesPropagateEffectsThroughCalls() {
+        assertDoesNotThrow(() -> checked(
                 "fnc risky(): int throws string { return 1; }"
-              + "fnc capture(): void throws string { val f = risky; return; }"));
-        assertTrue(error.getMessage().contains("direct-call-only"));
+              + "fnc capture(): int throws string { val f = risky; return f(); }"));
+
+        var missing = assertThrows(IllegalArgumentException.class, () -> checked(
+                "fnc risky(): int throws string { return 1; }"
+              + "fnc capture(): int { val f = risky; return f(); }"));
+        assertTrue(missing.getMessage().contains("checked effects not covered"));
+    }
+
+    @Test
+    void cannotAssignEffectfulValueToPureFncSignature() {
+        var error = assertThrows(IllegalArgumentException.class, () -> checked(
+                "fnc risky(): int panics int { return 1; }"
+              + "fnc capture(): Fnc<int> panics int { return risky; }"));
+        assertTrue(error.getMessage().contains("expected"));
+    }
+
+    @Test
+    void pureFunctionValuesCanBeCalledFromPureFunctions() {
+        assertDoesNotThrow(() -> checked(
+                "fnc safe(): int { return 1; }"
+              + "fnc capture(): int { val f = safe; return f(); }"));
     }
     @Test
     void rejectsUnresolvedAndRuntimeAffinePayloadsInAllCategories() {
@@ -246,13 +265,15 @@ final class CheckedEffectsTest {
     }
 
     @Test
-    void effectfulStaticFunctionsCannotBeErasedIntoFunctionValues() {
-        var erased = assertThrows(IllegalArgumentException.class, () -> checked(
-                "define class Work as "
+    void staticFunctionValuesPreservePanicEffects() {
+        String work = "define class Work as "
               + "  static fnc risky(): int panics int { return 1; }"
-              + "end"
-              + "fnc store(): void panics int { val callback = Work.risky; return; }"));
-        assertTrue(erased.getMessage().contains("direct-call-only"));
+              + "end";
+        assertDoesNotThrow(() -> checked(work
+              + "fnc forward(): int panics int { val callback = Work.risky; return callback(); }"));
+        var missing = assertThrows(IllegalArgumentException.class, () -> checked(work
+              + "fnc bad(): int { val callback = Work.risky; return callback(); }"));
+        assertTrue(missing.getMessage().contains("checked effects not covered"));
     }
 
     @Test
@@ -343,5 +364,27 @@ final class CheckedEffectsTest {
               + "  val callback = || -> { return pure(); };"
               + "  return 0;"
               + "}"));
+    }
+
+    @Test
+    void callbackParameterCannotSilentlyErasePanic() {
+        var mismatch = assertThrows(IllegalArgumentException.class, () -> checked(
+                "fnc risky(): int panics int { return 1; }"
+              + "fnc use(Fnc<int> cb): int { return cb(); }"
+              + "fnc caller(): int panics int { return use(risky); }"));
+        assertTrue(mismatch.getMessage().contains("expected"));
+    }
+
+    @Test
+    void functionValueStillSeparatesThrowsRaisesAndPanics() {
+        assertDoesNotThrow(() -> checked(
+                "fnc risky(): int throws string raises bool panics int { return 1; }"
+              + "fnc good(): int panics int raises bool throws string {"
+              + "  val f = risky; return f();"
+              + "}"));
+        var mismatch = assertThrows(IllegalArgumentException.class, () -> checked(
+                "fnc risky(): int throws string raises bool panics int { return 1; }"
+              + "fnc wrong(): int throws string raises bool { val f = risky; return f(); }"));
+        assertTrue(mismatch.getMessage().contains("checked effects not covered"));
     }
 }
