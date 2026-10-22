@@ -44,6 +44,12 @@ final class ZordeCheckedTypeIdentityTest {
         assertFalse(isAssignable(fake, checked));
         assertFalse(isAssignable(namespaceSpoof, checked));
         assertFalse(isAssignable(checked, fake));
+        assertFalse(isAssignable(fake, fake));
+        assertFalse(isAssignable(namespaceSpoof, namespaceSpoof));
+        assertFalse(isAssignable(new Named("Option", List.of(fake)),
+                new Named("Option", List.of(fake))));
+        assertFalse(isAssignable(new Types.Record(Map.of("proof", namespaceSpoof)),
+                new Types.Record(Map.of("proof", namespaceSpoof))));
         assertFalse(isAssignable(Primitive.INT, checked));
         assertFalse(isAssignable(checked, Primitive.INT));
     }
