@@ -69,7 +69,7 @@ final class ImmutableAggregateScalarSpreadRuntimeTest {
 
     @Test
     void aggregateElementsEvaluateExactlyOnceInLexicalOrder() {
-        assertEquals("base\\nfirst\\ninline\\nlast\\n4\\n1\\n", execute("""
+        assertEquals("base\nfirst\ninline\nlast\n4\n1\n", execute("""
                 fnc mark(string label, int value): int {
                     stdio.println(label);
                     return value;
@@ -91,7 +91,7 @@ final class ImmutableAggregateScalarSpreadRuntimeTest {
 
     @Test
     void spreadCanOverrideNamedInitializerBeforeIt() {
-        assertEquals("6\\n5\\n", execute("""
+        assertEquals("6\n5\n", execute("""
                 pub fnc main(): void {
                     const base = record{x: 5, y: 6};
                     const next = record{x: 1, ...base};
@@ -174,7 +174,7 @@ final class ImmutableAggregateScalarSpreadRuntimeTest {
 
     @Test
     void namedInferredStructuralAliasesRemainLexicalNotNominal() {
-        assertEquals("5\\nfoo\\n42\\n", execute("""
+        assertEquals("5\nfoo\n42\n", execute("""
                 pub fnc main(): void {
                     const base = infer struct{foo: 5};
                     const T2 v = infer struct{...base, bar: "foo"};
