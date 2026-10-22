@@ -34,6 +34,7 @@ for required in (
     'case "exists_async" -> (Invokable) fs::existsAsync',
     'case "write_text_async" -> (Invokable) fs::writeTextAsync',
     'case "append_text_async" -> (Invokable) fs::appendTextAsync',
+    'case "remove_async" -> (Invokable) fs::removeAsync',
 ):
     if required not in fs_switch:
         deny("missing strict async dispatch: " + required)
@@ -50,6 +51,7 @@ for required in (
     "context.strictFileIo().exists",
     "context.strictFileIo().writeText",
     "context.strictFileIo().appendText",
+    "context.strictFileIo().remove",
     "context.requireStrictPathPermission",
 ):
     if required not in facade:
@@ -94,6 +96,7 @@ for required in (
     "IORING_OP_OPENAT2",
     "IORING_OP_READ",
     "IORING_OP_WRITE",
+    "IORING_OP_UNLINKAT",
     "IORING_OP_ASYNC_CANCEL",
     "IORING_OP_CLOSE",
     "RESOLVE_BENEATH",
@@ -108,6 +111,18 @@ if "ores_retract_last_sqe_locked" not in native:
     deny("failed io_uring submission must retract its unconsumed SQE")
 if "if (ctx->closed) op->cancelled = 1;" not in native:
     deny("closed provider must not advance an operation to another I/O stage")
+if "ores_prepare_parent_leaf" not in native:
+    deny("strict remove must split and securely open the parent directory")
+for required in (
+    "O_PATH | O_DIRECTORY | O_CLOEXEC",
+    "AT_REMOVEDIR",
+    "ORES_STAGE_UNLINK",
+    "ORES_STAGE_RMDIR",
+    "ores_free_op_memory",
+):
+    if required not in native:
+        deny("strict remove missing secure parent/unlink invariant: " + required)
+
 
 
 build = text("scripts/build-native-thread.sh")
@@ -129,7 +144,12 @@ method_names = {
     for method in entry.get("methods", [])
     if isinstance(method, dict)
 }
-if not {"nativeReadCompleted", "nativeExistsCompleted", "nativeWriteCompleted"} <= method_names:
+if not {
+        "nativeReadCompleted",
+        "nativeExistsCompleted",
+        "nativeWriteCompleted",
+        "nativeRemoveCompleted",
+} <= method_names:
     deny("Native Image JNI callback methods are incomplete")
 
 # This PR is deliberately staged: legacy synchronous filesystem APIs remain
@@ -137,7 +157,12 @@ if not {"nativeReadCompleted", "nativeExistsCompleted", "nativeWriteCompleted"} 
 # release cannot accidentally describe this as the global strict boundary.
 if 'case "read_text" -> (Invokable) fs::readText' not in fs_switch:
     deny("staged legacy-sync marker changed; update migration/audit together")
+if 'case "mkdir_all_async" -> (Invokable) fs::mkdirAllAsync' not in fs_switch:
+    deny("mkdir_all_async staging marker changed; update secure-directory plan together")
+if "context.strictFileIo().mkdirAll" not in facade:
+    deny("mkdir_all_async must remain routed to the fail-closed provider contract")
+
 
 print("STRICT_FILESYSTEM_IO=PASS")
-print("strict_async_operations=read_text_async,exists_async,write_text_async,append_text_async")
+print("strict_async_operations=read_text_async,exists_async,write_text_async,append_text_async,remove_async")
 print("legacy_sync_surface=STAGED_NOT_STRICT")
