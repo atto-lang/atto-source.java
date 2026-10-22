@@ -181,6 +181,16 @@ final class CompilerZordeParsedImportLinkTest {
         crowdedTarget.append("@Range(min=1,max=100) type Port = int;");
         assertThrows(IllegalArgumentException.class,
                 () -> staged(crowdedTarget.toString(), "svc.api"));
+
+        // Inclusive, bounded operation must still be possible.
+        StringBuilder atLimit = new StringBuilder("namespace api; ");
+        for (int i = 0; i < CompilerZordeSchemaRegistry.MAX_TYPES_PER_IMPORTED_UNIT; i++)
+            atLimit.append("import type Allowed").append(i)
+                    .append(" from \"svc.users\"; ");
+        atLimit.append("@Range(min=1,max=100) type Port = int;");
+        assertEquals(CompilerZordeSchemaRegistry.MAX_TYPES_PER_IMPORTED_UNIT,
+                staged(atLimit.toString(), "svc.api")
+                        .parsedTypeImports().get("svc.users").size());
     }
 
     @Test void stagingAndLinkingRequireTheSameCanonicalUnitIdentity() {
