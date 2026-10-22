@@ -184,17 +184,29 @@ public final class ActorMixedRegion implements AutoCloseable {
         return new Shape(align(cursor, alignment), alignment, offsets);
     }
 
-    public int rows() { return rows; }
-    public int physicalBytes() { return physicalBytes; }
-    public long payloadBytes() { return payloadBytes; }
-    public List<Field> fields() { return fields; }
-    public List<Segment> segments() { return segments; }
+    private void requireOwner() { memory.nativeOffset(); }
 
-    public Address address(int row, String field) {
-        memory.nativeOffset(); // validates actor ownership and region liveness
-        Integer index = byName.get(field);
-        if (row < 0 || row >= rows || index == null) {
-            throw new IndexOutOfBoundsException("actor mixed row or field");
+    public int rows() { requireOwner(); return rows; }
+    public int physicalBytes() { requireOwner(); return physicalBytes; }
+    public long payloadBytes() { requireOwner(); return payloadBytes; }
+    public List<Field> fields() { requireOwner(); return fields; }
+    public List<Segment> segments() { requireOwner(); return segments; }
+
+    private int indexOf(String field, Kind expected) {
+        requireOwner();
+        Integer index = field == null ? null : byName.get(field);
+        if (index == null) throw new IndexOutOfBoundsException("unknown actor mixed field");
+        if (fields.get(index).kind() != expected) {
+            throw new IllegalArgumentException("actor mixed field type mismatch");
+        }
+        return index;
+    }
+
+    /** Primitive-only byte locator on all scalar hot paths; no Address facade. */
+    private int byteOffset(int row, int index) {
+        requireOwner();
+        if (row < 0 || row >= rows) {
+            throw new IndexOutOfBoundsException("actor mixed row outside live capacity");
         }
         Location loc = locations[index];
         Segment seg = segments.get(loc.segment);
@@ -207,85 +219,97 @@ public final class ActorMixedRegion implements AutoCloseable {
         if (inner < 0 || inner > seg.bytes || width > seg.bytes - inner) {
             throw new IndexOutOfBoundsException("actor mixed field outside native segment");
         }
-        int absolute = Math.toIntExact(Math.addExact(seg.base, inner));
-        return new Address(loc.segment, absolute, Math.toIntExact(inner),
+        return Math.toIntExact(Math.addExact(seg.base, inner));
+    }
+
+    private int checkedOffset(int row, String field, Kind expected) {
+        return byteOffset(row, indexOf(field, expected));
+    }
+
+    /** Diagnostic geometry object; ordinary reads/writes use primitive offsets. */
+    public Address address(int row, String field) {
+        requireOwner();
+        Integer index = field == null ? null : byName.get(field);
+        if (index == null) throw new IndexOutOfBoundsException("unknown actor mixed field");
+        int absolute = byteOffset(row, index);
+        Location loc = locations[index];
+        Segment seg = segments.get(loc.segment);
+        return new Address(loc.segment, absolute, Math.toIntExact(absolute - seg.base),
                 fields.get(index).kind());
     }
 
-    private Address checked(int row, String field, Kind expected) {
-        Address a = address(row, field);
-        if (a.kind != expected) throw new IllegalArgumentException("actor mixed field type mismatch");
-        return a;
-    }
-
     public long readU32(int row, String field) {
-        Address a = checked(row, field, Kind.U32);
+        int offset = checkedOffset(row, field, Kind.U32);
         synchronized (arena) {
             long word = 0;
             for (int i = 0; i < 4; i++) word |= (long)
-                    (memory.readByte(a.absoluteByteOffset + i) & 0xff) << (8 * i);
+                    (memory.readByte(offset + i) & 0xff) << (8 * i);
             return word;
         }
     }
     public void writeU32(int row, String field, long value) {
-        Address a = checked(row, field, Kind.U32);
+        int offset = checkedOffset(row, field, Kind.U32);
         if (value < 0 || value > 0xffff_ffffL) throw new IllegalArgumentException("invalid u32");
         synchronized (arena) {
             memory.assertWritable();
             for (int i = 0; i < 4; i++) {
-                memory.writeByte(a.absoluteByteOffset + i, (byte) (value >>> (8 * i)));
+                memory.writeByte(offset + i, (byte) (value >>> (8 * i)));
             }
         }
     }
     /** Stored reference word only; no authority or dereference is conferred. */
     public long readRef32(int row, String field) {
-        Address a = checked(row, field, Kind.REF32);
+        int offset = checkedOffset(row, field, Kind.REF32);
         synchronized (arena) {
             long word = 0;
             for (int i = 0; i < 4; i++) word |= (long)
-                    (memory.readByte(a.absoluteByteOffset + i) & 0xff) << (8 * i);
+                    (memory.readByte(offset + i) & 0xff) << (8 * i);
             return word;
         }
     }
     public void writeRef32(int row, String field, long value) {
-        Address a = checked(row, field, Kind.REF32);
+        int offset = checkedOffset(row, field, Kind.REF32);
         if (value < 0 || value > 0xffff_ffffL) throw new IllegalArgumentException("invalid ref32 word");
         synchronized (arena) {
             memory.assertWritable();
             for (int i = 0; i < 4; i++) {
-                memory.writeByte(a.absoluteByteOffset + i, (byte) (value >>> (8 * i)));
+                memory.writeByte(offset + i, (byte) (value >>> (8 * i)));
             }
         }
     }
     public double readF64(int row, String field) {
-        return memory.readDouble(checked(row, field, Kind.F64).absoluteByteOffset);
+        return memory.readDouble(checkedOffset(row, field, Kind.F64));
     }
     public void writeF64(int row, String field, double value) {
-        memory.writeDouble(checked(row, field, Kind.F64).absoluteByteOffset, value);
+        memory.writeDouble(checkedOffset(row, field, Kind.F64), value);
     }
     public boolean readBool(int row, String field) {
         int raw = Byte.toUnsignedInt(memory.readByte(
-                checked(row, field, Kind.BOOL).absoluteByteOffset));
+                checkedOffset(row, field, Kind.BOOL)));
         if (raw > 1) throw new IllegalStateException("noncanonical actor bool backing byte");
         return raw == 1;
     }
     public void writeBool(int row, String field, boolean value) {
-        memory.writeByte(checked(row, field, Kind.BOOL).absoluteByteOffset,
+        memory.writeByte(checkedOffset(row, field, Kind.BOOL),
                 (byte) (value ? 1 : 0));
     }
 
     public void integrate(String position, String velocity, double dt) {
-        if (!Double.isFinite(dt) || Objects.equals(position, velocity)
-                || byName.get(position) == null || byName.get(velocity) == null
-                || fields.get(byName.get(position)).kind() != Kind.F64
-                || fields.get(byName.get(velocity)).kind() != Kind.F64) {
-            throw new IllegalArgumentException("integrate requires distinct f64 fields");
+        requireOwner();
+        if (!Double.isFinite(dt) || Objects.equals(position, velocity)) {
+            throw new IllegalArgumentException("integrate requires distinct finite f64 fields");
         }
+        int p = indexOf(position, Kind.F64);
+        int v = indexOf(velocity, Kind.F64);
         synchronized (arena) {
+            // Freeze-borrow admission before the first write, so a live lease
+            // cannot leave a partially updated ECS column.
             memory.assertWritable();
             for (int row = 0; row < rows; row++) {
-                writeF64(row, position, readF64(row, position)
-                        + readF64(row, velocity) * dt);
+                int pos = byteOffset(row, p);
+                int vel = byteOffset(row, v);
+                memory.writeDouble(pos, memory.readDouble(pos)
+                        + memory.readDouble(vel) * dt);
             }
         }
     }
