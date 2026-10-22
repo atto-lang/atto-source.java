@@ -9,6 +9,7 @@ on:
       - 'src/main/c/**'
       - 'src/test/java/**'
       - 'scripts/build-native-thread.sh'
+      - 'scripts/check-native-arena-abi.sh'
       - '.github/workflows/actor-native-memory.yml'
 
 permissions:
