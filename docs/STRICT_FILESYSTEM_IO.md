@@ -39,10 +39,12 @@ The native bridge uses:
 The reactor thread only waits on the shared completion ring and publishes
 terminal completions back into `OresFuture`. It never executes guest code.
 
-Admission is bounded to 128 pending operations. Read buffers start at 64 KiB and
-grow geometrically only as data arrives, up to a 16 MiB text limit plus one byte
-used to detect overflow. The provider therefore does not reserve 16 MiB for
-every admitted read.
+Admission is bounded to 128 pending operations on a 512-entry submission ring.
+The extra SQ capacity is deliberate headroom for cancellation, close and reactor
+wake operations rather than additional guest admission. Read buffers start at
+64 KiB and grow geometrically only as data arrives, up to a 16 MiB text limit
+plus one byte used to detect overflow. The provider therefore does not reserve
+16 MiB for every admitted read.
 
 Provider construction includes a JVM-attach startup barrier: a native handle is
 not returned to Java until the reactor can deliver JNI callbacks. The callback
@@ -68,10 +70,17 @@ opening the file. A symlink is not silently canonicalized into another target.
 ## Cancellation and shutdown
 
 A cancellable read/exists future keeps its native operation owned by the
-provider until a terminal completion arrives. Cancellation submits
-`IORING_OP_ASYNC_CANCEL`; the Java future can enter the cancelled state
-immediately, but late or duplicate native completions are ignored after removing
-the pending ownership record.
+provider until a terminal completion arrives. Cancellation first submits
+`IORING_OP_ASYNC_CANCEL`; the Java future is allowed to enter the cancelled
+state only if that native revocation SQE was actually admitted. If enqueueing
+the cancel fails, `Future.cancel` returns false and the original completion
+remains authoritative. Late or duplicate native completions are ignored after
+removing the pending ownership record.
+
+Every published SQE is submitted immediately. If `io_uring_enter` reports that
+the just-published entry was not submitted, the provider retracts that SQ tail
+entry before its owner can be freed, preventing stale `user_data` from becoming
+reachable through a later submit.
 
 Context/provider shutdown:
 
