@@ -72,6 +72,34 @@ final class SourceTaskCleanupHardeningTest {
     }
 
     @Test
+    void lexicalScopeReleasesAllIndependentMutexGuardsBeforeNextAcquisition()
+            throws Exception {
+        assertEquals("3|4", run("""
+                define class Counter as
+                  pub let int value = 0;
+                end
+                pub async routine main(): void {
+                  val first = Mutex.new(new Counter());
+                  val second = Mutex.new(new Counter());
+                  {
+                    val one = first.lock();
+                    val two = second.lock();
+                    one.value = 3;
+                    two.value = 4;
+                  }
+                  val oneAgain = first.lock();
+                  val twoAgain = second.lock();
+                  stdio.stdout.write(oneAgain.value);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(twoAgain.value);
+                  twoAgain.release();
+                  oneAgain.release();
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void failedDeferDoesNotErasePreviouslyThrownOrdinarySourceFailure()
             throws Exception {
         String source = """
