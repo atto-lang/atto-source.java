@@ -671,6 +671,10 @@ public final class TypeChecker {
         effectTypes.addAll(effects.throwsTypes());
         effectTypes.addAll(effects.raisesTypes());
         effectTypes.addAll(effects.panicsTypes());
+        validateCheckedEffectPayloads(effectTypes, generics);
+    }
+
+    private void validateCheckedEffectPayloads(List<Ast.TypeRef> effectTypes, Set<String> generics) {
         for (Ast.TypeRef type : effectTypes) {
             checkEffectTypeBudget(type);
             if (type.inferArguments() || mentionsEffectGeneric(type, generics)) {
@@ -1533,6 +1537,32 @@ public final class TypeChecker {
                 }
             }
 
+            if (!method.effects().isEmpty()) {
+                if (method.async() || method.suspends() || klass.actorKind() != Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "checked method effects currently require synchronous non-actor methods; "
+                                    + "async/suspends/actor propagation is not enabled");
+                }
+                List<Ast.TypeRef> effectTypes = new ArrayList<>();
+                effectTypes.addAll(method.effects().throwsTypes());
+                effectTypes.addAll(method.effects().raisesTypes());
+                effectTypes.addAll(method.effects().panicsTypes());
+                validateCheckedEffectPayloads(effectTypes, generics);
+            }
+            // Checked method effects are observable across virtual inheritance.
+            // An override must not add effects absent from its inherited contract.
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+                if (parent == null) continue;
+                Ast.MethodDecl inherited = method.isStatic()
+                        ? findStaticFunction(parent, method.name(), method.arity(), new LinkedHashSet<>())
+                        : effectiveInstanceMethods(parent, new LinkedHashSet<>()).get(method.overloadIdentity());
+                if (inherited != null && inherited.isStatic() == method.isStatic()) {
+                    requireEffectsCovered(method.effects(), inherited.effects(),
+                            "override " + klass.name() + "." + method.name());
+                }
+            }
+
             if (method.isStatic()) {
                 for (Ast.Param param : method.parameters()) {
                     rejectStaticClassGenericReference(param.type(), classGenerics, klass, method);
@@ -1630,7 +1660,9 @@ public final class TypeChecker {
             currentClassOwner = klass;
             lexicalClassOrigin = klass;
             boolean previousMaySuspend = currentMaySuspend;
+            Ast.EffectSpec previousEffects = currentEffects;
             currentMaySuspend = method.async() || method.suspends();
+            currentEffects = method.effects();
             try {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
             } finally {
@@ -1638,6 +1670,7 @@ public final class TypeChecker {
                 currentClassOwner = previousClassOwner;
                 lexicalClassOrigin = previousLexicalClass;
                 currentMaySuspend = previousMaySuspend;
+                currentEffects = previousEffects;
             }
             if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
                 String label = method.isStatic() ? "static function" : "method";
@@ -1659,6 +1692,21 @@ public final class TypeChecker {
             Record actual = publicClassShape(klass, new LinkedHashSet<>());
             if (!assignable(actual, expected)) {
                 throw new IllegalArgumentException("class '" + klass.name() + "' does not implement interface '" + interfaceRef.name() + "': expected " + expected + " but got " + actual);
+            }
+            // Interface function types do not yet carry effect metadata.
+            // Reject effectful implementations of any exposed interface slot,
+            // including inherited slots, instead of erasing their may-effects.
+            for (Ast.MethodDecl implementation :
+                    effectiveInstanceMethods(klass, new LinkedHashSet<>()).values()) {
+                if (!implementation.effects().isEmpty()
+                        && expected.members().containsKey(methodContractKey(
+                                implementation.name(), implementation.arity(),
+                                implementation.genericParameters().size()))) {
+                    throw new IllegalArgumentException(
+                            "effectful method '" + klass.name() + "." + implementation.name()
+                                    + "' cannot implement an interface until its method contract "
+                                    + "preserves checked throws/raises/panics");
+                }
             }
         }
     }
@@ -3185,6 +3233,7 @@ public final class TypeChecker {
                     validateCallTypeArgumentMarker(call, fn.genericParameters(), "static function " + fnOwner.name() + "." + fn.name());
                     List<String> callableGenerics = new ArrayList<>(fn.genericParameters());
                     String label = "static function " + klass.name() + "." + fn.name();
+                    requireEffectsCovered(fn.effects(), currentEffects, label);
                     Type result = checkGenericCallable(
                             callableGenerics,
                             fn.parameters(),
@@ -3285,6 +3334,8 @@ public final class TypeChecker {
                                             + " on " + named.name());
                         }
                         Ast.MethodDecl method = target.method();
+                        requireEffectsCovered(method.effects(), currentEffects,
+                                "method " + named.name() + "." + method.name());
                         requireSuspendableCall(method.suspends(), "method '" + method.name() + "'");
                         Ast.ClassDecl owner = target.owner();
                         Named ownerType = target.ownerType();
