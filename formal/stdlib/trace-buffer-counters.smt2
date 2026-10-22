@@ -77,6 +77,14 @@
 (check-sat)
 (pop 1)
 
+; Constructor base case: after a valid capacity is accepted, empty counters
+; establish Inv. This is only a modeled base case, not guest constructor proof.
+(push 1)
+(assert (and (bvsge cap one) (bvsle cap maximum-cap)
+  (= count zero) (= dropped zero) (not Inv)))
+(check-sat)
+(pop 1)
+
 ; Negative controls: a <= admission test erroneously admits at full
 ; capacity; an unguarded dropped++ overflows at the saturation boundary.
 (push 1)
@@ -87,5 +95,10 @@
 (push 1)
 (assert (and Inv Valid (= count cap) (= dropped max-dropped)
   (bvsgt (bvadd dropped one) max-dropped)))
+(check-sat)
+(pop 1)
+; Mandatory SAT control: permitting zero capacity violates the base Inv.
+(push 1)
+(assert (and (= cap zero) (= count zero) (= dropped zero) (not Inv)))
 (check-sat)
 (pop 1)
