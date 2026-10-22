@@ -130,9 +130,12 @@ public final class NominalErrorProof {
         // accept arbitrary mismatched class objects returned for a spelling.
         // Until an authenticated qualified-name resolver is wired, deliberately
         // reject source-qualified aliases rather than accepting a suffix match.
-        if (!reference.name().equals(resolved.name())) {
+        if (!reference.name().equals(resolved.name())
+                || reference.name().indexOf('.') >= 0
+                || reference.name().indexOf(':') >= 0) {
             throw new IllegalArgumentException(
-                    label + " name does not match resolved class identity: " + reference);
+                    label + " name does not match resolved class identity: " + reference
+                            + " (qualified names require authenticated module ownership)");
         }
     }
 
