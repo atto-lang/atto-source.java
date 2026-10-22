@@ -9,15 +9,16 @@ output. It is intentionally separate from the runtime's bounded actor models.
 | File | Logic / scope | Obligations | Negative controls |
 | --- | --- | --- | --- |
 | `core-int64.smt2` | QF_BV signed 64-bit, arbitrary inputs | 16 UNSAT counterexample queries: min/max bounds, selection and commutativity; clamp reversed-bound policy, in-range selection, idempotence and monotonicity | 2 SAT queries: swapped min, missing upper clamp |
-| `trace-buffer-counters.smt2` | QF_BV signed 64-bit, single-owner counter transition | 8 UNSAT counterexample queries: valid capacity 1..65536, occupancy conservation, invalid-input no-op, full rejection, at-most-once admission, saturating dropped count, nondecrease | 2 SAT queries: incorrect full-buffer admission, missing dropped-counter saturation |
-| `testing-summary.smt2` | QF_BV signed 64-bit, one-step suite accounting for up to 1,024 processed cases | 8 UNSAT counterexample queries: total/filtered partition, passed/failed/skipped conservation, fail-fast state, single case advancement, and bounded progress | 2 SAT queries: uncounted failure and doubly counted skip |
+| `trace-buffer-counters.smt2` | QF_BV signed 64-bit, single-owner counter transition | 9 UNSAT queries: valid-capacity empty constructor base, occupancy conservation, invalid-input no-op, full rejection, at-most-once admission, saturating dropped count, nondecrease | 3 SAT queries: incorrect full admission, missing drop saturation, zero-capacity constructor |
+| `testing-summary.smt2` | QF_BV signed 64-bit, one-step suite accounting for up to 1,024 processed cases | 9 UNSAT queries: empty-suite base, total/filtered partition, passed/failed/skipped conservation, fail-fast state, single case advancement, and bounded progress | 3 SAT queries: uncounted failure, doubly counted skip, malformed empty-suite counters |
 
 **UNSAT** means that no counterexample exists in the entire fixed-width bit-vector
 domain under the model's definitions and stated preconditions; this is not
 randomized testing or merely bounded enumeration of test inputs. For
-`Trace.Buffer` and `testing.run_suite`, this is an *inductive one-transition invariant* over all
-states meeting `Inv`. It does **not** prove that initialization establishes
-`Inv` unless the actual constructor is verified separately.
+`Trace.Buffer` and `testing.run_suite`, these are base-case and *inductive
+one-transition invariant* proofs **inside the abstract models**. A real guest
+constructor or runner entrypoint must independently establish the modeled
+initial state before any end-to-end source guarantee can be claimed.
 
 The models intentionally follow the *current* implementations:
 - `core.clamp_int(value, lower, upper)` returns **lower** when `lower > upper`.
@@ -36,7 +37,7 @@ The models intentionally follow the *current* implementations:
 including a documentation-only modification, fails CI until a reviewer checks
 the implementation, updates the abstract model if necessary, and deliberately
 updates the source-identity constants. The gate then demands **exactly**
-16/8/8 `unsat` results followed by 2/2/2 `sat` negative controls. Missing solver,
+16/9/9 `unsat` results followed by 2/3/3 `sat` negative controls. Missing solver,
 nonzero process exit, wrong output, `unknown`, an extra result, or changed
 source all fail closed.
 
