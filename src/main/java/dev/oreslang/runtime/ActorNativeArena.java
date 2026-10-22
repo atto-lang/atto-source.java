@@ -1027,12 +1027,15 @@ public final class ActorNativeArena implements AutoCloseable {
                 releases.ensureCapacity(releases.size() + 1);
                 long slabBase = alignedActorOffset(capacity, Long.BYTES);
                 long nextOffset = Math.addExact(slabBase, capacity);
+                // Box the slab base before publishing any metadata. A boxing
+                // allocation failure must not leave a freed slab in one list.
+                Long boxedSlabBase = Long.valueOf(slabBase);
                 NativeCarrierExecutor.ensureNativeLibraryLoaded();
                 slab = allocateNative(capacity);
                 if (slab == null) throw new OutOfMemoryError("native actor arena allocation failed");
                 slab.order(ByteOrder.LITTLE_ENDIAN);
                 slabs.add(slab);
-                slabBases.add(slabBase);
+                slabBases.add(boxedSlabBase);
                 releases.add(release);
                 nextActorOffset = nextOffset;
             } catch (RuntimeException | Error failure) {
