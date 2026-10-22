@@ -7149,46 +7149,19 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof FileSystemFacade fs) {
                 return switch (name) {
-                    case "read_text" -> (Invokable) fs::readText;
-                    case "read_text_async" -> (Invokable) args -> {
-                        List<Object> values = immutableIoStrings(args);
-                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.READ,
-                                "fs.read_text_async", () -> fs.readText(values));
-                    };
-                    case "write_text" -> (Invokable) fs::writeText;
-                    case "write_text_atomic" -> (Invokable) fs::writeTextAtomic;
-                    case "write_text_async" -> (Invokable) args -> {
-                        List<Object> values = immutableIoStrings(args);
-                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
-                                "fs.write_text_async", () -> fs.writeText(values));
-                    };
-                    case "append_text" -> (Invokable) fs::appendText;
-                    case "append_text_async" -> (Invokable) args -> {
-                        List<Object> values = immutableIoStrings(args);
-                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
-                                "fs.append_text_async", () -> fs.appendText(values));
-                    };
-                    case "list_dir" -> (Invokable) fs::listDir;
-                    case "is_dir" -> (Invokable) fs::isDir;
-                    case "is_symlink" -> (Invokable) fs::isSymlink;
-                    case "exists" -> (Invokable) fs::exists;
-                    case "exists_async" -> (Invokable) args -> {
-                        List<Object> values = immutableIoStrings(args);
-                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.READ,
-                                "fs.exists_async", () -> fs.exists(values));
-                    };
-                    case "remove" -> (Invokable) fs::remove;
-                    case "remove_async" -> (Invokable) args -> {
-                        List<Object> values = immutableIoStrings(args);
-                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
-                                "fs.remove_async", () -> fs.remove(values));
-                    };
-                    case "mkdir_all" -> (Invokable) fs::mkdirAll;
-                    case "mkdir_all_async" -> (Invokable) args -> {
-                        List<Object> values = immutableIoStrings(args);
-                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
-                                "fs.mkdir_all_async", () -> fs.mkdirAll(values));
-                    };
+                    case "read_text", "write_text", "write_text_atomic", "append_text",
+                            "list_dir", "is_dir", "is_symlink", "exists", "remove", "mkdir_all" ->
+                            (Invokable) args -> {
+                                throw new UnsupportedOperationException(
+                                        "fs." + name
+                                                + " is disabled in the strict filesystem profile; use the async completion API");
+                            };
+                    case "read_text_async" -> (Invokable) fs::readTextAsync;
+                    case "write_text_async" -> (Invokable) fs::writeTextAsync;
+                    case "append_text_async" -> (Invokable) fs::appendTextAsync;
+                    case "exists_async" -> (Invokable) fs::existsAsync;
+                    case "remove_async" -> (Invokable) fs::removeAsync;
+                    case "mkdir_all_async" -> (Invokable) fs::mkdirAllAsync;
                     default -> throw new IllegalArgumentException("unknown filesystem member " + name);
                 };
             }
@@ -10268,52 +10241,62 @@ public final class OresEvalRootNode extends RootNode {
     }
 
     private record FileSystemFacade(OresContext context) {
-        private Object readText(List<Object> args) {
-            return NativeIo.readText(context, requireStringArg(args, "fs.read_text"));
+        private String readPath(List<Object> args, String operation) {
+            String raw = requireStringArg(args, operation);
+            return context.requireStrictPathPermission(
+                    dev.oreslang.runtime.RuntimePermissions.Permission.READ,
+                    raw,
+                    operation);
         }
-        private Object writeText(List<Object> args) {
-            requireTwo(args, "fs.write_text");
-            NativeIo.writeText(
-                    context,
-                    requireString(args.get(0), "fs.write_text path"),
-                    requireString(args.get(1), "fs.write_text value"));
-            return null;
+
+        private String writePath(List<Object> args, String operation) {
+            String raw = requireStringArg(args, operation);
+            return context.requireStrictPathPermission(
+                    dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
+                    raw,
+                    operation);
         }
-        private Object writeTextAtomic(List<Object> args) {
-            requireTwo(args, "fs.write_text_atomic");
-            NativeIo.writeTextAtomic(
-                    context,
-                    requireString(args.get(0), "fs.write_text_atomic path"),
-                    requireString(args.get(1), "fs.write_text_atomic value"));
-            return null;
+
+        private Object readTextAsync(List<Object> args) {
+            return context.strictFileIo().readText(
+                    readPath(args, "fs.read_text_async"));
         }
-        private Object appendText(List<Object> args) {
-            requireTwo(args, "fs.append_text");
-            NativeIo.appendText(
-                    context,
-                    requireString(args.get(0), "fs.append_text path"),
-                    requireString(args.get(1), "fs.append_text value"));
-            return null;
+
+        private Object existsAsync(List<Object> args) {
+            return context.strictFileIo().exists(
+                    readPath(args, "fs.exists_async"));
         }
-        private Object exists(List<Object> args) {
-            return NativeIo.exists(context, requireStringArg(args, "fs.exists"));
+
+        private Object writeTextAsync(List<Object> args) {
+            requireTwo(args, "fs.write_text_async");
+            String raw = requireString(args.get(0), "fs.write_text_async path");
+            String path = context.requireStrictPathPermission(
+                    dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
+                    raw,
+                    "fs.write_text_async");
+            String value = requireString(args.get(1), "fs.write_text_async value");
+            return context.strictFileIo().writeText(path, value);
         }
-        private Object listDir(List<Object> args) {
-            return NativeIo.listDir(context, requireStringArg(args, "fs.list_dir"));
+
+        private Object appendTextAsync(List<Object> args) {
+            requireTwo(args, "fs.append_text_async");
+            String raw = requireString(args.get(0), "fs.append_text_async path");
+            String path = context.requireStrictPathPermission(
+                    dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
+                    raw,
+                    "fs.append_text_async");
+            String value = requireString(args.get(1), "fs.append_text_async value");
+            return context.strictFileIo().appendText(path, value);
         }
-        private Object isDir(List<Object> args) {
-            return NativeIo.isDir(context, requireStringArg(args, "fs.is_dir"));
+
+        private Object removeAsync(List<Object> args) {
+            return context.strictFileIo().remove(
+                    writePath(args, "fs.remove_async"));
         }
-        private Object isSymlink(List<Object> args) {
-            return NativeIo.isSymlink(context, requireStringArg(args, "fs.is_symlink"));
-        }
-        private Object remove(List<Object> args) {
-            NativeIo.remove(context, requireStringArg(args, "fs.remove"));
-            return null;
-        }
-        private Object mkdirAll(List<Object> args) {
-            NativeIo.createDirectories(context, requireStringArg(args, "fs.mkdir_all"));
-            return null;
+
+        private Object mkdirAllAsync(List<Object> args) {
+            return context.strictFileIo().mkdirAll(
+                    writePath(args, "fs.mkdir_all_async"));
         }
     }
 
