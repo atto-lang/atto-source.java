@@ -3175,7 +3175,13 @@ public final class ActorRuntime implements AutoCloseable {
                 stoppingWorkers.remove(actorId);
             }
             leaveId(actorId);
-            if (Objects.equals(creator, actorId)) closeFromRuntime();
+            if (Objects.equals(creator, actorId)
+                    && (!workerAdmissionFenced || shutdownTreeOwner == null)) {
+                // During supervised tree shutdown, the CONTROL coordinator
+                // already owns the group's graceful drain. Creator exit
+                // must not race it with immediate structured cancellation.
+                closeFromRuntime();
+            }
         }
 
         private void requireOpen() {
@@ -6952,18 +6958,11 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        for (ActorGroup group : List.copyOf(actorGroups.values())) group.closeFromRuntime();
-        actorGroups.clear();
-        for (ActorOutputStream<?> stream : List.copyOf(actorOutputStreams)) {
-            stream.closeAndDrainFromRuntime();
-        }
-        actorOutputStreams.clear();
-        for (SyncCell<?> cell : List.copyOf(syncCells)) cell.invalidateFromRuntime();
-        syncCells.clear();
-        for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
-        sharedValues.clear();
-        sharedMemoryBytes.set(0L);
-
+        // A terminated request or shutdownNow() is not physical quiescence.
+        // In particular, never clear shared-memory quotas, close output
+        // streams, or release shared resources while a carrier still executes
+        // (or while a resumed continuation could still hold a memory loan).
+        // A later close() can retry after the missing carrier exits.
         if (interrupted) Thread.currentThread().interrupt();
         if (!stillRunning.isEmpty() || !dispatchersTerminated || interrupted) {
             if (interrupted) {
@@ -6978,6 +6977,19 @@ public final class ActorRuntime implements AutoCloseable {
                             + stillRunning.size() + " actor(s) still running, dispatchersTerminated="
                             + dispatchersTerminated);
         }
+
+        for (ActorGroup group : List.copyOf(actorGroups.values())) group.closeFromRuntime();
+        actorGroups.clear();
+        for (ActorOutputStream<?> stream : List.copyOf(actorOutputStreams)) {
+            stream.closeAndDrainFromRuntime();
+        }
+        actorOutputStreams.clear();
+        for (SyncCell<?> cell : List.copyOf(syncCells)) cell.invalidateFromRuntime();
+        syncCells.clear();
+        for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
+        sharedValues.clear();
+        sharedMemoryBytes.set(0L);
+
         actors.clear();
         actorCount.set(0);
     }
