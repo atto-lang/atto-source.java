@@ -48,8 +48,10 @@ public final class RecordFrontendSmoke {
         denied(() -> TypeChecker.checkTypesWithDiagnostics(partlyTyped),
                 "later type error must fail the full compilation unit");
         // Ownership intentionally does not prove return type assignability;
-        // running it independently must not recover a partial type proof.
-        OwnershipChecker.check(partlyTyped);
+        // however an independent check must reject the missing exact-program
+        // type proof rather than convert an orphan into executable authority.
+        deniedState(() -> OwnershipChecker.check(partlyTyped),
+                "ownership-only pass must reject a type-invalid program");
         deniedState(() -> AggregateConstructionPlan.Checked.requireAdmitted(partlyTyped, orphan),
                 "standalone ownership cannot promote an orphan type candidate");
 
