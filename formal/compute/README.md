@@ -21,3 +21,7 @@ For positive signed-i64 `element_bytes` and positive `length`, the new predicate
 5. Preserve the current structural API while rolling out `valid_exact_buffer_layout` separately; do not silently change caller admission.
 
 Related: [Java issue #1876](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/1876) and [cross-backend issue #150](https://github.com/ores-truffle-oreslang/oreslang-platform-conformance/issues/150).
+
+## Differential arithmetic evidence (host only)
+
+`formal/compute/checked-layout-reference.test.mjs` runs the signed-i64 quotient preflight against an independent unbounded-BigInt product specification. It checks 18 edge vectors, 102,966 bounded cases (131×131×6), 12,000 deterministic full-width samples, and two intentionally unsafe variants that must disagree with the specification. This file was run locally with Node 22 and all four tests passed. It models the arithmetic rule only; it neither calls Oreslang nor proves the source is semantically identical to this host model, and random testing is not an SMT proof.
