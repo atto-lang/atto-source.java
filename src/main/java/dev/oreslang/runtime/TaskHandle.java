@@ -332,7 +332,8 @@ public final class TaskHandle<T> {
         if (!published.compareAndSet(false, true)) return;
         TaskOutcome<T> outcome = settledOutcome.get();
         if (!releaseErrors.isEmpty()) {
-            outcome = new Failed<>(new TaskOwnedLeases.CleanupFailure(releaseErrors));
+            outcome = new Failed<>(new TaskOwnedLeases.CleanupFailure(
+                    releaseErrors, outcome));
         }
         done.completeFromRuntime(outcome);
     }
