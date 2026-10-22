@@ -151,13 +151,13 @@ public final class RecoveryLayoutBenchmark {
                     run(layouts[i], repetitions / 2);
                 }
             }
+            long expectedTotal = run(layouts[0], repetitions);
             double[][] samples = new double[layouts.length][5];
             for (int trial = 0; trial < 5; trial++) {
                 for (int i : shuffledOrder(layouts.length, random)) {
                     long start = System.nanoTime();
                     long actual = run(layouts[i], repetitions);
-                    if (actual != run(layouts[0], 128) * (repetitions / 128L)
-                            && repetitions % 128 == 0) {
+                    if (actual != expectedTotal) {
                         throw new AssertionError("checksum drift");
                     }
                     samples[i][trial] = (System.nanoTime() - start) / (double) repetitions;
