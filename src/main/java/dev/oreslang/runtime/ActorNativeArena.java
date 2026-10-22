@@ -17,6 +17,7 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.IntConsumer;
 
 /**
  * Explicitly freed, actor-owned native storage for source object fields.
@@ -132,6 +133,8 @@ public final class ActorNativeArena implements AutoCloseable {
 
     private final Runnable checkOwner;
     private final Budget budget;
+    /** Trusted package-only fault injection, absent from normal runtime arenas. */
+    private final IntConsumer slabPublicationProbe;
     private final long limit;
     private final ArrayList<ByteBuffer> slabs = new ArrayList<>();
     private final ArrayList<Long> slabBases = new ArrayList<>();
@@ -158,10 +161,17 @@ public final class ActorNativeArena implements AutoCloseable {
     private ActorLinearMemory linearMemory;
 
     ActorNativeArena(long limit, Runnable checkOwner, Budget budget) {
+        this(limit, checkOwner, budget, null);
+    }
+
+    /** Trusted test-only constructor: fails after a selected slab metadata append. */
+    ActorNativeArena(long limit, Runnable checkOwner, Budget budget,
+            IntConsumer slabPublicationProbe) {
         if (limit <= 0) throw new IllegalArgumentException("native arena limit must be positive");
         this.limit = limit;
         this.checkOwner = Objects.requireNonNull(checkOwner);
         this.budget = Objects.requireNonNull(budget);
+        this.slabPublicationProbe = slabPublicationProbe;
     }
 
     /** Fixed field names are layout metadata; values are stored only in native slots. */
@@ -1113,8 +1123,11 @@ public final class ActorNativeArena implements AutoCloseable {
                 if (slab == null) throw new OutOfMemoryError("native actor arena allocation failed");
                 slab.order(ByteOrder.LITTLE_ENDIAN);
                 slabs.add(slab);
+                if (slabPublicationProbe != null) slabPublicationProbe.accept(1);
                 slabBases.add(boxedSlabBase);
+                if (slabPublicationProbe != null) slabPublicationProbe.accept(2);
                 releases.add(release);
+                if (slabPublicationProbe != null) slabPublicationProbe.accept(3);
                 nextActorOffset = nextOffset;
             } catch (RuntimeException | Error failure) {
                 // Undo partially appended metadata BEFORE freeing backing
