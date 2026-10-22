@@ -148,7 +148,7 @@ final class ErrorPatternMatrixTest {
             add(cases, "fallback/root/" + child, true, null,
                     ERRORS, "Error", child + " specific", "Error remaining");
             add(cases, "fallback/wildcard/" + child, true, null,
-                    ERRORS, "Error", child + " specific", "_");
+                    ERRORS, "Error", child + " specific when false", "_");
             add(cases, "fallback/binding/" + child, true, null,
                     ERRORS, "Error", child + " specific", "remaining");
         }
@@ -160,7 +160,7 @@ final class ErrorPatternMatrixTest {
                     ERRORS, "Result<int, Error>",
                     "Ok(success)", "Err(" + child + " specific)", "Err(Error remaining)");
             add(cases, "result/ok-and-root/" + child, true, null,
-                    ERRORS, "Result<int, Error>", "Ok(success)", "Err(Error remaining)");
+                    ERRORS, "Result<int, Error>", "Ok(success)", "Err(" + child + " specific) when false", "Err(Error remaining)");
             add(cases, "result/missing-other-errors/" + child, false, "non-exhaustive match",
                     ERRORS, "Result<int, Error>", "Ok(success)", "Err(" + child + " specific)");
             add(cases, "result/missing-ok/" + child, false, "non-exhaustive match",
