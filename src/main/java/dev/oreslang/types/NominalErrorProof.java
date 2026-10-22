@@ -72,7 +72,11 @@ public final class NominalErrorProof {
         Objects.requireNonNull(root, "trusted std/error Error root");
         if (!root.name().equals("Error")
                 || !root.genericParameters().isEmpty()
-                || root.actorKind() != Ast.ActorKind.NONE) {
+                || root.actorKind() != Ast.ActorKind.NONE
+                || root.parents().stream().anyMatch(parent ->
+                        !parent.name().equals("Object")
+                                || !parent.arguments().isEmpty()
+                                || parent.inferArguments())) {
             throw new IllegalArgumentException("invalid trusted std/error.Error root metadata");
         }
     }
