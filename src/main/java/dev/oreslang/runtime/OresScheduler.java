@@ -1325,10 +1325,16 @@ public final class OresScheduler implements AutoCloseable {
             // carrier has actually exited. Do NOT publish fake cancellation
             // while lexical guards may still remain.
             if (task instanceof CleanupAwareTask<?>) {
+                if (phase.get() == TERMINAL) return;
                 completion.cancel(false);
-                cleanupIncomplete.set(true);
-                failTerminal(new CleanupIncompleteError(
-                        "scheduler closed before source Task unwind completed"));
+                // Cancellation BEFORE initial guest execution has no lexical
+                // frames; failTerminal() inside requestCleanupCancellation
+                // already handled that case without a quarantine.
+                if (phase.get() != TERMINAL) {
+                    cleanupIncomplete.set(true);
+                    failTerminal(new CleanupIncompleteError(
+                            "scheduler closed before source Task unwind completed"));
+                }
             } else {
                 cancelFromFuture();
             }
