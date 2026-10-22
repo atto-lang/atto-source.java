@@ -103,6 +103,11 @@ public final class TaskWaterfall {
             if (cursor != null) throw new IllegalStateException("waterfall plan is cyclic");
 
             AtomicReference<TaskHandle<T>> owner = new AtomicReference<>();
+            // Stage 0 cannot start until the owner TaskHandle is published.
+            // A pre-cancelled source must be classified by an authenticated
+            // owner cancellation checkpoint, not as a user-raised failure
+            // simply because inline startup ran before handle binding.
+            OresFuture<Void> ownerReady = new OresFuture<>();
             AtomicReference<OresFuture.RuntimeWaiterRegistration<?>> stageWaiter =
                     new AtomicReference<>();
             AtomicBoolean upstreamCancelled = new AtomicBoolean();
@@ -110,6 +115,7 @@ public final class TaskWaterfall {
             OresScheduler.Task<T> driver = new OresScheduler.Task<>() {
                 private int nextStage;
                 private boolean started;
+                private boolean ownerReadyObserved;
 
                 private void detachWaiter() {
                     OresFuture.RuntimeWaiterRegistration<?> previous =
@@ -167,12 +173,23 @@ public final class TaskWaterfall {
                                     "waterfall started with noninitial resume");
                         }
                         started = true;
-                        return invokeNext(null);
+                        // Even an inline scheduler must fully publish the
+                        // TaskHandle before a user-supplied stage is entered.
+                        return OresScheduler.await(ownerReady);
                     }
 
                     if (resume.initial()) {
                         throw new IllegalStateException(
                                 "waterfall resumed with duplicate initial event");
+                    }
+                    if (!ownerReadyObserved) {
+                        ownerReadyObserved = true;
+                        if (resume.failure() != null) {
+                            throw new IllegalStateException(
+                                    "waterfall ownership admission rejected",
+                                    OresFuture.unwrap(resume.failure()));
+                        }
+                        return invokeNext(null);
                     }
                     detachWaiter();
                     if (resume.failure() != null) {
@@ -209,6 +226,11 @@ public final class TaskWaterfall {
                         stageWaiter.getAndSet(null);
                 if (pending != null) pending.detach();
             });
+            // Resume the initial scheduler turn ONLY after ownership and
+            // cleanup subscriptions are registered; completion may wake the
+            // original Task from another host thread but never executes guest
+            // code there.
+            ownerReady.completeFromRuntime(null);
             if (upstreamCancelled.get()) handle.cancel("waterfall stage cancelled");
             return handle;
         }
