@@ -4011,7 +4011,7 @@ public final class OresEvalRootNode extends RootNode {
             AggregateConstructionPlan.Plan checkedPlan = null;
             if (object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
                 try {
-                    checkedPlan = AggregateConstructionPlan.Checked.requireAdmitted(object);
+                    checkedPlan = AggregateConstructionPlan.Checked.requireAdmitted(program, object);
                 } catch (RuntimeException unadmitted) {
                     continuation.accept(task, null, unadmitted);
                     return;
@@ -7057,7 +7057,7 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalArgumentException("spread into explicitly shaped structs is not yet supported");
                 }
                 AggregateConstructionPlan.Plan checkedPlan = hasAggregateSpread
-                        ? AggregateConstructionPlan.Checked.requireAdmitted(object) : null;
+                        ? AggregateConstructionPlan.Checked.requireAdmitted(program, object) : null;
                 LinkedHashMap<String, Object> result = new LinkedHashMap<>();
                 if (object.explicitStruct()) {
                     for (Ast.StructFieldSpec field : object.declaredFields()) {
