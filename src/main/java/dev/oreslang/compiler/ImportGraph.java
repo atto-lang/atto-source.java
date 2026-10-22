@@ -143,6 +143,7 @@ final class ImportGraph {
                             && fn.name().equals(name);
                     case ACTOR -> decl instanceof Ast.ClassDecl klass
                             && klass.actorKind() != Ast.ActorKind.NONE
+                            && klass.visibility() == Ast.Visibility.PUBLIC
                             && klass.name().equals(name);
                     case CLASS -> decl instanceof Ast.ClassDecl klass
                             && klass.visibility() == Ast.Visibility.PUBLIC
@@ -157,11 +158,13 @@ final class ImportGraph {
                             && iface.visibility() == Ast.Visibility.PUBLIC
                             && iface.name().equals(name);
                     case TYPE -> decl instanceof Ast.TypeAliasDecl alias
+                            && alias.visibility() == Ast.Visibility.PUBLIC
                             && alias.name().equals(name);
                     case TYPES -> (decl instanceof Ast.InterfaceDecl iface
                                     && iface.visibility() == Ast.Visibility.PUBLIC
                                     && iface.name().equals(name))
                             || (decl instanceof Ast.TypeAliasDecl alias
+                                    && alias.visibility() == Ast.Visibility.PUBLIC
                                     && alias.name().equals(name));
                     case TRAIT, STRUCT -> false;
                     case ALL -> (decl instanceof Ast.FunctionDecl fn
