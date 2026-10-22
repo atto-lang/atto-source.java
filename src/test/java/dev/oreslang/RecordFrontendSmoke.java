@@ -31,6 +31,25 @@ public final class RecordFrontendSmoke {
         denied(() -> OwnershipChecker.check(mutableSpread),
                 "mutable aggregate source must not bypass snapshot lease admission");
 
+        // A later type error cannot publish an earlier, fully parsed spread
+        // candidate. Previously the checker recorded candidates as it went,
+        // leaving an orphan proof after a failed compilation unit.
+        Ast.Program partlyTyped = Parser.parse("""
+                fnc earlier(): int {
+                    const base = record{x: 1};
+                    const copy = record{...base, y: 2};
+                    return copy.x;
+                }
+                fnc later(): int {
+                    return "wrong return type";
+                }
+                """);
+        Ast.ObjectExpr orphan = aggregateBinding(partlyTyped, "copy");
+        denied(() -> TypeChecker.checkTypesWithDiagnostics(partlyTyped),
+                "later type error must fail the full compilation unit");
+        deniedState(() -> AggregateConstructionPlan.Checked.requireAdmitted(orphan),
+                "failed type-check must never grant runtime spread admission");
+
         // Type checking alone cannot authorize interpreter spread execution.
         // A structurally equal parse never inherits another AST's approval.
         String sourceWithSpread = """
