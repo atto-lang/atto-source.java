@@ -87,6 +87,35 @@ final class SupervisorShutdownTreeTest {
     }
 
     @Test
+    void treeAdmissionFencePrecedesEvenAnAwaitingParentShutdownHook() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             var control = Executors.newSingleThreadExecutor()) {
+            OresFuture<Void> hookGate = new OresFuture<>();
+            CountDownLatch entered = new CountDownLatch(1);
+            ActorRuntime.ActorGroup parentGroup = runtime.createActorGroup();
+            ActorRuntime.ActorGroup childGroup = runtime.createActorGroup();
+            SupervisorShutdownTree tree = new SupervisorShutdownTree(runtime, control);
+            var root = tree.setRoot("root", parentGroup, new SupervisorShutdownTree.Hooks() {
+                @Override public OresFuture<Void> onShutdown(
+                        SupervisorShutdownTree.Reason reason) {
+                    entered.countDown();
+                    return hookGate;
+                }
+            });
+            root.addChild("child", childGroup, new SupervisorShutdownTree.Hooks() {});
+            OresFuture<Void> done = tree.shutdown(SupervisorShutdownTree.Reason.REQUESTED);
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            assertFalse(childGroup.closed(), "child close has not started");
+            assertThrows(IllegalStateException.class, () ->
+                    childGroup.spawnWorker(ActorRuntime.ActorKind.PRIVATE,
+                            IsolatePolicy.developer(), ctx -> (message, actor) -> {}));
+            assertFalse(done.isDone());
+            hookGate.completeFromRuntime(null);
+            done.get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void hookFailureDoesNotSkipOtherChildrenOrParentPostHook() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime();
              var control = Executors.newSingleThreadExecutor()) {
