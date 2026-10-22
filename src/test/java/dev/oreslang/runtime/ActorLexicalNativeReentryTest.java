@@ -123,6 +123,19 @@ final class ActorLexicalNativeReentryTest {
                     }
                     assertSame(initialCell, nativeCell.get(slot));
                     assertEquals(99L, lookup.invoke(env, "value"));
+
+                    // Env.snapshot intentionally shares Slot objects. A
+                    // compiler must not automatically call ValueCell.close()
+                    // merely when one lexical Env frame returns: the snapshot
+                    // can still be used by a captured callback/continuation.
+                    Method snapshot = envType.getDeclaredMethod("snapshot");
+                    snapshot.setAccessible(true);
+                    Object copiedEnv = snapshot.invoke(env);
+                    @SuppressWarnings("unchecked")
+                    Map<String, ?> copiedSlots =
+                            (Map<String, ?>) slotsField.get(copiedEnv);
+                    assertSame(slot, copiedSlots.get("value"));
+                    assertEquals(99L, lookup.invoke(copiedEnv, "value"));
                 } catch (Throwable problem) {
                     failure.set(problem);
                 } finally {
