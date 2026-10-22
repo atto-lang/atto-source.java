@@ -1389,6 +1389,10 @@ public final class OwnershipChecker {
             return new ValueInfo(Ast.TypeRef.tupleType(slots), copy ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.ObjectExpr object) {
+            if (object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
+                throw error("aggregate spread requires field-wise ownership, borrow and exception-path proof; "
+                        + "unsupported at this frontend stage");
+            }
             LinkedHashMap<String, Ast.TypeRef> members = new LinkedHashMap<>();
             if (object.explicitStruct()) {
                 for (Ast.StructFieldSpec field : object.declaredFields()) {
