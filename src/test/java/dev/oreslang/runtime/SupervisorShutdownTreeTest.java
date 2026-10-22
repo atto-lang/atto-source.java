@@ -229,6 +229,32 @@ final class SupervisorShutdownTreeTest {
     }
 
     @Test
+    void queuedEventLoopOnSameThreadIsNotMistakenForInlineExecution() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            java.util.ArrayDeque<Runnable> queued = new java.util.ArrayDeque<>();
+            AtomicInteger calls = new AtomicInteger();
+            SupervisorShutdownTree tree = new SupervisorShutdownTree(runtime, queued::addLast);
+            var root = tree.setRoot("root", runtime.createActorGroup(),
+                    new SupervisorShutdownTree.Hooks() {
+                        @Override public OresFuture<Void> onShutdown(
+                                SupervisorShutdownTree.Reason reason) {
+                            calls.incrementAndGet();
+                            return OresFuture.completed(null);
+                        }
+                    });
+            OresFuture<Void> done = tree.shutdown(SupervisorShutdownTree.Reason.NORMAL);
+            assertEquals(0, calls.get(), "hook must be queued, not called inline");
+            assertFalse(done.isDone());
+            // A valid single-thread event loop can execute queued CONTROL work
+            // later on the same thread that originally requested shutdown.
+            while (!queued.isEmpty()) queued.removeFirst().run();
+            done.get(5, TimeUnit.SECONDS);
+            assertEquals(1, calls.get());
+            assertTrue(root.terminated().isDone());
+        }
+    }
+
+    @Test
     void rejectedControlExecutorFailsClosedAndClosesGroups() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var group = runtime.createActorGroup();
