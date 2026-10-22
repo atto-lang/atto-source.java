@@ -47,6 +47,13 @@ closing an unused native pool creates no pthread and no reaper. Use the host-onl
 `ActorRuntime.dispatcherWorkerCounts()` snapshot to audit the live shared,
 isolated, and untrusted carrier counts.
 
+`NativeCarrierExecutor.isTerminated()` and `awaitTermination(...)` now require
+a shutdown request **and** confirmation from the JNI retirement reaper after
+all pthread carriers have been joined. An unopened pool with zero workers is
+not terminated; shutdown of an unused pool terminates immediately without
+starting a worker or reaper. A retiring pool cannot be treated as quiescent
+merely because its Java carrier-thread slots are momentarily empty.
+
 Worker pools belong to actor *classes*, not individual actors. An actor's
 `ActorNativeArena` is independently owned and persists across its mailbox
 turns and physical worker migration. A Future completion only enqueues an
