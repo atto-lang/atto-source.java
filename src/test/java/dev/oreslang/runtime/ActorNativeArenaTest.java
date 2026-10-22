@@ -706,6 +706,51 @@ final class ActorNativeArenaTest {
     }
 
     @Test
+    void trappedSourceErrorCompletesSuspendedFramesWithoutLeakingSpillRoots() {
+        AtomicLong charged = new AtomicLong();
+        Object marker = new Object();
+        try (ActorNativeArena arena = arena(16 * 1024, charged)) {
+            Map<String, Object> payload = arena.fields(List.of("v"), marker);
+
+            for (ActorNativeArena.SuspensionKind kind :
+                    ActorNativeArena.SuspensionKind.values()) {
+                ActorNativeArena.TaskFrame frame = arena.taskFrame();
+                frame.configureSpillSlots(1);
+                assertThrows(IllegalStateException.class, frame::completeTrappedFailure,
+                        "NEW is not an entered continuation and cannot complete");
+                frame.beginInitialResume();
+                frame.spill(0, payload);
+                assertEquals(1, arena.nativeReferenceCount());
+                long ticket = kind == ActorNativeArena.SuspensionKind.AWAIT
+                        ? frame.awaiting() : frame.cooperating();
+                frame.completeTrappedFailure();
+                assertEquals(ActorNativeArena.TaskPhase.DONE, frame.phase());
+                assertEquals(0, arena.nativeReferenceCount(),
+                        "trapping a partially suspended task must drop its native roots");
+                assertThrows(IllegalStateException.class,
+                        () -> frame.beginResume(kind, ticket),
+                        "trapped completion must revoke outstanding resume tickets");
+                assertThrows(IllegalStateException.class, frame::completeTrappedFailure);
+                assertThrows(IllegalStateException.class, () -> frame.restore(0));
+            }
+
+            ActorNativeArena.TaskFrame running = arena.taskFrame();
+            running.configureSpillSlots(1);
+            running.beginInitialResume();
+            running.spill(0, 42L);
+            running.completeTrappedFailure();
+            assertEquals(ActorNativeArena.TaskPhase.DONE, running.phase());
+
+            ActorNativeArena.TaskFrame failed = arena.taskFrame();
+            failed.beginInitialResume();
+            failed.failed();
+            assertThrows(IllegalStateException.class, failed::completeTrappedFailure,
+                    "FAILED frames must not transition into successful completion");
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
     void actorTaskFramesPersistResumeAuthorityInNativeMemory() {
         AtomicLong charged = new AtomicLong();
         try (ActorNativeArena arena = arena(4096, charged)) {
