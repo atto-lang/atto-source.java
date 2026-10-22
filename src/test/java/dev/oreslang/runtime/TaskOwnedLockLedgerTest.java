@@ -194,6 +194,7 @@ public final class TaskOwnedLockLedgerTest {
             java.util.concurrent.atomic.AtomicInteger revoked =
                     new java.util.concurrent.atomic.AtomicInteger();
             AtomicBoolean registered = new AtomicBoolean();
+            AtomicReference<Throwable> unexpected = new AtomicReference<>();
             CountDownLatch go = new CountDownLatch(1);
             Thread admission = Thread.ofPlatform().start(() -> {
                 try {
@@ -204,7 +205,9 @@ public final class TaskOwnedLockLedgerTest {
                     // STOP won before permit registration.
                 } catch (InterruptedException error) {
                     Thread.currentThread().interrupt();
-                    throw new AssertionError(error);
+                    unexpected.compareAndSet(null, error);
+                } catch (Throwable error) {
+                    unexpected.compareAndSet(null, error);
                 }
             });
             Thread canceller = Thread.ofPlatform().start(() -> {
@@ -213,12 +216,15 @@ public final class TaskOwnedLockLedgerTest {
                     ledger.fence();
                 } catch (InterruptedException error) {
                     Thread.currentThread().interrupt();
-                    throw new AssertionError(error);
+                    unexpected.compareAndSet(null, error);
+                } catch (Throwable error) {
+                    unexpected.compareAndSet(null, error);
                 }
             });
             go.countDown();
             admission.join();
             canceller.join();
+            assertNull(unexpected.get(), "unexpected racing worker failure");
             ledger.revokeAfterQuiescence();
             assertEquals(0, ledger.outstanding());
             assertEquals(registered.get() ? 1 : 0, revoked.get(),
