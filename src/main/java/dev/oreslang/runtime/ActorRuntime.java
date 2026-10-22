@@ -7082,6 +7082,9 @@ public final class ActorRuntime implements AutoCloseable {
          */
         private boolean sourceHandoffRequested;
         private OresScheduler sourceScheduler;
+        // Do not reenter finalization from scheduler close/Task callbacks
+        // while cleanup receipts are being checked under lifecycleLock.
+        private boolean sourceSchedulerClosing;
         /** self.end()/self.endWithCleanup(...) lifecycle state; guarded by lifecycleLock. */
         private boolean endRequested;
         private Runnable finalCleanup;
@@ -7378,21 +7381,37 @@ public final class ActorRuntime implements AutoCloseable {
             // fully crossed back out of the TurnExecutor boundary. For
             // Truffle-backed runtimes that boundary owns context enter/leave.
             if (finalized
+                    || sourceSchedulerClosing
                     || activeTurns != 0
                     || scheduled.get()
                     || carrierActive
                     || !children.isEmpty()) return;
-            finalized = true;
             OresScheduler scheduler = sourceScheduler;
-            sourceScheduler = null;
             if (scheduler != null) {
+                Throwable closeFailure = null;
+                sourceSchedulerClosing = true;
                 try {
                     scheduler.close();
-                } catch (RuntimeException ignored) {
-                    // Actor teardown remains authoritative; source scheduler
-                    // cancellation is best-effort after the actor has finalized.
+                } catch (RuntimeException failure) {
+                    closeFailure = failure;
+                } finally {
+                    sourceSchedulerClosing = false;
+                }
+                if (closeFailure != null || scheduler.hasIncompleteCleanup()) {
+                    // A cancelled/suspended source frame may still own defer
+                    // state, mutex guards or native loans. Keep ActorCell and
+                    // memorySlice strongly reachable in the runtime's actor
+                    // registry: no heap reclamation and no false actor-done.
+                    ref.terminationCause.compareAndSet(null,
+                            new OresScheduler.CleanupIncompleteError(
+                                    "actor source cleanup incomplete; quarantine arena",
+                                    closeFailure));
+                    lifecycleLock.notifyAll();
+                    return;
                 }
             }
+            finalized = true;
+            sourceScheduler = null;
             drainMailboxReservations();
             staticSelectCursors.clear();
             codeActorState = null;
