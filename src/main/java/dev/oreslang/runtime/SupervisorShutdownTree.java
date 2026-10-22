@@ -218,7 +218,11 @@ public final class SupervisorShutdownTree {
         try {
             return Objects.requireNonNull(
                     node.hooks.onShutdown(reason), "onShutdown returned null");
-        } catch (Exception failure) {
+        } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+            throw fatal;
+        } catch (Throwable failure) {
+            // An ordinary host hook panic is recorded and the rest of the tree
+            // is still drained. Fatal JVM execution failures remain fatal.
             return OresFuture.failed(failure);
         }
     }
@@ -227,7 +231,11 @@ public final class SupervisorShutdownTree {
         try {
             return Objects.requireNonNull(
                     node.hooks.onStopped(reason), "onStopped returned null");
-        } catch (Exception failure) {
+        } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+            throw fatal;
+        } catch (Throwable failure) {
+            // An ordinary host hook panic is recorded and the rest of the tree
+            // is still drained. Fatal JVM execution failures remain fatal.
             return OresFuture.failed(failure);
         }
     }
