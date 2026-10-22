@@ -93,6 +93,28 @@ final class CheckedEffectDeclarationsSyntaxTest {
     }
 
     @Test
+    void linkedClassAndContractCannotSmuggleUncheckedEffects() {
+        Ast.Program source = Parser.parse("fnc root(): int { return 1; }");
+        Ast.ClassDecl linkedClass = (Ast.ClassDecl) Parser.parse(
+                "define class Remote as pub work(): int panics FatalError { return 1; } end")
+                .modules().getFirst().declarations().getFirst();
+        var fromClass = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
+                        source, java.util.Map.of("Remote", linkedClass),
+                        java.util.Map.of(), java.util.Map.of()));
+        assertTrue(fromClass.getMessage().contains("parsed but not yet enabled"));
+
+        Ast.InterfaceDecl linkedContract = (Ast.InterfaceDecl) Parser.parse(
+                "define contract API as fnc request(): int raises DomainError; end")
+                .modules().getFirst().declarations().getFirst();
+        var fromContract = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
+                        source, java.util.Map.of(), java.util.Map.of(),
+                        java.util.Map.of("API", linkedContract)));
+        assertTrue(fromContract.getMessage().contains("parsed but not yet enabled"));
+    }
+
+    @Test
     void effectMetadataCannotBeMutatedOrDuplicated() {
         var list = new java.util.ArrayList<>(List.of(Ast.TypeRef.simple("E")));
         Ast.EffectSpec spec = new Ast.EffectSpec(list, List.of(), List.of());
