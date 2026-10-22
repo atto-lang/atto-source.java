@@ -755,7 +755,8 @@ public final class ActorNativeArena implements AutoCloseable {
         private final int capacity;
         private final long baseOffset;
         private final Runnable release;
-        private int readLeases;
+        // Live immutable byte ranges; all checks and updates hold the actor monitor.
+        private final ArrayList<ReadOnlyLease> readLeases = new ArrayList<>();
         private Region(ByteBuffer memory, int capacity, long baseOffset, Runnable release) {
             this.memory = memory;
             this.capacity = capacity;
@@ -782,22 +783,27 @@ public final class ActorNativeArena implements AutoCloseable {
             synchronized (ActorNativeArena.this) { return checked().get(offset); }
         }
         public void writeByte(int offset, byte value) {
-            synchronized (ActorNativeArena.this) { requireWritable().put(offset, value); }
+            synchronized (ActorNativeArena.this) { requireWritable(offset, Byte.BYTES).put(offset, value); }
         }
         void assertWritable() {
             synchronized (ActorNativeArena.this) { requireWritable(); }
+        }
+
+        /** Range preflight for callers that hold the actor monitor across a full mutation. */
+        void assertWritable(int offset, int length) {
+            synchronized (ActorNativeArena.this) { requireWritable(offset, length); }
         }
         public long readLong(int offset) {
             synchronized (ActorNativeArena.this) { return checked().getLong(offset); }
         }
         public void writeLong(int offset, long value) {
-            synchronized (ActorNativeArena.this) { requireWritable().putLong(offset, value); }
+            synchronized (ActorNativeArena.this) { requireWritable(offset, Long.BYTES).putLong(offset, value); }
         }
         public double readDouble(int offset) {
             synchronized (ActorNativeArena.this) { return checked().getDouble(offset); }
         }
         public void writeDouble(int offset, double value) {
-            synchronized (ActorNativeArena.this) { requireWritable().putDouble(offset, value); }
+            synchronized (ActorNativeArena.this) { requireWritable(offset, Double.BYTES).putDouble(offset, value); }
         }
 
         /**
@@ -820,7 +826,7 @@ public final class ActorNativeArena implements AutoCloseable {
                 int blockStrideElements,
                 double dt) {
             synchronized (ActorNativeArena.this) {
-                ByteBuffer bytes = requireWritable();
+                ByteBuffer bytes = checked();
                 if (!Double.isFinite(dt) || rows <= 0 || rowStrideElements <= 0
                         || blockRows <= 0 || blockStrideElements < 0
                         || positionBaseElement < 0 || velocityBaseElement < 0) {
@@ -856,6 +862,32 @@ public final class ActorNativeArena implements AutoCloseable {
                     }
                 }
 
+                // Validate every destination BEFORE any native write. The
+                // optimized kernel may read a borrowed source column, but may
+                // never write a borrowed destination. Separate geometry and
+                // borrow preflights preserve all-or-nothing rejection.
+                if (!readLeases.isEmpty()) {
+                    int checkRemaining = rows;
+                    int checkBlockBase = 0;
+                    while (checkRemaining > 0) {
+                        int active = Math.min(blockRows, checkRemaining);
+                        int p = Math.addExact(positionBaseElement, checkBlockBase);
+                        for (int lane = 0; lane < active; lane++) {
+                            requireWritable(Math.multiplyExact(p, Double.BYTES), Double.BYTES);
+                            // Do not compute a non-existent next row: huge
+                            // valid strides must not overflow after the last
+                            // element was already checked or written.
+                            if (lane + 1 < active) {
+                                p = Math.addExact(p, rowStrideElements);
+                            }
+                        }
+                        checkRemaining -= active;
+                        if (checkRemaining != 0) {
+                            checkBlockBase = Math.addExact(checkBlockBase, blockStrideElements);
+                        }
+                    }
+                }
+
                 remaining = rows;
                 blockBase = 0;
                 while (remaining > 0) {
@@ -867,8 +899,10 @@ public final class ActorNativeArena implements AutoCloseable {
                         int vByte = Math.multiplyExact(v, Double.BYTES);
                         bytes.putDouble(pByte,
                                 bytes.getDouble(pByte) + bytes.getDouble(vByte) * dt);
-                        p = Math.addExact(p, rowStrideElements);
-                        v = Math.addExact(v, rowStrideElements);
+                        if (lane + 1 < active) {
+                            p = Math.addExact(p, rowStrideElements);
+                            v = Math.addExact(v, rowStrideElements);
+                        }
                     }
                     remaining -= active;
                     if (remaining != 0) {
@@ -878,16 +912,38 @@ public final class ActorNativeArena implements AutoCloseable {
             }
         }
 
+        private ByteBuffer requireWritable(int offset, int width) {
+            ByteBuffer bytes = checked();
+            if (offset < 0 || width < 0 || offset > capacity || width > capacity - offset) {
+                throw new IndexOutOfBoundsException("native region write outside allocation");
+            }
+            if (width > 0 && !readLeases.isEmpty()) {
+                long end = (long) offset + width;
+                for (ReadOnlyLease lease : readLeases) {
+                    // Empty leases protect lifetime only, not any bytes.
+                    if (lease.length != 0
+                            && (long) offset < (long) lease.base + lease.length
+                            && (long) lease.base < end) {
+                        throw new IllegalStateException("native write overlaps read-only lease");
+                    }
+                }
+            }
+            return bytes;
+        }
+
+        /** Conservative whole-region guard retained for unoptimized callers. */
         private ByteBuffer requireWritable() {
             ByteBuffer bytes = checked();
-            if (readLeases != 0) throw new IllegalStateException("native region has active read-only leases");
+            if (!readLeases.isEmpty()) {
+                throw new IllegalStateException("native region has active read-only leases");
+            }
             return bytes;
         }
 
         /**
-         * Temporarily freezes writes to the entire region. The returned slice
-         * does not expose a raw address or bypass the actor's ownership check.
-         * The lease must be closed before the region can be explicitly released.
+         * Freezes only the leased half-open byte interval. Disjoint native
+         * writes are allowed, but any live lease forbids releasing the region.
+         * No raw pointer or mutable native view escapes.
          */
         public ReadOnlyLease leaseReadOnly(int offset, int length) {
             synchronized (ActorNativeArena.this) {
@@ -895,11 +951,8 @@ public final class ActorNativeArena implements AutoCloseable {
                 if (offset < 0 || length < 0 || offset > capacity || length > capacity - offset) {
                     throw new IndexOutOfBoundsException("read-only lease outside native region");
                 }
-                // Construct the lease before recording admission. Otherwise an
-                // allocation failure leaves a phantom outstanding reader and
-                // permanently prevents deterministic native reclamation.
                 ReadOnlyLease lease = new ReadOnlyLease(offset, length);
-                readLeases = Math.addExact(readLeases, 1);
+                readLeases.add(lease);
                 return lease;
             }
         }
@@ -965,7 +1018,9 @@ public final class ActorNativeArena implements AutoCloseable {
                     // outstanding Java facades must not resurrect it.
                     if (!ActorNativeArena.this.closed) {
                         checkAccess();
-                        readLeases--;
+                        if (!readLeases.remove(this)) {
+                            throw new IllegalStateException("native read lease registry mismatch");
+                        }
                     }
                     released = true;
                 }
@@ -976,13 +1031,14 @@ public final class ActorNativeArena implements AutoCloseable {
             if (memory == null) return;
             releaseNative(memory);
             memory = null;
+            readLeases.clear();
             committed -= capacity;
             release.run();
         }
         @Override public void close() {
             synchronized (ActorNativeArena.this) {
                 checkAccess();
-                if (readLeases != 0) {
+                if (!readLeases.isEmpty()) {
                     throw new IllegalStateException("cannot release a leased native region");
                 }
                 revoke();
@@ -1379,16 +1435,13 @@ public final class ActorNativeArena implements AutoCloseable {
         }
     }
 
-    /**
-     * Called only after the runtime's actor/async physical quiescence barrier.
-     * Fail closed even if a buggy scheduler claims quiescence while an issued
-     * native read lease still exists. Do not partially retire any region;
-     * preserve the whole arena so its outstanding lease can release safely.
-     */
+    /** Called only after the runtime's actor/async physical quiescence barrier. */
     @Override public synchronized void close() {
         if (closed) return;
+        // Refuse physical retirement while any native read lease survives.
+        // Validate the ENTIRE arena before revoking a single region.
         for (Region region : regions) {
-            if (region.readLeases != 0) {
+            if (!region.readLeases.isEmpty()) {
                 throw new IllegalStateException(
                         "actor native arena has outstanding read-only leases");
             }
