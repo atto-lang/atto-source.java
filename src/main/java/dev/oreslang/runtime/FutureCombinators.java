@@ -165,6 +165,51 @@ public final class FutureCombinators {
 
 
 
+
+    /**
+     * Authenticated upstream cancellation moves downstream without granting
+     * the downstream task the right to cancel the shared source. Install the
+     * cancellation witness BEFORE admitting/awaiting the dependent Task so
+     * it wins the pending-source notification order. Detach the witness once
+     * the dependent result settles, including on admission failure.
+     */
+    private static <U> OresFuture<U> startObservingCancellation(
+            OresFuture<?> source,
+            java.util.function.Supplier<OresFuture<U>> taskFactory) {
+        java.util.concurrent.atomic.AtomicBoolean upstreamCancelled =
+                new java.util.concurrent.atomic.AtomicBoolean();
+        java.util.concurrent.atomic.AtomicReference<OresFuture<U>> taskRef =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        OresFuture.RuntimeWaiterRegistration<?> waiter =
+                source.whenCompleteRuntimeCancellable((value, failure) -> {
+                    if (!source.isCancelled()) return;
+                    upstreamCancelled.set(true);
+                    OresFuture<U> active = taskRef.get();
+                    if (active != null) active.cancel(false);
+                });
+
+        if (upstreamCancelled.get()) {
+            waiter.detach();
+            OresFuture<U> cancelled = new OresFuture<>();
+            cancelled.cancel(false);
+            return cancelled;
+        }
+
+        final OresFuture<U> dependent;
+        try {
+            dependent = Objects.requireNonNull(taskFactory.get(),
+                    "task factory returned null Future");
+        } catch (RuntimeException | Error failure) {
+            waiter.detach();
+            throw failure;
+        }
+
+        taskRef.set(dependent);
+        dependent.whenCompleteRuntime((value, failure) -> waiter.detach());
+        if (upstreamCancelled.get()) dependent.cancel(false);
+        return dependent;
+    }
+
     /**
      * Transform one settled Future on the explicitly supplied scheduler.
      * The source is only observed: cancelling the dependent Task must never
@@ -181,7 +226,8 @@ public final class FutureCombinators {
         Objects.requireNonNull(scheduler, "scheduler");
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(mapper, "mapper");
-        return scheduler.start(new OresScheduler.Task<>() {
+        return startObservingCancellation(source, () ->
+                scheduler.start(new OresScheduler.Task<>() {
             private boolean started;
 
             @Override
@@ -201,7 +247,7 @@ public final class FutureCombinators {
                 T value = (T) resume.value();
                 return OresScheduler.done(mapper.apply(value));
             }
-        });
+        }));
     }
 
     /**
@@ -216,7 +262,8 @@ public final class FutureCombinators {
         Objects.requireNonNull(scheduler, "scheduler");
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(mapper, "mapper");
-        return scheduler.start(new OresScheduler.Task<>() {
+        return startObservingCancellation(source, () ->
+                scheduler.start(new OresScheduler.Task<>() {
             private int phase;
 
             @Override
@@ -250,7 +297,7 @@ public final class FutureCombinators {
                 }
                 throw new IllegalStateException("flatMap resumed after completion");
             }
-        });
+        }));
     }
 
     private static RuntimeException propagate(Throwable failure) {
