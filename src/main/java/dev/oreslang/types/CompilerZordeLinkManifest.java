@@ -50,8 +50,15 @@ final class CompilerZordeLinkManifest {
         }
     }
 
+    private record SchemaExport(int version, String fingerprint) {
+        private SchemaExport {
+            if (version != 1 || !isDigest(fingerprint))
+                throw new IllegalArgumentException("unsupported Zorde exported schema version");
+        }
+    }
+
     private record Unit(String name, String sourceDigest, long generation,
-                        Map<String, String> exportedSchemas,
+                        Map<String, SchemaExport> exportedSchemas,
                         Map<String, String> dependencies) {
         private Unit {
             exportedSchemas = Collections.unmodifiableMap(new TreeMap<>(exportedSchemas));
@@ -110,13 +117,14 @@ final class CompilerZordeLinkManifest {
                     || pin.generation() != registry.generation())
                 throw new IllegalArgumentException("Zorde pinned source or generation mismatch");
 
-            Map<String, String> exports = new TreeMap<>();
+            Map<String, SchemaExport> exports = new TreeMap<>();
             for (var schema : registry.schemaEntriesForLinker().entrySet()) {
                 if (exportedBy.putIfAbsent(schema.getKey(), name) != null) {
                     throw new IllegalArgumentException(
                             "ambiguous Zorde exported schema " + schema.getKey());
                 }
-                exports.put(schema.getKey(), schema.getValue().fingerprint());
+                exports.put(schema.getKey(), new SchemaExport(
+                        schema.getValue().version(), schema.getValue().fingerprint()));
             }
             if (exports.isEmpty())
                 throw new IllegalArgumentException("Zorde unit exports no schema");
@@ -194,11 +202,21 @@ final class CompilerZordeLinkManifest {
         // marker. Link digest equality is not sufficient as admission.
         if (!registry.sourceDigest().equals(unit.sourceDigest())
                 || registry.generation() != unit.generation()
+                || registry.descriptor(qualifiedSchema).version()
+                        != unit.exportedSchemas().get(qualifiedSchema).version()
                 || !registry.descriptor(qualifiedSchema).fingerprint().equals(
-                        unit.exportedSchemas().get(qualifiedSchema)))
+                        unit.exportedSchemas().get(qualifiedSchema).fingerprint()))
             throw new IllegalArgumentException("Zorde linker registry identity changed");
         return Types.scopeCheckedTypeToVerifiedLink(
                 registry.checkedTypeForAnalysis(qualifiedSchema, candidate), this);
+    }
+
+    int schemaVersion(String unitId, String qualifiedName) {
+        Unit unit = units.get(unitId);
+        SchemaExport export = unit == null ? null : unit.exportedSchemas().get(qualifiedName);
+        if (export == null)
+            throw new IllegalArgumentException("unknown exact-tree Zorde schema");
+        return export.version();
     }
 
     String digest() { return treeDigest; }
@@ -241,7 +259,8 @@ final class CompilerZordeLinkManifest {
                 putInt(md, unit.exportedSchemas().size());
                 for (var schema : unit.exportedSchemas().entrySet()) {
                     putText(md, schema.getKey());
-                    putText(md, schema.getValue());
+                    putInt(md, schema.getValue().version());
+                    putText(md, schema.getValue().fingerprint());
                 }
                 putInt(md, unit.dependencies().size());
                 for (var dependency : unit.dependencies().entrySet()) {
