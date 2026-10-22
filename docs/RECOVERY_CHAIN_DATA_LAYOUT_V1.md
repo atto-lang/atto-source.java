@@ -167,3 +167,79 @@ cost too, since a handler is registered much more often than it executes.
    parity suites, including fuzz/property tests and real actor memory pressure.
 7. Treat JDK21 standalone class compilation and microbenchmark as **local
    preliminary checks only**. No claim of exact-head source/CI test passing.
+
+## Post-review security and performance hardening (2026-10-22)
+
+The first review found and corrected several specific flaws in this experimental
+runtime substrate:
+
+- **Untrusted kind/source mismatch:** a caller could label a wrapped
+  `CancellationException`, `TimeoutException`, `SecurityException` or host
+  `Error` as `THROW`/`RAISE` and have a handler turn it into a success.
+  The dispatcher now fails closed on those terminal host signals, even when
+  they appear in the bounded cause or suppressed graph. A cycle/over-budget
+  graph also fails closed. This is defense in depth, NOT guest provenance:
+  the final compiler bridge MUST mint an unforgeable typed effect carrier.
+- **Unbounded worklist breadth:** causal checking formerly enqueued every
+  suppressed failure before enforcing the 64-node bound. It now bounds
+  insertion before the queue grows. `getSuppressed()` may itself return
+  an already-large array, so untrusted host exceptions must still be sealed
+  or rejected at the guest adapter boundary.
+- **Implicit swallowed raise:** a callback that simply returned without
+  calling `resolve` or `next` previously threw a new host exception,
+  risking loss of the pending failure. It now returns a `HandlerFailure`
+  containing both the pending effect/error and callback error. Double-decision
+  and callback-exception tests verify identity.
+- **Leaked or off-lane cursor:** every visited callback receives a distinct
+  one-shot cursor, invalidated in `finally`. A synchronous foreign carrier
+  thread is refused. This thread check is temporary: suspended guest callbacks
+  must instead be checked against the logical task/actor admission token.
+- **Overexposed host dispatch:** `dispatch` is package-private until a
+  trusted guest-effect bridge exists. The standalone helper still accepts
+  raw `Throwable` internally; it must never be exported as a guest ABI.
+- **Unnecessary allocation/scans:** a common ordinary leaf error now avoids
+  constructing the causal graph worklist, and a chain with no mask-compatible
+  handler skips causal graph traversal altogether.
+- **Stale assertion:** the double-decision regression expected a thrown host
+  `IllegalStateException` even after the policy changed to
+  failure-preserving `HandlerFailure`. The test now asserts the stronger
+  contract. A seeded 400-scenario differential reference-model check covers
+  effect masks and LIFO short-circuit delegation.
+
+Local supplementary execution: an independently reconstructed copy of the
+core helper compiled with `javac --release 21 -Xlint:all`, and 35 smoke
+assertions plus 400 deterministic differential scenarios passed on OpenJDK21.
+This is **not** an exact-source commit or repository JUnit run. The committed
+18 JUnit methods remain unexecuted on an approved JDK25 runner at the time of
+this audit.
+
+The checked-in metadata-layout benchmark now randomizes interleaved execution
+order, reports medians across five trials, includes four-handler cases, and
+checks full-run checksums outside timed sections. It is **still not JMH** and
+does not establish recovery-chain allocation or latency characteristics.
+The historical table above is illustrative only and must not be treated as
+validated current-branch measurements.
+
+### Additional hard gates before production integration
+
+1. Define a compiler/VM-sealed **guest-originated exceptional signal** with
+   nominal error identity and `throws`/`raises` proof. Do not map arbitrary
+   Java `Throwable` or user-controlled `FailureKind` labels into it.
+2. Treat `HandlerFailure` as a **non-success** whose strongest underlying
+   runtime signal continues to propagate. Host fatal Error and cancellation
+   must not be downgraded by the callback-error wrapper.
+3. Verify direct `c.next(): Never` lowerings have no subsequent guest
+   effects, including in branch/match edges; the host `next(): void` method
+   is only a simulation, not evidence of terminal guest behavior.
+4. Prove that `defer` executes once, in LIFO order, **before** recovery where
+   specified, and that a new throw/raise in a handler cannot re-enter itself.
+5. Bind any suspended recovery cursor to the authenticated logical Task/actor
+   incarnation and arena; carrier-thread identity is insufficient after
+   `await`. Forbid capture or persistence of the cursor.
+6. Measure successful-call registration and cleanup overhead, fresh-failure
+   allocation (cursor + preflight + outcome), and deep-chain p99 alongside
+   metadata scans. Evaluate compiler-inlined 0-4-handler storage against
+   SoA/SoAoS/AoSoA/SoAoS/ECS on each target; do not use simulated ECS
+   metadata walk as a proof of actor scheduler suitability.
+7. Obtain real exact-head Maven/JDK25/JUnit, GraalVM AOT/hybrid and LLVM
+   source-level conformance evidence, with security-approved CI placement.
