@@ -6976,6 +6976,8 @@ public final class TypeChecker {
                 && callbackExpression instanceof Ast.LambdaExpr literalFallback
                 && literalFallback.expressionBody() instanceof Ast.NameExpr none
                 && none.name().equals("None")
+                // A shadowing local named None is a value, not the builtin.
+                && env.lookup("None") == null
                 && mapped instanceof Named optionNone
                 && optionNone.name().equals("Option")
                 && optionNone.arguments().size() == 1
