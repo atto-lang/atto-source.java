@@ -2,6 +2,7 @@ package dev.oreslang.launcher;
 
 import dev.oreslang.compiler.BuildOptions;
 import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.compiler.ReachabilityReport;
 import dev.oreslang.compiler.TreeShaker;
 import dev.oreslang.config.OresProjectConfig;
 import dev.oreslang.parser.Parser;
@@ -82,6 +83,7 @@ public final class OresMain {
         boolean strict = false;
         boolean checkOnly = false;
         boolean buildAnalysis = false;
+        String reachabilityReportPath = null;
         List<String> buildDefines = new ArrayList<>();
         Set<String> buildEntryPoints = new LinkedHashSet<>();
         String mode = NativeBuildMode.defaultExecutionMode();
@@ -106,6 +108,15 @@ public final class OresMain {
                 else if (arg.equals("--core-debug")) coreDebug = true;
                 else if (arg.equals("--no-core-debug")) coreDebug = false;
                 else if (arg.equals("--build-analysis")) buildAnalysis = true;
+                else if (arg.startsWith("--reachability-report=")) {
+                    if (reachabilityReportPath != null) {
+                        throw new UsageException("--reachability-report may be supplied only once");
+                    }
+                    reachabilityReportPath = arg.substring("--reachability-report=".length()).trim();
+                    if (reachabilityReportPath.isEmpty()) {
+                        throw new UsageException("--reachability-report requires a file path");
+                    }
+                }
                 else if (arg.equals("--no-prompt")) {
                     // Oreslang permissions never prompt. This Deno-compatible
                     // spelling is accepted so automation can state that intent.
@@ -160,6 +171,9 @@ public final class OresMain {
         // An invalid invocation is status 2 even when the source path is absent.
         if (checkOnly && buildAnalysis) {
             throw new UsageException("--check and --build-analysis are mutually exclusive");
+        }
+        if (reachabilityReportPath != null && !buildAnalysis) {
+            throw new UsageException("--reachability-report requires --build-analysis");
         }
 
         final CoreLog.Level admittedLogLevel;
@@ -237,9 +251,28 @@ public final class OresMain {
             }
             Map<String, String> defines = BuildOptions.mergeDefines(System.getenv(), buildDefines);
             Set<String> entries = buildEntryPoints.isEmpty() ? Set.of("main") : Set.copyOf(buildEntryPoints);
+            BuildOptions buildOptions = new BuildOptions(defines, entries, false);
             TreeShaker.Result result = OresCompiler.compileForBuild(
                     directOresSource,
-                    new BuildOptions(defines, entries, false));
+                    buildOptions);
+
+            if (reachabilityReportPath != null) {
+                final Path reportPath;
+                try {
+                    reportPath = Path.of(reachabilityReportPath);
+                } catch (java.nio.file.InvalidPathException invalidPath) {
+                    throw new UsageException(
+                            "invalid reachability report path: " + invalidPath.getMessage());
+                }
+                String report = ReachabilityReport.render(
+                        result,
+                        buildOptions,
+                        "graal",
+                        "analysis",
+                        "graal-" + platform,
+                        "executable");
+                Files.writeString(reportPath, report + System.lineSeparator());
+            }
 
             System.out.println("tree-shake retained:");
             result.retainedSymbols().stream().sorted().forEach(symbol -> System.out.println("  + " + symbol));
@@ -248,8 +281,8 @@ public final class OresMain {
             return 0;
         }
 
-        if (!buildDefines.isEmpty() || !buildEntryPoints.isEmpty()) {
-            throw new UsageException("--define/--entry require --build-analysis until the artifact build command is wired");
+        if (!buildDefines.isEmpty() || !buildEntryPoints.isEmpty() || reachabilityReportPath != null) {
+            throw new UsageException("--define/--entry/--reachability-report require --build-analysis until the artifact build command is wired");
         }
 
         if (checkOnly) {
@@ -344,7 +377,7 @@ public final class OresMain {
                         + "[--allow-sys[=API,...]] [--deny-sys[=API,...]] "
                         + "[--allow-ffi[=PATH,...]] [--deny-ffi[=PATH,...]] "
                         + "[--allow-import[=PATH,...]] [--deny-import[=PATH,...]] "
-                        + "[--no-prompt] [--define=name=value ...] [--entry=symbol ...] "
+                        + "[--no-prompt] [--define=name=value ...] [--entry=symbol ...] [--reachability-report=FILE] "
                         + "[--strict-isolate] [--core-perf|--no-core-perf] [--core-debug|--no-core-debug] "
                         + "[--core-log-level=off|error|warn|info|debug|trace] [--no-core-log] [--mode=aot|jit|hybrid] "
                         + "[--platform=server|windows|macos|linux|android|ios] "
