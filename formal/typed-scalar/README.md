@@ -19,3 +19,27 @@ GitHub Actions runners for this private repository have recently failed **before
 5. Attach exact-head execution receipts; never count 0-step CI or silently skipped unsupported paths as proof.
 
 Related [common-source draft #126](https://github.com/ores-truffle-oreslang/oreslang-common-source/pull/126), [hand-reviewed SMT pilot #1873](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/1873), and [conformance plan #150](https://github.com/ores-truffle-oreslang/oreslang-platform-conformance/issues/150).
+
+## Hardening and proof transcripts
+
+The proof boundary rejects unmodeled module annotations/contracts, unexpected
+callable effects, malformed or missing proof identities, and null or oversized
+source. Typed-AST traversal also has explicit limits: at most 64 branch levels,
+512 visited statements, and 65,536 emitted SMT characters. These are *admission
+limits*, not compiler-wide denial-of-service guarantees; the frontend parses
+and type-checks inputs independently.
+
+JUnit writes `target/formal-typed-scalar/` proof receipts for each accepted
+and deliberately mutated source example. Each receipt includes the input
+source's SHA-256, generated SMT SHA-256, exact SMT-LIB2, and Z3 stdout. The
+workflow records the Git head, source Git blob, Java version, Z3 version and
+binary SHA-256, and archives the results with a SHA-pinned artifact action.
+A transcript is useful for independent replay but is **not a signed
+attestation**. GitHub runner id, successful job execution and independent
+review are required separately. Solver binary provenance is recorded, not
+yet pinned to a reviewed package digest; artifact integrity across the
+hosted CI/storage trust boundary remains an assumption.
+
+If the initial job never starts, no artifact exists, and the result is **not
+verified**. Partial artifacts from failed executions must not be treated as
+successful proofs.
