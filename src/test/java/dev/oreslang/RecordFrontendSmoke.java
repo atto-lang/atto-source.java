@@ -41,6 +41,30 @@ public final class RecordFrontendSmoke {
                     return row.x;
                 }
                 """);
+        acceptedThroughFullFrontend("""
+                fnc retype_rightmost(): string {
+                    const first = record{x: 1, y: true};
+                    const second = record{x: "two"};
+                    const result = record{...first, ...second, x: "last"};
+                    return result.x;
+                }
+                """);
+        acceptedThroughFullFrontend("""
+                fnc plain_struct_to_readonly_record(): int {
+                    const base = infer struct{x: 1};
+                    const copy = record{...base, y: true};
+                    return copy.x;
+                }
+                """);
+        Ast.Program incorrectlyNarrowed = Parser.parse("""
+                fnc wrong_return(): int {
+                    const base = record{x: 1};
+                    const copy = record{...base, x: "changed"};
+                    return copy.x;
+                }
+                """);
+        denied(() -> TypeChecker.check(incorrectlyNarrowed),
+                "type-changing override cannot retain previous scalar type");
         Ast.Program nestedSpread = Parser.parse("""
                 fnc blocked(): int {
                     const base = record{nested: record{x: 1}};
