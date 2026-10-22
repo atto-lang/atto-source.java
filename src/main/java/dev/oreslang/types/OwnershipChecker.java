@@ -1389,9 +1389,9 @@ public final class OwnershipChecker {
             return new ValueInfo(Ast.TypeRef.tupleType(slots), copy ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.ObjectExpr object) {
-            if (object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
-                throw error("aggregate spread requires field-wise ownership, borrow and exception-path proof; "
-                        + "unsupported at this frontend stage");
+            if (object.explicitStruct()
+                    && object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
+                throw error("aggregate spread into an explicit struct requires a checked initialization plan");
             }
             LinkedHashMap<String, Ast.TypeRef> members = new LinkedHashMap<>();
             if (object.explicitStruct()) {
@@ -1402,6 +1402,31 @@ public final class OwnershipChecker {
                 }
             }
             for (Ast.ObjectField field : object.fields()) {
+                if (field.spread()) {
+                    // A scalar-only projection preserves the source binding.
+                    // Never consume the aggregate as a whole or silently move
+                    // non-Copy fields out of it.
+                    ValueInfo source = checkExpr(field.value(), scope, false);
+                    if (isBorrowValue(source) || containsMutexGuardType(source.type)
+                            || !source.type.isClosedAggregateType()) {
+                        throw error("aggregate spread requires a directly owned closed aggregate");
+                    }
+                    for (Map.Entry<String, Ast.TypeRef> item :
+                            source.type.aggregateMembers().entrySet()) {
+                        Ast.TypeRef fieldType = item.getValue();
+                        if (!isCopyType(fieldType)
+                                || !(fieldType.name().equals("int")
+                                || fieldType.name().equals("float")
+                                || fieldType.name().equals("bool")
+                                || fieldType.name().equals("string")
+                                || fieldType.name().equals("String"))) {
+                            throw error("aggregate spread scalar-only stage rejects field '"
+                                    + item.getKey() + "'");
+                        }
+                        members.put(item.getKey(), fieldType);
+                    }
+                    continue;
+                }
                 ValueInfo info = checkExpr(field.value(), scope, true);
                 if (containsMutexGuardType(info.type)) {
                     throw error("MutexGuard cannot be stored in a struct");
