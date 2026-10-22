@@ -243,14 +243,22 @@ public class TaskOwnedLeasesTest {
         AtomicInteger releases = new AtomicInteger();
         int loops = TaskOwnedLeases.MAX_LEASES_PER_TASK + 3072;
         try (OresScheduler scheduler = new OresScheduler(1)) {
-            TaskHandle<Integer> handle = scheduler.startTracked(resume -> {
-                for (int i = 0; i < loops; i++) {
-                    TaskOwnedLeases.Lease lease =
-                            TaskOwnedLeases.register(releases::incrementAndGet);
-                    lease.close();
-                    if ((i & 127) == 0) OresScheduler.cancellationCheckpoint();
+            TaskHandle<Integer> handle = scheduler.startTracked(
+                    new OresScheduler.Task<Integer>() {
+                private int cursor;
+                @Override public OresScheduler.Step<Integer> resume(
+                        OresScheduler.Resume resume) {
+                    int limit = Math.min(loops, cursor + 64);
+                    while (cursor < limit) {
+                        TaskOwnedLeases.Lease lease =
+                                TaskOwnedLeases.register(releases::incrementAndGet);
+                        lease.close();
+                        cursor++;
+                    }
+                    return cursor == loops
+                            ? OresScheduler.done(loops)
+                            : OresScheduler.cooperate();
                 }
-                return OresScheduler.done(loops);
             });
             assertEquals(Integer.valueOf(loops),
                     handle.result().get(5, TimeUnit.SECONDS));
@@ -264,13 +272,24 @@ public class TaskOwnedLeasesTest {
     @Test void outstandingLiveLeaseQuotaCannotBeBypassed() throws Exception {
         AtomicInteger released = new AtomicInteger();
         try (OresScheduler scheduler = new OresScheduler(1)) {
-            TaskHandle<Integer> handle = scheduler.startTracked(resume -> {
-                for (int i = 0; i < TaskOwnedLeases.MAX_LEASES_PER_TASK; i++) {
-                    TaskOwnedLeases.register(released::incrementAndGet);
+            TaskHandle<Integer> handle = scheduler.startTracked(
+                    new OresScheduler.Task<Integer>() {
+                private int count;
+                @Override public OresScheduler.Step<Integer> resume(
+                        OresScheduler.Resume resume) {
+                    int limit = Math.min(
+                            TaskOwnedLeases.MAX_LEASES_PER_TASK, count + 64);
+                    while (count < limit) {
+                        TaskOwnedLeases.register(released::incrementAndGet);
+                        count++;
+                    }
+                    if (count < TaskOwnedLeases.MAX_LEASES_PER_TASK) {
+                        return OresScheduler.cooperate();
+                    }
+                    assertThrows(IllegalStateException.class,
+                            () -> TaskOwnedLeases.register(released::incrementAndGet));
+                    return OresScheduler.done(1);
                 }
-                assertThrows(IllegalStateException.class,
-                        () -> TaskOwnedLeases.register(released::incrementAndGet));
-                return OresScheduler.done(1);
             });
             assertInstanceOf(TaskHandle.Success.class,
                     handle.getDone().get(5, TimeUnit.SECONDS));
