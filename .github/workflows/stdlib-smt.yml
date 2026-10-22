@@ -1,0 +1,43 @@
+name: Native core and stdlib SMT safety gate
+on:
+  pull_request:
+    paths:
+      - 'stdlib/core.ores'
+      - 'stdlib/trace.ores'
+      - 'formal/stdlib/**'
+      - '.github/workflows/stdlib-smt.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'stdlib/core.ores'
+      - 'stdlib/trace.ores'
+      - 'formal/stdlib/**'
+      - '.github/workflows/stdlib-smt.yml'
+permissions:
+  contents: read
+jobs:
+  formal-stdlib:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install SMT solver and Rust verifier
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends z3 rustc
+      - name: Record exact inputs and tool versions
+        run: |
+          git rev-parse HEAD
+          git hash-object stdlib/core.ores stdlib/trace.ores
+          rustc --version
+          z3 -version
+      - name: Rust gate regression tests
+        run: |
+          rustc --edition=2021 --test formal/stdlib/verify.rs -o "${RUNNER_TEMP}/ores-stdlib-formal-tests"
+          "${RUNNER_TEMP}/ores-stdlib-formal-tests"
+      - name: SMT proof obligations and negative controls
+        run: |
+          rustc --edition=2021 formal/stdlib/verify.rs -o "${RUNNER_TEMP}/ores-stdlib-formal"
+          timeout 90s "${RUNNER_TEMP}/ores-stdlib-formal"
