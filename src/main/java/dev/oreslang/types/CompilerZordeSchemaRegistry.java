@@ -117,9 +117,10 @@ final class CompilerZordeSchemaRegistry {
                 }
                 String module = item.path();
                 String simple = item.names().getFirst();
-                if (module == null || module.length() > 256
-                        || !module.matches("[A-Za-z_][A-Za-z_0-9.-]*")
-                        || module.contains("..") || module.endsWith(".")
+                if (!CompilerZordeLinkManifest.validUnitId(module)
+                        // The restricted import-type dialect addresses
+                        // dotted unit identifiers; no filesystem resolution.
+                        || module.indexOf('/') >= 0
                         || !simple.matches("[A-Za-z_][A-Za-z_0-9]*")
                         || !importedSimpleNames.add(simple)
                         || module.equals(compilationUnitId)) {
