@@ -4193,8 +4193,8 @@ public final class TypeChecker {
             return new Tuple(tuple.elements().stream().map(item -> typeOf(item, env, generics, self)).toList());
         }
         if (expr instanceof Ast.ObjectExpr object) {
-            if (object.explicitStruct()
-                    && object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
+            boolean hasAggregateSpread = object.fields().stream().anyMatch(Ast.ObjectField::spread);
+            if (object.explicitStruct() && hasAggregateSpread) {
                 throw new IllegalArgumentException(
                         "aggregate spread into explicitly shaped structs requires checked partial-initialization lowering");
             }
@@ -4270,12 +4270,23 @@ public final class TypeChecker {
                     continue;
                 }
                 Type exactValueType = typeOf(field.value(), env, generics, self);
+                Type fieldType = object.inferredFieldTypes()
+                        ? widenCollectionElement(exactValueType)
+                        : exactValueType;
+                // All fields in a spreading constructor must be plain Copy
+                // scalars, not merely the fields imported from its operands.
+                // Otherwise a later override could discard an owned resource
+                // before its deterministic drop/rollback plan is implemented.
+                if (hasAggregateSpread
+                        && fieldType != Primitive.INT && fieldType != Primitive.FLOAT
+                        && fieldType != Primitive.STRING && fieldType != Primitive.BOOL) {
+                    throw new IllegalArgumentException(
+                            "aggregate spread scalar-only stage rejects initializer field '"
+                                    + field.name() + "'");
+                }
                 // The AST has already rejected duplicate explicitly written
                 // fields; a named field after a spread overrides it.
-                members.put(field.name(),
-                        object.inferredFieldTypes()
-                                ? widenCollectionElement(exactValueType)
-                                : exactValueType);
+                members.put(field.name(), fieldType);
             }
             if (object.structuralRecord()) return new Record(members, true, AggregateKind.RECORD);
             if (object.inferredStruct()) return Record.struct(members);
