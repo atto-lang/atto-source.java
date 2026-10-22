@@ -230,16 +230,18 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         try {
             registrar.accept(completion);
         } catch (Throwable failure) {
-            // Promise-style constructor semantics: a registrar failure rejects
-            // only if the callback has not already won the single-shot race.
+            // VM-fatal failures must escape regardless of whether the foreign
+            // registrar has already settled the Future. Turning an unhandled
+            // VM/linkage failure into an ordinary rejected Future is unsafe.
+            if (failure instanceof VirtualMachineError fatal) throw fatal;
+            if (failure instanceof ThreadDeath fatal) throw fatal;
+            if (failure instanceof LinkageError fatal) throw fatal;
+
+            // A normal registrar failure rejects only if the callback has not
+            // already won the single-shot race. A late benign exception must
+            // never overwrite a result the registrar already published.
             if (callbackClaimed.compareAndSet(false, true)) {
                 future.failFromRuntime(failure);
-            } else if (failure instanceof VirtualMachineError fatal) {
-                throw fatal;
-            } else if (failure instanceof ThreadDeath fatal) {
-                throw fatal;
-            } else if (failure instanceof LinkageError fatal) {
-                throw fatal;
             }
         }
         return future;
@@ -265,23 +267,34 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
                 ? () -> cancellable.cancel(true)
                 : () -> { };
         OresFuture<T> result = new OresFuture<>(cancelHook);
-        stage.whenComplete((value, failure) -> {
-            if (failure == null) {
-                result.completeFromRuntime(value);
-                return;
-            }
+        try {
+            stage.whenComplete((value, failure) -> {
+                if (failure == null) {
+                    result.completeFromRuntime(value);
+                    return;
+                }
 
-            Throwable terminalFailure = unwrap(failure);
-            boolean cancelled = stage instanceof Future<?> hostFuture
-                    ? hostFuture.isCancelled()
-                    : terminalFailure instanceof CancellationException;
+                Throwable terminalFailure = unwrap(failure);
+                boolean cancelled = stage instanceof Future<?> hostFuture
+                        ? hostFuture.isCancelled()
+                        : terminalFailure instanceof CancellationException;
 
-            if (cancelled) {
-                result.cancel(false);
-            } else {
-                result.failFromRuntime(terminalFailure);
-            }
-        });
+                if (cancelled) {
+                    result.cancel(false);
+                } else {
+                    result.failFromRuntime(terminalFailure);
+                }
+            });
+        } catch (Throwable failure) {
+            // An untrusted host CompletionStage can fail while registering the
+            // completion observer. Never strand the Ores Future in PENDING or
+            // replace a result which raced registration failure. VM-fatal
+            // exceptions retain their normal host failure semantics.
+            if (failure instanceof VirtualMachineError fatal) throw fatal;
+            if (failure instanceof ThreadDeath fatal) throw fatal;
+            if (failure instanceof LinkageError fatal) throw fatal;
+            result.failFromRuntime(unwrap(failure));
+        }
         return result;
     }
 
