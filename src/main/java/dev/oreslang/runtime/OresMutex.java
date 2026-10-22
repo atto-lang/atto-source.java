@@ -520,13 +520,24 @@ public final class OresMutex {
             return new LogicalOwner(execution);
         }
 
-        private static Object currentLogicalLockOwner() {
+        private static Object currentLogicalExecutionIdentity() {
             // Actor domain != execution owner. Task identity survives await
             // and carrier migration; an untracked actor uses its physical
             // dispatch instance, and an ordinary host uses its Thread.
             Object taskDomain = OresScheduler.currentTaskDomain();
-            return logicalOwnerKey(taskDomain != null
-                    ? taskDomain : ActorRuntime.currentMutexExecutionSegment());
+            return taskDomain != null
+                    ? taskDomain : ActorRuntime.currentMutexExecutionSegment();
+        }
+
+        private static Object currentLogicalLockOwner() {
+            // One allocated key per lock admission. Keep guard reads and
+            // releases free of additional wrapper allocations.
+            return logicalOwnerKey(currentLogicalExecutionIdentity());
+        }
+
+        private static boolean currentExecutionOwns(Object ownerKey) {
+            return ownerKey instanceof LogicalOwner owner
+                    && owner.execution == currentLogicalExecutionIdentity();
         }
 
         private Object reserveDomain(boolean tryOnly) {
@@ -1172,7 +1183,7 @@ public final class OresMutex {
                         throw new WrongMutexDomainException(
                                 "SharedMutex guard belongs to a different actor domain");
                     }
-                    if (!currentLogicalLockOwner().equals(ownerDomain)) {
+                    if (!currentExecutionOwns(ownerDomain)) {
                         throw new WrongMutexDomainException(
                                 "SharedMutex guard belongs to another logical Task or actor turn");
                     }
