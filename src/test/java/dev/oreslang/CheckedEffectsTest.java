@@ -312,4 +312,36 @@ final class CheckedEffectsTest {
         assertDoesNotThrow(() -> checked(
                 "define interface Worker as fnc handle(): int; end"));
     }
+
+    @Test
+    void escapingLambdaMustNotInheritEnclosingPanicAllowance() {
+        var leaked = assertThrows(IllegalArgumentException.class, () -> checked(
+                "fnc risky(): int panics int { return 1; }"
+              + "fnc parent(): int panics int {"
+              + "  val callback = || -> { return risky(); };"
+              + "  return 0;"
+              + "}"));
+        assertTrue(leaked.getMessage().contains("checked panics"));
+    }
+
+    @Test
+    void expectedFunctionLambdaMustNotLaunderPanicThroughCallbackType() {
+        var leaked = assertThrows(IllegalArgumentException.class, () -> checked(
+                "fnc risky(): int panics int { return 1; }"
+              + "fnc apply(cb: Fnc<int>): int { return cb(); }"
+              + "fnc parent(): int panics int {"
+              + "  return apply(|| -> { return risky(); });"
+              + "}"));
+        assertTrue(leaked.getMessage().contains("checked panics"));
+    }
+
+    @Test
+    void pureLambdaRemainsValidWithinEffectfulCaller() {
+        assertDoesNotThrow(() -> checked(
+                "fnc pure(): int { return 1; }"
+              + "fnc parent(): int panics int {"
+              + "  val callback = || -> { return pure(); };"
+              + "  return 0;"
+              + "}"));
+    }
 }
