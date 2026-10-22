@@ -2637,6 +2637,12 @@ public final class ActorRuntime implements AutoCloseable {
         // group admission revocation and clearing managed-worker references.
         private final OresFuture<Void> closedWorkersDone =
                 new OresFuture<>(() -> false, () -> { });
+        // Group completion requires BOTH worker finalization and transport
+        // teardown. A zero-worker group must not complete before its Mailman,
+        // event bus and membership state have actually been closed.
+        private final AtomicInteger closePendingWorkers = new AtomicInteger(-1);
+        private final AtomicBoolean closeTransportTeardownDone = new AtomicBoolean();
+        private final AtomicReference<Throwable> closeTerminalFailure = new AtomicReference<>();
         private final Object authorityLock = new Object();
         private final ActorEventBus eventBus;
         private final AtomicReference<GroupMailmanState<?>> mailmanState = new AtomicReference<>();
@@ -3197,6 +3203,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // racing teardown can no longer pass validation.
                 joinSecret = UUID.randomUUID();
                 owned = List.copyOf(managedWorkers.values());
+                closePendingWorkers.set(owned.size());
                 managedWorkers.clear();
                 stoppingWorkers.clear();
             }
@@ -3223,21 +3230,13 @@ public final class ActorRuntime implements AutoCloseable {
             // Attach completion handlers before requesting cancellation: an
             // actor might finalize synchronously during the first stop call.
             // Keep only a future, not strong actor heap/arena references.
-            if (owned.isEmpty()) {
-                closedWorkersDone.completeFromRuntime(null);
-            } else {
-                AtomicInteger pending = new AtomicInteger(owned.size());
-                AtomicReference<Throwable> firstFailure = new AtomicReference<>();
-                for (ActorRef<?> worker : owned) {
-                    worker.done().whenCompleteRuntime((ignored, failure) -> {
-                        if (failure != null) firstFailure.compareAndSet(null, failure);
-                        if (pending.decrementAndGet() == 0) {
-                            Throwable terminal = firstFailure.get();
-                            if (terminal == null) closedWorkersDone.completeFromRuntime(null);
-                            else closedWorkersDone.failFromRuntime(terminal);
-                        }
-                    });
-                }
+            for (ActorRef<?> worker : owned) {
+                worker.done().whenCompleteRuntime((ignored, failure) -> {
+                    if (failure != null) closeTerminalFailure.compareAndSet(null, failure);
+                    if (closePendingWorkers.decrementAndGet() == 0) {
+                        completeCloseIfReady();
+                    }
+                });
             }
             // Closing a cooperating group never cancels ordinary members.
             // Only explicitly managed workers are structurally cancelled.
@@ -3255,17 +3254,35 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 }
             }
+            if (cancellationFailure != null) {
+                closeTerminalFailure.compareAndSet(null, cancellationFailure);
+            }
             try {
                 GroupMailmanState<?> mailman = mailmanState.getAndSet(null);
                 if (mailman != null) mailman.close();
+            } catch (RuntimeException | Error teardownFailure) {
+                closeTerminalFailure.compareAndSet(null, teardownFailure);
+                throw teardownFailure;
             } finally {
                 try {
                     eventBus.closeFromGroup();
+                } catch (RuntimeException | Error teardownFailure) {
+                    closeTerminalFailure.compareAndSet(null, teardownFailure);
+                    throw teardownFailure;
                 } finally {
                     actorGroups.remove(id, this);
+                    closeTransportTeardownDone.set(true);
+                    completeCloseIfReady();
                 }
             }
             if (cancellationFailure != null) throw cancellationFailure;
+        }
+
+        private void completeCloseIfReady() {
+            if (!closeTransportTeardownDone.get() || closePendingWorkers.get() != 0) return;
+            Throwable failure = closeTerminalFailure.get();
+            if (failure == null) closedWorkersDone.completeFromRuntime(null);
+            else closedWorkersDone.failFromRuntime(failure);
         }
 
         @Override
