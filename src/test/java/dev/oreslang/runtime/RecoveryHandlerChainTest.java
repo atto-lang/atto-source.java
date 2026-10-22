@@ -112,10 +112,14 @@ final class RecoveryHandlerChainTest {
     @Test void failureDuringHandlerRevokesContinuation() {
         List<RecoveryHandlerChain.Continuation<Integer>> leaked = new ArrayList<>();
         RuntimeException boom = new IllegalArgumentException("handler failed");
+        Throwable original = new Exception("original raise");
         var chain = RecoveryHandlerChain.<Integer>builder()
                 .register((e, c) -> { leaked.add(c); throw boom; }).freeze();
-        assertSame(boom, assertThrows(IllegalArgumentException.class,
-                () -> chain.dispatch(RecoveryHandlerChain.FailureKind.THROW, new Exception())));
+        var result = assertInstanceOf(RecoveryHandlerChain.HandlerFailure.class,
+                chain.dispatch(RecoveryHandlerChain.FailureKind.RAISE, original));
+        assertSame(boom, result.callbackError());
+        assertSame(original, result.pendingError());
+        assertEquals(RecoveryHandlerChain.FailureKind.RAISE, result.pendingKind());
         assertThrows(IllegalStateException.class, () -> leaked.getFirst().next());
     }
 
