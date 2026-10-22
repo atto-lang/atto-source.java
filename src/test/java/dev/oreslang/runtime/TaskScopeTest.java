@@ -26,6 +26,127 @@ public class TaskScopeTest {
         if (interrupted) Thread.currentThread().interrupt();
     }
 
+    @Test void deferredChildRetirementBlocksSealedScopeEvenAfterResultSettles()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            TaskScope scope = scheduler.newTaskScope();
+            CountDownLatch carrierRetired = new CountDownLatch(1);
+            AtomicReference<Runnable> retireDescendants = new AtomicReference<>();
+            TaskHandle<Integer> child = scope.startTask(new OresScheduler.Task<>() {
+                @Override
+                public OresScheduler.Step<Integer> resume(OresScheduler.Resume resume) {
+                    return OresScheduler.done(12);
+                }
+
+                @Override
+                public void afterCarrierQuiescent(Runnable retire) {
+                    retireDescendants.set(retire);
+                    carrierRetired.countDown();
+                }
+            });
+            assertTrue(carrierRetired.await(3, TimeUnit.SECONDS));
+            assertEquals(12, child.result().get(3, TimeUnit.SECONDS));
+            scope.seal();
+            assertFalse(child.getDone().isDone(),
+                    "a settled result is not descendant physical retirement");
+            assertFalse(scope.getDone().isDone(),
+                    "a sealed scope cannot retire before its child barrier");
+            assertEquals(1, scope.liveCancellationChildren(),
+                    "the running lifetime owner must stay registered");
+            Runnable retire = retireDescendants.get();
+            assertNotNull(retire);
+            try {
+                retire.run();
+                retire.run();
+                assertEquals(new TaskHandle.Success<>(12),
+                        child.getDone().get(3, TimeUnit.SECONDS));
+                scope.getDone().get(3, TimeUnit.SECONDS);
+                assertTrue(scope.getDone().isDone());
+                assertEquals(0, scope.liveCancellationChildren());
+            } finally {
+                retire.run();
+            }
+        }
+    }
+
+    @Test void cancelledScopeRetainsPhysicallyUnretiredTerminalChild()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            TaskScope scope = scheduler.newTaskScope();
+            CountDownLatch carrierRetired = new CountDownLatch(1);
+            AtomicReference<Runnable> release = new AtomicReference<>();
+            TaskHandle<Integer> child = scope.startTask(new OresScheduler.Task<>() {
+                @Override
+                public OresScheduler.Step<Integer> resume(OresScheduler.Resume resume) {
+                    return OresScheduler.done(99);
+                }
+
+                @Override
+                public void afterCarrierQuiescent(Runnable done) {
+                    release.set(done);
+                    carrierRetired.countDown();
+                }
+            });
+            assertTrue(carrierRetired.await(3, TimeUnit.SECONDS));
+            assertEquals(99, child.result().get(3, TimeUnit.SECONDS));
+            assertTrue(scope.cancel("shutdown"));
+            assertFalse(scope.getDone().isDone(),
+                    "scope cancellation must not forge descendant quiescence");
+            assertFalse(child.getDone().isDone());
+            Runnable done = release.get();
+            assertNotNull(done);
+            try {
+                done.run();
+                scope.getDone().get(3, TimeUnit.SECONDS);
+                assertInstanceOf(TaskHandle.Success.class,
+                        child.getDone().get(3, TimeUnit.SECONDS));
+            } finally {
+                done.run();
+            }
+        }
+    }
+
+    @Test void finalHeldChildKeepsEntireScopeLiveAfterSiblingRetires()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            TaskScope scope = scheduler.newTaskScope();
+            TaskHandle<Integer> first = scope.startTask(r -> OresScheduler.done(1));
+            CountDownLatch afterCarrier = new CountDownLatch(1);
+            AtomicReference<Runnable> remaining = new AtomicReference<>();
+            TaskHandle<Integer> second = scope.startTask(new OresScheduler.Task<>() {
+                @Override
+                public OresScheduler.Step<Integer> resume(OresScheduler.Resume resume) {
+                    return OresScheduler.done(2);
+                }
+
+                @Override
+                public void afterCarrierQuiescent(Runnable retire) {
+                    remaining.set(retire);
+                    afterCarrier.countDown();
+                }
+            });
+            assertEquals(new TaskHandle.Success<>(1),
+                    first.getDone().get(3, TimeUnit.SECONDS));
+            assertTrue(afterCarrier.await(3, TimeUnit.SECONDS));
+            assertEquals(2, second.result().get(3, TimeUnit.SECONDS));
+            scope.seal();
+            assertEquals(1, scope.liveCancellationChildren());
+            assertFalse(scope.getDone().isDone());
+            Runnable finish = remaining.get();
+            assertNotNull(finish);
+            try {
+                finish.run();
+                finish.run();
+                assertEquals(new TaskHandle.Success<>(2),
+                        second.getDone().get(3, TimeUnit.SECONDS));
+                assertNull(scope.getDone().get(3, TimeUnit.SECONDS));
+                assertEquals(0, scope.liveCancellationChildren());
+            } finally {
+                finish.run();
+            }
+        }
+    }
+
     @Test void sealingEmptyScopeCompletesWithoutTask() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             TaskScope scope = scheduler.newTaskScope();

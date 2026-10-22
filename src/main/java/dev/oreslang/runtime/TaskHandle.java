@@ -303,9 +303,22 @@ public final class TaskHandle<T> {
         TaskHandle<T> handle = new TaskHandle<>(parent);
         OresFuture<T> source;
         try {
-            source = scheduler.start(
-                    resume -> handle.resumeAtCancellationBoundary(resume, task),
-                    handle::onQuiescent);
+            // Preserve the wrapped Task's physical descendant-retirement
+            // barrier. A resume-only lambda silently selects the default
+            // afterCarrierQuiescent() and can publish TaskScope.getDone()
+            // while this child's scoped descendants still own native memory.
+            source = scheduler.start(new OresScheduler.Task<T>() {
+                @Override
+                public OresScheduler.Step<T> resume(OresScheduler.Resume resume)
+                        throws Exception {
+                    return handle.resumeAtCancellationBoundary(resume, task);
+                }
+
+                @Override
+                public void afterCarrierQuiescent(Runnable retire) {
+                    task.afterCarrierQuiescent(retire);
+                }
+            }, handle::onQuiescent);
         } catch (RuntimeException | Error failure) {
             handle.revoker.close();
             handle.cancellation.cancel("admission rejected");
