@@ -81,6 +81,37 @@ final class CompilerZordeLinkManifestTest {
                 .allMatch(c -> Modifier.isPrivate(c.getModifiers())));
     }
 
+    @Test void linkedAnalysisTypeRequiresExactRegisteredUnitAndScalar() {
+        var candidates = registries();
+        var linked = link(candidates, pins(candidates),
+                "java-dev-1", "graalvm-linux-arm64");
+        var checked = linked.checkedTypeForLinkedAnalysis("svc.api", "api.Port", 7L);
+        var same = linked.checkedTypeForLinkedAnalysis("svc.api", "api.Port", 9L);
+        assertEquals(checked, same);
+        assertTrue(Types.containsCompilerCheckedScalar(checked));
+        assertFalse(Types.isAssignable(Types.Primitive.INT, checked));
+        assertNotNull(linked.checkedTypeForLinkedAnalysis(
+                "svc.users", "users.Username", "😀"));
+        assertThrows(IllegalArgumentException.class, () ->
+                linked.checkedTypeForLinkedAnalysis("svc.api", "users.Username", "ok"));
+        assertThrows(IllegalArgumentException.class, () ->
+                linked.checkedTypeForLinkedAnalysis("svc.rogue", "api.Port", 7L));
+        assertThrows(IllegalArgumentException.class, () ->
+                linked.checkedTypeForLinkedAnalysis("svc.api", "api.Port", 200L));
+        assertThrows(IllegalArgumentException.class, () ->
+                linked.checkedTypeForLinkedAnalysis("svc.api", "api.Port", 7.0));
+
+        // Identical canonical manifests assembled from independent compilation
+        // sessions must not issue interchangeable internal type identities.
+        var separate = registries();
+        var other = link(separate, pins(separate),
+                "java-dev-1", "graalvm-linux-arm64");
+        assertEquals(linked.digest(), other.digest());
+        var foreign = other.checkedTypeForLinkedAnalysis("svc.api", "api.Port", 7L);
+        assertFalse(Types.isAssignable(checked, foreign));
+        assertFalse(Types.isAssignable(foreign, checked));
+    }
+
     @Test void mismatchedRootSourceOrGenerationOrCandidateIsDenied() {
         var candidates = registries();
         var policy = pins(candidates);
