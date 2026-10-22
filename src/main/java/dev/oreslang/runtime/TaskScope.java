@@ -16,6 +16,8 @@ import java.util.concurrent.RejectedExecutionException;
  */
 public final class TaskScope implements AutoCloseable {
     private final OresScheduler scheduler;
+    /** Admission authority for actor-affine scopes, checked on every spawn. */
+    private final Runnable checkAdmission;
     private final TaskCancellation cancellation = new TaskCancellation();
     private final Object admissionLock = new Object();
     private final OresFuture<Void> done = new OresFuture<>(() -> false, () -> { });
@@ -23,12 +25,18 @@ public final class TaskScope implements AutoCloseable {
     private int active;
 
     TaskScope(OresScheduler scheduler) {
+        this(scheduler, () -> { });
+    }
+
+    TaskScope(OresScheduler scheduler, Runnable checkAdmission) {
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
+        this.checkAdmission = Objects.requireNonNull(checkAdmission, "checkAdmission");
     }
 
     /** Atomically reserve a child slot or reject a sealed scope. */
     public <T> TaskHandle<T> startTask(OresScheduler.Task<T> task) {
         Objects.requireNonNull(task, "task");
+        checkAdmission.run();
         synchronized (admissionLock) {
             if (sealed) {
                 throw new RejectedExecutionException("TaskScope is sealed");
