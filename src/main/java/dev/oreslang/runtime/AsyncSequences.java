@@ -83,8 +83,15 @@ public final class AsyncSequences {
                 }
                 if (closed) return OresFuture.completed(Optional.empty());
                 if (pendingResult != null) {
-                    return OresFuture.failed(new IllegalStateException(
-                            "concurrent nextAsync on a single Stream cursor"));
+                    // A successful prior result can notify runtime listeners
+                    // synchronously before its callback finishes unwinding.
+                    // Permit a new read only AFTER authoritative terminal
+                    // publication (including cancellation-hook revocation).
+                    if (pendingResult.runtimeTerminalStateOrNull() == null) {
+                        return OresFuture.failed(new IllegalStateException(
+                                "concurrent nextAsync on a single Stream cursor"));
+                    }
+                    pendingResult = null;
                 }
 
                 // Reserve the single-reader slot BEFORE touching the channel.
@@ -205,8 +212,11 @@ public final class AsyncSequences {
             synchronized (lock) {
                 if (closed) return OresFuture.completed(Optional.empty());
                 if (pending != null) {
-                    return OresFuture.failed(new IllegalStateException(
-                            "concurrent nextAsync on a single Future cursor"));
+                    if (pending.runtimeTerminalStateOrNull() == null) {
+                        return OresFuture.failed(new IllegalStateException(
+                                "concurrent nextAsync on a single Future cursor"));
+                    }
+                    pending = null;
                 }
                 if (consumed) return OresFuture.completed(Optional.empty());
                 consumed = true;
