@@ -109,6 +109,27 @@ public final class TaskScope implements AutoCloseable {
         }
     }
 
+    /**
+     * Runtime-only actor-stop path. Seal child admission synchronously, then
+     * request child cancellation on a host virtual notifier: cancellation
+     * hooks and Future subscribers are user callbacks and may block.
+     *
+     * <p>The parent actor MUST continue waiting on getDone(); launching the
+     * cancellation notifier is not a physical-retirement receipt.</p>
+     */
+    void requestCancelNonblocking(String reason) {
+        Objects.requireNonNull(reason, "reason");
+        if (reason.isBlank() || reason.length() > 256) {
+            throw new IllegalArgumentException(
+                    "reason must contain 1..256 nonblank characters");
+        }
+        synchronized (admissionLock) {
+            sealed = true;
+        }
+        Thread.ofVirtual().name("ores-actor-scope-cancel")
+                .start(() -> cancel(reason));
+    }
+
     public boolean isCancellationRequested() {
         return cancellation.isCancelled();
     }
