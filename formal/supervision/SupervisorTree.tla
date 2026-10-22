@@ -5,12 +5,16 @@ EXTENDS Naturals, FiniteSets
 \* model. Every node has ONE lifecycle FSM, not one global Cartesian FSM.
 \* Finite root + two sibling topology, two epochs. For larger models,
 \* vary these four definitions and rerun TLC; no real actor count is proven.
+CONSTANT Chain
 Nodes == {"root", "a", "b"}
 Root == "root"
-Parent == [n \in Nodes \ {Root} |-> Root]
+\* Chain=FALSE: root -> {a,b}; Chain=TRUE: root -> a -> b.
+Parent == [n \in Nodes \ {Root}
+           |-> IF Chain /\ n = "b" THEN "a" ELSE Root]
 MaxEpoch == 2
 
-ASSUME /\ Nodes # {}
+ASSUME /\ Chain \in BOOLEAN
+       /\ Nodes # {}
        /\ Root \in Nodes
        /\ Parent \in [Nodes \ {Root} -> Nodes]
        /\ MaxEpoch \in Nat
