@@ -79,6 +79,15 @@ final class ZordeCheckedTypeIdentityTest {
         Type forgedRecord = new Record(Map.of("proof", Unknown.INSTANCE));
         assertFalse(isAssignable(forgedRecord, actualRecord));
         assertFalse(isAssignable(actualRecord, forgedRecord));
+        // Width subtyping of a record may discard the proof field. Do not
+        // permit that silent identity erasure until owned lowering exists.
+        assertFalse(isAssignable(actualRecord,
+                new Types.Record(Map.of())));
+        assertFalse(isAssignable(new Types.Record(Map.of()),
+                actualRecord));
+        assertFalse(isAssignable(
+                new Types.Record(Map.of("proof", checked, "extra", Primitive.INT)),
+                actualRecord));
         assertFalse(isAssignable(new Borrow(Unknown.INSTANCE, false),
                 new Borrow(checked, false)));
         assertFalse(isAssignable(new Borrow(checked, false),
