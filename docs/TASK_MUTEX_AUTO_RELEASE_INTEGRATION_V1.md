@@ -46,6 +46,58 @@ GraalVM CI pass has been verified for this integration.
    its outcome is published. An unlock failure makes `getDone()` Failed and
    appears in `cleanupFailures()` rather than fabricating success.
 
+## Physical layout and ECS design constraint (planned, NOT implemented here)
+
+Runtime lock ownership, waiter admission, supervisor child metadata, and
+Task/actor lifetime bookkeeping MUST be designed for **AoS, SoA, AoSoA,
+SoAoS, and ECS-style iteration** from the outset. Layout is a *physical
+storage choice*, not a change to ownership, fairness, or shutdown semantics.
+
+- **AoS**: compact individual control records for low cardinality,
+  mixed-field access, and uncommon/cold paths.
+- **SoA**: columnar hot fields for batch owner cancellation, lease expiry
+  scans, active-generation validation, and supervisor/Task state sweeps.
+- **AoSoA**: bounded, cache-/SIMD-friendly tiles for high-cardinality
+  sharded scheduling, wait queues, and repeated per-batch state transitions.
+- **SoAoS**: a separately specified nested/blocked layout option when
+  grouped records and field-wise subscans both matter. Define its precise
+  indexing/packing ABI before implementing it; do not silently treat the
+  abbreviation as interchangeable with AoSoA.
+- **ECS**: permit entity/component indexing and batch system iteration over
+  large collections of logical actors, Tasks, mutex leases, and generations,
+  WITHOUT forcing ordinary Oreslang programs, actors, or Tasks to use ECS.
+
+Use one authoritative physical representation per store at a time, with a
+layout-selectable `LayoutStore<T>` / `InvertedArray<T>`-style abstraction
+where suitable. **Never** maintain four synchronized mutable copies of
+the same lock graph. Hot storage may include `OwnerId`, `ActorId`,
+`TaskId`, `MutexId`, incarnation/lease generation, guard mode, lease
+state, waiter head/tail or index, and cleanup sequence; cold diagnostic
+data may be stored separately. These are examples for benchmarking, not
+a frozen memory ABI.
+
+Expose stable, generation-checked opaque handles instead of raw interior
+pointers. Layout conversion, compaction, and row relocation must never
+invalidate live leases, permit stale handles to unlock recycled slots,
+alter per-owner LIFO unwind order, or reorder linearized lock grants.
+Require a freeze/quiescence/epoch protocol (or defer relocation) whenever
+read/write borrows or protected callbacks remain active. Actor-private
+arenas remain isolated; a shared index of handles does NOT confer a
+capability to read an adjacent actor heap or bypass actor ownership.
+
+Cross-backend requirements: avoid per-lease Java object/boxing overhead
+where generated off-heap metadata accessors suffice, preserve LLVM/Java/
+Wasm memory and alignment constraints, and keep source semantics independent
+of the chosen layout. Benchmark memory per live lease, cache misses, lock
+handoff latency, batch cancellation cost, contention/fairness, and layout
+conversion against AoS baseline. Differential/model-check tests must show
+that each implemented layout produces identical safety/lifecycle traces
+through cancel, throw, raise, panic, STOP/restart, generation rollover,
+poison/recover, and concurrent async handoff.
+
+This PR implements Task ownership integration, **not** these additional
+physical layouts or ECS storage; they remain explicit engineering gates.
+
 ## Required safety ordering
 
 ```text
