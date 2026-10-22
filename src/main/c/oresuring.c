@@ -275,6 +275,23 @@ static void ores_remove_op_locked(ores_uring_ctx *ctx, ores_io_op *op) {
 }
 
 static ores_completion ores_terminal_locked(ores_uring_ctx *ctx, ores_io_op *op) {
+    /*
+     * Normal descriptors are closed through IORING_OP_CLOSE. If a later SQE
+     * cannot be submitted after the fd is already open, do not leak it while
+     * terminating the failed operation. This emergency close runs only on the
+     * single native reactor/control path; it is not a guest-visible I/O
+     * implementation or worker fallback.
+     */
+    if (op->fd >= 0) {
+        int close_result;
+        do {
+            close_result = close(op->fd);
+        } while (close_result < 0 && errno == EINTR);
+        if (close_result < 0 && op->terminal_error == 0) {
+            op->terminal_error = errno;
+        }
+        op->fd = -1;
+    }
     ores_completion completion;
     memset(&completion, 0, sizeof(completion));
     completion.terminal = 1;
@@ -588,11 +605,19 @@ Java_dev_oreslang_runtime_LinuxUringFileIoProvider_nativeCreate(
     if (ctx == NULL) return 0;
     ctx->ring_fd = -1;
     ctx->root_fd = -1;
-    pthread_mutex_init(&ctx->mutex, NULL);
-    pthread_cond_init(&ctx->ready, NULL);
+    if (pthread_mutex_init(&ctx->mutex, NULL) != 0) {
+        free(ctx);
+        return 0;
+    }
+    if (pthread_cond_init(&ctx->ready, NULL) != 0) {
+        pthread_mutex_destroy(&ctx->mutex);
+        free(ctx);
+        return 0;
+    }
 
     if ((*env)->GetJavaVM(env, &ctx->jvm) != JNI_OK || ctx->jvm == NULL) {
         ores_unmap(ctx);
+        pthread_cond_destroy(&ctx->ready);
         pthread_mutex_destroy(&ctx->mutex);
         free(ctx);
         return 0;
@@ -600,6 +625,7 @@ Java_dev_oreslang_runtime_LinuxUringFileIoProvider_nativeCreate(
     ctx->owner = (*env)->NewGlobalRef(env, owner);
     if (ctx->owner == NULL) {
         ores_unmap(ctx);
+        pthread_cond_destroy(&ctx->ready);
         pthread_mutex_destroy(&ctx->mutex);
         free(ctx);
         return 0;
