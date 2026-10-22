@@ -36,6 +36,12 @@ public final class TaskOwnedLeases {
     public interface Lease extends AutoCloseable {
         /** Enforce owning logical Task identity for any guest-visible access. */
         void requireCurrentOwner();
+        /**
+         * Trusted runtime only: cancel a reservation that never delivered
+         * a lock/guard. No release callback is run, and the operation is
+         * safe from a foreign Future-notification carrier.
+         */
+        void disarmWithoutRelease();
         @Override void close();
     }
 
@@ -199,6 +205,14 @@ public final class TaskOwnedLeases {
                     throw new IllegalStateException(
                             "mutex guard belongs to a different logical Task");
                 }
+            }
+
+            @Override public void disarmWithoutRelease() {
+                // The caller must first prove no grant was delivered, or that
+                // a failed-publication grant has ALREADY returned its permit.
+                // Never invoke the ordinary/abandoned release callback here.
+                released.compareAndSet(false, true);
+                owner.forget(this);
             }
 
             @Override public void close() {
