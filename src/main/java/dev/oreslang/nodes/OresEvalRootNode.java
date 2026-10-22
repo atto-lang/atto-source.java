@@ -9966,7 +9966,9 @@ public final class OresEvalRootNode extends RootNode {
      */
     private record ScalarSpreadSnapshot(Map<String, Object> fields) {
         private ScalarSpreadSnapshot {
-            fields = java.util.Collections.unmodifiableMap(new LinkedHashMap<>(fields));
+            // This constructor is private; callers pass only an unaliased
+            // freshly populated snapshot map. Avoid copying its entries twice.
+            fields = java.util.Collections.unmodifiableMap(fields);
         }
     }
 
