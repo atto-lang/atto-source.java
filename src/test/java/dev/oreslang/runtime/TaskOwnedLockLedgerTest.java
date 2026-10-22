@@ -131,6 +131,33 @@ public final class TaskOwnedLockLedgerTest {
     }
 
     @Test
+    void trackedPermitsRetireInLifoOrderWithoutRetainingReleasedGuards() {
+        TaskOwnedLockLedger ledger = new TaskOwnedLockLedger();
+        java.util.List<Integer> releaseOrder = new java.util.ArrayList<>();
+        TaskOwnedLockLedger.Lease first = () -> releaseOrder.add(1);
+        TaskOwnedLockLedger.Lease second = () -> releaseOrder.add(2);
+        TaskOwnedLockLedger.Lease third = () -> releaseOrder.add(3);
+        ledger.register(first);
+        ledger.register(second);
+        ledger.register(third);
+        ledger.forget(second); // ordinary explicit guard close
+        assertEquals(2, ledger.outstanding());
+        ledger.revokeAfterQuiescence();
+        assertEquals(java.util.List.of(3, 1), releaseOrder);
+        assertEquals(0, ledger.outstanding());
+        ledger.revokeAfterQuiescence(); // exactly once
+        assertEquals(java.util.List.of(3, 1), releaseOrder);
+    }
+
+    @Test
+    void hostileTaskCannotRegisterUnboundedPermits() {
+        TaskOwnedLockLedger ledger = new TaskOwnedLockLedger();
+        for (int i = 0; i < 4096; i++) ledger.register(() -> {});
+        assertThrows(IllegalStateException.class, () -> ledger.register(() -> {}));
+        assertEquals(4096, ledger.outstanding());
+    }
+
+    @Test
     void ledgerRevocationRunsOutsideMonitorAndRetainsFailedPermit() {
         TaskOwnedLockLedger ledger = new TaskOwnedLockLedger();
         AtomicBoolean outsideMonitor = new AtomicBoolean();
