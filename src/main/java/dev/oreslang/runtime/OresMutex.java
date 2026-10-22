@@ -69,14 +69,49 @@ public final class OresMutex {
      * could be detached from the mutex's domain/permit accounting.</p>
      */
     public static final class GuardFuture<T> extends CompletableFuture<Guard<T>> {
+        // Physical wait/graph revocation must precede public cancellation and
+        // timeout publication. If a handoff already claimed the waiter, its
+        // grant or explicit failure wins rather than forging an early cancel.
+        private volatile java.util.function.BooleanSupplier revokeQueuedWaiter;
+
         private GuardFuture() { }
 
+        @Override
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            if (super.isDone()) return false;
+            java.util.function.BooleanSupplier revoke = revokeQueuedWaiter;
+            if (revoke != null && !revoke.getAsBoolean()) return false;
+            try {
+                return super.cancel(mayInterruptIfRunning);
+            } finally {
+                if (super.isDone()) revokeQueuedWaiter = null;
+            }
+        }
+
+        private boolean failQueuedFromRuntime(Throwable failure) {
+            java.util.function.BooleanSupplier revoke = revokeQueuedWaiter;
+            if (super.isDone() || revoke == null || !revoke.getAsBoolean()) return false;
+            try {
+                return super.completeExceptionally(failure);
+            } finally {
+                if (super.isDone()) revokeQueuedWaiter = null;
+            }
+        }
+
         private boolean completeFromRuntime(Guard<T> guard) {
-            return super.complete(guard);
+            try {
+                return super.complete(guard);
+            } finally {
+                if (super.isDone()) revokeQueuedWaiter = null;
+            }
         }
 
         private boolean failFromRuntime(Throwable failure) {
-            return super.completeExceptionally(failure);
+            try {
+                return super.completeExceptionally(failure);
+            } finally {
+                if (super.isDone()) revokeQueuedWaiter = null;
+            }
         }
 
         @Override
@@ -613,6 +648,7 @@ public final class OresMutex {
             private final boolean enforceOwnerDomain;
             private final GuardFuture<T> future;
             private final TaskOwnedLockLedger taskLocks;
+            private final AtomicBoolean quotaSettled = new AtomicBoolean();
 
             private AsyncWaiter(
                     Object ownerDomain,
@@ -633,6 +669,23 @@ public final class OresMutex {
                 // separate release gate (Java #754/#769).
                 future.cancel(false);
             }
+        }
+
+        /** Physically unlink a queued waiter before its Future becomes terminal. */
+        private boolean revokeQueuedWaiter(AsyncWaiter waiter) {
+            synchronized (asyncQueueLock) {
+                if (!asyncQueue.remove(waiter)) return false;
+                endWait(waiter.ownerDomain);
+                releaseDomain(waiter.ownerDomain);
+                settleAsyncWaiterQuota(waiter);
+                return true;
+            }
+        }
+
+        private void settleAsyncWaiterQuota(AsyncWaiter waiter) {
+            if (!waiter.quotaSettled.compareAndSet(false, true)) return;
+            releaseAsyncWaiter();
+            releaseGlobalAsyncWaiter();
         }
 
         /**
@@ -656,6 +709,7 @@ public final class OresMutex {
                         // removed from the queue, this path owns wait/domain cleanup.
                         endWait(candidate.ownerDomain);
                         releaseDomain(candidate.ownerDomain);
+                        settleAsyncWaiterQuota(candidate);
                     }
 
                     if (waiter == null) {
@@ -670,6 +724,9 @@ public final class OresMutex {
                         return;
                     }
                     if (permit.hasQueuedThreads()) preferAsyncHandoff = false;
+                    // This dequeue wins over timeout/cancel. Return quota
+                    // capacity before publishing a grant or failure.
+                    settleAsyncWaiterQuota(waiter);
                 }
 
                 if (poisoned.get()) {
@@ -816,6 +873,7 @@ public final class OresMutex {
             GuardFuture<T> future = new GuardFuture<>();
             AsyncWaiter waiter = new AsyncWaiter(
                     ownerDomain, enforceOwnerDomain, future, ledger);
+            future.revokeQueuedWaiter = () -> revokeQueuedWaiter(waiter);
             if (ledger != null) {
                 try {
                     ledger.register(waiter);
@@ -836,8 +894,7 @@ public final class OresMutex {
                     endWait(ownerDomain);
                     releaseDomain(ownerDomain);
                 }
-                releaseAsyncWaiter();
-                releaseGlobalAsyncWaiter();
+                settleAsyncWaiterQuota(waiter);
                 if (ledger != null) ledger.forget(waiter);
             });
 
@@ -914,18 +971,18 @@ public final class OresMutex {
 
             long timeoutNanos = saturatedNanos(timeout);
             if (timeoutNanos == 0L) {
-                future.failFromRuntime(new LockTimeoutException(timeout));
+                future.failQueuedFromRuntime(new LockTimeoutException(timeout));
                 return future;
             }
 
             final java.util.concurrent.ScheduledFuture<?> timeoutTask;
             try {
                 timeoutTask = ASYNC_TIMEOUTS.schedule(
-                        () -> future.failFromRuntime(new LockTimeoutException(timeout)),
+                        () -> future.failQueuedFromRuntime(new LockTimeoutException(timeout)),
                         timeoutNanos,
                         TimeUnit.NANOSECONDS);
             } catch (RuntimeException schedulingFailure) {
-                future.failFromRuntime(schedulingFailure);
+                future.failQueuedFromRuntime(schedulingFailure);
                 return future;
             }
             future.whenComplete((ignored, failure) -> timeoutTask.cancel(false));
