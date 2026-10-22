@@ -9809,31 +9809,76 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private void releaseMutexGuards(boolean failed) {
-            Set<Object> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
-            for (Slot slot : slots.values()) releaseMutexGuardsInValue(slot.value, failed, seen);
+            Set<Object> seen = java.util.Collections.newSetFromMap(
+                    new java.util.IdentityHashMap<>());
+            ArrayList<Throwable> releaseErrors = new ArrayList<>();
+            for (Slot slot : slots.values()) {
+                try {
+                    releaseMutexGuardsInValue(slot.value, failed, seen, releaseErrors);
+                } catch (RuntimeException | Error traversalFailure) {
+                    // A broken aggregate traversal must not prevent another
+                    // independent lexical slot's guards from being retired.
+                    releaseErrors.add(traversalFailure);
+                }
+            }
+            if (releaseErrors.isEmpty()) return;
+
+            // Panic/host fatal errors must not be downgraded behind an earlier
+            // ordinary release error. Keep every remaining release failure
+            // separately as suppressed diagnostics.
+            Throwable primary = releaseErrors.get(0);
+            for (Throwable failure : releaseErrors) {
+                if ((failure instanceof OresPanic || failure instanceof Error)
+                        && !(primary instanceof OresPanic || primary instanceof Error)) {
+                    primary = failure;
+                    break;
+                }
+            }
+            for (Throwable failure : releaseErrors) {
+                if (failure != primary) primary.addSuppressed(failure);
+            }
+            if (primary instanceof RuntimeException runtime) throw runtime;
+            if (primary instanceof Error error) throw error;
+            throw new IllegalStateException("unexpected checked lock cleanup failure", primary);
         }
 
-        private static void releaseMutexGuardsInValue(Object value, boolean failed, Set<Object> seen) {
+        private static void releaseMutexGuardsInValue(
+                Object value, boolean failed, Set<Object> seen,
+                ArrayList<Throwable> releaseErrors) {
             if (value == null) return;
             if (value instanceof OresMutex.Guard<?> guard) {
+                // Even a throwing release must never be attempted twice when
+                // another field/Option/list aliases the same guard.
+                if (!seen.add(guard)) return;
                 if (!guard.released()) {
-                    if (failed) guard.fail();
-                    else guard.release();
+                    try {
+                        if (failed) guard.fail();
+                        else guard.release();
+                    } catch (RuntimeException | Error releaseFailure) {
+                        releaseErrors.add(releaseFailure);
+                    }
                 }
                 return;
             }
             if (!seen.add(value)) return;
 
             if (value instanceof OptionValue option) {
-                if (option.present()) releaseMutexGuardsInValue(option.value(), failed, seen);
+                if (option.present()) {
+                    releaseMutexGuardsInValue(
+                            option.value(), failed, seen, releaseErrors);
+                }
                 return;
             }
             if (value instanceof ResultValue result) {
-                releaseMutexGuardsInValue(result.value(), failed, seen);
+                releaseMutexGuardsInValue(
+                        result.value(), failed, seen, releaseErrors);
                 return;
             }
             if (value instanceof GeneratorRuntime.Step<?> step) {
-                if (!step.done()) releaseMutexGuardsInValue(step.value(), failed, seen);
+                if (!step.done()) {
+                    releaseMutexGuardsInValue(
+                            step.value(), failed, seen, releaseErrors);
+                }
                 return;
             }
             if (value instanceof OresMutex.GuardFuture<?> future) {
@@ -9842,33 +9887,46 @@ public final class OresEvalRootNode extends RootNode {
                     return;
                 }
                 if (!future.isCancelled() && !future.isCompletedExceptionally()) {
-                    releaseMutexGuardsInValue(future.getNow(null), failed, seen);
+                    releaseMutexGuardsInValue(
+                            future.getNow(null), failed, seen, releaseErrors);
                 }
                 return;
             }
             if (value instanceof OresObject object) {
                 for (Object field : object.fields.values()) {
-                    releaseMutexGuardsInValue(field, failed, seen);
+                    releaseMutexGuardsInValue(
+                            field, failed, seen, releaseErrors);
                 }
                 return;
             }
             if (value instanceof List<?> list) {
-                for (Object item : list) releaseMutexGuardsInValue(item, failed, seen);
+                for (Object item : list) {
+                    releaseMutexGuardsInValue(
+                            item, failed, seen, releaseErrors);
+                }
                 return;
             }
             if (value instanceof Set<?> set) {
-                for (Object item : set) releaseMutexGuardsInValue(item, failed, seen);
+                for (Object item : set) {
+                    releaseMutexGuardsInValue(
+                            item, failed, seen, releaseErrors);
+                }
                 return;
             }
             if (value instanceof Map<?, ?> map) {
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
-                    releaseMutexGuardsInValue(entry.getKey(), failed, seen);
-                    releaseMutexGuardsInValue(entry.getValue(), failed, seen);
+                    releaseMutexGuardsInValue(
+                            entry.getKey(), failed, seen, releaseErrors);
+                    releaseMutexGuardsInValue(
+                            entry.getValue(), failed, seen, releaseErrors);
                 }
                 return;
             }
             if (value instanceof Object[] array) {
-                for (Object item : array) releaseMutexGuardsInValue(item, failed, seen);
+                for (Object item : array) {
+                    releaseMutexGuardsInValue(
+                            item, failed, seen, releaseErrors);
+                }
             }
         }
     }
