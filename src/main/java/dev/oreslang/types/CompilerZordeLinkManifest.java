@@ -6,7 +6,6 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -30,6 +29,7 @@ final class CompilerZordeLinkManifest {
     private final String compilerBuild;
     private final String targetAbi;
     private final Map<String, Unit> units;
+    private final Map<String, CompilerZordeSchemaRegistry> linkedRegistries;
     private final Set<String> roots;
     private final List<String> dependencyFirstOrder;
     private final String treeDigest;
@@ -61,10 +61,12 @@ final class CompilerZordeLinkManifest {
 
     private CompilerZordeLinkManifest(
             String compilerBuild, String targetAbi, Map<String, Unit> units,
+            Map<String, CompilerZordeSchemaRegistry> registries,
             Set<String> roots, List<String> dependencyFirstOrder) {
         this.compilerBuild = compilerBuild;
         this.targetAbi = targetAbi;
         this.units = Collections.unmodifiableMap(new TreeMap<>(units));
+        this.linkedRegistries = Collections.unmodifiableMap(new TreeMap<>(registries));
         this.roots = Collections.unmodifiableSet(new TreeSet<>(roots));
         this.dependencyFirstOrder = List.copyOf(dependencyFirstOrder);
         this.treeDigest = computeDigest();
@@ -142,7 +144,7 @@ final class CompilerZordeLinkManifest {
         if (order.size() != built.size())
             throw new IllegalArgumentException("unreachable source unit in exact-tree Zorde link");
         return new CompilerZordeLinkManifest(
-                compilerBuild, targetAbi, built, entryRoots, order);
+                compilerBuild, targetAbi, built, candidates, entryRoots, order);
     }
 
     private static void visit(
@@ -174,6 +176,28 @@ final class CompilerZordeLinkManifest {
     private static boolean validVersion(String value) {
         return value != null && value.length() <= 128
                 && value.matches("[A-Za-z0-9_][A-Za-z0-9_.+-]*");
+    }
+
+    /**
+     * After a successful whole-build verification, derive a checked analysis
+     * type only from the *same staged registry instance* admitted to this
+     * build graph. This does not produce a runtime value or a guest proof.
+     */
+    Types.Type checkedTypeForLinkedAnalysis(
+            String unitId, String qualifiedSchema, Object candidate) {
+        CompilerZordeSchemaRegistry registry = linkedRegistries.get(unitId);
+        Unit unit = units.get(unitId);
+        if (registry == null || unit == null
+                || !unit.exportedSchemas().containsKey(qualifiedSchema))
+            throw new IllegalArgumentException("unlinked Zorde schema or source unit");
+        // Re-check exact registry/manifest bindings before issuing any type
+        // marker. Link digest equality is not sufficient as admission.
+        if (!registry.sourceDigest().equals(unit.sourceDigest())
+                || registry.generation() != unit.generation()
+                || !registry.descriptor(qualifiedSchema).fingerprint().equals(
+                        unit.exportedSchemas().get(qualifiedSchema)))
+            throw new IllegalArgumentException("Zorde linker registry identity changed");
+        return registry.checkedTypeForAnalysis(qualifiedSchema, candidate);
     }
 
     String digest() { return treeDigest; }
