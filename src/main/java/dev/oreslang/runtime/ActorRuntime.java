@@ -3170,16 +3170,20 @@ public final class ActorRuntime implements AutoCloseable {
         private void actorTerminated(ActorId actorId) {
             // Fenced against concurrent worker admission so stale actor refs
             // cannot be resurrected after finalization.
+            final boolean creatorMustClose;
             synchronized (authorityLock) {
                 managedWorkers.remove(actorId);
                 stoppingWorkers.remove(actorId);
+                // Both fields are guarded by authorityLock. A creator exit
+                // racing supervisor fencing must observe one linearization
+                // order, not an unfenced volatile/stale read.
+                creatorMustClose = Objects.equals(creator, actorId)
+                        && (!workerAdmissionFenced || shutdownTreeOwner == null);
             }
             leaveId(actorId);
-            if (Objects.equals(creator, actorId)
-                    && (!workerAdmissionFenced || shutdownTreeOwner == null)) {
-                // During supervised tree shutdown, the CONTROL coordinator
-                // already owns the group's graceful drain. Creator exit
-                // must not race it with immediate structured cancellation.
+            if (creatorMustClose) {
+                // During supervised tree shutdown, CONTROL owns graceful
+                // drain; creator exit must not replace it with cancellation.
                 closeFromRuntime();
             }
         }
