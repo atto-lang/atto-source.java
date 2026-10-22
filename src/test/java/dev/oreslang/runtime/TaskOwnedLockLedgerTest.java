@@ -113,6 +113,67 @@ public final class TaskOwnedLockLedgerTest {
     }
 
     @Test
+    void blockedHostFutureSubscriberDoesNotParkReleasingCarrierOrForgeTaskDone()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresMutex.Shared<int[]> mutex = OresMutex.shared(new int[] {4});
+            var original = mutex.tryLock().orElseThrow();
+            CountDownLatch requested = new CountDownLatch(1);
+            CountDownLatch allowTaskExit = new CountDownLatch(1);
+            CountDownLatch callbackEntered = new CountDownLatch(1);
+            CountDownLatch unblockCallback = new CountDownLatch(1);
+            AtomicReference<java.util.concurrent.CompletableFuture<OresMutex.Guard<int[]>>>
+                    pending = new AtomicReference<>();
+            AtomicBoolean callbackRanOnTask = new AtomicBoolean();
+            TaskHandle<Void> task = scheduler.startTracked(resume -> {
+                pending.set(mutex.lockAsync());
+                requested.countDown();
+                try {
+                    if (!allowTaskExit.await(3, TimeUnit.SECONDS))
+                        throw new IllegalStateException("waiting for Task exit timed out");
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(error);
+                }
+                return OresScheduler.done(null);
+            });
+            try {
+                assertTrue(requested.await(3, TimeUnit.SECONDS));
+                pending.get().whenComplete((guard, failure) -> {
+                    callbackRanOnTask.set(OresScheduler.currentTaskDomain() != null
+                            || ActorRuntime.inActorExecution());
+                    callbackEntered.countDown();
+                    try {
+                        if (!unblockCallback.await(3, TimeUnit.SECONDS))
+                            throw new IllegalStateException("notification blocker timed out");
+                    } catch (InterruptedException error) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(error);
+                    }
+                });
+                // Must return promptly, not execute callback on this host
+                // mutex-releaser. The notifier runs it separately.
+                original.release();
+                assertTrue(callbackEntered.await(3, TimeUnit.SECONDS));
+                allowTaskExit.countDown();
+                // CompletableFuture.isDone does NOT establish that host
+                // subscribers or the physical handoff have unwound.
+                assertFalse(task.getDone().isDone(),
+                        "Task DONE must wait behind claimed handoff receipt");
+            } finally {
+                allowTaskExit.countDown();
+                unblockCallback.countDown();
+            }
+            assertEquals(new TaskHandle.Success<Void>(null),
+                    task.getDone().get(3, TimeUnit.SECONDS));
+            assertFalse(callbackRanOnTask.get(),
+                    "host Future callback inherited guest Task authority");
+            assertTrue(mutex.isPoisoned(),
+                    "Task exit with an unreleased writer must poison state");
+        }
+    }
+
+    @Test
     void queuedAsyncTimeoutSettlesPhysicalWaitAndQuotaBeforePublication()
             throws Exception {
         OresMutex.Shared<int[]> mutex = OresMutex.shared(new int[]{0});
