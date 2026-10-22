@@ -34,6 +34,7 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
         boolean submitExists(long handle, long id, byte[] path);
         boolean submitWrite(
                 long handle, long id, byte[] path, byte[] value, boolean append);
+        boolean submitRemove(long handle, long id, byte[] path);
         boolean cancel(long handle, long id);
         void close(long handle);
     }
@@ -54,13 +55,16 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
                 long handle, long id, byte[] path, byte[] value, boolean append) {
             return nativeSubmitWrite(handle, id, path, value, append);
         }
+        @Override public boolean submitRemove(long handle, long id, byte[] path) {
+            return nativeSubmitRemove(handle, id, path);
+        }
         @Override public boolean cancel(long handle, long id) {
             return nativeCancel(handle, id);
         }
         @Override public void close(long handle) { nativeClose(handle); }
     }
 
-    private enum Kind { READ, EXISTS, WRITE }
+    private enum Kind { READ, EXISTS, WRITE, REMOVE }
 
     private static final class Pending<T> {
         final Kind kind;
@@ -160,6 +164,24 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
         return submitWrite(absolutePath, value, true, "fs.append_text_async");
     }
 
+    @Override
+    public OresFuture<Void> remove(String absolutePath) {
+        byte[] path = encodeAbsolutePath(absolutePath);
+        long id = nextId();
+        OresFuture<Void> future = new OresFuture<>(() -> false, () -> { });
+        pending.put(id, new Pending<>(Kind.REMOVE, future, 0));
+        if (!submitRemoveNative(id, path)) {
+            Pending<?> removed = pending.remove(id);
+            if (removed != null) {
+                future.failFromRuntime(new IllegalStateException(
+                        closed.get()
+                                ? "strict filesystem provider is closed"
+                                : "io_uring remove submission was rejected"));
+            }
+        }
+        return future;
+    }
+
     private OresFuture<Void> submitWrite(
             String absolutePath, String value, boolean append, String operation) {
         byte[] path = encodeAbsolutePath(absolutePath);
@@ -201,6 +223,11 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
             long id, byte[] path, byte[] value, boolean append) {
         if (closed.get() || pending.size() > MAX_PENDING) return false;
         return bridge.submitWrite(handle, id, path, value, append);
+    }
+
+    private synchronized boolean submitRemoveNative(long id, byte[] path) {
+        if (closed.get() || pending.size() > MAX_PENDING) return false;
+        return bridge.submitRemove(handle, id, path);
     }
 
     private boolean reserveBytes(long bytes) {
@@ -339,6 +366,24 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
         future.completeFromRuntime(null);
     }
 
+    @SuppressWarnings("unchecked")
+    void nativeRemoveCompleted(long id, int error) {
+        Pending<?> raw = pending.remove(id);
+        if (raw == null) return;
+        boolean released = releaseBytes(raw.reservedBytes);
+        if (raw.kind != Kind.REMOVE) return;
+        OresFuture<Void> future = (OresFuture<Void>) raw.future;
+        if (!released) {
+            future.failFromRuntime(reservationAccountingFailure());
+            return;
+        }
+        if (error != 0) {
+            future.failFromRuntime(ioFailure("remove", error));
+            return;
+        }
+        future.completeFromRuntime(null);
+    }
+
     private static IOException ioFailure(String operation, int errno) {
         if (errno == ECANCELED) {
             return new IOException(
@@ -375,6 +420,8 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
             long handle, long id, byte[] path);
     private static native boolean nativeSubmitWrite(
             long handle, long id, byte[] path, byte[] value, boolean append);
+    private static native boolean nativeSubmitRemove(
+            long handle, long id, byte[] path);
     private static native boolean nativeCancel(long handle, long id);
     private static native void nativeClose(long handle);
 }
