@@ -642,8 +642,13 @@ public final class OresMutex {
                 }
                 // Complete cancellation outside this monitor: subscribers can
                 // synchronously remove waiters and dispatch notifications.
-                if (pending != null) pending.cancel(false);
-                if (acquired != null) acquired.releaseFromRuntime(true);
+                try {
+                    if (pending != null) pending.cancel(false);
+                } finally {
+                    // An observer failing during cancellation must never
+                    // suppress physical mutex release.
+                    if (acquired != null) acquired.releaseFromRuntime(true);
+                }
             }
         }
 
