@@ -24,8 +24,7 @@ final class CompilerZordeSchemaRegistryTest {
         assertEquals("service.api", registry.unitId());
         assertEquals(7, registry.generation());
         assertEquals(2, registry.size());
-        assertEquals("app.Port", registry.descriptor("app.Port").nominalIdentity().isEmpty()
-                ? "app.Port" : "unexpected");
+        assertEquals("", registry.descriptor("app.Port").nominalIdentity());
         Type a = registry.checkedTypeForAnalysis("app.Port", 5L);
         Type b = registry.checkedTypeForAnalysis("app.Port", 8L);
         assertEquals(a, b);
