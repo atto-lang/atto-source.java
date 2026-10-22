@@ -15,6 +15,10 @@ import java.util.concurrent.atomic.AtomicReferenceArray;
  * accepted only as a host-interop input and is immediately normalized into an
  * OresFuture so dependent Oreslang work never inherits a host callback
  * execution policy.</p>
+ *
+ * <p>These combinators observe already-started Futures. Cancellation of
+ * an aggregate detaches its waiters, NEVER cancelling its borrowed input
+ * sources; only explicit owners such as TaskScope may revoke work.</p>
  */
 public final class OresFutures {
     private OresFutures() { }
@@ -32,8 +36,10 @@ public final class OresFutures {
         Runnable detachWaiters = () -> detachAll(waiters);
 
         OresFuture<List<T>> result = new OresFuture<>(() -> {
+            // An aggregate only OBSERVES borrowed input Futures. Revoking
+            // the observer must never cancel a shared Task or actor reply.
+            // Structured child cancellation belongs to an owning TaskScope.
             detachWaiters.run();
-            children.forEach(child -> child.cancel(true));
         });
         if (children.isEmpty()) {
             result.completeFromRuntime(List.of());
@@ -96,8 +102,10 @@ public final class OresFutures {
         Runnable detachWaiters = () -> detachAll(waiters);
 
         OresFuture<T> result = new OresFuture<>(() -> {
+            // An aggregate only OBSERVES borrowed input Futures. Revoking
+            // the observer must never cancel a shared Task or actor reply.
+            // Structured child cancellation belongs to an owning TaskScope.
             detachWaiters.run();
-            children.forEach(child -> child.cancel(true));
         });
 
         for (int index = 0; index < children.size(); index++) {
@@ -135,8 +143,10 @@ public final class OresFutures {
                 new AtomicReferenceArray<>(children.size());
         Runnable detachWaiters = () -> detachAll(waiters);
         OresFuture<List<Settled<T>>> result = new OresFuture<>(() -> {
+            // An aggregate only OBSERVES borrowed input Futures. Revoking
+            // the observer must never cancel a shared Task or actor reply.
+            // Structured child cancellation belongs to an owning TaskScope.
             detachWaiters.run();
-            children.forEach(child -> child.cancel(true));
         });
         if (children.isEmpty()) {
             result.completeFromRuntime(List.of());
