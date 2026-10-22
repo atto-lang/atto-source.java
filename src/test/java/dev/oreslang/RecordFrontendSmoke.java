@@ -50,7 +50,7 @@ public final class RecordFrontendSmoke {
         // Ownership intentionally does not prove return type assignability;
         // running it independently must not recover a partial type proof.
         OwnershipChecker.check(partlyTyped);
-        deniedState(() -> AggregateConstructionPlan.Checked.requireAdmitted(orphan),
+        deniedState(() -> AggregateConstructionPlan.Checked.requireAdmitted(partlyTyped, orphan),
                 "standalone ownership cannot promote an orphan type candidate");
 
         // Type checking alone cannot authorize interpreter spread execution.
@@ -66,17 +66,17 @@ public final class RecordFrontendSmoke {
         TypeChecker.TypeCheckResult typedSpread =
                 TypeChecker.checkTypesWithDiagnostics(firstParse);
         Ast.ObjectExpr exactSpread = aggregateBinding(firstParse, "copy");
-        deniedState(() -> AggregateConstructionPlan.Checked.requireAdmitted(exactSpread),
+        deniedState(() -> AggregateConstructionPlan.Checked.requireAdmitted(typedSpread.program(), exactSpread),
                 "type-only aggregate is not executable");
         OwnershipChecker.check(typedSpread.program(), typedSpread.shortInferredAliases());
-        check(AggregateConstructionPlan.Checked.requireAdmitted(exactSpread)
+        check(AggregateConstructionPlan.Checked.requireAdmitted(typedSpread.program(), exactSpread)
                         .resolvedFields().containsKey("y"),
                 "whole-program ownership approval admits exact original AST");
         Ast.Program secondParse = Parser.parse(sourceWithSpread);
         Ast.ObjectExpr equalButForeign = aggregateBinding(secondParse, "copy");
         check(exactSpread != equalButForeign && exactSpread.equals(equalButForeign),
                 "equal-shaped AST identity regression setup");
-        deniedState(() -> AggregateConstructionPlan.Checked.requireAdmitted(equalButForeign),
+        deniedState(() -> AggregateConstructionPlan.Checked.requireAdmitted(secondParse, equalButForeign),
                 "structurally identical reparse may not inherit approval");
 
         // An ownership failure in a separate callable must prevent approval
@@ -100,7 +100,7 @@ public final class RecordFrontendSmoke {
         denied(() -> OwnershipChecker.check(
                         badTyped.program(), badTyped.shortInferredAliases()),
                 "mutable source rejects the complete ownership pass");
-        deniedState(() -> AggregateConstructionPlan.Checked.requireAdmitted(premature),
+        deniedState(() -> AggregateConstructionPlan.Checked.requireAdmitted(badTyped.program(), premature),
                 "failed whole-unit ownership cannot leave prior spread admitted");
 
         // Closed scalar spreads now pass the actual front-end chain.
