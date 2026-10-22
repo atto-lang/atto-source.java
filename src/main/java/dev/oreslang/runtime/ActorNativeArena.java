@@ -890,9 +890,15 @@ public final class ActorNativeArena implements AutoCloseable {
                             "native actor task suspension requires unsuspended RUNNING frame; phase="
                                     + current + " kind=" + kind);
                 }
+                long site = read(base, 56);
+                if (site <= 0L) {
+                    throw new IllegalStateException(
+                            "native actor task cannot suspend without an entered source site");
+                }
                 long ticket = Math.addExact(read(base, 24), 1L);
                 if (ticket <= 0L) throw new IllegalStateException("native actor suspension ticket exhausted");
                 write(base, 24, ticket);
+                write(base, 64, site);
                 write(base, 32, kind.code);
                 write(base, 8, kind.phase.code);
                 return ticket;
