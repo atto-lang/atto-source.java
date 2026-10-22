@@ -40,6 +40,14 @@ public final class NominalErrorProof {
         if (candidate == null) {
             throw new IllegalArgumentException("checked effect payload must resolve to a nominal class: " + payload);
         }
+        // Refuse a class resolver that maps a primitive or unrelated source
+        // spelling to a nominal Error handle. Imported aliases require their
+        // own authenticated identity proof before this restriction is lifted.
+        if (!payload.name().equals(candidate.name())
+                && !payload.name().endsWith("." + candidate.name())) {
+            throw new IllegalArgumentException(
+                    "checked effect payload name does not match resolved class identity: " + payload);
+        }
         Set<Ast.ClassDecl> ancestry = Collections.newSetFromMap(new IdentityHashMap<>());
         if (!descendsFromRoot(candidate, trustedRoot, resolveClass, ancestry, new int[]{0})) {
             throw new IllegalArgumentException(
@@ -101,9 +109,13 @@ public final class NominalErrorProof {
             throw new IllegalArgumentException("cycle in checked error nominal ancestry");
         }
         try {
+            boolean foundTrustedRoot = false;
+            // Explore every parent: a second ambiguous/unresolved/cyclic
+            // ancestry must not become invisible just because the first
+            // path happened to reach Error.
             for (Ast.TypeRef parentRef : candidate.parents()) {
                 if (parentRef.name().equals("Object") && parentRef.arguments().isEmpty()) {
-                    continue; // implicit ordinary object ancestry proves no Error relationship
+                    continue; // ordinary object ancestry proves no Error relationship
                 }
                 ensureConcrete(parentRef, "checked error superclass");
                 Ast.ClassDecl parent = resolveClass.apply(parentRef);
@@ -111,11 +123,10 @@ public final class NominalErrorProof {
                     throw new IllegalArgumentException(
                             "unresolved checked error superclass: " + parentRef);
                 }
-                if (descendsFromRoot(parent, trustedRoot, resolveClass, ancestry, visited)) {
-                    return true;
-                }
+                foundTrustedRoot = descendsFromRoot(
+                        parent, trustedRoot, resolveClass, ancestry, visited) || foundTrustedRoot;
             }
-            return false;
+            return foundTrustedRoot;
         } finally {
             ancestry.remove(candidate);
         }
