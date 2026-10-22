@@ -1,0 +1,157 @@
+package dev.oreslang.runtime;
+
+import java.util.Arrays;
+import java.util.Objects;
+
+/**
+ * Bounded, stackless host prototype for compiler-owned recovery dispatch.
+ *
+ * <p>Handlers are stored as two compact parallel arrays (a SoA snapshot):
+ * callable references and effect masks. This is a synchronous implementation
+ * substrate; it does not enable guest-source recover syntax, physical Task
+ * unwinding, or actor supervision.
+ *
+ * <p>Only a trusted VM/compiler path may classify a failure as THROW or RAISE.
+ * Never construct an admitted kind from guest strings or an arbitrary host
+ * Throwable. Panic, cancellation and fatal failures always bypass handlers.
+ */
+public final class RecoveryHandlerChain<T> {
+    public enum FailureKind { THROW, RAISE, PANIC, CANCELLATION, HOST_FATAL }
+
+    public sealed interface Outcome<T> permits Recovered, Unhandled { }
+
+    public record Recovered<T>(T value) implements Outcome<T> { }
+
+    public record Unhandled<T>(FailureKind kind, Throwable error) implements Outcome<T> {
+        public Unhandled {
+            Objects.requireNonNull(kind);
+            Objects.requireNonNull(error);
+        }
+    }
+
+    @FunctionalInterface
+    public interface Handler<T> {
+        void handle(Throwable error, Continuation<T> continuation);
+    }
+
+    public interface Continuation<T> {
+        /** Delegates to an earlier eligible handler; terminal in guest lowering. */
+        void next();
+
+        /** Resolves a failed callable with a compatible result value. */
+        void resolve(T value);
+    }
+
+    private static final int THROW = 1;
+    private static final int RAISE = 2;
+    private static final int BOTH = THROW | RAISE;
+    public static final int MAX_HANDLERS = 1024;
+
+    private final Handler<T>[] handlers;
+    private final byte[] effectMasks;
+
+    private RecoveryHandlerChain(Handler<T>[] handlers, byte[] effectMasks) {
+        this.handlers = handlers;
+        this.effectMasks = effectMasks;
+    }
+
+    public static <T> Builder<T> builder() { return new Builder<>(); }
+
+    public int size() { return handlers.length; }
+
+    /**
+     * Returns a resolved value or the original unhandled failure. Each handler
+     * runs at most once in reverse registration order. No recursive delegation
+     * or Java stack growth is used. A distinct one-shot continuation is minted
+     * for each visited handler, invalidated even when its handler throws.
+     */
+    public Outcome<T> dispatch(FailureKind kind, Throwable failure) {
+        Objects.requireNonNull(kind, "kind");
+        Objects.requireNonNull(failure, "failure");
+        final int mask = switch (kind) {
+            case THROW -> THROW;
+            case RAISE -> RAISE;
+            case PANIC, CANCELLATION, HOST_FATAL -> 0;
+        };
+        if (mask == 0 || handlers.length == 0) return new Unhandled<>(kind, failure);
+
+        for (int i = handlers.length - 1; i >= 0; i--) {
+            if ((effectMasks[i] & mask) == 0) continue;
+            // NEVER recycle this capability for the next handler: an escaped
+            // reference must not acquire authority over another handler.
+            Cursor<T> cursor = new Cursor<>();
+            byte decision;
+            T resolved;
+            try {
+                handlers[i].handle(failure, cursor);
+                decision = cursor.state;
+                resolved = cursor.value;
+            } finally {
+                cursor.invalidate();
+            }
+            if (decision == Cursor.OPEN) {
+                throw new IllegalStateException(
+                        "recovery handler must resolve or delegate");
+            }
+            if (decision == Cursor.RESOLVED) return new Recovered<>(resolved);
+        }
+        return new Unhandled<>(kind, failure);
+    }
+
+    private static final class Cursor<T> implements Continuation<T> {
+        private static final byte OPEN = 0;
+        private static final byte DELEGATED = 1;
+        private static final byte RESOLVED = 2;
+        private static final byte INVALID = 3;
+        private byte state = OPEN;
+        private T value;
+
+        void invalidate() { state = INVALID; value = null; }
+
+        private void checkOpen() {
+            if (state != OPEN) {
+                throw new IllegalStateException("recovery continuation already consumed");
+            }
+        }
+
+        @Override public void next() { checkOpen(); state = DELEGATED; }
+
+        @Override public void resolve(T resolved) {
+            checkOpen();
+            value = resolved;
+            state = RESOLVED;
+        }
+    }
+
+    public static final class Builder<T> {
+        @SuppressWarnings("unchecked")
+        private Handler<T>[] handlers = (Handler<T>[]) new Handler<?>[4];
+        private byte[] effectMasks = new byte[4];
+        private int size;
+
+        public Builder<T> register(Handler<T> handler) { return add(BOTH, handler); }
+        public Builder<T> onThrow(Handler<T> handler) { return add(THROW, handler); }
+        public Builder<T> onRaise(Handler<T> handler) { return add(RAISE, handler); }
+
+        private Builder<T> add(int mask, Handler<T> handler) {
+            Objects.requireNonNull(handler, "handler");
+            if (size == MAX_HANDLERS) {
+                throw new IllegalStateException("recovery handler quota exceeded");
+            }
+            if (size == handlers.length) {
+                int newSize = Math.min(MAX_HANDLERS, size * 2);
+                handlers = Arrays.copyOf(handlers, newSize);
+                effectMasks = Arrays.copyOf(effectMasks, newSize);
+            }
+            handlers[size] = handler;
+            effectMasks[size++] = (byte) mask;
+            return this;
+        }
+
+        /** Immutable snapshot. The caller enforces ownership of captured data. */
+        public RecoveryHandlerChain<T> freeze() {
+            return new RecoveryHandlerChain<>(
+                    Arrays.copyOf(handlers, size), Arrays.copyOf(effectMasks, size));
+        }
+    }
+}
