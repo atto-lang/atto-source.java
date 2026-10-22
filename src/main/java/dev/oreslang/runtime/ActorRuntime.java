@@ -1989,6 +1989,13 @@ public final class ActorRuntime implements AutoCloseable {
         }
         final TaskScope scope;
         synchronized (cell.lifecycleLock) {
+            if (cell.kind == ActorKind.UNTRUSTED) {
+                // TaskScope.startTask currently uses the ordinary scheduler
+                // admission path; allowing it here would bypass the shared
+                // untrusted wall/fuel quotas enforced by startActorTask.
+                throw new SecurityException(
+                        "untrusted actor TaskScope requires quota-aware child admission");
+            }
             if (cell.stopped.get() || cell.finalized || cell.finalizing) {
                 throw new RejectedExecutionException(
                         "actor " + cell.ref.id() + " cannot admit a TaskScope after stop");
