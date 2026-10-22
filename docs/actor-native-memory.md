@@ -343,3 +343,58 @@ tests.
 `ActorShardColumns.integrate` now lowers each complete AoS/SoA/AoSoA/SoAoS pass to one owner-authenticated `ActorNativeArena.Region` bulk operation. The region validates writability, finite scalar parameters, and the highest byte touched by every block **before** the first store, then keeps one arena critical section for the complete pass. This removes per-element actor-owner checks and monitor entry/exit from the dense loop while preserving the actor's single-flight execution authority and read-lease freeze semantics.
 
 The physical traversal remains layout-specific: AoS uses a record stride, SoA uses contiguous scalar columns, SoAoS uses the inner-group stride, and AoSoA uses contiguous lanes plus an explicit tail block. No raw `ByteBuffer` or native address escapes. This is a structural hot-path improvement, not a SIMD or cache-miss performance claim; optimized Graal/Native Image code generation and hardware counters still require exact-head execution evidence.
+
+## Message-scoped native scratch and idle quota return (stacked draft #1856)
+
+`ActorRuntime.currentMessageScratch()` now exposes a **runtime-host/compiler-only
+substrate** for actor-owned, primitive/POD message temporaries: checked, bounded
+native `ActorMessageScratch.Slice` handles allocated from the same actor's JNI
+`ActorNativeArena`. This does **not** imply automatic placement of ordinary
+guest-language `new` allocations, or an arbitrary source-level heap API.
+Compile-time escape and borrow analysis must first establish that a value dies
+with the logical mailbox message.
+
+- `beginMessage()` starts a monotonic scratch epoch at user-mail admission.
+  `finishMessage()` is called on logical receive completion; the carrier
+  yielding or `await` suspending does not complete that epoch. A source-await
+  continuation keeps the region active until its result settles.
+- Native scratch slices validate the current owning physical actor, active
+  message epoch and byte extent on every access. Stale views fail before deref
+  even if an old native block was freed and a future message reallocated it.
+- `Slice.borrowReadOnly()` returns a bounded native read lease that freezes
+  writes to its backing native block. Outstanding borrows **block
+  `finishMessage()`**. A missing drop causes fail-stop rather than a silent
+  use-after-reuse. Ownerless or foreign-thread release is refused.
+- Each allocation is zeroed using a **single native region critical section**;
+  used scratch spans are also erased on message completion. This is O(bytes
+  written) work, not constant-time scrubbing, and its managed/JNI overhead
+  has not been benchmarked on GraalVM or Native Image.
+- Capacity of normal small chunks is cached across messages. After each
+  completed message the allocator automatically releases newest native chunks
+  until retained scratch capacity is **at most 64 KiB**. A single oversized
+  region is fully released. The privileged `trimIdleTo(retainBytes)` API can
+  release all remaining idle native chunks and immediately refund their
+  quota; active or borrowed regions cannot be trimmed. Persistent class
+  state and dense AoS/SoA/AoSoA/SoAoS shards are unaffected.
+- The 64-KiB default is a bounded idle-cache policy, **not** an observed
+  optimal performance threshold. Tune only with actual hot-path benchmark
+  and actor quota/latency evidence.
+
+Negative and stress JUnit sources on draft #1856 exercise 100,000 mailbox
+turns, capacity reuse, stale view revocation, read-borrow pinning, denied
+cross-owner release, fail-stop on missing borrow drop, burst memory return,
+oversized block eviction, and persistent dense state across all four physical
+layouts. These tests are **not validated passing** until exact-head JDK/JNI
+compilation and GraalVM source test execution occurs. On head
+`1f46e40dd47cc51431a1eae0acc88e48caac3e9a`, the native-storage workflow
+reported failure without any executed steps or runner; that result establishes
+neither source-test pass nor source-test failure.
+
+**Remaining safety boundary:** borrowed scratch references must not escape to
+detached Tasks, FFI callbacks, child scopes, shared regions or mailbox payloads.
+Compiler-generated drop glue on normal/error/cancellation paths and physical
+quiescence of source Task descendants are still outstanding. Parent issue
+[#1566](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/1566)
+blocks claims of general async-borrow safety. This implementation adds neither
+an actor-local tracing GC nor a new Graal isolate; the JDK 21 JNI allocation
+provider remains unchanged.
