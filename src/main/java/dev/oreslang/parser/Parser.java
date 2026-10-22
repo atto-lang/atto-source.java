@@ -1097,6 +1097,7 @@ public final class Parser {
         }
 
         Ast.TypeRef returnType = parseReturnType(annotations);
+        Ast.EffectSpec effects = parseCheckedEffects();
         // An abstract class may declare required slots as `name(args): Type;`.
         // Such signatures are abstract, but remain private unless explicitly pub.
         // Their identity is still name + arity only.
@@ -1112,7 +1113,7 @@ public final class Parser {
             body = List.of();
         } else body = parseBlock();
         return new Ast.MethodDecl(name, mods.visibility, mods.isStatic, mods.isAbstract || implicitAbstract, mods.async, mods.suspends, structural.enabled(),
-                receiverType, generics, params, returnType, annotations, body);
+                receiverType, generics, params, returnType, annotations, body, effects);
     }
 
     private String parseMethodName() {
