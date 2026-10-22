@@ -239,10 +239,13 @@ final class CompilerZordeLinkManifest {
         return digest != null && digest.matches("[0-9a-f]{64}");
     }
 
-    private static boolean validUnitId(String id) {
+    /** Shared canonical unit identity for source staging and link admission. */
+    static boolean validUnitId(String id) {
+        // Segments cannot be empty or contain traversal/metacharacters.
+        // The same canonical spelling must be used in source, policy and
+        // imported path edges; never normalize an unsafe path after parsing.
         return id != null && id.length() <= 256
-                && id.matches("[A-Za-z_][A-Za-z_0-9./-]*")
-                && !id.contains("..") && !id.contains("//") && !id.endsWith("/");
+                && id.matches("[A-Za-z_][A-Za-z_0-9-]*(?:[./][A-Za-z0-9_][A-Za-z_0-9-]*)*");
     }
 
     private static boolean validVersion(String value) {
