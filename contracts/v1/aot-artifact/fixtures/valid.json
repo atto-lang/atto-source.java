@@ -1,0 +1,34 @@
+{
+  "schema_version": "oreslang.aot-artifact.v1",
+  "compiler": {
+    "backend": "llvm",
+    "version": "0.1.0-dev",
+    "git_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "source_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+  "expanded_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+  "generated_ast_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+  "artifact": {
+    "file_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+    "size_bytes": 8192,
+    "format": "native-executable",
+    "target_triple": "x86_64-unknown-linux-gnu",
+    "abi": "sysv"
+  },
+  "policy": {
+    "runtime_macro_expansion": false,
+    "runtime_annotation_generation": false,
+    "runtime_guest_compilation": false,
+    "required_capabilities": [
+      "filesystem.read"
+    ]
+  },
+  "provenance": {
+    "builder_id": "trusted-builder-1",
+    "signature": {
+      "algorithm": "ed25519",
+      "key_id": "release-key-1",
+      "value_base64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+    }
+  }
+}

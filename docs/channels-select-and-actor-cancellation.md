@@ -179,20 +179,42 @@ read can rendezvous with a pending select-write.
 
 ## Static select
 
-**Result-mode vocabulary:** `do select { ... }` and
-`do nb select { ... }` explicitly request no-result, side-effecting dispatch.
-The selected arm runs as a statement, not as a value-producing expression.
-The older `select { ... }` and `nb select { ... }` remain accepted as
-statement forms for source compatibility. A future value-returning static
-select expression will require separate typed expression/arm support rather
-than silently changing the existing statement contract.
+**Control-flow contract (2026-10-13 correction):** Blocking `do select { ... }`
+is procedural, like `do switch` and `do match`. A `return` in the
+winning arm returns from the **containing function/method**, never just the
+select arm; its value is type-checked against that callable's return type.
+Lexically valid `break` and `continue` can target enclosing loops.
+An arm that falls through continues after the select statement. A blocked
+selection suspends the actor source task and must preserve this same control
+flow after resumption; defers/finally execute exactly once.
+
+The long-term result-mode surface is:
+
+- `select { ... }` — **expression**, suspends until an arm wins, yields
+  that arm's result `T`. Arm-local `return T;` provides the expression result.
+- `do select { ... }` — **statement**, suspends until an arm wins, yields
+  no result. `return T;` (or `return;`) exits the surrounding callable.
+- `nb select { ... }` — **expression** returning `Future<T>` immediately,
+  completed only after the winning arm itself completes on the actor lane;
+  its arm returns never escape into the already-continued outer callable.
+- `do nb select { ... }` — not a canonical new form. Detached
+  no-result arms obscure completion/failure/cancellation; callers should
+  keep a returned `Future<void>` when they want side effects.
+
+**Implementation gap:** Java/Graal main still models static `select` and
+`nb select` as legacy statements; static `select<T>` expression and
+`Future<T>` result tracking are not implemented by the do-select control-flow
+correction. Legacy `do nb select` remains temporarily parseable and
+arm-local/discarding for compatibility only; it is *not* evidence for the
+canonical `Future<void>` semantics. LLVM must fail closed for unsupported
+source forms. See `contracts/v1/static-select-result-and-return.md`.
 
 `cb select` and `nb cb select` are **not** aliases: the parser rejects
 both with a hint to use `do select` or `do nb select`. The existing
 `nb cb writech ... || -> { ... }` is different: it actually supplies a
 callback function and remains supported.
 
-Canonical explicit no-result static syntax:
+Canonical blocking procedural syntax:
 
 ```ores
 do select {
@@ -482,10 +504,39 @@ This transformation is permitted only when evaluating the case expressions has
 no required per-iteration observable behavior and the referenced channel/value
 bindings are stable. Otherwise the compiler must keep the original lowering.
 
-Dynamic selection can explicitly build a plan after constructing its runtime
-case list. Mutating the source list afterward does not mutate the plan; create a
-new plan for a changed case set. A later versioned dynamic-plan builder may
-support incremental add/remove/rebind without changing this snapshot contract.
+A fixed `SelectPlan` freezes its input case list. For a changing case set, the
+Java runtime now provides `ChannelRuntime.DynamicSelectPlan<K>`: `put(key, case)`,
+`remove(key)`, `selectSetSnapshot()`, `trySelectKeyed(policy)` and
+`selectKeyedAsync(policy)`. The keyed result contains `{version, key, selection}`
+and is pinned to the exact generation captured when the selection began.
+The source-language `DynamicSelectPlan.new` and implicit lexical-loop hoisting
+remain staged on Java PR #526 and are **not yet merged into main**.
+
+```java
+var plan = new ChannelRuntime.DynamicSelectPlan<String>();
+plan.put("inbox", ChannelRuntime.read(inbox)); // once, outside loop
+while (running) {
+    var result = plan.selectKeyedAsync(ChannelRuntime.SelectPolicy.FAIR).join();
+    handle(result.key(), result.selection().value());
+}
+```
+
+The `SelectSet` snapshot is immutable and reused while the plan's structure is
+unchanged. Each selection allocates fresh winner/cancellation state and fresh
+Channel/Future waiter registrations. A mutation publishes a new descriptor
+generation; existing operations keep their old generation, even if its key was
+removed or replaced. Previous-generation completions cannot rotate the new
+generation's FAIR cursor. The current admission limit of
+`ChannelRuntime.MAX_SELECT_CASES` applies to dynamic plans at insertion time.
+Default-only wins do not advance FAIR credit.
+
+A compiler may hoist an inline static select only when it proves every retained
+operand is loop-invariant, immutable, ownership-safe and actor-generation-local.
+Channel writes, dynamic expressions, per-iteration shadowing and mutable
+bindings must still be evaluated every iteration. Compiler lowering must also
+preserve the source-site FAIR ticket and fresh per-invocation cancellation/winner
+state. Native LLVM currently remains fail-closed pending explicit lowering and
+equivalent cancellation/sanitizer tests.
 
 ## Cancellation
 
