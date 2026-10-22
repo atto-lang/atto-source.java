@@ -300,20 +300,28 @@ public final class Types {
         Objects.requireNonNull(to);
         if (containsForgedZordeProofName(from) || containsForgedZordeProofName(to))
             return false;
-        // Proof identity is not ordinary structural, Unknown or Generic
-        // assignability. These checks MUST precede permissive wildcard paths.
-        if (from instanceof CheckedScalarType || to instanceof CheckedScalarType) {
+        // Proof-bearing objects must never be widened to structural super-
+        // records (or generic wrappers) that omit the proof field. Until
+        // ownership/type-preserving lowering is complete, only exact nested
+        // type identities are assignable, plus explicit union alternatives.
+        // This check comes BEFORE the general permissive Unknown/Generic path.
+        boolean fromProof = containsCompilerCheckedScalar(from);
+        boolean toProof = containsCompilerCheckedScalar(to);
+        if (fromProof || toProof) {
             if (from.equals(to)) return true;
-            if (to instanceof Union target)
-                return target.options().stream().anyMatch(option -> isAssignable(from, option));
-            if (from instanceof Union source)
+            if (from == Unknown.INSTANCE || to == Unknown.INSTANCE
+                    || from instanceof Generic || to instanceof Generic)
+                return false;
+            if (from instanceof Union source) {
+                // Each source alternative must pass the same strict proof
+                // check; no uncertain source arm may mint proof authority.
                 return source.options().stream().allMatch(option -> isAssignable(option, to));
+            }
+            if (to instanceof Union target) {
+                return target.options().stream().anyMatch(option -> isAssignable(from, option));
+            }
             return false;
         }
-        if ((from == Unknown.INSTANCE || to == Unknown.INSTANCE
-                || from instanceof Generic || to instanceof Generic)
-                && (containsCompilerCheckedScalar(from) || containsCompilerCheckedScalar(to)))
-            return false;
 
         // Complements must be checked before permissive Unknown/Generic rules.
         // No compiler pass may turn uncertainty into a negative-type proof.
