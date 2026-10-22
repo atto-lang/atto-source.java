@@ -103,7 +103,16 @@ public final class TaskMapParallel {
                 }
             }
             failures.completeFromRuntime(List.copyOf(diagnostic));
-            done.completeFromRuntime(null);
+            // A physical join is not a CLEAN release when any owned child
+            // failed to unlock its logical lease. Scope.getDone() now fails
+            // closed in that case. Do not turn it back into success here.
+            try {
+                scope.getDone().join(); // already terminal, never parks a carrier
+                done.completeFromRuntime(null);
+            } catch (java.util.concurrent.CompletionException
+                    | java.util.concurrent.CancellationException compromised) {
+                done.failFromRuntime(OresFuture.unwrap(compromised));
+            }
         }
 
         public OresFuture<List<R>> result() {
