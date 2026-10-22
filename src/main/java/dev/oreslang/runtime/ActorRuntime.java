@@ -4023,6 +4023,12 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    // Package-scoped host authority check for the dedicated supervisor tree
+    // coordinator. ActorGroup creator privileges are not supervisor authority.
+    void requireSupervisorShutdownAuthority(String operation) {
+        requireSupervisorContext(operation);
+    }
+
     private void requireBlockingHostContext(String operation) {
         if (inActorExecution()
                 || inActorGroupMailmanExecution()
