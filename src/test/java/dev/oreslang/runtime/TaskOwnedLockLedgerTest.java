@@ -188,6 +188,45 @@ public final class TaskOwnedLockLedgerTest {
     }
 
     @Test
+    void registerVersusCancellationFenceNeverLosesOwnedPermit() throws Exception {
+        for (int round = 0; round < 150; round++) {
+            TaskOwnedLockLedger ledger = new TaskOwnedLockLedger();
+            java.util.concurrent.atomic.AtomicInteger revoked =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            AtomicBoolean registered = new AtomicBoolean();
+            CountDownLatch go = new CountDownLatch(1);
+            Thread admission = Thread.ofPlatform().start(() -> {
+                try {
+                    go.await();
+                    ledger.register(revoked::incrementAndGet);
+                    registered.set(true);
+                } catch (CancellationException expected) {
+                    // STOP won before permit registration.
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(error);
+                }
+            });
+            Thread canceller = Thread.ofPlatform().start(() -> {
+                try {
+                    go.await();
+                    ledger.fence();
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(error);
+                }
+            });
+            go.countDown();
+            admission.join();
+            canceller.join();
+            ledger.revokeAfterQuiescence();
+            assertEquals(0, ledger.outstanding());
+            assertEquals(registered.get() ? 1 : 0, revoked.get(),
+                    "a granted permit must be reclaimed exactly once");
+        }
+    }
+
+    @Test
     void ledgerRevocationRunsOutsideMonitorAndRetainsFailedPermit() {
         TaskOwnedLockLedger ledger = new TaskOwnedLockLedger();
         AtomicBoolean outsideMonitor = new AtomicBoolean();
