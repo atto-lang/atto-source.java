@@ -353,10 +353,10 @@ public class TaskWaterfallTest {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             TaskHandle<Integer> handle = TaskWaterfall.from(
                     () -> OresFuture.completed(5))
-                .thenValue(value -> {
+                .<Integer>thenValue(value -> {
                     throw thrown;
                 })
-                .<Integer>thenValue(value -> value + 1)
+                .thenValue(value -> value + 1)
                 .start(scheduler);
             assertSame(thrown, assertThrows(ExecutionException.class,
                     () -> handle.result().get(3, TimeUnit.SECONDS)).getCause());
@@ -371,10 +371,10 @@ public class TaskWaterfallTest {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             TaskHandle<Integer> handle = TaskWaterfall.from(
                     () -> OresFuture.completed(1))
-                .thenValue(n -> {
+                .<Integer>thenValue(n -> {
                     throw fatal;
                 })
-                .<Integer>thenValue(v -> v + 1)
+                .thenValue(v -> v + 1)
                 .start(scheduler);
             assertSame(fatal, assertThrows(ExecutionException.class,
                     () -> handle.result().get(3, TimeUnit.SECONDS)).getCause());
