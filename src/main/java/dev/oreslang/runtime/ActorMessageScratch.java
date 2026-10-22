@@ -267,8 +267,12 @@ public final class ActorMessageScratch {
                 ActorNativeArena.Region.ReadOnlyLease lease =
                         region.leaseReadOnly(start, length);
                 try {
+                    // Allocate the managed, non-authoritative lease facade
+                    // before publishing the pin count. If construction throws
+                    // OOME, the native lease is closed with no leaked pin.
+                    ReadBorrow borrow = new ReadBorrow(issuedEpoch, lease);
                     readBorrows = Math.addExact(readBorrows, 1);
-                    return new ReadBorrow(issuedEpoch, lease);
+                    return borrow;
                 } catch (RuntimeException | Error failure) {
                     lease.close();
                     throw failure;
