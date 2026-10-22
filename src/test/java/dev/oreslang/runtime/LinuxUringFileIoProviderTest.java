@@ -26,6 +26,7 @@ final class LinuxUringFileIoProviderTest {
         final List<Long> exists = new ArrayList<>();
         final List<Long> cancels = new ArrayList<>();
         boolean accept = true;
+        boolean cancelAccept = true;
         int closes;
 
         @Override
@@ -56,7 +57,7 @@ final class LinuxUringFileIoProviderTest {
         public boolean cancel(long handle, long id) {
             assertEquals(77L, handle);
             cancels.add(id);
-            return true;
+            return cancelAccept;
         }
 
         @Override
@@ -91,6 +92,27 @@ final class LinuxUringFileIoProviderTest {
                 id, "duplicate".getBytes(StandardCharsets.UTF_8), 0);
         assertEquals(0, provider.pendingCount());
         assertTrue(future.isCancelled());
+        provider.close();
+    }
+
+    @Test
+    void cancellationIsRejectedWhenNativeCancelCannotBeEnqueued() throws Exception {
+        FakeBridge bridge = new FakeBridge();
+        bridge.cancelAccept = false;
+        LinuxUringFileIoProvider provider = new LinuxUringFileIoProvider(bridge);
+        OresFuture<String> future = provider.readText("/tmp/cancel-admission");
+        long id = bridge.reads.getFirst();
+
+        assertFalse(future.cancel(false),
+                "Future cancellation cannot win without native revocation admission");
+        assertFalse(future.isCancelled());
+        assertEquals(List.of(id), bridge.cancels);
+        assertEquals(1, provider.pendingCount());
+
+        provider.nativeReadCompleted(
+                id, "winner".getBytes(StandardCharsets.UTF_8), 0);
+        assertEquals("winner", future.get(1, TimeUnit.SECONDS));
+        assertEquals(0, provider.pendingCount());
         provider.close();
     }
 
