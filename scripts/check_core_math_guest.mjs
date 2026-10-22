@@ -5,6 +5,7 @@ import {createHash} from "node:crypto";
 import {pathToFileURL} from "node:url";
 
 export const EXPECTED_GIT_BLOB = "58d2b64a137ede4700593f855e1f0504ff744f90";
+export const EXPECTED_GUEST_GIT_BLOB = "2d12b8632ad77c8dee34235ecfacfca6a0fa553f";
 const I64_MIN=-(1n<<63n),I64_MAX=(1n<<63n)-1n;
 const DECIMAL=/^(?:0|-?[1-9][0-9]*)$/;
 const IDS=/^[a-z][a-z0-9-]{1,80}$/;
@@ -80,11 +81,20 @@ export function validateCapturedGuestLog(log,cases) {
     evidenceKind:"captured-guest-stdout-not-authenticated-run"};
 }
 function main(args) {
-  requireCondition(args.length===3,
-    "usage: node check_core_math_guest.mjs <raw-log> <contract-json> <receipt-json>");
-  const [logPath,contractPath,outPath]=args;
+  requireCondition(args.length===4,
+    "usage: node check_core_math_guest.mjs <raw-log> <contract-json> <guest-source.ores> <receipt-json>");
+  const [logPath,contractPath,guestPath,outPath]=args;
+  const sourceBytes=readFileSync(guestPath);
+  const sourceBlob=createHash("sha1")
+    .update(Buffer.from("blob "+sourceBytes.length+"\0"))
+    .update(sourceBytes).digest("hex");
+  requireCondition(sourceBlob===EXPECTED_GUEST_GIT_BLOB,
+    "guest source does not match reviewed Git blob");
   const cases=loadContract(readFileSync(contractPath));
-  const receipt=validateCapturedGuestLog(readFileSync(logPath,"utf8"),cases);
+  const receipt={
+    ...validateCapturedGuestLog(readFileSync(logPath,"utf8"),cases),
+    guestSourceGitBlob:sourceBlob
+  };
   writeFileSync(outPath,JSON.stringify(receipt,null,2)+"\n");
   process.stdout.write("JAVA-GRAAL-CORE-MATH-OK "+receipt.executedCases+"\n");
 }
