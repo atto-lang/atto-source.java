@@ -165,6 +165,19 @@ public final class ActorMixedRegion implements AutoCloseable {
         this(arena, fields, rows, layout, lanes, groups, MAX_BYTES);
     }
 
+    /**
+     * Production entry point: take ownership from the currently admitted
+     * physical actor turn, never from a carrier-thread identity.
+     */
+    public static ActorMixedRegion forCurrentActor(
+            List<Field> fields, int rows, Layout layout, int lanes,
+            List<List<String>> groups) {
+        ActorNativeArena owner = ActorRuntime.currentNativeArena();
+        if (owner == null) throw new SecurityException(
+                "mixed actor storage requires an executing actor turn");
+        return new ActorMixedRegion(owner, fields, rows, layout, lanes, groups);
+    }
+
     private static long align(long value, int alignment) {
         return Math.multiplyExact(Math.addExact(value, alignment - 1L) / alignment,
                 (long) alignment);
