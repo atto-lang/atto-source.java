@@ -227,3 +227,95 @@ A destination with Actions minutes does NOT supply that authorization.
 The local runner cannot retrieve the complete private source tree;
 exact-head GitHub workflows continue failing without recorded build/test
 steps. New tests are committed, NOT claimed passing.
+
+
+## SourceTask focused hardening (October 22, 2026)
+
+Java/GraalVM `OresEvalRootNode.SourceTask` now has two additional
+**source-level** correctness changes:
+
+- `runBlock` passes the underlying `SourceFlowCont` directly into
+  `runStatements`. Before the fix, both `runStatements` and the extra
+  `runBlock` continuation called `finishBlock`, so a lexical block
+  could attempt `env.releaseMutexGuards` twice after the same defer
+  stack had already been emptied. There must be exactly ONE owner of
+  lexical unwinding for both normal completion and abnormal flow.
+- `mergeCleanupFailure` preserves the original ordinary Task error
+  when a later defer/guard cleanup produces an ordinary error, retaining
+  secondary diagnostics as suppressed. Existing panic policy is NOT
+  weakened: an untrappable cleanup panic/authority failure still
+  supersedes a prior merely recoverable throw; a preexisting fatal
+  primary is never downgraded. Cleanup ProcessExitSignal cannot erase
+  an already pending error.
+
+`SourceTaskCleanupHardeningTest` adds four guest-execution tests for
+post-cooperation defer LIFO order + finally once, implicit MutexGuard
+scope release without programmer defer, original bounds error
+precedence with a bad defer, and fatal Option::unwrap cleanup
+precedence over an ordinary failed cast. These test sources are
+committed, **not verified passing**, and should run alongside
+`TrapOptionSemanticsTest`, `SourceLoopSoftPreemptionTest`, and
+`SourceActorEndCleanupExecutionTest` on the actual GraalVM runtime.
+
+### P0 still unresolved: externally cancelled suspended SourceTask
+
+The canonical scheduler's TaskRunner can move WAITING directly to
+TERMINAL on cancellation, detach its await registration, and publish
+the task Future without dispatching `SourceTask.resume` again.
+SourceTask presently holds `awaitingContinuation` and heap-owned
+lexical state; its `resume` catch clears continuation fields without
+running an async cleanup trampoline. Therefore the above changes DO
+NOT ensure cancellation while suspended executes every `defer`,
+`finally`, iterator close, or guard release.
+
+Required next stage is an **authenticated terminal-unwind mode**
+owned by the scheduler/SourceTask, not `SourceFlow.throwing` delivered
+to guest code:
+1. On cancellation, forbid new ordinary Task work while permitting
+   one bounded, cancellation-shielded cleanup continuation on the
+   original scheduler/actor domain.
+2. Track the live lexical scope/iterator/guard frames in the
+   SourceTask heap-owned continuation state. Execute each scope's
+   cleanup exactly once in LIFO order, allow only budgeted cleanup
+   suspensions, and never route terminal cancellation into guest
+   `TryStmt.catch`.
+3. Join all owned descendants; only after the cleanup continuation
+   and physical carrier/arena leases retire may the source Task
+   publish a **successful** physical cleanup witness. If a lock
+   fails to release, report failed cleanup and quarantine its memory
+   rather than claiming safe finalization.
+4. Add deterministic cancel-at-await, cancel-after-cooperate,
+   cancel-while-guarded, cancel-during-defer-await, and actor
+   supervisor/restart tests. Use model-checked interleavings to
+   forbid duplicate cleanup, stale continuation revival, or early
+   memory release. LLVM needs equivalent lowering.
+
+The SourceTask continuation gate remains tracked as #883 and the
+actor arena finalization gate as #1566. Keep PR #1887 draft until
+these guarantees are actually implemented and executed.
+
+
+### Additional lexical MutexGuard release hardening
+
+`Env.releaseMutexGuards` previously aborted its traversal if the first
+guard release threw. This could prevent later independent guards from
+receiving any unlock attempt. It now traverses all slots and nested
+Option/Result/list/map/object/array fields, identifies each guard by
+identity so aliased handles are attempted at most once, and records
+individual release/traversal failures while continuing the remaining
+cleanup work. Once all attempts finish, it throws the primary cleanup
+failure with other failures retained as suppressed; panic/host fatal
+errors are never demoted behind an earlier ordinary cleanup error.
+
+The source-level `SourceTaskCleanupHardeningTest` adds a fifth test
+checking two independent MutexGuard values automatically release at
+lexical-block exit and can be reacquired subsequently. If a release
+fails, this change makes the other unlock attempts but **does not**
+falsely assert that every resource was actually released. Failed
+resource retirement still demands physical lease accounting and
+failure-closed actor heap reclamation.
+
+No proof of automatic cleanup on EXTERNAL cancellation of a
+SUSPENDED SourceTask exists: scheduler WAITING->TERMINAL bypasses its
+normal continuation, as tracked by #883. Run guest JDK25 and LLVM
+equivalent tests before merge.
