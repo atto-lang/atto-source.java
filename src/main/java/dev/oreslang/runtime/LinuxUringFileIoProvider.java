@@ -20,7 +20,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * permission check cannot subsequently be redirected through a symlink.</p>
  */
 final class LinuxUringFileIoProvider implements StrictFileIoProvider {
-    static final int DEFAULT_ENTRIES = 128;
+    static final int DEFAULT_ENTRIES = 512;
     static final int MAX_PENDING = 128;
     static final int MAX_READ_BYTES = 16 * 1024 * 1024;
     static final int ECANCELED = 125;
@@ -99,7 +99,8 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
     public OresFuture<String> readText(String absolutePath) {
         byte[] path = encodeAbsolutePath(absolutePath);
         long id = nextId();
-        OresFuture<String> future = new OresFuture<>(() -> cancelNative(id));
+        OresFuture<String> future = new OresFuture<>(
+                () -> cancelNative(id), () -> { });
         pending.put(id, new Pending<>(Kind.READ, future));
         if (!submitReadNative(id, path)) {
             Pending<?> removed = pending.remove(id);
@@ -117,7 +118,8 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
     public OresFuture<Boolean> exists(String absolutePath) {
         byte[] path = encodeAbsolutePath(absolutePath);
         long id = nextId();
-        OresFuture<Boolean> future = new OresFuture<>(() -> cancelNative(id));
+        OresFuture<Boolean> future = new OresFuture<>(
+                () -> cancelNative(id), () -> { });
         pending.put(id, new Pending<>(Kind.EXISTS, future));
         if (!submitExistsNative(id, path)) {
             Pending<?> removed = pending.remove(id);
@@ -147,8 +149,8 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
         return id;
     }
 
-    private synchronized void cancelNative(long id) {
-        if (!closed.get()) bridge.cancel(handle, id);
+    private synchronized boolean cancelNative(long id) {
+        return !closed.get() && bridge.cancel(handle, id);
     }
 
     private static byte[] encodeAbsolutePath(String absolutePath) {
