@@ -1,6 +1,9 @@
 package dev.oreslang;
 
 import dev.oreslang.compiler.ZordeSchemaGenerator;
+import dev.oreslang.ast.Ast;
+import dev.oreslang.parser.Parser;
+import dev.oreslang.types.RefinementRules;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -100,4 +103,21 @@ final class ZordeCheckedScalarMoveTest {
             executor.shutdownNow();
         }
     }
+    @Test void hostNominalNewtypeAlsoConsumesExactlyOnce() {
+        var parsed = Parser.parse(
+                "@MinLength(1) define newtype Username(string);");
+        var alias = (Ast.TypeAliasDecl)
+                parsed.modules().getFirst().declarations().getFirst();
+        var result = RefinementRules.tryFrom("app.Username",
+                alias.target(), alias.refinement(), "alice");
+        assertTrue(result.ok());
+        var nominal = (RefinementRules.NominalValue) result.value();
+        assertEquals("alice", nominal.intoInner());
+        assertThrows(IllegalStateException.class, nominal::intoInner);
+        assertEquals("app.Username", nominal.qualifiedTypeName());
+        assertEquals(64, nominal.schemaFingerprint().length());
+        assertFalse(RefinementRules.tryFrom("app.Username",
+                alias.target(), alias.refinement(), "").ok());
+    }
+
 }
