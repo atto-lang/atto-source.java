@@ -137,6 +137,66 @@ final class ActorShardSnapshotLeaseTest {
     }
 
     @Test
+    void retainedSnapshotConstrainsLaterNativeArenaGrowthInEitherActorKind() throws Exception {
+        long limit = 16L * 1024 * 1024;
+        IsolatePolicy policy = new IsolatePolicy(
+                IsolatePolicy.developer().capabilities(),
+                limit,
+                64,
+                Duration.ofSeconds(10),
+                false);
+
+        for (boolean shared : new boolean[] {false, true}) {
+            try (ActorRuntime runtime = new ActorRuntime(policy)) {
+                CountDownLatch done = new CountDownLatch(1);
+                AtomicReference<Throwable> failure = new AtomicReference<>();
+                ActorRuntime.BehaviorFactory<Integer> behavior =
+                        ctx -> (value, turn) -> {
+                            try {
+                                ActorShardColumns.ColumnSnapshot snapshot;
+                                try (ActorShardColumns shard =
+                                        new ActorShardColumns(
+                                                ActorShardColumns.Layout.SOA,
+                                                64,
+                                                1,
+                                                1)) {
+                                    snapshot = shard.snapshotColumnLeased(0);
+                                }
+
+                                int nearLimit = Math.toIntExact(limit - 256);
+                                IllegalStateException denied = assertThrows(
+                                        IllegalStateException.class,
+                                        () -> ActorRuntime.currentNativeArena()
+                                                .region(nearLimit));
+                                assertTrue(
+                                        denied.getMessage().contains("limit exceeded"),
+                                        denied.toString());
+
+                                snapshot.close();
+                                try (ActorNativeArena.Region admitted =
+                                        ActorRuntime.currentNativeArena().region(nearLimit)) {
+                                    assertEquals(nearLimit, admitted.capacity());
+                                }
+                            } catch (Throwable x) {
+                                failure.set(x);
+                            } finally {
+                                done.countDown();
+                            }
+                        };
+
+                ActorRuntime.ActorRef<Integer> actor = shared
+                        ? runtime.spawnSharedTrusted(policy, behavior)
+                        : runtime.spawnPrivateTrusted(policy, behavior);
+                actor.send(1);
+                assertTrue(done.await(10, TimeUnit.SECONDS), shared ? "shared" : "private");
+                assertNull(failure.get(), shared ? "shared" : "private");
+                actor.gracefulStop().get(10, TimeUnit.SECONDS);
+                assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
+            }
+        }
+    }
+
+    @Test
     void hostCannotCreateSnapshotOutsideAnActorTurn() {
         assertThrows(SecurityException.class,
                 () -> new ActorShardColumns(ActorShardColumns.Layout.SOA, 4, 2, 1));
