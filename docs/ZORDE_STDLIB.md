@@ -262,7 +262,7 @@ the same fixtures before those backends admit executable refinements.
 length-prefixed SHA-256 **exact-tree integrity manifest** from an explicitly
 pinned, closed graph of source-staged \`CompilerZordeSchemaRegistry\` instances.
 The manifest commits to the named compiler build, target ABI, entry roots,
-each unit's source digest and generation, statically inferred schema exports,
+each unit's source digest and generation, explicit schema-versioned exports,
 and dependency edges with the exact pinned source digest of each target.
 Exports, dependency edges and units are sorted before hashing.
 
