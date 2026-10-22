@@ -181,6 +181,10 @@ public final class TaskPipeline {
                             throw new IllegalStateException(
                                     "pipeline cannot await its own exposed completion Future");
                         }
+                        if (child == input) {
+                            throw new IllegalArgumentException(
+                                    "pipeline cannot claim ownership of its borrowed input Future");
+                        }
                         if (!ownedStage.compareAndSet(null, child)) {
                             throw new IllegalStateException(
                                     "pipeline already retains an owned stage Future");
