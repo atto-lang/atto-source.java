@@ -43,3 +43,32 @@ hosted CI/storage trust boundary remains an assumption.
 If the initial job never starts, no artifact exists, and the result is **not
 verified**. Partial artifacts from failed executions must not be treated as
 successful proofs.
+
+## Real Graal guest core-math matrix (separate CI job)
+
+The new `examples/native-core-math-24.ores` guest imports the actual
+Oreslang `std/core` implementation and emits 24 signed-i64 numeric
+observations under exact `CORE-MATH-CASE|id|value` markers.
+`scripts/check_core_math_guest.mjs` consumes the **captured Maven guest
+stdout**, not predictions, and rejects missing/duplicate/unknown/malformed
+cases, wrong signed-i64 results or absent completion. Its
+`tests/core_math_guest_validator.test.mjs` examples are synthetic parser
+self-tests and **not guest runtime evidence**. The guest fixture and reviewed
+`formal/typed-scalar/core-math-i64-v1.json` are both Git-blob guarded.
+
+The semantic oracle copy is pinned to the common-source signed-i64 Git blob
+`58d2b64a137ede4700593f855e1f0504ff744f90`. Synchronization is manual
+and requires explicit review. Java and LLVM guest source shapes differ,
+so comparison is of the same **24 mathematical contracts**, not identical
+source bytes or a proof that both code generators are equivalent.
+
+The separate `graal-guest-core-math` job records real stdout, a normalized
+non-attested result JSON, guest Git blob and Java version. It is a distinct
+gate from the typed-AST Z3 job. If Maven fails, the pipe fails; no result
+JSON can count as a pass without the captured guest output and exact-head
+runner provenance.
+
+**Current state:** [Java workflow #39744843339](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/39744843339)
+failed with **zero executed steps on both jobs**, `runner_id:0`.
+Neither 24-case guest matrix nor compiler-backed SMT executed. This remains
+a draft unverified implementation.
