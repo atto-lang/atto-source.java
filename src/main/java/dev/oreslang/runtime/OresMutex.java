@@ -720,16 +720,22 @@ public final class OresMutex {
         private final class AsyncWaiter {
             private final Object ownerDomain;
             private final boolean enforceOwnerDomain;
+            // Transporting a grant does not transport actor authority.
+            // Capture the requesting actor domain before another carrier
+            // performs the physical permit handoff.
+            private final Object requestingActorDomain;
             private final GuardFuture<T> future;
             private final TaskBoundRequest taskRequest;
 
             private AsyncWaiter(
                     Object ownerDomain,
                     boolean enforceOwnerDomain,
+                    Object requestingActorDomain,
                     GuardFuture<T> future,
                     TaskBoundRequest taskRequest) {
                 this.ownerDomain = ownerDomain;
                 this.enforceOwnerDomain = enforceOwnerDomain;
+                this.requestingActorDomain = requestingActorDomain;
                 this.future = future;
                 this.taskRequest = taskRequest;
             }
@@ -784,6 +790,7 @@ public final class OresMutex {
                 SharedGuard guard = new SharedGuard(
                         waiter.ownerDomain,
                         waiter.enforceOwnerDomain,
+                        waiter.requestingActorDomain,
                         waiter.taskRequest == null ? null : waiter.taskRequest.lease,
                         false);
                 if (waiter.taskRequest != null && !waiter.taskRequest.bindGuard(guard)) {
@@ -822,7 +829,8 @@ public final class OresMutex {
                 throw failure;
             }
             try {
-                return new SharedGuard(ownerDomain, enforceOwnerDomain, null, true);
+                return new SharedGuard(ownerDomain, enforceOwnerDomain,
+                        ActorRuntime.currentActorExecutionDomain(), null, true);
             } catch (RuntimeException | Error registrationFailure) {
                 clearOwner(ownerDomain);
                 releaseDomain(ownerDomain);
@@ -934,6 +942,7 @@ public final class OresMutex {
             AsyncWaiter waiter = new AsyncWaiter(
                     ownerDomain,
                     enforceOwnerDomain,
+                    ActorRuntime.currentActorExecutionDomain(),
                     future,
                     taskRequest);
 
@@ -998,6 +1007,7 @@ public final class OresMutex {
                     SharedGuard guard = new SharedGuard(
                             ownerDomain,
                             enforceOwnerDomain,
+                            ActorRuntime.currentActorExecutionDomain(),
                             taskRequest == null ? null : taskRequest.lease,
                             false);
                     if (taskRequest != null && !taskRequest.bindGuard(guard)) {
@@ -1133,14 +1143,17 @@ public final class OresMutex {
         private final class SharedGuard implements Guard<T> {
             private final Object ownerDomain;
             private final boolean enforceOwnerDomain;
+            private final Object requestingActorDomain;
             private final AtomicBoolean released = new AtomicBoolean();
             private final TaskOwnedLeases.Lease taskLease;
 
             private SharedGuard(Object ownerDomain, boolean enforceOwnerDomain,
+                                Object requestingActorDomain,
                                 TaskOwnedLeases.Lease inheritedLease,
                                 boolean registerCurrentTask) {
                 this.ownerDomain = ownerDomain;
                 this.enforceOwnerDomain = enforceOwnerDomain;
+                this.requestingActorDomain = requestingActorDomain;
                 this.taskLease = registerCurrentTask
                         ? TaskOwnedLeases.registerIfTracked(
                                 () -> releaseFromRuntime(false),
@@ -1149,10 +1162,20 @@ public final class OresMutex {
             }
 
             private void requireOwnerDomain() {
-                if (enforceOwnerDomain
-                        && !currentLogicalLockOwner().equals(ownerDomain)) {
-                    throw new WrongMutexDomainException(
-                            "SharedMutex guard belongs to another logical Task or actor turn");
+                if (enforceOwnerDomain) {
+                    // Actor shared-memory authorization and Task ownership
+                    // are distinct checks. A Task identity does not authorize
+                    // entering another actor's guard domain.
+                    if (!Objects.equals(
+                            ActorRuntime.currentActorExecutionDomain(),
+                            requestingActorDomain)) {
+                        throw new WrongMutexDomainException(
+                                "SharedMutex guard belongs to a different actor domain");
+                    }
+                    if (!currentLogicalLockOwner().equals(ownerDomain)) {
+                        throw new WrongMutexDomainException(
+                                "SharedMutex guard belongs to another logical Task or actor turn");
+                    }
                 }
                 if (taskLease != null) taskLease.requireCurrentOwner();
             }
