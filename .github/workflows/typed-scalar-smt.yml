@@ -112,6 +112,7 @@ jobs:
           node scripts/check_core_math_guest.mjs \
             target/formal-typed-scalar/guest/guest-raw-stdout.log \
             formal/typed-scalar/core-math-i64-v1.json \
+            examples/native-core-math-24.ores \
             target/formal-typed-scalar/guest/observed-results.json
       - name: Record execution source and Java identity
         if: always()
