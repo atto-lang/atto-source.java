@@ -624,6 +624,36 @@ final class ActorNativeArenaTest {
     }
 
     @Test
+    void arenaCloseWithBorrowOnLaterRegionIsFailureAtomic() {
+        for (int borrowedBytes : new int[] {0, Long.BYTES}) {
+            AtomicLong charged = new AtomicLong();
+            try (ActorNativeArena arena = arena(128, charged)) {
+                ActorNativeArena.Region first = arena.region(16);
+                ActorNativeArena.Region second = arena.region(16);
+                first.writeLong(0, 101L);
+                second.writeLong(0, 202L);
+                try (var loan = second.leaseReadOnly(0, borrowedBytes)) {
+                    assertThrows(IllegalStateException.class, arena::close,
+                            "an outstanding immutable lease must block whole-arena retirement");
+                    assertFalse(arena.closed());
+                    assertFalse(first.closed(), "unrelated earlier region must remain alive");
+                    assertFalse(second.closed(), "borrowed region must remain alive");
+                    assertEquals(101L, first.readLong(0));
+                    assertEquals(202L, second.readLong(0));
+                    assertEquals(32L, charged.get(),
+                            "failed whole-arena close cannot partially refund native quota");
+                    assertEquals(borrowedBytes, loan.length());
+                }
+                arena.close();
+                assertTrue(first.closed());
+                assertTrue(second.closed());
+                assertEquals(0L, charged.get());
+            }
+            assertEquals(0L, charged.get());
+        }
+    }
+
+    @Test
     void failedRegionRegistrationRetractsNativeBackingBeforeRetryAndClose() {
         for (int failureKind = 0; failureKind < 2; failureKind++) {
             final boolean fatal = failureKind == 1;
