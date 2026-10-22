@@ -164,8 +164,15 @@ public final class RecoveryHandlerChain<T> {
         // Most guest failures are ordinary leaves. Avoid allocating graph-walk
         // containers on this common exceptional path.
         if (isTerminal(failure)) return true;
-        if (failure.getCause() == null && failure.getSuppressed().length == 0) {
-            return false;
+        // Throwable.getCause() is overridable by host/FFI exception types.
+        // Never allow an untrusted accessor to throw out of the recovery
+        // admission gate and accidentally replace the original guest failure.
+        try {
+            if (failure.getCause() == null && failure.getSuppressed().length == 0) {
+                return false;
+            }
+        } catch (RuntimeException hostileAccessor) {
+            return true;
         }
         ArrayDeque<Throwable> pending = new ArrayDeque<>();
         Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
@@ -174,7 +181,12 @@ public final class RecoveryHandlerChain<T> {
             Throwable current = pending.removeFirst();
             if (!seen.add(current) || seen.size() > MAX_FAILURE_GRAPH_NODES) return true;
             if (isTerminal(current)) return true;
-            Throwable cause = current.getCause();
+            final Throwable cause;
+            try {
+                cause = current.getCause();
+            } catch (RuntimeException hostileAccessor) {
+                return true;
+            }
             if (cause != null) {
                 if (pending.size() + seen.size() >= MAX_FAILURE_GRAPH_NODES) return true;
                 pending.addLast(cause);

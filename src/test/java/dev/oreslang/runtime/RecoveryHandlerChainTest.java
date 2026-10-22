@@ -175,6 +175,26 @@ final class RecoveryHandlerChainTest {
                 chain.dispatch(RecoveryHandlerChain.FailureKind.RAISE, wide));
     }
 
+    @Test void hostileThrowableCauseAccessorCannotReplacePendingFailure() {
+        var chain = RecoveryHandlerChain.<Integer>builder()
+                .onRaise((error, continuation) -> continuation.resolve(17))
+                .freeze();
+        Throwable hostile = new RuntimeException("original") {
+            @Override public synchronized Throwable getCause() {
+                throw new IllegalStateException("hostile cause accessor");
+            }
+        };
+        var unhandled = assertInstanceOf(RecoveryHandlerChain.Unhandled.class,
+                chain.dispatch(RecoveryHandlerChain.FailureKind.RAISE, hostile));
+        assertSame(hostile, unhandled.error());
+        assertEquals(RecoveryHandlerChain.FailureKind.RAISE, unhandled.kind());
+
+        RuntimeException wrapper = new RuntimeException("wrapper", hostile);
+        var nested = assertInstanceOf(RecoveryHandlerChain.Unhandled.class,
+                chain.dispatch(RecoveryHandlerChain.FailureKind.RAISE, wrapper));
+        assertSame(wrapper, nested.error());
+    }
+
     @Test void crossThreadContinuationUseIsRejected() throws Exception {
         var errors = new java.util.concurrent.atomic.AtomicReference<Throwable>();
         var chain = RecoveryHandlerChain.<Integer>builder()
