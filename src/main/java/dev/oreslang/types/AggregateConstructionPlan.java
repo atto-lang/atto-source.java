@@ -26,6 +26,96 @@ import java.util.Objects;
 public final class AggregateConstructionPlan {
     private AggregateConstructionPlan() { }
 
+    /**
+     * Identity-bound checker provenance. Recording a typed shape is NOT runtime
+     * admission: the ownership checker commits approvals only if its entire
+     * program pass succeeds. Weak identities prevent cross-parse equal-object
+     * collisions and avoid retaining obsolete ASTs. Optimizers must recheck
+     * transformed aggregates rather than copy this authority by shape.
+     */
+    public static final class Checked {
+        private Checked() { }
+
+        private static final java.lang.ref.ReferenceQueue<Ast.ObjectExpr> CLEARED =
+                new java.lang.ref.ReferenceQueue<>();
+        private static final Map<IdentityKey, Plan> TYPED = new java.util.HashMap<>();
+        private static final Map<IdentityKey, Plan> ADMITTED = new java.util.HashMap<>();
+
+        private static final class IdentityKey
+                extends java.lang.ref.WeakReference<Ast.ObjectExpr> {
+            private final int hash;
+            private IdentityKey(
+                    Ast.ObjectExpr expression,
+                    java.lang.ref.ReferenceQueue<Ast.ObjectExpr> queue) {
+                super(Objects.requireNonNull(expression, "aggregate expression"), queue);
+                hash = System.identityHashCode(expression);
+            }
+            @Override public int hashCode() { return hash; }
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof IdentityKey key)) return false;
+                Ast.ObjectExpr referent = get();
+                return referent != null && referent == key.get();
+            }
+        }
+
+        private static void expunge() {
+            java.lang.ref.Reference<? extends Ast.ObjectExpr> collected;
+            while ((collected = CLEARED.poll()) != null) {
+                TYPED.remove(collected);
+                ADMITTED.remove(collected);
+            }
+        }
+
+        /** Called by the type checker; never grants executable spread authority. */
+        public static synchronized void recordTyped(Ast.ObjectExpr source, Plan plan) {
+            Objects.requireNonNull(plan, "typed aggregate construction plan");
+            if (!source.kind().equals(plan.resultKind())
+                    || source.fields().size() != plan.orderedSteps().size()) {
+                throw new IllegalArgumentException("typed plan does not describe this aggregate AST");
+            }
+            expunge();
+            IdentityKey key = new IdentityKey(source, CLEARED);
+            Plan prior = TYPED.putIfAbsent(key, plan);
+            if (prior != null && !prior.equals(plan)) {
+                throw new IllegalStateException(
+                        "the same aggregate expression has inconsistent checked type plans");
+            }
+        }
+
+        /**
+         * Atomically finalize an entire set of ownership-checked spread nodes.
+         * A missing type proof is not accepted. Independent ownership-only
+         * smoke checks may still run, but do not grant executable authority.
+         */
+        public static synchronized void admitAfterOwnership(
+                java.util.Collection<Ast.ObjectExpr> checkedNodes) {
+            Objects.requireNonNull(checkedNodes, "ownership-checked aggregates");
+            expunge();
+            for (Ast.ObjectExpr source : checkedNodes) {
+                if (!TYPED.containsKey(new IdentityKey(source, null))) {
+                    throw new IllegalStateException(
+                            "cannot admit aggregate spread without checked static type plan");
+                }
+            }
+            for (Ast.ObjectExpr source : checkedNodes) {
+                IdentityKey key = new IdentityKey(source, CLEARED);
+                ADMITTED.put(key, TYPED.get(key));
+            }
+        }
+
+        /** Runtime must refuse spread ASTs without both checker approvals. */
+        public static synchronized Plan requireAdmitted(Ast.ObjectExpr source) {
+            expunge();
+            Plan admitted = ADMITTED.get(new IdentityKey(source, null));
+            if (admitted == null) {
+                throw new IllegalStateException(
+                        "aggregate spread requires exact-AST type and ownership admission");
+            }
+            return admitted;
+        }
+    }
+
     public sealed interface Step permits NamedField, SpreadFields {
         int sourceIndex();
     }
