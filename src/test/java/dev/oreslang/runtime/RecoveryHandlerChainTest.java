@@ -90,8 +90,8 @@ final class RecoveryHandlerChainTest {
     @Test void continuationIsOneShotAndRevokedAfterHandlerReturns() {
         List<RecoveryHandlerChain.Continuation<Integer>> leaked = new ArrayList<>();
         var chain = RecoveryHandlerChain.<Integer>builder()
-                .register((e, c) -> { leaked.add(c); c.next(); })
                 .register((e, c) -> { leaked.add(c); c.resolve(7); })
+                .register((e, c) -> { leaked.add(c); c.next(); })
                 .freeze();
         assertEquals(new RecoveryHandlerChain.Recovered<>(7),
                 chain.dispatch(RecoveryHandlerChain.FailureKind.THROW, new Exception()));
