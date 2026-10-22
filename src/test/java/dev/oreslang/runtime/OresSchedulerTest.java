@@ -379,26 +379,36 @@ final class OresSchedulerTest {
         }
     }
     @Test
-    void logicalTaskDomainSurvivesAwaitButIsDistinctPerTask() throws Exception {
+    void logicalExecutionContextSurvivesAwaitAndIsNotAHeapOrDispatch() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(2)) {
             OresFuture<Integer> gate = new OresFuture<>();
-            AtomicReference<Object> firstDomain = new AtomicReference<>();
-            AtomicReference<Object> resumedDomain = new AtomicReference<>();
-            AtomicReference<Object> secondTaskDomain = new AtomicReference<>();
+            AtomicReference<ExecutionContext> firstContext = new AtomicReference<>();
+            AtomicReference<ExecutionContext> resumedContext = new AtomicReference<>();
+            AtomicReference<ExecutionContext> secondContext = new AtomicReference<>();
+            AtomicLong firstDispatch = new AtomicLong();
+            AtomicLong resumedDispatch = new AtomicLong();
             AtomicInteger firstPc = new AtomicInteger();
 
             OresFuture<Integer> first = scheduler.start(resume -> {
+                ExecutionContext current = OresScheduler.currentExecutionContext();
+                assertNotNull(current);
+                assertSame(current, OresScheduler.currentTaskDomain(),
+                        "legacy task-domain token must be the stable execution context");
+                assertEquals(ExecutionContext.AllocationKind.NONE,
+                        current.allocationDomain().kind(),
+                        "ordinary scheduler tasks must not be assigned a fake heap");
                 if (firstPc.getAndIncrement() == 0) {
-                    firstDomain.set(OresScheduler.currentTaskDomain());
-                    assertNotNull(firstDomain.get());
+                    firstContext.set(current);
+                    firstDispatch.set(OresScheduler.currentDispatchId());
                     return OresScheduler.await(gate);
                 }
-                resumedDomain.set(OresScheduler.currentTaskDomain());
+                resumedContext.set(current);
+                resumedDispatch.set(OresScheduler.currentDispatchId());
                 return OresScheduler.done(1);
             });
 
             OresFuture<Integer> second = scheduler.start(resume -> {
-                secondTaskDomain.set(OresScheduler.currentTaskDomain());
+                secondContext.set(OresScheduler.currentExecutionContext());
                 return OresScheduler.done(2);
             });
 
@@ -406,11 +416,77 @@ final class OresSchedulerTest {
             gate.completeFromRuntime(0);
             assertEquals(1, first.get(5, TimeUnit.SECONDS));
 
-            assertSame(firstDomain.get(), resumedDomain.get(),
-                    "await/resume must preserve the logical task execution domain");
-            assertNotSame(firstDomain.get(), secondTaskDomain.get(),
-                    "two tasks on one scheduler must not share mutex/borrow ownership");
+            assertSame(firstContext.get(), resumedContext.get(),
+                    "await/resume must preserve one logical execution context");
+            assertNotEquals(firstDispatch.get(), resumedDispatch.get(),
+                    "physical scheduler dispatch identity must change across await");
+            assertNotSame(firstContext.get(), secondContext.get(),
+                    "two tasks on one scheduler must have distinct execution contexts");
+            assertEquals(firstContext.get().id().runtimeDomain(),
+                    secondContext.get().id().runtimeDomain(),
+                    "tasks share a scheduler domain without sharing execution identity");
+            assertNotEquals(firstContext.get().id().execution(),
+                    secondContext.get().id().execution());
+            assertFalse(firstContext.get().allocationDomain().isBound());
+            assertEquals(0L, firstContext.get().parentExecution());
+            assertEquals(0L, firstContext.get().continuation());
         }
+    }
+
+    @Test
+    void logicalExecutionSurvivesTwoAwaitsAndFailureOnSeparateDispatches() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            OresFuture<Integer> gateOne = new OresFuture<>();
+            OresFuture<Integer> gateTwo = new OresFuture<>();
+            java.util.List<ExecutionContext> contexts =
+                    new java.util.concurrent.CopyOnWriteArrayList<>();
+            java.util.List<Long> dispatches =
+                    new java.util.concurrent.CopyOnWriteArrayList<>();
+            AtomicInteger phase = new AtomicInteger();
+
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                ExecutionContext current = OresScheduler.currentExecutionContext();
+                assertNotNull(current);
+                contexts.add(current);
+                dispatches.add(OresScheduler.currentDispatchId());
+                int step = phase.getAndIncrement();
+                if (step == 0) return OresScheduler.await(gateOne);
+                if (step == 1) return OresScheduler.await(gateTwo);
+                if (step == 2) throw new IllegalStateException("two-await-trace-marker");
+                throw new AssertionError("task must never resume after failure");
+            });
+
+            gateOne.completeFromRuntime(1);
+            gateTwo.completeFromRuntime(2);
+            java.util.concurrent.ExecutionException failure = assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> result.get(5, TimeUnit.SECONDS));
+            assertTrue(failure.getCause() instanceof IllegalStateException);
+            assertEquals("two-await-trace-marker", failure.getCause().getMessage());
+            assertEquals(3, contexts.size());
+            assertEquals(3, dispatches.size());
+            assertSame(contexts.get(0), contexts.get(1));
+            assertSame(contexts.get(1), contexts.get(2));
+            assertNotEquals(dispatches.get(0), dispatches.get(1));
+            assertNotEquals(dispatches.get(1), dispatches.get(2));
+            assertEquals(ExecutionContext.AllocationKind.NONE,
+                    contexts.get(2).allocationDomain().kind());
+        }
+    }
+
+    @Test
+    void actorAllocationDomainPermitsZeroBasedOwnerWithoutBecomingExecutionIdentity() {
+        ExecutionContext context = ExecutionContext.actor(
+                11, 22, 11, 0, 3, 0, 0);
+
+        assertEquals(11L, context.id().runtimeDomain());
+        assertEquals(22L, context.id().execution());
+        assertEquals(ExecutionContext.AllocationKind.ACTOR,
+                context.allocationDomain().kind());
+        assertEquals(0L, context.allocationDomain().owner());
+        assertEquals(3L, context.allocationDomain().generation());
+        assertNotEquals(context.id().execution(), context.allocationDomain().owner(),
+                "execution and allocation-owner identities must never be conflated");
     }
 
     @Test
