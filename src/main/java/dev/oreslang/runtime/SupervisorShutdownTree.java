@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.time.Duration;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
@@ -11,23 +12,21 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Trusted-host supervisor shutdown coordinator.
+ * Trusted-host supervisor shutdown substrate. This does not enable source
+ * `define supervisor` or implement the guest checked-effect lowering.
  *
- * <p>One CONTROL executor is shared by the tree; there are no threads or
- * schedulers per supervisor. The injected executor MUST enqueue work onto a
- * serialized CONTROL lane and must never run guest callbacks inline on an
- * actor, producer, or timer thread. This is a runtime substrate, not source
- * lowering of `define supervisor` or permission for guest code to invoke
- * host supervisor hooks.</p>
- *
- * <p>Shutdown is top-down for admission fencing/onShutdown and bottom-up
- * for finalization/onStopped. Siblings stop in reverse registration order.
- * A failed hook/actor cannot prevent the remaining subtree from draining.
- * A timeout is a failed outcome, NEVER proof of physical termination.</p>
+ * <p>Hook invocations are serialized through a shared CONTROL executor.
+ * It MUST enqueue rather than execute inline, and MUST NOT use actor carriers.
+ * Source compiler CONTROL admission and physical arena-loan quiescence remain
+ * independent release gates.</p>
  */
 public final class SupervisorShutdownTree {
+    private static final int MAX_DEPTH = 64;
+    private static final int MAX_NODES = 4096;
+
     public enum Reason { NORMAL, REQUESTED, PARENT_EXIT, RUNTIME_EXIT }
 
     public interface Hooks {
@@ -35,7 +34,7 @@ public final class SupervisorShutdownTree {
             return OresFuture.completed(null);
         }
 
-        /** Called only after child supervisors and managed actors have settled. */
+        /** After child supervisors and owned actor DONE barriers have settled. */
         default OresFuture<Void> onStopped(Reason reason) {
             return OresFuture.completed(null);
         }
@@ -45,21 +44,26 @@ public final class SupervisorShutdownTree {
         private final String name;
         private final ActorRuntime.ActorGroup group;
         private final Hooks hooks;
+        private final int depth;
         private final List<Supervisor> children = new ArrayList<>();
-        // Capture before graceful group close clears its worker registry.
-        // Retain for timeout escalation only until physical finalization.
+        // Strong refs are kept only until actor shutdown actually settles.
         private volatile List<ActorRuntime.ActorRef<?>> shutdownWorkers = List.of();
         private final OresFuture<Void> terminated = new OresFuture<>(() -> false, () -> { });
 
-        private Supervisor(String name, ActorRuntime.ActorGroup group, Hooks hooks) {
+        private Supervisor(String name, ActorRuntime.ActorGroup group, Hooks hooks, int depth) {
             this.name = Objects.requireNonNull(name, "name");
+            if (name.isBlank()) throw new IllegalArgumentException("empty supervisor name");
             this.group = Objects.requireNonNull(group, "group");
             this.hooks = Objects.requireNonNull(hooks, "hooks");
+            this.depth = depth;
         }
 
         public String name() { return name; }
 
-        /** Noncancellable observer; failure or timeout is not a clean shutdown. */
+        /**
+         * Noncancellable graceful-completion outcome. Failed or timed-out
+         * results must never be interpreted as physical cleanup receipts.
+         */
         public OresFuture<Void> terminated() { return terminated; }
 
         public Supervisor addChild(String childName, ActorRuntime.ActorGroup childGroup, Hooks childHooks) {
@@ -72,7 +76,13 @@ public final class SupervisorShutdownTree {
     private final Object treeLock = new Object();
     private final Set<ActorRuntime.ActorGroup> boundGroups =
             Collections.newSetFromMap(new IdentityHashMap<>());
+    private final Object queueLock = new Object();
+    private final ArrayDeque<Runnable> work = new ArrayDeque<>();
+    private final AtomicBoolean emergency = new AtomicBoolean();
+    private boolean draining;
+    private boolean dispatchFailed;
     private Supervisor root;
+    private int supervisorCount;
     private boolean shuttingDown;
 
     public SupervisorShutdownTree(ActorRuntime runtime, Executor serialControlExecutor) {
@@ -85,10 +95,13 @@ public final class SupervisorShutdownTree {
             if (root != null || shuttingDown) {
                 throw new IllegalStateException("supervisor root already installed or stopping");
             }
+            Supervisor next = new Supervisor(name, group, hooks, 1);
             verifyGroup(group);
-            root = new Supervisor(name, group, hooks);
+            group.bindSupervisorShutdownTree(this);
             boundGroups.add(group);
-            return root;
+            supervisorCount = 1;
+            root = next;
+            return next;
         }
     }
 
@@ -99,12 +112,18 @@ public final class SupervisorShutdownTree {
             if (!belongsToTree(parent)) {
                 throw new IllegalArgumentException("parent is not in this supervisor tree");
             }
-            verifyGroup(group);
-            if (!boundGroups.add(group)) {
-                throw new IllegalArgumentException("ActorGroup already belongs to a supervisor");
+            if (parent.depth >= MAX_DEPTH || supervisorCount >= MAX_NODES) {
+                throw new IllegalStateException("supervisor tree capacity exceeded");
             }
-            Supervisor child = new Supervisor(name, group, hooks);
+            Supervisor child = new Supervisor(name, group, hooks, parent.depth + 1);
+            verifyGroup(group);
+            if (boundGroups.contains(group)) {
+                throw new IllegalArgumentException("ActorGroup already belongs to this supervisor");
+            }
+            group.bindSupervisorShutdownTree(this);
+            boundGroups.add(group);
             parent.children.add(child);
+            supervisorCount++;
             return child;
         }
     }
@@ -114,9 +133,9 @@ public final class SupervisorShutdownTree {
         return contains(root, candidate);
     }
 
-    private static boolean contains(Supervisor root, Supervisor candidate) {
-        if (root == candidate) return true;
-        for (Supervisor child : root.children) {
+    private static boolean contains(Supervisor node, Supervisor candidate) {
+        if (node == candidate) return true;
+        for (Supervisor child : node.children) {
             if (contains(child, candidate)) return true;
         }
         return false;
@@ -127,123 +146,212 @@ public final class SupervisorShutdownTree {
         if (!group.ownedBy(runtime)) {
             throw new IllegalArgumentException("supervised group belongs to another runtime");
         }
-        if (group.closed()) throw new IllegalStateException("cannot supervise a closed ActorGroup");
+        if (group.closed()) throw new IllegalStateException("cannot supervise closed ActorGroup");
     }
 
     /**
-     * Fence admissions for the WHOLE tree before dispatching any hook. A
-     * concurrent spawn completing its allocation after the fence must fail
-     * management and cancel its worker. No worker or supervisor is orphaned.
+     * Freeze tree membership and managed-worker admission before calling
+     * any hook. A conflicting spawn must fail management and cancel its newly
+     * allocated actor instead of publishing an unowned child.
      */
     public OresFuture<Void> shutdown(Reason reason) {
         Objects.requireNonNull(reason, "reason");
         final Supervisor target;
+        Throwable fenceFailure = null;
         synchronized (treeLock) {
             if (root == null) throw new IllegalStateException("supervisor root is missing");
             target = root;
             if (shuttingDown) return target.terminated;
-            // The admission fence and the tree freeze share a linearization
-            // point with child registration. Do not call guest hooks here.
-            sealSubtree(target);
+            // On any fence failure the tree MUST remain sealed, not retry
+            // guest callbacks against a partially-fenced tree.
             shuttingDown = true;
+            try {
+                sealSubtree(target);
+            } catch (Throwable failure) {
+                fenceFailure = failure;
+            }
         }
-        dispatch(() -> start(target, reason));
+        if (fenceFailure != null) emergencyStop(fenceFailure);
+        else dispatch(() -> start(target, reason));
         return target.terminated;
     }
 
     /**
-     * Deadline applies to the WHOLE tree, not individually to each sibling.
-     * A timed-out observer fails; the runtime must still retain all active
-     * execution leases/arenas until physical finalization is verified.
-     * The caller supplies one shared timer, not a timer thread per actor.
+     * A deadline creates a SEPARATE bounded failure observer. The underlying
+     * terminated() future is never force-settled by a clock: a timeout does not
+     * fabricate evidence that actor turns or guest hooks have ended.
+     *
+     * Watchdog scheduling failure also returns a failed bounded observer
+     * after shutdown admission, rather than leaving a caller believing that
+     * an unobserved shutdown was never started.
      */
     public OresFuture<Void> shutdown(
             Reason reason, Duration grace, ScheduledExecutorService watchdog) {
         Objects.requireNonNull(grace, "grace");
         Objects.requireNonNull(watchdog, "watchdog");
         if (grace.isNegative()) throw new IllegalArgumentException("negative shutdown grace");
-        // A huge positive Duration must not launch shutdown and then throw
-        // during conversion before installing the deadline observer.
-        long graceNanos;
+        long nanos;
         try {
-            graceNanos = grace.toNanos();
+            nanos = grace.toNanos();
         } catch (ArithmeticException overflow) {
-            graceNanos = Long.MAX_VALUE;
+            nanos = Long.MAX_VALUE;
         }
-        OresFuture<Void> done = shutdown(reason);
-        var timeout = watchdog.schedule(() -> {
-            if (done.isDone()) return;
-            TimeoutException deadline = new TimeoutException(
-                    "supervisor tree shutdown deadline expired; physical cleanup unverified");
-            // Do not claim success or release memory on the timeout path.
-            if (!done.failFromRuntime(deadline)) return;
-            List<Supervisor> nodes = new ArrayList<>();
-            synchronized (treeLock) { collect(root, nodes); }
-            // Cancellation is an escalation request, not forceful lease
-            // revocation. Runtime shutdown must still await physical exit.
-            for (Supervisor node : nodes) {
-                try {
-                    for (ActorRuntime.ActorRef<?> worker : node.shutdownWorkers) {
-                        worker.cancel();
-                    }
-                } catch (RuntimeException failure) {
-                    deadline.addSuppressed(failure);
+        OresFuture<Void> actual = shutdown(reason);
+        OresFuture<Void> bounded = new OresFuture<>(() -> false, () -> { });
+        final java.util.concurrent.ScheduledFuture<?> timer;
+        try {
+            timer = watchdog.schedule(() -> {
+                TimeoutException deadline = new TimeoutException(
+                        "supervisor tree shutdown deadline expired; physical cleanup unverified");
+                if (bounded.failFromRuntime(deadline)) escalate(deadline);
+            }, nanos, TimeUnit.NANOSECONDS);
+        } catch (RuntimeException rejected) {
+            bounded.failFromRuntime(rejected);
+            escalate(rejected);
+            return bounded;
+        }
+        actual.whenCompleteRuntime((ignored, failure) -> {
+            timer.cancel(false);
+            if (failure == null) bounded.completeFromRuntime(null);
+            else bounded.failFromRuntime(failure);
+        });
+        return bounded;
+    }
+
+    private void sealSubtree(Supervisor node) {
+        node.group.fenceWorkerAdmissions();
+        node.shutdownWorkers = node.group.workers();
+        for (Supervisor child : node.children) sealSubtree(child);
+    }
+
+    private static void collect(Supervisor node, List<Supervisor> out) {
+        if (node == null) return;
+        out.add(node);
+        for (Supervisor child : node.children) collect(child, out);
+    }
+
+    /**
+     * Serialize callbacks EVEN when the embedder accidentally supplies a
+     * multi-worker executor. This is a CONTROL event queue, not a thread pool.
+     * Any inline executor is rejected; callbacks must not run on a caller's
+     * actor, producer, or timer stack.
+     */
+    private void dispatch(Runnable action) {
+        boolean schedule = false;
+        synchronized (queueLock) {
+            if (dispatchFailed) return;
+            work.addLast(action);
+            if (!draining) {
+                draining = true;
+                schedule = true;
+            }
+        }
+        if (!schedule) return;
+        Thread submitter = Thread.currentThread();
+        try {
+            control.execute(() -> {
+                if (Thread.currentThread() == submitter) {
+                    emergencyStop(new IllegalStateException(
+                            "supervisor CONTROL executor ran a callback inline"));
+                } else {
+                    drainQueue();
                 }
-                try {
-                    node.group.closeAsync();
-                } catch (RuntimeException failure) {
-                    deadline.addSuppressed(failure);
+            });
+        } catch (RuntimeException rejected) {
+            emergencyStop(rejected);
+        }
+    }
+
+    private void drainQueue() {
+        for (;;) {
+            Runnable next;
+            synchronized (queueLock) {
+                if (dispatchFailed) return;
+                next = work.pollFirst();
+                if (next == null) {
+                    draining = false;
+                    return;
                 }
             }
-        }, graceNanos, TimeUnit.NANOSECONDS);
-        done.whenCompleteRuntime((ignored, failure) -> timeout.cancel(false));
-        return done;
+            try {
+                next.run();
+            } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+                emergencyStop(fatal);
+                throw fatal;
+            } catch (Throwable failure) {
+                emergencyStop(failure);
+            }
+        }
     }
 
-    private void sealSubtree(Supervisor supervisor) {
-        supervisor.group.fenceWorkerAdmissions();
-        supervisor.shutdownWorkers = supervisor.group.workers();
-        for (Supervisor child : supervisor.children) sealSubtree(child);
+    /** No guest callbacks are run on the emergency / watchdog thread. */
+    private void emergencyStop(Throwable failure) {
+        if (!emergency.compareAndSet(false, true)) return;
+        synchronized (queueLock) {
+            dispatchFailed = true;
+            work.clear();
+            draining = false;
+        }
+        escalate(failure);
+        Supervisor target;
+        synchronized (treeLock) {
+            target = root;
+        }
+        if (target != null) {
+            target.terminated.failFromRuntime(new IllegalStateException(
+                    "supervisor CONTROL unavailable; clean shutdown unverified", failure));
+        }
     }
 
-    private static void collect(Supervisor node, List<Supervisor> nodes) {
-        nodes.add(node);
-        for (Supervisor child : node.children) collect(child, nodes);
-    }
-
-    private void dispatch(Runnable task) {
-        try {
-            control.execute(task);
-        } catch (RuntimeException rejected) {
-            // A stopped CONTROL lane is a terminal failure, never a
-            // fabricated clean-shutdown completion.
-            Supervisor target = root;
-            if (target != null) target.terminated.failFromRuntime(rejected);
+    /**
+     * Escalation requests cooperative cancellation of the ORIGINAL
+     * admission snapshot. closeAsync() alone is not sufficient: it is
+     * idempotent and the group may already have entered graceful close.
+     */
+    private void escalate(Throwable reason) {
+        List<Supervisor> nodes = new ArrayList<>();
+        synchronized (treeLock) {
+            collect(root, nodes);
+        }
+        // Reversed order prefers descendants but makes no physical
+        // completion or hard-kill claim.
+        for (int i = nodes.size() - 1; i >= 0; i--) {
+            Supervisor node = nodes.get(i);
+            for (ActorRuntime.ActorRef<?> worker : node.shutdownWorkers) {
+                try {
+                    worker.cancel();
+                } catch (RuntimeException failure) {
+                    reason.addSuppressed(failure);
+                }
+            }
+            try {
+                node.group.closeAsync();
+            } catch (RuntimeException failure) {
+                reason.addSuppressed(failure);
+            }
+            // Once the actual group drain settles, no supervisor coordinator
+            // needs to retain actor heap handles for later escalation.
+            node.group.closedDone().whenCompleteRuntime((ignored, failure) ->
+                    node.shutdownWorkers = List.of());
         }
     }
 
     private static OresFuture<Void> callShutdownHook(Supervisor node, Reason reason) {
         try {
-            return Objects.requireNonNull(
-                    node.hooks.onShutdown(reason), "onShutdown returned null");
+            return Objects.requireNonNull(node.hooks.onShutdown(reason), "onShutdown returned null");
         } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
             throw fatal;
         } catch (Throwable failure) {
-            // An ordinary host hook panic is recorded and the rest of the tree
-            // is still drained. Fatal JVM execution failures remain fatal.
             return OresFuture.failed(failure);
         }
     }
 
     private static OresFuture<Void> callStoppedHook(Supervisor node, Reason reason) {
         try {
-            return Objects.requireNonNull(
-                    node.hooks.onStopped(reason), "onStopped returned null");
+            return Objects.requireNonNull(node.hooks.onStopped(reason), "onStopped returned null");
         } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
             throw fatal;
         } catch (Throwable failure) {
-            // An ordinary host hook panic is recorded and the rest of the tree
-            // is still drained. Fatal JVM execution failures remain fatal.
             return OresFuture.failed(failure);
         }
     }
@@ -273,32 +381,33 @@ public final class SupervisorShutdownTree {
     }
 
     private void stopWorkers(Supervisor node, Reason reason, List<Throwable> failures) {
-        OresFuture<Void> groupDone;
+        OresFuture<Void> done;
         try {
-            groupDone = node.group.gracefulCloseAsync();
+            done = node.group.gracefulCloseAsync();
         } catch (Exception failure) {
             failures.add(failure);
-            // A failed initiation still attempts ordinary structured close.
             try {
-                groupDone = node.group.closeAsync();
+                done = node.group.closeAsync();
             } catch (Exception secondFailure) {
                 failures.add(secondFailure);
-                groupDone = OresFuture.failed(secondFailure);
+                // A failed initiation is NOT a physical quiescence receipt.
+                node.terminated.failFromRuntime(new IllegalStateException(
+                        "failed to start managed-worker shutdown", secondFailure));
+                return;
             }
         }
-        groupDone.whenCompleteRuntime((ignored, failure) ->
+        done.whenCompleteRuntime((ignored, failure) ->
                 dispatch(() -> {
                     if (failure != null) failures.add(failure);
                     node.shutdownWorkers = List.of();
-                    callStoppedHook(node, reason).whenCompleteRuntime((done, hookFailure) ->
+                    callStoppedHook(node, reason).whenCompleteRuntime((result, hookFailure) ->
                             dispatch(() -> {
                                 if (hookFailure != null) failures.add(hookFailure);
                                 if (failures.isEmpty()) {
                                     node.terminated.completeFromRuntime(null);
                                 } else {
-                                    IllegalStateException aggregate =
-                                            new IllegalStateException(
-                                                    "supervisor " + node.name + " shutdown failed");
+                                    IllegalStateException aggregate = new IllegalStateException(
+                                            "supervisor " + node.name + " shutdown failed");
                                     for (Throwable problem : failures) aggregate.addSuppressed(problem);
                                     node.terminated.failFromRuntime(aggregate);
                                 }
