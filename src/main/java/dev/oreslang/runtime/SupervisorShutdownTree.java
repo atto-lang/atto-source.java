@@ -79,6 +79,9 @@ public final class SupervisorShutdownTree {
     private final Set<ActorRuntime.ActorGroup> boundGroups =
             Collections.newSetFromMap(new IdentityHashMap<>());
     private final Object queueLock = new Object();
+    // Check actual synchronous invocation, not merely the thread identity:
+    // a legitimate event loop may dequeue later on the submission thread.
+    private final ThreadLocal<Boolean> insideSubmission = new ThreadLocal<>();
     private final ArrayDeque<Runnable> work = new ArrayDeque<>();
     private final AtomicBoolean emergency = new AtomicBoolean();
     private boolean draining;
@@ -263,10 +266,11 @@ public final class SupervisorShutdownTree {
             return;
         }
         if (!schedule) return;
-        Thread submitter = Thread.currentThread();
+        boolean previous = Boolean.TRUE.equals(insideSubmission.get());
+        insideSubmission.set(true);
         try {
             control.execute(() -> {
-                if (Thread.currentThread() == submitter) {
+                if (Boolean.TRUE.equals(insideSubmission.get())) {
                     emergencyStop(new IllegalStateException(
                             "supervisor CONTROL executor ran a callback inline"));
                 } else {
@@ -275,6 +279,9 @@ public final class SupervisorShutdownTree {
             });
         } catch (RuntimeException rejected) {
             emergencyStop(rejected);
+        } finally {
+            if (previous) insideSubmission.set(true);
+            else insideSubmission.remove();
         }
     }
 
