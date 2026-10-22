@@ -319,3 +319,78 @@ No proof of automatic cleanup on EXTERNAL cancellation of a
 SUSPENDED SourceTask exists: scheduler WAITING->TERMINAL bypasses its
 normal continuation, as tracked by #883. Run guest JDK25 and LLVM
 equivalent tests before merge.
+
+
+## Update: authenticated SourceTask cancellation cleanup (2026-10-22)
+
+**Supersedes the earlier statement above that a suspended root
+SourceTask has no cancellation continuation.** The current Java draft
+now has a partial, real scheduler-to-SourceTask unwind protocol.
+
+1. `OresFuture` has an opt-in deferred cancellation request for
+   `OresScheduler.CleanupAwareTask`. Request admission is linearized
+   with ordinary terminal settlement under a short lock. The Future
+   remains logically pending during cleanup; only a scheduler-owned
+   physical terminal handoff can publish cancelled or incomplete.
+   Ordinary `OresFuture` cancellation semantics are unchanged.
+2. `OresScheduler` injects exactly one terminal cleanup resume only
+   on the original scheduler, with a private thread-local admission
+   marker. Awaited producer Future registrations are detached without
+   cancelling borrowed producers. A cleanup continuation may suspend
+   again; the cancellation marker is not reinjected.
+3. `SourceTask` now implements `CleanupAwareTask` and retains heap-owned,
+   LIFO lexical frames for `defer`, implicit `MutexGuard` retirement,
+   and `finally`. On an AUTHENTICATED cleanup resume, it discards the
+   interrupted ordinary continuation, bypasses source catch/trap, and
+   unwinds frames using an iterative trampoline. Nested cleanup that
+   itself awaits uses the same scheduler-owned continuation mechanism.
+4. `async for` and AutoCloseable synchronous iterator scopes now
+   register a close-once cleanup capability. Original completion and
+   cancellation share ONE cached async close Future to prevent duplicate
+   close of a producer racing with cancellation.
+5. Cleanup-time Oreslang panic implements a runtime-only untrappable
+   marker; a true panic still dominates cancellation. Ordinary
+   secondary cleanup errors are retained as bounded suppressed
+   diagnostics. A trapped function cannot turn cleanup errors into
+   normal `None`.
+6. The scheduler fails closed when a cleanup lane is unavailable or a
+   finite cleanup-execution budget is exceeded. It must NOT release
+   an actor arena under a false clean-up success witness.
+7. Root scheduler unit tests now include `CleanupAwareTaskTest`,
+   `CleanupAwareSchedulerCancellationTest`, and
+   `DeferredFutureCancellationRaceTest`; source-language tests
+   `SourceTaskCleanupHardeningTest` cover lexical cleanup and
+   ordinary async generator close. Tests are SOURCE-COMMITTED, NOT
+   verified executed or passing on exact head.
+
+### Remaining P0 and proof boundaries
+
+- **Actor STOP cleanup admission.** ActorRuntime currently marks its
+  continuation queue stopped/closed and drops normal queued work. A
+  suspended source cleanup resume needs a scheduler-minted,
+  actor-incarnation-bound cleanup-only mailbox permit, backed by
+  a physical-lifetime count that postpones actor finalization.
+  Current fallback quarantines actor arena on incomplete cleanup;
+  this is safe failure handling, NOT working actor STOP cleanup.
+  No guest user messages or arbitrary callbacks may be admitted
+  after stop. Force-revocation must require actual isolation proof.
+- **Exact-head compilation and tests.** GitHub Actions run jobs fail
+  with no recorded steps. Run focused JDK25/JUnit, GraalVM Native Image,
+  actor mailbox cancellation and LLVM/TSan parity on an approved
+  runner. The source-org private CI destination allowlist is empty,
+  so cross-organization source mirroring remains prohibited until
+  the security-policy approval is complete.
+- **Compiler-enforced checked effects.** `raise`/typed `recover`
+  remain fail-closed until parser, callable signature typechecker,
+  backend unwinder and supervisor semantics are implemented.
+  Automatic source guard release is now better staged but does
+  not prove arbitrary native/FFI mutexes are safely releasable.
+- **Adversarial model.** Check cancel-vs-await settle, cleanup-await,
+  stop-vs-queued cleanup, iterator close races, panic during cleanup,
+  task-child physical retirement, executor rejection, and identity/
+  generation fencing. The Java implementation does not establish
+  LLVM or native actor-arena parity by itself.
+
+Keep PR #1887 DRAFT. Neither logical cancellation nor an
+exceptionally completed cleanup Future alone is a clean physical
+reclamation receipt.
