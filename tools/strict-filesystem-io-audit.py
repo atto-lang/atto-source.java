@@ -54,6 +54,12 @@ for required in (
 provider = text("src/main/java/dev/oreslang/runtime/LinuxUringFileIoProvider.java")
 if provider.count("() -> cancelNative(id), () -> { }") < 2:
     deny("read/exists Future cancellation must require native revocation admission")
+if "MAX_RESERVED_BYTES = 64L * 1024 * 1024" not in provider:
+    deny("strict filesystem provider lacks aggregate native-buffer reservation bound")
+if "reserveBytes(MAX_READ_BYTES)" not in provider:
+    deny("strict reads do not reserve their full native growth ceiling")
+if "releaseBytes(removed.reservedBytes)" not in provider:
+    deny("strict submission/close paths do not release byte reservations")
 
 for forbidden in (
     "ExecutorService",
