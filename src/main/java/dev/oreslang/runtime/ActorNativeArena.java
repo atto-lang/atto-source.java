@@ -914,8 +914,11 @@ public final class ActorNativeArena implements AutoCloseable {
                 if (offset < 0 || length < 0 || offset > capacity || length > capacity - offset) {
                     throw new IndexOutOfBoundsException("read-only lease outside native region");
                 }
+                // Construct first: allocation failure must never strand a
+                // phantom read-only lease and block deterministic teardown.
+                ReadOnlyLease lease = new ReadOnlyLease(offset, length);
                 readLeases = Math.addExact(readLeases, 1);
-                return new ReadOnlyLease(offset, length);
+                return lease;
             }
         }
 
