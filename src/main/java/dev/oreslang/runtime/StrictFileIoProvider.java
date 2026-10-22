@@ -38,15 +38,61 @@ public interface StrictFileIoProvider extends AutoCloseable {
 
     static StrictFileIoProvider createDefault() {
         String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
-        if (os.contains("linux")) {
-            StrictFileIoProvider provider = LinuxUringFileIoProvider.tryCreate();
-            if (provider != null) return provider;
-        }
-        return Unsupported.INSTANCE;
+        return new Lazy(os.contains("linux"));
     }
 
     @Override
     void close();
+
+    final class Lazy implements StrictFileIoProvider {
+        private final boolean linuxCandidate;
+        private StrictFileIoProvider delegate;
+        private boolean closed;
+
+        private Lazy(boolean linuxCandidate) {
+            this.linuxCandidate = linuxCandidate;
+        }
+
+        private synchronized StrictFileIoProvider delegate() {
+            if (closed) return Unsupported.INSTANCE;
+            if (delegate == null) {
+                delegate = linuxCandidate
+                        ? LinuxUringFileIoProvider.tryCreate()
+                        : Unsupported.INSTANCE;
+                if (delegate == null) delegate = Unsupported.INSTANCE;
+            }
+            return delegate;
+        }
+
+        @Override
+        public synchronized boolean supported() {
+            return delegate != null ? delegate.supported() : linuxCandidate;
+        }
+
+        @Override
+        public synchronized String backend() {
+            if (delegate != null) return delegate.backend();
+            return linuxCandidate ? "linux-io_uring-lazy" : "unsupported";
+        }
+
+        @Override
+        public OresFuture<String> readText(String absolutePath) {
+            return delegate().readText(absolutePath);
+        }
+
+        @Override
+        public OresFuture<Boolean> exists(String absolutePath) {
+            return delegate().exists(absolutePath);
+        }
+
+        @Override
+        public synchronized void close() {
+            if (closed) return;
+            closed = true;
+            if (delegate != null) delegate.close();
+            delegate = Unsupported.INSTANCE;
+        }
+    }
 
     enum Unsupported implements StrictFileIoProvider {
         INSTANCE;
