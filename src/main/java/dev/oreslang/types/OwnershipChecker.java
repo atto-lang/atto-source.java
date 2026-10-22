@@ -44,6 +44,9 @@ public final class OwnershipChecker {
     private final Set<String> ambiguousClasses = new HashSet<>();
     /** Only bindings admitted as new short aliases by the type checker. */
     private final Map<Ast.BindingStmt, String> validatedShortAliases;
+    /** Staged until the entire unit's ownership validation completes. */
+    private final Set<Ast.ObjectExpr> validatedAggregateSpreads =
+            java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
@@ -71,6 +74,8 @@ public final class OwnershipChecker {
             Ast.Program program, Map<Ast.BindingStmt, String> validatedShortAliases) {
         OwnershipChecker checker = new OwnershipChecker(program, validatedShortAliases);
         checker.validate(program);
+        AggregateConstructionPlan.Checked.admitAfterOwnership(
+                checker.validatedAggregateSpreads);
         return program;
     }
 
@@ -105,6 +110,8 @@ public final class OwnershipChecker {
             checker.classes.put(name, declaration);
         }
         checker.validate(program);
+        AggregateConstructionPlan.Checked.admitAfterOwnership(
+                checker.validatedAggregateSpreads);
         return program;
     }
 
@@ -1466,6 +1473,7 @@ public final class OwnershipChecker {
             if (object.structuralRecord()) type = Ast.TypeRef.readonlyRecordType(members);
             else if (object.inferredStruct() || object.explicitStruct()) type = Ast.TypeRef.structType(members);
             else throw error("unknown anonymous aggregate kind " + object.kind());
+            if (hasAggregateSpread) validatedAggregateSpreads.add(object);
             return new ValueInfo(type, ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.LambdaExpr lambda) return checkLambda(lambda, scope, null);
