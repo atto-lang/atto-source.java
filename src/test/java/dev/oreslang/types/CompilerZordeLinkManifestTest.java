@@ -61,6 +61,10 @@ final class CompilerZordeLinkManifestTest {
         assertEquals(Set.of("svc.api"), a.roots());
         assertEquals(List.of("svc.users", "svc.api"), a.dependencyFirstOrder());
         assertEquals(64, a.digest().length());
+        assertEquals(1, a.schemaVersion("svc.api", "api.Port"));
+        assertEquals(1, a.schemaVersion("svc.users", "users.Username"));
+        assertThrows(IllegalArgumentException.class,
+                () -> a.schemaVersion("svc.api", "users.Username"));
         assertEquals(a.digest(), b.digest());
         // Identical deterministic manifest hash is NOT an authority token.
         assertFalse(a.sameLinkInstance(b));
