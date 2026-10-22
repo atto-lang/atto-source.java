@@ -236,6 +236,11 @@ public final class Types {
         }
         if (from instanceof Not) return to == Unknown.INSTANCE;
         if (from instanceof BoolLiteral && to == Primitive.BOOL) return true;
+        // Unknown has no checked-effect witness. Do not manufacture a pure
+        // callback from it, or erase an effectful callback to Unknown.
+        if (from == Unknown.INSTANCE && to instanceof Function) return false;
+        if (to == Unknown.INSTANCE && from instanceof Function fn
+                && !fn.effects().isEmpty()) return false;
         if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
         if (to instanceof Generic || from instanceof Generic) return true;
         if (from.equals(to)) return true;
