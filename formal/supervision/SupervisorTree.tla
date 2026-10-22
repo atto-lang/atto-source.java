@@ -51,8 +51,9 @@ BeginShutdown ==
 \* A child shutdown hook cannot precede the parent's pre-hook.
 PreComplete(n) ==
     /\ phase[n] = "Pre"
-    /\ (n = Root \/ phase[Parent[n]] \in
-         {"Children", "Workers", "Post", "Stopped", "Reclaimed"})
+    /\ (IF n = Root THEN TRUE
+        ELSE phase[Parent[n]] \in
+             {"Children", "Workers", "Post", "Stopped", "Reclaimed"})
     /\ phase' = [phase EXCEPT ![n] = "Children"]
     /\ preDone' = [preDone EXCEPT ![n] = TRUE]
     /\ UNCHANGED <<epoch, fenced, workerDone, loans, postDone, timedOut>>
