@@ -1399,6 +1399,18 @@ public final class ActorNativeArena implements AutoCloseable {
     }
 
     /**
+     * Host-only preflight; an actor must not publish physical finalization
+     * before all issued native read leases have retired. No actor guest access
+     * is granted and this cannot revoke a lease.
+     */
+    synchronized boolean hasOutstandingReadLeases() {
+        for (Region region : regions) {
+            if (region.readLeases != 0) return true;
+        }
+        return false;
+    }
+
+    /**
      * Called only after the runtime's actor/async physical quiescence barrier.
      * Fail closed if any native read borrow remains: never free backing pages
      * while a supposedly live immutable region lease could dereference them.
