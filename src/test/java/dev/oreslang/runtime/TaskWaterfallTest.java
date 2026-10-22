@@ -227,4 +227,40 @@ public class TaskWaterfallTest {
                     handle.getDone().get(3, TimeUnit.SECONDS));
         }
     }
+
+    @Test void awaitableStagesMixWithSyncAndFutureStages() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskHandle<String> pipeline = TaskWaterfall.from(
+                    () -> OresFuture.completed(5))
+                .thenValue(n -> n * 2)
+                .thenAwaitable(n -> (Awaitable<String>)
+                        () -> OresFuture.completed("number:" + n))
+                .start(scheduler);
+            assertEquals("number:10", pipeline.result().get(3, TimeUnit.SECONDS));
+            assertEquals(new TaskHandle.Success<>("number:10"),
+                    pipeline.getDone().get(3, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test void failedAwaitableProjectionStopsChainBeforeFollowingStage()
+            throws Exception {
+        AtomicInteger laterStages = new AtomicInteger();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskHandle<String> pipeline = TaskWaterfall.from(
+                    () -> OresFuture.completed(5))
+                .thenAwaitable(v -> (Awaitable<String>)
+                        () -> OresFuture.failed(new IllegalStateException("stage failed")))
+                .thenValue(v -> {
+                    laterStages.incrementAndGet();
+                    return v;
+                })
+                .start(scheduler);
+            assertInstanceOf(IllegalStateException.class,
+                    assertThrows(ExecutionException.class,
+                            () -> pipeline.result().get(3, TimeUnit.SECONDS)).getCause());
+            assertEquals(0, laterStages.get());
+            assertInstanceOf(TaskHandle.Failed.class,
+                    pipeline.getDone().get(3, TimeUnit.SECONDS));
+        }
+    }
 }
