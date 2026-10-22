@@ -57,7 +57,7 @@ final class DistinctPipeSyntaxTest {
     @Test
     void functionalPipingDoesNotAlterBitwiseOrOrPipeLambdaLexing() {
         var tokens = new Lexer("value |> double; a | b; |x| -> x;").scan();
-        assertEquals(1, tokens.stream().filter(t -> t.type() == Token.Type.VALUE_PIPE).count());
+        assertEquals(1, tokens.stream().filter(t -> t.type() == Token.Type.PIPE_FORWARD).count());
         assertEquals(3, tokens.stream().filter(t -> t.type() == Token.Type.PIPE).count());
         assertDoesNotThrow(() -> Parser.parse("""
                 pub fnc double(int value): int { return value * 2; }
