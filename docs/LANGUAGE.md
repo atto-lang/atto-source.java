@@ -1308,13 +1308,26 @@ Top-level/module callables use the same **name + exact arity** overload rule. Sa
 
 ## Ternary expressions
 
-The ternary operator is right-associative and lazy in its selected branch:
+The ternary operator is the value-producing conditional form:
 
 ```ores
 fnc find(bool found): Option<int> {
   return found ? Some(42) : None;
 }
 ```
+
+Its condition must have static type `bool`; Oreslang has no integer, pointer,
+string, collection, or object truthiness conversion for ternary conditions.
+The condition is evaluated exactly once and only the selected value arm is
+evaluated at runtime. Both arms are still checked statically for type,
+ownership/borrow, capability, actor-isolation, and definite-initialization
+rules, and their post-states must admit the compiler's branch join.
+
+Ternary is right-associative, so `a ? b : c ? d : e` means
+`a ? b : (c ? d : e)`. Its precedence is below logical OR and above
+assignment. It is the conditional **expression** counterpart to
+statement-only `if ... then ... fi`; an `if` never substitutes for a
+ternary or yields a branch value.
 
 ## Standalone lexical blocks and conditional bodies
 
@@ -1353,6 +1366,20 @@ fi
 ```
 
 The older `do ... fi` spelling remains accepted for source compatibility, but `then ... fi` is canonical for keyword-delimited conditionals.
+
+`if` is a **statement-only** control-flow form. It never yields a value, and the final expression statement in a branch is never an implicit branch result or function return. Consequently, `const y = if ... fi`, `return if ... fi`, and passing an `if` directly as a call argument are syntax errors. Use the lazy `condition ? when_true : when_false` expression for direct value selection. When branch bodies require multiple statements, put the control flow in a callable and use explicit `return` statements; every path of a non-void callable must explicitly return.
+
+```ores
+fnc get_val(bool condition): int {
+  if condition then
+    return 1;
+  else
+    return 2;
+  fi
+}
+
+const y = condition ? a : b;
+```
 
 ## Loops, iterators, and scheduler safepoints
 
