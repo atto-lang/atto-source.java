@@ -1684,6 +1684,12 @@ public final class OresEvalRootNode extends RootNode {
                                         statementContainsPotentialSuspension(
                                                 nested, seen));
             }
+            if (stmt instanceof Ast.DoWhileStmt loop) {
+                return loop.body().stream().anyMatch(
+                                nested ->
+                                        statementContainsPotentialSuspension(nested, seen))
+                        || expressionContainsPotentialSuspension(loop.condition(), seen);
+            }
             if (stmt instanceof Ast.LoopStmt loop) {
                 return loop.body().stream().anyMatch(
                         nested ->
@@ -1862,6 +1868,7 @@ public final class OresEvalRootNode extends RootNode {
          */
         private boolean containsSourceLoop(Ast.Stmt stmt) {
             if (stmt instanceof Ast.ForStmt
+                    || stmt instanceof Ast.DoWhileStmt
                     || stmt instanceof Ast.LoopStmt
                     || stmt instanceof Ast.ForOfStmt
                     || stmt instanceof Ast.ForOfDestructureStmt) return true;
@@ -2366,6 +2373,15 @@ public final class OresEvalRootNode extends RootNode {
 
                 if (stmt instanceof Ast.ForStmt loop) {
                     runForSuspendable(
+                            task,
+                            loop,
+                            env,
+                            continuation);
+                    return;
+                }
+
+                if (stmt instanceof Ast.DoWhileStmt loop) {
+                    runDoWhileSuspendable(
                             task,
                             loop,
                             env,
@@ -2881,6 +2897,63 @@ public final class OresEvalRootNode extends RootNode {
                                         });
                             }
                         }
+                    });
+        }
+
+        private void runDoWhileSuspendable(
+                SourceTask task,
+                Ast.DoWhileStmt loop,
+                Env env,
+                SourceFlowCont continuation) {
+            runBlock(
+                    task,
+                    loop.body(),
+                    env,
+                    (t, flow) -> {
+                        if (flow.kind() == SourceFlowKind.BREAK) {
+                            continuation.accept(
+                                    t,
+                                    SourceFlow.normal());
+                            return;
+                        }
+                        if (flow.kind() == SourceFlowKind.RETURN
+                                || flow.kind() == SourceFlowKind.THROW) {
+                            continuation.accept(t, flow);
+                            return;
+                        }
+
+                        // NORMAL and CONTINUE both reach the post-test.
+                        evalSuspendableExpr(
+                                t,
+                                loop.condition(),
+                                env,
+                                (t2, condition, failure) -> {
+                                    if (failure != null) {
+                                        continuation.accept(
+                                                t2,
+                                                SourceFlow.throwing(failure));
+                                    } else if (truth(condition)) {
+                                        t2.scheduleLoopContinuation(
+                                                env,
+                                                (resumed, ignored, resumeFailure) -> {
+                                                    if (resumeFailure != null) {
+                                                        continuation.accept(
+                                                                resumed,
+                                                                SourceFlow.throwing(resumeFailure));
+                                                    } else {
+                                                        runDoWhileSuspendable(
+                                                                resumed,
+                                                                loop,
+                                                                env,
+                                                                continuation);
+                                                    }
+                                                });
+                                    } else {
+                                        continuation.accept(
+                                                t2,
+                                                SourceFlow.normal());
+                                    }
+                                });
                     });
         }
 
@@ -5828,6 +5901,22 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return;
             }
+            if (stmt instanceof Ast.DoWhileStmt loop) {
+                do {
+                    context.schedulerSafepoint();
+                    try {
+                        executeBlock(
+                                loop.body(),
+                                env,
+                                inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                    } catch (ContinueSignal ignored) {
+                        // Continue in a post-test loop still evaluates the condition.
+                    } catch (BreakSignal ignored) {
+                        break;
+                    }
+                } while (truth(eval(loop.condition(), env)));
+                return;
+            }
             if (stmt instanceof Ast.LoopStmt loop) {
                 while (true) {
                     context.schedulerSafepoint();
@@ -7739,6 +7828,19 @@ public final class OresEvalRootNode extends RootNode {
             return new IllegalArgumentException(operation + " failed: " + failure.getMessage(), failure);
         }
 
+        private boolean requireSumCallback(List<Object> args, String operation) {
+            requireOne(args, operation);
+            if (!(args.getFirst() instanceof Invokable)) {
+                throw new IllegalArgumentException(operation + " requires a callable");
+            }
+            return true;
+        }
+
+        private Object sumCallback(List<Object> args, String operation, Object... values) {
+            requireSumCallback(args, operation);
+            return invoke(invokableInvocation((Invokable) args.getFirst(), List.of(values)));
+        }
+
         private Object unwrapOptionAtDepth(OptionValue option, int depth) {
             Object current = option;
             for (int level = 0; level < depth; level++) {
@@ -7794,6 +7896,46 @@ public final class OresEvalRootNode extends RootNode {
                     requireOne(args, "Option.unwrap_or");
                     return option.present() ? option.value() : args.getFirst();
                 };
+                case "map" -> (Invokable) args -> {
+                    requireSumCallback(args, "Option.map");
+                    return option.present()
+                            ? new OptionValue(true, sumCallback(args, "Option.map", option.value()))
+                            : option;
+                };
+                case "and_then" -> (Invokable) args -> {
+                    requireSumCallback(args, "Option.and_then");
+                    if (!option.present()) return option;
+                    Object mapped = sumCallback(args, "Option.and_then", option.value());
+                    if (!(mapped instanceof OptionValue)) {
+                        throw new IllegalArgumentException("Option.and_then callback must return Option");
+                    }
+                    return mapped;
+                };
+                case "filter" -> (Invokable) args -> {
+                    requireSumCallback(args, "Option.filter");
+                    if (!option.present()) return option;
+                    Object keep = sumCallback(args, "Option.filter", option.value());
+                    if (!(keep instanceof Boolean value)) {
+                        throw new IllegalArgumentException("Option.filter callback must return bool");
+                    }
+                    return value ? option : new OptionValue(false, null);
+                };
+                case "ok_or_else" -> (Invokable) args -> {
+                    requireSumCallback(args, "Option.ok_or_else");
+                    return option.present()
+                            ? new ResultValue(true, option.value())
+                            : new ResultValue(false, sumCallback(args, "Option.ok_or_else"));
+                };
+                case "transpose" -> (Invokable) args -> {
+                    requireZero(args, "Option.transpose");
+                    if (!option.present()) return new ResultValue(true, option);
+                    if (!(option.value() instanceof ResultValue inner)) {
+                        throw new IllegalArgumentException("Option.transpose requires Option<Result<T,E>>");
+                    }
+                    return inner.ok()
+                            ? new ResultValue(true, new OptionValue(true, inner.value()))
+                            : new ResultValue(false, inner.value());
+                };
                 default -> throw new IllegalArgumentException("unknown Option member " + name);
             };
         }
@@ -7821,6 +7963,41 @@ public final class OresEvalRootNode extends RootNode {
                 case "unwrap_or" -> (Invokable) args -> {
                     requireOne(args, "Result.unwrap_or");
                     return result.ok() ? result.value() : args.getFirst();
+                };
+                case "map" -> (Invokable) args -> {
+                    requireSumCallback(args, "Result.map");
+                    return result.ok()
+                            ? new ResultValue(true, sumCallback(args, "Result.map", result.value()))
+                            : result;
+                };
+                case "map_err" -> (Invokable) args -> {
+                    requireSumCallback(args, "Result.map_err");
+                    return result.ok()
+                            ? result
+                            : new ResultValue(false, sumCallback(args, "Result.map_err", result.value()));
+                };
+                case "and_then" -> (Invokable) args -> {
+                    requireSumCallback(args, "Result.and_then");
+                    if (!result.ok()) return result;
+                    Object mapped = sumCallback(args, "Result.and_then", result.value());
+                    if (!(mapped instanceof ResultValue)) {
+                        throw new IllegalArgumentException("Result.and_then callback must return Result");
+                    }
+                    return mapped;
+                };
+                case "or_else" -> (Invokable) args -> {
+                    requireSumCallback(args, "Result.or_else");
+                    if (result.ok()) return result;
+                    Object mapped = sumCallback(args, "Result.or_else", result.value());
+                    if (!(mapped instanceof ResultValue)) {
+                        throw new IllegalArgumentException("Result.or_else callback must return Result");
+                    }
+                    return mapped;
+                };
+                case "ok" -> (Invokable) args -> {
+                    requireZero(args, "Result.ok");
+                    return result.ok()
+                            ? new OptionValue(true, result.value()) : new OptionValue(false, null);
                 };
                 default -> throw new IllegalArgumentException("unknown Result member " + name);
             };

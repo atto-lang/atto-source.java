@@ -1826,6 +1826,10 @@ public final class Parser {
             return new Ast.ForStmt(null, new Ast.LiteralExpr(true), null, turn);
         }
         if (match(IF)) return parseIf();
+        if (check(DO) && checkNext(LBRACE)) {
+            advance();
+            return parseDoWhile();
+        }
         // Procedural dispatch returns from its enclosing callable. Keep this
         // distinction in the AST instead of relying on source spelling later.
         if (match(DO)) {
@@ -1842,6 +1846,9 @@ public final class Parser {
             return new Ast.LoopStmt(parseLoopBody());
         }
         if (match(FOR)) {
+            if (check(LBRACE) || check(DO)) {
+                return new Ast.LoopStmt(parseLoopBody());
+            }
             boolean asyncIteration = match(AWAIT);
             return parseFor(asyncIteration);
         }
@@ -2066,6 +2073,19 @@ public final class Parser {
             return Ast.SelectPolicy.RANDOM;
         }
         return Ast.SelectPolicy.FAIR;
+    }
+
+    private Ast.Stmt parseDoWhile() {
+        List<Ast.Stmt> body = parseBlock();
+        consume(WHILE, "expected 'while' after do-while body");
+        consume(LPAREN, "post-test do-while requires 'while (<condition>);'");
+        if (check(RPAREN)) {
+            throw error(peek(), "do-while requires a condition; use 'loop { ... }' for an unconditional loop");
+        }
+        Ast.Expr condition = parseExpression();
+        consume(RPAREN, "expected ')' after do-while condition");
+        consume(SEMICOLON, "do-while must end with ';'");
+        return new Ast.DoWhileStmt(body, condition);
     }
 
     private Ast.Stmt parseFor(boolean asyncIteration) {
@@ -2817,7 +2837,7 @@ public final class Parser {
             suppressRefinementOperators = previousSuppression;
         }
 
-        boolean canonicalOver = matchContextualIdentifier("over");
+        boolean canonicalOver = match(OVER) || matchContextualIdentifier("over");
         if (!canonicalOver) match(SEMICOLON);
         // "over { ... }" owns the outer braces, while "over ... end"
         // retains its established terminator. Neither form may consume the
@@ -3086,7 +3106,7 @@ public final class Parser {
     public Ast.Expr parseExpression() { return parseAssignment(); }
 
     private Ast.Expr parseAssignment() {
-        Ast.Expr expr = parseConditional();
+        Ast.Expr expr = parsePipeline();
         if (match(EQUAL)) {
             if (!(expr instanceof Ast.NameExpr) && !(expr instanceof Ast.MemberExpr) && !(expr instanceof Ast.IndexExpr)) {
                 throw error(previous(), "assignment target must be a local, field, or index");
@@ -3094,6 +3114,50 @@ public final class Parser {
             return new Ast.AssignExpr(expr, parseAssignment());
         }
         return expr;
+    }
+
+    /**
+     * Value pipelines are ordinary, eager calls. The leading value is
+     * evaluated once as the first argument. Namespace combinators
+     * (Option.map, Result.map_err, etc.) lower to receiver members so that
+     * the normal sum-type checker and ownership rules apply unchanged.
+     */
+    private Ast.Expr parsePipeline() {
+        Ast.Expr value = parseConditional();
+        int stages = 0;
+        while (match(PIPE_FORWARD)) {
+            Token operator = previous();
+            if (++stages > 128) {
+                throw error(operator, "pipeline exceeds 128 stages");
+            }
+            Ast.Expr stage = parsePostfix();
+            if (stage instanceof Ast.CallExpr call) {
+                if (call.callee() instanceof Ast.MemberExpr member
+                        && member.receiver() instanceof Ast.NameExpr namespace
+                        && (namespace.name().equals("Option") || namespace.name().equals("Result"))) {
+                    value = new Ast.CallExpr(new Ast.MemberExpr(value, member.member()),
+                            call.typeArguments(), call.typeArgumentsPresent(),
+                            call.arguments());
+                } else if (isPipelineCallable(call.callee())) {
+                    List<Ast.Expr> args = new ArrayList<>();
+                    args.add(value);
+                    args.addAll(call.arguments());
+                    value = new Ast.CallExpr(call.callee(), call.typeArguments(),
+                            call.typeArgumentsPresent(), args);
+                } else {
+                    throw error(operator, "pipeline stage must call a named function or Option/Result combinator");
+                }
+            } else if (isPipelineCallable(stage)) {
+                value = new Ast.CallExpr(stage, List.of(value));
+            } else {
+                throw error(operator, "pipeline stage must be a named callable");
+            }
+        }
+        return value;
+    }
+
+    private static boolean isPipelineCallable(Ast.Expr stage) {
+        return stage instanceof Ast.NameExpr;
     }
 
     private Ast.Expr parseConditional() {
