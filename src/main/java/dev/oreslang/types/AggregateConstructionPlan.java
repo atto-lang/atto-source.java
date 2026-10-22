@@ -34,7 +34,7 @@ public final class AggregateConstructionPlan {
     public record NamedField(int sourceIndex, String name, Type type) implements Step {
         public NamedField {
             if (sourceIndex < 0) throw new IllegalArgumentException("negative aggregate source index");
-            Objects.requireNonNull(name, "static aggregate field name");
+            Ast.validateStaticAggregateFieldName(name);
             Objects.requireNonNull(type, "named aggregate field type");
         }
     }
@@ -53,6 +53,10 @@ public final class AggregateConstructionPlan {
                 throw new IllegalArgumentException("aggregate spread cannot project a contract row");
             }
             Objects.requireNonNull(fields, "spread projection fields");
+            for (Map.Entry<String, Type> entry : fields.entrySet()) {
+                Ast.validateStaticAggregateFieldName(entry.getKey());
+                Objects.requireNonNull(entry.getValue(), "spread projection field type");
+            }
             fields = Collections.unmodifiableMap(new LinkedHashMap<>(fields));
         }
     }
