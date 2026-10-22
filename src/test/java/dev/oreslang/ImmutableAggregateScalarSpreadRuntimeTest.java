@@ -68,6 +68,41 @@ final class ImmutableAggregateScalarSpreadRuntimeTest {
     }
 
     @Test
+    void aggregateElementsEvaluateExactlyOnceInLexicalOrder() {
+        assertEquals("base\\nfirst\\ninline\\nlast\\n4\\n1\\n", execute("""
+                fnc mark(string label, int value): int {
+                    stdio.println(label);
+                    return value;
+                }
+
+                pub fnc main(): void {
+                    const base = record{x: mark("base", 1)};
+                    const next = record{
+                        x: mark("first", 2),
+                        ...record{x: mark("inline", 3)},
+                        x_after: mark("last", 4)
+                    };
+                    stdio.println(next.x_after);
+                    stdio.println(base.x);
+                    return;
+                }
+                """));
+    }
+
+    @Test
+    void spreadCanOverrideNamedInitializerBeforeIt() {
+        assertEquals("6\\n5\\n", execute("""
+                pub fnc main(): void {
+                    const base = record{x: 5, y: 6};
+                    const next = record{x: 1, ...base};
+                    stdio.println(next.y);
+                    stdio.println(next.x);
+                    return;
+                }
+                """));
+    }
+
+    @Test
     void nestedOrMoveOnlySourcesRejectBeforeExecution() {
         String nested = """
                 fnc fail(): int {
