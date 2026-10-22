@@ -76,6 +76,9 @@ final class LinuxUringFileIoProviderTest {
         assertEquals(1, bridge.reads.size());
         long id = bridge.reads.getFirst();
         assertEquals(1, provider.pendingCount());
+        assertEquals(
+                LinuxUringFileIoProvider.MAX_READ_BYTES,
+                provider.reservedByteCount());
 
         assertTrue(future.cancel(false));
         assertTrue(future.isCancelled());
@@ -86,6 +89,7 @@ final class LinuxUringFileIoProviderTest {
         provider.nativeReadCompleted(
                 id, "late".getBytes(StandardCharsets.UTF_8), 0);
         assertEquals(0, provider.pendingCount());
+        assertEquals(0, provider.reservedByteCount());
         assertTrue(future.isCancelled());
 
         provider.nativeReadCompleted(
@@ -146,10 +150,42 @@ final class LinuxUringFileIoProviderTest {
 
         OresFuture<String> future = provider.readText("/tmp/rejected");
         assertEquals(0, provider.pendingCount());
+        assertEquals(0, provider.reservedByteCount());
         ExecutionException failure =
                 assertThrows(ExecutionException.class, future::get);
         assertTrue(failure.getCause().getMessage().contains("submission was rejected"));
         provider.close();
+    }
+
+    @Test
+    void providerBoundsAggregateReadReservationsAndReleasesThemOnClose() {
+        FakeBridge bridge = new FakeBridge();
+        LinuxUringFileIoProvider provider = new LinuxUringFileIoProvider(bridge);
+        List<OresFuture<String>> admitted = new ArrayList<>();
+
+        int slots = Math.toIntExact(
+                LinuxUringFileIoProvider.MAX_RESERVED_BYTES
+                        / LinuxUringFileIoProvider.MAX_READ_BYTES);
+        for (int index = 0; index < slots; index++) {
+            admitted.add(provider.readText("/tmp/budget-" + index));
+        }
+        assertEquals(slots, provider.pendingCount());
+        assertEquals(
+                LinuxUringFileIoProvider.MAX_RESERVED_BYTES,
+                provider.reservedByteCount());
+
+        OresFuture<String> overflow = provider.readText("/tmp/budget-overflow");
+        assertTrue(overflow.isDone());
+        assertThrows(ExecutionException.class, overflow::get);
+        assertEquals(slots, provider.pendingCount());
+        assertEquals(
+                LinuxUringFileIoProvider.MAX_RESERVED_BYTES,
+                provider.reservedByteCount());
+
+        provider.close();
+        assertTrue(admitted.stream().allMatch(OresFuture::isDone));
+        assertEquals(0, provider.pendingCount());
+        assertEquals(0, provider.reservedByteCount());
     }
 
     @Test
