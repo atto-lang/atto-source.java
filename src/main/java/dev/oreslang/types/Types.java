@@ -98,7 +98,43 @@ public final class Types {
         }
     }
 
-    public record ListType(Type element) implements Type { }
+    /**
+     * Immutable compile-time positional pattern on a runtime-extent sequence.
+     * An empty repeating unit denotes ordinary homogeneous/union storage.
+     * No reflection or runtime layout is implied by this static proof.
+     */
+    public record ListType(Type element, List<Type> repeatUnit) implements Type {
+        public ListType {
+            Objects.requireNonNull(element, "list element");
+            repeatUnit = List.copyOf(repeatUnit);
+            // Proof metadata cannot claim an element type narrower than any
+            // slot in the repeating sequence.
+            for (Type slot : repeatUnit) {
+                // A generic is not a wildcard proof: an unbound T may not
+                // be substituted with an arbitrary concrete type. Its own
+                // identity must occur in the joined type.
+                // Unknown hidden inside Box<Unknown>, records, tuples,
+                // nested arrays or callbacks is not a positional type proof.
+                boolean unresolved = containsUnknownRecursively(element)
+                        || containsUnknownRecursively(slot);
+                // Generic<T> is not wildcard compatibility. Retain the exact
+                // generic-bearing slot in the join, including nested T's.
+                boolean genericCovered = !containsUncertainType(slot)
+                        || slot.equals(element)
+                        || (element instanceof Union joined && joined.options().contains(slot));
+                boolean joinedGenericSafe = !(element instanceof Generic)
+                        || element.equals(slot);
+                if (unresolved || slot == Primitive.VOID || slot == Primitive.NULL
+                        || !genericCovered || !joinedGenericSafe
+                        || !Types.isAssignable(slot, element)) {
+                    throw new IllegalArgumentException(
+                            "repeating collection slot must be a value subtype of element join");
+                }
+            }
+        }
+        public ListType(Type element) { this(element, List.of()); }
+        public boolean patterned() { return !repeatUnit.isEmpty(); }
+    }
 
     public enum TupleKind {
         TUPLE,
@@ -197,13 +233,48 @@ public final class Types {
         return false; // Not knowing if types overlap is NOT proof of exclusion.
     }
 
+    /** Unknown is not a proof, even when nested; generic names remain valid. */
+    /** Deeply detect ordered sequence proofs inside any type wrapper. */
+    public static boolean containsPatternedList(Type type) {
+        if (type instanceof ListType list) return list.patterned()
+                || containsPatternedList(list.element())
+                || list.repeatUnit().stream().anyMatch(Types::containsPatternedList);
+        if (type instanceof Named named) return named.arguments().stream().anyMatch(Types::containsPatternedList);
+        if (type instanceof Union union) return union.options().stream().anyMatch(Types::containsPatternedList);
+        if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(Types::containsPatternedList);
+        if (type instanceof Record rec) return rec.members().values().stream().anyMatch(Types::containsPatternedList);
+        if (type instanceof Function fn) return fn.parameters().stream().anyMatch(Types::containsPatternedList)
+                || containsPatternedList(fn.result());
+        if (type instanceof Borrow loan) return containsPatternedList(loan.target());
+        if (type instanceof SelfType self) return containsPatternedList(self.bound());
+        if (type instanceof Not not) return containsPatternedList(not.excluded());
+        return false;
+    }
+
+    private static boolean containsUnknownRecursively(Type type) {
+        if (type == Unknown.INSTANCE) return true;
+        if (type instanceof Union union) return union.options().stream().anyMatch(Types::containsUnknownRecursively);
+        if (type instanceof Not not) return containsUnknownRecursively(not.excluded());
+        if (type instanceof Named named) return named.arguments().stream().anyMatch(Types::containsUnknownRecursively);
+        if (type instanceof Record record) return record.members().values().stream().anyMatch(Types::containsUnknownRecursively);
+        if (type instanceof ListType list) return containsUnknownRecursively(list.element())
+                || list.repeatUnit().stream().anyMatch(Types::containsUnknownRecursively);
+        if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(Types::containsUnknownRecursively);
+        if (type instanceof Function function) return function.parameters().stream().anyMatch(Types::containsUnknownRecursively)
+                || containsUnknownRecursively(function.result());
+        if (type instanceof Borrow borrow) return containsUnknownRecursively(borrow.target());
+        if (type instanceof SelfType self) return containsUnknownRecursively(self.bound());
+        return false;
+    }
+
     private static boolean containsUncertainType(Type type) {
         if (type == Unknown.INSTANCE || type instanceof Generic) return true;
         if (type instanceof Union union) return union.options().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof Not not) return containsUncertainType(not.excluded());
         if (type instanceof Named named) return named.arguments().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof Record record) return record.members().values().stream().anyMatch(Types::containsUncertainType);
-        if (type instanceof ListType list) return containsUncertainType(list.element());
+        if (type instanceof ListType list) return containsUncertainType(list.element())
+                || list.repeatUnit().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof Function function) return function.parameters().stream().anyMatch(Types::containsUncertainType)
                 || containsUncertainType(function.result());
@@ -223,6 +294,11 @@ public final class Types {
         }
         if (from instanceof Not) return to == Unknown.INSTANCE;
         if (from instanceof BoolLiteral && to == Primitive.BOOL) return true;
+        // An unknown or unconstrained generic source is not evidence of an
+        // ordered, runtime-extent array contract. Generic slots INSIDE a
+        // declared pattern are still permitted and preserve their identity.
+        if ((from == Unknown.INSTANCE || from instanceof Generic)
+                && containsPatternedList(to)) return false;
         if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
         if (to instanceof Generic || from instanceof Generic) return true;
         if (from.equals(to)) return true;
@@ -272,6 +348,9 @@ public final class Types {
         }
 
         if (from instanceof ListType source && to instanceof ListType target) {
+            // Never recover an erased positional proof or expose a shaped list
+            // through a mutable union-only alias.
+            if (!source.repeatUnit().equals(target.repeatUnit())) return false;
             return isAssignable(source.element(), target.element()) && isAssignable(target.element(), source.element());
         }
 
