@@ -2587,6 +2587,13 @@ public final class OresEvalRootNode extends RootNode {
                                     return;
                                 }
                                 Iterable<?> values = iterableValues(iterable, env);
+                                SourceOwnedClose closer = values instanceof AutoCloseable
+                                        ? new SourceOwnedClose(() -> closeIterable(values)) : null;
+                                SourceCleanupFrame registered = closer == null ? null
+                                        : t.registerSourceCleanup((owner, finished) ->
+                                                finishSourceIterable(owner, closer,
+                                                        SourceFlow.throwing(owner.cancellationCause),
+                                                        finished));
                                 runForOfIteration(
                                         t,
                                         loop,
@@ -2594,7 +2601,11 @@ public final class OresEvalRootNode extends RootNode {
                                         values.iterator(),
                                         0,
                                         (completed, flow) -> finishSourceIterable(
-                                                completed, values, flow, continuation));
+                                                completed, closer, flow, (owner, closed) -> {
+                                                    if (registered != null)
+                                                        owner.disarmSourceCleanup(registered);
+                                                    continuation.accept(owner, closed);
+                                                }));
                             });
                     return;
                 }
@@ -2627,6 +2638,13 @@ public final class OresEvalRootNode extends RootNode {
                                     return;
                                 }
                                 Iterable<?> values = iterableValues(iterable, env);
+                                SourceOwnedClose closer = values instanceof AutoCloseable
+                                        ? new SourceOwnedClose(() -> closeIterable(values)) : null;
+                                SourceCleanupFrame registered = closer == null ? null
+                                        : t.registerSourceCleanup((owner, finished) ->
+                                                finishSourceIterable(owner, closer,
+                                                        SourceFlow.throwing(owner.cancellationCause),
+                                                        finished));
                                 runForOfDestructureIteration(
                                         t,
                                         loop,
@@ -2634,7 +2652,11 @@ public final class OresEvalRootNode extends RootNode {
                                         values.iterator(),
                                         0,
                                         (completed, flow) -> finishSourceIterable(
-                                                completed, values, flow, continuation));
+                                                completed, closer, flow, (owner, closed) -> {
+                                                    if (registered != null)
+                                                        owner.disarmSourceCleanup(registered);
+                                                    continuation.accept(owner, closed);
+                                                }));
                             });
                     return;
                 }
@@ -3216,62 +3238,91 @@ public final class OresEvalRootNode extends RootNode {
             });
         }
 
+        /**
+         * A generator/iterator close is requested at most once. Ordinary
+         * completion and cancellation may race while close() itself is
+         * asynchronous; both await the SAME physical producer finalizer.
+         */
+        private final class SourceOwnedClose {
+            private final Runnable release;
+            private OresFuture<Void> closing;
+
+            SourceOwnedClose(Runnable release) {
+                this.release = Objects.requireNonNull(release, "release");
+            }
+
+            synchronized OresFuture<Void> closeOnce() {
+                if (closing == null) {
+                    closing = context.asyncRuntime().submit(() -> {
+                        release.run();
+                        return null;
+                    });
+                }
+                return closing;
+            }
+        }
+
         private void runAsyncForOf(SourceTask task, Object value, Env env,
                 List<Ast.Stmt> body, java.util.function.BiConsumer<Env, Object> bind,
                 SourceFlowCont continuation) {
-            runAsyncForOfIteration(task, sourceAsyncGenerator(value, env), env, body, bind, continuation);
+            GeneratorRuntime.AsyncGenerator<?> generator = sourceAsyncGenerator(value, env);
+            SourceOwnedClose closer = new SourceOwnedClose(generator::close);
+            SourceCleanupFrame registered = task.registerSourceCleanup(
+                    (owner, completed) -> finishAsyncForOf(owner, closer,
+                            SourceFlow.throwing(owner.cancellationCause), completed));
+            runAsyncForOfIteration(task, generator, closer, env, body, bind,
+                    (owner, flow) -> {
+                        owner.disarmSourceCleanup(registered);
+                        continuation.accept(owner, flow);
+                    });
         }
 
-        private void finishSourceIterable(SourceTask task, Iterable<?> values,
+        private void finishSourceIterable(SourceTask task, SourceOwnedClose closer,
                 SourceFlow flow, SourceFlowCont continuation) {
-            if (!(values instanceof AutoCloseable)) {
+            if (closer == null) {
                 continuation.accept(task, flow);
                 return;
             }
-            task.suspend(context.asyncRuntime().submit(() -> {
-                closeIterable(values);
-                return null;
-            }), (t, ignored, failure) -> continuation.accept(t,
-                    failure == null ? flow : SourceFlow.throwing(failure)));
+            task.suspend(closer.closeOnce(), (t, ignored, failure) ->
+                    continuation.accept(t,
+                            failure == null ? flow : mergeCleanupFailure(flow, failure)));
         }
 
-        private void finishAsyncForOf(SourceTask task, GeneratorRuntime.AsyncGenerator<?> generator,
+        private void finishAsyncForOf(SourceTask task, SourceOwnedClose closer,
                 SourceFlow flow, SourceFlowCont continuation) {
-            // Closing waits for producer cleanup, so it also runs off the bounded carrier.
-            task.suspend(context.asyncRuntime().submit(() -> {
-                generator.close();
-                return null;
-            }), (t, ignored, failure) -> continuation.accept(t,
-                    failure == null ? flow : SourceFlow.throwing(failure)));
+            task.suspend(closer.closeOnce(), (t, ignored, failure) ->
+                    continuation.accept(t,
+                            failure == null ? flow : mergeCleanupFailure(flow, failure)));
         }
 
         private void runAsyncForOfIteration(SourceTask task, GeneratorRuntime.AsyncGenerator<?> generator,
-                Env env, List<Ast.Stmt> body, java.util.function.BiConsumer<Env, Object> bind,
+                SourceOwnedClose closer, Env env, List<Ast.Stmt> body,
+                java.util.function.BiConsumer<Env, Object> bind,
                 SourceFlowCont continuation) {
             task.suspend(generator.nextStep(), (t, value, failure) -> {
                 if (failure != null) {
-                    finishAsyncForOf(t, generator, SourceFlow.throwing(failure), continuation);
+                    finishAsyncForOf(t, closer, SourceFlow.throwing(failure), continuation);
                     return;
                 }
                 GeneratorRuntime.Step<?> step = (GeneratorRuntime.Step<?>) value;
                 if (step.done()) {
-                    finishAsyncForOf(t, generator, SourceFlow.normal(), continuation);
+                    finishAsyncForOf(t, closer, SourceFlow.normal(), continuation);
                     return;
                 }
                 Env iteration = new Env(env);
                 try {
                     bind.accept(iteration, step.value());
                 } catch (RuntimeException | Error bindingFailure) {
-                    finishAsyncForOf(t, generator, SourceFlow.throwing(bindingFailure), continuation);
+                    finishAsyncForOf(t, closer, SourceFlow.throwing(bindingFailure), continuation);
                     return;
                 }
                 runBlock(t, body, iteration, (t2, flow) -> {
                     if (flow.kind() == SourceFlowKind.BREAK) {
-                        finishAsyncForOf(t2, generator, SourceFlow.normal(), continuation);
+                        finishAsyncForOf(t2, closer, SourceFlow.normal(), continuation);
                     } else if (flow.kind() == SourceFlowKind.RETURN || flow.kind() == SourceFlowKind.THROW) {
-                        finishAsyncForOf(t2, generator, flow, continuation);
+                        finishAsyncForOf(t2, closer, flow, continuation);
                     } else {
-                        runAsyncForOfIteration(t2, generator, env, body, bind, continuation);
+                        runAsyncForOfIteration(t2, generator, closer, env, body, bind, continuation);
                     }
                 });
             });
