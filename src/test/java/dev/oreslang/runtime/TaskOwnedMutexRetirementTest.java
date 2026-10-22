@@ -181,6 +181,33 @@ public class TaskOwnedMutexRetirementTest {
 
 
     @Test
+    void equalValuedActorTurnsHaveDistinctLogicalMutexOwnerKeys() {
+        record Context(String actor, int generation) { }
+        var firstTurn = new Context("actor-1", 7);
+        var secondTurn = new Context("actor-1", 7);
+        assertEquals(firstTurn, secondTurn, "records are equal by value");
+        var firstOwner = OresMutex.Shared.logicalOwnerKey(firstTurn);
+        var sameOwner = OresMutex.Shared.logicalOwnerKey(firstTurn);
+        var distinctOwner = OresMutex.Shared.logicalOwnerKey(secondTurn);
+        assertEquals(firstOwner, sameOwner,
+                "one physical/logical execution must preserve its key");
+        assertEquals(firstOwner.hashCode(), sameOwner.hashCode());
+        assertNotEquals(firstOwner, distinctOwner,
+                "two distinct actor turns must never alias by record equality");
+    }
+
+    @Test
+    void ungrantedLeaseDisarmDoesNotRunAnyReleaseCallback() {
+        var releases = new java.util.concurrent.atomic.AtomicInteger();
+        var registry = new TaskOwnedLeases.Registry();
+        var lease = registry.register(releases::incrementAndGet, releases::incrementAndGet);
+        lease.disarmWithoutRelease();
+        lease.disarmWithoutRelease();
+        assertTrue(registry.releaseOnRetirement().isEmpty());
+        assertEquals(0, releases.get());
+    }
+
+    @Test
     void differentLogicalTasksOnOneSchedulerCanQueueSameSharedMutex()
             throws Exception {
         var shared = OresMutex.shared(new int[] { 0 });
