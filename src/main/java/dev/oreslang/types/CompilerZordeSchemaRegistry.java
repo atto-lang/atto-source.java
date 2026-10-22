@@ -37,11 +37,13 @@ final class CompilerZordeSchemaRegistry {
     private final Map<String, RefinementRules.Descriptor> schemas;
     // Only parsed and checked named type imports, never caller graph edges.
     private final Map<String, Set<String>> parsedTypeImports;
+    private final Set<String> publicSchemaNames;
 
     private CompilerZordeSchemaRegistry(
             String unitId, long generation, String sourceDigest,
             Map<String, RefinementRules.Descriptor> schemas,
-            Map<String, Set<String>> imports) {
+            Map<String, Set<String>> imports,
+            Set<String> publiclyVisibleSchemas) {
         this.unitId = unitId;
         this.generation = generation;
         this.sourceDigest = sourceDigest;
@@ -50,6 +52,8 @@ final class CompilerZordeSchemaRegistry {
         imports.forEach((unit, names) ->
                 copy.put(unit, Collections.unmodifiableSet(new TreeSet<>(names))));
         this.parsedTypeImports = Collections.unmodifiableMap(copy);
+        this.publicSchemaNames = Collections.unmodifiableSet(
+                new TreeSet<>(publiclyVisibleSchemas));
     }
 
     /**
@@ -150,8 +154,26 @@ final class CompilerZordeSchemaRegistry {
                 throw new IllegalArgumentException(
                         "imported Zorde type shadows a local schema");
         }
+        // An inferred descriptor is not automatically an importable export.
+        // Only explicit `pub` declarations may cross a source unit.
+        Set<String> publicNames = new TreeSet<>();
+        for (Ast.ModuleDecl module : parsed.modules()) {
+            String prefix = (parsed.namespace() == null ? ""
+                    : parsed.namespace() + ".")
+                    + (module.name().equals(Parser.ROOT_MODULE) ? ""
+                    : module.name() + ".");
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.TypeAliasDecl alias
+                        && alias.visibility() == Ast.Visibility.PUBLIC) {
+                    String qualifiedName = prefix + alias.name();
+                    if (entries.containsKey(qualifiedName))
+                        publicNames.add(qualifiedName);
+                }
+            }
+        }
         return new CompilerZordeSchemaRegistry(
-                compilationUnitId, generation, sha256(source), entries, imported);
+                compilationUnitId, generation, sha256(source),
+                entries, imported, publicNames);
     }
 
     private static String sha256(String text) {
@@ -170,6 +192,7 @@ final class CompilerZordeSchemaRegistry {
     String unitId() { return unitId; }
     String sourceDigest() { return sourceDigest; }
     Map<String, Set<String>> parsedTypeImports() { return parsedTypeImports; }
+    Set<String> publicSchemaNames() { return publicSchemaNames; }
     long generation() { return generation; }
     int size() { return schemas.size(); }
 
