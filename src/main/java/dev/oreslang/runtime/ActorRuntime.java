@@ -7170,6 +7170,8 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean finalCleanupStarted;
         private volatile boolean finalCleanupActive;
         private boolean finalized;
+        /** Prevent reentrant finalization while callbacks settle under lifecycleLock. */
+        private boolean finalizing;
         private volatile ActorTurnWatchdog.Lease watchdogLease;
         private long turnStartedWallNanos;
         private long turnStartedCpuNanos = -1L;
@@ -7494,6 +7496,7 @@ public final class ActorRuntime implements AutoCloseable {
             // fully crossed back out of the TurnExecutor boundary. For
             // Truffle-backed runtimes that boundary owns context enter/leave.
             if (finalized
+                    || finalizing
                     || activeTurns != 0
                     || scheduled.get()
                     || carrierActive
@@ -7507,6 +7510,8 @@ public final class ActorRuntime implements AutoCloseable {
                         "actor still has native read leases at physical finalization"));
                 return;
             }
+            finalizing = true;
+            try {
             OresScheduler scheduler = sourceScheduler;
             sourceScheduler = null;
             if (scheduler != null) {
@@ -7559,7 +7564,10 @@ public final class ActorRuntime implements AutoCloseable {
             if (terminal == null) ref.doneFuture.completeFromRuntime(null);
             else ref.doneFuture.failFromRuntime(terminal);
             finalizedFuture.completeFromRuntime(null);
-            lifecycleLock.notifyAll();
+            } finally {
+                finalizing = false;
+                lifecycleLock.notifyAll();
+            }
         }
 
         private void childFinalized(ActorCell<?> child) {
