@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
+import dev.oreslang.types.AggregateConstructionPlan;
 import dev.oreslang.types.OwnershipChecker;
 
 import java.util.Map;
@@ -29,6 +30,56 @@ public final class RecordFrontendSmoke {
                 """);
         denied(() -> OwnershipChecker.check(mutableSpread),
                 "mutable aggregate source must not bypass snapshot lease admission");
+
+        // Type checking alone cannot authorize interpreter spread execution.
+        // A structurally equal parse never inherits another AST's approval.
+        String sourceWithSpread = """
+                fnc prove(): int {
+                    const base = record{x: 1};
+                    const copy = record{...base, y: 2};
+                    return copy.x;
+                }
+                """;
+        Ast.Program firstParse = Parser.parse(sourceWithSpread);
+        TypeChecker.TypeCheckResult typedSpread =
+                TypeChecker.checkTypesWithDiagnostics(firstParse);
+        Ast.ObjectExpr exactSpread = aggregateBinding(firstParse, "copy");
+        deniedState(() -> AggregateConstructionPlan.Checked.requireAdmitted(exactSpread),
+                "type-only aggregate is not executable");
+        OwnershipChecker.check(typedSpread.program(), typedSpread.shortInferredAliases());
+        check(AggregateConstructionPlan.Checked.requireAdmitted(exactSpread)
+                        .resolvedFields().containsKey("y"),
+                "whole-program ownership approval admits exact original AST");
+        Ast.Program secondParse = Parser.parse(sourceWithSpread);
+        Ast.ObjectExpr equalButForeign = aggregateBinding(secondParse, "copy");
+        check(exactSpread != equalButForeign && exactSpread.equals(equalButForeign),
+                "equal-shaped AST identity regression setup");
+        deniedState(() -> AggregateConstructionPlan.Checked.requireAdmitted(equalButForeign),
+                "structurally identical reparse may not inherit approval");
+
+        // An ownership failure in a separate callable must prevent approval
+        // of earlier successfully checked aggregates in the same program.
+        String rejectedUnit = """
+                fnc good(): int {
+                    const base = record{x: 1};
+                    const copy = record{...base};
+                    return copy.x;
+                }
+                fnc bad(): int {
+                    val mutable = infer struct{x: 1};
+                    const unsafe = record{...mutable};
+                    return unsafe.x;
+                }
+                """;
+        Ast.Program badProgram = Parser.parse(rejectedUnit);
+        TypeChecker.TypeCheckResult badTyped =
+                TypeChecker.checkTypesWithDiagnostics(badProgram);
+        Ast.ObjectExpr premature = aggregateBinding(badProgram, "copy");
+        denied(() -> OwnershipChecker.check(
+                        badTyped.program(), badTyped.shortInferredAliases()),
+                "mutable source rejects the complete ownership pass");
+        deniedState(() -> AggregateConstructionPlan.Checked.requireAdmitted(premature),
+                "failed whole-unit ownership cannot leave prior spread admitted");
 
         // Closed scalar spreads now pass the actual front-end chain.
         // Non-scalar or unowned sources still fail independently at the type
@@ -294,6 +345,30 @@ public final class RecordFrontendSmoke {
         TypeChecker.TypeCheckResult typed =
                 TypeChecker.checkTypesWithDiagnostics(Parser.parse(source));
         OwnershipChecker.check(typed.program(), typed.shortInferredAliases());
+    }
+
+    private static Ast.ObjectExpr aggregateBinding(Ast.Program program, String bindingName) {
+        return program.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .flatMap(fn -> fn.body().stream())
+                .filter(Ast.BindingStmt.class::isInstance)
+                .map(Ast.BindingStmt.class::cast)
+                .filter(binding -> binding.name().equals(bindingName))
+                .map(Ast.BindingStmt::initializer)
+                .filter(Ast.ObjectExpr.class::isInstance)
+                .map(Ast.ObjectExpr.class::cast)
+                .findFirst().orElseThrow();
+    }
+
+    private static void deniedState(Runnable action, String label) {
+        try {
+            action.run();
+        } catch (IllegalStateException expected) {
+            return;
+        }
+        throw new AssertionError("unexpected authorization: " + label);
     }
 
     private static void check(boolean condition, String message) {
