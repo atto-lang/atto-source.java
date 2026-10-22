@@ -1,11 +1,17 @@
 package dev.oreslang.types;
 
 import dev.oreslang.compiler.ZordeSchemaGenerator;
+import dev.oreslang.ast.Ast;
+import dev.oreslang.parser.Parser;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -29,14 +35,21 @@ final class CompilerZordeSchemaRegistry {
     // Reproducibility/debugging only; this digest does NOT grant authority.
     private final String sourceDigest;
     private final Map<String, RefinementRules.Descriptor> schemas;
+    // Only parsed and checked named type imports, never caller graph edges.
+    private final Map<String, Set<String>> parsedTypeImports;
 
     private CompilerZordeSchemaRegistry(
             String unitId, long generation, String sourceDigest,
-            Map<String, RefinementRules.Descriptor> schemas) {
+            Map<String, RefinementRules.Descriptor> schemas,
+            Map<String, Set<String>> imports) {
         this.unitId = unitId;
         this.generation = generation;
         this.sourceDigest = sourceDigest;
         this.schemas = Collections.unmodifiableMap(new LinkedHashMap<>(schemas));
+        Map<String, Set<String>> copy = new TreeMap<>();
+        imports.forEach((unit, names) ->
+                copy.put(unit, Collections.unmodifiableSet(new TreeSet<>(names))));
+        this.parsedTypeImports = Collections.unmodifiableMap(copy);
     }
 
     /**
@@ -50,6 +63,25 @@ final class CompilerZordeSchemaRegistry {
      */
     static CompilerZordeSchemaRegistry stageSourceForAnalysis(
             String source, String compilationUnitId, long generation) {
+        return stage(source, compilationUnitId, generation, false);
+    }
+
+    /**
+     * Import-aware source staging for a separate strict linker entrypoint.
+     * Imports are parsed from the original AST, not interpolated by a build
+     * driver. Only explicit named `import type` is currently understood.
+     *
+     * Dependencies must still be verified against pinned external sources
+     * and exported schemas before any linked analysis type may be issued.
+     */
+    static CompilerZordeSchemaRegistry stageSourceWithParsedImportsForAnalysis(
+            String source, String compilationUnitId, long generation) {
+        return stage(source, compilationUnitId, generation, true);
+    }
+
+    private static CompilerZordeSchemaRegistry stage(
+            String source, String compilationUnitId,
+            long generation, boolean allowTypeImports) {
         Objects.requireNonNull(source, "source");
         if (compilationUnitId == null || compilationUnitId.isBlank()
                 || compilationUnitId.length() > 256
@@ -59,9 +91,40 @@ final class CompilerZordeSchemaRegistry {
         if (generation < 0) {
             throw new IllegalArgumentException("negative Zorde compilation generation");
         }
-        // planSource parses the source and rejects unresolved imports,
-        // arbitrary schema calls, duplicate names and dynamic constraints.
-        ZordeSchemaGenerator.Plan plan = ZordeSchemaGenerator.planSource(source);
+        Ast.Program parsed = Parser.parse(source);
+        if (!allowTypeImports && !parsed.imports().isEmpty())
+            throw new IllegalArgumentException(
+                    "unresolved Zorde imports require strict parsed-import linking");
+
+        Map<String, Set<String>> imported = new TreeMap<>();
+        Set<String> importedSimpleNames = new HashSet<>();
+        if (allowTypeImports) {
+            for (Ast.ImportDecl item : parsed.imports()) {
+                if (item.kind() != Ast.ImportKind.TYPE
+                        || item.wildcard() || item.namespace() != null
+                        || item.names().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "only explicit single-name import type is admitted");
+                }
+                String module = item.path();
+                String simple = item.names().getFirst();
+                if (module == null || module.length() > 256
+                        || !module.matches("[A-Za-z_][A-Za-z_0-9.-]*")
+                        || module.contains("..") || module.endsWith(".")
+                        || !simple.matches("[A-Za-z_][A-Za-z_0-9]*")
+                        || !importedSimpleNames.add(simple)
+                        || module.equals(compilationUnitId)) {
+                    throw new IllegalArgumentException(
+                            "invalid, duplicate, ambiguous or self Zorde import type");
+                }
+                imported.computeIfAbsent(module, ignored -> new TreeSet<>()).add(simple);
+            }
+        }
+        // Source-to-schema inference remains strictly local. We remove
+        // imports only AFTER retaining them for linker symbol verification.
+        // This does not make imported types available to the schema builder.
+        ZordeSchemaGenerator.Plan plan = ZordeSchemaGenerator.plan(
+                new Ast.Program(parsed.namespace(), java.util.List.of(), parsed.modules()));
         if (plan.schemas().isEmpty()) {
             throw new IllegalArgumentException("no statically admitted Zorde schemas");
         }
@@ -81,8 +144,14 @@ final class CompilerZordeSchemaRegistry {
             }
             entries.put(name, descriptor);
         }
+        for (String name : entries.keySet()) {
+            String simple = name.substring(name.lastIndexOf('.') + 1);
+            if (importedSimpleNames.contains(simple))
+                throw new IllegalArgumentException(
+                        "imported Zorde type shadows a local schema");
+        }
         return new CompilerZordeSchemaRegistry(
-                compilationUnitId, generation, sha256(source), entries);
+                compilationUnitId, generation, sha256(source), entries, imported);
     }
 
     private static String sha256(String text) {
@@ -100,6 +169,7 @@ final class CompilerZordeSchemaRegistry {
     Object compilationSeal() { return compilationSeal; }
     String unitId() { return unitId; }
     String sourceDigest() { return sourceDigest; }
+    Map<String, Set<String>> parsedTypeImports() { return parsedTypeImports; }
     long generation() { return generation; }
     int size() { return schemas.size(); }
 
