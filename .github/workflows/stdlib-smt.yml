@@ -13,6 +13,7 @@ on:
       - 'stdlib/core.ores'
       - 'stdlib/trace.ores'
       - 'formal/stdlib/**'
+      - 'examples/native-core-smt-refinement.ores'
       - '.github/workflows/stdlib-smt.yml'
 permissions:
   contents: read
