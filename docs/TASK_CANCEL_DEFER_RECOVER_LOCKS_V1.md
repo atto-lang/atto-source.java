@@ -183,3 +183,47 @@ effects #1010, trap contract #1132, async composition draft #1887.
 The parser already recognizes source `defer` expressions but
 currently rejects source `raise`/`recover` before runtime lowering.
 Do NOT claim source execution until those blockers are resolved.
+
+
+## 2026-10-22 additional failure-closed hardening
+
+- A successfully **explicitly closed** lease is removed from the registry's
+  live-lock stack. The 4,096 limit now caps simultaneously outstanding
+  leases instead of lifetime registrations; a Task can sequentially acquire
+  and close many thousands of leases without false quota exhaustion.
+- Any lease release failure still remains diagnostic even if its early
+  exception is caught and the entry is removed. No automatic unsafe retry
+  is attempted: a release may have partially succeeded. Failed physical
+  cleanup is NOT proof that a lock was released.
+- TaskOwnedLeases.CleanupFailure now retains originalOutcome() so a Task
+  whose primary status was Failed(original error) or Cancelled(reason)
+  does not lose its identity when physical lease cleanup also fails.
+  The original result() Future retains its terminal state independently.
+- TaskScope.getDone() now completes exceptionally on failed descendant
+  logical lock releases; TaskScope.cleanupFailures() is a separate
+  uncancellable detailed observer. TaskMapParallel.MapHandle.getDone()
+  propagates that failed scope cleanup instead of manufacturing success.
+  Scope getDone *settlement* and scope getDone *successful retirement*
+  are distinct; consumers must never use isDone() alone for lock/arena
+  reclamation when a cleanup error is possible.
+- New regressions cover repeated acquisition with cooperative scheduler
+  yields, simultaneous lease caps, failure propagation through scopes and
+  bounded maps, preserving prior Task throw/cancel outcome, and no early
+  release while guest execution is active.
+
+This is host-only Task-owned transferable lease retirement, NOT source
+`defer`/typed `raise`/`recover` implementation, ordinary mutex auto
+unlock support, supervisor panic parity, or verified zero-UAF actor
+finalization. The source compiler still needs continuation-unwind work
+tracked by #883 / #1010 / #1566.
+
+### Runner/privacy constraint
+
+The source repository's approved private CI destination list on main is
+empty, and policy PR #1538 remains unmerged. Repository governance
+forbids cross-organization transfer (even private temporary refs) until
+independent review and approved exact destination/carrier contract.
+A destination with Actions minutes does NOT supply that authorization.
+The local runner cannot retrieve the complete private source tree;
+exact-head GitHub workflows continue failing without recorded build/test
+steps. New tests are committed, NOT claimed passing.
