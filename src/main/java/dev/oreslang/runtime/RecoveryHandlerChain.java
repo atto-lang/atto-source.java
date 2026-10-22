@@ -109,7 +109,21 @@ public final class RecoveryHandlerChain<T> {
         while (firstEligible >= 0 && (effectMasks[firstEligible] & mask) == 0) {
             firstEligible--;
         }
-        if (firstEligible < 0 || containsTerminalControl(failure)) {
+        if (firstEligible < 0) {
+            return new Unhandled<>(kind, failure);
+        }
+        // Throwable.getCause() may be overridden by foreign/host code. If its
+        // causal graph cannot be inspected reliably, do not invoke a recovery
+        // callback or replace the original pending guest failure with the
+        // accessor's unchecked exception. A future sealed GuestEffect is still
+        // required: this defensive scan is not provenance authentication.
+        final boolean terminal;
+        try {
+            terminal = containsTerminalControl(failure);
+        } catch (RuntimeException malformedHostGraph) {
+            return new Unhandled<>(kind, failure);
+        }
+        if (terminal) {
             return new Unhandled<>(kind, failure);
         }
 
