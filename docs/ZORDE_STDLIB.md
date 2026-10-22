@@ -256,6 +256,41 @@ the same fixtures before those backends admit executable refinements.
   typed parsing requires immutable scalar payloads and deep freeze/ownership
   transfer for mutable collections.
 
+### Source-derived named type import edges (non-executable)
+
+The import-aware staging entrypoint
+\`CompilerZordeSchemaRegistry.stageSourceWithParsedImportsForAnalysis\`
+now parses the **original Oreslang source AST** and keeps strict
+\`import type Name from "unit.id";\` declarations as immutable dependency
+metadata. It rejects module/function imports, aliases, wildcards, multiple
+names in one import, duplicate local imported names, names that shadow local
+schema exports, traversal-style paths and source-unit self-imports. The
+legacy source-only staging method continues to reject all imports.
+
+The linker method \`verifyParsedTypeImportsForAnalysis\` compares **exactly**
+the imported unit names from the source AST with the independently pinned
+dependency map; an edge may not be added, removed, or redirected simply by
+supplying an otherwise well-formed lockfile entry. For every named import
+the target staged source must export exactly one schema with that imported
+simple type name. Only an explicitly `pub` refined alias/newtype counts as
+a cross-unit export; private generated schemas cannot be imported merely
+because their names and descriptors are present in linker analysis. The target's source digest must match the independently
+pinned hash, the target and pin sets must be complete, and the pre-existing
+cycle/orphan/ABI/generation/schema collision checks still apply. The older
+\`verifyForAnalysis\` graph-only route explicitly rejects units with parsed
+imports to prevent an admission bypass.
+
+**Limitations:** this is only a restricted, parser-derived **type import
+dependency check**, not general Oreslang symbol resolution. It currently
+does not support qualified module imports, aliases, wildcard imports, an
+imported type in a local Zorde schema expression, or actual linking of
+imported declarations into the source typechecker. The linker still expects
+source hashes and generations from independently **approved** policy input;
+user-selected pins are not credentials. It does not authenticate compiler
+binaries or resolve a signed dependency lockfile. No executable
+\`Valid<T,SchemaId>\` issuance, actor arena allocation, immutable graph
+ownership, FFI transfer, or native LLVM parity is enabled.
+
 ### Closed-world pinned linker manifests (non-executable)
 
 \`CompilerZordeLinkManifest.verifyForAnalysis\` now builds a deterministic,
@@ -282,9 +317,11 @@ linker or a runtime capability:
 - The caller must obtain source-digest/generation pins from independently
   approved build inputs; deriving pins from untrusted candidate sources
   defeats the integrity check. Hash equality alone never authenticates code.
-- Dependency edges are supplied by the build driver, not yet resolved from
-  imported Oreslang module ASTs. Full imported-symbol/interface resolution
-  and actual source-to-module dependency attestation remain separate gates.
+- The original graph-only path still accepts build-driver edges for
+  import-free units. A separate strict path verifies parser-derived
+  `import type` edges, but full imported module AST/interface resolution
+  and externally authenticated source-to-module attestation remain separate
+  gates.
 - The compiler build ID and ABI label are pinned metadata, not a signature,
   compiler-binary attestation or permission to run on that target.
 - The \`checkedTypeForLinkedAnalysis\` method creates only a private static

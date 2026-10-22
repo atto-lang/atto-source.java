@@ -91,6 +91,67 @@ final class CompilerZordeLinkManifest {
             String compilerBuild, String targetAbi,
             Map<String, CompilerZordeSchemaRegistry> candidates,
             Map<String, Pin> expectedPins, Set<String> entryRoots) {
+        // Legacy build-graph analysis accepts only units with NO source imports.
+        // Imported source can never borrow this entrypoint to bypass symbol
+        // resolution. Production guest proofs are still disabled everywhere.
+        return verifyGraphForAnalysis(compilerBuild, targetAbi,
+                candidates, expectedPins, entryRoots, false);
+    }
+
+    /**
+     * Parse-derived dependency admission. Unlike the graph-only entrypoint,
+     * the edges and imported type names here MUST match source import ASTs.
+     * Pinned source digests/generations are independently provided build
+     * policy inputs; never derive trust pins from the candidate source.
+     */
+    static CompilerZordeLinkManifest verifyParsedTypeImportsForAnalysis(
+            String compilerBuild, String targetAbi,
+            Map<String, CompilerZordeSchemaRegistry> candidates,
+            Map<String, Pin> expectedPins, Set<String> entryRoots) {
+        Objects.requireNonNull(candidates, "Zorde candidate source units");
+        Objects.requireNonNull(expectedPins, "Zorde lockfile pins");
+        if (!candidates.keySet().equals(expectedPins.keySet()))
+            throw new IllegalArgumentException("missing or extra pinned Zorde import unit");
+        for (var unit : candidates.entrySet()) {
+            CompilerZordeSchemaRegistry registry = Objects.requireNonNull(
+                    unit.getValue(), "Zorde source registry");
+            Pin policy = Objects.requireNonNull(
+                    expectedPins.get(unit.getKey()), "Zorde pinned source");
+            Map<String, Set<String>> imported = registry.parsedTypeImports();
+            if (!imported.keySet().equals(policy.dependencies().keySet()))
+                throw new IllegalArgumentException(
+                        "Zorde source import graph differs from independently pinned edges");
+            for (var dep : imported.entrySet()) {
+                CompilerZordeSchemaRegistry target = candidates.get(dep.getKey());
+                if (target == null)
+                    throw new IllegalArgumentException("unresolved Zorde parsed import path");
+                if (!policy.dependencies().get(dep.getKey())
+                        .equals(target.sourceDigest()))
+                    throw new IllegalArgumentException("Zorde parsed import hash mismatch");
+                for (String importedName : dep.getValue()) {
+                    // Only explicitly public source declarations are valid
+                    // cross-unit imports. Generated private descriptors are
+                    // usable inside their compilation, not public exports.
+                    long matches = target.publicSchemaNames().stream()
+                            .filter(name -> name.endsWith("." + importedName))
+                            .limit(2).count();
+                    if (matches != 1) {
+                        throw new IllegalArgumentException(
+                                "ambiguous or missing imported Zorde schema "
+                                        + importedName);
+                    }
+                }
+            }
+        }
+        return verifyGraphForAnalysis(compilerBuild, targetAbi,
+                candidates, expectedPins, entryRoots, true);
+    }
+
+    private static CompilerZordeLinkManifest verifyGraphForAnalysis(
+            String compilerBuild, String targetAbi,
+            Map<String, CompilerZordeSchemaRegistry> candidates,
+            Map<String, Pin> expectedPins, Set<String> entryRoots,
+            boolean parsedImportsVerified) {
         if (!validVersion(compilerBuild) || !validVersion(targetAbi))
             throw new IllegalArgumentException("invalid pinned compiler/target ABI");
         Objects.requireNonNull(candidates, "candidate source units");
@@ -111,6 +172,9 @@ final class CompilerZordeLinkManifest {
             CompilerZordeSchemaRegistry registry = Objects.requireNonNull(
                     candidates.get(name), "Zorde compilation unit");
             Pin pin = Objects.requireNonNull(expectedPins.get(name), "Zorde policy pin");
+            if (!parsedImportsVerified && !registry.parsedTypeImports().isEmpty())
+                throw new IllegalArgumentException(
+                        "Zorde parsed imports require strict import-link verifier");
             if (!name.equals(registry.unitId()))
                 throw new IllegalArgumentException("candidate Zorde unit identity mismatch");
             if (!pin.sourceDigest().equals(registry.sourceDigest())
