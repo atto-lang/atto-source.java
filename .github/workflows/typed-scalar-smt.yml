@@ -106,7 +106,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p target/formal-typed-scalar/guest
-          mvn -B -ntp -DskipTests compile exec:java \
+          mvn -B -ntp -DskipTests compile
+          mvn -B -ntp exec:java \
             -Dexec.args="examples/native-core-math-24.ores" \
             | tee target/formal-typed-scalar/guest/guest-raw-stdout.log
           node scripts/check_core_math_guest.mjs \
