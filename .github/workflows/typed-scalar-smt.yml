@@ -1,0 +1,44 @@
+name: Typed Oreslang AST to SMT core proof
+on:
+  pull_request:
+    paths:
+      - 'stdlib/core.ores'
+      - 'src/main/java/dev/oreslang/compiler/TypedScalarSmt.java'
+      - 'src/test/java/dev/oreslang/compiler/TypedScalarSmtTest.java'
+      - 'formal/typed-scalar/**'
+      - '.github/workflows/typed-scalar-smt.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  typed-ast-core-smt:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Enforce exact head and reviewed source identity
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+          test "$(git hash-object stdlib/core.ores)" = "d2cd9b8e0cd3e3bb3ee6a5f9cebf9ab3312c44f4"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Install solver and record provenance
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends z3
+          z3 -version
+          sha256sum "$(command -v z3)"
+      - name: Execute checked Oreslang AST -> SMT and negative source mutations
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=TypedScalarSmtTest -DfailIfNoTests=true test
