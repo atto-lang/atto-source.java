@@ -6458,8 +6458,15 @@ public final class TypeChecker {
                     patternCoversType(pattern, option, generics, self));
         }
         if (pattern instanceof Ast.TypePattern typed) {
+            // A negative type test is not an irrefutable positive coverage proof.
+            // The checker handles complementary T / !T partitions separately.
+            if (typed.type().isComplement()) return false;
             Type target = deref(resolve(typed.type(), generics, self));
-            return typesMayOverlap(subject, target) && assignable(subject, target);
+            // Assignment compatibility is not runtime membership. In
+            // particular, numeric conversions and structural compatibility
+            // must not make a nominal Error/interface pattern exhaustive.
+            // Use the same conservative runtime relation as arm subsumption.
+            return runtimeValueTypeCovered(subject, target, 0);
         }
         if (pattern instanceof Ast.StructuralPattern structural) {
             Type resolved = deref(resolve(structural.target(), generics, self));
