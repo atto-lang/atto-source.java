@@ -68,7 +68,7 @@ public final class AggregateConstructionPlan {
         }
 
         /** Called by the type checker; never grants executable spread authority. */
-        public static synchronized void recordTyped(Ast.ObjectExpr source, Plan plan) {
+        static synchronized void recordTyped(Ast.ObjectExpr source, Plan plan) {
             Objects.requireNonNull(plan, "typed aggregate construction plan");
             if (!source.kind().equals(plan.resultKind())
                     || source.fields().size() != plan.orderedSteps().size()) {
@@ -88,7 +88,7 @@ public final class AggregateConstructionPlan {
          * A missing type proof is not accepted. Independent ownership-only
          * smoke checks may still run, but do not grant executable authority.
          */
-        public static synchronized void admitAfterOwnership(
+        static synchronized void admitAfterOwnership(
                 java.util.Collection<Ast.ObjectExpr> checkedNodes) {
             Objects.requireNonNull(checkedNodes, "ownership-checked aggregates");
             expunge();
