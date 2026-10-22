@@ -1,7 +1,8 @@
 package dev.oreslang.runtime;
 
-import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -81,10 +82,13 @@ public final class TaskOwnedLeases {
 
     static final class Registry {
         private final Object lock = new Object();
-        private final ArrayDeque<Entry> stack = new ArrayDeque<>();
-        // An explicit early close may fail and be caught by host code.
-        // That still invalidates the cleanup proof at physical retirement.
+        // Insertion-ordered live leases permit O(1) explicit retirement, so
+        // sequential acquisitions cannot exhaust the live-leases quota.
+        private final LinkedHashSet<Entry> active = new LinkedHashSet<>();
+        private static final int MAX_EARLY_FAILURES = 64;
+        // Bounded: arbitrary repeated early failures must not grow Task memory.
         private final ArrayList<Throwable> earlyFailures = new ArrayList<>();
+        private long suppressedEarlyFailures;
         private boolean retired;
 
         Lease register(TransferableRelease token) {
@@ -96,11 +100,27 @@ public final class TaskOwnedLeases {
             synchronized (lock) {
                 if (retired) throw new IllegalStateException(
                         "task lease registration after retirement");
-                if (stack.size() == MAX_LEASES_PER_TASK) throw new IllegalStateException(
+                if (active.size() == MAX_LEASES_PER_TASK) throw new IllegalStateException(
                         "task lease quota exceeded");
                 Entry entry = new Entry(this, ordinaryRelease, abandonedRelease);
-                stack.addLast(entry);
+                active.add(entry);
                 return entry;
+            }
+        }
+
+        private void forget(Entry entry) {
+            synchronized (lock) {
+                active.remove(entry);
+            }
+        }
+
+        private void recordEarlyFailure(Throwable failure) {
+            synchronized (lock) {
+                if (earlyFailures.size() < MAX_EARLY_FAILURES) {
+                    earlyFailures.add(failure);
+                } else if (suppressedEarlyFailures != Long.MAX_VALUE) {
+                    suppressedEarlyFailures++;
+                }
             }
         }
 
@@ -110,12 +130,18 @@ public final class TaskOwnedLeases {
             synchronized (lock) {
                 if (retired) return List.of();
                 retired = true;
-                reversed = new ArrayList<>(stack.size());
-                while (!stack.isEmpty()) reversed.add(stack.removeLast());
+                reversed = new ArrayList<>(active);
+                Collections.reverse(reversed);
+                active.clear();
                 // One linearized snapshot of earlier failed releases; no
                 // registration or same-task close may follow retirement.
                 errors = new ArrayList<>(earlyFailures);
+                if (suppressedEarlyFailures != 0L) {
+                    errors.add(new IllegalStateException(
+                            suppressedEarlyFailures + " additional early lease release failures"));
+                }
                 earlyFailures.clear();
+                suppressedEarlyFailures = 0L;
             }
             // Do not invoke any release while holding the registry lock.
             for (Entry entry : reversed) {
@@ -159,10 +185,13 @@ public final class TaskOwnedLeases {
                 try {
                     releaseOnce(false);
                 } catch (RuntimeException | Error failed) {
-                    synchronized (owner.lock) {
-                        owner.earlyFailures.add(failed);
-                    }
+                    owner.recordEarlyFailure(failed);
                     throw failed;
+                } finally {
+                    // Unlink after an explicit close regardless of success.
+                    // The failure remains in cleanupFailures and prevents
+                    // falsely claiming resource reclamation.
+                    owner.forget(this);
                 }
             }
         }
