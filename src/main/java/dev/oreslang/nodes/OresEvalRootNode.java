@@ -4037,23 +4037,26 @@ public final class OresEvalRootNode extends RootNode {
                         }
                     }
                 }
-                for (Object value : values) {
-                    @SuppressWarnings("unchecked")
-                    Map.Entry<String, Object> entry =
-                            (Map.Entry<String, Object>) value;
+                for (int fieldIndex = 0; fieldIndex < values.size(); fieldIndex++) {
+                    Ast.ObjectField field = object.fields().get(fieldIndex);
+                    Object value = values.get(fieldIndex);
+                    if (field.spread()) {
+                        putScalarSpreadFields(value, result);
+                        continue;
+                    }
+                    String key = field.name();
                     if (object.explicitStruct()) {
-                        if (!result.containsKey(entry.getKey())) {
+                        if (!result.containsKey(key)) {
                             throw new IllegalArgumentException(
-                                    "explicit struct initializer contains undeclared field " + entry.getKey());
+                                    "explicit struct initializer contains undeclared field " + key);
                         }
-                        if (result.get(entry.getKey()) != UNINITIALIZED_FIELD) {
+                        if (result.get(key) != UNINITIALIZED_FIELD) {
                             throw new IllegalArgumentException(
-                                    "duplicate explicit struct initializer field " + entry.getKey());
+                                    "duplicate explicit struct initializer field " + key);
                         }
-                        result.put(entry.getKey(), entry.getValue());
-                    } else if (result.putIfAbsent(entry.getKey(), entry.getValue()) != null) {
-                        throw new IllegalArgumentException(
-                                "duplicate struct field " + entry.getKey());
+                        result.put(key, value);
+                    } else {
+                        result.put(key, value);
                     }
                 }
                 Object built = object.structuralRecord()
@@ -4073,7 +4076,9 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(t, null, failure);
                             return;
                         }
-                        values.add(Map.entry(field.name(), value));
+                        // Retain each evaluated source value in lexical order.
+                        // Its AST field metadata determines name vs spread later.
+                        values.add(value);
                         evalSuspendableObjectField(
                                 t,
                                 object,
@@ -9922,6 +9927,37 @@ public final class OresEvalRootNode extends RootNode {
      * detachment/copy boundaries. Concrete structs use mutable owned maps; the
      * static binding/borrow checker decides whether a particular reference may write.
      */
+    /**
+     * Stage-one executable aggregate expansion: copy only immutable scalars
+     * from a tagged Oreslang closed aggregate. Arbitrary Java Maps and guest
+     * capabilities must never acquire spread authority by host shape.
+     *
+     * The destination is still local/unpublished and is abandoned on failure.
+     * No resource-owning nested values are admitted by the type/ownership pass.
+     */
+    private static void putScalarSpreadFields(
+            Object source, LinkedHashMap<String, Object> destination) {
+        Map<String, Object> fields;
+        if (source instanceof ReadonlyRecordValue record) {
+            fields = record;
+        } else if (source instanceof MutableStructValue struct) {
+            fields = struct;
+        } else {
+            throw new IllegalArgumentException(
+                    "aggregate spread requires a closed Oreslang record/struct runtime tag");
+        }
+        for (Map.Entry<String, Object> item : fields.entrySet()) {
+            Object value = item.getValue();
+            if (!(value instanceof Long || value instanceof Integer
+                    || value instanceof Double || value instanceof Boolean
+                    || value instanceof String)) {
+                throw new IllegalArgumentException(
+                        "aggregate spread scalar-only stage cannot copy field '" + item.getKey() + "'");
+            }
+            destination.put(item.getKey(), value);
+        }
+    }
+
     /** Runtime tag for closed mutable struct values; never conflated with generic maps. */
     private static final class MutableStructValue
             extends LinkedHashMap<String, Object> {
