@@ -1,0 +1,127 @@
+package dev.oreslang;
+
+import dev.oreslang.ast.Ast;
+import dev.oreslang.parser.Parser;
+import dev.oreslang.types.NominalErrorProof;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/** Host-only ancestry proofs; these fixtures do NOT authenticate stdlib roots. */
+final class NominalErrorProofTest {
+    private static Ast.ClassDecl klass(String source) {
+        return (Ast.ClassDecl) Parser.parse(source).modules()
+                .getFirst().declarations().getFirst();
+    }
+
+    private static java.util.function.Function<Ast.TypeRef, Ast.ClassDecl> resolver(
+            Map<String, Ast.ClassDecl> classes) {
+        return name -> classes.get(name.name());
+    }
+
+    @Test
+    void verifiedRootIdentityAndMultiStepNominalInheritanceAreAccepted() {
+        // In production the root has to come from independently verified stdlib metadata.
+        Ast.ClassDecl root = klass("define class Error as end");
+        Ast.ClassDecl parse = klass("define class ParseError extends Error as end");
+        Ast.ClassDecl domain = klass("define class DomainError extends ParseError as end");
+        var lookup = resolver(Map.of("Error", root, "ParseError", parse, "DomainError", domain));
+        assertDoesNotThrow(() -> NominalErrorProof.requireNominalError(
+                Ast.TypeRef.simple("Error"), root, lookup));
+        assertDoesNotThrow(() -> NominalErrorProof.requireNominalError(
+                Ast.TypeRef.simple("DomainError"), root, lookup));
+        assertDoesNotThrow(() -> NominalErrorProof.requireNominalEffects(
+                new Ast.EffectSpec(List.of(Ast.TypeRef.simple("ParseError")),
+                        List.of(Ast.TypeRef.simple("DomainError")),
+                        List.of(Ast.TypeRef.simple("Error"))), root, lookup));
+    }
+
+    @Test
+    void counterfeitClassNamedErrorDoesNotAcquireRootAuthority() {
+        Ast.ClassDecl trusted = klass("define class Error as end");
+        Ast.ClassDecl forged = klass("define class Error as end");
+        Ast.ClassDecl child = klass("define class BadError extends Error as end");
+        var lookup = resolver(Map.of("Error", forged, "BadError", child));
+        assertThrows(IllegalArgumentException.class, () ->
+                NominalErrorProof.requireNominalError(
+                        Ast.TypeRef.simple("Error"), trusted, lookup));
+        assertThrows(IllegalArgumentException.class, () ->
+                NominalErrorProof.requireNominalError(
+                        Ast.TypeRef.simple("BadError"), trusted, lookup));
+    }
+
+    @Test
+    void structurallySimilarClassesAndPrimitivesAreNotErrors() {
+        Ast.ClassDecl root = klass("define class Error as end");
+        Ast.ClassDecl unrelated = klass("define class Other as end");
+        var lookup = resolver(Map.of("Error", root, "Other", unrelated));
+        for (String name : List.of("Other", "string", "int", "UnknownError")) {
+            assertThrows(IllegalArgumentException.class, () ->
+                    NominalErrorProof.requireNominalError(
+                            Ast.TypeRef.simple(name), root, lookup), name);
+        }
+    }
+
+    @Test
+    void unboundGenericAndInferredPayloadsFailClosed() {
+        Ast.ClassDecl root = klass("define class Error as end");
+        var lookup = resolver(Map.of("Error", root));
+        assertThrows(IllegalArgumentException.class, () ->
+                NominalErrorProof.requireNominalError(
+                        new Ast.TypeRef("Error", List.of(Ast.TypeRef.simple("int")), false),
+                        root, lookup));
+        assertThrows(IllegalArgumentException.class, () ->
+                NominalErrorProof.requireNominalError(
+                        new Ast.TypeRef("Error", List.of(), true), root, lookup));
+    }
+
+    @Test
+    void unresolvedParentNeverProvesNominalErrorAncestry() {
+        Ast.ClassDecl root = klass("define class Error as end");
+        Ast.ClassDecl child = klass("define class ChildError extends MissingBase as end");
+        var lookup = resolver(Map.of("Error", root, "ChildError", child));
+        var error = assertThrows(IllegalArgumentException.class, () ->
+                NominalErrorProof.requireNominalError(
+                        Ast.TypeRef.simple("ChildError"), root, lookup));
+        assertTrue(error.getMessage().contains("unresolved"));
+    }
+
+    @Test
+    void ancestryCyclesCannotForgeErrorIdentity() {
+        Ast.ClassDecl root = klass("define class Error as end");
+        Ast.ClassDecl a = klass("define class A extends B as end");
+        Ast.ClassDecl b = klass("define class B extends A as end");
+        var lookup = resolver(Map.of("Error", root, "A", a, "B", b));
+        var error = assertThrows(IllegalArgumentException.class, () ->
+                NominalErrorProof.requireNominalError(Ast.TypeRef.simple("A"), root, lookup));
+        assertTrue(error.getMessage().contains("cycle"));
+    }
+
+    @Test
+    void errorCategoryDiagnosticsArePreserved() {
+        Ast.ClassDecl root = klass("define class Error as end");
+        Ast.ClassDecl unrelated = klass("define class Unrelated as end");
+        var lookup = resolver(Map.of("Error", root, "Unrelated", unrelated));
+        for (String category : List.of("throws", "raises", "panics")) {
+            Ast.EffectSpec spec = new Ast.EffectSpec(
+                    category.equals("throws") ? List.of(Ast.TypeRef.simple("Unrelated")) : List.of(),
+                    category.equals("raises") ? List.of(Ast.TypeRef.simple("Unrelated")) : List.of(),
+                    category.equals("panics") ? List.of(Ast.TypeRef.simple("Unrelated")) : List.of());
+            var error = assertThrows(IllegalArgumentException.class, () ->
+                    NominalErrorProof.requireNominalEffects(spec, root, lookup));
+            assertTrue(error.getMessage().contains("checked " + category), category);
+        }
+    }
+
+    @Test
+    void invalidTrustedRootMetadataIsRejected() {
+        Ast.ClassDecl notRoot = klass("define class SomethingElse as end");
+        assertThrows(IllegalArgumentException.class, () ->
+                NominalErrorProof.requireNominalError(
+                        Ast.TypeRef.simple("SomethingElse"), notRoot,
+                        resolver(Map.of("SomethingElse", notRoot))));
+    }
+}
