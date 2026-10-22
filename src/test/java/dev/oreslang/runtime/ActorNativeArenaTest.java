@@ -544,8 +544,6 @@ final class ActorNativeArenaTest {
         region.writeLong(8, 100L);
         assertEquals(100L, region.readLong(8));
         var outstanding = region.leaseReadOnly(8, 8);
-        // A scheduler's erroneous assertion of physical quiescence may not
-        // free memory that still has an issued native borrow.
         assertThrows(IllegalStateException.class, arena::close);
         assertFalse(arena.closed());
         assertEquals(100L, outstanding.readLong(0));
@@ -686,6 +684,73 @@ final class ActorNativeArenaTest {
                 assertEquals(0, runtime.actorMemoryBytes());
             }
         }
+    }
+
+    @Test
+    void nativeLexicalScopeDropRetiresSlotAndReleasesRegistryReferences() {
+        AtomicLong charged = new AtomicLong();
+        Object marker = new Object();
+        try (ActorNativeArena arena = arena(64 * 1024, charged)) {
+            var list = arena.nativeList();
+            var first = arena.valueCell(list, marker);
+            var second = arena.valueCell(list, marker);
+            assertEquals(1, arena.nativeReferenceCount(),
+                    "two references to one native payload share one registry entry");
+            assertSame(list, first.get());
+            assertSame(list, second.get());
+
+            first.close();
+            first.close(); // idempotent within the actor owner
+            assertEquals(1, arena.nativeReferenceCount(),
+                    "retiring one borrower cannot invalidate a second live reference");
+            assertSame(list, second.get());
+            assertThrows(IllegalStateException.class, first::get);
+            assertThrows(IllegalStateException.class, first::nativeOffset);
+            assertThrows(IllegalStateException.class, () -> first.trySet(42L));
+
+            second.close();
+            assertEquals(0, arena.nativeReferenceCount(),
+                    "the final lexical slot drop must release its facade root");
+
+            var text = arena.valueCell("temporary", marker);
+            text.close();
+            assertThrows(IllegalStateException.class, text::get);
+            assertThrows(IllegalStateException.class, () -> text.trySet("reused"));
+            // The owning actor arena still holds its slab until physical
+            // actor teardown; this API does not claim per-slot byte refunds.
+            assertTrue(charged.get() > 0);
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
+    void foreignThreadCannotRetireAnotherActorsNativeLexicalCell() throws Exception {
+        AtomicLong charged = new AtomicLong();
+        Thread owner = Thread.currentThread();
+        try (ActorNativeArena arena = new ActorNativeArena(4096, () -> {
+            if (Thread.currentThread() != owner) {
+                throw new SecurityException("foreign actor memory owner");
+            }
+        }, bytes -> {
+            charged.addAndGet(bytes);
+            return () -> charged.addAndGet(-bytes);
+        })) {
+            Object uninitialized = new Object();
+            ActorNativeArena.ValueCell cell = arena.valueCell(42L, uninitialized);
+            AtomicReference<Throwable> rejected = new AtomicReference<>();
+            Thread foreign = new Thread(() -> {
+                try { cell.close(); }
+                catch (Throwable failure) { rejected.set(failure); }
+            });
+            foreign.start();
+            foreign.join(5000);
+            assertFalse(foreign.isAlive(), "foreign close attempt must terminate");
+            assertInstanceOf(SecurityException.class, rejected.get());
+            assertEquals(42L, cell.get(), "failed foreign retirement must preserve state");
+            cell.close();
+            assertThrows(IllegalStateException.class, cell::get);
+        }
+        assertEquals(0, charged.get());
     }
 
     private static ActorNativeArena arena(long limit, AtomicLong charged) {
