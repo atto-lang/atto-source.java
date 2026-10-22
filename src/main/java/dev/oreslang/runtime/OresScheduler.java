@@ -1203,7 +1203,13 @@ public final class OresScheduler implements AutoCloseable {
                 T value = (T) success.value();
                 completion.completeFromRuntime(value);
             } else if (outcome instanceof TerminalFailure<?> failure) {
-                completion.failFromRuntime(failure.failure());
+                if (pendingCancellation != null && task instanceof CleanupAwareTask<?>) {
+                    // Fatal cleanup error or unavailable cleanup carrier:
+                    // cancellation cannot serve as a successful release proof.
+                    completion.failDeferredCleanupFromRuntime(failure.failure());
+                } else {
+                    completion.failFromRuntime(failure.failure());
+                }
             }
         }
 
@@ -1257,15 +1263,27 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void revokeFromSchedulerClose() {
-            // Quiesce internal state even when another cancellation thread has
-            // settled the Future but is blocked notifying its waiters.
-            cancelFromFuture();
+            // Scheduler CLOSE is not a runnable cleanup lane. A queued or
+            // suspended guest cleanup cannot truthfully be reported as done.
+            // Fail closed; retire physical resources only once a running
+            // carrier has actually exited. Do NOT publish fake cancellation
+            // while lexical guards may still remain.
+            if (task instanceof CleanupAwareTask<?>) {
+                completion.cancel(false);
+                failTerminal(new RejectedExecutionException(
+                        "scheduler closed before source Task unwind completed"));
+            } else {
+                cancelFromFuture();
+            }
         }
 
         private void publishCancelledFromSchedulerClose() {
-            // Task-local revocation for the entire snapshot has completed.
-            // Subscriber delivery is allowed to block, but cannot now delay
-            // cancellation/await detachment for any other admitted task.
+            if (task instanceof CleanupAwareTask<?>) {
+                publishTerminalIfReady();
+                return;
+            }
+            // Ordinary tasks may publish immediate cancellation after their
+            // await revokers have been detached.
             completion.cancel(false);
         }
     }
