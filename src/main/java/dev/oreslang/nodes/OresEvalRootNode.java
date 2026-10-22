@@ -1331,6 +1331,7 @@ public final class OresEvalRootNode extends RootNode {
             private void noteCancelledCleanupFailure(Throwable failed) {
                 if (failed == cancellationCause) return;
                 if (fatalCleanupFailure == null && (failed instanceof Error
+                        || failed instanceof dev.oreslang.runtime.UntrappableTaskFailure
                         || failed instanceof java.util.concurrent.RejectedExecutionException)) {
                     fatalCleanupFailure = failed;
                 }
@@ -10532,7 +10533,8 @@ public final class OresEvalRootNode extends RootNode {
     private record OptionUnwrapError(String reason) {
         @Override public String toString(){return "OptionUnwrapError(" + reason + ")";}
     }
-    private static final class OresPanic extends RuntimeException {
+    private static final class OresPanic extends RuntimeException
+            implements dev.oreslang.runtime.UntrappableTaskFailure {
         private OresPanic(String message) { super(message, null, true, false); }
     }
     private static final class OresCastError extends RuntimeException {
