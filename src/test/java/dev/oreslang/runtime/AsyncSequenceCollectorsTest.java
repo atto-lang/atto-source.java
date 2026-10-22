@@ -4,7 +4,6 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.List;
 import java.util.Optional;
-import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -135,7 +134,7 @@ public class AsyncSequenceCollectorsTest {
                     scheduler, AsyncSequences.fromChannel(channel), n);
             List<Integer> items = collection.result().get(10, TimeUnit.SECONDS);
             assertEquals(n, items.size());
-            for (int i = 0; i < n; i++) assertEquals(i, items.get(i));
+            for (int i = 0; i < n; i++) assertEquals(Integer.valueOf(i), items.get(i));
             assertInstanceOf(TaskHandle.Success.class,
                     collection.getDone().get(10, TimeUnit.SECONDS));
             assertEquals(0, channel.pendingRegistrations());
