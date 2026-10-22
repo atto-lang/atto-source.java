@@ -7498,7 +7498,15 @@ public final class ActorRuntime implements AutoCloseable {
                     || scheduled.get()
                     || carrierActive
                     || !children.isEmpty()) return;
-            finalized = true;
+            // Native arena close refuses active read leases. Never set
+            // finalized=true, unlink the scheduler or drain resources before
+            // this preflight, or actor.done could be stranded behind a falsely
+            // published finalization state with live native memory.
+            if (nativeArena.hasOutstandingReadLeases()) {
+                ref.terminationCause.compareAndSet(null, new IllegalStateException(
+                        "actor still has native read leases at physical finalization"));
+                return;
+            }
             OresScheduler scheduler = sourceScheduler;
             sourceScheduler = null;
             if (scheduler != null) {
@@ -7524,6 +7532,10 @@ public final class ActorRuntime implements AutoCloseable {
             shardSnapshotLeases.clear();
             nativeArena.close();
             if (memorySlice != null) memorySlice.close();
+            // Commit the finalization state only after physical native memory
+            // and actor-budget refunds succeed. This keeps an interrupted
+            // teardown retryable and avoids false successful termination.
+            finalized = true;
             try {
                 actorExitHook.accept(executionDomain);
             } catch (VirtualMachineError | ThreadDeath fatal) {
