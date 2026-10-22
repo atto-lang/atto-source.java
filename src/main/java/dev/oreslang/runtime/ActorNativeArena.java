@@ -969,12 +969,20 @@ public final class ActorNativeArena implements AutoCloseable {
             @Override public void close() {
                 synchronized (ActorNativeArena.this) {
                     if (released) return;
-                    // Physical actor finalization revokes all native storage;
-                    // outstanding Java facades must not resurrect it.
-                    if (!ActorNativeArena.this.closed) {
-                        checkAccess();
-                        readLeases--;
+                    // A read lease can be released by a foreign completion
+                    // thread after its owning actor is suspended or stopped.
+                    // No guest memory read/write occurs here: releasing the
+                    // already-issued lease is not a fresh owner admission.
+                    // Calling checkAccess() would strand the pin forever
+                    // when the callback ends on a different carrier, blocking
+                    // arena shutdown. Arena.close() rejects live leases, so
+                    // a valid lease can never race a physical native free.
+                    if (ActorNativeArena.this.closed || Region.this.memory == null
+                            || readLeases <= 0) {
+                        throw new IllegalStateException(
+                                "native read lease outlived its region");
                     }
+                    --readLeases;
                     released = true;
                 }
             }
