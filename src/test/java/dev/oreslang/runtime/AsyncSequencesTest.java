@@ -242,4 +242,39 @@ public class AsyncSequencesTest {
             assertFalse(source.isCancelled(), "observer close cannot revoke source");
         }
     }
+
+    @Test void completedChannelReadMayReenterNextFromRuntimeListener() throws Exception {
+        ChannelRuntime.Channel<Integer> source = new ChannelRuntime.Channel<>(1);
+        AsyncSequences.Cursor<Integer> cursor = AsyncSequences.fromChannel(source);
+        OresFuture<Optional<Integer>> first = cursor.nextAsync();
+        AtomicReference<OresFuture<Optional<Integer>>> second = new AtomicReference<>();
+        first.whenCompleteRuntime((value, failure) -> {
+            assertNull(failure);
+            assertEquals(Optional.of(1), value);
+            second.set(cursor.nextAsync());
+        });
+        assertTrue(source.tryWrite(1));
+        assertNotNull(second.get());
+        assertFalse(second.get().isDone());
+        assertTrue(source.tryWrite(2));
+        assertEquals(Optional.of(2), second.get().get(3, TimeUnit.SECONDS));
+        cursor.close();
+        assertEquals(0, source.pendingRegistrations());
+    }
+
+    @Test void completedFutureCursorMayObserveEOFFromTerminalListener() throws Exception {
+        OresFuture<Integer> source = new OresFuture<>();
+        AsyncSequences.Cursor<Integer> cursor = AsyncSequences.fromFuture(source);
+        OresFuture<Optional<Integer>> first = cursor.nextAsync();
+        AtomicReference<OresFuture<Optional<Integer>>> next = new AtomicReference<>();
+        first.whenCompleteRuntime((value, failure) -> {
+            assertNull(failure);
+            assertEquals(Optional.of(5), value);
+            next.set(cursor.nextAsync());
+        });
+        source.completeFromRuntime(5);
+        assertNotNull(next.get());
+        assertEquals(Optional.empty(), next.get().get(3, TimeUnit.SECONDS));
+        assertEquals(0, source.pendingRuntimeWaiterCount());
+    }
 }
