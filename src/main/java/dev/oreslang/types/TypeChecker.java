@@ -453,20 +453,16 @@ public final class TypeChecker {
         for (Ast.Decl decl : module.declarations()) {
             if (decl instanceof Ast.FunctionDecl fn && fn.visibility() == Ast.Visibility.PUBLIC
                     && fn.actorKind() == Ast.ActorKind.NONE) {
-                if (!fn.effects().isEmpty()) {
-                    throw new IllegalArgumentException(
-                            "effectful function '" + module.name() + "." + fn.name()
-                                    + "' cannot be represented as a structural module value "
-                                    + "until Function types carry checked effect metadata");
-                }
                 Type signature = callableContractType(
-                        fn.genericParameters(), fn.parameters(), fn.returnType(), fn.async(), fn.generator(), Set.of(), null);
+                        fn.genericParameters(), fn.parameters(), fn.returnType(), fn.async(),
+                        fn.generator(), Set.of(), null, fn.effects());
                 if (fn.trapped() && signature instanceof Function trappedSignature) {
                     signature = new Function(
                             trappedSignature.parameters(),
                             trappedSignature.mutableParameters(),
                             trappedSignature.async(),
-                            trapResult(true, trappedSignature.result()));
+                            trapResult(true, trappedSignature.result()),
+                            trappedSignature.effects());
                 }
 
                 // Only concretely reifiable fnc declarations become raw
@@ -6533,7 +6529,8 @@ public final class TypeChecker {
             if (method.isStatic()) continue;
             mergeMember(members,
                     methodContractKey(method.name(), method.arity(), method.genericParameters().size()),
-                    callableContractType(method.genericParameters(), method.parameters(), method.returnType(), method.async(), false, generics, self),
+                    callableContractType(method.genericParameters(), method.parameters(), method.returnType(),
+                            method.async(), false, generics, self, method.effects()),
                     "class " + klass.name());
         }
         stack.remove(klass);
@@ -7204,9 +7201,22 @@ public final class TypeChecker {
             boolean generator,
             Set<String> ownerGenerics,
             Type self) {
+        return callableContractType(callableGenerics, params, returns, async, generator,
+                ownerGenerics, self, Ast.EffectSpec.none());
+    }
+
+    private Function callableContractType(
+            List<String> callableGenerics,
+            List<Ast.Param> params,
+            Ast.TypeRef returns,
+            boolean async,
+            boolean generator,
+            Set<String> ownerGenerics,
+            Type self,
+            Ast.EffectSpec effects) {
         Set<String> all = new HashSet<>(ownerGenerics);
         all.addAll(callableGenerics);
-        Function raw = functionType(params, returns, async, generator, all, self);
+        Function raw = functionType(params, returns, async, generator, all, self, effects);
         // Contract comparison must preserve the fact that a slot is
         // receiver-polymorphic without baking in the declaring class. Parent,
         // child, and interface declarations of (...): self therefore compare
