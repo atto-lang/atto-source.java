@@ -1211,26 +1211,14 @@ public final class OresEvalRootNode extends RootNode {
                         // this task's native spill roots before propagating the
                         // runtime authority violation to the scheduler.
                         nativeFrame.failed();
-                        awaitingContinuation = null;
-                        awaitingKind = null;
-                        awaitingTicket = 0L;
-                        pendingLoopContinuation = null;
-                        pendingLoopGuardEnv = null;
-                        nextStep = null;
-                        initialBlockEnv = null;
+                        discardManagedContinuationRoots();
                         throw authorityFailure;
                     }
                 }
                 try {
                     return resumeSource(resume);
                 } catch (RuntimeException failure) {
-                    awaitingContinuation = null;
-                    awaitingKind = null;
-                    awaitingTicket = 0L;
-                    pendingLoopContinuation = null;
-                    pendingLoopGuardEnv = null;
-                    nextStep = null;
-                    initialBlockEnv = null;
+                    discardManagedContinuationRoots();
                     // Preserve control/authority failures even when a future
                     // or resumed continuation wraps the original exception.
                     if (function != null && function.trapped()
@@ -1248,9 +1236,24 @@ public final class OresEvalRootNode extends RootNode {
                             function != null ? function.name() : method != null ? method.name() : "<block>",
                             resume.initial() ? "source task" : "resumed source task");
                 } catch (Error failure) {
+                    // Fatal errors also must not keep suspended Java callbacks
+                    // and initial guest arguments rooted after native failure.
+                    discardManagedContinuationRoots();
                     if (nativeFrame != null) nativeFrame.failed();
                     throw failure;
                 }
+            }
+
+            private void discardManagedContinuationRoots() {
+                awaitingContinuation = null;
+                awaitingKind = null;
+                awaitingTicket = 0L;
+                pendingLoopContinuation = null;
+                pendingLoopGuardEnv = null;
+                nextStep = null;
+                initialBlockEnv = null;
+                arguments = List.of();
+                receiver = null;
             }
 
             private OresScheduler.Step<Object> resumeSource(OresScheduler.Resume resume) {
