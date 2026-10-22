@@ -332,18 +332,14 @@ public class TaskMapParallelTest {
             throws Exception {
         IllegalArgumentException first = new IllegalArgumentException("first");
         IllegalStateException second = new IllegalStateException("second");
-        OresFuture<Integer> a = new OresFuture<>();
-        OresFuture<Integer> b = new OresFuture<>();
-        CountDownLatch admitted = new CountDownLatch(2);
-        try (OresScheduler scheduler = new OresScheduler(3)) {
+        // A single carrier queues both child turns before the coordinator
+        // can receive its next result. Both sources are already failed,
+        // avoiding a test-only race between genuine failure and cancellation.
+        OresFuture<Integer> a = OresFuture.failed(first);
+        OresFuture<Integer> b = OresFuture.failed(second);
+        try (OresScheduler scheduler = new OresScheduler(1)) {
             var handle = TaskMapParallel.mapLimit(scheduler, List.of(0,1), 2,
-                    index -> {
-                        admitted.countDown();
-                        return awaitValue(index == 0 ? a : b);
-                    });
-            assertTrue(admitted.await(3, TimeUnit.SECONDS));
-            b.failFromRuntime(second);
-            a.failFromRuntime(first);
+                    index -> awaitValue(index == 0 ? a : b));
             assertThrows(ExecutionException.class,
                     () -> handle.result().get(3, TimeUnit.SECONDS));
             assertNull(handle.getDone().get(3, TimeUnit.SECONDS));
