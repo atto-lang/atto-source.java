@@ -343,6 +343,22 @@ proved there are no nested captured aliases, live async continuations, or
 snapshot environments that can still read the cell. Early unconditional
 scope-drop would be a use-after-drop semantic regression.
 
+## Trapped-error completion after native suspension
+
+The Java source evaluator's trapped-function failure boundary calls
+`TaskFrame.completeTrappedFailure()` instead of normal `done()`. A
+trappable guest failure can occur after the task has recorded an AWAIT or
+COOPERATE suspension ticket but before the outer scheduler accepts the
+step. The dedicated transition permits only previously entered
+RUNNING/AWAITING/COOPERATING frames, clears native spill roots, revokes any
+outstanding suspension reason, and publishes DONE. NEW, DONE and FAILED
+frames remain ineligible. Normal `done()` still requires an unsuspended
+RUNNING frame. Untrappable runtime authority errors continue through the
+separate terminal FAILED path, never silently becoming trapped results.
+
+This is exception-state hardening, not a guarantee that all source
+continuations or cancellation paths use native storage.
+
 ## Remaining work before strict no-managed-allocation admission
 
 This patch does **not** make the Java evaluator allocation-free. It still uses
