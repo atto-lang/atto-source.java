@@ -119,8 +119,24 @@ public final class RecoveryLayoutBenchmark {
         return sum;
     }
 
+    private static int[] shuffledOrder(int n, java.util.SplittableRandom random) {
+        int[] indices = new int[n];
+        for (int i = 0; i < n; i++) indices[i] = i;
+        for (int i = n - 1; i > 0; i--) {
+            int chosen = random.nextInt(i + 1);
+            int temporary = indices[i];
+            indices[i] = indices[chosen];
+            indices[chosen] = temporary;
+        }
+        return indices;
+    }
+
     public static void main(String[] args) {
-        for (int n : new int[] {8, 64, 256}) {
+        // Deterministic permutation seed for reproducibility. Still NOT JMH:
+        // compare this with forked JVMs and performance counters before a
+        // code-layout decision.
+        java.util.SplittableRandom random = new java.util.SplittableRandom(0x0E5A1234L);
+        for (int n : new int[] {4, 8, 64, 256}) {
             Layout[] layouts = {aos(n), soa(n), aosoa(n), soaos(n), ecs(n)};
             String[] names = {"AoS", "SoA", "AoSoA-16", "SoAoS", "ECS-indirect"};
             int repetitions = Math.max(120_000, 5_000_000 / n);
@@ -131,13 +147,26 @@ public final class RecoveryLayoutBenchmark {
                 }
             }
             for (int warmup = 0; warmup < 3; warmup++) {
-                for (Layout layout : layouts) run(layout, repetitions / 2);
+                for (int i : shuffledOrder(layouts.length, random)) {
+                    run(layouts[i], repetitions / 2);
+                }
+            }
+            double[][] samples = new double[layouts.length][5];
+            for (int trial = 0; trial < 5; trial++) {
+                for (int i : shuffledOrder(layouts.length, random)) {
+                    long start = System.nanoTime();
+                    long actual = run(layouts[i], repetitions);
+                    if (actual != run(layouts[0], 128) * (repetitions / 128L)
+                            && repetitions % 128 == 0) {
+                        throw new AssertionError("checksum drift");
+                    }
+                    samples[i][trial] = (System.nanoTime() - start) / (double) repetitions;
+                }
             }
             for (int i = 0; i < layouts.length; i++) {
-                long start = System.nanoTime();
-                run(layouts[i], repetitions);
-                double nanos = (System.nanoTime() - start) / (double) repetitions;
-                System.out.printf("depth=%d %-13s %.2f ns/scan%n", n, names[i], nanos);
+                java.util.Arrays.sort(samples[i]);
+                System.out.printf("depth=%d %-13s %.2f ns/scan (median of 5)%n",
+                        n, names[i], samples[i][2]);
             }
         }
     }
