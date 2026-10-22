@@ -239,7 +239,8 @@ final class LinuxUringFileIoProviderTest {
 
         assertThrows(
                 IllegalArgumentException.class,
-                () -> provider.writeText("/tmp/out", "\ud800"));
+                () -> provider.writeText(
+                        "/tmp/out", new String(new char[] {(char) 0xd800})));
         provider.close();
     }
 
