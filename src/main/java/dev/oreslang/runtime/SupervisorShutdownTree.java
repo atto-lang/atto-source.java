@@ -13,6 +13,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Trusted-host supervisor shutdown substrate. This does not enable source
@@ -26,6 +27,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class SupervisorShutdownTree {
     private static final int MAX_DEPTH = 64;
     private static final int MAX_NODES = 4096;
+    private static final int MAX_CONTROL_EVENTS = MAX_NODES * 16;
 
     public enum Reason { NORMAL, REQUESTED, PARENT_EXIT, RUNTIME_EXIT }
 
@@ -91,6 +93,7 @@ public final class SupervisorShutdownTree {
     }
 
     public Supervisor setRoot(String name, ActorRuntime.ActorGroup group, Hooks hooks) {
+        runtime.requireSupervisorShutdownAuthority("install supervisor shutdown root");
         synchronized (treeLock) {
             if (root != null || shuttingDown) {
                 throw new IllegalStateException("supervisor root already installed or stopping");
@@ -107,6 +110,7 @@ public final class SupervisorShutdownTree {
 
     private Supervisor addChild(
             Supervisor parent, String name, ActorRuntime.ActorGroup group, Hooks hooks) {
+        runtime.requireSupervisorShutdownAuthority("register supervisor shutdown child");
         synchronized (treeLock) {
             if (shuttingDown) throw new IllegalStateException("supervisor tree is stopping");
             if (!belongsToTree(parent)) {
@@ -155,6 +159,7 @@ public final class SupervisorShutdownTree {
      * allocated actor instead of publishing an unowned child.
      */
     public OresFuture<Void> shutdown(Reason reason) {
+        runtime.requireSupervisorShutdownAuthority("begin supervisor tree shutdown");
         Objects.requireNonNull(reason, "reason");
         final Supervisor target;
         Throwable fenceFailure = null;
@@ -187,6 +192,7 @@ public final class SupervisorShutdownTree {
      */
     public OresFuture<Void> shutdown(
             Reason reason, Duration grace, ScheduledExecutorService watchdog) {
+        runtime.requireSupervisorShutdownAuthority("begin timed supervisor tree shutdown");
         Objects.requireNonNull(grace, "grace");
         Objects.requireNonNull(watchdog, "watchdog");
         if (grace.isNegative()) throw new IllegalArgumentException("negative shutdown grace");
@@ -240,6 +246,9 @@ public final class SupervisorShutdownTree {
         boolean schedule = false;
         synchronized (queueLock) {
             if (dispatchFailed) return;
+            if (work.size() >= MAX_CONTROL_EVENTS) {
+                throw new IllegalStateException("supervisor CONTROL event budget exhausted");
+            }
             work.addLast(action);
             if (!draining) {
                 draining = true;
@@ -292,14 +301,25 @@ public final class SupervisorShutdownTree {
             work.clear();
             draining = false;
         }
-        escalate(failure);
+        // An unavailable CONTROL dispatcher must not mark the root stopped:
+        // exceptional root completion is deferred until every managed group
+        // has actually retired. Guest hooks are not invoked during this
+        // emergency fallback, and their omission is recorded as failure.
+        OresFuture<Void> groups = escalate(failure);
         Supervisor target;
         synchronized (treeLock) {
             target = root;
         }
         if (target != null) {
-            target.terminated.failFromRuntime(new IllegalStateException(
-                    "supervisor CONTROL unavailable; clean shutdown unverified", failure));
+            groups.whenCompleteRuntime((ignored, groupFailure) -> {
+                IllegalStateException terminal = new IllegalStateException(
+                        "supervisor CONTROL unavailable; hooks skipped, physical group close observed",
+                        failure);
+                if (groupFailure != null && groupFailure != failure) {
+                    terminal.addSuppressed(groupFailure);
+                }
+                target.terminated.failFromRuntime(terminal);
+            });
         }
     }
 
@@ -308,7 +328,7 @@ public final class SupervisorShutdownTree {
      * admission snapshot. closeAsync() alone is not sufficient: it is
      * idempotent and the group may already have entered graceful close.
      */
-    private void escalate(Throwable reason) {
+    private OresFuture<Void> escalate(Throwable reason) {
         List<Supervisor> nodes = new ArrayList<>();
         synchronized (treeLock) {
             collect(root, nodes);
@@ -334,6 +354,28 @@ public final class SupervisorShutdownTree {
             node.group.closedDone().whenCompleteRuntime((ignored, failure) ->
                     node.shutdownWorkers = List.of());
         }
+        // Aggregate all group completion barriers instead of relying on
+        // fail-fast Future.all: a failing child cannot hide a still-live
+        // sibling's physical actor execution.
+        OresFuture<Void> completed = new OresFuture<>(() -> false, () -> { });
+        if (nodes.isEmpty()) {
+            completed.completeFromRuntime(null);
+            return completed;
+        }
+        AtomicInteger remaining = new AtomicInteger(nodes.size());
+        java.util.concurrent.atomic.AtomicReference<Throwable> firstFailure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        for (Supervisor node : nodes) {
+            node.group.closedDone().whenCompleteRuntime((ignored, failure) -> {
+                if (failure != null) firstFailure.compareAndSet(null, failure);
+                if (remaining.decrementAndGet() == 0) {
+                    Throwable terminal = firstFailure.get();
+                    if (terminal == null) completed.completeFromRuntime(null);
+                    else completed.failFromRuntime(terminal);
+                }
+            });
+        }
+        return completed;
     }
 
     private static OresFuture<Void> callShutdownHook(Supervisor node, Reason reason) {
