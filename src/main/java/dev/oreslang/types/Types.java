@@ -74,27 +74,56 @@ public final class Types {
         }
     }
 
+    /** Compiler-internal resolved may-effects; source effect syntax is not admitted here. */
+    public record CheckedEffects(List<Type> throwsTypes, List<Type> raisesTypes,
+                                 List<Type> panicsTypes) {
+        public CheckedEffects {
+            throwsTypes = List.copyOf(throwsTypes);
+            raisesTypes = List.copyOf(raisesTypes);
+            panicsTypes = List.copyOf(panicsTypes);
+        }
+
+        public static CheckedEffects none() {
+            return new CheckedEffects(List.of(), List.of(), List.of());
+        }
+
+        public boolean isEmpty() {
+            return throwsTypes.isEmpty() && raisesTypes.isEmpty() && panicsTypes.isEmpty();
+        }
+
+        /** Exact-type category preservation; nominal Error subtyping is a separate gate. */
+        public boolean isSubsetOf(CheckedEffects allowance) {
+            return allowance.throwsTypes.containsAll(throwsTypes)
+                    && allowance.raisesTypes.containsAll(raisesTypes)
+                    && allowance.panicsTypes.containsAll(panicsTypes);
+        }
+    }
+
     public record Function(
             List<Type> parameters,
             List<Boolean> mutableParameters,
             boolean async,
-            Type result) implements Type {
+            Type result,
+            CheckedEffects effects) implements Type {
         public Function {
             parameters = List.copyOf(parameters);
             mutableParameters = List.copyOf(mutableParameters);
+            Objects.requireNonNull(effects, "checked function effects");
             if (parameters.size() != mutableParameters.size()) {
                 throw new IllegalArgumentException(
                         "function parameter mutability metadata must match parameter arity");
             }
         }
 
-        /**
-         * Source-level Fnc<...> types and built-in callables have no mutable
-         * parameters and are synchronous unless a declaration explicitly says
-         * otherwise.
-         */
+        /** Existing producers emit pure function values until effect inference is connected. */
+        public Function(List<Type> parameters, List<Boolean> mutableParameters,
+                        boolean async, Type result) {
+            this(parameters, mutableParameters, async, result, CheckedEffects.none());
+        }
+
         public Function(List<Type> parameters, Type result) {
-            this(parameters, java.util.Collections.nCopies(parameters.size(), false), false, result);
+            this(parameters, java.util.Collections.nCopies(parameters.size(), false), false,
+                    result, CheckedEffects.none());
         }
     }
 
@@ -207,7 +236,10 @@ public final class Types {
         if (type instanceof ListType list) return containsUncertainType(list.element());
         if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof Function function) return function.parameters().stream().anyMatch(Types::containsUncertainType)
-                || containsUncertainType(function.result());
+                || containsUncertainType(function.result())
+                || function.effects().throwsTypes().stream().anyMatch(Types::containsUncertainType)
+                || function.effects().raisesTypes().stream().anyMatch(Types::containsUncertainType)
+                || function.effects().panicsTypes().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof Borrow borrow) return containsUncertainType(borrow.target());
         if (type instanceof SelfType self) return containsUncertainType(self.bound());
         return false;
@@ -289,6 +321,7 @@ public final class Types {
         if (from instanceof Function source && to instanceof Function target) {
             if (source.parameters().size() != target.parameters().size()) return false;
             if (source.async() != target.async()) return false;
+            if (!source.effects().isSubsetOf(target.effects())) return false;
             // Parameter mutation authority is part of the callable contract.
             // Keep it invariant: callers and implementations must agree exactly
             // on which arguments may be mutated.
