@@ -300,4 +300,87 @@ public class TaskWaterfallTest {
             assertNotSame(caller, factoryThread.get());
         }
     }
+
+    @Test void userRaisedCancellationExceptionInStageIsFailureNotCancellation()
+            throws Exception {
+        java.util.concurrent.CancellationException raised =
+                new java.util.concurrent.CancellationException("guest raised");
+        AtomicInteger later = new AtomicInteger();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskHandle<Integer> handle = TaskWaterfall.from(
+                    () -> OresFuture.completed(2))
+                .then(n -> OresFuture.<Integer>failed(raised))
+                .thenValue(v -> {
+                    later.incrementAndGet();
+                    return v + 1;
+                }).start(scheduler);
+            var error = assertThrows(ExecutionException.class,
+                    () -> handle.result().get(3, TimeUnit.SECONDS));
+            assertSame(raised, error.getCause());
+            assertFalse(handle.result().isCancelled());
+            TaskHandle.Failed<?> done = assertInstanceOf(
+                    TaskHandle.Failed.class,
+                    handle.getDone().get(3, TimeUnit.SECONDS));
+            assertSame(raised, done.failure());
+            assertEquals(0, later.get());
+        }
+    }
+
+    @Test void failedMiddleStagePreservesExactCauseAndStopsLaterStages()
+            throws Exception {
+        IllegalStateException expected = new IllegalStateException("middle failed");
+        AtomicInteger startedLater = new AtomicInteger();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskHandle<Integer> handle = TaskWaterfall.from(
+                    () -> OresFuture.completed(2))
+                .thenValue(n -> n * 2)
+                .then(n -> OresFuture.<Integer>failed(expected))
+                .thenValue(n -> {
+                    startedLater.incrementAndGet();
+                    return n + 1;
+                }).start(scheduler);
+            assertSame(expected, assertThrows(ExecutionException.class,
+                    () -> handle.result().get(3, TimeUnit.SECONDS)).getCause());
+            var done = assertInstanceOf(TaskHandle.Failed.class,
+                    handle.getDone().get(3, TimeUnit.SECONDS));
+            assertSame(expected, done.failure());
+            assertEquals(0, startedLater.get());
+        }
+    }
+
+    @Test void synchronousStageThrownFailureRetainsIdentity() throws Exception {
+        IllegalArgumentException thrown = new IllegalArgumentException("bad transform");
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskHandle<Integer> handle = TaskWaterfall.from(
+                    () -> OresFuture.completed(5))
+                .thenValue(value -> {
+                    throw thrown;
+                })
+                .<Integer>thenValue(value -> value + 1)
+                .start(scheduler);
+            assertSame(thrown, assertThrows(ExecutionException.class,
+                    () -> handle.result().get(3, TimeUnit.SECONDS)).getCause());
+            assertSame(thrown, assertInstanceOf(TaskHandle.Failed.class,
+                    handle.getDone().get(3, TimeUnit.SECONDS)).failure());
+        }
+    }
+
+    @Test void hostErrorInStageIsNotSilentlyConvertedToCancellation()
+            throws Exception {
+        AssertionError fatal = new AssertionError("host error");
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskHandle<Integer> handle = TaskWaterfall.from(
+                    () -> OresFuture.completed(1))
+                .thenValue(n -> {
+                    throw fatal;
+                })
+                .<Integer>thenValue(v -> v + 1)
+                .start(scheduler);
+            assertSame(fatal, assertThrows(ExecutionException.class,
+                    () -> handle.result().get(3, TimeUnit.SECONDS)).getCause());
+            assertFalse(handle.result().isCancelled());
+            assertSame(fatal, assertInstanceOf(TaskHandle.Failed.class,
+                    handle.getDone().get(3, TimeUnit.SECONDS)).failure());
+        }
+    }
 }
