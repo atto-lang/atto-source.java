@@ -341,6 +341,44 @@ final class TaskPipelineTest {
     }
 
     @Test
+    void returningPipelineOwnCompletionDoesNotDeadlockTheAwaitGraph()
+            throws Exception {
+        OresFuture<Integer> source = new OresFuture<>();
+        AtomicReference<OresFuture<Integer>> own = new AtomicReference<>();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> output = TaskPipeline.start(scheduler, source,
+                    List.of(value -> own.get()));
+            own.set(output);
+            awaitWaiter(source);
+            assertTrue(source.completeFromRuntime(1));
+            ExecutionException error = assertThrows(ExecutionException.class,
+                    () -> output.get(5, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, error.getCause());
+            assertTrue(error.getCause().getMessage().contains("own exposed completion"),
+                    error::toString);
+        }
+    }
+
+    @Test
+    void transferringPipelineOwnCompletionIsRejectedBeforeOwnershipRegistration()
+            throws Exception {
+        OresFuture<Integer> source = new OresFuture<>();
+        AtomicReference<OresFuture<Integer>> own = new AtomicReference<>();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> output = TaskPipeline.start(scheduler, source,
+                    List.of(value -> TaskPipeline.owned(own.get())));
+            own.set(output);
+            awaitWaiter(source);
+            assertTrue(source.completeFromRuntime(1));
+            ExecutionException error = assertThrows(ExecutionException.class,
+                    () -> output.get(5, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, error.getCause());
+            assertTrue(error.getCause().getMessage().contains("own exposed completion"),
+                    error::toString);
+        }
+    }
+
+    @Test
     void rejectsNullStageAndUnboundedPipeline() {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             OresFuture<Integer> input = OresFuture.completed(1);
