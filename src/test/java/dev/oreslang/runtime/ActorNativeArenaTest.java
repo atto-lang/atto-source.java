@@ -623,6 +623,35 @@ final class ActorNativeArenaTest {
     }
 
     @Test
+    void rejectedNativeRegionReservationDoesNotConsumeActorRelativeAddress() {
+        AtomicLong charged = new AtomicLong();
+        AtomicBoolean reject = new AtomicBoolean();
+        try (ActorNativeArena arena = new ActorNativeArena(128, () -> {}, bytes -> {
+            if (reject.get()) throw new IllegalStateException("synthetic quota denial");
+            charged.addAndGet(bytes);
+            return () -> charged.addAndGet(-bytes);
+        })) {
+            try (ActorNativeArena.Region first = arena.region(9)) {
+                assertEquals(0L, first.nativeOffset());
+            }
+            assertEquals(0L, charged.get());
+            reject.set(true);
+            assertThrows(IllegalStateException.class, () -> arena.region(9));
+            assertEquals(0L, charged.get());
+            reject.set(false);
+            try (ActorNativeArena.Region next = arena.region(9)) {
+                // A closed allocation is never recycled; a failed admission
+                // must not create an additional phantom logical allocation.
+                assertEquals(16L, next.nativeOffset());
+                next.writeByte(0, (byte) 42);
+                assertEquals((byte) 42, next.readByte(0));
+            }
+            assertEquals(0L, charged.get());
+        }
+        assertEquals(0L, charged.get());
+    }
+
+    @Test
     void nativeObjectsRegionsAndLinearPagesShareOneNonRecycledActorOffsetSpace() {
         AtomicLong charged = new AtomicLong();
         Object marker = new Object();
