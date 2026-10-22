@@ -170,6 +170,24 @@ final class NominalErrorProofTest {
     }
 
     @Test
+    void inferredObjectParentCannotBeSkippedAsOrdinaryObject() {
+        Ast.ClassDecl root = klass("define class Error as end");
+        Ast.ClassDecl parsed = klass("define class ChildError extends Error as end");
+        Ast.ClassDecl child = new Ast.ClassDecl(
+                parsed.name(), parsed.visibility(), parsed.isAbstract(),
+                parsed.actorKind(), parsed.genericParameters(),
+                List.of(Ast.TypeRef.simple("Error"),
+                        new Ast.TypeRef("Object", List.of(), true)),
+                parsed.interfaces(), parsed.fields(), parsed.constructor(),
+                parsed.methods(), parsed.actorConcurrency());
+        var lookup = resolver(Map.of("Error", root, "ChildError", child));
+        var failure = assertThrows(IllegalArgumentException.class, () ->
+                NominalErrorProof.requireNominalError(
+                        Ast.TypeRef.simple("ChildError"), root, lookup));
+        assertTrue(failure.getMessage().contains("concrete"));
+    }
+
+    @Test
     void rootWithUnexpectedSuperclassIsNotTrusted() {
         Ast.ClassDecl root = klass("define class Error extends UntrustedRoot as end");
         var lookup = resolver(Map.of("Error", root));
