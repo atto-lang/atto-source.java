@@ -162,4 +162,63 @@ public class FutureCombinatorsTest {
             assertEquals(0, b.pendingRuntimeWaiterCount());
         }
     }
+
+    @Test void anyReturnsFirstSuccessNotFirstFailure() throws Exception {
+        OresFuture<Integer> first = new OresFuture<>();
+        OresFuture<Integer> second = new OresFuture<>();
+        OresFuture<Integer> third = new OresFuture<>();
+        OresFuture<Integer> result = FutureCombinators.any(
+                List.of(first, second, third));
+        first.failFromRuntime(new IllegalStateException("failed first"));
+        assertFalse(result.isDone());
+        third.completeFromRuntime(30);
+        assertEquals(Integer.valueOf(30), result.get(3, TimeUnit.SECONDS));
+        assertFalse(second.isDone());
+        assertEquals(0, second.pendingRuntimeWaiterCount());
+    }
+
+    @Test void anyAllFailedReportsCausesInInputOrder() throws Exception {
+        OresFuture<Integer> one = new OresFuture<>();
+        OresFuture<Integer> two = new OresFuture<>();
+        OresFuture<Integer> three = new OresFuture<>();
+        Throwable a = new IllegalArgumentException("a");
+        Throwable b = new IllegalStateException("b");
+        OresFuture<Integer> result = FutureCombinators.any(
+                List.of(one, two, three));
+        three.failFromRuntime(b);
+        one.failFromRuntime(a);
+        two.cancel(false);
+        var thrown = assertThrows(ExecutionException.class,
+                () -> result.get(3, TimeUnit.SECONDS));
+        var aggregate = assertInstanceOf(
+                FutureCombinators.AnyFailedException.class,
+                thrown.getCause());
+        assertSame(a, aggregate.failures().get(0));
+        assertInstanceOf(CancellationException.class,
+                aggregate.failures().get(1));
+        assertSame(b, aggregate.failures().get(2));
+        assertEquals(3, aggregate.getSuppressed().length);
+    }
+
+    @Test void anyAllCancelledPropagatesAuthenticatedCancellation() {
+        OresFuture<Integer> one = new OresFuture<>();
+        OresFuture<Integer> two = new OresFuture<>();
+        OresFuture<Integer> result = FutureCombinators.any(List.of(one, two));
+        one.cancel(false);
+        assertFalse(result.isDone());
+        two.cancel(false);
+        assertTrue(result.isCancelled());
+        assertEquals(0, one.pendingRuntimeWaiterCount());
+        assertEquals(0, two.pendingRuntimeWaiterCount());
+    }
+
+    @Test void anyEmptyRejectedAndConsumerCancellationDetachesOnly() {
+        assertThrows(IllegalArgumentException.class,
+                () -> FutureCombinators.<Integer>any(List.of()));
+        OresFuture<Integer> source = new OresFuture<>();
+        OresFuture<Integer> result = FutureCombinators.any(List.of(source));
+        assertTrue(result.cancel(false));
+        assertEquals(0, source.pendingRuntimeWaiterCount());
+        assertFalse(source.isCancelled());
+    }
 }
