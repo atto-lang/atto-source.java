@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
@@ -34,6 +35,20 @@ public final class TaskWaterfall {
     private record Link(Link parent, Stage stage) { }
 
     /**
+     * Diagnostics are separate from the original failed Future: they do NOT
+     * wrap, mutate, catch, or downcast its Throwable. Source-level throws,
+     * raises and panics classification is a different compiler contract.
+     */
+    public record StageFailure(int stageIndex, Throwable cause, boolean cancelled) {
+        public StageFailure {
+            if (stageIndex < 0) {
+                throw new IllegalArgumentException("negative waterfall stage index");
+            }
+            Objects.requireNonNull(cause, "cause");
+        }
+    }
+
+    /**
      * A pipeline carries the exact generic type of its latest stage.
      * All prefixes of a pipeline share one single-use admission token, so
      * extending a plan cannot double-submit an owned deferred computation.
@@ -42,11 +57,25 @@ public final class TaskWaterfall {
         private final Link tail;
         private final int size;
         private final AtomicBoolean admitted;
+        private final AtomicReference<StageFailure> firstFailure;
 
-        private Pipeline(Link tail, int size, AtomicBoolean admitted) {
+        private Pipeline(Link tail, int size, AtomicBoolean admitted,
+                         AtomicReference<StageFailure> firstFailure) {
             this.tail = tail;
             this.size = size;
             this.admitted = admitted;
+            this.firstFailure = firstFailure;
+        }
+
+        /**
+         * Once the waterfall Task has physically retired, this identifies
+         * the failing stage (zero-based). Genuine failure retains the exact
+         * original cause, while source cancellation is authenticated by the
+         * source Future's cancellation state. External owner cancellation
+         * may have no failing stage.
+         */
+        public Optional<StageFailure> failureContext() {
+            return Optional.ofNullable(firstFailure.get());
         }
 
         /** Apply a lazy asynchronous step to the preceding result. */
@@ -62,7 +91,7 @@ public final class TaskWaterfall {
                 return Objects.requireNonNull(next.apply(value),
                         "waterfall async stage returned null Future");
             };
-            return new Pipeline<>(new Link(tail, step), size + 1, admitted);
+            return new Pipeline<>(new Link(tail, step), size + 1, admitted, firstFailure);
         }
 
         /**
@@ -127,9 +156,17 @@ public final class TaskWaterfall {
                     if (nextStage >= stages.length) {
                         throw new IllegalStateException("waterfall exhausted stage plan");
                     }
-                    Stage step = stages[nextStage++];
-                    OresFuture<?> future = Objects.requireNonNull(
-                            step.invoke(previous), "waterfall stage returned null Future");
+                    int stageIndex = nextStage++;
+                    Stage step = stages[stageIndex];
+                    final OresFuture<?> future;
+                    try {
+                        future = Objects.requireNonNull(
+                                step.invoke(previous), "waterfall stage returned null Future");
+                    } catch (RuntimeException | Error thrown) {
+                        firstFailure.compareAndSet(
+                                null, new StageFailure(stageIndex, thrown, false));
+                        throw thrown;
+                    }
 
                     // This watcher carries only runtime cancellation bookkeeping.
                     // Cancelling a borrowed stage Future does not grant the
@@ -137,6 +174,12 @@ public final class TaskWaterfall {
                     OresFuture.RuntimeWaiterRegistration<?> watcher =
                             future.whenCompleteRuntimeCancellable((value, failure) -> {
                                 if (!future.isCancelled()) return;
+                                firstFailure.compareAndSet(null,
+                                        new StageFailure(stageIndex,
+                                                failure != null ? failure :
+                                                        new java.util.concurrent.CancellationException(
+                                                                "waterfall source cancelled"),
+                                                true));
                                 upstreamCancelled.set(true);
                                 TaskHandle<T> active = owner.get();
                                 if (active != null) active.cancel("waterfall stage cancelled");
@@ -150,6 +193,10 @@ public final class TaskWaterfall {
                     // cancellation, never revokes the shared stage source.
                     if (future.isDone()) {
                         if (future.isCancelled()) {
+                            firstFailure.compareAndSet(null, new StageFailure(
+                                    stageIndex,
+                                    new java.util.concurrent.CancellationException(
+                                            "waterfall stage cancelled"), true));
                             upstreamCancelled.set(true);
                             TaskHandle<T> active = owner.get();
                             if (active != null) {
@@ -194,6 +241,8 @@ public final class TaskWaterfall {
                     detachWaiter();
                     if (resume.failure() != null) {
                         Throwable failure = OresFuture.unwrap(resume.failure());
+                        firstFailure.compareAndSet(null,
+                                new StageFailure(nextStage - 1, failure, false));
                         if (failure instanceof Exception exception) throw exception;
                         if (failure instanceof Error error) throw error;
                         throw new IllegalStateException(
@@ -242,7 +291,8 @@ public final class TaskWaterfall {
         Objects.requireNonNull(first, "first");
         Stage initial = ignored -> Objects.requireNonNull(first.get(),
                 "waterfall initial stage returned null Future");
-        return new Pipeline<>(new Link(null, initial), 1, new AtomicBoolean());
+        return new Pipeline<>(new Link(null, initial), 1, new AtomicBoolean(),
+                new AtomicReference<>());
     }
 
     /** Convenience: 3 heterogeneous, lazily executed asynchronous stages. */
