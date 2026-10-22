@@ -183,3 +183,8 @@ ownership/safepoint/cancellation evidence and cross-backend tests exist.
     result.getDone().join();                  // host-only quiescence bridge
 
 In an actual Oreslang task or actor, both waits must lower to nonparking `await`, NOT `join()`; a scheduler carrier must never call the Java blocking host bridge. Future stage callbacks execute on the waterfall's scheduler; the owner of an independent producer is not implicitly transferred.
+
+
+## Startup cancellation hardening
+
+The Java host waterfall now begins with a one-time nonparking `ownerReady` Future. Its initial Task turn suspends on the gate, and only after the TaskHandle owner, task-completion cleanup waiter and cancellation state have been installed does the gate resolve. Thus even an inline runtime executor cannot start a user-supplied first stage before its cancellation authority exists. Tests include an already-cancelled first-stage Future, lazy factory scheduler affinity, and staged cancellation. This does not by itself prove every host callback race or release gate; run the exact JVM tests on an authorized runner before merge.
