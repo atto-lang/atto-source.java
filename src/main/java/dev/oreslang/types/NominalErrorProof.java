@@ -28,13 +28,8 @@ public final class NominalErrorProof {
             Ast.ClassDecl trustedRoot,
             Function<Ast.TypeRef, Ast.ClassDecl> resolveClass) {
         Objects.requireNonNull(payload, "effect payload");
-        Objects.requireNonNull(trustedRoot, "trusted std/error Error root");
+        validateRootMetadata(trustedRoot);
         Objects.requireNonNull(resolveClass, "nominal class resolver");
-        if (!trustedRoot.name().equals("Error")
-                || !trustedRoot.genericParameters().isEmpty()
-                || trustedRoot.actorKind() != Ast.ActorKind.NONE) {
-            throw new IllegalArgumentException("invalid trusted std/error.Error root metadata");
-        }
         ensureConcrete(payload, "effect payload");
         Ast.ClassDecl candidate = resolveClass.apply(payload);
         if (candidate == null) {
@@ -56,9 +51,20 @@ public final class NominalErrorProof {
             Ast.ClassDecl trustedRoot,
             Function<Ast.TypeRef, Ast.ClassDecl> resolveClass) {
         Objects.requireNonNull(effects, "checked effects");
+        validateRootMetadata(trustedRoot);
+        Objects.requireNonNull(resolveClass, "nominal class resolver");
         requireCategory(effects.throwsTypes(), "throws", trustedRoot, resolveClass);
         requireCategory(effects.raisesTypes(), "raises", trustedRoot, resolveClass);
         requireCategory(effects.panicsTypes(), "panics", trustedRoot, resolveClass);
+    }
+
+    private static void validateRootMetadata(Ast.ClassDecl root) {
+        Objects.requireNonNull(root, "trusted std/error Error root");
+        if (!root.name().equals("Error")
+                || !root.genericParameters().isEmpty()
+                || root.actorKind() != Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException("invalid trusted std/error.Error root metadata");
+        }
     }
 
     private static void requireCategory(
