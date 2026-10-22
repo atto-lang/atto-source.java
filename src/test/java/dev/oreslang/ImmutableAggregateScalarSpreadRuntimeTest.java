@@ -1,5 +1,6 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.OwnershipChecker;
@@ -34,6 +35,46 @@ final class ImmutableAggregateScalarSpreadRuntimeTest {
             }
         });
         return output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n");
+    }
+
+    @Test
+    void precheckedLeaseCannotBypassAggregateOwnershipOrTypeProof() {
+        String source = """
+                pub fnc main(): void {
+                    const base = record{x: 1};
+                    const copy = record{...base, y: 2};
+                    stdio.println(copy.x);
+                    return;
+                }
+                """;
+        // The trusted prechecked-program hook must never be enough to make
+        // unverified aggregate projections executable.
+        Ast.Program unchecked = Parser.parse(source);
+        Source guest = assertDoesNotThrow(() ->
+                Source.newBuilder(OresLanguage.ID, source, "unapproved-spread.ores")
+                        .mimeType(OresLanguage.MIME_TYPE).buildLiteral());
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false).build();
+             OresLanguage.PrecheckedProgramScope ignored =
+                     OresLanguage.openPrecheckedProgram(
+                             "unapproved-spread.ores", source, unchecked)) {
+            RuntimeException failure = assertThrows(
+                    RuntimeException.class, () -> context.eval(guest));
+            assertTrue(failure.toString().contains("type and ownership admission"),
+                    "raw parser AST must fail specifically at checked spread provenance");
+        }
+
+        Ast.Program typeOnly = TypeChecker.checkTypesWithDiagnostics(Parser.parse(source)).program();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false).build();
+             OresLanguage.PrecheckedProgramScope ignored =
+                     OresLanguage.openPrecheckedProgram(
+                             "unapproved-spread.ores", source, typeOnly)) {
+            RuntimeException failure = assertThrows(
+                    RuntimeException.class, () -> context.eval(guest));
+            assertTrue(failure.toString().contains("type and ownership admission"),
+                    "type-only AST must not inherit a fabricated ownership proof");
+        }
     }
 
     @Test
