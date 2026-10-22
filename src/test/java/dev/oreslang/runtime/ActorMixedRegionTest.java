@@ -185,6 +185,45 @@ final class ActorMixedRegionTest {
     }
 
     @Test
+    void zeroCopySoaLoanBlocksAllWritesAndKernelBeforeFirstMutation() {
+        AtomicLong charged = new AtomicLong();
+        var schema = List.of(
+                new ActorMixedRegion.Field("pos", ActorMixedRegion.Kind.F64),
+                new ActorMixedRegion.Field("vel", ActorMixedRegion.Kind.F64));
+        try (ActorNativeArena arena = arena(charged)) {
+            var store = new ActorMixedRegion(arena, schema, 4,
+                    ActorMixedRegion.Layout.SOA, 1, null);
+            store.writeF64(0, "pos", 10.0);
+            store.writeF64(1, "pos", 20.0);
+            store.writeF64(0, "vel", 2.0);
+            try (var lease = store.leaseSoaColumnReadOnly("pos")) {
+                assertEquals(4 * Double.BYTES, lease.length());
+                assertEquals(10.0, lease.readDouble(0));
+                assertEquals(20.0, lease.readDouble(Double.BYTES));
+                assertThrows(IllegalStateException.class, () ->
+                        store.writeF64(0, "vel", 5.0));
+                assertThrows(IllegalStateException.class, () ->
+                        store.integrate("pos", "vel", 0.5));
+                assertEquals(10.0, store.readF64(0, "pos"),
+                        "failed kernel cannot modify earlier rows");
+                assertEquals(20.0, store.readF64(1, "pos"));
+                assertThrows(IllegalStateException.class, store::close);
+            }
+            store.integrate("pos", "vel", 0.5);
+            assertEquals(11.0, store.readF64(0, "pos"));
+            assertEquals(20.0, store.readF64(1, "pos"));
+            assertThrows(UnsupportedOperationException.class, () -> {
+                try (var aos = new ActorMixedRegion(arena, schema, 2,
+                        ActorMixedRegion.Layout.AOS, 1, null)) {
+                    aos.leaseSoaColumnReadOnly("pos");
+                }
+            });
+            store.close();
+            assertEquals(0, charged.get());
+        }
+    }
+
+    @Test
     void mixedWidthKernelUpdatesNativeDataWithoutReplacingOtherColumns() {
         AtomicLong charged = new AtomicLong();
         var fields = List.of(
