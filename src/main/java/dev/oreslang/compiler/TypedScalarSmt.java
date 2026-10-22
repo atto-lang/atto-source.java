@@ -4,7 +4,6 @@ import dev.oreslang.ast.Ast;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * Experimental source-to-SMT interface backed by the actual checked AST.
@@ -36,12 +35,8 @@ public final class TypedScalarSmt {
         return fromCheckedProgram(OresCompiler.parseAndTypeCheck(source), module, function);
     }
 
-    /**
-     * Takes a caller-owned fully checked Program. Callers must not hand this
-     * method an AST created directly from Parser.parse without checking it.
-     * Exposing this separately is useful for a future typed HIR adapter.
-     */
-    public static String fromCheckedProgram(Ast.Program checked, String module, String function) {
+    /** Not public: consumers cannot bypass full frontend admission via AST input. */
+    private static String fromCheckedProgram(Ast.Program checked, String module, String function) {
         if (checked == null || module == null || module.isBlank()
                 || !ARITY.containsKey(function)) {
             throw new IllegalArgumentException("unsupported scalar proof target");
