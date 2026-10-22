@@ -1851,14 +1851,12 @@ public final class OresEvalRootNode extends RootNode {
                 SourceFlowCont continuation) {
             Env env = new Env(parent);
             ArrayDeque<Ast.Expr> defers = new ArrayDeque<>();
-            runStatements(
-                    task,
-                    statements,
-                    env,
-                    defers,
-                    0,
-                    (ignored, flow) ->
-                            finishBlock(task, env, defers, flow, continuation));
+            // runStatements owns finishBlock() for normal fallthrough and
+            // every nonlocal exit. Wrapping its continuation in another
+            // finishBlock() re-retires the same MutexGuards (and may invoke
+            // a cleanup observer twice) after the first defer stack drained.
+            // Only one lexical owner may publish each block's unwind.
+            runStatements(task, statements, env, defers, 0, continuation);
         }
 
         /**
