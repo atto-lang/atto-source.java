@@ -2005,6 +2005,18 @@ public final class OresEvalRootNode extends RootNode {
             // pending error. Preserve original identity for source and actor
             // supervisor attribution.
             if (earlier != null) {
+                // An untrappable panic/authority failure in cleanup must
+                // still escape an earlier ordinary THROW. Otherwise catch or
+                // trap could swallow a fatal cleanup panic. A deferred
+                // process-exit never replaces an already pending failure.
+                if (!(cleanupFailure instanceof ProcessExitSignal)
+                        && isUnmaskableFailure(cleanupFailure)
+                        && !isUnmaskableFailure(earlier)) {
+                    cleanupFailure.addSuppressed(earlier);
+                    return SourceFlow.throwing(cleanupFailure);
+                }
+                // Two ordinary failures: the original Task error wins.
+                // Any already-fatal primary also remains authoritative.
                 earlier.addSuppressed(cleanupFailure);
                 return currentFlow;
             }
