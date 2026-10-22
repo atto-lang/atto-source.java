@@ -324,6 +324,76 @@ This improves hot-path memory placement but does **not** eliminate managed
 values while an unsupported payload is active, allocate-free frame metadata,
 or provide lexical scope-drop/reclamation.
 
+## Explicit native lexical scope-drop primitive
+
+`ActorNativeArena.ValueCell` now has a terminal, owner-checked
+`close()` for future compiler-generated lexical scope drops. It clears the
+tagged slot, releases any native facade/capability registry reference retained
+by that slot, then rejects all later reads, writes or address queries through
+the dropped cell. Repeated `close()` is harmless **while the actor is live**;
+using the cell after arena shutdown remains a stale-access error. A dropped
+cell's actor-relative logical offset and slab bytes are **not** immediately
+recycled: safe deallocation and generational handle reuse remain separate
+tasks. The surrounding actor arena is reclaimed only after physical actor
+quiescence.
+
+This is deliberately only an API foundation. The source evaluator must
+**not** call `close()` on Env scope exit until ownership/borrow analysis has
+proved there are no nested captured aliases, live async continuations, or
+snapshot environments that can still read the cell. Early unconditional
+scope-drop would be a use-after-drop semantic regression.
+
+## Trapped-error completion after native suspension
+
+The Java source evaluator's trapped-function failure boundary calls
+`TaskFrame.completeTrappedFailure()` instead of normal `done()`. A
+trappable guest failure can occur after the task has recorded an AWAIT or
+COOPERATE suspension ticket but before the outer scheduler accepts the
+step. The dedicated transition permits only previously entered
+RUNNING/AWAITING/COOPERATING frames, clears native spill roots, revokes any
+outstanding suspension reason, and publishes DONE. NEW, DONE and FAILED
+frames remain ineligible. Normal `done()` still requires an unsuspended
+RUNNING frame. Untrappable runtime authority errors continue through the
+separate terminal FAILED path, never silently becoming trapped results.
+
+This is exception-state hardening, not a guarantee that all source
+continuations or cancellation paths use native storage.
+
+## Native source continuation sites (first code-lowering increment)
+
+A GraalVM actor's `ActorNativeArena.TaskFrame` now includes two additional
+native words: the latest entered **source statement-site label** and the
+label captured by its active AWAIT/COOPERATE ticket. Labels are positive,
+code-unit-local identities assigned once per AST statement and reused across
+invocations of the same linked evaluator. On the source interpreter's
+suspendable-statement path, `SourceTask` enters the corresponding label
+before evaluating that statement. The native frame refuses to suspend
+without an entered label. On resume it authenticates the captured label
+alongside the existing native kind/ticket/phase checks; a suspended actor
+cannot relabel itself, and terminal transitions clear both labels.
+
+This is the **first input for compiler-generated native program counters**,
+not full continuation dispatch. The site table is currently cached evaluator
+metadata built on first execution of a statement; the Java continuation
+callback still determines the branch of execution on resumption. Repeated
+suspensions within the same statement or loop share a site label and are
+distinguished by monotonic native tickets. Later compiler passes must
+precompute stable PC labels, generate a per-suspension liveness/spill map,
+and dispatch directly from validated native PCs while retiring managed
+callback/environment roots. Synchronous fast-path statements do not need
+a site write.
+
+The `SourceTask.resume()` entry boundary also fails closed on malformed
+initial/resumed native authority: it clears pending managed continuation
+roots and marks the native frame FAILED, releasing spill references. The
+actor's guest-level `trap` does not convert a forged/stale resume into a
+successful absent-value result. Fatal `Error` paths now clear those managed
+callback roots and any original argument/receiver facades as well; this
+prevents a terminal `SourceTask` object from needlessly retaining guest
+payloads while it remains reachable from host scheduler cleanup state.
+Cancellation while suspended still needs a distinct, owner-authorized
+terminal-drop callback; that is **not** implemented by this change.
+
 ## Remaining work before strict no-managed-allocation admission
 
 This patch does **not** make the Java evaluator allocation-free. It still uses
