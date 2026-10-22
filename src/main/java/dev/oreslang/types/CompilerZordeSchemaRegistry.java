@@ -121,6 +121,7 @@ final class CompilerZordeSchemaRegistry {
                         // The restricted import-type dialect addresses
                         // dotted unit identifiers; no filesystem resolution.
                         || module.indexOf('/') >= 0
+                        || simple.length() > 128
                         || !simple.matches("[A-Za-z_][A-Za-z_0-9]*")
                         || !importedSimpleNames.add(simple)
                         || module.equals(compilationUnitId)) {
