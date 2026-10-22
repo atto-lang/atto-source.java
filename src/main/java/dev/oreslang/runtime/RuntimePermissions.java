@@ -194,6 +194,70 @@ public final class RuntimePermissions {
         }
     }
 
+    /**
+     * Strict stdlib filesystem admission without performing host filesystem I/O.
+     *
+     * <p>Permission scopes are normalized when the context policy is built.
+     * Per-operation strict I/O must not call Files.exists/toRealPath merely to
+     * authorize a request, because doing so would reintroduce blocking I/O on
+     * the guest carrier. The native provider receives this lexical absolute
+     * path and opens it with a no-symlink/no-escape kernel contract.</p>
+     */
+    public String requireStrictPath(
+            Permission permission, String resource, String api) {
+        if (permission != Permission.READ && permission != Permission.WRITE) {
+            throw new IllegalArgumentException(
+                    "strict path admission only supports read/write permissions");
+        }
+        String normalized = normalizeStrictPath(resource);
+        Rule rule = rules.get(permission);
+        boolean denied = rule == null
+                || rule.denyAll()
+                || strictPathMatchesAny(normalized, rule.denied());
+        boolean allowed = !denied
+                && (rule.allowAll()
+                        || strictPathMatchesAny(normalized, rule.allowed()));
+        if (!allowed) {
+            throw new SecurityException(
+                    "Oreslang permission denied: " + permission.cliName()
+                            + " access to '" + normalized + "' required by " + api);
+        }
+        return normalized;
+    }
+
+    private static boolean strictPathMatchesAny(
+            String resource, Set<String> scopes) {
+        for (String scope : scopes) {
+            if ("*".equals(scope)) return true;
+            if (strictPathMatches(resource, scope)) return true;
+        }
+        return false;
+    }
+
+    private static boolean strictPathMatches(String resource, String scope) {
+        try {
+            Path resourcePath = Path.of(resource);
+            Path scopePath = Path.of(scope);
+            return resourcePath.equals(scopePath) || resourcePath.startsWith(scopePath);
+        } catch (InvalidPathException invalid) {
+            throw new IllegalArgumentException(
+                    "invalid normalized strict filesystem permission path", invalid);
+        }
+    }
+
+    private static String normalizeStrictPath(String value) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(
+                    "strict filesystem path cannot be empty");
+        }
+        try {
+            return Path.of(value).toAbsolutePath().normalize().toString();
+        } catch (InvalidPathException invalid) {
+            throw new IllegalArgumentException(
+                    "invalid strict filesystem path '" + value + "'", invalid);
+        }
+    }
+
     public boolean allows(Permission permission, String resource) {
         Rule rule = rules.get(permission);
         if (rule == null) return false;
