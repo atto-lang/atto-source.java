@@ -662,6 +662,12 @@ public final class OresScheduler implements AutoCloseable {
                         }
                         signalFullyQuiescentIfReady();
                     }
+                    // Source task revocation is complete for the whole
+                    // snapshot. Only now may callbacks that can block or
+                    // synchronously reenter host code be invoked.
+                    for (TaskRunner<?> runner : admitted) {
+                        runner.retireRevokedFromSchedulerClose();
+                    }
                     for (TaskRunner<?> runner : admitted) {
                         runner.publishCancelledFromSchedulerClose();
                     }
@@ -1255,9 +1261,23 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void revokeFromSchedulerClose() {
-            // Quiesce internal state even when another cancellation thread has
-            // settled the Future but is blocked notifying its waiters.
-            cancelFromFuture();
+            // First phase: revoke all admitted tasks without invoking
+            // potentially blocking onQuiescent or terminal Future callbacks.
+            // Physical carriers remain accounted until afterCarrierTurn().
+            detachActiveAwaitRegistration();
+            int observed;
+            do {
+                observed = phase.get();
+                if (observed == TERMINAL) break;
+            } while (!phase.compareAndSet(observed, TERMINAL));
+            pendingResume.set(null);
+        }
+
+        private void retireRevokedFromSchedulerClose() {
+            // Second phase: run physical retirement callbacks for tasks
+            // that are already quiescent. Executing tasks are retired by
+            // their real post-carrier callback, never by cancellation.
+            retireWhenQuiescent();
         }
 
         private void publishCancelledFromSchedulerClose() {
