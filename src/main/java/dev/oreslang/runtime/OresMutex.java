@@ -489,9 +489,18 @@ public final class OresMutex {
          * single actor from queueing a second acquisition behind itself and
          * deadlocking, even when the actor migrates JVM workers.
          */
+        private static Object currentLogicalLockOwner() {
+            // An actor is a protection domain, NOT the identity of each
+            // concurrent message handler or scheduler Task within it. A
+            // scheduler task retains its identity across await/carrier hops.
+            Object taskDomain = OresScheduler.currentTaskDomain();
+            return taskDomain != null
+                    ? taskDomain : ActorRuntime.currentMutexExecutionSegment();
+        }
+
         private Object reserveDomain(boolean tryOnly) {
             requireActorAccess();
-            Object domain = ActorRuntime.currentExecutionDomain();
+            Object domain = currentLogicalLockOwner();
             if (activeDomains.add(domain)) return domain;
             if (tryOnly) return null;
             throw new RecursiveLockException("SharedMutex<T>");
@@ -622,6 +631,30 @@ public final class OresMutex {
                 return true;
             }
 
+            /**
+             * A failed/timed-out/cancelled request that never obtained a guard
+             * owns NO permit and must not consume the Task's live lease quota.
+             * This is safe on the host notification carrier: no guest callback
+             * is invoked and no protected payload was ever exposed.
+             */
+            private void finishWithoutGrant() {
+                synchronized (this) {
+                    if (guard != null) return;
+                    retired = true;
+                }
+                lease.disarmWithoutRelease();
+            }
+
+            /** A grant lost the Future completion race; reclaim it first. */
+            private void finishUndeliveredGrant(SharedGuard undelivered) {
+                synchronized (this) {
+                    if (guard != undelivered) return;
+                    retired = true;
+                    guard = null;
+                }
+                lease.disarmWithoutRelease();
+            }
+
             private void releaseExplicitly() {
                 SharedGuard acquired;
                 synchronized (this) {
@@ -723,16 +756,22 @@ public final class OresMutex {
                         waiter.taskRequest == null ? null : waiter.taskRequest.lease,
                         false);
                 if (waiter.taskRequest != null && !waiter.taskRequest.bindGuard(guard)) {
-                    // The Task retired while handoff was in flight. Keep the
-                    // current permit in this handoff loop if still ours.
-                    if (guard.takePermitForHandoff()) continue;
+                    // The Task retired or the Future failed while handoff was
+                    // in flight. Reclaim the undelivered permit exactly once.
+                    boolean reclaimed = guard.takePermitForHandoff();
+                    waiter.taskRequest.finishUndeliveredGrant(guard);
+                    if (reclaimed) continue;
                     return;
                 }
                 if (waiter.future.completeFromRuntime(guard)) return;
 
                 // Cancellation won after dequeue. Either this loop or Task
                 // cleanup owns the physical permit, never both.
-                if (guard.takePermitForHandoff()) continue;
+                boolean reclaimed = guard.takePermitForHandoff();
+                if (waiter.taskRequest != null) {
+                    waiter.taskRequest.finishUndeliveredGrant(guard);
+                }
+                if (reclaimed) continue;
                 return;
             }
         }
@@ -829,11 +868,8 @@ public final class OresMutex {
 
         @Override
         public CompletableFuture<Guard<T>> lockAsync() {
-            // Register the pending acquisition in the logical Task before it
-            // can be granted on another scheduler carrier. Never infer Task
-            // identity from the granting thread.
-            TaskBoundRequest taskRequest = TaskHandle.isCurrentTrackedTaskTurn()
-                    ? new TaskBoundRequest() : null;
+            // Reserve the logical owner before registering a Task lease.
+            // A recursive-lock rejection must not leave an ungranted lease.
             Object ownerDomain = reserveDomain(false);
             int waiterLimit = asyncWaiterLimit();
             if (!reserveAsyncWaiter(waiterLimit)) {
@@ -846,6 +882,19 @@ public final class OresMutex {
                 releaseDomain(ownerDomain);
                 return failedGuardFuture(new IllegalStateException(
                         "SharedMutex process-wide async waiter limit exceeded: " + MAX_GLOBAL_ASYNC_WAITERS));
+            }
+
+            // Register before the waiter is exposed to other carriers. An
+            // admission failure must return both quotas and owner reservation.
+            final TaskBoundRequest taskRequest;
+            try {
+                taskRequest = TaskHandle.isCurrentTrackedTaskTurn()
+                        ? new TaskBoundRequest() : null;
+            } catch (RuntimeException | Error registrationFailure) {
+                releaseGlobalAsyncWaiter();
+                releaseAsyncWaiter();
+                releaseDomain(ownerDomain);
+                throw registrationFailure;
             }
 
             boolean enforceOwnerDomain = ActorRuntime.inActorExecution();
@@ -868,6 +917,9 @@ public final class OresMutex {
                 }
                 releaseAsyncWaiter();
                 releaseGlobalAsyncWaiter();
+                if (taskRequest != null && failure != null) {
+                    taskRequest.finishWithoutGrant();
+                }
             });
 
             boolean acquired = false;
@@ -919,9 +971,13 @@ public final class OresMutex {
                             false);
                     if (taskRequest != null && !taskRequest.bindGuard(guard)) {
                         guard.releaseFromRuntime(false);
+                        taskRequest.finishUndeliveredGrant(guard);
                         future.cancel(false);
                     } else if (!future.completeFromRuntime(guard)) {
                         guard.releaseFromRuntime(false);
+                        if (taskRequest != null) {
+                            taskRequest.finishUndeliveredGrant(guard);
+                        }
                     }
                 } catch (RuntimeException | Error failure) {
                     releaseDomain(ownerDomain);
@@ -1063,9 +1119,9 @@ public final class OresMutex {
 
             private void requireOwnerDomain() {
                 if (enforceOwnerDomain
-                        && !Objects.equals(ActorRuntime.currentExecutionDomain(), ownerDomain)) {
+                        && currentLogicalLockOwner() != ownerDomain) {
                     throw new WrongMutexDomainException(
-                            "SharedMutex guard belongs to another actor/execution domain");
+                            "SharedMutex guard belongs to another logical Task or actor turn");
                 }
                 if (taskLease != null) taskLease.requireCurrentOwner();
             }
