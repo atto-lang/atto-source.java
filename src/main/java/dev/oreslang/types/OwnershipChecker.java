@@ -1389,8 +1389,8 @@ public final class OwnershipChecker {
             return new ValueInfo(Ast.TypeRef.tupleType(slots), copy ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.ObjectExpr object) {
-            if (object.explicitStruct()
-                    && object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
+            boolean hasAggregateSpread = object.fields().stream().anyMatch(Ast.ObjectField::spread);
+            if (object.explicitStruct() && hasAggregateSpread) {
                 throw error("aggregate spread into an explicit struct requires a checked initialization plan");
             }
             LinkedHashMap<String, Ast.TypeRef> members = new LinkedHashMap<>();
@@ -1433,6 +1433,16 @@ public final class OwnershipChecker {
                 }
                 if (isBorrowValue(info)) {
                     throw error("borrowed references cannot be stored in an owned struct until explicit container lifetimes are supported");
+                }
+                if (hasAggregateSpread
+                        && (!isCopyType(info.type)
+                        || !(info.type.name().equals("int")
+                        || info.type.name().equals("float")
+                        || info.type.name().equals("bool")
+                        || info.type.name().equals("string")
+                        || info.type.name().equals("String")))) {
+                    throw error("aggregate spread scalar-only stage rejects initializer field '"
+                            + field.name() + "'");
                 }
                 if (!object.explicitStruct()) members.put(field.name(), info.type);
             }
