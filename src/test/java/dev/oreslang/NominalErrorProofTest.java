@@ -170,6 +170,21 @@ final class NominalErrorProofTest {
     }
 
     @Test
+    void rootWithUnexpectedSuperclassIsNotTrusted() {
+        Ast.ClassDecl root = klass("define class Error extends UntrustedRoot as end");
+        var lookup = resolver(Map.of("Error", root));
+        var error = assertThrows(IllegalArgumentException.class, () ->
+                NominalErrorProof.requireNominalError(
+                        Ast.TypeRef.simple("Error"), root, lookup));
+        assertTrue(error.getMessage().contains("invalid trusted"));
+
+        Ast.ClassDecl ordinaryRoot = klass("define class Error extends Object as end");
+        assertDoesNotThrow(() -> NominalErrorProof.requireNominalError(
+                Ast.TypeRef.simple("Error"), ordinaryRoot,
+                resolver(Map.of("Error", ordinaryRoot))));
+    }
+
+    @Test
     void compilerBuiltinAliasesCannotActAsNominalErrors() {
         Ast.ClassDecl root = klass("define class Error as end");
         for (String builtin : List.of("i32", "u64", "f32", "Bool",
