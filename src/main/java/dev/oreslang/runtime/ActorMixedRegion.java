@@ -307,6 +307,24 @@ public final class ActorMixedRegion implements AutoCloseable {
                 (byte) (value ? 1 : 0));
     }
 
+    /**
+     * Borrow one physically contiguous SoA column without copying or exposing
+     * a mutable ByteBuffer. Region leases currently freeze the entire actor
+     * native allocation, so this does NOT yet prove field-disjoint borrows.
+     * The caller must close the lease before writes, conversion or teardown.
+     */
+    public ActorNativeArena.Region.ReadOnlyLease leaseSoaColumnReadOnly(String field) {
+        requireOwner();
+        if (layout != Layout.SOA) {
+            throw new UnsupportedOperationException("only SoA columns are contiguous");
+        }
+        Integer index = field == null ? null : byName.get(field);
+        if (index == null) throw new IndexOutOfBoundsException("unknown SoA column");
+        Segment segment = segments.get(locations[index].segment);
+        return memory.leaseReadOnly(Math.toIntExact(segment.base),
+                Math.toIntExact(segment.bytes));
+    }
+
     public void integrate(String position, String velocity, double dt) {
         requireOwner();
         if (!Double.isFinite(dt) || Objects.equals(position, velocity)) {
