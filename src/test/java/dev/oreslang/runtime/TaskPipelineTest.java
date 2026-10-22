@@ -156,9 +156,52 @@ final class TaskPipelineTest {
                     }));
             assertTrue(admitted.await(5, TimeUnit.SECONDS));
             assertTrue(output.cancel(false));
-            assertTrue(child.isCancelled(), "owned work must be cancelled");
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!child.isCancelled() && System.nanoTime() < deadline) {
+                Thread.sleep(2);
+            }
+            assertTrue(child.isCancelled(), "owned work must be cancelled even when admission races revocation");
             assertFalse(shared.isCancelled(), "shared upstream must not be cancelled");
             assertEquals(0, later.get());
+        }
+    }
+
+    @Test
+    void cancellingPipelineDoesNotCancelSharedStageFuture() throws Exception {
+        OresFuture<Integer> sharedChild = new OresFuture<>();
+        AtomicInteger invoked = new AtomicInteger();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> output = TaskPipeline.start(scheduler,
+                    OresFuture.completed(1),
+                    List.of(value -> sharedChild,
+                            value -> {
+                                invoked.incrementAndGet();
+                                return value;
+                            }));
+            awaitWaiter(sharedChild);
+            assertTrue(output.cancel(false));
+            assertFalse(sharedChild.isCancelled(),
+                    "unowned stage Future may be shared with other consumers");
+            waitForNoWaiter(sharedChild);
+            assertEquals(0, invoked.get());
+            assertTrue(sharedChild.completeFromRuntime(42));
+        }
+    }
+
+    @Test
+    void repeatedCompletionAndCancellationRacesNeverCancelSharedProducer()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            for (int iteration = 0; iteration < 64; iteration++) {
+                OresFuture<Integer> producer = new OresFuture<>();
+                OresFuture<Integer> output = TaskPipeline.start(scheduler, producer,
+                        List.of(value -> ((Integer) value) + 1));
+                assertTrue(output.cancel(false));
+                assertFalse(producer.isCancelled(), "iteration " + iteration);
+                assertTrue(producer.completeFromRuntime(iteration));
+                assertTrue(output.isCancelled());
+                waitForNoWaiter(producer);
+            }
         }
     }
 
