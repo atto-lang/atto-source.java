@@ -1,9 +1,11 @@
 name: Native core and stdlib SMT safety gate
 on:
+  workflow_dispatch:
   pull_request:
     paths:
       - 'stdlib/core.ores'
       - 'stdlib/trace.ores'
+      - 'stdlib/testing.ores'
       - 'formal/stdlib/**'
       - 'examples/native-core-smt-refinement.ores'
       - '.github/workflows/stdlib-smt.yml'
@@ -12,6 +14,7 @@ on:
     paths:
       - 'stdlib/core.ores'
       - 'stdlib/trace.ores'
+      - 'stdlib/testing.ores'
       - 'formal/stdlib/**'
       - 'examples/native-core-smt-refinement.ores'
       - '.github/workflows/stdlib-smt.yml'
@@ -25,6 +28,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Enforce exact checked-out commit
+        run: test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
       - name: Install SMT solver and Rust verifier
         run: |
           sudo apt-get update
@@ -32,7 +38,7 @@ jobs:
       - name: Record exact inputs and tool versions
         run: |
           git rev-parse HEAD
-          git hash-object stdlib/core.ores stdlib/trace.ores
+          git hash-object stdlib/core.ores stdlib/trace.ores stdlib/testing.ores
           rustc --version
           z3 -version
       - name: Rust gate regression tests
@@ -50,6 +56,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Enforce exact checked-out commit
+        run: test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
       - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
         with:
           version: '25.3'
@@ -59,6 +68,15 @@ jobs:
           cache: maven
       - name: Execute actual source-owned core from exact checkout
         run: |
+          set -euo pipefail
           git rev-parse HEAD
           mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-core-smt-refinement.ores" | tee "${RUNNER_TEMP}/core-refinement.out"
           grep -Fx 'CORE-SMT-REFINEMENT-OK' "${RUNNER_TEMP}/core-refinement.out"
+      - name: Run real Oreslang testing.run_suite guest refinement
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing.ores" | tee "${RUNNER_TEMP}/testing-refinement.out"
+          grep -F 'ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0' "${RUNNER_TEMP}/testing-refinement.out"
+          mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-semantics.ores" | tee "${RUNNER_TEMP}/testing-semantics.out"
+          grep -F 'ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=2' "${RUNNER_TEMP}/testing-semantics.out"
+          grep -F 'ORES_TEST|SUMMARY|total=2|passed=1|failed=1|skipped=0|filtered=0' "${RUNNER_TEMP}/testing-semantics.out"
