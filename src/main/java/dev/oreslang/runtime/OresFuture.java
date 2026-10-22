@@ -115,6 +115,12 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      * a cancellation hook registers another waiter on its own Future.
      */
     private final AtomicBoolean cancelRevocationComplete = new AtomicBoolean();
+    // Only scheduler-owned cleanup-aware Task Futures use deferred cancellation.
+    // An observer's cancel() requests the runtime to unwind without exposing
+    // a false terminal state while guest defer/finally and arena loans remain.
+    private final boolean deferredCancellation;
+    private final AtomicReference<CancellationException> requestedCancellation =
+            new AtomicReference<>();
     private final AtomicReference<Object> state = new AtomicReference<>(PENDING);
     private final ConcurrentLinkedQueue<RuntimeWaiterRegistration<T>> waiters = new ConcurrentLinkedQueue<>();
 
@@ -145,6 +151,12 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
     OresFuture(BooleanSupplier cancelAdmission, Runnable cancelHook,
             Runnable onNotificationDrained) {
+        this(cancelAdmission, cancelHook, onNotificationDrained, false);
+    }
+
+    OresFuture(BooleanSupplier cancelAdmission, Runnable cancelHook,
+            Runnable onNotificationDrained, boolean deferredCancellation) {
+        this.deferredCancellation = deferredCancellation;
         this.cancelAdmission = Objects.requireNonNull(
                 cancelAdmission, "cancelAdmission");
         this.cancelHook = new AtomicReference<>(
@@ -463,11 +475,33 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
         CancellationException cancelled =
                 new CancellationException("OresFuture was cancelled");
+        if (deferredCancellation) {
+            // This request is not terminal. The owner must dispatch its
+            // authenticated unwind continuation before publication.
+            if (!requestedCancellation.compareAndSet(null, cancelled)) return false;
+            if (state.get() != PENDING) return false;
+            invokeCancelHook();
+            return true;
+        }
         // Revoke the owning operation BEFORE any synchronous subscriber can
         // block terminal notification. isCancelled() becomes visible at the
         // successful state CAS; guest/producer authority must then be removed
         // before ordinary host completion callbacks are entered.
         return settle(new Cancelled(cancelled), this::invokeCancelHook);
+    }
+
+    /** Trusted scheduler-only observation of a pending terminal-unwind request. */
+    CancellationException deferredCancellationCause() {
+        return requestedCancellation.get();
+    }
+
+    /** Settle cancelled ONLY after the cleanup continuation physically exits. */
+    boolean completeDeferredCancellationFromRuntime() {
+        CancellationException cause = requestedCancellation.get();
+        if (!deferredCancellation || cause == null) {
+            throw new IllegalStateException("no deferred cancellation to complete");
+        }
+        return settle(new Cancelled(cause));
     }
 
     @Override
