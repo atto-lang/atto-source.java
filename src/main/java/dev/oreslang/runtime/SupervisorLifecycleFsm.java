@@ -203,7 +203,7 @@ public final class SupervisorLifecycleFsm {
             if (failed) return s;
             failed = true;
         } else if (e instanceof DeadlineExpired) {
-            if (timedOut || p == Phase.RECLAIMED || p == Phase.STOPPED) return s;
+            if (timedOut || p == Phase.RECLAIMED) return s;
             require(p != Phase.RUNNING && p != Phase.RESTARTING,
                     "timeout without admitted shutdown");
             timedOut = true;
