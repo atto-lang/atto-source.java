@@ -36,8 +36,10 @@ public final class TaskScope implements AutoCloseable {
     /** Atomically reserve a child slot or reject a sealed scope. */
     public <T> TaskHandle<T> startTask(OresScheduler.Task<T> task) {
         Objects.requireNonNull(task, "task");
-        checkAdmission.run();
         synchronized (admissionLock) {
+            // Check owner/stop authority at the same admission boundary as
+            // sealed and active, not before another thread can stop the actor.
+            checkAdmission.run();
             if (sealed) {
                 throw new RejectedExecutionException("TaskScope is sealed");
             }
