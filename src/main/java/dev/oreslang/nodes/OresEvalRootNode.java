@@ -1998,12 +1998,17 @@ public final class OresEvalRootNode extends RootNode {
         private SourceFlow mergeCleanupFailure(SourceFlow currentFlow, Throwable cleanupFailure) {
             Throwable earlier = currentFlow.failure();
             if (earlier == cleanupFailure) return currentFlow; // no self-suppression
-            if (earlier != null && (isUnmaskableFailure(earlier)
-                    || cleanupFailure instanceof ProcessExitSignal)) {
+            // The first genuine failure is the PRIMARY cause of the Task.
+            // Defer/finally/guard failures are secondary diagnostics and must
+            // never erase the original THROW, RAISE, PANIC or cancellation.
+            // In particular ProcessExitSignal from a defer cannot replace a
+            // pending error. Preserve original identity for source and actor
+            // supervisor attribution.
+            if (earlier != null) {
                 earlier.addSuppressed(cleanupFailure);
                 return currentFlow;
             }
-            if (earlier != null) cleanupFailure.addSuppressed(earlier);
+            // A cleanup failure after a normal return still fails the Task.
             return SourceFlow.throwing(cleanupFailure);
         }
 
