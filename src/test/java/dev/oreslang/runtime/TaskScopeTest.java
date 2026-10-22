@@ -7,6 +7,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
@@ -33,6 +34,61 @@ public class TaskScopeTest {
             scope.seal();
             assertNull(scope.getDone().get(3, TimeUnit.SECONDS));
             assertFalse(scope.getDone().cancel(true));
+        }
+    }
+
+    @Test void actorScopeAsyncCancelSealsAdmissionWithoutBlockingSubscribers()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskScope scope = scheduler.newTaskScope();
+            OresFuture<Integer> producer = new OresFuture<>();
+            TaskHandle<Integer> child = scope.startTask(
+                    resume -> OresScheduler.await(producer));
+            CountDownLatch subscriberEntered = new CountDownLatch(1);
+            CountDownLatch releaseSubscriber = new CountDownLatch(1);
+            child.result().whenCompleteRuntime((value, failure) -> {
+                subscriberEntered.countDown();
+                awaitUninterruptibly(releaseSubscriber);
+            });
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (producer.pendingRuntimeWaiterCount() != 1
+                    && System.nanoTime() < deadline) Thread.sleep(1);
+            assertEquals(1, producer.pendingRuntimeWaiterCount());
+            try {
+                scope.requestCancelNonblocking("owning actor terminated");
+                assertThrows(RejectedExecutionException.class,
+                        () -> scope.startTask(r -> OresScheduler.done(1)),
+                        "sealed admission must be immediate even if subscribers block");
+                assertTrue(subscriberEntered.await(5, TimeUnit.SECONDS));
+                for (int i = 0; i < 100; i++) {
+                    scope.requestCancelNonblocking("owning actor terminated");
+                }
+                assertEquals(0, producer.pendingRuntimeWaiterCount(),
+                        "cancellation must detach the child from its shared producer");
+            } finally {
+                releaseSubscriber.countDown();
+            }
+            assertNull(scope.getDone().get(5, TimeUnit.SECONDS));
+            assertFalse(producer.isDone());
+        }
+    }
+
+    @Test void actorAffineScopeAdmissionRejectsForeignOwnerBeforeReservation()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            AtomicBoolean owner = new AtomicBoolean(false);
+            TaskScope scope = scheduler.newTaskScope(() -> {
+                if (!owner.get()) throw new SecurityException("foreign actor owner");
+            });
+            assertThrows(SecurityException.class,
+                    () -> scope.startTask(r -> OresScheduler.done(1)));
+            owner.set(true);
+            TaskHandle<Integer> child = scope.startTask(
+                    r -> OresScheduler.done(42));
+            scope.seal();
+            assertEquals(new TaskHandle.Success<>(42),
+                    child.getDone().get(5, TimeUnit.SECONDS));
+            assertNull(scope.getDone().get(5, TimeUnit.SECONDS));
         }
     }
 
