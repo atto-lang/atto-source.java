@@ -82,6 +82,19 @@ public final class AggregateConstructionPlanSmoke {
                 "internal structural contract row");
         denied(() -> new AggregateConstructionPlan.Builder(readonly)
                         .addSpread(0, Types.Record.struct(Map.of(
+                                "bad" + (char) 0, Types.Primitive.INT))),
+                "spread with invalid NUL field name");
+        denied(() -> new AggregateConstructionPlan.Builder(readonly)
+                        .addSpread(0, Types.Record.struct(Map.of(
+                                "x".repeat(1025), Types.Primitive.INT))),
+                "spread with oversized static key");
+        denied(() -> new AggregateConstructionPlan.SpreadFields(
+                        0, Types.AggregateKind.RECORD, Map.of(
+                                "bad" + (char) 0xD800, Types.Primitive.INT)),
+                "directly forged projection with invalid surrogate");
+
+        denied(() -> new AggregateConstructionPlan.Builder(readonly)
+                        .addSpread(0, Types.Record.struct(Map.of(
                                 "nested", Types.Record.struct(Map.of("foo", Types.Primitive.INT))))),
                 "nested resource requires ownership plan");
         denied(() -> new AggregateConstructionPlan.Builder(readonly)
