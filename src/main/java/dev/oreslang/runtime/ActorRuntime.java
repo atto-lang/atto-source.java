@@ -7474,6 +7474,14 @@ public final class ActorRuntime implements AutoCloseable {
                     || scheduled.get()
                     || carrierActive
                     || !children.isEmpty()) return;
+            // The native arena itself rejects retirement with live immutable
+            // borrows. Check BEFORE publishing finalized or clearing any
+            // scheduler/mailbox/shard state, otherwise nativeArena.close()
+            // can throw after the actor is irreversibly half-finalized.
+            //
+            // This is only a lease barrier, not source-task quiescence.
+            // Task carrier/descendant retirement remains an independent gate.
+            if (nativeArena.hasOutstandingReadLeases()) return;
             finalized = true;
             OresScheduler scheduler = sourceScheduler;
             sourceScheduler = null;
