@@ -26,6 +26,15 @@ function oracle(name,a) {
   const [v,low,high]=a;
   return low>high?low:v<low?low:v>high?high:v;
 }
+export function validateGuestSource(sourceBytes) {
+  requireCondition(Buffer.isBuffer(sourceBytes),"guest source must be raw bytes");
+  const sourceBlob=createHash("sha1")
+    .update(Buffer.from("blob "+sourceBytes.length+"\0"))
+    .update(sourceBytes).digest("hex");
+  requireCondition(sourceBlob===EXPECTED_GUEST_GIT_BLOB,
+    "guest source does not match reviewed Git blob");
+  return sourceBlob;
+}
 export function loadContract(raw) {
   requireCondition(Buffer.isBuffer(raw),"expected raw contract bytes");
   const hash=createHash("sha1").update(Buffer.from("blob "+raw.length+"\0")).update(raw).digest("hex");
@@ -84,12 +93,7 @@ function main(args) {
   requireCondition(args.length===4,
     "usage: node check_core_math_guest.mjs <raw-log> <contract-json> <guest-source.ores> <receipt-json>");
   const [logPath,contractPath,guestPath,outPath]=args;
-  const sourceBytes=readFileSync(guestPath);
-  const sourceBlob=createHash("sha1")
-    .update(Buffer.from("blob "+sourceBytes.length+"\0"))
-    .update(sourceBytes).digest("hex");
-  requireCondition(sourceBlob===EXPECTED_GUEST_GIT_BLOB,
-    "guest source does not match reviewed Git blob");
+  const sourceBlob=validateGuestSource(readFileSync(guestPath));
   const cases=loadContract(readFileSync(contractPath));
   const receipt={
     ...validateCapturedGuestLog(readFileSync(logPath,"utf8"),cases),
