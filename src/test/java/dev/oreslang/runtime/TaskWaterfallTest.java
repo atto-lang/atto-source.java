@@ -263,4 +263,41 @@ public class TaskWaterfallTest {
                     pipeline.getDone().get(3, TimeUnit.SECONDS));
         }
     }
+
+    @Test void preCancelledFirstStagePreservesOwnedTaskCancellation() throws Exception {
+        OresFuture<Integer> first = new OresFuture<>();
+        assertTrue(first.cancel(false));
+        AtomicInteger secondCalls = new AtomicInteger();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskHandle<Integer> handle = TaskWaterfall.waterfall(
+                    scheduler,
+                    () -> first,
+                    v -> {
+                        secondCalls.incrementAndGet();
+                        return OresFuture.completed(v + 1);
+                    },
+                    v -> OresFuture.completed(v + 1));
+            assertInstanceOf(TaskHandle.Cancelled.class,
+                    handle.getDone().get(3, TimeUnit.SECONDS));
+            assertTrue(handle.result().isCancelled());
+            assertEquals(0, secondCalls.get());
+            assertEquals(0, first.pendingRuntimeWaiterCount());
+        }
+    }
+
+    @Test void startupGatePreventsFactoryRunningBeforeStartReturns() throws Exception {
+        // The factory must run on a scheduler carrier after the TaskHandle
+        // exists, not on the calling thread as an eager argument evaluation.
+        AtomicReference<Thread> factoryThread = new AtomicReference<>();
+        Thread caller = Thread.currentThread();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskHandle<Integer> handle = TaskWaterfall.from(() -> {
+                factoryThread.set(Thread.currentThread());
+                return OresFuture.completed(42);
+            }).start(scheduler);
+            assertEquals(Integer.valueOf(42), handle.result().get(3, TimeUnit.SECONDS));
+            assertNotNull(factoryThread.get());
+            assertNotSame(caller, factoryThread.get());
+        }
+    }
 }
