@@ -55,6 +55,9 @@ public final class TypeChecker {
             Named ownerType,
             Ast.InterfaceFunctionDecl function) { }
     private record ResolvedField(Ast.ClassDecl owner, Named ownerType, Ast.FieldDecl field) { }
+    /** Compile-time actor stream ports; not a second actor or scheduler. */
+    private record StreamPorts(Type input, Type output) { }
+
     private record CallableTarget(Ast.ClassDecl owner, Ast.MethodDecl method) { }
     private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
@@ -256,7 +259,7 @@ public final class TypeChecker {
                 "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult",
                 "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "HttpResponse", "TcpConnection",
-                "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
+                "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind", "ActorStream", "StreamOperator",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "void",
                 "self", "null"));
@@ -1177,6 +1180,23 @@ public final class TypeChecker {
     }
 
     private void checkClassBody(String module, Ast.ClassDecl klass) {
+        Ast.ActorConcurrency concurrency = klass.actorConcurrency();
+        if (klass.actorKind() == Ast.ActorKind.NONE
+                && concurrency.transport() != Ast.ActorTransport.GENERIC) {
+            throw new IllegalArgumentException("only actors may declare a transport concurrency policy");
+        }
+        // The VM currently holds one logical actor-state lease across await.
+        // Do not admit a concurrency policy the ActorCell scheduler cannot
+        // enforce merely because a configuration literal type-checks.
+        if (concurrency.requestConcurrency() > 1 || concurrency.messageConcurrency() > 1) {
+            throw new IllegalArgumentException(
+                    "actor '" + klass.name() + "' requests concurrency ("
+                            + concurrency.requestConcurrency() + ","
+                            + concurrency.messageConcurrency() + ") but the current ActorRuntime "
+                            + "enforces one logical receive at a time across await/rt cooperate; "
+                            + "parallel handlers require a new per-request/per-message admission "
+                            + "scheduler plus exclusive state loans. Refusing unsafe configuration.");
+        }
         Set<String> classGenerics = uniqueGenerics(klass.genericParameters(), "class " + klass.name());
         Type self = nominalClassType(klass);
 
@@ -1201,6 +1221,14 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("actor isolation kind must be preserved across inheritance: "
                         + klass.name() + " is " + klass.actorKind() + " but parent "
                         + resolvedParent.name() + " is " + resolvedParent.actorKind());
+            }
+            if (resolvedParent != null
+                    && klass.actorKind() != Ast.ActorKind.NONE
+                    && !klass.actorConcurrency().equals(resolvedParent.actorConcurrency())) {
+                throw new IllegalArgumentException("actor transport and concurrency policy must "
+                        + "be preserved across inheritance: " + klass.name() + " has "
+                        + klass.actorConcurrency() + " but parent "
+                        + resolvedParent.name() + " has " + resolvedParent.actorConcurrency());
             }
             if (resolvedParent != null && resolvedParent.constructor() != null) {
                 throw new IllegalArgumentException(
@@ -1556,6 +1584,10 @@ public final class TypeChecker {
         Set<String> implemented = new HashSet<>();
         for (Ast.TypeRef interfaceRef : klass.interfaces()) {
             if (!implemented.add(interfaceRef.name())) throw new IllegalArgumentException("duplicate implemented interface '" + interfaceRef.name() + "' on " + klass.name());
+            if (interfaceRef.name().equals("StreamOperator")) {
+                streamPortsForClass(klass, nominalClassType(klass));
+                continue;
+            }
             Ast.InterfaceDecl iface = findInterface(interfaceRef.name());
             if (iface == null) throw new IllegalArgumentException("unknown interface '" + interfaceRef.name() + "' implemented by " + klass.name());
             if (iface.moduleContract()) throw new IllegalArgumentException("module contract '" + interfaceRef.name() + "' cannot be implemented by class '" + klass.name() + "'");
@@ -2546,6 +2578,15 @@ public final class TypeChecker {
             return operand;
         }
         if (expr instanceof Ast.BinaryExpr binary) {
+            if (binary.operator().equals("pipe")) {
+                checkPipeTopology(binary, env, generics, self);
+                // Still fail closed: the current actor mailbox send() is void
+                // and lacks awaitable bounded admission. Do not silently spawn
+                // actors or build an unbackpressured bridge.
+                throw new IllegalArgumentException(
+                        "typed pipe ports are compatible, but ActorStream runtime "
+                        + "with bounded delivery/startup/cancellation is not implemented yet");
+            }
             Type left = typeOf(binary.left(), env, generics, self);
             if (binary.operator().equals("&&") || binary.operator().equals("||")) {
                 requireAssignable(left, Primitive.BOOL, "logical operand");
@@ -2627,6 +2668,14 @@ public final class TypeChecker {
                 if (actorClass.isAbstract()) {
                     throw new IllegalArgumentException(
                             "cannot spawn abstract actor '" + actorClass.name() + "'");
+                }
+                if (actorClass.actorConcurrency().transport() != Ast.ActorTransport.GENERIC) {
+                    throw new IllegalArgumentException(
+                            "actor '" + actorClass.name() + "' is a "
+                                    + actorClass.actorConcurrency().transport()
+                                    + " transport actor; generic spawn has no HTTP/TCP/WebSocket "
+                                    + "request-dispatch adapter yet. Use an explicit transport "
+                                    + "binding once the runtime provides one.");
                 }
                 if (!created.arguments().isEmpty()) {
                     throw new IllegalArgumentException(
@@ -3037,6 +3086,18 @@ public final class TypeChecker {
                                 currentActorKind,
                                 false,
                                 "self.send outbound value");
+                        if (currentClassOwner != null) {
+                            StreamPorts ports = streamPortsForClass(
+                                    currentClassOwner, nominalClassType(currentClassOwner));
+                            if (ports != null) {
+                                if (ports.output() == Primitive.VOID)
+                                    throw new IllegalArgumentException(
+                                            "StreamOperator sink '" + currentClassOwner.name()
+                                            + "' cannot emit a value with self.send");
+                                requireAssignable(payload, ports.output(),
+                                        "StreamOperator output of actor '" + currentClassOwner.name() + "'");
+                            }
+                        }
                         return Primitive.VOID;
                     }
                     if (member.member().equals("end")) {
@@ -5097,6 +5158,88 @@ public final class TypeChecker {
         return type;
     }
 
+    private StreamPorts streamPortsForClass(Ast.ClassDecl actor, Type actorType) {
+        Ast.TypeRef marker = null;
+        for (Ast.TypeRef iface : actor.interfaces()) {
+            if (!iface.name().equals("StreamOperator")) continue;
+            if (marker != null)
+                throw new IllegalArgumentException(
+                        "duplicate StreamOperator on actor '" + actor.name() + "'");
+            marker = iface;
+        }
+        if (marker == null) return null;
+        if (actor.actorKind() == Ast.ActorKind.NONE)
+            throw new IllegalArgumentException(
+                    "StreamOperator<I,O> can only be implemented by actors");
+        if (marker.inferArguments() || marker.arguments().size() != 2)
+            throw new IllegalArgumentException(
+                    "StreamOperator requires exactly two explicit port type arguments");
+        Set<String> ownerGenerics = Set.copyOf(actor.genericParameters());
+        Type rawInput = resolve(marker.arguments().get(0), ownerGenerics, actorType);
+        Type rawOutput = resolve(marker.arguments().get(1), ownerGenerics, actorType);
+        Map<String, Type> bindings = actorType instanceof Named concrete
+                ? classGenericBindings(actor, concrete) : Map.of();
+        Type input = substituteGenerics(rawInput, bindings);
+        Type output = substituteGenerics(rawOutput, bindings);
+        if (input != Primitive.VOID)
+            validateActorCallableBoundaryType(input, actor.actorKind(), false,
+                    "StreamOperator input for actor '" + actor.name() + "'");
+        if (output != Primitive.VOID)
+            validateActorCallableBoundaryType(output, actor.actorKind(), false,
+                    "StreamOperator output for actor '" + actor.name() + "'");
+        if (input != Primitive.VOID) {
+            Type declared = actorMailboxPayloadType(new Named("ActorRef", List.of(actorType)));
+            if (!input.equals(declared))
+                throw new IllegalArgumentException(
+                        "StreamOperator input for actor '" + actor.name()
+                        + "' is " + input + ", but receive(ActorMail<T>) uses " + declared);
+        } else {
+            for (Ast.MethodDecl method : actor.methods()) {
+                if (method.name().equals("receive") && !method.isStatic())
+                    throw new IllegalArgumentException(
+                            "StreamOperator source actor '" + actor.name()
+                            + "' has void input and cannot declare receive");
+            }
+        }
+        return new StreamPorts(input, output);
+    }
+
+    private StreamPorts checkPipeTopology(
+            Ast.Expr expression, Env env, Set<String> generics, Type self) {
+        if (expression instanceof Ast.BinaryExpr binary
+                && binary.operator().equals("pipe")) {
+            StreamPorts from = checkPipeTopology(binary.left(), env, generics, self);
+            StreamPorts into = checkPipeTopology(binary.right(), env, generics, self);
+            if (from.output() == Primitive.VOID || into.input() == Primitive.VOID)
+                throw new IllegalArgumentException(
+                        "pipe cannot attach stages through a void output/input port");
+            if (!from.output().equals(into.input()))
+                throw new IllegalArgumentException(
+                        "pipe port type mismatch: producer emits " + from.output()
+                        + " but consumer requires " + into.input());
+            return new StreamPorts(from.input(), into.output());
+        }
+        return streamPortsForPipeOperand(
+                typeOf(expression, env, generics, self), "stage");
+    }
+
+    private StreamPorts streamPortsForPipeOperand(Type value, String side) {
+        Type type = receiverDispatchType(deref(value));
+        if (!(type instanceof Named named))
+            throw new IllegalArgumentException("pipe " + side + " operand must be a typed actor stage/graph");
+        if (named.name().equals("ActorStream") && named.arguments().size() == 2)
+            return new StreamPorts(named.arguments().get(0), named.arguments().get(1));
+        if (!named.name().equals("ActorRef") || named.arguments().size() != 1)
+            throw new IllegalArgumentException("pipe " + side + " operand must be ActorRef<StreamOperator<I,O>> or ActorStream<I,O>");
+        Ast.ClassDecl actor = actorClassForRef(named);
+        StreamPorts ports = streamPortsForClass(actor, named.arguments().get(0));
+        if (ports == null)
+            throw new IllegalArgumentException(
+                    "pipe " + side + " actor '" + actor.name()
+                    + "' must explicitly implement StreamOperator<I,O>");
+        return ports;
+    }
+
     private Type actorMailboxPayloadType(Named actorRef) {
         if (actorRef.arguments().size() != 1) {
             throw new IllegalArgumentException(
@@ -5418,6 +5561,7 @@ public final class TypeChecker {
                 || named.name().equals("Weak") || named.name().equals("Rc")
                 || named.name().equals("RefCell") || named.name().equals("RwLock")
                 || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
+                || named.name().equals("ActorStream") || named.name().equals("StreamOperator")
                 || named.name().equals("Channel") || named.name().equals("SelectCase")
                 || named.name().equals("SelectSet") || named.name().equals("SelectResult")
                 || named.name().equals("Iterator") || named.name().equals("AsyncIterator")) {
@@ -5539,7 +5683,7 @@ public final class TypeChecker {
         if (Set.of(
                 "Box", "Arc", "Weak", "Rc", "RefCell", "RwLock",
                 "Mutex", "MutexGuard", "SharedMutex",
-                "Future", "Iterator", "AsyncIterator",
+                "Future", "Iterator", "AsyncIterator", "ActorStream", "StreamOperator",
                 "Channel", "SelectCase", "SelectSet", "SelectResult")
                 .contains(named.name())) {
             return false;
@@ -9027,6 +9171,16 @@ public final class TypeChecker {
                 }
                 yield new Named(ref.name(), List.of());
             }
+            case "ActorStream" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 2)
+                    throw new IllegalArgumentException(
+                            "ActorStream<I,O> requires two explicit endpoint types");
+                yield new Named("ActorStream", List.of(
+                        resolve(ref.arguments().get(0), generics, self),
+                        resolve(ref.arguments().get(1), generics, self)));
+            }
+            case "StreamOperator" -> throw new IllegalArgumentException(
+                    "StreamOperator<I,O> is a reserved actor implements marker, not a runtime value type");
             case "ActorMail", "ActorOutput", "ActorOutputStream" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) {
                     throw new IllegalArgumentException(

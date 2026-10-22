@@ -535,6 +535,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             Ast.ClassDecl klass = requireLocalActorClass(actorTypeName);
+            requireSupportedActorExecutionPolicy(klass);
             ActorRuntime.ActorKind expectedKind = switch (klass.actorKind()) {
                 case NONE -> throw new IllegalArgumentException(
                         "source spawn target '" + actorTypeName + "' is not an actor");
@@ -655,6 +656,26 @@ public final class OresEvalRootNode extends RootNode {
             if (result != null) {
                 throw new IllegalStateException(
                         "actor receive must complete with void");
+            }
+        }
+
+        /**
+         * Runtime admission guard independent of source type-checker entry
+         * points. No actor with unsupported parallel state access may start.
+         */
+        private void requireSupportedActorExecutionPolicy(Ast.ClassDecl actor) {
+            Ast.ActorConcurrency policy = actor.actorConcurrency();
+            if (policy.transport() != Ast.ActorTransport.GENERIC) {
+                throw new SecurityException(
+                        "actor " + actor.name() + " uses a " + policy.transport()
+                                + " transport, but generic ActorRef spawning does not bind "
+                                + "HTTP/TCP/WebSocket requests to actor connection lanes");
+            }
+            if (policy.requestConcurrency() != 1 || policy.messageConcurrency() != 1) {
+                throw new SecurityException(
+                        "actor " + actor.name() + " declares unsupported parallel execution "
+                                + policy + "; ActorRuntime holds a single-writer actor-state "
+                                + "lease across every await/cooperate boundary");
             }
         }
 
@@ -3500,6 +3521,13 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (expr instanceof Ast.BinaryExpr binary) {
+                    if (binary.operator().equals("pipe")) {
+                        // Defense in depth: never spawn or inspect either stage
+                        // if an untyped graph operator reaches guest evaluation.
+                        continuation.accept(task, null, new IllegalStateException(
+                                "actor pipe graph is not implemented; no stages were spawned"));
+                        return;
+                    }
                     if (binary.operator().equals("&&")) {
                         evalSuspendableExpr(
                                 task,
@@ -6832,6 +6860,10 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
             if (expr instanceof Ast.BinaryExpr binary) {
+                if (binary.operator().equals("pipe")) {
+                    throw new IllegalStateException(
+                            "actor pipe graph is not implemented; no stages were spawned");
+                }
                 if (binary.operator().equals("&&")) {
                     Object left = eval(binary.left(), env);
                     return truth(left) && truth(eval(binary.right(), env));
@@ -6886,6 +6918,7 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     Ast.ClassDecl actorClass =
                             requireLocalActorClass(created.type().name());
+                    requireSupportedActorExecutionPolicy(actorClass);
                     ActorRuntime.ActorKind runtimeKind =
                             switch (actorClass.actorKind()) {
                                 case NONE -> throw new AssertionError(
