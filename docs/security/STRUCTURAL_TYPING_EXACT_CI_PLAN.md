@@ -43,9 +43,12 @@ Security authorization remains tracked by issue #962.
    reviewer-pinned source attestation, never read from the carrier itself.
    The verifier additionally rejects missing/symlinked checkout roots,
    staged/unstaged changes, ignored/untracked source files and Git index
-   assume-unchanged/skip-worktree flags; a matching committed tree alone is
-   insufficient to prove which bytes a compiler will read. Run it before
-   the first compilation or artifact/logging step.
+   assume-unchanged/skip-worktree flags. Reject a symlink passed as the
+   checkout root and any source index entry other than an ordinary 100644 or
+   executable 100755 file (including tracked symlinks, gitlinks and nonzero
+   index stages). A matching committed tree alone is insufficient to prove
+   which bytes a compiler will read. Run the *reviewed carrier-base copy* of
+   this verifier before the first compilation or artifact/logging step.
 6. Do not print the source code, source files, tokens or binary artifacts
    into public logs. No source-tree transfer to public/internal repos.
 7. Recheck authorization during every write batch; treat revocation,
@@ -57,6 +60,25 @@ has no active entries. A successful private alternate-org source-free
 JDK25 runner canary at
 https://github.com/ores-otel-test/legacy-java-consumer/actions/runs/39658254105
 is **capacity evidence only**, not authorization to export private source.
+
+## Minimal source-local execution route
+
+Prefer restoring source-org GitHub Actions admission and running directly in
+the private source repository at an immutable, independently recorded commit
+and root-tree SHA. This requires **no cross-organization mirror**, carrier
+allowlist change, or transfer permission; it does not waive independent review,
+branch protection, or an actual running test job. Require nonzero executed
+steps and Maven/JUnit/Graal guest evidence; if jobs still have zero steps, keep
+the compiler evidence gate red.
+
+For an external carrier, source-free synthetic Rust verifier tests may prove
+the guard's behavior without importing any private Oreslang data. The carrier
+guard itself must be the independently reviewed, pinned carrier-base version:
+its matching copy in the PR source tree is **not** an execution authority.
+The synthetic fixture must include a valid nested tree, a symlinked checkout
+root, and a committed tracked source symlink; only the valid plain-file tree
+may pass. A private source transfer remains prohibited until all #962
+authorization conditions are independently satisfied.
 
 ## Tests on the exact approved source tree
 
