@@ -35,6 +35,8 @@ public final class OresContext implements AutoCloseable {
     private final RuntimeGarbageCollector garbageCollector;
     private final AsyncNativeIo nativeIo = new AsyncNativeIo();
     public AsyncNativeIo nativeIo() { return nativeIo; }
+    private final StrictFileIoProvider strictFileIo;
+    public StrictFileIoProvider strictFileIo() { return strictFileIo; }
     private final NativeHttp http = new NativeHttp(this);
     public NativeHttp http() { return http; }
 
@@ -102,6 +104,7 @@ public final class OresContext implements AutoCloseable {
                     "Oreslang VM startup barrier was not established before context admission");
         }
 
+        StrictFileIoProvider strictFs = StrictFileIoProvider.createDefault();
         ActorRuntime actors = null;
         AsyncRuntime async = null;
         RuntimeGarbageCollector gc = null;
@@ -119,6 +122,7 @@ public final class OresContext implements AutoCloseable {
             this.actors = actors;
             this.asyncRuntime = async;
             this.garbageCollector = gc;
+            this.strictFileIo = strictFs;
         } catch (RuntimeException | Error failure) {
             if (async != null) {
                 try { async.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
@@ -126,6 +130,7 @@ public final class OresContext implements AutoCloseable {
             if (actors != null) {
                 try { actors.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
             }
+            try { strictFs.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
             try { vm.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
             throw failure;
         }
@@ -179,6 +184,14 @@ public final class OresContext implements AutoCloseable {
             String api) {
         requireCapability(permission.capability(), api);
         runtimePermissions.require(permission, resource, api);
+    }
+
+    public String requireStrictPathPermission(
+            RuntimePermissions.Permission permission,
+            String resource,
+            String api) {
+        requireCapability(permission.capability(), api);
+        return runtimePermissions.requireStrictPath(permission, resource, api);
     }
 
     static void requireEffectiveCapability(
@@ -423,11 +436,13 @@ public final class OresContext implements AutoCloseable {
                 "control_carriers_started", vm.controlCarrierCount(),
                 "scheduler_safepoints", schedulerSafepoints.get()));
         descriptor.put("source_loop_cooperates", sourceLoopCooperates.get());
+        descriptor.put("strict_fs_backend", strictFileIo.backend());
         return Map.copyOf(descriptor);
     }
 
     @Override
     public void close() {
+        strictFileIo.close();
         nativeIo.close();
         http.close();
         RuntimeException failure = null;
