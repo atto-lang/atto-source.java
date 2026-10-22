@@ -6,6 +6,8 @@ import com.oracle.truffle.api.interop.InteropLibrary;
 import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.types.AggregateConstructionPlan;
+import dev.oreslang.types.Types;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
@@ -4006,11 +4008,21 @@ public final class OresEvalRootNode extends RootNode {
                     && object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
                 throw new IllegalArgumentException("spread into explicitly shaped structs is not yet supported");
             }
+            AggregateConstructionPlan.Plan checkedPlan = null;
+            if (object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
+                try {
+                    checkedPlan = AggregateConstructionPlan.Checked.requireAdmitted(object);
+                } catch (RuntimeException unadmitted) {
+                    continuation.accept(task, null, unadmitted);
+                    return;
+                }
+            }
             ArrayList<Object> values = new ArrayList<>();
             evalSuspendableObjectField(
                     task,
                     object,
                     env,
+                    checkedPlan,
                     values,
                     0,
                     (t, built, failure) ->
@@ -4024,12 +4036,12 @@ public final class OresEvalRootNode extends RootNode {
                 SourceTask task,
                 Ast.ObjectExpr object,
                 Env env,
+                AggregateConstructionPlan.Plan checkedPlan,
                 ArrayList<Object> values,
                 int index,
                 SourceValueCont continuation) {
             if (index >= object.fields().size()) {
-                boolean hasAggregateSpread =
-                        object.fields().stream().anyMatch(Ast.ObjectField::spread);
+                boolean hasAggregateSpread = checkedPlan != null;
                 // Errors during terminal assembly must enter the same
                 // continuation channel as failures from awaited operands.
                 // Never strand a suspended source task by throwing out of
@@ -4049,7 +4061,8 @@ public final class OresEvalRootNode extends RootNode {
                         Ast.ObjectField field = object.fields().get(fieldIndex);
                         Object value = values.get(fieldIndex);
                         if (hasAggregateSpread) {
-                            applyScalarSpreadElement(field, value, result);
+                            applyScalarSpreadElement(
+                                    checkedPlan.orderedSteps().get(fieldIndex), value, result);
                             continue;
                         }
                         String key = field.name();
@@ -4093,7 +4106,9 @@ public final class OresEvalRootNode extends RootNode {
                         // before this continuation assembles the result.
                         try {
                             values.add(field.spread()
-                                    ? snapshotScalarSpreadFields(value)
+                                    ? snapshotScalarSpreadFields(value,
+                                            ((AggregateConstructionPlan.SpreadFields)
+                                                    checkedPlan.orderedSteps().get(index)).fields())
                                     : value);
                         } catch (RuntimeException invalid) {
                             continuation.accept(t, null, invalid);
@@ -4103,6 +4118,7 @@ public final class OresEvalRootNode extends RootNode {
                                 t,
                                 object,
                                 env,
+                                checkedPlan,
                                 values,
                                 index + 1,
                                 continuation);
@@ -7037,6 +7053,8 @@ public final class OresEvalRootNode extends RootNode {
                 if (object.explicitStruct() && hasAggregateSpread) {
                     throw new IllegalArgumentException("spread into explicitly shaped structs is not yet supported");
                 }
+                AggregateConstructionPlan.Plan checkedPlan = hasAggregateSpread
+                        ? AggregateConstructionPlan.Checked.requireAdmitted(object) : null;
                 LinkedHashMap<String, Object> result = new LinkedHashMap<>();
                 if (object.explicitStruct()) {
                     for (Ast.StructFieldSpec field : object.declaredFields()) {
@@ -7046,10 +7064,12 @@ public final class OresEvalRootNode extends RootNode {
                         }
                     }
                 }
-                for (Ast.ObjectField field : object.fields()) {
+                for (int fieldIndex = 0; fieldIndex < object.fields().size(); fieldIndex++) {
+                    Ast.ObjectField field = object.fields().get(fieldIndex);
                     Object value = eval(field.value(), env);
                     if (hasAggregateSpread) {
-                        applyScalarSpreadElement(field, value, result);
+                        applyScalarSpreadElement(
+                                checkedPlan.orderedSteps().get(fieldIndex), value, result);
                         continue;
                     }
                     String key = field.name();
@@ -9974,48 +9994,60 @@ public final class OresEvalRootNode extends RootNode {
         }
     }
 
-    private static ScalarSpreadSnapshot snapshotScalarSpreadFields(Object source) {
-        Map<String, Object> fields;
-        if (source instanceof ReadonlyRecordValue record) {
-            fields = record;
-        } else if (source instanceof MutableStructValue struct) {
-            fields = struct;
-        } else {
-            throw new IllegalArgumentException(
-                    "aggregate spread requires a closed Oreslang record/struct runtime tag");
+    private static boolean matchesScalarType(Object value, Types.Type type) {
+        if (type == Types.Primitive.INT) {
+            return value instanceof Long || value instanceof Integer;
         }
+        if (type == Types.Primitive.FLOAT) return value instanceof Double;
+        if (type == Types.Primitive.BOOL) return value instanceof Boolean;
+        if (type == Types.Primitive.STRING) return value instanceof String;
+        return false;
+    }
+
+    /** Never enumerate runtime fields outside the statically proven projection. */
+    private static ScalarSpreadSnapshot snapshotScalarSpreadFields(
+            Object source, Map<String, Types.Type> admittedFields) {
+        Map<String, Object> fields;
+        if (source instanceof ReadonlyRecordValue record) fields = record;
+        else if (source instanceof MutableStructValue struct) fields = struct;
+        else throw new IllegalArgumentException(
+                "aggregate spread requires a closed Oreslang record/struct runtime tag");
+
         LinkedHashMap<String, Object> snapshot = new LinkedHashMap<>();
-        for (Map.Entry<String, Object> item : fields.entrySet()) {
-            Object value = item.getValue();
-            if (!isScalarAggregateValue(value)) {
-                throw new IllegalArgumentException(
-                        "aggregate spread scalar-only stage cannot copy field '" + item.getKey() + "'");
+        for (Map.Entry<String, Types.Type> expected : admittedFields.entrySet()) {
+            String key = expected.getKey();
+            if (!fields.containsKey(key)) {
+                throw new IllegalArgumentException("missing checked aggregate spread field '" + key + "'");
             }
-            snapshot.put(item.getKey(), value);
+            Object value = fields.get(key);
+            if (!matchesScalarType(value, expected.getValue())) {
+                throw new IllegalArgumentException("aggregate spread scalar type mismatch for '" + key + "'");
+            }
+            snapshot.put(key, value);
         }
         return new ScalarSpreadSnapshot(snapshot);
     }
 
     private static void applyScalarSpreadElement(
-            Ast.ObjectField field, Object value, LinkedHashMap<String, Object> result) {
-        // One lowering rule for synchronous evaluation and suspended frames:
-        // validate Copy-only values before publishing any destination.
-        if (field.spread()) {
-            putScalarSpreadFields(value, result);
+            AggregateConstructionPlan.Step step,
+            Object value,
+            LinkedHashMap<String, Object> result) {
+        if (step instanceof AggregateConstructionPlan.SpreadFields spread) {
+            ScalarSpreadSnapshot snapshot = value instanceof ScalarSpreadSnapshot saved
+                    ? saved : snapshotScalarSpreadFields(value, spread.fields());
+            if (!snapshot.fields().keySet().equals(spread.fields().keySet())) {
+                throw new IllegalArgumentException(
+                        "spread snapshot differs from the checked field projection");
+            }
+            result.putAll(snapshot.fields());
             return;
         }
-        if (!isScalarAggregateValue(value)) {
+        if (!(step instanceof AggregateConstructionPlan.NamedField named)
+                || !matchesScalarType(value, named.type())) {
             throw new IllegalArgumentException(
-                    "aggregate spread requires scalar-only initializer field " + field.name());
+                    "aggregate spread requires a checked Copy scalar initializer");
         }
-        result.put(field.name(), value);
-    }
-
-    private static void putScalarSpreadFields(
-            Object source, LinkedHashMap<String, Object> destination) {
-        ScalarSpreadSnapshot snapshot = source instanceof ScalarSpreadSnapshot saved
-                ? saved : snapshotScalarSpreadFields(source);
-        destination.putAll(snapshot.fields());
+        result.put(named.name(), value);
     }
 
     /** Runtime tag for closed mutable struct values; never conflated with generic maps. */
