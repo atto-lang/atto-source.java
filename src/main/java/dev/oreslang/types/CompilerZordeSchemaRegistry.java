@@ -105,6 +105,6 @@ final class CompilerZordeSchemaRegistry {
                     "scalar failed statically staged Zorde schema " + qualifiedName);
         }
         return Types.checkedScalarTypeFromRegistry(
-                scalar, qualifiedName, descriptor, compilationSeal);
+                scalar, qualifiedName, descriptor, this);
     }
 }
