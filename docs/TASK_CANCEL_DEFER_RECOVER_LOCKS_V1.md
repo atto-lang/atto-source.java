@@ -293,3 +293,29 @@ to guest code:
 The SourceTask continuation gate remains tracked as #883 and the
 actor arena finalization gate as #1566. Keep PR #1887 draft until
 these guarantees are actually implemented and executed.
+
+
+### Additional lexical MutexGuard release hardening
+
+`Env.releaseMutexGuards` previously aborted its traversal if the first
+guard release threw. This could prevent later independent guards from
+receiving any unlock attempt. It now traverses all slots and nested
+Option/Result/list/map/object/array fields, identifies each guard by
+identity so aliased handles are attempted at most once, and records
+individual release/traversal failures while continuing the remaining
+cleanup work. Once all attempts finish, it throws the primary cleanup
+failure with other failures retained as suppressed; panic/host fatal
+errors are never demoted behind an earlier ordinary cleanup error.
+
+The source-level `SourceTaskCleanupHardeningTest` adds a fifth test
+checking two independent MutexGuard values automatically release at
+lexical-block exit and can be reacquired subsequently. If a release
+fails, this change makes the other unlock attempts but **does not**
+falsely assert that every resource was actually released. Failed
+resource retirement still demands physical lease accounting and
+failure-closed actor heap reclamation.
+
+No proof of automatic cleanup on EXTERNAL cancellation of a
+SUSPENDED SourceTask exists: scheduler WAITING->TERMINAL bypasses its
+normal continuation, as tracked by #883. Run guest JDK25 and LLVM
+equivalent tests before merge.
