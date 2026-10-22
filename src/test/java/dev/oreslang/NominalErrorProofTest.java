@@ -117,6 +117,28 @@ final class NominalErrorProofTest {
     }
 
     @Test
+    void resolverCannotRebindPrimitiveTypeNameToTrustedRoot() {
+        Ast.ClassDecl root = klass("define class Error as end");
+        var spoofed = resolver(Map.of("int", root, "Error", root));
+        var error = assertThrows(IllegalArgumentException.class, () ->
+                NominalErrorProof.requireNominalError(
+                        Ast.TypeRef.simple("int"), root, spoofed));
+        assertTrue(error.getMessage().contains("does not match"));
+    }
+
+    @Test
+    void validAncestryDoesNotMaskAnUnresolvedSecondaryParent() {
+        Ast.ClassDecl root = klass("define class Error as end");
+        Ast.ClassDecl child = klass(
+                "define class MultiError extends Error, MissingBase as end");
+        var lookup = resolver(Map.of("Error", root, "MultiError", child));
+        var failure = assertThrows(IllegalArgumentException.class, () ->
+                NominalErrorProof.requireNominalError(
+                        Ast.TypeRef.simple("MultiError"), root, lookup));
+        assertTrue(failure.getMessage().contains("unresolved"));
+    }
+
+    @Test
     void invalidTrustedRootMetadataIsRejected() {
         Ast.ClassDecl notRoot = klass("define class SomethingElse as end");
         assertThrows(IllegalArgumentException.class, () ->
