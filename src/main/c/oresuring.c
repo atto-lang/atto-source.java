@@ -180,13 +180,35 @@ static struct io_uring_sqe *ores_get_sqe_locked(ores_uring_ctx *ctx) {
     return sqe;
 }
 
+static void ores_retract_last_sqe_locked(ores_uring_ctx *ctx) {
+    /*
+     * All SQ publishing is serialized by ctx->mutex and every helper submits
+     * exactly the SQE it just appended. io_uring_enter(..., to_submit=1)
+     * returning an error/zero means that entry was not consumed, so retract
+     * it before its user_data owner can be released.
+     */
+    unsigned tail = __atomic_load_n(ctx->sq_tail, __ATOMIC_RELAXED);
+    unsigned head = __atomic_load_n(ctx->sq_head, __ATOMIC_ACQUIRE);
+    if (tail > head) {
+        __atomic_store_n(ctx->sq_tail, tail - 1, __ATOMIC_RELEASE);
+    }
+}
+
 static int ores_submit_one_locked(ores_uring_ctx *ctx) {
     int result;
     do {
         result = ores_enter(ctx->ring_fd, 1, 0, 0);
     } while (result < 0 && errno == EINTR);
-    if (result < 0) return -errno;
-    return result == 1 ? 0 : -EIO;
+    if (result < 0) {
+        int error = errno;
+        ores_retract_last_sqe_locked(ctx);
+        return -error;
+    }
+    if (result != 1) {
+        ores_retract_last_sqe_locked(ctx);
+        return -EIO;
+    }
+    return 0;
 }
 
 static int ores_submit_nop_locked(ores_uring_ctx *ctx) {
@@ -321,6 +343,7 @@ static ores_completion ores_handle_cqe_locked(
     ores_io_stage stage = ORES_UD_STAGE(cqe->user_data);
     op->current_user_data = 0;
     int res = cqe->res;
+    if (ctx->closed) op->cancelled = 1;
 
     if (stage == ORES_STAGE_OPEN) {
         if (res >= 0) op->fd = res;
