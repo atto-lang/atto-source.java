@@ -1995,11 +1995,6 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             Ast.Stmt stmt = statements.get(index);
-            // Each AST statement owns one stable code-unit label. The
-            // actor-native frame records the last entered source site;
-            // a suspend captures it and resume authenticates that site
-            // together with its monotonic native suspension ticket.
-            task.enterSourceStatement(stmt);
             // Source tasks must carry returns as SourceFlow, not as a tail-call
             // signal, including when a discarded do-select value is a call.
             if (!(stmt instanceof Ast.ReturnStmt)
@@ -2051,6 +2046,11 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
 
+            // Only the suspendable lowering path needs a resume label.
+            // Fast synchronous statements avoid actor-arena monitor traffic.
+            // Labels remain stable per AST statement and the native ticket
+            // differentiates repeated suspensions within that statement.
+            task.enterSourceStatement(stmt);
             runSuspendableStatement(
                     task,
                     stmt,
