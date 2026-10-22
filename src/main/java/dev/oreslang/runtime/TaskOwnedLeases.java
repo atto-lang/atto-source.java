@@ -129,8 +129,12 @@ public final class TaskOwnedLeases {
                     throw new IllegalStateException(
                             "only the owning Task turn may close a live lease");
                 }
-                // A logical lease can be released early inside its owning
-                // Task; retirement's stack entry is safely idempotent.
+                // A closed lease no longer occupies an outstanding-live
+                // lock slot. Without removal, a long-running Task can hit
+                // MAX_LEASES_PER_TASK after 4096 acquire/release cycles even
+                // when it holds zero locks. Removal is synchronized with
+                // retirement's LIFO snapshot. A failed release still poisons
+                // the later physical-cleanup proof.
                 try {
                     releaseOnce();
                 } catch (RuntimeException | Error failed) {
@@ -138,6 +142,10 @@ public final class TaskOwnedLeases {
                         owner.earlyFailures.add(failed);
                     }
                     throw failed;
+                } finally {
+                    synchronized (owner.lock) {
+                        owner.stack.remove(this);
+                    }
                 }
             }
         }
