@@ -21,6 +21,13 @@ fn git(repo: &Path, args: &[&str]) -> Result<String,String> {
 }
 fn verify(root: &Path, expected: &str) -> Result<(),String> {
     if !sha40(expected) { return Err("expected source Git tree is not a 40-digit lowercase SHA".into()); }
+    // canonicalize() follows a symlink: inspect the caller-provided checkout
+    // root first rather than silently accepting a redirected checkout.
+    let root_type = fs::symlink_metadata(root)
+        .map_err(|_| "Git checkout path unavailable")?.file_type();
+    if !root_type.is_dir() || root_type.is_symlink() {
+        return Err("carrier checkout root is absent, non-directory or symlinked".into());
+    }
     let root = fs::canonicalize(root).map_err(|_| "Git checkout path unavailable")?;
     if !root.is_dir() { return Err("carrier checkout is not a directory".into()); }
     let top = git(&root,&["rev-parse","--show-toplevel"])?;
@@ -60,6 +67,34 @@ fn verify(root: &Path, expected: &str) -> Result<(),String> {
     if tags.lines().any(|line| !line.starts_with("H ")) {
         return Err("source index contains assume-unchanged or skip-worktree entries".into());
     }
+    // A matching Git tree and clean status still permit an *approved* source
+    // tree to contain tracked symlinks or gitlinks. Neither may be executed in
+    // a carrier because the compiler could follow paths outside the subtree.
+    // Inspect index modes without printing source paths or file contents.
+    let stages = Command::new("git").arg("-C").arg(&root)
+        .args(["ls-files", "--stage", "-z", "--", SUBTREE])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output().map_err(|_| "tracked source modes unavailable")?;
+    if !stages.status.success() || stages.stdout.len() > 2_000_000 {
+        return Err("tracked source modes invalid or exceed bound".into());
+    }
+    let mut count = 0usize;
+    for raw in stages.stdout.split(|byte| *byte == 0).filter(|row| !row.is_empty()) {
+        let row = std::str::from_utf8(raw).map_err(|_| "invalid tracked source index encoding")?;
+        let (metadata, path) = row.split_once('\t')
+            .ok_or("invalid tracked source index record")?;
+        let mut fields = metadata.split_ascii_whitespace();
+        let (Some(mode), Some(sha), Some(stage), None) =
+            (fields.next(), fields.next(), fields.next(), fields.next()) else {
+                return Err("invalid tracked source index metadata".into());
+            };
+        if !matches!(mode, "100644" | "100755") || !sha40(sha)
+            || stage != "0" || !path.starts_with("private-oreslang-source/") {
+            return Err("tracked source contains an unsupported mode or index stage".into());
+        }
+        count += 1;
+    }
+    if count == 0 { return Err("nested source index has no files".into()); }
     Ok(())
 }
 fn main() -> ExitCode {
@@ -94,5 +129,50 @@ mod tests {
         let missing = env::temp_dir().join(format!(
             "oreslang-ci-verifier-no-such-root-{}",std::process::id()));
         assert!(verify(&missing,&"0".repeat(40)).is_err());
+    }
+
+    // Synthetic-only Git fixtures; no private Oreslang code or transfer.
+    #[cfg(unix)]
+    #[test]
+    fn valid_tree_admitted_but_linked_root_and_tracked_symlink_denied() {
+        use std::os::unix::fs::symlink;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let fixture = env::temp_dir().join(format!(
+            "oreslang-subtree-guard-{}-{nonce}", std::process::id()));
+        let checkout = fixture.join("carrier");
+        fs::create_dir_all(checkout.join(SUBTREE)).unwrap();
+        let command = |args: &[&str]| {
+            let output = Command::new("git").arg("-C").arg(&checkout)
+                .args(args)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .output().unwrap();
+            assert!(output.status.success(), "synthetic git fixture command failed");
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        command(&["init", "-q"]);
+        let input = checkout.join(SUBTREE).join("fixture.ores");
+        fs::write(&input, "synthetic fixture only").unwrap();
+        command(&["add", "--", SUBTREE]);
+        command(&["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+            "commit", "-qm", "synthetic ordinary file"]);
+        let source_ref = format!("HEAD:{SUBTREE}");
+        let expected = command(&["rev-parse", "--verify", &source_ref]);
+        assert!(verify(&checkout, &expected).is_ok());
+
+        let linked_checkout = fixture.join("linked-carrier");
+        symlink(&checkout, &linked_checkout).unwrap();
+        assert!(verify(&linked_checkout, &expected).is_err(),
+            "a symlinked checkout root must never be admitted");
+
+        fs::remove_file(&input).unwrap();
+        symlink(fixture.join("outside-fixture"), &input).unwrap();
+        command(&["add", "--", SUBTREE]);
+        command(&["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+            "commit", "-qm", "synthetic symlink"]);
+        let linked_tree = command(&["rev-parse", "--verify", &source_ref]);
+        assert!(verify(&checkout, &linked_tree).is_err(),
+            "a tracked symlink in an otherwise clean, matching tree must be denied");
+        fs::remove_dir_all(fixture).unwrap();
     }
 }
