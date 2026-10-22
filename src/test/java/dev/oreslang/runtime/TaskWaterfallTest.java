@@ -383,4 +383,24 @@ public class TaskWaterfallTest {
                     handle.getDone().get(3, TimeUnit.SECONDS)).failure());
         }
     }
+
+    @Test void waterfallFailureContextIdentifiesMiddleStepWithoutWrapping()
+            throws Exception {
+        IllegalArgumentException exact = new IllegalArgumentException("bad stage");
+        var pipeline = TaskWaterfall.from(() -> OresFuture.completed(5))
+                .thenValue(v -> v + 2)
+                .then(v -> OresFuture.<String>failed(exact))
+                .thenValue(v -> v.length());
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskHandle<Integer> run = pipeline.start(scheduler);
+            assertSame(exact, assertThrows(ExecutionException.class,
+                    () -> run.result().get(3, TimeUnit.SECONDS)).getCause());
+            assertInstanceOf(TaskHandle.Failed.class,
+                    run.getDone().get(3, TimeUnit.SECONDS));
+            var context = pipeline.failureContext().orElseThrow();
+            assertEquals(2, context.stageIndex());
+            assertSame(exact, context.cause());
+            assertFalse(context.cancelled());
+        }
+    }
 }
