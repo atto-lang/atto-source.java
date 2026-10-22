@@ -65,8 +65,8 @@ public interface StrictFileIoProvider extends AutoCloseable {
         }
 
         @Override
-        public synchronized boolean supported() {
-            return delegate != null ? delegate.supported() : linuxCandidate;
+        public boolean supported() {
+            return delegate().supported();
         }
 
         @Override
