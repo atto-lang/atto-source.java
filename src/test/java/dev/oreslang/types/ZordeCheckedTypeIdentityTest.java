@@ -69,7 +69,7 @@ final class ZordeCheckedTypeIdentityTest {
         assertFalse(isAssignable(Unknown.INSTANCE, concreteOption));
         assertFalse(isAssignable(concreteOption, Unknown.INSTANCE));
 
-        Type actualRecord = new Record(Map.of("proof", checked));
+        Type actualRecord = new Types.Record(Map.of("proof", checked));
         Type forgedRecord = new Record(Map.of("proof", Unknown.INSTANCE));
         assertFalse(isAssignable(forgedRecord, actualRecord));
         assertFalse(isAssignable(actualRecord, forgedRecord));
