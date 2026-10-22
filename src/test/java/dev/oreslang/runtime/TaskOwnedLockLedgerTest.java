@@ -179,7 +179,10 @@ public final class TaskOwnedLockLedgerTest {
     @Test
     void hostileTaskCannotRegisterUnboundedPermits() {
         TaskOwnedLockLedger ledger = new TaskOwnedLockLedger();
-        for (int i = 0; i < 4096; i++) ledger.register(() -> {});
+        for (int i = 0; i < 4096; i++) {
+            final int identity = i;
+            ledger.register(() -> { if (identity < 0) throw new AssertionError(); });
+        }
         assertThrows(IllegalStateException.class, () -> ledger.register(() -> {}));
         assertEquals(4096, ledger.outstanding());
     }
