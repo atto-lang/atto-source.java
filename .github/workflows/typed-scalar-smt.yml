@@ -38,7 +38,24 @@ jobs:
           sudo apt-get install -y --no-install-recommends z3
           z3 -version
           sha256sum "$(command -v z3)"
+      - name: Record exact proof provenance
+        run: |
+          set -euo pipefail
+          mkdir -p target/formal-typed-scalar
+          git rev-parse HEAD > target/formal-typed-scalar/commit-sha.txt
+          git hash-object stdlib/core.ores > target/formal-typed-scalar/source-git-blob.txt
+          java -version 2> target/formal-typed-scalar/java-version.txt
+          z3 -version > target/formal-typed-scalar/z3-version.txt
+          sha256sum "$(command -v z3)" > target/formal-typed-scalar/z3-binary-sha256.txt
       - name: Execute checked Oreslang AST -> SMT and negative source mutations
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dtest=TypedScalarSmtTest -DfailIfNoTests=true test
+          mvn -B -ntp -Dtest=TypedScalarSmtTest -DfailIfNoTests=true test | tee target/formal-typed-scalar/maven-test.log
+      - name: Upload proof inputs, solver outputs, and provenance
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: typed-ast-smt-evidence
+          path: target/formal-typed-scalar/
+          if-no-files-found: warn
+          retention-days: 14
