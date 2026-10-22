@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
@@ -23,12 +24,15 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
     static final int DEFAULT_ENTRIES = 512;
     static final int MAX_PENDING = 128;
     static final int MAX_READ_BYTES = 16 * 1024 * 1024;
+    static final int MAX_WRITE_BYTES = 16 * 1024 * 1024;
     static final int ECANCELED = 125;
 
     interface NativeBridge {
         long create(LinuxUringFileIoProvider owner, int entries);
         boolean submitRead(long handle, long id, byte[] path, int maxBytes);
         boolean submitExists(long handle, long id, byte[] path);
+        boolean submitWrite(
+                long handle, long id, byte[] path, byte[] value, boolean append);
         boolean cancel(long handle, long id);
         void close(long handle);
     }
@@ -45,13 +49,17 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
         @Override public boolean submitExists(long handle, long id, byte[] path) {
             return nativeSubmitExists(handle, id, path);
         }
+        @Override public boolean submitWrite(
+                long handle, long id, byte[] path, byte[] value, boolean append) {
+            return nativeSubmitWrite(handle, id, path, value, append);
+        }
         @Override public boolean cancel(long handle, long id) {
             return nativeCancel(handle, id);
         }
         @Override public void close(long handle) { nativeClose(handle); }
     }
 
-    private enum Kind { READ, EXISTS }
+    private enum Kind { READ, EXISTS, WRITE }
 
     private static final class Pending<T> {
         final Kind kind;
@@ -133,6 +141,38 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
         return future;
     }
 
+    @Override
+    public OresFuture<Void> writeText(String absolutePath, String value) {
+        return submitWrite(absolutePath, value, false, "fs.write_text_async");
+    }
+
+    @Override
+    public OresFuture<Void> appendText(String absolutePath, String value) {
+        return submitWrite(absolutePath, value, true, "fs.append_text_async");
+    }
+
+    private OresFuture<Void> submitWrite(
+            String absolutePath, String value, boolean append, String operation) {
+        byte[] path = encodeAbsolutePath(absolutePath);
+        byte[] bytes = encodeUtf8Value(value, operation);
+        long id = nextId();
+        // Guest cancellation is deliberately declined for mutations: an
+        // already-started write may have changed the file and cannot promise
+        // rollback. Context shutdown may still request native cancellation.
+        OresFuture<Void> future = new OresFuture<>(() -> false, () -> { });
+        pending.put(id, new Pending<>(Kind.WRITE, future));
+        if (!submitWriteNative(id, path, bytes, append)) {
+            Pending<?> removed = pending.remove(id);
+            if (removed != null) {
+                future.failFromRuntime(new IllegalStateException(
+                        closed.get()
+                                ? "strict filesystem provider is closed"
+                                : "io_uring write submission was rejected"));
+            }
+        }
+        return future;
+    }
+
     private synchronized boolean submitReadNative(long id, byte[] path) {
         if (closed.get() || pending.size() > MAX_PENDING) return false;
         return bridge.submitRead(handle, id, path, MAX_READ_BYTES);
@@ -141,6 +181,12 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
     private synchronized boolean submitExistsNative(long id, byte[] path) {
         if (closed.get() || pending.size() > MAX_PENDING) return false;
         return bridge.submitExists(handle, id, path);
+    }
+
+    private synchronized boolean submitWriteNative(
+            long id, byte[] path, byte[] value, boolean append) {
+        if (closed.get() || pending.size() > MAX_PENDING) return false;
+        return bridge.submitWrite(handle, id, path, value, append);
     }
 
     private long nextId() {
@@ -160,6 +206,30 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
                     "strict filesystem provider requires an absolute NUL-free path");
         }
         return absolutePath.getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static byte[] encodeUtf8Value(String value, String operation) {
+        Objects.requireNonNull(value, "value");
+        if (value.length() > MAX_WRITE_BYTES) {
+            throw new IllegalArgumentException(
+                    operation + " text exceeds strict filesystem write limit");
+        }
+        try {
+            ByteBuffer encoded = StandardCharsets.UTF_8.newEncoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .encode(CharBuffer.wrap(value));
+            if (encoded.remaining() > MAX_WRITE_BYTES) {
+                throw new IllegalArgumentException(
+                        operation + " UTF-8 text exceeds strict filesystem write limit");
+            }
+            byte[] bytes = new byte[encoded.remaining()];
+            encoded.get(bytes);
+            return bytes;
+        } catch (CharacterCodingException invalid) {
+            throw new IllegalArgumentException(
+                    operation + " text is not valid Unicode", invalid);
+        }
     }
 
     @SuppressWarnings("unchecked")
@@ -198,6 +268,18 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
         future.completeFromRuntime(exists);
     }
 
+    @SuppressWarnings("unchecked")
+    void nativeWriteCompleted(long id, int error) {
+        Pending<?> raw = pending.remove(id);
+        if (raw == null || raw.kind != Kind.WRITE) return;
+        OresFuture<Void> future = (OresFuture<Void>) raw.future;
+        if (error != 0) {
+            future.failFromRuntime(ioFailure("write", error));
+            return;
+        }
+        future.completeFromRuntime(null);
+    }
+
     private static IOException ioFailure(String operation, int errno) {
         if (errno == ECANCELED) {
             return new IOException(
@@ -228,6 +310,8 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
             long handle, long id, byte[] path, int maxBytes);
     private static native boolean nativeSubmitExists(
             long handle, long id, byte[] path);
+    private static native boolean nativeSubmitWrite(
+            long handle, long id, byte[] path, byte[] value, boolean append);
     private static native boolean nativeCancel(long handle, long id);
     private static native void nativeClose(long handle);
 }
