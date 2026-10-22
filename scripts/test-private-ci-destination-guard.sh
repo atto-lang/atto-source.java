@@ -19,7 +19,8 @@ approved="$target 1323599063"
 # No network, authenticated sessions, tokens, real policy edits or source data.
 cat > "$tmp/bin/gh" <<'MOCK'
 #!/usr/bin/env bash
-[[ $# -ge 2 && "$1" == api && "$2" == repos/sonus-auris-test/clients-api-contract ]] || exit 2
+[[ "${GH_HOST:-}" == github.com && "${GH_PROMPT_DISABLED:-}" == 1 ]] || exit 2
+[[ $# -eq 8 && "$1" == api && "$2" == --hostname && "$3" == github.com && "$4" == --method && "$5" == GET && "$6" == repos/sonus-auris-test/clients-api-contract && "$7" == --jq && "$8" == '[.full_name, .visibility, (.private|tostring), (.id|tostring), (.archived|tostring), (.disabled|tostring)] | @tsv' ]] || exit 2
 printf '%s\n' "$FAKE_GH_METADATA"
 MOCK
 chmod 700 "$tmp/bin/gh"
@@ -46,6 +47,15 @@ reject "invalid slug" "../clients-api-contract" "$valid"
 reject "different repository name" "other-org/clients-api-contract" "$valid"
 reject "wrong immutable ID" "$target" \
   $'sonus-auris-test/clients-api-contract\tprivate\ttrue\t999\tfalse\tfalse'
+reject "archived destination" "$target" \
+  $'sonus-auris-test/clients-api-contract\tprivate\ttrue\t1323599063\ttrue\tfalse'
+reject "disabled destination" "$target" \
+  $'sonus-auris-test/clients-api-contract\tprivate\ttrue\t1323599063\tfalse\ttrue'
+reject "missing disabled flag" "$target" \
+  $'sonus-auris-test/clients-api-contract\tprivate\ttrue\t1323599063\tfalse'
+reject "empty internal TSV field" "$target" \
+  $'sonus-auris-test/clients-api-contract\tprivate\t\t1323599063\tfalse\tfalse'
+reject "extra TSV field" "$target" "$valid"$'\textra'
 reject "public visibility" "$target" \
   $'sonus-auris-test/clients-api-contract\tpublic\tfalse\t1323599063\tfalse\tfalse'
 reject "incorrect reported owner/repo" "$target" \
@@ -56,6 +66,8 @@ reject "missing metadata field" "$target" \
 
 printf '%s\n' "$approved" "$approved" > "$policy"
 reject "duplicate approval" "$target" "$valid"
+printf '%s\n' "$approved" "other-org/same-repo 1323599063" > "$policy"
+reject "same immutable ID under different approved slugs" "$target" "$valid"
 printf '%s\n' "$approved extra" > "$policy"
 reject "suffix appended to policy ID" "$target" "$valid"
 printf '%s\n' "$approved" > "$policy"
