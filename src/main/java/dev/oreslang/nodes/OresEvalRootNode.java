@@ -1194,14 +1194,31 @@ public final class OresEvalRootNode extends RootNode {
                     OresScheduler.Resume resume)
                     throws Exception {
                 if (nativeFrame != null) {
-                    if (resume.initial()) {
-                        nativeFrame.beginInitialResume();
-                    } else {
-                        if (awaitingContinuation == null || awaitingKind == null || awaitingTicket <= 0L) {
-                            throw new IllegalStateException(
-                                    "managed source continuation lacks native suspension authority");
+                    try {
+                        if (resume.initial()) {
+                            nativeFrame.beginInitialResume();
+                        } else {
+                            if (awaitingContinuation == null
+                                    || awaitingKind == null || awaitingTicket <= 0L) {
+                                throw new IllegalStateException(
+                                        "managed source continuation lacks native suspension authority");
+                            }
+                            nativeFrame.beginResume(awaitingKind, awaitingTicket);
                         }
-                        nativeFrame.beginResume(awaitingKind, awaitingTicket);
+                    } catch (RuntimeException | Error authorityFailure) {
+                        // A stale, duplicated, or mismatched resume must not
+                        // fall through the source-level `trap` handler. Retire
+                        // this task's native spill roots before propagating the
+                        // runtime authority violation to the scheduler.
+                        nativeFrame.failed();
+                        awaitingContinuation = null;
+                        awaitingKind = null;
+                        awaitingTicket = 0L;
+                        pendingLoopContinuation = null;
+                        pendingLoopGuardEnv = null;
+                        nextStep = null;
+                        initialBlockEnv = null;
+                        throw authorityFailure;
                     }
                 }
                 try {
