@@ -60,9 +60,12 @@ bash scripts/check-record-parser.sh
 bash scripts/check-record-frontend.sh
 bash scripts/check-soa-snapshot.sh
 
+# Includes executable scalar aggregate spread regressions and tree-shaker
+# preservation, not only AST and host-only smoke tests. Current Java stage
+# deliberately rejects nested, dynamic, borrow-only and explicit-struct spread.
 # Contains GraalVM guest execution, not only AST and host-only smoke tests.
 mvn -B -ntp \
-  -Dtest=InferredRecordBoundaryTest,InferredStructBoundaryTest,DynamicPropertyAccessBoundaryTest,DynamicPropertyAccessRuntimeTest,DynamicPropertyAccessRuntimeFailureTest,CheckedClassViewMetadataTest,PrecheckedProgramLeaseTest,TreeShakerTest,LinkedPublicClassFieldTypesTest,FileRootPublicClassImportTest,InferredRecordRuntimeTest,NamedInferredTypeTest,SoaSnapshotTest \
+  -Dtest=InferredRecordBoundaryTest,InferredStructBoundaryTest,DynamicPropertyAccessBoundaryTest,DynamicPropertyAccessRuntimeTest,DynamicPropertyAccessRuntimeFailureTest,CheckedClassViewMetadataTest,PrecheckedProgramLeaseTest,TreeShakerTest,LinkedPublicClassFieldTypesTest,FileRootPublicClassImportTest,InferredRecordRuntimeTest,ImmutableAggregateScalarSpreadRuntimeTest,NamedInferredTypeTest,SoaSnapshotTest \
   test
 mvn -B -ntp -Dores.runtime.carriers=native verify
 
