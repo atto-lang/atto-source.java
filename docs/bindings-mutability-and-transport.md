@@ -9,6 +9,47 @@ Oreslang's proposed canonical contract, agreed 2026-10-06. The compiler and owne
 | `let x` | yes | no |
 | `let mut x` | yes | yes if ownership permits |
 
+## Canonical type-first class field initializers
+
+Direct class fields canonically initialize with a colon. An equals sign is
+accepted by the compiler as input compatibility, but `oreslang-format`
+normalizes that syntax to a colon.
+
+```ores
+define class Example as
+  final int fixed: 5
+  string label: "100"
+  final mut Array<int> items: [1, 2]
+  mut Array<int> queue: []
+end
+```
+
+These two field capabilities are **orthogonal**:
+
+- `final` fixes the field slot after its declaration initializer and does
+  **not** grant mutable-referent access.
+- `mut` permits mutation through the field's referent, subject to borrow,
+  readonly and ownership rules. It does **not** make a `final` slot
+  reassignable.
+- A field without `final` is a reassignable slot under the new type-first
+  spelling. Readonly-referent constraints still apply.
+- Legacy `val int late;` fields without declaration initializers retain a
+  constructor-only initialization exception. That exception permits **at most
+  one syntactic write**, and the current conservative checker also rejects
+  separate writes in mutually exclusive branches. This is stricter than a
+  future path-sensitive may-initialize analysis; the compiler must never
+  admit a possible double write. Initialized `final` fields have **no**
+  constructor rewrite exception.
+- Defer bodies and captured lambdas cannot inherit the constructor
+  initialization capability, and destructive `rt take` of fixed fields is
+  rejected.
+
+The current LLVM source frontend admits integer-literal class field
+initializers, but does not yet lower the Java compiler's full string,
+container or general-expression field initializer set. It must reject
+unsupported types before emitting IR. Do not treat targeted parser admission
+as full cross-backend runtime parity.
+
 In select cases, `case job = readch(jobs) -> { ... }` defaults to immutable/read-only. `case val job` fixes binding but permits referent mutation; `case mut job` is shorthand for `case let mut job`. Only the winning case receives ownership. Existing `case readch channel: val job { ... }` may be accepted for compatibility.
 
 `mut` is not a bypass around borrowing: a live immutable borrow excludes mutation; only one mutable borrow may exist at once; a moved owner is unusable; nested fields, indexes, collection methods, closure captures, deferred continuations, and actor access paths must be checked transitively. Mutation through a readonly view is rejected, even if another alias may have write permission at other times. Use canonical `rt borrow`, `rt copy`, `rt take`, `rt share`, never raw pointer operators as public syntax.

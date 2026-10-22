@@ -38,3 +38,5 @@ and remaining physical-isolation work are tracked in
 [Actor physical boundaries](docs/runtime/actor-physical-boundaries.md).
 
 Async filesystem, TCP and HTTP client APIs: [usage and execution guarantees](docs/ASYNC_IO.md).
+
+Core assertions: see [Assert API and trap behavior](docs/ASSERT.md).

@@ -13,3 +13,10 @@ aliases = ["core-debug"]
 type = "bool"
 default = "false"
 help = "Record bounded core-only numeric diagnostic events; dump JSONL to stderr on exit."
+
+[flags.core-log-level]
+env = "ORES_CORE_LOG_LEVEL"
+aliases = ["core-log-level"]
+type = "string"
+default = "off"
+help = "Core-only fixed-ID diagnostics: off|error|warn|info|debug|trace. Never controls oreslang-otel."

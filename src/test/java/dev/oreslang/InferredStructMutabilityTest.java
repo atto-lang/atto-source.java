@@ -12,32 +12,29 @@ import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class InferredStructMutabilityTest {
-    @Test void inferredStructRequiresReadOnlyBinding() {
+    @Test void inferredStructMutabilityFollowsBindingAuthority() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                fnc ok(): string {
+                fnc read_only(): string {
                   const value = infer struct{foo: "bar"};
                   return value.foo;
                 }
-                """)));
 
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc bad(): void {
+                fnc const_mut(): string {
                   const mut value = infer struct{foo: "bar"};
-                  return;
+                  value.foo = "changed";
+                  return value.foo;
                 }
-                """)));
 
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc bad(): void {
+                fnc val_mut(): string {
                   val value = infer struct{foo: "bar"};
-                  return;
+                  value.foo = "changed";
+                  return value.foo;
                 }
-                """)));
 
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc bad(): void {
+                fnc let_mut(): string {
                   let mut value = infer struct{foo: "bar"};
-                  return;
+                  value.foo = "changed";
+                  return value.foo;
                 }
                 """)));
     }
@@ -60,33 +57,42 @@ final class InferredStructMutabilityTest {
                 """)));
     }
 
-    @Test void readonlyCapabilityCannotBeLaunderedThroughAlias() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc bad(): void {
+    @Test void wholeStructOwnershipMayTransferButOldOwnerCannotBeReused() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc ok(): string {
                   const original = infer struct{foo: "bar"};
                   val alias = original;
                   alias.foo = "changed";
-                  return;
+                  return alias.foo;
                 }
                 """)));
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc bad(): void {
+                fnc bad(): string {
                   const original = infer struct{foo: "bar"};
-                  let mut alias = original;
+                  val alias = original;
                   alias.foo = "changed";
-                  return;
+                  return original.foo;
                 }
                 """)));
     }
 
-    @Test void nestedInferredStructStaysReadonlyWhenProjected() {
+    @Test void projectionFromReadOnlyRootCannotLaunderMutableAuthority() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc bad(): void {
                   const outer = infer struct{inside: infer struct{foo: "bar"}};
                   val inner = outer.inside;
                   inner.foo = "changed";
                   return;
+                }
+                """)));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc ok(): string {
+                  val outer = infer struct{inside: infer struct{foo: "bar"}};
+                  val inner = outer.inside;
+                  inner.foo = "changed";
+                  return outer.inside.foo;
                 }
                 """)));
     }

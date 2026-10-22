@@ -41,7 +41,7 @@ def main():
     # adapter. This runner-only compatibility option retains its current
     # (already permitted) behavior while preserving every guest stderr byte.
     # Production compatibility with future JDK deny/removal is a separate gate.
-    argv = ["java", "-XX:+EnableJVMCI",
+    argv = ["java", "-XX:+UnlockExperimentalVMOptions", "-XX:+EnableJVMCI",
             "--sun-misc-unsafe-memory-access=allow",
             "--enable-native-access=ALL-UNNAMED",
             "-Dpolyglot.log.file=" + str(engine_log),
