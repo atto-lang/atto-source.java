@@ -306,4 +306,77 @@ final class ActorExecutionGrantGateTest {
         assertThrows(IllegalArgumentException.class, () -> new ActorExecutionGrantGate(1, -5));
         assertThrows(IllegalArgumentException.class, () -> new ActorExecutionGrantGate(1, 4));
     }
+    @Test
+    void threePhysicalGrantsMustAllDrainAfterSealBeforeRetirement() throws Exception {
+        var gate = new ActorExecutionGrantGate(901, 3);
+        CountDownLatch entered = new CountDownLatch(3);
+        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch exited = new CountDownLatch(3);
+        java.util.concurrent.atomic.AtomicInteger live = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicInteger maximum = new java.util.concurrent.atomic.AtomicInteger();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        var carriers = new ArrayList<Thread>();
+        try {
+            for (int i = 0; i < 3; i++) {
+                Thread carrier = new Thread(() -> {
+                    try (var grant = gate.tryAcquire()) {
+                        if (grant == null) throw new AssertionError("reserved permit unexpectedly denied");
+                        int current = live.incrementAndGet();
+                        maximum.accumulateAndGet(current, Math::max);
+                        entered.countDown();
+                        if (!release.await(5, TimeUnit.SECONDS)) {
+                            throw new AssertionError("host carrier did not finish");
+                        }
+                        live.decrementAndGet();
+                    } catch (Throwable t) {
+                        failure.compareAndSet(null, t);
+                        entered.countDown();
+                    } finally {
+                        exited.countDown();
+                    }
+                }, "actor-physical-" + i);
+                carriers.add(carrier);
+                carrier.start();
+            }
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            assertEquals(3, live.get());
+            assertEquals(3, maximum.get());
+            assertEquals(3, gate.activeSlots());
+            gate.seal();
+            assertNull(gate.tryAcquire());
+            assertFalse(gate.awaitPhysicalDrain(1, TimeUnit.MILLISECONDS));
+            assertFalse(gate.tryRetirePhysicalGate(),
+                    "sealed is not physically retired while three grant owners are live");
+        } finally {
+            release.countDown();
+            assertTrue(exited.await(5, TimeUnit.SECONDS));
+            for (Thread carrier : carriers) carrier.join(1000);
+        }
+        assertNull(failure.get());
+        assertEquals(0, gate.activeSlots());
+        assertTrue(gate.awaitPhysicalDrain(1, TimeUnit.SECONDS));
+        assertTrue(gate.tryRetirePhysicalGate());
+        assertNull(gate.tryAcquire(), "retirement cannot reopen the gate");
+    }
+
+    @Test
+    void crossActorGrantNeverNestsEvenWhenBothActorsHaveFreeMaxThreeSlots() {
+        var a = new ActorExecutionGrantGate(501, 3);
+        var b = new ActorExecutionGrantGate(502, 3);
+        try (var permit = a.tryAcquire()) {
+            assertNotNull(permit);
+            assertEquals(1, a.activeSlots());
+            assertThrows(IllegalStateException.class, b::tryAcquire);
+            assertEquals(0, b.activeSlots());
+        }
+        try (var permit = b.tryAcquire()) {
+            assertNotNull(permit);
+        }
+        a.seal();
+        b.seal();
+        assertTrue(a.tryRetirePhysicalGate());
+        assertTrue(b.tryRetirePhysicalGate());
+    }
+
 }
