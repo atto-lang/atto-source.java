@@ -58,7 +58,22 @@ public final class OresCompiler {
      * compilation that hides invalid source.
      */
     public static TreeShaker.Result compileForBuild(String source, BuildOptions options) {
-        return TreeShaker.shake(parseAndTypeCheck(source), options);
+        TreeShaker.Result optimized = TreeShaker.shake(parseAndTypeCheck(source), options);
+        if (!optimized.needsSpreadRecheck()) return optimized;
+
+        // Rewritten aggregate expressions have different AST identities from
+        // their original checked nodes. Do NOT copy ownership admission into
+        // optimizer-created nodes; re-run the complete type + ownership policy.
+        // A non-equivalent optimization fails closed instead of producing an
+        // executable artifact carrying a stale field projection.
+        Ast.Program revalidated = analyze(optimized.program());
+        return new TreeShaker.Result(
+                revalidated,
+                optimized.retainedSymbols(),
+                optimized.removedSymbols(),
+                optimized.compileTimeConstants(),
+                optimized.rootSymbols(),
+                false);
     }
 
     /**
