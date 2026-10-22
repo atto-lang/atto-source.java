@@ -68,8 +68,8 @@ final class TreeShakerTest {
         // rather than inherit the input program's identity-bound authority.
         assertFalse(result.needsSpreadRecheck(),
                 "compileForBuild must not return a pending spread validation");
-        assertDoesNotThrow(() -> AggregateConstructionPlan.Checked.requireAdmitted(copied));
-        assertDoesNotThrow(() -> AggregateConstructionPlan.Checked.requireAdmitted(specialized));
+        assertDoesNotThrow(() -> AggregateConstructionPlan.Checked.requireAdmitted(result.program(), copied));
+        assertDoesNotThrow(() -> AggregateConstructionPlan.Checked.requireAdmitted(result.program(), specialized));
     }
 
     @Test
@@ -101,7 +101,7 @@ final class TreeShakerTest {
                 .map(Ast.ObjectExpr.class::cast)
                 .findFirst().orElseThrow();
         assertThrows(IllegalStateException.class,
-                () -> AggregateConstructionPlan.Checked.requireAdmitted(rawCopy),
+                () -> AggregateConstructionPlan.Checked.requireAdmitted(raw.program(), rawCopy),
                 "raw tree shaking must never inherit type or ownership admission");
 
         TreeShaker.Result admitted = OresCompiler.compileForBuild(
