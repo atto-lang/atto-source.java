@@ -35,7 +35,7 @@ public final class FuturePipelineTypingCheck {
                   val Option<int> result = trap await (source() |> save());
                   return;
                 }
-                """);
+                """, "argument 1 has type Named[name=Future", "but expected INT");
 
         TypeChecker.check(Parser.parse("""
                 async fnc source(): int { return 21; }
@@ -51,13 +51,18 @@ public final class FuturePipelineTypingCheck {
                   val Option<int> result = await trap (source());
                   return;
                 }
-                """);
+                """, "await requires Future<T> or ActorRef<T>", "name=Option");
     }
 
-    private static void rejected(String source) {
+    private static void rejected(String source, String... diagnosticFragments) {
+        Ast.Program parsed = Parser.parse(source); // parser rejection is not a typing pass
         try {
-            TypeChecker.check(Parser.parse(source));
+            TypeChecker.check(parsed);
         } catch (IllegalArgumentException expected) {
+            for (String fragment : diagnosticFragments) {
+                if (expected.getMessage() == null || !expected.getMessage().contains(fragment))
+                    throw new AssertionError("wrong typing diagnostic: " + expected.getMessage(), expected);
+            }
             return;
         }
         throw new AssertionError("unsupported source was admitted: " + source);

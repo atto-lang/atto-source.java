@@ -17,7 +17,9 @@ public final class FuturePipelineProvenanceCheck {
         trapAwaitOrderSurvives();
         stageLimitStillApplies();
         malformedOriginsAreRejected();
-        System.out.println("9 pipeline provenance checks passed (parser/AST only).");
+        callArgumentsAndTypesAreImmutable();
+        rewritesPreserveOriginWithoutCopyingProofs();
+        System.out.println("11 pipeline provenance checks passed (parser/AST only).");
     }
 
     static void directCallsStayDirect() {
@@ -101,6 +103,68 @@ public final class FuturePipelineProvenanceCheck {
                 List.of(), Ast.CallOrigin.VALUE_PIPE_RECEIVER), "non-member receiver accepted");
         require(new Ast.CallExpr(new Ast.NameExpr("f"), List.of()).origin() == Ast.CallOrigin.DIRECT,
                 "legacy constructor changed");
+        Ast.TypeRef intType = new Ast.TypeRef("int", List.of(), false);
+        require(new Ast.CallExpr(new Ast.NameExpr("f"), List.of(intType), List.of())
+                        .origin() == Ast.CallOrigin.DIRECT,
+                "legacy generic constructor invented a pipeline");
+        require(new Ast.CallExpr(new Ast.NameExpr("f"), List.of(intType), true, List.of())
+                        .origin() == Ast.CallOrigin.DIRECT,
+                "legacy explicit-marker constructor invented a pipeline");
+        failure(NullPointerException.class,
+                () -> new Ast.CallExpr(null, List.of()), "null callee accepted");
+        failure(NullPointerException.class,
+                () -> new Ast.CallExpr(new Ast.NameExpr("f"), List.of(), false,
+                        List.of(), null), "null origin accepted");
+        rejected(() -> new Ast.CallExpr(new Ast.NameExpr("f"),
+                List.of(new Ast.TypeRef("int", List.of(), false)), false, List.of()),
+                "unmarked generic arguments accepted");
+    }
+
+    static void callArgumentsAndTypesAreImmutable() {
+        var arguments = new java.util.ArrayList<Ast.Expr>();
+        arguments.add(new Ast.NameExpr("input"));
+        var types = new java.util.ArrayList<Ast.TypeRef>();
+        types.add(new Ast.TypeRef("int", List.of(), false));
+        Ast.CallExpr pipe = new Ast.CallExpr(new Ast.NameExpr("save"), types, true,
+                arguments, Ast.CallOrigin.VALUE_PIPE_ARGUMENT);
+        arguments.clear();
+        types.clear();
+        require(pipe.arguments().size() == 1 && pipe.typeArguments().size() == 1,
+                "caller mutations changed pipeline operands");
+        failure(UnsupportedOperationException.class, () -> pipe.arguments().clear(),
+                "pipeline arguments were mutable");
+        failure(UnsupportedOperationException.class, () -> pipe.typeArguments().clear(),
+                "pipeline type arguments were mutable");
+    }
+
+    static void rewritesPreserveOriginWithoutCopyingProofs() {
+        Ast.CallExpr pipe = call("input |> Option.unwrap_all()");
+        Ast.CheckedOptionDepth.record(pipe, 2);
+        Ast.CallExpr rewritten = pipe.rewrite(pipe.callee(), pipe.typeArguments(),
+                pipe.typeArgumentsPresent(), pipe.arguments());
+        require(rewritten.origin() == Ast.CallOrigin.VALUE_PIPE_RECEIVER,
+                "rewrite erased receiver provenance");
+        failure(IllegalStateException.class, () -> Ast.CheckedOptionDepth.require(rewritten),
+                "rewrite reused an unchecked depth proof");
+        Ast.copyCheckedMetadata(pipe, rewritten);
+        require(Ast.CheckedOptionDepth.require(rewritten) == 2,
+                "explicit checked transfer lost a proof");
+
+        Ast.CallExpr erased = new Ast.CallExpr(pipe.callee(), pipe.typeArguments(),
+                pipe.typeArgumentsPresent(), pipe.arguments());
+        rejected(() -> Ast.copyCheckedMetadata(pipe, erased),
+                "proof transfer silently erased pipeline provenance");
+        failure(IllegalStateException.class, () -> Ast.CheckedOptionDepth.require(erased),
+                "rejected transfer left a partial proof behind");
+
+        Ast.CallExpr argumentPipe = call("input |> save()");
+        require(argumentPipe.rewrite(argumentPipe.callee(), List.of(), false,
+                argumentPipe.arguments()).origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT,
+                "rewrite erased argument provenance");
+        Ast.CallExpr direct = call("save(input)");
+        require(direct.rewrite(direct.callee(), List.of(), false,
+                direct.arguments()).origin() == Ast.CallOrigin.DIRECT,
+                "rewrite invented a pipeline");
     }
 
     private static Ast.Expr expression(String text) {
@@ -116,7 +180,14 @@ public final class FuturePipelineProvenanceCheck {
         if (!condition) throw new AssertionError(message);
     }
     private static void rejected(Runnable operation, String message) {
-        try { operation.run(); } catch (IllegalArgumentException expected) { return; }
+        failure(IllegalArgumentException.class, operation, message);
+    }
+    private static void failure(Class<? extends RuntimeException> type,
+                                Runnable operation, String message) {
+        try { operation.run(); } catch (RuntimeException expected) {
+            if (type.isInstance(expected)) return;
+            throw new AssertionError("unexpected failure for " + message, expected);
+        }
         throw new AssertionError(message);
     }
 }

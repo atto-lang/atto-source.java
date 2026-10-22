@@ -1020,6 +1020,7 @@ public final class Ast {
             List<Expr> arguments,
             CallOrigin origin) implements Expr {
         public CallExpr {
+            java.util.Objects.requireNonNull(callee, "call callee");
             typeArguments = List.copyOf(typeArguments);
             arguments = List.copyOf(arguments);
             java.util.Objects.requireNonNull(origin, "call origin");
@@ -1042,6 +1043,17 @@ public final class Ast {
         }
         public CallExpr(Expr callee, List<TypeRef> typeArguments, List<Expr> arguments) {
             this(callee, typeArguments, true, arguments);
+        }
+
+        /**
+         * Rebuild a call without erasing syntax origin. The replacement must
+         * be checked again: identity-bound type/ownership proofs do not follow
+         * arbitrary changes to its callee or arguments.
+         */
+        public CallExpr rewrite(Expr newCallee, List<TypeRef> newTypeArguments,
+                                boolean newTypeArgumentsPresent, List<Expr> newArguments) {
+            return new CallExpr(newCallee, newTypeArguments,
+                    newTypeArgumentsPresent, newArguments, origin);
         }
     }
 
@@ -1310,6 +1322,11 @@ public final class Ast {
     public static void copyCheckedMetadata(Expr source, Expr target) {
         java.util.Objects.requireNonNull(source, "source expression");
         java.util.Objects.requireNonNull(target, "target expression");
+        if (source instanceof CallExpr sourceCall && target instanceof CallExpr targetCall
+                && sourceCall.origin() != targetCall.origin()) {
+            throw new IllegalArgumentException(
+                    "call rewrites must preserve syntax origin; use CallExpr.rewrite");
+        }
         for (CheckedMetadataTransfer transfer : CheckedMetadataTransfer.values()) {
             transfer.copy(source, target);
         }
