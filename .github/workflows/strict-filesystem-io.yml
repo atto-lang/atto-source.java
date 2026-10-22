@@ -65,6 +65,6 @@ jobs:
       - name: Execute strict permission regression
         run: mvn -B -ntp '-Dtest=RuntimePermissionsTest#strictFilesystemAdmissionIsLexicalScopedAndDenyFirst' test
       - name: Execute async filesystem integration regression
-        run: mvn -B -ntp '-Dtest=AsyncNativeIoTest#strictFilesystemReadAndExistsCompleteWithoutMutationWorkerFallback' test
+        run: mvn -B -ntp '-Dtest=AsyncNativeIoTest#strictFilesystemReadWriteAppendAndExistsCompleteWithoutWorkerFallback' test
       - name: Validate Native Image JNI metadata
         run: mvn -B -ntp -Pnative-aot -DskipTests package
