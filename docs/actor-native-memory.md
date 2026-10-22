@@ -299,6 +299,31 @@ lists. Native reference roots are released while the list's chunk chain stays
 available for subsequent append reuse; this change does not reclaim the
 actor's slab commitment during its lifetime.
 
+## Reversible native lexical storage and admission atomicity
+
+Actor source lexical `Slot` values now retain an already-allocated native
+`ValueCell` when an unsupported managed-only value temporarily occupies the
+same local. The previous native reference is retired before the managed
+fallback becomes authoritative; the same native cell resumes ownership when a
+supported scalar or arena-issued object is assigned later. This avoids a
+permanently managed local and additional cell allocation during repeated
+managed/native transitions. An initially managed-only local can also acquire
+native storage on its first supported assignment. Native/capability provenance
+is checked before admitting a newly supported value; foreign actor aliases
+cannot slip into a managed-fallback slot just because it began outside the
+arena.
+
+The source evaluator now checks duplicate lexical definitions **before**
+constructing a `Slot`. A rejected duplicate can no longer charge a speculative
+native value cell against the actor's arena quota. The white-box regression
+is JVM-test-only reflection used to exercise the private `Env` implementation
+inside a real actor turn; production source lowering still does not use
+runtime reflection.
+
+This improves hot-path memory placement but does **not** eliminate managed
+values while an unsupported payload is active, allocate-free frame metadata,
+or provide lexical scope-drop/reclamation.
+
 ## Remaining work before strict no-managed-allocation admission
 
 This patch does **not** make the Java evaluator allocation-free. It still uses
