@@ -1851,14 +1851,9 @@ public final class OresEvalRootNode extends RootNode {
                 SourceFlowCont continuation) {
             Env env = new Env(parent);
             ArrayDeque<Ast.Expr> defers = new ArrayDeque<>();
-            runStatements(
-                    task,
-                    statements,
-                    env,
-                    defers,
-                    0,
-                    (ignored, flow) ->
-                            finishBlock(task, env, defers, flow, continuation));
+            // runStatements owns terminal finalization for this block.
+            // A second finishBlock would release the same environment twice.
+            runStatements(task, statements, env, defers, 0, continuation);
         }
 
         /**
@@ -1995,15 +1990,26 @@ public final class OresEvalRootNode extends RootNode {
          * An earlier exit owns its status; an earlier unhandled failure must
          * never be downgraded by a later deferred exit(0).
          */
+        private static final int MAX_CLEANUP_SUPPRESSED = 64;
+
+        private static void suppressCleanupFailure(Throwable primary, Throwable secondary) {
+            if (primary == secondary) return;
+            synchronized (primary) {
+                if (primary.getSuppressed().length < MAX_CLEANUP_SUPPRESSED) {
+                    primary.addSuppressed(secondary);
+                }
+            }
+        }
+
         private SourceFlow mergeCleanupFailure(SourceFlow currentFlow, Throwable cleanupFailure) {
             Throwable earlier = currentFlow.failure();
             if (earlier == cleanupFailure) return currentFlow; // no self-suppression
             if (earlier != null && (isUnmaskableFailure(earlier)
                     || cleanupFailure instanceof ProcessExitSignal)) {
-                earlier.addSuppressed(cleanupFailure);
+                suppressCleanupFailure(earlier, cleanupFailure);
                 return currentFlow;
             }
-            if (earlier != null) cleanupFailure.addSuppressed(earlier);
+            if (earlier != null) suppressCleanupFailure(cleanupFailure, earlier);
             return SourceFlow.throwing(cleanupFailure);
         }
 
@@ -2019,7 +2025,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (isUnmaskableFailure(earlier)) {
                     if (finallyFlow.kind() == SourceFlowKind.THROW
                             && earlier != finallyFlow.failure()) {
-                        earlier.addSuppressed(finallyFlow.failure());
+                        suppressCleanupFailure(earlier, finallyFlow.failure());
                     }
                     return pending;
                 }
@@ -3299,19 +3305,40 @@ public final class OresEvalRootNode extends RootNode {
                 SourceTask task,
                 Ast.Expr expr,
                 Env env,
-                SourceValueCont continuation) {
+                SourceValueCont downstream) {
+            // Deliver the non-suspending hot path outside the evaluation catch.
+            boolean canSuspend;
             try {
-                if (!expressionContainsPotentialSuspension(
+                canSuspend = expressionContainsPotentialSuspension(
                         expr,
-                        java.util.Collections.newSetFromMap(
-                                new IdentityHashMap<>()))) {
-                    continuation.accept(
-                            task,
-                            eval(expr, env),
-                            null);
+                        java.util.Collections.newSetFromMap(new IdentityHashMap<>()));
+            } catch (RuntimeException | Error failure) {
+                downstream.accept(task, null, failure);
+                return;
+            }
+            if (!canSuspend) {
+                Object value;
+                try {
+                    value = eval(expr, env);
+                } catch (RuntimeException | Error failure) {
+                    downstream.accept(task, null, failure);
                     return;
                 }
+                downstream.accept(task, value, null);
+                return;
+            }
 
+            // Resumable expressions have exactly one terminal delivery.
+            java.util.concurrent.atomic.AtomicBoolean delivered =
+                    new java.util.concurrent.atomic.AtomicBoolean();
+            SourceValueCont continuation = (resumedTask, value, failure) -> {
+                if (!delivered.compareAndSet(false, true)) {
+                    throw new IllegalStateException(
+                            "suspendable expression completed more than once");
+                }
+                downstream.accept(resumedTask, value, failure);
+            };
+            try {
                 if (expr instanceof Ast.MatchExpr matched) {
                     // Evaluate the subject once on the SourceTask. In
                     // particular, an awaited subject must not be replayed
@@ -3881,6 +3908,9 @@ public final class OresEvalRootNode extends RootNode {
 
                 continuation.accept(task, eval(expr, env), null);
             } catch (RuntimeException | Error failure) {
+                // A delivered continuation owns its downstream failure.
+                // Re-delivery could replay effects or release affine resources twice.
+                if (delivered.get()) throw failure;
                 continuation.accept(task, null, failure);
             }
         }
@@ -5531,16 +5561,16 @@ public final class OresEvalRootNode extends RootNode {
                         if (pendingFailure != null && isUnmaskableFailure(pendingFailure)) {
                             // Never let a deferred ordinary failure replace a panic,
                             // denial, cancellation, host Error, or earlier process exit.
-                            if (failure != pendingFailure) pendingFailure.addSuppressed(failure);
+                            if (failure != pendingFailure) suppressCleanupFailure(pendingFailure, failure);
                         } else if (failure instanceof ProcessExitSignal && pendingFailure != null) {
                             // A deferred exit(0) must not convert an earlier
                             // unhandled failure into a successful process exit.
                             // Keep the original failure authoritative; the exit
                             // attempt is diagnostic only.
-                            if (failure != pendingFailure) pendingFailure.addSuppressed(failure);
+                            if (failure != pendingFailure) suppressCleanupFailure(pendingFailure, failure);
                         } else {
                             if (pendingFailure != null && pendingFailure != failure) {
-                                failure.addSuppressed(pendingFailure);
+                                suppressCleanupFailure(failure, pendingFailure);
                             }
                             pendingFailure = failure;
                         }
@@ -5550,14 +5580,14 @@ public final class OresEvalRootNode extends RootNode {
                     env.releaseMutexGuards(abnormalExit || pendingFailure != null);
                 } catch (RuntimeException | Error failure) {
                     if (pendingFailure != null && isUnmaskableFailure(pendingFailure)) {
-                        if (failure != pendingFailure) pendingFailure.addSuppressed(failure);
+                        if (failure != pendingFailure) suppressCleanupFailure(pendingFailure, failure);
                     } else if (failure instanceof ProcessExitSignal && pendingFailure != null) {
                         // Mutex cleanup cannot downgrade an already failing
                         // root task into successful exit(0).
-                        if (failure != pendingFailure) pendingFailure.addSuppressed(failure);
+                        if (failure != pendingFailure) suppressCleanupFailure(pendingFailure, failure);
                     } else {
                         if (pendingFailure != null && pendingFailure != failure) {
-                            failure.addSuppressed(pendingFailure);
+                            suppressCleanupFailure(failure, pendingFailure);
                         }
                         pendingFailure = failure;
                     }
@@ -5811,11 +5841,11 @@ public final class OresEvalRootNode extends RootNode {
                                 && (isUnmaskableFailure(pendingTryFailure)
                                         || cleanupFailure instanceof ProcessExitSignal)) {
                             if (pendingTryFailure != cleanupFailure) {
-                                pendingTryFailure.addSuppressed(cleanupFailure);
+                                suppressCleanupFailure(pendingTryFailure, cleanupFailure);
                             }
                         } else {
                             if (pendingTryFailure != null && pendingTryFailure != cleanupFailure) {
-                                cleanupFailure.addSuppressed(pendingTryFailure);
+                                suppressCleanupFailure(cleanupFailure, pendingTryFailure);
                             }
                             throw cleanupFailure;
                         }
