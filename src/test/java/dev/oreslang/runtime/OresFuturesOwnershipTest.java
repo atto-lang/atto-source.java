@@ -123,4 +123,31 @@ public class OresFuturesOwnershipTest {
         assertEquals(0, actorA.pendingRuntimeWaiterCount());
         assertEquals(0, actorB.pendingRuntimeWaiterCount());
     }
+
+    @Test void excessiveFanInRejectedBeforeRegisteringObservers() {
+        OresFuture<Integer> shared = new OresFuture<>();
+        List<OresFuture<Integer>> tooMany = java.util.Collections.nCopies(
+                OresFutures.MAX_FAN_IN + 1, shared);
+        assertThrows(IllegalArgumentException.class,
+                () -> OresFutures.all(tooMany));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresFutures.race(tooMany));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresFutures.allSettled(tooMany));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresFutures.allSettledDetailed(tooMany));
+        assertEquals(0, shared.pendingRuntimeWaiterCount());
+    }
+
+    @Test void futureInputsAreSnapshottedBeforeObservation() throws Exception {
+        OresFuture<Integer> first = new OresFuture<>();
+        OresFuture<Integer> second = new OresFuture<>();
+        java.util.ArrayList<OresFuture<Integer>> input = new java.util.ArrayList<>();
+        input.add(first);
+        var gathered = OresFutures.<Integer>all(input);
+        input.set(0, second);
+        first.completeFromRuntime(3);
+        assertEquals(List.of(3), gathered.get(3, TimeUnit.SECONDS));
+        assertEquals(0, second.pendingRuntimeWaiterCount());
+    }
 }
