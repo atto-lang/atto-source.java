@@ -791,6 +791,6 @@ final class PatternMatchingHardeningTest {
                 .build()) {
             context.eval(source);
         }
-        assertEquals("1\\n2\\n3", output.toString(StandardCharsets.UTF_8).trim().replace("\\r", ""));
+        assertEquals("1\n2\n3", output.toString(StandardCharsets.UTF_8).trim().replace("\r", ""));
     }
 }
