@@ -1,0 +1,169 @@
+# Recovery chains, explicit capture and data layout (draft, 2026-10-22)
+
+## Status and boundaries
+
+This patch introduces an isolated Java 21 **host prototype** of recovery-chain dispatch,
+focused JUnit tests, and an exploratory layout microbenchmark. It does not enable
+guest-source `recover |err, c| -> ...`, typed `raise`, the curried registration
+syntax, deferred cleanup interoperation, actor supervisor delivery, LLVM lowering,
+or continuation-safe `await`. Those gates remain fail-closed. The experimental
+recover example in oreslang-demo#9 used a different and now **rejected** contract
+where panic could be locally recovered. We must not resurrect that behavior.
+
+The controlling safety rule from oreslang-common-source#128 is: typed ordinary
+`throw` is locally catchable; `raise` bypasses catch/trap but may be handled by
+an eligible direct-defer recovery boundary; `panic` cannot be handled locally and
+must reach supervisor CONTROL, after safe non-consuming cleanup. Cancellation,
+revocation and host-fatal signals must not be recovered.
+
+## Proposed source (not implemented)
+
+```ores
+fnc process(string x): int {
+    recover (|string context| -> |err, c| -> {
+        if can_recover(err, context); do
+            return 7;
+        fi
+        c.next();
+    })(x);
+
+    defer || -> { release_resource(); };
+
+    work_that_may_raise();
+    return 42;
+}
+```
+
+The factory is evaluated **once at registration**. The resulting handler carries
+an ownership-checked capture environment, and it is called only while unwinding
+a compatible `throw` or `raise`. A successful callable call must not invoke
+any recover callbacks. `|context: string|` may later be considered as an
+alias for current type-first `|string context|` lambda parameters; do not add
+an ad hoc recover-only lambda parser. The two `c` parameters from the originally
+suggested example must not shadow each other: use `context` for the binding
+and `c` for the runtime continuation.
+
+### Delegation and result semantics
+
+- Registration order is source order; recovery runs in reverse order (LIFO).
+- Compiler-lowered `return value` from a handler sets a `Recovered<T>` outcome,
+  which the caller receives as the failed invocation's result. It does **not**
+  restart execution after the failing statement.
+- `c.next()` is a terminal `Never` effect in **guest source**, moving the
+  same pending failure to the next earlier eligible recover registration.
+  Delegation is iterative and bounded; it never recursively calls Java handlers.
+- With no earlier handler, propagation crosses to the caller's failure context,
+  preserving original error identity and effect kind; the caller may return a
+  different type. No implicit fallthrough or swallow is legal.
+- An eligible handler must terminate in either a compatible return or `c.next()`.
+  This needs definite-control-flow analysis for branches and match cases.
+- No handler may consume panic/cancellation/host-fatal outcomes, independently of
+  whether it declares a generic Error parameter.
+- `c` is compiler-issued, non-copyable, non-storable, non-sendable, non-serializable,
+  and one-shot. It cannot be placed in persistent actor `state { ... }` or
+  retained past the callback. The host prototype invalidates each capability
+  even on exceptional exit; the real compiler must additionally reject escape.
+- Cleanup `defer`/finally execution precedes recovery selection under the
+  chosen boundary and runs at most once, including upon failure and cancellation.
+  Cleanup failures preserve higher-priority signals and suppressed diagnostics.
+- Raising a new failure inside a handler cannot recursively re-enter the same
+  handler. A compiler/runtime unwind guard must route it only outward.
+- A handler may only handle values that satisfy its checked `throws`/`raises`
+  effect signature; it may not invent an effect or cast an arbitrary host Throwable
+  into a guest error.
+
+### Capture and ownership rules
+
+Factory args evaluate once, left-to-right. Ordinary lexical closures can capture
+immutable/Copy values, but non-Copy captures move explicitly under `rt take`.
+Do not permit an ordinary mutable loan, actor arena reference, socket, Task
+capability, or recovery cursor to outlive the lexical activation without a
+proven region. A captured read-only view is not automatically `Send`, `Sync`
+or portable across actors. `nlex` disables ambient activation capture but can
+allow explicitly owned parameters when the checker proves their origin and
+lifetime. Reuse the canonical pointerless ownership/actor isolation engine;
+do not introduce a second permissive capture checker for recover.
+
+Suspended/source Tasks need a heap-backed **logical** unwind frame owned by
+the task/actor, not the carrier OS thread. Physical quiescence must gate actor
+arena retirement. Guest callback delivery must remain on the actor's single
+serial execution lane; no host callback may run on a producer/IO thread.
+
+## Data-oriented layout investigation
+
+A recovery list is an **ordered LIFO chain**, not a bag of unordered ECS
+systems. Typical registrations are small; failures are rare; registering a
+handler should add almost no overhead to successful execution. Avoid generic
+hash maps and linked lists in the hot path.
+
+| Layout | Proposed representation | Strength | Tradeoff |
+|---|---|---|---|
+| AoS | `Entry { mask, functionRef, environmentRef, scope }` array | One conceptual object/entry; useful when all fields are touched | Extra allocation/pointer chasing in Java |
+| SoA | compact `byte[] masks` + `Handler[] refs`; future `int[] captureOffsets` | Linear reverse scan, dense filter metadata, fast selective skipping | Extra arrays; capture resolution still indirect |
+| SoAoS | hot masks SoA + arrays of small payload records | Hot/cold segregation without full flattening | Record allocations remain |
+| AoSoA | fixed 16/32/64-element chunks, each with parallel hot arrays | Chunk reuse, bounded locality, useful for large continuation stacks/NUMA domains | Chunk transitions and branch overhead at short depth |
+| ECS | dense entity index into pooled registered recovery components | Potential reuse for large fleets of actor-owned descriptors | Indirection and generation/authority validation, poor fit to tiny lexical chains |
+
+**Chosen v1 substrate:** SoA immutable snapshots of handler refs and effect masks,
+iterative reverse scan, fixed 1024-registration cap, and a distinct one-shot
+continuation for each visited handler. Snapshot ownership and capture validation
+remain work for compiler/runtime integration. Do not pool/recycle a continuation
+object in a way that lets a retained stale reference act on a new handler.
+
+For a mature runtime, separate **cold immutable code descriptors** (function ID,
+effect mask, provenance, source span) from **per-invocation capture environments**
+(logical actor arena and owned slots). Compiler-generated small-stack inline slots
+can avoid allocating snapshots for 1-4 handlers. An optional AoSoA chunked
+representation can be evaluated when profiling shows deep, numerous chains.
+ECS should be restricted to a distinct actor/supervisor registry use case, not
+adopted as the default for lexical recovery.
+
+Consider compressed 32-bit *indexes* for descriptors/capture offsets where the
+region has verified bounds, never raw guest-forgeable 32-bit pointers. Pinned
+native arena lifetime, generation checking, and hot-reload code-epoch identity
+are mandatory before indices can be reused.
+
+## Exploratory Java layout benchmark
+
+Run the checked-in standalone metadata benchmark after compiling the project:
+
+```sh
+java -cp target/test-classes:target/classes dev.oreslang.runtime.RecoveryLayoutBenchmark
+```
+
+One local OpenJDK 21 scan (not an authoritative statistical performance result)
+gave approximately the following nanoseconds per **metadata walk**; no guest
+callback invocation, recovery allocation, or production JIT/AOT was included.
+
+| depth | AoS | SoA | AoSoA-16 | SoAoS | ECS-indexed |
+|---|---:|---:|---:|---:|---:|
+| 8 | 8.22 | 10.00 | 14.78 | 8.45 | 16.06 |
+| 64 | 35.75 | 38.81 | 63.82 | 35.54 | 39.69 |
+| 256 | 143.03 | 136.85 | 194.78 | 130.88 | 177.91 |
+
+These numbers are noisy and implementation-dependent, do not establish a
+universal winner, and **must not** be presented as Oreslang guest performance.
+AoS was competitive for small stacks; SoA/SoAoS became competitive for deeper
+scans. Future evaluations must use randomized harness order, JMH/forked JVMs,
+confidence intervals, allocation rate/GC, p95/p99, PMU L1/L2 misses, JDK25
+GraalVM AOT/hybrid, LLVM native and actor/carrier stress, while preserving
+identical logical traces. Benchmark real registration/freeze and successful-call
+cost too, since a handler is registered much more often than it executes.
+
+## Release gates (not yet passed)
+
+1. Merge/disambiguate existing draft recover contracts (#1316 vs #128 and prior
+   demo), selecting panic-never-recovered semantics across grammar and tests.
+2. Lower curried and direct handler registration to a typed `RecoveryHandler<T>`
+   without leaking the continuation, reusing the ordinary lambda parser and
+   checked capture/ownership engine.
+3. Prove handler control flow (`return T` or terminal `c.next()`), forbid
+   double use, callback escaping, stale scope, shadowing and invalid error effect.
+4. Integrate with real `throw`/`raise` unwind, defer/finally LIFO, suppression,
+   cancellation, after-`await` continuations and physical actor quiescence.
+5. Confirm source-level panic bypass and exactly-once immutable supervisor
+   CONTROL notification when the normal actor mailbox is full.
+6. Run exact-head JDK25 Maven/JUnit, GraalVM JIT/AOT/hybrid and LLVM native
+   parity suites, including fuzz/property tests and real actor memory pressure.
+7. Treat JDK21 standalone class compilation and microbenchmark as **local
+   preliminary checks only**. No claim of exact-head source/CI test passing.
