@@ -50,6 +50,13 @@
             "long",
             "int"
           ]
+        },
+        {
+          "name": "nativeRemoveCompleted",
+          "parameterTypes": [
+            "long",
+            "int"
+          ]
         }
       ]
     }
