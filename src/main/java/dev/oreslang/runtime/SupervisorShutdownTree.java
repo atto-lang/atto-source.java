@@ -46,6 +46,9 @@ public final class SupervisorShutdownTree {
         private final ActorRuntime.ActorGroup group;
         private final Hooks hooks;
         private final List<Supervisor> children = new ArrayList<>();
+        // Capture before graceful group close clears its worker registry.
+        // Retain for timeout escalation only until physical finalization.
+        private volatile List<ActorRuntime.ActorRef<?>> shutdownWorkers = List.of();
         private final OresFuture<Void> terminated = new OresFuture<>(() -> false, () -> { });
 
         private Supervisor(String name, ActorRuntime.ActorGroup group, Hooks hooks) {
@@ -172,7 +175,7 @@ public final class SupervisorShutdownTree {
             // revocation. Runtime shutdown must still await physical exit.
             for (Supervisor node : nodes) {
                 try {
-                    for (ActorRuntime.ActorRef<?> worker : node.group.workers()) {
+                    for (ActorRuntime.ActorRef<?> worker : node.shutdownWorkers) {
                         worker.cancel();
                     }
                 } catch (RuntimeException failure) {
@@ -191,6 +194,7 @@ public final class SupervisorShutdownTree {
 
     private void sealSubtree(Supervisor supervisor) {
         supervisor.group.fenceWorkerAdmissions();
+        supervisor.shutdownWorkers = supervisor.group.workers();
         for (Supervisor child : supervisor.children) sealSubtree(child);
     }
 
@@ -269,6 +273,7 @@ public final class SupervisorShutdownTree {
         groupDone.whenCompleteRuntime((ignored, failure) ->
                 dispatch(() -> {
                     if (failure != null) failures.add(failure);
+                    node.shutdownWorkers = List.of();
                     callStoppedHook(node, reason).whenCompleteRuntime((done, hookFailure) ->
                             dispatch(() -> {
                                 if (hookFailure != null) failures.add(hookFailure);
