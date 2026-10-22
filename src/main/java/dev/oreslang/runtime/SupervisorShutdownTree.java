@@ -244,16 +244,23 @@ public final class SupervisorShutdownTree {
      */
     private void dispatch(Runnable action) {
         boolean schedule = false;
+        boolean overflow = false;
         synchronized (queueLock) {
             if (dispatchFailed) return;
             if (work.size() >= MAX_CONTROL_EVENTS) {
-                throw new IllegalStateException("supervisor CONTROL event budget exhausted");
+                overflow = true;
+            } else {
+                work.addLast(action);
+                if (!draining) {
+                    draining = true;
+                    schedule = true;
+                }
             }
-            work.addLast(action);
-            if (!draining) {
-                draining = true;
-                schedule = true;
-            }
+        }
+        if (overflow) {
+            emergencyStop(new IllegalStateException(
+                    "supervisor CONTROL event budget exhausted"));
+            return;
         }
         if (!schedule) return;
         Thread submitter = Thread.currentThread();
