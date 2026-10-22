@@ -164,6 +164,124 @@ public final class FutureCombinators {
     }
 
 
+
+    /**
+     * Transform one settled Future on the explicitly supplied scheduler.
+     * The source is only observed: cancelling the dependent Task must never
+     * cancel a source that may be shared elsewhere.
+     *
+     * <p>Unlike CompletableFuture.thenApply, the mapper NEVER executes from
+     * the producer's I/O, timer, JNI or notification thread. Source-level
+     * mappers additionally require compiler-proven captures/effect admission;
+     * this is trusted HOST runtime plumbing only.</p>
+     */
+    public static <T, U> OresFuture<U> map(
+            OresScheduler scheduler, OresFuture<? extends T> source,
+            java.util.function.Function<? super T, ? extends U> mapper) {
+        Objects.requireNonNull(scheduler, "scheduler");
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(mapper, "mapper");
+        return scheduler.start(new OresScheduler.Task<>() {
+            private boolean started;
+
+            @Override
+            public OresScheduler.Step<U> resume(OresScheduler.Resume resume) {
+                if (!started) {
+                    if (!resume.initial()) {
+                        throw new IllegalStateException("map started with noninitial resume");
+                    }
+                    started = true;
+                    return OresScheduler.await(source);
+                }
+                if (resume.initial()) {
+                    throw new IllegalStateException("map resumed with duplicate initial event");
+                }
+                if (resume.failure() != null) throw propagate(resume.failure());
+                @SuppressWarnings("unchecked")
+                T value = (T) resume.value();
+                return OresScheduler.done(mapper.apply(value));
+            }
+        });
+    }
+
+    /**
+     * Scheduler-owned asynchronous flatMap; waits for the source, executes
+     * the mapper on the scheduler, then waits for the returned Future without
+     * parking a physical carrier. No nested Future is implicitly cancelled:
+     * an owning TaskScope must handle owned work cancellation and quiescence.
+     */
+    public static <T, U> OresFuture<U> flatMap(
+            OresScheduler scheduler, OresFuture<? extends T> source,
+            java.util.function.Function<? super T, ? extends OresFuture<? extends U>> mapper) {
+        Objects.requireNonNull(scheduler, "scheduler");
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(mapper, "mapper");
+        return scheduler.start(new OresScheduler.Task<>() {
+            private int phase;
+
+            @Override
+            public OresScheduler.Step<U> resume(OresScheduler.Resume resume) {
+                if (phase == 0) {
+                    if (!resume.initial()) {
+                        throw new IllegalStateException(
+                                "flatMap started with noninitial resume");
+                    }
+                    phase = 1;
+                    return OresScheduler.await(source);
+                }
+                if (resume.initial()) {
+                    throw new IllegalStateException(
+                            "flatMap resumed with duplicate initial event");
+                }
+                if (resume.failure() != null) throw propagate(resume.failure());
+                if (phase == 1) {
+                    @SuppressWarnings("unchecked")
+                    T value = (T) resume.value();
+                    OresFuture<? extends U> next = Objects.requireNonNull(
+                            mapper.apply(value), "flatMap mapper returned null Future");
+                    phase = 2;
+                    return OresScheduler.await(next);
+                }
+                if (phase == 2) {
+                    @SuppressWarnings("unchecked")
+                    U value = (U) resume.value();
+                    phase = 3;
+                    return OresScheduler.done(value);
+                }
+                throw new IllegalStateException("flatMap resumed after completion");
+            }
+        });
+    }
+
+    private static RuntimeException propagate(Throwable failure) {
+        Throwable original = OresFuture.unwrap(failure);
+        if (original instanceof RuntimeException runtime) return runtime;
+        if (original instanceof Error error) throw error;
+        return new java.util.concurrent.CompletionException(original);
+    }
+
+    /** A typed two-value result; no Any-erasure in the public API. */
+    public record Pair<A, B>(A first, B second) { }
+
+    /**
+     * Heterogeneous ordered fan-in via the same cancellation-safe all()
+     * observer and scheduler-owned mapper. Future values are never restarted.
+     */
+    public static <A, B> OresFuture<Pair<A, B>> zip(
+            OresScheduler scheduler, OresFuture<? extends A> a,
+            OresFuture<? extends B> b) {
+        Objects.requireNonNull(a, "a");
+        Objects.requireNonNull(b, "b");
+        List<OresFuture<? extends Object>> pair = List.of(a, b);
+        return map(scheduler, FutureCombinators.<Object>all(pair), values -> {
+            @SuppressWarnings("unchecked")
+            A first = (A) values.get(0);
+            @SuppressWarnings("unchecked")
+            B second = (B) values.get(1);
+            return new Pair<>(first, second);
+        });
+    }
+
     /**
      * First SUCCESS wins; unlike race, failures/cancellations are ignored until
      * all candidates fail. Empty input is an invalid composition.
