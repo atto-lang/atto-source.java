@@ -47,6 +47,15 @@ final class CheckedFunctionTypeTest {
     }
 
     @Test
+    void unknownCannotManufactureOrEraseCheckedFunctionWitness() {
+        var checked = value(new CheckedEffects(List.of(), List.of(),
+                List.of(Primitive.INT)));
+        assertFalse(Types.isAssignable(Types.Unknown.INSTANCE,
+                value(CheckedEffects.none())));
+        assertFalse(Types.isAssignable(checked, Types.Unknown.INSTANCE));
+    }
+
+    @Test
     void legacyPureFunctionConstructorsRemainPure() {
         var old = new Function(List.of(Primitive.INT), List.of(false), false, Primitive.STRING);
         var simple = new Function(List.of(Primitive.INT), Primitive.STRING);
