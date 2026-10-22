@@ -542,7 +542,8 @@ public final class TypeChecker {
                             trappedSignature.parameters(),
                             trappedSignature.mutableParameters(),
                             trappedSignature.async(),
-                            trapResult(true, trappedSignature.result()));
+                            trapResult(true, trappedSignature.result()),
+                            trappedSignature.effects());
                 }
 
                 // Only concretely reifiable fnc declarations become raw
@@ -5149,7 +5150,8 @@ public final class TypeChecker {
         if (type instanceof Function fn) return new Function(
                 fn.parameters().stream().map(t -> bindReceiverSelf(t, receiver)).toList(),
                 fn.mutableParameters(), fn.async(),
-                bindReceiverSelf(fn.result(), receiver));
+                bindReceiverSelf(fn.result(), receiver),
+                mapFunctionEffects(fn.effects(), t -> bindReceiverSelf(t, receiver)));
         if (type instanceof Record record) {
             Map<String, Type> members = new LinkedHashMap<>();
             record.members().forEach((name, member) -> members.put(name, bindReceiverSelf(member, receiver)));
@@ -6705,7 +6707,8 @@ public final class TypeChecker {
                             .toList(),
                     fn.mutableParameters(),
                     fn.async(),
-                    resolveSharedGeneric(fn.result(), bindings));
+                    resolveSharedGeneric(fn.result(), bindings),
+                    mapFunctionEffects(fn.effects(), t -> resolveSharedGeneric(t, bindings)));
         }
         if (type instanceof Record record) {
             Map<String, Type> members = new LinkedHashMap<>();
@@ -8030,7 +8033,8 @@ public final class TypeChecker {
                 raw.parameters(),
                 raw.mutableParameters(),
                 raw.async(),
-                trapResult(true, raw.result()));
+                trapResult(true, raw.result()),
+                raw.effects());
     }
 
     private Type generatorYieldType(boolean async, Type declared) {
@@ -8648,6 +8652,15 @@ public final class TypeChecker {
         }
     }
 
+    private static Types.CheckedEffects mapFunctionEffects(
+            Types.CheckedEffects effects,
+            java.util.function.Function<Type, Type> mapper) {
+        return new Types.CheckedEffects(
+                effects.throwsTypes().stream().map(mapper).toList(),
+                effects.raisesTypes().stream().map(mapper).toList(),
+                effects.panicsTypes().stream().map(mapper).toList());
+    }
+
     private Type substituteGenerics(Type type, Map<String, Type> bindings) {
         if (type instanceof Generic generic) return bindings.getOrDefault(generic.name(), type);
         if (type instanceof SelfType receiverSelf) return new SelfType(substituteGenerics(receiverSelf.bound(), bindings));
@@ -8661,7 +8674,8 @@ public final class TypeChecker {
                 fn.parameters().stream().map(t -> substituteGenerics(t, bindings)).toList(),
                 fn.mutableParameters(),
                 fn.async(),
-                substituteGenerics(fn.result(), bindings));
+                substituteGenerics(fn.result(), bindings),
+                mapFunctionEffects(fn.effects(), t -> substituteGenerics(t, bindings)));
         if (type instanceof Record record) {
             Map<String, Type> members = new LinkedHashMap<>();
             record.members().forEach((name, member) -> members.put(name, substituteGenerics(member, bindings)));
@@ -8680,7 +8694,10 @@ public final class TypeChecker {
         if (type instanceof Types.Not not) return containsUnknown(not.excluded());
         if (type instanceof Named named) return named.arguments().stream().anyMatch(this::containsUnknown);
         if (type instanceof Function fn) return fn.parameters().stream().anyMatch(this::containsUnknown)
-                || containsUnknown(fn.result());
+                || containsUnknown(fn.result())
+                || fn.effects().throwsTypes().stream().anyMatch(this::containsUnknown)
+                || fn.effects().raisesTypes().stream().anyMatch(this::containsUnknown)
+                || fn.effects().panicsTypes().stream().anyMatch(this::containsUnknown);
         if (type instanceof Record record) return record.members().values().stream().anyMatch(this::containsUnknown);
         return false;
     }
@@ -8696,7 +8713,10 @@ public final class TypeChecker {
         if (type instanceof Types.Not not) return containsGenericNamed(not.excluded(), names);
         if (type instanceof Named named) return named.arguments().stream().anyMatch(t -> containsGenericNamed(t, names));
         if (type instanceof Function fn) return fn.parameters().stream().anyMatch(t -> containsGenericNamed(t, names))
-                || containsGenericNamed(fn.result(), names);
+                || containsGenericNamed(fn.result(), names)
+                || fn.effects().throwsTypes().stream().anyMatch(t -> containsGenericNamed(t, names))
+                || fn.effects().raisesTypes().stream().anyMatch(t -> containsGenericNamed(t, names))
+                || fn.effects().panicsTypes().stream().anyMatch(t -> containsGenericNamed(t, names));
         if (type instanceof Record record) return record.members().values().stream().anyMatch(t -> containsGenericNamed(t, names));
         return false;
     }
@@ -9373,6 +9393,7 @@ public final class TypeChecker {
         if (actual instanceof Function source && expected instanceof Function target) {
             if (source.parameters().size() != target.parameters().size()) return false;
             if (source.async() != target.async()) return false;
+            if (!source.effects().isSubsetOf(target.effects())) return false;
             if (!source.mutableParameters().equals(target.mutableParameters())) return false;
             for (int i = 0; i < source.parameters().size(); i++) {
                 if (!assignable(target.parameters().get(i), source.parameters().get(i))) return false;
