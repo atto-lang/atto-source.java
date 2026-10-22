@@ -234,4 +234,50 @@ final class CleanupAwareTaskTest {
             scheduler.close();
         }
     }
+
+    @Test void untrustedActorQuotaAdapterPreservesCleanupAwareCancellation()
+            throws Exception {
+        OresFuture<Integer> producer = new OresFuture<>();
+        OresFuture<Integer> cleanupProducer = new OresFuture<>();
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch cleanupEntered = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<OresFuture<Integer>> ref =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(), new ActorRuntime.DispatcherConfig(1, 2, 64, 16))) {
+            var actor = runtime.<String>spawnUntrusted(
+                    context -> (message, turn) -> {
+                        OresFuture<Integer> future = turn.runtime().startActorTask(
+                                new OresScheduler.CleanupAwareTask<Integer>() {
+                                    private int phase;
+                                    @Override public OresScheduler.Step<Integer> resume(
+                                            OresScheduler.Resume resumed) {
+                                        assertEquals(ActorRuntime.ActorKind.UNTRUSTED,
+                                                ActorRuntime.currentActorKind());
+                                        if (phase++ == 0) {
+                                            started.countDown();
+                                            return OresScheduler.await(producer);
+                                        }
+                                        assertInstanceOf(CancellationException.class,
+                                                resumed.failure());
+                                        cleanupEntered.countDown();
+                                        return OresScheduler.await(cleanupProducer);
+                                    }
+                                });
+                        ref.set(future);
+                    });
+            actor.send("run");
+            assertTrue(started.await(4, TimeUnit.SECONDS));
+            assertTrue(ref.get().cancel(false));
+            assertTrue(cleanupEntered.await(4, TimeUnit.SECONDS),
+                    "untrusted quota wrapper must preserve CleanupAwareTask");
+            assertFalse(ref.get().isDone());
+            cleanupProducer.completeFromRuntime(4);
+            assertThrows(CancellationException.class,
+                    () -> ref.get().get(4, TimeUnit.SECONDS));
+            actor.stop();
+            assertTrue(actor.awaitTermination(4, TimeUnit.SECONDS));
+            assertFalse(producer.isCancelled());
+        }
+    }
 }
