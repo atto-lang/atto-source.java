@@ -72,6 +72,13 @@ printf '%s\n' "$approved extra" > "$policy"
 reject "suffix appended to policy ID" "$target" "$valid"
 printf '%s\n' "$approved" > "$policy"
 
+# Bash imports exported functions from caller environments, including CI
+# steps invoking this guard. A forged gh() must never authorize a destination.
+gh() { printf '%s\n' "$FAKE_GH_METADATA"; }
+export -f gh
+reject "exported function spoofs GitHub API metadata" "$target" "$valid"
+unset -f gh
+
 FAKE_GH_METADATA="$valid" bash "$tmp/scripts/check-private-ci-destination.sh" \
   "$target" >"$tmp/output"
 grep -q '^PRIVATE_CI_DESTINATION_APPROVED:' "$tmp/output"
