@@ -98,6 +98,37 @@ poison/recover, and concurrent async handoff.
 This PR implements Task ownership integration, **not** these additional
 physical layouts or ECS storage; they remain explicit engineering gates.
 
+## Post-v1 hardening: logical owner and async failure accounting
+
+This draft branch now uses a per-execution **reference-identity owner key**
+in `OresMutex.Shared`, rather than the stable actor-wide domain or
+value-based equality of `ActorExecutionContext` records. Tracked scheduler
+Tasks retain the same underlying execution identity over await/carrier
+migration; untracked actor dispatches use their distinct current physical
+turn context; ordinary host calls use the current carrier identity. This
+key is *not* an ownership capability for reading a foreign actor arena.
+
+Async acquisition reserves the logical owner and waiter quotas before
+admitting its Task-owned lease; a failed admission rolls back the earlier
+reservations. A request that ends with no grant disarms its lease without
+running any permit-release callback. A grant that loses Future completion
+must reclaim its permit first, then disarm the undelivered lease. Abandoned
+*delivered* holders still follow the poisoned-release path. Notification
+threads do not run guest `defer`, recovery, or actor callbacks.
+
+New **unexecuted** JUnit regressions cover: distinct logical Tasks
+sharing a single scheduler carrier, more than 4,096 zero-timeout async
+requests in one Task, recursive admission rejects without leaking Task
+leases, equal-valued actor turn records remaining distinct lock owners,
+and disarming an ungranted lease without touching its release callback.
+These complement the original eight Task-owned guard regressions; passing
+results are not claimed.
+
+Future SoA/AoSoA layout work should replace this allocation-heavy host
+owner-key wrapper with a **stable generation-checked numeric handle**,
+maintaining the same identity and compare-and-set invariants. The current
+wrapper is a correctness staging bridge, not a physical layout commitment.
+
 ## Required safety ordering
 
 ```text
