@@ -23,23 +23,31 @@ public final class Types {
         private final Primitive scalar;
         private final String qualifiedSchemaName;
         private final String schemaFingerprint;
+        // Null denotes legacy unadmitted compiler analysis. A staged schema
+        // registry has a fresh per-compilation seal that cannot be recreated
+        // from its digest/name/generation metadata.
+        private final Object compilationSeal;
 
         private CheckedScalarType(
-                Primitive scalar, String qualifiedSchemaName, String schemaFingerprint) {
+                Primitive scalar, String qualifiedSchemaName,
+                String schemaFingerprint, Object compilationSeal) {
             this.scalar = Objects.requireNonNull(scalar, "scalar");
             this.qualifiedSchemaName = Objects.requireNonNull(qualifiedSchemaName, "schema identity");
             this.schemaFingerprint = Objects.requireNonNull(schemaFingerprint, "fingerprint");
+            this.compilationSeal = compilationSeal;
         }
 
         @Override public boolean equals(Object other) {
             return other instanceof CheckedScalarType p
                     && scalar == p.scalar
                     && qualifiedSchemaName.equals(p.qualifiedSchemaName)
-                    && schemaFingerprint.equals(p.schemaFingerprint);
+                    && schemaFingerprint.equals(p.schemaFingerprint)
+                    && compilationSeal == p.compilationSeal;
         }
 
         @Override public int hashCode() {
-            return Objects.hash(scalar, qualifiedSchemaName, schemaFingerprint);
+            return Objects.hash(scalar, qualifiedSchemaName,
+                    schemaFingerprint, System.identityHashCode(compilationSeal));
         }
 
         @Override public String toString() {
@@ -69,7 +77,29 @@ public final class Types {
             throw new IllegalArgumentException("Zorde nominal schema identity mismatch");
         if (!descriptor.accepts(candidate))
             throw new IllegalArgumentException("Zorde checked scalar did not satisfy schema");
-        return new CheckedScalarType(scalar, schemaName, descriptor.fingerprint());
+        return new CheckedScalarType(scalar, schemaName, descriptor.fingerprint(), null);
+    }
+
+    /**
+     * Compiler-only issuance from an immutable, per-compilation registry.
+     * This is type-system *analysis* evidence, NOT a source-level Valid proof.
+     * The descriptor must be the same admitted object from that registry,
+     * rather than merely matching a caller-controlled fingerprint.
+     */
+    static Type checkedScalarTypeFromRegistry(
+            Primitive scalar, String schemaName,
+            RefinementRules.Descriptor descriptor,
+            CompilerZordeSchemaRegistry registry) {
+        Objects.requireNonNull(registry, "Zorde compiler registry");
+        Objects.requireNonNull(descriptor, "Zorde descriptor");
+        if (registry.descriptor(schemaName) != descriptor)
+            throw new IllegalArgumentException("Zorde descriptor is not registry-admitted");
+        if (scalar != Primitive.INT && scalar != Primitive.STRING)
+            throw new IllegalArgumentException("invalid Zorde registered scalar type");
+        if (!descriptor.base().equals(scalar == Primitive.INT ? "int" : "string"))
+            throw new IllegalArgumentException("Zorde registry scalar type mismatch");
+        return new CheckedScalarType(scalar, schemaName, descriptor.fingerprint(),
+                registry.compilationSeal());
     }
 
     /** Whether a type (including nested generic/record/function) carries proof. */
