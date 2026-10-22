@@ -25,9 +25,12 @@ final class LinuxUringFileIoProviderTest {
         final List<Long> reads = new ArrayList<>();
         final List<Long> exists = new ArrayList<>();
         final List<Long> cancels = new ArrayList<>();
+        final List<WriteCall> writes = new ArrayList<>();
         boolean accept = true;
         boolean cancelAccept = true;
         int closes;
+
+        record WriteCall(long id, byte[] path, byte[] value, boolean append) {}
 
         @Override
         public long create(LinuxUringFileIoProvider owner, int entries) {
@@ -50,6 +53,15 @@ final class LinuxUringFileIoProviderTest {
             assertEquals(77L, handle);
             assertEquals('/', (char) path[0]);
             exists.add(id);
+            return accept;
+        }
+
+        @Override
+        public boolean submitWrite(
+                long handle, long id, byte[] path, byte[] value, boolean append) {
+            assertEquals(77L, handle);
+            assertEquals('/', (char) path[0]);
+            writes.add(new WriteCall(id, path.clone(), value.clone(), append));
             return accept;
         }
 
@@ -187,16 +199,47 @@ final class LinuxUringFileIoProviderTest {
     }
 
     @Test
-    void unfinishedMutationOperationsFailClosedWithoutNativeSubmission() {
+    void writeAndAppendDeclineGuestCancellationAndSettleFromNativeCompletion()
+            throws Exception {
         FakeBridge bridge = new FakeBridge();
         LinuxUringFileIoProvider provider = new LinuxUringFileIoProvider(bridge);
-        OresFuture<Void> future = provider.writeText("/tmp/out", "value");
-        ExecutionException failure =
-                assertThrows(ExecutionException.class, future::get);
-        assertInstanceOf(UnsupportedOperationException.class, failure.getCause());
-        assertTrue(bridge.reads.isEmpty());
-        assertTrue(bridge.exists.isEmpty());
+
+        OresFuture<Void> write = provider.writeText("/tmp/out", "value");
+        assertEquals(1, bridge.writes.size());
+        FakeBridge.WriteCall first = bridge.writes.getFirst();
+        assertFalse(first.append());
+        assertArrayEquals("value".getBytes(StandardCharsets.UTF_8), first.value());
+        assertFalse(write.cancel(false),
+                "partial filesystem mutation cannot promise rollback");
+        assertTrue(bridge.cancels.isEmpty(),
+                "guest mutation cancellation must not reach native cancel");
+        provider.nativeWriteCompleted(first.id(), 0);
+        assertNull(write.get(1, TimeUnit.SECONDS));
+
+        OresFuture<Void> append = provider.appendText("/tmp/out", " more");
+        FakeBridge.WriteCall second = bridge.writes.get(1);
+        assertTrue(second.append());
+        assertArrayEquals(" more".getBytes(StandardCharsets.UTF_8), second.value());
+        assertFalse(append.cancel(false));
+        provider.nativeWriteCompleted(second.id(), 0);
+        assertNull(append.get(1, TimeUnit.SECONDS));
         assertEquals(0, provider.pendingCount());
+        provider.close();
+    }
+
+    @Test
+    void writeSubmissionFailureAndInvalidUnicodeFailClosed() {
+        FakeBridge bridge = new FakeBridge();
+        bridge.accept = false;
+        LinuxUringFileIoProvider provider = new LinuxUringFileIoProvider(bridge);
+
+        OresFuture<Void> rejected = provider.writeText("/tmp/out", "value");
+        assertEquals(0, provider.pendingCount());
+        assertThrows(ExecutionException.class, rejected::get);
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> provider.writeText("/tmp/out", "\ud800"));
         provider.close();
     }
 
@@ -272,6 +315,38 @@ final class LinuxUringFileIoProviderTest {
             assertFalse(provider.exists(root.resolve("missing.txt")
                             .toAbsolutePath().toString())
                     .get(5, TimeUnit.SECONDS));
+
+            Path output = root.resolve("output.txt");
+            assertNull(provider.writeText(
+                            output.toAbsolutePath().toString(), "first")
+                    .get(5, TimeUnit.SECONDS));
+            assertEquals("first", Files.readString(output, StandardCharsets.UTF_8));
+            assertNull(provider.appendText(
+                            output.toAbsolutePath().toString(), " second")
+                    .get(5, TimeUnit.SECONDS));
+            assertEquals(
+                    "first second",
+                    Files.readString(output, StandardCharsets.UTF_8));
+
+            Path protectedTarget = root.resolve("protected.txt");
+            Files.writeString(protectedTarget, "safe", StandardCharsets.UTF_8);
+            Path writeLink = root.resolve("write-link.txt");
+            try {
+                Files.createSymbolicLink(writeLink, protectedTarget);
+                ExecutionException symlinkWrite =
+                        assertThrows(ExecutionException.class, () ->
+                                provider.writeText(
+                                                writeLink.toAbsolutePath().toString(),
+                                                "escaped")
+                                        .get(5, TimeUnit.SECONDS));
+                assertNotNull(symlinkWrite.getCause());
+                assertEquals(
+                        "safe",
+                        Files.readString(protectedTarget, StandardCharsets.UTF_8));
+            } catch (UnsupportedOperationException
+                    | java.nio.file.FileSystemException unsupported) {
+                // The deterministic bridge tests still cover write ownership.
+            }
 
             Path link = root.resolve("link.txt");
             try {
