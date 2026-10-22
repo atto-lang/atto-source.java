@@ -78,9 +78,21 @@ public final class Types {
     public record CheckedEffects(List<Type> throwsTypes, List<Type> raisesTypes,
                                  List<Type> panicsTypes) {
         public CheckedEffects {
-            throwsTypes = List.copyOf(throwsTypes);
-            raisesTypes = List.copyOf(raisesTypes);
-            panicsTypes = List.copyOf(panicsTypes);
+            throwsTypes = normalize(throwsTypes);
+            raisesTypes = normalize(raisesTypes);
+            panicsTypes = normalize(panicsTypes);
+        }
+
+        /**
+         * Effect clauses denote sets, not declaration-order-sensitive lists.
+         * Reject nulls, remove duplicates and canonicalize order so a method's
+         * effect contract compares identically after serialization/reification.
+         */
+        private static List<Type> normalize(List<Type> input) {
+            return List.copyOf(input).stream()
+                    .distinct()
+                    .sorted(java.util.Comparator.comparing(Type::toString))
+                    .toList();
         }
 
         public static CheckedEffects none() {
@@ -256,6 +268,11 @@ public final class Types {
         }
         if (from instanceof Not) return to == Unknown.INSTANCE;
         if (from instanceof BoolLiteral && to == Primitive.BOOL) return true;
+        // An unresolved value cannot prove a callable's checked effect
+        // contract; a known effectful callable cannot hide behind Unknown.
+        if (from == Unknown.INSTANCE && to instanceof Function) return false;
+        if (to == Unknown.INSTANCE && from instanceof Function fn
+                && !fn.effects().isEmpty()) return false;
         if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
         if (to instanceof Generic || from instanceof Generic) return true;
         if (from.equals(to)) return true;
