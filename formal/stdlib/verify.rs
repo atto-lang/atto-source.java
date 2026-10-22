@@ -43,8 +43,8 @@ fn check_source(path: &str, expected: &str) -> Result<(), String> {
 
 fn classify(stdout: &str, number_of_proofs: usize, number_of_mutants: usize) -> Result<(), String> {
     let values: Vec<&str> = stdout.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
-    let expected: Vec<&str> = std::iter::repeat_n("unsat", number_of_proofs)
-        .chain(std::iter::repeat_n("sat", number_of_mutants))
+    let expected: Vec<&str> = std::iter::repeat("unsat").take(number_of_proofs)
+        .chain(std::iter::repeat("sat").take(number_of_mutants))
         .collect();
     if values != expected {
         return Err(format!(
