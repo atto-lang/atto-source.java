@@ -252,14 +252,14 @@ static int ores_submit_close_locked(ores_uring_ctx *ctx, ores_io_op *op) {
     return result;
 }
 
-static void ores_submit_cancel_locked(ores_uring_ctx *ctx, uint64_t target) {
-    if (target == 0) return;
+static int ores_submit_cancel_locked(ores_uring_ctx *ctx, uint64_t target) {
+    if (target == 0) return -ENOENT;
     struct io_uring_sqe *sqe = ores_get_sqe_locked(ctx);
-    if (sqe == NULL) return;
+    if (sqe == NULL) return -EAGAIN;
     sqe->opcode = IORING_OP_ASYNC_CANCEL;
     sqe->addr = target;
     sqe->user_data = 0;
-    (void)ores_submit_one_locked(ctx);
+    return ores_submit_one_locked(ctx);
 }
 
 static void ores_remove_op_locked(ores_uring_ctx *ctx, ores_io_op *op) {
@@ -719,10 +719,11 @@ Java_dev_oreslang_runtime_LinuxUringFileIoProvider_nativeCancel(
         pthread_mutex_unlock(&ctx->mutex);
         return JNI_FALSE;
     }
-    match->cancelled = 1;
-    ores_submit_cancel_locked(ctx, match->current_user_data);
+    int cancel_result = ores_submit_cancel_locked(
+            ctx, match->current_user_data);
+    if (cancel_result == 0) match->cancelled = 1;
     pthread_mutex_unlock(&ctx->mutex);
-    return JNI_TRUE;
+    return cancel_result == 0 ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL
@@ -736,8 +737,9 @@ Java_dev_oreslang_runtime_LinuxUringFileIoProvider_nativeClose(
     if (!ctx->closed) {
         ctx->closed = 1;
         for (ores_io_op *cursor = ctx->ops; cursor != NULL; cursor = cursor->next) {
-            cursor->cancelled = 1;
-            ores_submit_cancel_locked(ctx, cursor->current_user_data);
+            int cancel_result = ores_submit_cancel_locked(
+                    ctx, cursor->current_user_data);
+            if (cancel_result == 0) cursor->cancelled = 1;
         }
         (void)ores_submit_nop_locked(ctx);
     }
