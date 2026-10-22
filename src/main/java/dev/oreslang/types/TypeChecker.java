@@ -8137,6 +8137,9 @@ public final class TypeChecker {
     }
 
     private boolean assignable(Type actual, Type expected) {
+        if (Types.containsForgedZordeProofName(actual)
+                || Types.containsForgedZordeProofName(expected))
+            return false;
         // A future compiler-minted Zorde proof is opaque. Do not allow this
         // checker's structural, nominal-supertype or generic substitution
         // fallbacks to erase its schema identity. Type-layer invariance is
