@@ -63,7 +63,7 @@ export function validateCapturedGuestLog(log,cases) {
   for(const line of log.replace(/\r\n/g,"\n").split("\n")) {
     if(line==="CORE-MATH-DONE") {finishCount++;continue;}
     if(!line.startsWith("CORE-MATH-CASE"))continue;
-    const match=/^CORE-MATH-CASE\|([a-z][a-z0-9-]{1,80})\|(-?(?:0|[1-9][0-9]*))$/.exec(line);
+    const match=/^CORE-MATH-CASE\|([a-z][a-z0-9-]{1,80})\|((?:0|-?[1-9][0-9]*))$/.exec(line);
     requireCondition(match!==null,"malformed guest case line");
     const [,id,value]=match;
     requireCondition(cases.has(id)&&!seen.has(id),"unexpected or repeated guest result");
