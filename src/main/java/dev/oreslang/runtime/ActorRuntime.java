@@ -7515,10 +7515,18 @@ public final class ActorRuntime implements AutoCloseable {
             if (sourceScheduler != null && !sourceSchedulerFullyQuiescent) {
                 if (!sourceSchedulerCloseRequested) {
                     sourceSchedulerCloseRequested = true;
-                    sourceScheduler.requestClose(() -> {
+                    sourceScheduler.requestCloseWithOutcome(retirementFailure -> {
                         synchronized (lifecycleLock) {
-                            sourceSchedulerFullyQuiescent = true;
-                            if (stopped.get()) finalizeStopLocked();
+                            if (retirementFailure != null) {
+                                // A failed post-carrier cleanup does not prove
+                                // that all guest-owned resources are retired.
+                                // Preserve the backing native heap rather than
+                                // publishing an unsafe actor.done completion.
+                                ref.terminationCause.compareAndSet(null, retirementFailure);
+                            } else {
+                                sourceSchedulerFullyQuiescent = true;
+                                if (stopped.get()) finalizeStopLocked();
+                            }
                             lifecycleLock.notifyAll();
                         }
                     });
