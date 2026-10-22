@@ -6271,6 +6271,10 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException(
                     "channel capability is execution-domain local and cannot cross actor mailboxes");
         }
+        if (value instanceof OresKeyedMap<?, ?>) {
+            throw new IllegalArgumentException(
+                    "typed guest Map transport is disabled until actor-owned storage, quotas and isolation are verified");
+        }
         if (value instanceof HttpResponseDraft) {
             throw new SecurityException(
                     "HTTP response drafts are single-use, request-scoped capabilities; "
