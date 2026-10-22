@@ -86,7 +86,9 @@ public final class RecoveryHandlerChain<T> {
      * or Java stack growth is used. A distinct one-shot continuation is minted
      * for each visited handler, invalidated even when its handler throws.
      */
-    public Outcome<T> dispatch(FailureKind kind, Throwable failure) {
+    // Package-private: source execution must enter via a future trusted,
+    // compiler-owned guest-effect admission bridge, not a guest/FFI method.
+    Outcome<T> dispatch(FailureKind kind, Throwable failure) {
         Objects.requireNonNull(kind, "kind");
         Objects.requireNonNull(failure, "failure");
         final int mask = switch (kind) {
@@ -139,19 +141,29 @@ public final class RecoveryHandlerChain<T> {
      * Bounds also prevent hostile cyclic or huge cause graphs from becoming
      * an unbounded preflight denial-of-service.
      */
+    private static boolean isTerminal(Throwable failure) {
+        return failure instanceof Error
+                || failure instanceof CancellationException
+                || failure instanceof InterruptedException
+                || failure instanceof RejectedExecutionException
+                || failure instanceof TimeoutException
+                || failure instanceof SecurityException;
+    }
+
     private static boolean containsTerminalControl(Throwable failure) {
+        // Most guest failures are ordinary leaves. Avoid allocating graph-walk
+        // containers on this common exceptional path.
+        if (isTerminal(failure)) return true;
+        if (failure.getCause() == null && failure.getSuppressed().length == 0) {
+            return false;
+        }
         ArrayDeque<Throwable> pending = new ArrayDeque<>();
         Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
         pending.add(failure);
         while (!pending.isEmpty()) {
             Throwable current = pending.removeFirst();
             if (!seen.add(current) || seen.size() > MAX_FAILURE_GRAPH_NODES) return true;
-            if (current instanceof Error
-                    || current instanceof CancellationException
-                    || current instanceof InterruptedException
-                    || current instanceof RejectedExecutionException
-                    || current instanceof TimeoutException
-                    || current instanceof SecurityException) return true;
+            if (isTerminal(current)) return true;
             Throwable cause = current.getCause();
             if (cause != null) {
                 if (pending.size() + seen.size() >= MAX_FAILURE_GRAPH_NODES) return true;
