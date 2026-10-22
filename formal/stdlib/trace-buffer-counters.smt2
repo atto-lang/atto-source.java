@@ -86,7 +86,9 @@
 (pop 1)
 
 ; Negative controls: a <= admission test erroneously admits at full
-; capacity; an unguarded dropped++ overflows at the saturation boundary.
+; capacity; an unguarded dropped++ exceeds the declared saturation cap.
+; Although it breaches the 2^31-1 application limit, it does NOT overflow
+; the model's 64-bit signed integer representation at this boundary.
 (push 1)
 (assert (and Inv Valid (= count cap)
   (and Valid (bvsle count cap))))
