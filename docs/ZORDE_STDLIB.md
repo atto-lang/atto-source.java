@@ -267,6 +267,14 @@ names in one import, duplicate local imported names, names that shadow local
 schema exports, traversal-style paths and source-unit self-imports. The
 legacy source-only staging method continues to reject all imports.
 
+Source staging now enforces an explicit budget of 128 named type imports
+per compilation unit, with at most 32 imported type names from any
+individual target unit, before attempting a closed-world link. Unit
+identities and imported paths use the same canonical segment grammar:
+empty segments, dot-dot traversal, trailing separators and ambiguous
+normalization are rejected. The strict import dialect uses dotted
+unit IDs rather than filesystem paths.
+
 The linker method \`verifyParsedTypeImportsForAnalysis\` compares **exactly**
 the imported unit names from the source AST with the independently pinned
 dependency map; an edge may not be added, removed, or redirected simply by
