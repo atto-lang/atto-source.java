@@ -282,4 +282,38 @@ final class CleanupAwareTaskTest {
             assertFalse(producer.isCancelled());
         }
     }
+
+    @Test void endlesslyCooperatingCleanupIsQuarantinedAfterFiniteBudget()
+            throws Exception {
+        OresFuture<Integer> producer = new OresFuture<>();
+        CountDownLatch started = new CountDownLatch(1);
+        AtomicInteger cleanupTurns = new AtomicInteger();
+        AtomicInteger releaseReceipts = new AtomicInteger();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> task = scheduler.start(
+                    new OresScheduler.CleanupAwareTask<Integer>() {
+                        private boolean initial = true;
+                        @Override public OresScheduler.Step<Integer> resume(
+                                OresScheduler.Resume r) {
+                            if (initial) {
+                                initial = false;
+                                started.countDown();
+                                return OresScheduler.await(producer);
+                            }
+                            cleanupTurns.incrementAndGet();
+                            return OresScheduler.cooperate();
+                        }
+                    }, releaseReceipts::incrementAndGet);
+            assertTrue(started.await(4, TimeUnit.SECONDS));
+            assertTrue(task.cancel(false));
+            var failed = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> task.get(12, TimeUnit.SECONDS));
+            assertInstanceOf(OresScheduler.CleanupIncompleteError.class, failed.getCause());
+            assertTrue(scheduler.hasIncompleteCleanup());
+            assertEquals(0, releaseReceipts.get(),
+                    "a runaway defer cannot produce a safe reclamation receipt");
+            assertTrue(cleanupTurns.get() > 0);
+            assertFalse(producer.isCancelled());
+        }
+    }
 }
