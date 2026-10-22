@@ -39,6 +39,80 @@ public final class TaskOwnedLockLedgerTest {
     }
 
     @Test
+    void queuedAsyncLockRequestIsCancelledAtTaskQuiescence() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresMutex.Shared<int[]> mutex = OresMutex.shared(new int[] {12});
+            var holder = mutex.tryLock().orElseThrow();
+            AtomicReference<java.util.concurrent.CompletableFuture<OresMutex.Guard<int[]>>>
+                    pending = new AtomicReference<>();
+            TaskHandle<Void> task = scheduler.startTracked(resume -> {
+                pending.set(mutex.lockAsync());
+                assertFalse(pending.get().isDone());
+                return OresScheduler.done(null); // no explicit cancel/defer
+            });
+            try {
+                assertEquals(new TaskHandle.Success<Void>(null),
+                        task.getDone().get(3, TimeUnit.SECONDS));
+                assertNotNull(pending.get());
+                assertTrue(pending.get().isCancelled(),
+                        "Task exited but its queued lock request survived");
+            } finally {
+                holder.release();
+            }
+            var subsequent = mutex.tryLock().orElseThrow();
+            subsequent.release();
+            assertFalse(mutex.isPoisoned(),
+                    "a never-granted waiter must not poison shared state");
+        }
+    }
+
+    @Test
+    void asyncHandoffRegistersGrantWithOriginatingTaskNotReleasingHostThread()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresMutex.Shared<int[]> mutex = OresMutex.shared(new int[]{3});
+            var hostGuard = mutex.tryLock().orElseThrow();
+            CountDownLatch requested = new CountDownLatch(1);
+            CountDownLatch allowTaskToObserve = new CountDownLatch(1);
+            AtomicReference<java.util.concurrent.CompletableFuture<OresMutex.Guard<int[]>>>
+                    pending = new AtomicReference<>();
+            TaskHandle<Integer> task = scheduler.startTracked(resume -> {
+                pending.set(mutex.lockAsync());
+                requested.countDown();
+                try {
+                    if (!allowTaskToObserve.await(3, TimeUnit.SECONDS))
+                        throw new IllegalStateException("handoff barrier exceeded");
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(error);
+                }
+                var granted = pending.get().getNow(null);
+                assertNotNull(granted, "host release did not publish a guard");
+                try {
+                    granted.value()[0] = 8;
+                    return OresScheduler.done(granted.value()[0]);
+                } finally {
+                    granted.release();
+                }
+            });
+            try {
+                assertTrue(requested.await(3, TimeUnit.SECONDS));
+                assertFalse(pending.get().isDone());
+                hostGuard.release(); // handoff is delivered on this host thread
+                assertTrue(pending.get().isDone());
+            } finally {
+                allowTaskToObserve.countDown();
+            }
+            assertEquals(new TaskHandle.Success<>(8),
+                    task.getDone().get(3, TimeUnit.SECONDS));
+            assertFalse(mutex.isPoisoned());
+            var check = mutex.tryLock().orElseThrow();
+            assertEquals(8, check.value()[0]);
+            check.release();
+        }
+    }
+
+    @Test
     void unreleasedSharedGuardIsRevokedAndPoisonedBeforeTaskDone() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             OresMutex.Shared<int[]> mutex = OresMutex.shared(new int[] {0});
