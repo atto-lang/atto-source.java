@@ -78,6 +78,32 @@ public final class RecordFrontendSmoke {
                 "equal-shaped AST identity regression setup");
         deniedState(() -> AggregateConstructionPlan.Checked.requireAdmitted(secondParse, equalButForeign),
                 "structurally identical reparse may not inherit approval");
+        // A different compilation-unit wrapper can reuse the SAME inner AST
+        // object. Equality and object identity of the spread are insufficient:
+        // executable authority must also require an exact-program proof.
+        Ast.Program graftedProgram = new Ast.Program(
+                typedSpread.program().namespace(),
+                typedSpread.program().imports(),
+                typedSpread.program().modules());
+        check(graftedProgram != typedSpread.program()
+                        && aggregateBinding(graftedProgram, "copy") == exactSpread,
+                "cross-unit AST graft regression setup");
+        deniedState(() -> AggregateConstructionPlan.Checked.requireAdmitted(
+                        graftedProgram, exactSpread),
+                "approved spread AST must not carry authority to another program");
+        deniedState(() -> OwnershipChecker.check(graftedProgram),
+                "independent ownership pass cannot import the original program's type proof");
+        TypeChecker.TypeCheckResult independentlyChecked =
+                TypeChecker.checkTypesWithDiagnostics(graftedProgram);
+        Ast.ObjectExpr independentlyTypedSpread =
+                aggregateBinding(independentlyChecked.program(), "copy");
+        OwnershipChecker.check(independentlyChecked.program(),
+                independentlyChecked.shortInferredAliases());
+        check(AggregateConstructionPlan.Checked.requireAdmitted(
+                        independentlyChecked.program(), independentlyTypedSpread)
+                        .resolvedFields().containsKey("y"),
+                "new compilation unit succeeds only after its own full two-pass checks");
+
 
         // An ownership failure in a separate callable must prevent approval
         // of earlier successfully checked aggregates in the same program.
