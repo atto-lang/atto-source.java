@@ -664,6 +664,48 @@ final class ActorMessageScratchTest {
 
     @Test
     @Timeout(25)
+    void actorStopNeverWaitsForBlockedScopedTaskFutureSubscriber() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            OresFuture<Integer> producer = new OresFuture<>();
+            CountDownLatch waiting = new CountDownLatch(1);
+            CountDownLatch subscriberEntered = new CountDownLatch(1);
+            CountDownLatch releaseSubscriber = new CountDownLatch(1);
+            var actor = runtime.<Integer>spawnSharedTrusted(ctx -> (message, turn) -> {
+                TaskScope scope = runtime.newActorTaskScope();
+                var child = scope.startTask(resume -> {
+                    waiting.countDown();
+                    return OresScheduler.await(producer);
+                });
+                child.result().whenCompleteRuntime((value, failure) -> {
+                    subscriberEntered.countDown();
+                    try {
+                        releaseSubscriber.await(10, TimeUnit.SECONDS);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                });
+            });
+            Thread stopThread = new Thread(actor::stop, "scoped-actor-stop-probe");
+            try {
+                actor.send(1);
+                assertTrue(waiting.await(8, TimeUnit.SECONDS));
+                stopThread.start();
+                stopThread.join(1000);
+                assertFalse(stopThread.isAlive(),
+                        "actor.stop must return even if a child Future subscriber blocks");
+                assertTrue(subscriberEntered.await(5, TimeUnit.SECONDS));
+            } finally {
+                releaseSubscriber.countDown();
+                if (stopThread.isAlive()) stopThread.join(5000);
+            }
+            assertTrue(actor.awaitTermination(8, TimeUnit.SECONDS));
+            assertEquals(0L, runtime.actorMemoryBytes());
+            assertFalse(producer.isDone());
+        }
+    }
+
+    @Test
+    @Timeout(25)
     void actorStopCancelsSuspendedTaskScopeChildWithoutCancellingSharedProducer()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
