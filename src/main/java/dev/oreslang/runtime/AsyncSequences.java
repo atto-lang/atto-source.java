@@ -70,7 +70,7 @@ public final class AsyncSequences {
 
         @Override
         public OresFuture<Optional<T>> nextAsync() {
-            final OresFuture<T> read;
+            final AtomicReference<OresFuture<T>> readRef = new AtomicReference<>();
             final OresFuture<Optional<T>> result;
             synchronized (lock) {
                 if (terminalFailure != null) {
@@ -82,15 +82,31 @@ public final class AsyncSequences {
                             "concurrent nextAsync on a single Stream cursor"));
                 }
 
-                // ChannelRuntime arbitrates the read before the callback is
-                // installed; cancellations that win before commit cannot
-                // consume a phantom item. The completion listener runs outside
-                // the channel coordinator's critical section.
-                read = channel.readAsync();
-                result = new OresFuture<>(() -> read.cancel(false));
+                // Reserve the single-reader slot BEFORE touching the channel.
+                // Channel callbacks can notify other operations synchronously;
+                // never run channel selection under our own lifecycle monitor.
+                // Cancellation in the short pre-registration gap is reconciled
+                // as soon as the underlying read is available.
+                result = new OresFuture<>(() -> {
+                    OresFuture<T> active = readRef.get();
+                    if (active != null) active.cancel(false);
+                });
                 pendingResult = result;
             }
 
+            if (result.isCancelled()) return result;
+            final OresFuture<T> read;
+            try {
+                read = channel.readAsync();
+            } catch (RuntimeException | Error failure) {
+                synchronized (lock) {
+                    if (pendingResult == result) pendingResult = null;
+                }
+                result.failFromRuntime(failure);
+                return result;
+            }
+            readRef.set(read);
+            if (result.isCancelled()) read.cancel(false);
             read.whenCompleteRuntime((value, failure) -> {
                 synchronized (lock) {
                     if (pendingResult == result) pendingResult = null;
