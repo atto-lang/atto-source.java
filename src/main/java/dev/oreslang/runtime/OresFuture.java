@@ -275,9 +275,22 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
                 }
 
                 Throwable terminalFailure = unwrap(failure);
-                boolean cancelled = stage instanceof Future<?> hostFuture
-                        ? hostFuture.isCancelled()
-                        : terminalFailure instanceof CancellationException;
+                final boolean cancelled;
+                try {
+                    // A host may convey cancellation through the terminal
+                    // error even when its Future.isCancelled() flag is false.
+                    // Conversely, an inconsistent host may throw from its
+                    // cancellation probe. Neither may strand this adapter.
+                    cancelled = terminalFailure instanceof CancellationException
+                            || (stage instanceof Future<?> hostFuture
+                                    && hostFuture.isCancelled());
+                } catch (Throwable observationFailure) {
+                    if (observationFailure instanceof VirtualMachineError fatal) throw fatal;
+                    if (observationFailure instanceof ThreadDeath fatal) throw fatal;
+                    if (observationFailure instanceof LinkageError fatal) throw fatal;
+                    result.failFromRuntime(unwrap(observationFailure));
+                    return;
+                }
 
                 if (cancelled) {
                     result.cancel(false);
