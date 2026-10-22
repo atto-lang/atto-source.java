@@ -186,6 +186,49 @@ final class RuntimePermissionsTest {
         assertFalse(permissions.allows(RuntimePermissions.Permission.WRITE, escape.resolve("new.txt").toString()));
     }
 
+    @Test
+    void strictFilesystemAdmissionIsLexicalScopedAndDenyFirst() throws Exception {
+        Path root = Files.createTempDirectory("ores-strict-permission-")
+                .toAbsolutePath().normalize();
+        Path blocked = root.resolve("blocked").normalize();
+        RuntimePermissions permissions = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.READ, root.toString())
+                .withDenied(RuntimePermissions.Permission.READ, blocked.toString());
+
+        Path child = root.resolve("nested").resolve("file.txt").normalize();
+        assertEquals(
+                child.toString(),
+                permissions.requireStrictPath(
+                        RuntimePermissions.Permission.READ,
+                        child.toString(),
+                        "fs.read_text_async"));
+
+        assertThrows(
+                SecurityException.class,
+                () -> permissions.requireStrictPath(
+                        RuntimePermissions.Permission.READ,
+                        blocked.resolve("secret.txt").toString(),
+                        "fs.read_text_async"));
+        assertThrows(
+                SecurityException.class,
+                () -> permissions.requireStrictPath(
+                        RuntimePermissions.Permission.READ,
+                        root.resolve("..").resolve("outside.txt").toString(),
+                        "fs.read_text_async"));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> permissions.requireStrictPath(
+                        RuntimePermissions.Permission.NET,
+                        root.toString(),
+                        "network.connect_async"));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> permissions.requireStrictPath(
+                        RuntimePermissions.Permission.READ,
+                        " ",
+                        "fs.read_text_async"));
+    }
+
     private static String escape(Path path) {
         return path.toString().replace("\\", "\\\\").replace("\"", "\\\"");
     }
