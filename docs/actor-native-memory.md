@@ -276,6 +276,29 @@ capacity allocates transactionally and leaves the previous value untouched if
 the actor quota cannot satisfy it. General lifetime-based reclamation of
 variable-size payloads remains unfinished.
 
+## Native async frame spill slots and deterministic collection cleanup
+
+A GraalVM actor `ActorNativeArena.TaskFrame` can now reserve a fixed register
+bank with `configureSpillSlots(count)` **before** its initial resume. It uses
+tagged native slots from the owning actor arena rather than a Java `Object[]`.
+`spill(index, value)` and `restore(index)` require an actively RUNNING
+task frame and enforce the same native object provenance/owner checks as
+actor field storage. Spill contents survive `AWAIT` and `COOPERATE` as
+actor-owned bytes and may be read only after the correct native ticket resumes
+the frame. `done()` and `failed()` clear the register slots, retiring their
+native object reference roots deterministically even when a task fails while
+suspended. The bank has a bounded one-time size (1–1024); no bank is created
+for a task unless requested. This API is a compiler-lowering target, **not**
+evidence that all `SourceTask` callback closures, lexical environments or
+program counters have been lowered yet.
+
+`NativeList.clear()` now traverses the arena's native list chunks once and
+clears each occupied tagged slot exactly once. This prevents repeated
+head-to-index traversal from yielding quadratic cleanup time for long actor
+lists. Native reference roots are released while the list's chunk chain stays
+available for subsequent append reuse; this change does not reclaim the
+actor's slab commitment during its lifetime.
+
 ## Remaining work before strict no-managed-allocation admission
 
 This patch does **not** make the Java evaluator allocation-free. It still uses
