@@ -4246,8 +4246,13 @@ public final class TypeChecker {
                 return Record.struct(members);
             }
 
-            Map<String, Type> members = new LinkedHashMap<>();
-            for (Ast.ObjectField field : object.fields()) {
+            // Compiler-generated, source-ordered static construction recipe.
+            // OwnershipChecker separately verifies each spread's source
+            // lifetime/copy authority before interpreter or code generation.
+            AggregateConstructionPlan.Builder plan =
+                    new AggregateConstructionPlan.Builder(object);
+            for (int position = 0; position < object.fields().size(); position++) {
+                Ast.ObjectField field = object.fields().get(position);
                 if (field.spread()) {
                     if (field.value() instanceof Ast.NameExpr sourceName) {
                         Env.Binding owner = env.lookup(sourceName.name());
@@ -4257,48 +4262,16 @@ public final class TypeChecker {
                                             + sourceName.name() + "'");
                         }
                     }
-                    Type source = typeOf(field.value(), env, generics, self);
-                    if (!(source instanceof Record row)
-                            || row.kind() == AggregateKind.CONTRACT) {
-                        throw new IllegalArgumentException(
-                                "aggregate spread requires an owned, closed struct or record value");
-                    }
-                    // First executable slice: only immutable, value-copyable
-                    // scalar fields. Reject nested aggregates, pointers,
-                    // capabilities and all unknown/generic/borrowed fields.
-                    for (Map.Entry<String, Type> item : row.members().entrySet()) {
-                        Type itemType = item.getValue();
-                        if (itemType != Primitive.INT && itemType != Primitive.FLOAT
-                                && itemType != Primitive.STRING && itemType != Primitive.BOOL) {
-                            throw new IllegalArgumentException(
-                                    "aggregate spread scalar-only stage rejects field '" + item.getKey() + "'");
-                        }
-                        members.put(item.getKey(), itemType);
-                    }
-                    continue;
+                    plan.addSpread(position, typeOf(field.value(), env, generics, self));
+                } else {
+                    Type fieldType = typeOf(field.value(), env, generics, self);
+                    plan.addNamed(position, field.name(),
+                            object.inferredFieldTypes()
+                                    ? widenCollectionElement(fieldType)
+                                    : fieldType);
                 }
-                Type exactValueType = typeOf(field.value(), env, generics, self);
-                Type fieldType = object.inferredFieldTypes()
-                        ? widenCollectionElement(exactValueType)
-                        : exactValueType;
-                // All fields in a spreading constructor must be plain Copy
-                // scalars, not merely the fields imported from its operands.
-                // Otherwise a later override could discard an owned resource
-                // before its deterministic drop/rollback plan is implemented.
-                if (hasAggregateSpread
-                        && fieldType != Primitive.INT && fieldType != Primitive.FLOAT
-                        && fieldType != Primitive.STRING && fieldType != Primitive.BOOL) {
-                    throw new IllegalArgumentException(
-                            "aggregate spread scalar-only stage rejects initializer field '"
-                                    + field.name() + "'");
-                }
-                // The AST has already rejected duplicate explicitly written
-                // fields; a named field after a spread overrides it.
-                members.put(field.name(), fieldType);
             }
-            if (object.structuralRecord()) return new Record(members, true, AggregateKind.RECORD);
-            if (object.inferredStruct()) return Record.struct(members);
-            throw new IllegalArgumentException("unknown anonymous aggregate kind " + object.kind());
+            return plan.finish().resultType();
         }
         if (expr instanceof Ast.LambdaExpr lambda) {
             boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
