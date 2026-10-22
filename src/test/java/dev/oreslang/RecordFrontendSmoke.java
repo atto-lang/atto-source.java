@@ -17,20 +17,28 @@ public final class RecordFrontendSmoke {
     private RecordFrontendSmoke() { }
 
     public static void main(String[] args) {
-        // Parser acceptance does not imply semantic admission. Test both
-        // independent checkers so bypassing one cannot silently accept an
-        // aggregate spread before field-wise ownership/lowering is proved.
-        Ast.Program stageOneSpread = Parser.parse("""
-                fnc blocked(): int {
+        // Closed scalar spreads now pass the actual front-end chain.
+        // Non-scalar or unowned sources still fail independently at the type
+        // and ownership gates. Guest execution is a separate release gate.
+        accepted("""
+                fnc copy_scalars(): int {
                     const base = infer struct{x: 1};
                     const next = infer struct{...base, y: 2};
-                    return next.x;
+                    const row = record{...next, x: 42};
+                    return row.x;
                 }
                 """);
-        denied(() -> TypeChecker.check(stageOneSpread),
-                "unimplemented spread shape must fail closed");
-        denied(() -> OwnershipChecker.check(stageOneSpread),
-                "unimplemented spread ownership must fail closed");
+        Ast.Program nestedSpread = Parser.parse("""
+                fnc blocked(): int {
+                    const base = record{nested: record{x: 1}};
+                    const next = record{...base, y: 2};
+                    return next.y;
+                }
+                """);
+        denied(() -> TypeChecker.check(nestedSpread),
+                "non-scalar spread shape must fail closed");
+        denied(() -> OwnershipChecker.check(nestedSpread),
+                "non-scalar spread ownership must fail closed");
         accepted("""
                 fnc read(): string {
                     const Person first = infer record{name: "Ada", age: 37};
