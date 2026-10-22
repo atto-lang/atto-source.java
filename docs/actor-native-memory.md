@@ -398,3 +398,49 @@ quiescence of source Task descendants are still outstanding. Parent issue
 blocks claims of general async-borrow safety. This implementation adds neither
 an actor-local tracing GC nor a new Graal isolate; the JDK 21 JNI allocation
 provider remains unchanged.
+
+## Nested lexical scratch scopes and physical finalization (draft #1856)
+
+Actor-message `ActorMessageScratch` has an additional **LIFO lexical scope**
+substrate for temporary memory reclaimed *before* the logical handler ends:
+`enterScope()` creates a checked `Scope`, and its `close()` scrubs and
+rewinds the native bump cursor to the entry mark. Outer-scope values remain
+valid. A scope token is revoked at close, so old `Slice` views cannot revive
+when a subsequent sibling scope allocates at the same physical offset. The
+message-root token is **reused across messages** rather than constructing a
+new managed token per turn; stale root slices still fail the issued-epoch
+check. Nested scopes still construct Java facade objects pending typed
+compiler/Native Image lowering; no strict no-JVM-GC claim follows.
+
+Scopes must close in reverse nesting order and may not close with any
+outstanding scratch read borrow (currently a conservative, whole-message
+borrow count). `finishMessage()` rejects any still-open nested scopes.
+Wrong-thread/wrong-actor closure fails without changing the allocation
+cursor or poisoning legitimate owner views. This API is *not* a public
+source-level lifetime escape hatch: the compiler must still prove that
+scratch allocations are not captured by detached Tasks, retained actor
+state, returned by reference, sent, or shared. `await` and carrier
+migration do not themselves close a logical message or lexical scope.
+
+**Parent #1822 reconciliation:** when physical actor finalization is
+attempted, the actor runtime checks the native arena's live region read
+leases *before* detaching the source scheduler or draining resources. If
+any remain, it records a terminal diagnostic and **does not mark the actor
+physically finalized**. `ActorNativeArena.close()` independently refuses
+to release borrowed regions. During other physical-release work,
+`finalizing` fences reentrant lifecycle callbacks and `finalized`
+is only published after native arena release and actor-budget cleanup.
+A cancellation or lost compiler drop that strands a lease can therefore
+still strand actor retirement; do **not** reinterpret this guard as
+complete cleanup. It is fail-closed safety, not a full liveness guarantee
+or a replacement for [source Task physical-quiescence #1566](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/1566).
+
+New tests cover nested/sibling scope ABA, preservation of parent and
+persistent state, multi-block rewind, exception-safe closure, out-of-order
+scope denial, outstanding read-borrow pins, wrong physical-owner close,
+and the preflight's lease-detection lifecycle. These cases are *committed
+test source only*, not demonstrated passing on an exact-head Graal JVM
+or Native Image runtime. The source-org Actions runner still reports
+zero-step jobs. The initial compiler-owned deterministic `drop` path
+must be implemented and tested before using this allocator for
+ordinary source-level object graphs.
