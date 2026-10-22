@@ -23,6 +23,16 @@ fn verify(root: &Path, expected: &str) -> Result<(),String> {
     if !sha40(expected) { return Err("expected source Git tree is not a 40-digit lowercase SHA".into()); }
     // canonicalize() follows a symlink: inspect the caller-provided checkout
     // root first rather than silently accepting a redirected checkout.
+    // Check each literal path component before canonicalize. Checking only
+    // symlink_metadata(root) can follow a final symlink if root ends in '/'.
+    let mut literal = std::path::PathBuf::new();
+    for component in root.components() {
+        literal.push(component.as_os_str());
+        if fs::symlink_metadata(&literal)
+            .map_err(|_| "Git checkout path unavailable")?.file_type().is_symlink() {
+            return Err("carrier checkout path contains a symlink".into());
+        }
+    }
     let root_type = fs::symlink_metadata(root)
         .map_err(|_| "Git checkout path unavailable")?.file_type();
     if !root_type.is_dir() || root_type.is_symlink() {
@@ -164,6 +174,10 @@ mod tests {
         symlink(&checkout, &linked_checkout).unwrap();
         assert!(verify(&linked_checkout, &expected).is_err(),
             "a symlinked checkout root must never be admitted");
+        let linked_with_slash = std::path::PathBuf::from(
+            format!("{}/", linked_checkout.display()));
+        assert!(verify(&linked_with_slash, &expected).is_err(),
+            "a trailing slash must not bypass checkout-root symlink denial");
 
         fs::remove_file(&input).unwrap();
         symlink(fixture.join("outside-fixture"), &input).unwrap();
