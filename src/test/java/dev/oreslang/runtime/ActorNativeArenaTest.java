@@ -558,6 +558,56 @@ final class ActorNativeArenaTest {
     }
 
     @Test
+    void foreignCompletionCarrierMayReleaseButNotReadNativeLease() throws Exception {
+        AtomicLong charged = new AtomicLong();
+        Thread owner = Thread.currentThread();
+        ActorNativeArena arena = new ActorNativeArena(128, () -> {
+            if (Thread.currentThread() != owner)
+                throw new SecurityException("native actor read belongs to owner carrier");
+        }, bytes -> {
+            charged.addAndGet(bytes);
+            return () -> charged.addAndGet(-bytes);
+        });
+
+        var region = arena.region(64);
+        region.writeLong(0, 5150L);
+        var first = region.leaseReadOnly(0, 8);
+        var second = region.leaseReadOnly(0, 8);
+        assertThrows(IllegalStateException.class, region::close);
+        assertThrows(IllegalStateException.class, arena::close);
+        assertEquals(64L, charged.get());
+
+        AtomicReference<Throwable> readFailure = new AtomicReference<>();
+        AtomicReference<Throwable> releaseFailure = new AtomicReference<>();
+        Thread foreign = new Thread(() -> {
+            try { first.readLong(0); }
+            catch (Throwable failure) { readFailure.set(failure); }
+            try {
+                first.close();
+                first.close();
+            } catch (Throwable failure) { releaseFailure.set(failure); }
+        });
+        foreign.start();
+        foreign.join(10_000);
+        assertFalse(foreign.isAlive(), "foreign completion carrier failed to drain lease");
+        assertInstanceOf(SecurityException.class, readFailure.get(),
+                "foreign carrier must not read native payload");
+        assertNull(releaseFailure.get(), "an admitted lease may release on any carrier");
+
+        assertEquals(5150L, second.readLong(0));
+        assertThrows(IllegalStateException.class, () -> region.writeLong(0, 6L),
+                "second reader must still exclude native mutation");
+        assertThrows(IllegalStateException.class, arena::close);
+        assertFalse(arena.closed());
+        second.close();
+        region.writeLong(0, 6L);
+        assertEquals(6L, region.readLong(0));
+        arena.close();
+        assertEquals(0L, charged.get());
+        assertThrows(IllegalStateException.class, () -> first.readLong(0));
+    }
+
+    @Test
     void actorTaskFramesPersistResumeAuthorityInNativeMemory() {
         AtomicLong charged = new AtomicLong();
         try (ActorNativeArena arena = arena(4096, charged)) {
