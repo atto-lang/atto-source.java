@@ -1094,7 +1094,12 @@ public final class Parser {
         boolean mutableReferent = parseReferentMutability(kind);
         Ast.TypeRef type = null;
         String name;
-        if (check(IDENT) && checkNext(EQUAL)) name = advance().lexeme();
+        boolean functionShorthand = match(FNC);
+        if (functionShorthand && (kind != Ast.BindingKind.CONST || mutableReferent)) {
+            throw error(previous(), "lambda binding shorthand requires 'const fnc'");
+        }
+        if (functionShorthand) name = consume(IDENT, "expected function binding name").lexeme();
+        else if (check(IDENT) && checkNext(EQUAL)) name = advance().lexeme();
         else {
             type = parseTypeRef();
             name = consume(IDENT, "expected binding name").lexeme();
@@ -1102,6 +1107,9 @@ public final class Parser {
         if (type != null) type = applyTypeMetadataAnnotations(type, annotations, false);
         consume(EQUAL, "module bindings require an initializer");
         Ast.Expr initializer = parseExpression();
+        if (functionShorthand && !(initializer instanceof Ast.LambdaExpr)) {
+            throw error(previous(), "'const fnc' requires a lambda initializer");
+        }
         consumeExpressionStatementTerminator(initializer, "module binding should end with ';'");
         return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer, mutableReferent);
     }
@@ -1396,6 +1404,22 @@ public final class Parser {
         return declared != null ? declared : annotated != null ? annotated : Ast.TypeRef.simple("void");
     }
 
+    // A pipe after a name-first type may be a union separator or the
+    // parameter-list terminator. The latter is followed by the slim arrow.
+    // Preserve unrestricted unions in ordinary (...) parameter declarations.
+    private Ast.TypeRef parsePipeParameterType() {
+        Ast.TypeRef first = parseTypeAtom();
+        if (!check(PIPE) || checkNext(ARROW)) return first;
+
+        List<Ast.TypeRef> options = new ArrayList<>();
+        options.add(first);
+        do {
+            consume(PIPE, "expected '|' between union parameter types");
+            options.add(parseTypeAtom());
+        } while (check(PIPE) && !checkNext(ARROW));
+        return Ast.TypeRef.union(options);
+    }
+
     private List<Ast.Param> parseDeclaredPipeParameters() {
         if (check(PIPE)) return List.of();
         List<Ast.Param> params = new ArrayList<>();
@@ -1407,13 +1431,13 @@ public final class Parser {
             if (!structural && check(IDENT) && checkNext(COLON)) {
                 String name = advance().lexeme();
                 consume(COLON, "expected ':' after compatibility parameter name");
-                Ast.TypeRef type = parseTypeRef();
+                Ast.TypeRef type = parsePipeParameterType();
                 boolean mutable = match(MUT);
                 params.add(new Ast.Param(type, name, false, mutable));
                 continue;
             }
 
-            Ast.TypeRef type = parseTypeRef();
+            Ast.TypeRef type = parsePipeParameterType();
             boolean mutable = match(MUT);
             String name = consume(IDENT, "lambda-style callable declaration parameters require canonical 'Type name'").lexeme();
             if (structural && mutable) {
@@ -2519,7 +2543,13 @@ public final class Parser {
         boolean mutableReferent = parseReferentMutability(kind);
         Ast.TypeRef type = null;
         String name;
-        if (check(IDENT) && checkNext(COLON)) {
+        boolean functionShorthand = match(FNC);
+        if (functionShorthand && (kind != Ast.BindingKind.CONST || mutableReferent)) {
+            throw error(previous(), "lambda binding shorthand requires 'const fnc'");
+        }
+        if (functionShorthand) {
+            name = consume(IDENT, "expected function binding name").lexeme();
+        } else if (check(IDENT) && checkNext(COLON)) {
             name = advance().lexeme();
             consume(COLON, "expected ':' after binding name");
             type = parseTypeRef();
@@ -2568,6 +2598,9 @@ public final class Parser {
             }
         } else {
             initializer = parseExpression();
+        }
+        if (functionShorthand && !(initializer instanceof Ast.LambdaExpr)) {
+            throw error(previous(), "'const fnc' requires a lambda initializer");
         }
         consumeExpressionStatementTerminator(initializer, "binding should end with ';'");
         return new Ast.BindingStmt(kind, type, name, initializer, mutableReferent, inferredTypeName);
@@ -3911,8 +3944,14 @@ public final class Parser {
                 if (check(IDENT) && (checkNext(COMMA) || checkNext(PIPE))) {
                     String name = advance().lexeme();
                     params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, false));
+                } else if (check(IDENT) && checkNext(COLON)) {
+                    String name = advance().lexeme();
+                    consume(COLON, "expected ':' after lambda parameter name");
+                    Ast.TypeRef type = parsePipeParameterType();
+                    boolean mutable = match(MUT);
+                    params.add(new Ast.Param(type, name, false, mutable));
                 } else {
-                    Ast.TypeRef type = parseTypeRef();
+                    Ast.TypeRef type = parsePipeParameterType();
                     boolean mutable = match(MUT);
                     String name = consume(IDENT, "expected lambda parameter name").lexeme();
                     params.add(new Ast.Param(type, name, false, mutable));
