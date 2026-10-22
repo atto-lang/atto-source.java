@@ -37,6 +37,21 @@ public final class TaskOwnedLeases {
     }
 
     /**
+     * Attach an actual mutex acquisition to the current tracked Task, if any.
+     * The ordinary release and abandoned-release paths are intentionally
+     * distinct: only abandonment may poison protected mutable state.
+     * A mismatched or exhausted tracked Task MUST fail closed.
+     */
+    static Lease registerIfTracked(
+            TransferableRelease ordinaryRelease,
+            TransferableRelease abandonedRelease) {
+        Objects.requireNonNull(ordinaryRelease, "ordinaryRelease");
+        Objects.requireNonNull(abandonedRelease, "abandonedRelease");
+        if (!TaskHandle.isCurrentTrackedTaskTurn()) return null;
+        return TaskHandle.registerTransferableLease(ordinaryRelease, abandonedRelease);
+    }
+
+    /**
      * Register a logical lease with the CURRENT tracked Task. Compiler/native
      * lock lowering may call this only after checking actual token ownership
      * and cross-thread release safety. Do NOT pass java.util.concurrent.Lock::unlock.
@@ -73,12 +88,17 @@ public final class TaskOwnedLeases {
         private boolean retired;
 
         Lease register(TransferableRelease token) {
+            return register(token, token);
+        }
+
+        Lease register(TransferableRelease ordinaryRelease,
+                       TransferableRelease abandonedRelease) {
             synchronized (lock) {
                 if (retired) throw new IllegalStateException(
                         "task lease registration after retirement");
                 if (stack.size() == MAX_LEASES_PER_TASK) throw new IllegalStateException(
                         "task lease quota exceeded");
-                Entry entry = new Entry(this, token);
+                Entry entry = new Entry(this, ordinaryRelease, abandonedRelease);
                 stack.addLast(entry);
                 return entry;
             }
@@ -100,7 +120,7 @@ public final class TaskOwnedLeases {
             // Do not invoke any release while holding the registry lock.
             for (Entry entry : reversed) {
                 try {
-                    entry.releaseOnce();
+                    entry.releaseOnce(true);
                 } catch (RuntimeException | Error failed) {
                     // Never abandon sibling lease releases. The host owner
                     // must treat failed cleanup as a failed quiescence proof.
@@ -112,16 +132,21 @@ public final class TaskOwnedLeases {
 
         private static final class Entry implements Lease {
             private final Registry owner;
-            private final TransferableRelease token;
+            private final TransferableRelease ordinaryRelease;
+            private final TransferableRelease abandonedRelease;
             private final AtomicBoolean released = new AtomicBoolean();
 
-            Entry(Registry owner, TransferableRelease token) {
+            Entry(Registry owner, TransferableRelease ordinaryRelease,
+                  TransferableRelease abandonedRelease) {
                 this.owner = owner;
-                this.token = token;
+                this.ordinaryRelease = ordinaryRelease;
+                this.abandonedRelease = abandonedRelease;
             }
 
-            private void releaseOnce() {
-                if (released.compareAndSet(false, true)) token.release();
+            private void releaseOnce(boolean abandoned) {
+                if (released.compareAndSet(false, true)) {
+                    (abandoned ? abandonedRelease : ordinaryRelease).release();
+                }
             }
 
             @Override public void close() {
@@ -132,7 +157,7 @@ public final class TaskOwnedLeases {
                 // A logical lease can be released early inside its owning
                 // Task; retirement's stack entry is safely idempotent.
                 try {
-                    releaseOnce();
+                    releaseOnce(false);
                 } catch (RuntimeException | Error failed) {
                     synchronized (owner.lock) {
                         owner.earlyFailures.add(failed);
