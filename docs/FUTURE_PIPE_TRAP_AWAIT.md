@@ -5,9 +5,14 @@ remain unimplemented and unverified**. The Java runtime now has the staging
 helper `dev.oreslang.runtime.TaskPipeline.start`: one `OresScheduler.Task`
 executes deferred stages, awaiting any Future returned by a stage without
 allocating a new task for each stage. The helper returns an exposed Future
-and internally also has a scheduler completion Future; do not claim that only
-one Future allocation occurs. It does not yet create a source-visible Task,
-TaskHandle, or structured TaskScope.
+and internally also has scheduler and tracked completion Futures; do not
+claim that only one Future allocation occurs. It does not yet create a
+source-visible Task or TaskScope, although the trusted Java runtime now exposes
+`TaskPipeline.startTracked` (a TaskHandle-owned pipeline) and
+`TaskPipeline.startInScope` (a TaskScope child), with `PipelineHandle.getDone()`
+as the underlying Task's physical quiescence witness. This does **not**
+establish physical retirement of any independently scheduled FFI/child work
+which lacks a separate owned lifetime receipt.
 
 The existing Java source-language `|>` operator still eagerly injects the
 left value as the first argument of the stage call. The proposed *source-level*
@@ -114,11 +119,29 @@ A cancelled source produces a cancelled pipeline, not an ordinary failure.
 The source compiler must guarantee stage types, verified ownership transfer,
 checked effects, and no unproven borrowed value across await.
 
-Limitations: this host staging helper alone does **not** implement structured
-child-scope retirement, source `Task.pipeline` spelling, or compiler effect
-checking. The returned Future's terminal status is not by itself a physical
-actor/child quiescence witness; use the actor/task lifetime barrier before
-reclaiming arenas or other resources. Do not expose arbitrary host Stage
+`TaskPipeline.startTracked` returns a `PipelineHandle<T>` with `result()`
+and `getDone()` observations; `TaskPipeline.startInScope` admits the same
+single Task into an existing `TaskScope`. `getDone()` is a TaskHandle
+quiescence witness: it says the pipeline's own Task and its tracked descendants
+have retired. It does not prove arbitrary stage-originated native/host activity
+has stopped. Treat its `TaskOutcome` as the **internal** task's outcome and
+`result()` as the public pipeline outcome; the bridge can classify upstream
+cancellation as cancelled even though the internal task unwound with a
+failure. Do not substitute the internal outcome for the public result.
+
+The runtime also tracks active pipeline bridge-await edges by Future identity,
+rejecting both direct self-await and multi-pipeline cycles, and removes edges
+after completion/cancellation/resume. Stage implementations must not wrap the
+original borrowed input as an Owned child. Ownership tokens for independently
+shared futures and physical cancellation receipts remain a separate proof
+obligation.
+
+Limitations: this helper does **not** implement source `Task.pipeline`
+spelling, compiler lowering, checked-effect inference, or proven ownership
+transfer for arbitrary `TaskPipeline.owned` host Future wrappers. In
+particular, `TaskScope.getDone()` does not mean independently owned foreign
+work has physically stopped; before reclaiming arenas or FFI resources, also
+await that operation's quiescence receipt. Do not expose arbitrary host Stage
 lambdas to untrusted Oreslang source.
 
 ## Required executable acceptance matrix
