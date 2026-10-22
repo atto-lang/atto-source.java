@@ -99,11 +99,21 @@ public final class RecoveryHandlerChain<T> {
         // Kind and underlying host cause must both be eligible: never allow a
         // mislabeled THROW/RAISE to downgrade terminal cancellation, security
         // denial, a native/VM fatal error or an excessively complex causal graph.
-        if (mask == 0 || handlers.length == 0 || containsTerminalControl(failure)) {
+        if (mask == 0 || handlers.length == 0) {
+            return new Unhandled<>(kind, failure);
+        }
+        // Find the first eligible callback before doing a possibly expensive
+        // cause-graph preflight; a type-mismatched recovery chain must not
+        // traverse an untrusted host error graph unnecessarily.
+        int firstEligible = handlers.length - 1;
+        while (firstEligible >= 0 && (effectMasks[firstEligible] & mask) == 0) {
+            firstEligible--;
+        }
+        if (firstEligible < 0 || containsTerminalControl(failure)) {
             return new Unhandled<>(kind, failure);
         }
 
-        for (int i = handlers.length - 1; i >= 0; i--) {
+        for (int i = firstEligible; i >= 0; i--) {
             if ((effectMasks[i] & mask) == 0) continue;
             // NEVER recycle this capability for the next handler: an escaped
             // reference must not acquire authority over another handler.
