@@ -7512,58 +7512,58 @@ public final class ActorRuntime implements AutoCloseable {
             }
             finalizing = true;
             try {
-            OresScheduler scheduler = sourceScheduler;
-            sourceScheduler = null;
-            if (scheduler != null) {
-                try {
-                    scheduler.close();
-                } catch (RuntimeException ignored) {
-                    // Actor teardown remains authoritative; source scheduler
-                    // cancellation is best-effort after the actor has finalized.
+                OresScheduler scheduler = sourceScheduler;
+                sourceScheduler = null;
+                if (scheduler != null) {
+                    try {
+                        scheduler.close();
+                    } catch (RuntimeException ignored) {
+                        // Actor teardown remains authoritative; source scheduler
+                        // cancellation is best-effort after the actor has finalized.
+                    }
                 }
-            }
-            drainMailboxReservations();
-            staticSelectCursors.clear();
-            codeActorState = null;
-            Throwable terminalOutput = ref.terminationCause.get();
-            outputStream.close(terminalOutput);
-            for (ActorShardLease lease : List.copyOf(shardLeases)) {
-                lease.revokeFromActorStop();
-            }
-            shardLeases.clear();
-            for (ActorShardSnapshotLease snapshot : List.copyOf(shardSnapshotLeases)) {
-                snapshot.revokeFromActorStop();
-            }
-            shardSnapshotLeases.clear();
-            nativeArena.close();
-            if (memorySlice != null) memorySlice.close();
-            // Commit the finalization state only after physical native memory
-            // and actor-budget refunds succeed. This keeps an interrupted
-            // teardown retryable and avoids false successful termination.
-            finalized = true;
-            try {
-                actorExitHook.accept(executionDomain);
-            } catch (VirtualMachineError | ThreadDeath fatal) {
-                throw fatal;
-            } catch (Throwable ignored) {
-                // Actor termination must still complete. Runtime cleanup hooks
-                // are best-effort and retryable by the process collector.
-            }
-            unregisterActor(this);
-            if (parent != null) parent.childFinalized(this);
-            Throwable terminal = ref.terminationCause.get();
-            if (!ref.readyFuture.isDone()) {
-                // Preserve the initializer failure as the direct cause of
-                // readiness rejection. Only a graceful stop-before-ready has
-                // no underlying failure and needs a synthesized marker.
-                ref.readyFuture.failFromRuntime(
-                        terminal == null
-                                ? new ActorTerminatedException(ref.id(), kind, null)
-                                : terminal);
-            }
-            if (terminal == null) ref.doneFuture.completeFromRuntime(null);
-            else ref.doneFuture.failFromRuntime(terminal);
-            finalizedFuture.completeFromRuntime(null);
+                drainMailboxReservations();
+                staticSelectCursors.clear();
+                codeActorState = null;
+                Throwable terminalOutput = ref.terminationCause.get();
+                outputStream.close(terminalOutput);
+                for (ActorShardLease lease : List.copyOf(shardLeases)) {
+                    lease.revokeFromActorStop();
+                }
+                shardLeases.clear();
+                for (ActorShardSnapshotLease snapshot : List.copyOf(shardSnapshotLeases)) {
+                    snapshot.revokeFromActorStop();
+                }
+                shardSnapshotLeases.clear();
+                nativeArena.close();
+                if (memorySlice != null) memorySlice.close();
+                // Commit the finalization state only after physical native memory
+                // and actor-budget refunds succeed. This keeps an interrupted
+                // teardown retryable and avoids false successful termination.
+                finalized = true;
+                try {
+                    actorExitHook.accept(executionDomain);
+                } catch (VirtualMachineError | ThreadDeath fatal) {
+                    throw fatal;
+                } catch (Throwable ignored) {
+                    // Actor termination must still complete. Runtime cleanup hooks
+                    // are best-effort and retryable by the process collector.
+                }
+                unregisterActor(this);
+                if (parent != null) parent.childFinalized(this);
+                Throwable terminal = ref.terminationCause.get();
+                if (!ref.readyFuture.isDone()) {
+                    // Preserve the initializer failure as the direct cause of
+                    // readiness rejection. Only a graceful stop-before-ready has
+                    // no underlying failure and needs a synthesized marker.
+                    ref.readyFuture.failFromRuntime(
+                            terminal == null
+                                    ? new ActorTerminatedException(ref.id(), kind, null)
+                                    : terminal);
+                }
+                if (terminal == null) ref.doneFuture.completeFromRuntime(null);
+                else ref.doneFuture.failFromRuntime(terminal);
+                finalizedFuture.completeFromRuntime(null);
             } finally {
                 finalizing = false;
                 lifecycleLock.notifyAll();
