@@ -77,6 +77,9 @@ final class CompilerZordeSchemaRegistry {
         return new CompilerZordeSchemaRegistry(compilationUnitId, generation, entries);
     }
 
+    // Only code in the trusted compiler package can see the opaque seal.
+    // Neither the compilation identifier nor the SHA-256 descriptor is it.
+    Object compilationSeal() { return compilationSeal; }
     String unitId() { return unitId; }
     long generation() { return generation; }
     int size() { return schemas.size(); }
