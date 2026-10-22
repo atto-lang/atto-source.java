@@ -1,84 +1,94 @@
 # Async standard-library I/O
 
-The async APIs return native Oreslang `Future<T>` values. `await` suspends the
+Async APIs return native Oreslang `Future<T>` values. `await` suspends the
 source continuation and releases its actor/root execution carrier. Completion
-resumes through the owning scheduler; I/O workers never execute guest callbacks.
-Existing synchronous APIs remain available for compatibility.
+resumes through the owning scheduler.
 
-| API | Awaited result |
-| --- | --- |
-| `fs.read_text_async(path)` | `String` (UTF-8) |
-| `fs.exists_async(path)` | `bool` |
-| `fs.write_text_async(path, text)` | `void` |
-| `fs.append_text_async(path, text)` | `void` |
-| `fs.remove_async(path)` | `void` |
-| `fs.mkdir_all_async(path)` | `void` |
-| `network.connect_async(host, port)` | `TcpConnection` |
-| `socket.read_line_async()` | `Option<String>` (`None` at EOF) |
-| `socket.write_text_async(text)` | `void` (flushes the text) |
-| `socket.close_async()` | `void` |
-| `http.get_text_async(url)` | `String` (response body) |
-| `http.post_text_async(url, text)` | `String` (response body) |
+Filesystem async I/O is now being migrated away from the legacy worker adapter
+operation by operation. See [STRICT_FILESYSTEM_IO.md](STRICT_FILESYSTEM_IO.md)
+for the exact strict-provider contract.
 
-`File` aliases `fs`; `net` aliases `network`. Async TCP connections are local
-capabilities, not mailbox-sendable values. Await each operation before starting
-the next operation in the same direction; TCP reads and writes may run in parallel.
+| API | Awaited result | Current Java/GraalVM implementation |
+| --- | --- | --- |
+| `fs.read_text_async(path)` | `String` (UTF-8) | strict Linux `io_uring`; fail closed if unavailable |
+| `fs.exists_async(path)` | `bool` | strict Linux `io_uring`; fail closed if unavailable |
+| `fs.write_text_async(path, text)` | `void` | fail closed; completion provider pending |
+| `fs.append_text_async(path, text)` | `void` | fail closed; completion provider pending |
+| `fs.remove_async(path)` | `void` | fail closed; completion provider pending |
+| `fs.mkdir_all_async(path)` | `void` | fail closed; completion provider pending |
+| `network.connect_async(host, port)` | `TcpConnection` | legacy worker adapter |
+| `socket.read_line_async()` | `Option<String>` | legacy worker adapter |
+| `socket.write_text_async(text)` | `void` | legacy worker adapter |
+| `socket.close_async()` | `void` | legacy control adapter |
+| `http.get_text_async(url)` | `String` | legacy worker adapter |
+| `http.post_text_async(url, text)` | `String` | legacy worker adapter |
+
+`File` aliases `fs`; `net` aliases `network`. Existing synchronous
+filesystem APIs remain available for compatibility while their strict completion
+equivalents are built. They are explicitly **not** part of the strict I/O
+profile and will eventually move to the `*_blocking` suspend/non-parking
+contract rather than performing blocking work on an actor carrier.
+
+A strict read can be written as:
 
 ```ores
 pub async routine main(): void {
-  await fs.write_text_async("./message.txt", "hello");
-  val String text = await fs.read_text_async("./message.txt");
-  stdio.println(text);
+  if await fs.exists_async("./message.txt") then
+    val String text = await fs.read_text_async("./message.txt");
+    stdio.println(text);
+  end
   return;
 }
 ```
 
-Grant the same filesystem/network permissions required by synchronous calls.
-Actor-local capabilities are checked before submission. Canonical path resolution,
-resource permission checks, DNS/connect, file operations and blocking client HTTP
-work execute off the actor carrier. Only immutable argument values are captured.
-HTTP redirects remain disabled so a response cannot bypass the destination grant.
-Failures retain their cause and a bounded `native:io` boundary annotation.
+### Strict filesystem execution
 
-## Execution and lifecycle
+`fs.read_text_async` and `fs.exists_async` do not delegate to
+`AsyncNativeIo`. On Linux, one lazy bounded `io_uring` reactor per Oreslang
+context multiplexes open/read/close/cancel completion. Unsupported kernels or
+platforms fail closed rather than falling back to blocking workers.
 
-Each context owns a virtual-thread executor with a hard maximum of 128 in-flight
-standard-library operations. Submission above that bound returns a failed future;
-there is no unbounded backlog or caller-runs fallback. Socket close has 16
-separately reserved in-flight control slots, so saturated reads cannot consume
-all admission needed to close their sockets. These are executor admission
-counters, not additional actor channels. One future is created per
-operation, not one channel. Await uses the actor's existing continuation transport.
+Runtime path permission checks for these operations are lexical and
+nonblocking. The native open uses `openat2` with beneath/no-magic-link/no-symlink
+resolution, preventing a lexical permission decision from being redirected
+through a symlink. Strict reads reject malformed UTF-8.
 
-This is **non-blocking for guest execution**. The portable implementation offloads
-blocking host filesystem, TCP and HTTP client calls; it does not promise kernel
-asynchronous filesystem I/O or zero blocked OS threads. HTTP client connections
-are currently per call and closed after completion. No throughput improvement is
-claimed for tiny cached files.
+Read/exists futures support cancellation. Cancellation requests
+`IORING_OP_ASYNC_CANCEL`; native ownership is retained until physical terminal
+completion so a late callback cannot resurrect or double-settle a cancelled
+future. Context shutdown prevents new admission, cancels pending native
+operations, and closes the ring after native work drains.
 
-Cancellation of an individual I/O future is declined (`cancel` returns false):
-filesystem writes cannot safely promise rollback. Ending an actor does not undo
-an already submitted operation. Context closure stops new admission, interrupts
-workers, closes tracked sockets and settles pending futures. A filesystem syscall
-that ignores interruption may still finish after context closure. Await outstanding
-writes when their completion matters; closing a socket interrupts its pending read.
-Close TCP sockets explicitly when finished; context shutdown is a fallback.
+Async filesystem mutation methods currently return failed futures because no
+strict completion provider is implemented for them yet.
 
-The server-side HTTP API already returns futures for accept, body reads, response
-writes and graceful shutdown. Listener setup and synchronous abort/close control
-remain separate operations. Stdout/console export and stdin are not migrated by
-this change. This implementation does not add physical actor heap isolation.
+### Remaining portable worker adapter
 
-## Validation
+TCP and HTTP client operations still use the bounded `AsyncNativeIo`
+worker adapter. That adapter releases Oreslang actor carriers but may park host
+virtual/platform threads in blocking syscalls, so those operations are **not**
+yet strict kernel-nonblocking I/O. Their existing bounded admission, error
+sanitization, redirect restrictions, and socket-control reservation remain in
+force while readiness/completion transports are implemented.
 
-`AsyncNativeIoTest` covers real filesystem operations, permission denial and
-symlink escape, untrusted actor authority, HTTP GET/POST and redirect suppression,
-TCP write/read/EOF, bounded admission and context shutdown. A delayed TCP peer
-withholds its response until a second actor runs on the **same single actor
-carrier**, proving that the first actor's pending read does not occupy that carrier.
-EOF, errors and future results travel through normal continuation lowering.
+The server-side HTTP API already returns futures for accept, body reads,
+response writes and graceful shutdown, but its transport is not certified by
+the strict filesystem work. Stdout/console export and stdin are likewise
+outside this slice.
 
-Run `mvn -Dtest=AsyncNativeIoTest test` with JDK 25.
+### Validation
+
+The strict filesystem gate runs:
+
+- `tools/strict-filesystem-io-audit.py`,
+- the native bridge build under strict compiler warnings,
+- `LinuxUringFileIoProviderTest`,
+- the strict path-permission regression,
+- the Oreslang async read/exists integration regression,
+- Native Image packaging for JNI reachability validation.
+
+The broader `AsyncNativeIoTest` continues to cover the legacy TCP/HTTP adapter
+until those transports move to their own completion providers.
 
 ## Synchronous directory operations (Oreslang stack CLI)
 
