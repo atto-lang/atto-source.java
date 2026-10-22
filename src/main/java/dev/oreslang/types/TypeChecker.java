@@ -169,13 +169,50 @@ public final class TypeChecker {
     public static TypeCheckResult checkTypesWithImportedClassesWithDiagnostics(
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
             Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases) {
+        return checkTypesWithLinkedMetadataWithDiagnostics(
+                program, linkedClasses, linkedAliases, Map.of());
+    }
+
+    /** Linked classes and module contracts share the same admission pipeline. */
+    public static TypeCheckResult checkTypesWithLinkedMetadataWithDiagnostics(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
+            Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
+            Map<String, Ast.InterfaceDecl> linkedContracts) {
+        if (linkedContracts == null) {
+            throw new IllegalArgumentException("linked contracts cannot be null");
+        }
         if (linkedClasses == null || linkedAliases == null) {
             throw new IllegalArgumentException("linked public classes/aliases cannot be null");
         }
         program = AnnotationExpander.expand(program);
+        ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
         checker.collect(program);
+        for (Map.Entry<String, Ast.InterfaceDecl> entry : linkedContracts.entrySet()) {
+            String localName = entry.getKey();
+            Ast.InterfaceDecl declaration = entry.getValue();
+            if (localName == null || localName.isBlank() || declaration == null
+                    || !declaration.moduleContract()
+                    || declaration.visibility() != Ast.Visibility.PUBLIC
+                    || !declaration.parents().isEmpty()) {
+                throw new IllegalArgumentException("invalid linked module contract metadata");
+            }
+            boolean imported = program.imports().stream().anyMatch(use ->
+                    use.kind() == Ast.ImportKind.CONTRACT && !use.wildcard()
+                            && use.names().contains(declaration.name())
+                            && ImportRules.localName(use, declaration.name()).equals(localName));
+            if (!imported || checker.interfaces.containsKey(localName)
+                    || checker.ambiguousInterfaces.contains(localName)) {
+                throw new IllegalArgumentException(
+                        "linked contract was not uniquely imported: " + localName);
+            }
+            // Alias identity is local type-only metadata, never a runtime export.
+            Ast.InterfaceDecl local = new Ast.InterfaceDecl(
+                    localName, declaration.visibility(), declaration.genericParameters(),
+                    declaration.parents(), declaration.members(), true);
+            checker.interfaces.put(localName, local);
+        }
         for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
             String name = entry.getKey();
             Ast.ClassDecl declaration = entry.getValue();
@@ -456,8 +493,9 @@ public final class TypeChecker {
             }
             boolean actualRebindable = actual.bindingKind() == Ast.BindingKind.LET;
             boolean requiredRebindable = required.bindingKind() == Ast.BindingKind.LET;
-            if (actualRebindable != requiredRebindable
-                    || actual.mutableReferent() != required.mutableReferent()) {
+            if (required.bindingKind() != null
+                    && (actualRebindable != requiredRebindable
+                            || actual.mutableReferent() != required.mutableReferent())) {
                 throw new IllegalArgumentException(
                         "module '" + module.name() + "." + actual.name()
                                 + "' has binding capabilities rebindable=" + actualRebindable
