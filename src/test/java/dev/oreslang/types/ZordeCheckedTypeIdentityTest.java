@@ -76,7 +76,7 @@ final class ZordeCheckedTypeIdentityTest {
         assertFalse(isAssignable(concreteOption, Unknown.INSTANCE));
 
         Type actualRecord = new Types.Record(Map.of("proof", checked));
-        Type forgedRecord = new Record(Map.of("proof", Unknown.INSTANCE));
+        Type forgedRecord = new Types.Record(Map.of("proof", Unknown.INSTANCE));
         assertFalse(isAssignable(forgedRecord, actualRecord));
         assertFalse(isAssignable(actualRecord, forgedRecord));
         // Width subtyping of a record may discard the proof field. Do not

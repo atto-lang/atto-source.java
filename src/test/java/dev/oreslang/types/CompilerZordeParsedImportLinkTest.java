@@ -163,6 +163,61 @@ final class CompilerZordeParsedImportLinkTest {
         }
     }
 
+    @Test void hostileSourceCannotExhaustImportGraphBudgets() {
+        // Inputs can carry thousands of valid import declarations long
+        // before the eventual linker sees its separate unit-count budget.
+        StringBuilder tooMany = new StringBuilder("namespace api; ");
+        for (int i = 0; i <= CompilerZordeSchemaRegistry.MAX_NAMED_TYPE_IMPORTS; i++)
+            tooMany.append("import type Name").append(i)
+                    .append(" from \"svc.users").append(i).append("\"; ");
+        tooMany.append("@Range(min=1,max=100) type Port = int;");
+        assertThrows(IllegalArgumentException.class,
+                () -> staged(tooMany.toString(), "svc.api"));
+
+        StringBuilder crowdedTarget = new StringBuilder("namespace api; ");
+        for (int i = 0; i <= CompilerZordeSchemaRegistry.MAX_TYPES_PER_IMPORTED_UNIT; i++)
+            crowdedTarget.append("import type Name").append(i)
+                    .append(" from \"svc.users\"; ");
+        crowdedTarget.append("@Range(min=1,max=100) type Port = int;");
+        assertThrows(IllegalArgumentException.class,
+                () -> staged(crowdedTarget.toString(), "svc.api"));
+
+        // Inclusive, bounded operation must still be possible.
+        StringBuilder atLimit = new StringBuilder("namespace api; ");
+        for (int i = 0; i < CompilerZordeSchemaRegistry.MAX_TYPES_PER_IMPORTED_UNIT; i++)
+            atLimit.append("import type Allowed").append(i)
+                    .append(" from \"svc.users\"; ");
+        atLimit.append("@Range(min=1,max=100) type Port = int;");
+        assertEquals(CompilerZordeSchemaRegistry.MAX_TYPES_PER_IMPORTED_UNIT,
+                staged(atLimit.toString(), "svc.api")
+                        .parsedTypeImports().get("svc.users").size());
+    }
+
+    @Test void stagingAndLinkingRequireTheSameCanonicalUnitIdentity() {
+        for (String malicious : List.of(
+                "svc..api", "svc.", "svc/", "svc//api", "svc/../api",
+                "./svc", "svc/.api", "svc/api.", "svc\\api", "svc api")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> staged(API, malicious), malicious);
+            assertFalse(CompilerZordeLinkManifest.validUnitId(malicious),
+                    malicious);
+        }
+        for (String legitimate : List.of(
+                "svc.api", "service-1.api", "svc/api", "svc_1.dev2")) {
+            assertTrue(CompilerZordeLinkManifest.validUnitId(legitimate),
+                    legitimate);
+        }
+        assertThrows(IllegalArgumentException.class, () ->
+                staged(API.replace("\"svc.users\"", "\"svc.users.\""), "svc.api"));
+        assertThrows(IllegalArgumentException.class, () ->
+                staged(API.replace("\"svc.users\"", "\"svc..users\""), "svc.api"));
+        assertThrows(IllegalArgumentException.class, () ->
+                staged("namespace api; import type "
+                        + "A".repeat(129)
+                        + " from \"svc.users\"; "
+                        + "@Range(min=1,max=100) type Port = int;", "svc.api"));
+    }
+
     @Test void singleValidImportStillCannotInventRuntimeProofAuthority() {
         var candidates = sources(API);
         var accepted = verify(candidates, pinned(candidates));
