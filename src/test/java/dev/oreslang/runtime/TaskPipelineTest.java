@@ -379,6 +379,23 @@ final class TaskPipelineTest {
     }
 
     @Test
+    void stageCannotClaimBorrowedPipelineInputAsOwned() throws Exception {
+        OresFuture<Integer> shared = new OresFuture<>();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> output = TaskPipeline.start(scheduler, shared,
+                    List.of(value -> TaskPipeline.owned(shared)));
+            awaitWaiter(shared);
+            assertTrue(shared.completeFromRuntime(1));
+            ExecutionException error = assertThrows(ExecutionException.class,
+                    () -> output.get(5, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalArgumentException.class, error.getCause());
+            assertTrue(error.getCause().getMessage().contains("borrowed input Future"),
+                    error::toString);
+            assertFalse(shared.isCancelled());
+        }
+    }
+
+    @Test
     void rejectsNullStageAndUnboundedPipeline() {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             OresFuture<Integer> input = OresFuture.completed(1);
