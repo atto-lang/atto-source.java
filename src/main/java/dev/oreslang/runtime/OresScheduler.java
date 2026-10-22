@@ -1193,13 +1193,17 @@ public final class OresScheduler implements AutoCloseable {
         private void failTerminal(Throwable failure) {
             Objects.requireNonNull(failure, "failure");
             if (task instanceof CleanupAwareTask<?>
-                    && completion.deferredCancellationCause() != null
-                    && (failure instanceof RejectedExecutionException
-                            || failure instanceof CleanupIncompleteError)) {
+                    && (failure instanceof CleanupIncompleteError
+                        || failure instanceof ActorRuntime.UntrustedActorQuotaExceededException
+                        || (completion.deferredCancellationCause() != null
+                            && failure instanceof RejectedExecutionException))) {
+                // Quota rejection can occur BEFORE a cancellation resume even
+                // reaches SourceTask. Treat it as incomplete lexical cleanup
+                // and never issue a false heap/guard retirement receipt.
                 cleanupIncomplete.set(true);
                 if (!(failure instanceof CleanupIncompleteError)) {
                     failure = new CleanupIncompleteError(
-                            "scheduler rejected source cleanup; quarantine loans",
+                            "source cleanup denied or quota exhausted; quarantine loans",
                             failure);
                 }
             }
