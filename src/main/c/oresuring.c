@@ -79,8 +79,11 @@ struct ores_uring_ctx {
     struct io_uring_cqe *cqes;
 
     pthread_mutex_t mutex;
+    pthread_cond_t ready;
     pthread_t reactor;
     int reactor_started;
+    int reactor_ready;
+    int reactor_attach_failed;
     int closed;
     ores_io_op *ops;
 };
@@ -434,6 +437,7 @@ static void ores_free_ctx(JNIEnv *env, ores_uring_ctx *ctx) {
     ctx->ops = NULL;
     if (ctx->owner != NULL) (*env)->DeleteGlobalRef(env, ctx->owner);
     ores_unmap(ctx);
+    pthread_cond_destroy(&ctx->ready);
     pthread_mutex_destroy(&ctx->mutex);
     free(ctx);
 }
@@ -447,6 +451,11 @@ static void *ores_reactor_main(void *raw) {
     attach.name = "ores-io-uring";
     jint attached = (*ctx->jvm)->AttachCurrentThreadAsDaemon(
             ctx->jvm, (void **)&env, &attach);
+    pthread_mutex_lock(&ctx->mutex);
+    ctx->reactor_ready = 1;
+    ctx->reactor_attach_failed = attached != JNI_OK || env == NULL;
+    pthread_cond_broadcast(&ctx->ready);
+    pthread_mutex_unlock(&ctx->mutex);
     if (attached != JNI_OK || env == NULL) return NULL;
 
     for (;;) {
@@ -580,6 +589,7 @@ Java_dev_oreslang_runtime_LinuxUringFileIoProvider_nativeCreate(
     ctx->ring_fd = -1;
     ctx->root_fd = -1;
     pthread_mutex_init(&ctx->mutex, NULL);
+    pthread_cond_init(&ctx->ready, NULL);
 
     if ((*env)->GetJavaVM(env, &ctx->jvm) != JNI_OK || ctx->jvm == NULL) {
         ores_unmap(ctx);
@@ -621,6 +631,15 @@ Java_dev_oreslang_runtime_LinuxUringFileIoProvider_nativeCreate(
         return 0;
     }
     ctx->reactor_started = 1;
+    pthread_mutex_lock(&ctx->mutex);
+    while (!ctx->reactor_ready) pthread_cond_wait(&ctx->ready, &ctx->mutex);
+    int attach_failed = ctx->reactor_attach_failed;
+    pthread_mutex_unlock(&ctx->mutex);
+    if (attach_failed) {
+        pthread_join(ctx->reactor, NULL);
+        ores_free_ctx(env, ctx);
+        return 0;
+    }
     pthread_detach(ctx->reactor);
     return (jlong)(intptr_t)ctx;
 }
