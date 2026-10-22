@@ -68,9 +68,14 @@ source supervisor declarations with these hooks must **fail closed**.
   hierarchical coordinator binding runtime-local groups exactly once *within
   one coordinator*. The executor must be the existing **serial CONTROL lane**;
   it must enqueue work, not run guest hooks on producer/completion threads.
+  An internal CONTROL FIFO serializes callbacks even if an embedder supplies
+  a multi-worker executor; direct/inline or rejected execution triggers
+  fail-closed cancellation, never guest callbacks on a foreign stack.
   No actor-local OS thread pool is created for supervisors.
-- `SupervisorShutdownTree.shutdown(reason[, grace, watchdog])` — idempotent
-  barrier; the optional watchdog is **shared**, not one timer thread per child.
+- `SupervisorShutdownTree.shutdown(reason)` — idempotent, noncancellable
+  *actual* shutdown barrier. `shutdown(reason, grace, watchdog)` returns a
+  **separate** deadline-bounded observer: timeout never sets `terminated()` or
+  pretends cleanup occurred. The watchdog is shared, not one timer per child.
 
 The `onShutdown/onStopped` Java interfaces are strictly trusted embedding
 bridges for now, not the implementation of guest source hooks, actor `tear_down`,
@@ -82,13 +87,18 @@ scheduler CONTROL behavior, or native-supervisor code hot reload.
   a registered supervisor-tree coordinator **before** terminating execution
   carriers. Today `ActorRuntime.close()` still uses its legacy immediate
   stop/interrupt path and does not run these host tree hooks automatically.
-- Formalize the atomic, supervisor-owned association of groups across
-  coordinators and logical-child STOP/RESTART generation receipts. Preserve
+- Group binding is now exclusive across coordinators within one ActorRuntime;
+  validate integration against the existing ActorSupervisor hot-reload and
+  logical-child registries, including cross-coordinator transfer restrictions
+  and generation-fenced STOP/RESTART receipts. Preserve
   parentage and hot-reload turn leases; never allow STOP to be mistaken for a
   restartable panic.
 - Fully integrate source `define supervisor`, typed Failure/ShutdownReason,
   `async on_shutdown`, `async on_stopped`, checked effects, `await`
   continuations and supervisor escalation to Grandaddy/Daddy.
+- The Java runtime now refuses premature shared-resource teardown if actor
+  carriers fail to quiesce at runtime close; retry after finalization remains
+  necessary. No native loan/arena reclamation parity claim follows from this.
 - Graceful close currently revokes group event-bus/Mailman capabilities as
   soon as the group closes. Any protocol requiring transport to remain open
   until actor `done` needs a separate two-phase close and conformance tests.
