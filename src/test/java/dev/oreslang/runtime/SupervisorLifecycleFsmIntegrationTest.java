@@ -13,6 +13,91 @@ import org.junit.jupiter.api.Timeout;
 @Timeout(15)
 final class SupervisorLifecycleFsmIntegrationTest {
     @Test
+    void closeInitiationFailureRemainsVisibleAfterSuccessfulFallback() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var queued = new java.util.ArrayDeque<Runnable>();
+            var tree = new SupervisorShutdownTree(runtime, queued::addLast);
+            var root = tree.setRoot("root", runtime.createActorGroup(),
+                    new SupervisorShutdownTree.Hooks() {});
+            tree.shutdown(SupervisorShutdownTree.Reason.REQUESTED);
+            var failures = new java.util.ArrayList<Throwable>();
+            var injected = new IllegalStateException("graceful initiation failed");
+            var fallback = OresFuture.<Void>completed(null);
+            assertSame(fallback, tree.closeWorkers(root, failures,
+                    () -> { throw injected; }, () -> fallback));
+            assertEquals(java.util.List.of(injected), failures);
+            assertTrue(tree.status().hasFailures());
+            assertFalse(root.lifecycle().actorsDone(), "initiation is not retirement");
+            assertFalse(root.terminated().isDone());
+            while (!queued.isEmpty()) queued.removeFirst().run();
+            root.terminated().get(5, TimeUnit.SECONDS);
+            assertTrue(tree.status().hasFailures(), "failure remains sticky");
+            assertFalse(tree.status().allPhysicallyReclaimed());
+        }
+    }
+
+    @Test
+    void doubleCloseInitiationFailureDoesNotEmitCompletionReceipt() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var queued = new java.util.ArrayDeque<Runnable>();
+            var tree = new SupervisorShutdownTree(runtime, queued::addLast);
+            var root = tree.setRoot("root", runtime.createActorGroup(),
+                    new SupervisorShutdownTree.Hooks() {});
+            tree.shutdown(SupervisorShutdownTree.Reason.REQUESTED);
+            var failures = new java.util.ArrayList<Throwable>();
+            var first = new IllegalStateException("graceful failure");
+            var second = new IllegalStateException("fallback failure");
+            assertSame(second, assertThrows(IllegalStateException.class, () ->
+                    tree.closeWorkers(root, failures,
+                            () -> { throw first; }, () -> { throw second; })));
+            assertEquals(java.util.List.of(first, second), failures);
+            assertTrue(tree.status().hasFailures());
+            assertFalse(root.lifecycle().actorsDone());
+            assertFalse(root.terminated().isDone());
+            assertFalse(tree.status().allLogicallyStopped());
+            assertFalse(tree.status().allPhysicallyReclaimed());
+        }
+    }
+
+    private static final class ManualWatchdog
+            extends java.util.concurrent.ScheduledThreadPoolExecutor {
+        Runnable deadline;
+        ManualWatchdog() {
+            super(1);
+            setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
+        }
+        @Override public java.util.concurrent.ScheduledFuture<?> schedule(
+                Runnable command, long delay, TimeUnit unit) {
+            deadline = command;
+            return super.schedule(command, 1, TimeUnit.DAYS);
+        }
+    }
+
+    @Test
+    void timeoutCallbackObservesPublishedDeadlineStatus() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             var watchdog = new ManualWatchdog()) {
+            var queued = new java.util.ArrayDeque<Runnable>();
+            var tree = new SupervisorShutdownTree(runtime, queued::addLast);
+            var root = tree.setRoot("root", runtime.createActorGroup(),
+                    new SupervisorShutdownTree.Hooks() {});
+            var bounded = tree.shutdown(SupervisorShutdownTree.Reason.REQUESTED,
+                    java.time.Duration.ofSeconds(1), watchdog);
+            var observed = new java.util.concurrent.atomic.AtomicBoolean();
+            bounded.whenCompleteRuntime((ignored, failure) ->
+                    observed.set(failure != null && tree.status().hasDeadlineOverruns()));
+            watchdog.deadline.run();
+            assertTrue(observed.get(), "status must precede synchronous completion callbacks");
+            assertFalse(root.terminated().isDone());
+            assertFalse(tree.status().allLogicallyStopped());
+            while (!queued.isEmpty()) queued.removeFirst().run();
+            root.terminated().get(5, TimeUnit.SECONDS);
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> bounded.get(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void snapshotShowsEveryNodeQuiescingThenLogicallyStoppedNotPhysicallyReclaimed()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime();

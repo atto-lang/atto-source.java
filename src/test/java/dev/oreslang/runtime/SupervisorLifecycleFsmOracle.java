@@ -104,6 +104,7 @@ public final class SupervisorLifecycleFsmOracle {
                 new SupervisorLifecycleFsm.AfterHookFinished(e, false),
                 new SupervisorLifecycleFsm.AfterHookFinished(e, true),
                 new SupervisorLifecycleFsm.PhysicalRelease(e),
+                new SupervisorLifecycleFsm.CoordinatorFailed(e),
                 new SupervisorLifecycleFsm.DeadlineExpired(e));
     }
 

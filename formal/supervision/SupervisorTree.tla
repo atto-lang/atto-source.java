@@ -111,12 +111,11 @@ Reclaim(n) ==
     /\ UNCHANGED <<epoch, fenced, workerDone, loans, preDone, postDone,
                     timedOut>>
 
-\* No restart before prior generation's actor & resource leases retire.
+\* Reservation may precede retirement, matching the Java reducer.
+\* Only CommitRestart may advance the epoch after actor/resource retirement.
 RequestRestart(n) ==
     /\ phase[n] = "Running"
     /\ ~fenced[n]
-    /\ workerDone[n]
-    /\ loans[n] = 0
     /\ epoch[n] < MaxEpoch
     /\ phase' = [phase EXCEPT ![n] = "Restarting"]
     /\ UNCHANGED <<epoch, fenced, workerDone, loans, preDone, postDone,

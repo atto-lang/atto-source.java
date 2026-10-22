@@ -260,16 +260,18 @@ public final class SupervisorShutdownTree {
         }
         OresFuture<Void> actual = shutdown(reason);
         OresFuture<Void> bounded = new OresFuture<>(() -> false, () -> { });
+        AtomicBoolean observerSettled = new AtomicBoolean();
         final java.util.concurrent.ScheduledFuture<?> timer;
         try {
             timer = watchdog.schedule(() -> {
                 TimeoutException deadline = new TimeoutException(
                         "supervisor tree shutdown deadline expired; physical cleanup unverified");
-                if (actual.isDone()) return;
-                if (bounded.failFromRuntime(deadline)) {
-                    markDeadline();
-                    escalate(deadline);
-                }
+                if (actual.isDone() || !observerSettled.compareAndSet(false, true)) return;
+                // Publish status before completing the observer: completion
+                // callbacks may immediately inspect the tree on this thread.
+                markDeadline();
+                bounded.failFromRuntime(deadline);
+                escalate(deadline);
             }, nanos, TimeUnit.NANOSECONDS);
         } catch (RuntimeException rejected) {
             bounded.failFromRuntime(rejected);
@@ -278,6 +280,7 @@ public final class SupervisorShutdownTree {
         }
         actual.whenCompleteRuntime((ignored, failure) -> {
             timer.cancel(false);
+            if (!observerSettled.compareAndSet(false, true)) return;
             if (failure == null) bounded.completeFromRuntime(null);
             else bounded.failFromRuntime(failure);
         });
@@ -499,12 +502,13 @@ public final class SupervisorShutdownTree {
     }
 
     private void start(Supervisor node, Reason reason) {
+        final long epoch = node.lifecycle.get().epoch();
         List<Throwable> failures = new ArrayList<>();
         callShutdownHook(node, reason).whenCompleteRuntime((ignored, failure) ->
                 dispatch(() -> {
                     if (failure != null) failures.add(failure);
                     node.transition(new SupervisorLifecycleFsm.BeforeHookFinished(
-                            node.lifecycle.get().epoch(), failure != null));
+                            epoch, failure != null));
                     stopChildren(node, reason, node.children.size() - 1, failures);
                 }));
     }
@@ -516,43 +520,59 @@ public final class SupervisorShutdownTree {
             return;
         }
         Supervisor child = node.children.get(position);
+        final long epoch = node.lifecycle.get().epoch();
         child.terminated.whenCompleteRuntime((ignored, failure) ->
                 dispatch(() -> {
                     if (failure != null) failures.add(failure);
                     node.transition(new SupervisorLifecycleFsm.ChildFinished(
-                            node.lifecycle.get().epoch(), child.supervisorId, failure != null));
+                            epoch, child.supervisorId, failure != null));
                     stopChildren(node, reason, position - 1, failures);
                 }));
         start(child, Reason.PARENT_EXIT);
     }
 
-    private void stopWorkers(Supervisor node, Reason reason, List<Throwable> failures) {
-        OresFuture<Void> done;
+    /** Package-local initiation boundary for deterministic failure injection. */
+    OresFuture<Void> closeWorkers(Supervisor node, List<Throwable> failures,
+            java.util.function.Supplier<OresFuture<Void>> graceful,
+            java.util.function.Supplier<OresFuture<Void>> fallback) {
+        final long epoch = node.lifecycle.get().epoch();
         try {
-            done = node.group.gracefulCloseAsync();
+            return graceful.get();
         } catch (Exception failure) {
             failures.add(failure);
+            node.transition(new SupervisorLifecycleFsm.CoordinatorFailed(epoch));
             try {
-                done = node.group.closeAsync();
+                return fallback.get();
             } catch (Exception secondFailure) {
                 failures.add(secondFailure);
-                // A failed initiation is NOT a physical quiescence receipt.
-                node.terminated.failFromRuntime(new IllegalStateException(
-                        "failed to start managed-worker shutdown", secondFailure));
-                return;
+                throw secondFailure;
             }
+        }
+    }
+
+    private void stopWorkers(Supervisor node, Reason reason, List<Throwable> failures) {
+        final long epoch = node.lifecycle.get().epoch();
+        OresFuture<Void> done;
+        try {
+            done = closeWorkers(node, failures,
+                    node.group::gracefulCloseAsync, node.group::closeAsync);
+        } catch (Exception failure) {
+            // A failed initiation is NOT a physical quiescence receipt.
+            // Stop the coordinator so no parent treats this as ChildFinished.
+            emergencyStop(failure);
+            return;
         }
         done.whenCompleteRuntime((ignored, failure) ->
                 dispatch(() -> {
                     if (failure != null) failures.add(failure);
                     node.transition(new SupervisorLifecycleFsm.ActorsFinished(
-                            node.lifecycle.get().epoch(), failure != null));
+                            epoch, failure != null));
                     node.shutdownWorkers = List.of();
                     callStoppedHook(node, reason).whenCompleteRuntime((result, hookFailure) ->
                             dispatch(() -> {
                                 if (hookFailure != null) failures.add(hookFailure);
                                 node.transition(new SupervisorLifecycleFsm.AfterHookFinished(
-                                        node.lifecycle.get().epoch(), hookFailure != null));
+                                        epoch, hookFailure != null));
                                 if (failures.isEmpty()) {
                                     node.terminated.completeFromRuntime(null);
                                 } else {
