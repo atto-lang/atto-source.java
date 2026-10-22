@@ -1597,8 +1597,7 @@ public final class Parser {
         // function signatures, pattern targets, and new/spawn expressions.
         // The compiler cannot safely lower it until trusted schema identity
         // and transitive owned/frozen construction are implemented.
-        if (name.equals("Valid") || name.equals("Zorde.Valid")
-                || name.equals("std.zorde.Valid")) {
+        if (name.equals("Valid") || name.endsWith(".Valid")) {
             throw error(previous(),
                     "Zorde Valid<T, SchemaId> proof is compiler-only and not yet executable; "
                     + "source construction, casts, and unverified transfers are forbidden");
