@@ -152,8 +152,19 @@ public final class RecoveryHandlerChain<T> {
                     || current instanceof RejectedExecutionException
                     || current instanceof TimeoutException
                     || current instanceof SecurityException) return true;
-            if (current.getCause() != null) pending.addLast(current.getCause());
-            for (Throwable suppressed : current.getSuppressed()) pending.addLast(suppressed);
+            Throwable cause = current.getCause();
+            if (cause != null) {
+                if (pending.size() + seen.size() >= MAX_FAILURE_GRAPH_NODES) return true;
+                pending.addLast(cause);
+            }
+            Throwable[] suppressed = current.getSuppressed();
+            // Bound breadth during insertion as well as traversal. A malicious
+            // Throwable with thousands of suppressed failures may not allocate
+            // an unbounded work queue on the actor recovery path.
+            if (suppressed.length > MAX_FAILURE_GRAPH_NODES - seen.size() - pending.size()) {
+                return true;
+            }
+            for (Throwable secondary : suppressed) pending.addLast(secondary);
         }
         return false;
     }
