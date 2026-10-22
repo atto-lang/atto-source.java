@@ -137,6 +137,26 @@ public final class OresEvalRootNode extends RootNode {
         // identity map only retains call nodes already owned by this program.
         private final Map<Ast.CallExpr, Integer> optionDepthCache =
                 java.util.Collections.synchronizedMap(new IdentityHashMap<>());
+        /**
+         * Code-unit-local identities for source statement suspension sites.
+         * One AST statement receives one stable label across actor invocations.
+         * This metadata belongs to the evaluator, never to an actor carrier
+         * or a heap-owned per-resume continuation.
+         */
+        private final IdentityHashMap<Ast.Stmt, Long> sourceStatementSites =
+                new IdentityHashMap<>();
+        private long nextSourceStatementSite = 1L;
+
+        private long sourceStatementSite(Ast.Stmt statement) {
+            synchronized (sourceStatementSites) {
+                Long existing = sourceStatementSites.get(statement);
+                if (existing != null) return existing;
+                long label = nextSourceStatementSite;
+                nextSourceStatementSite = Math.addExact(label, 1L);
+                sourceStatementSites.put(statement, label);
+                return label;
+            }
+        }
 
         private int checkedOptionDepth(Ast.CallExpr call) {
             synchronized (optionDepthCache) {
@@ -1163,36 +1183,52 @@ public final class OresEvalRootNode extends RootNode {
                 return arena == null ? null : arena.taskFrame();
             }
 
+            private void enterSourceStatement(Ast.Stmt statement) {
+                if (nativeFrame != null) {
+                    nativeFrame.enterSourceSite(sourceStatementSite(statement));
+                }
+            }
+
             @Override
             public OresScheduler.Step<Object> resume(
                     OresScheduler.Resume resume)
                     throws Exception {
                 if (nativeFrame != null) {
-                    if (resume.initial()) {
-                        nativeFrame.beginInitialResume();
-                    } else {
-                        if (awaitingContinuation == null || awaitingKind == null || awaitingTicket <= 0L) {
-                            throw new IllegalStateException(
-                                    "managed source continuation lacks native suspension authority");
+                    try {
+                        if (resume.initial()) {
+                            nativeFrame.beginInitialResume();
+                        } else {
+                            if (awaitingContinuation == null
+                                    || awaitingKind == null || awaitingTicket <= 0L) {
+                                throw new IllegalStateException(
+                                        "managed source continuation lacks native suspension authority");
+                            }
+                            nativeFrame.beginResume(awaitingKind, awaitingTicket);
                         }
-                        nativeFrame.beginResume(awaitingKind, awaitingTicket);
+                    } catch (RuntimeException | Error authorityFailure) {
+                        // A stale, duplicated, or mismatched resume must not
+                        // fall through the source-level `trap` handler. Retire
+                        // this task's native spill roots before propagating the
+                        // runtime authority violation to the scheduler.
+                        nativeFrame.failed();
+                        discardManagedContinuationRoots();
+                        throw authorityFailure;
                     }
                 }
                 try {
                     return resumeSource(resume);
                 } catch (RuntimeException failure) {
-                    awaitingContinuation = null;
-                    awaitingKind = null;
-                    awaitingTicket = 0L;
-                    pendingLoopContinuation = null;
-                    pendingLoopGuardEnv = null;
-                    nextStep = null;
-                    initialBlockEnv = null;
+                    discardManagedContinuationRoots();
                     // Preserve control/authority failures even when a future
                     // or resumed continuation wraps the original exception.
                     if (function != null && function.trapped()
                             && isTrappableFailure(failure)) {
-                        if (nativeFrame != null) nativeFrame.done();
+                        // A trappable guest exception can follow a committed
+                        // suspension ticket. Normal done() intentionally
+                        // rejects AWAITING/COOPERATING; this dedicated transition
+                        // drops frame roots and revokes the ticket without
+                        // changing normal completion semantics.
+                        if (nativeFrame != null) nativeFrame.completeTrappedFailure();
                         return OresScheduler.done(new OptionValue(false, null));
                     }
                     if (nativeFrame != null) nativeFrame.failed();
@@ -1200,9 +1236,24 @@ public final class OresEvalRootNode extends RootNode {
                             function != null ? function.name() : method != null ? method.name() : "<block>",
                             resume.initial() ? "source task" : "resumed source task");
                 } catch (Error failure) {
+                    // Fatal errors also must not keep suspended Java callbacks
+                    // and initial guest arguments rooted after native failure.
+                    discardManagedContinuationRoots();
                     if (nativeFrame != null) nativeFrame.failed();
                     throw failure;
                 }
+            }
+
+            private void discardManagedContinuationRoots() {
+                awaitingContinuation = null;
+                awaitingKind = null;
+                awaitingTicket = 0L;
+                pendingLoopContinuation = null;
+                pendingLoopGuardEnv = null;
+                nextStep = null;
+                initialBlockEnv = null;
+                arguments = List.of();
+                receiver = null;
             }
 
             private OresScheduler.Step<Object> resumeSource(OresScheduler.Resume resume) {
@@ -2015,6 +2066,11 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
 
+            // Only the suspendable lowering path needs a resume label.
+            // Fast synchronous statements avoid actor-arena monitor traffic.
+            // Labels remain stable per AST statement and the native ticket
+            // differentiates repeated suspensions within that statement.
+            task.enterSourceStatement(stmt);
             runSuspendableStatement(
                     task,
                     stmt,
@@ -9841,12 +9897,17 @@ public final class OresEvalRootNode extends RootNode {
                 Object value,
                 Ast.BindingKind kind,
                 Ast.ClassDecl staticClassView) {
-            if (slots.putIfAbsent(name, new Slot(value, kind, staticClassView)) != null) {
+            // Check first: constructing Slot may reserve native arena bytes.
+            // putIfAbsent(name, new Slot(...)) eagerly allocated the rejected
+            // slot even when a binding with this name already existed.
+            if (slots.containsKey(name)) {
                 throw new IllegalArgumentException("duplicate binding " + name);
             }
+            slots.put(name, new Slot(value, kind, staticClassView));
         }
         private void reserve(String name, Ast.BindingKind kind) {
-            if (slots.putIfAbsent(name, new Slot(MISSING, kind, null)) != null) throw new IllegalArgumentException("duplicate binding " + name);
+            if (slots.containsKey(name)) throw new IllegalArgumentException("duplicate binding " + name);
+            slots.put(name, new Slot(MISSING, kind, null));
         }
         private void initialize(String name, Object value) {
             Slot slot = slots.get(name);
@@ -10033,36 +10094,43 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object value() {
-            return nativeCell == null ? value : nativeCell.get();
+            // A native cell remains allocated even while a managed-only
+            // transitional value is active. A null managed field marks the
+            // native cell authoritative; null guest values are themselves
+            // representable in the cell and never require managed fallback.
+            return nativeCell != null && value == null ? nativeCell.get() : value;
         }
 
         private void setValue(Object next) {
             if (nativeCell != null) {
-                if (nativeCell.trySet(next)) return;
-                // Preserve language semantics while a value family still lacks
-                // native lowering. Clear the old native payload first so an
-                // opaque capability handle is not retained merely because the
-                // lexical slot downgrades to managed fallback storage.
+                if (nativeCell.trySet(next)) {
+                    value = null;
+                    return;
+                }
+                // Keep the already-budgeted native cell for future supported
+                // values rather than permanently degrading this binding to
+                // managed storage. Drop the prior native reference before
+                // publishing the managed-only value.
                 if (!nativeCell.trySet(null)) {
                     throw new IllegalStateException("native lexical cell refused null retirement");
                 }
-                nativeCell = null;
                 value = next;
                 return;
             }
 
-            // Reserved bindings have not published a payload yet. Lower their
-            // first real value directly into the actor arena when possible.
-            if (value == Env.MISSING) {
-                ActorNativeArena arena = ActorRuntime.currentNativeArena();
-                if (arena != null) {
-                    try {
-                        nativeCell = arena.valueCell(next, Env.MISSING);
-                        value = null;
-                        return;
-                    } catch (IllegalArgumentException notLoweredYet) {
-                        // Explicit managed fallback pending native lowering.
-                    }
+            // An initially managed-only binding may later receive a native-
+            // representable value. This matters for long-running async/actor
+            // locals: managed fallback must never be permanently sticky.
+            ActorNativeArena arena = ActorRuntime.currentNativeArena();
+            if (arena != null) {
+                // Validate native/capability provenance even when the actual
+                // payload stays managed (e.g. an issued host capability).
+                boolean supported = arena.canStorePersistentValue(next, Env.MISSING);
+                if (supported && !(next instanceof ActorNativeArena.NativeCapability)) {
+                    ActorNativeArena.ValueCell cell = arena.valueCell(next, Env.MISSING);
+                    nativeCell = cell;
+                    value = null;
+                    return;
                 }
             }
             value = next;
