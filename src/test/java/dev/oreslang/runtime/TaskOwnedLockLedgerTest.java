@@ -12,6 +12,33 @@ import org.junit.jupiter.api.Test;
 /** The real OresScheduler TaskHandle + OresMutex synchronous guard path. */
 public final class TaskOwnedLockLedgerTest {
     @Test
+    void mutexCreatorMayRetireWhileAnotherTaskLaterAcquiresItsGuard() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            AtomicReference<OresMutex.Shared<int[]>> published = new AtomicReference<>();
+            TaskHandle<Void> creator = scheduler.startTracked(resume -> {
+                published.set(OresMutex.shared(new int[] {3}));
+                return OresScheduler.done(null);
+            });
+            assertEquals(new TaskHandle.Success<Void>(null),
+                    creator.getDone().get(3, TimeUnit.SECONDS));
+
+            // A mutex object's creator does not own a later Task's permit.
+            TaskHandle<Integer> holder = scheduler.startTracked(resume -> {
+                var guard = published.get().tryLock().orElseThrow();
+                try {
+                    guard.value()[0] += 4;
+                    return OresScheduler.done(guard.value()[0]);
+                } finally {
+                    guard.release();
+                }
+            });
+            assertEquals(new TaskHandle.Success<>(7),
+                    holder.getDone().get(3, TimeUnit.SECONDS));
+            assertFalse(published.get().isPoisoned());
+        }
+    }
+
+    @Test
     void unreleasedSharedGuardIsRevokedAndPoisonedBeforeTaskDone() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             OresMutex.Shared<int[]> mutex = OresMutex.shared(new int[] {0});
