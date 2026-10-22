@@ -7,7 +7,91 @@ import java.util.Objects;
 public final class Types {
     private Types() { }
 
-    public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, BoolLiteral, Not, Unknown { }
+    public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, BoolLiteral, Not, Unknown, CheckedScalarType { }
+
+    /**
+     * A compiler-internal type marker for a checked scalar in one *specific*
+     * schema identity. This is a preview of the type carrier, NOT minting or
+     * guest-code support for Valid<T, SchemaId>. The class and constructor are
+     * private, and must never become a user-defined Named/Record alias.
+     *
+     * Once an admitted-schema registry and owned/frozen lowering exist,
+     * compiler code may use this representation for checked constructions.
+     * Host-side descriptors and fingerprints ALONE are not authorization.
+     */
+    private static final class CheckedScalarType implements Type {
+        private final Primitive scalar;
+        private final String qualifiedSchemaName;
+        private final String schemaFingerprint;
+
+        private CheckedScalarType(
+                Primitive scalar, String qualifiedSchemaName, String schemaFingerprint) {
+            this.scalar = Objects.requireNonNull(scalar, "scalar");
+            this.qualifiedSchemaName = Objects.requireNonNull(qualifiedSchemaName, "schema identity");
+            this.schemaFingerprint = Objects.requireNonNull(schemaFingerprint, "fingerprint");
+        }
+
+        @Override public boolean equals(Object other) {
+            return other instanceof CheckedScalarType p
+                    && scalar == p.scalar
+                    && qualifiedSchemaName.equals(p.qualifiedSchemaName)
+                    && schemaFingerprint.equals(p.schemaFingerprint);
+        }
+
+        @Override public int hashCode() {
+            return Objects.hash(scalar, qualifiedSchemaName, schemaFingerprint);
+        }
+
+        @Override public String toString() {
+            return "compiler-checked<" + scalar + ", " + qualifiedSchemaName + ">";
+        }
+    }
+
+    /**
+     * Only same-package compiler components/tests can request this host
+     * reference type, never Oreslang source or imported guest metadata.
+     * Does not issue a deployable or transferable proof: schema *approval*
+     * is intentionally absent and source-level Valid remains rejected.
+     */
+    static Type checkedScalarTypeForCompilerAnalysis(
+            Primitive scalar, String schemaName,
+            RefinementRules.Descriptor descriptor, Object candidate) {
+        Objects.requireNonNull(descriptor, "descriptor");
+        if (scalar != Primitive.INT && scalar != Primitive.STRING)
+            throw new IllegalArgumentException("Zorde proof type requires int64/string scalar");
+        if (schemaName == null
+                || !schemaName.matches("[A-Za-z_][A-Za-z_0-9]*(\\.[A-Za-z_][A-Za-z_0-9]*)+"))
+            throw new IllegalArgumentException("Zorde type requires qualified schema identity");
+        if (!descriptor.base().equals(scalar == Primitive.INT ? "int" : "string"))
+            throw new IllegalArgumentException("Zorde schema base does not match scalar type");
+        if (!descriptor.nominalIdentity().isEmpty()
+                && !descriptor.nominalIdentity().equals(schemaName))
+            throw new IllegalArgumentException("Zorde nominal schema identity mismatch");
+        if (!descriptor.accepts(candidate))
+            throw new IllegalArgumentException("Zorde checked scalar did not satisfy schema");
+        return new CheckedScalarType(scalar, schemaName, descriptor.fingerprint());
+    }
+
+    /** Whether a type (including nested generic/record/function) carries proof. */
+    static boolean containsCompilerCheckedScalar(Type type) {
+        if (type instanceof CheckedScalarType) return true;
+        if (type instanceof Named n)
+            return n.arguments().stream().anyMatch(Types::containsCompilerCheckedScalar);
+        if (type instanceof Borrow b) return containsCompilerCheckedScalar(b.target());
+        if (type instanceof SelfType s) return containsCompilerCheckedScalar(s.bound());
+        if (type instanceof ListType l) return containsCompilerCheckedScalar(l.element());
+        if (type instanceof Tuple t)
+            return t.elements().stream().anyMatch(Types::containsCompilerCheckedScalar);
+        if (type instanceof Record r)
+            return r.members().values().stream().anyMatch(Types::containsCompilerCheckedScalar);
+        if (type instanceof Union u)
+            return u.options().stream().anyMatch(Types::containsCompilerCheckedScalar);
+        if (type instanceof Function fn)
+            return fn.parameters().stream().anyMatch(Types::containsCompilerCheckedScalar)
+                    || containsCompilerCheckedScalar(fn.result());
+        if (type instanceof Not n) return containsCompilerCheckedScalar(n.excluded());
+        return false;
+    }
 
     public enum Primitive implements Type {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
@@ -112,6 +196,8 @@ public final class Types {
 
     public static Type notOf(Type type) {
         Objects.requireNonNull(type, "type");
+        if (containsCompilerCheckedScalar(type))
+            throw new IllegalArgumentException("Zorde proof types cannot be negated or reified as runtime patterns");
         return type instanceof Not not ? not.excluded() : new Not(type);
     }
 
@@ -187,6 +273,21 @@ public final class Types {
     public static boolean isAssignable(Type from, Type to) {
         Objects.requireNonNull(from);
         Objects.requireNonNull(to);
+        // Proof identity is not ordinary structural, Unknown or Generic
+        // assignability. These checks MUST precede permissive wildcard paths.
+        if (from instanceof CheckedScalarType || to instanceof CheckedScalarType) {
+            if (from.equals(to)) return true;
+            if (to instanceof Union target)
+                return target.options().stream().anyMatch(option -> isAssignable(from, option));
+            if (from instanceof Union source)
+                return source.options().stream().allMatch(option -> isAssignable(option, to));
+            return false;
+        }
+        if ((from == Unknown.INSTANCE || to == Unknown.INSTANCE
+                || from instanceof Generic || to instanceof Generic)
+                && (containsCompilerCheckedScalar(from) || containsCompilerCheckedScalar(to)))
+            return false;
+
         // Complements must be checked before permissive Unknown/Generic rules.
         // No compiler pass may turn uncertainty into a negative-type proof.
         if (to instanceof Not negative) {
@@ -287,6 +388,10 @@ public final class Types {
 
     public static Type unionOf(List<Type> types) {
         java.util.ArrayList<Type> flattened = new java.util.ArrayList<>();
+        // Never silently erase a checked schema identity into Unknown.
+        if (types.contains(Unknown.INSTANCE)
+                && types.stream().anyMatch(Types::containsCompilerCheckedScalar))
+            throw new IllegalArgumentException("union cannot erase a Zorde proof into Unknown");
         for (Type type : types) {
             if (type == Unknown.INSTANCE) return Unknown.INSTANCE;
             if (type instanceof Union union) {
