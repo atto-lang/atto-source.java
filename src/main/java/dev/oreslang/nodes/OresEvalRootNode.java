@@ -1192,7 +1192,12 @@ public final class OresEvalRootNode extends RootNode {
                     // or resumed continuation wraps the original exception.
                     if (function != null && function.trapped()
                             && isTrappableFailure(failure)) {
-                        if (nativeFrame != null) nativeFrame.done();
+                        // A trappable guest exception can follow a committed
+                        // suspension ticket. Normal done() intentionally
+                        // rejects AWAITING/COOPERATING; this dedicated transition
+                        // drops frame roots and revokes the ticket without
+                        // changing normal completion semantics.
+                        if (nativeFrame != null) nativeFrame.completeTrappedFailure();
                         return OresScheduler.done(new OptionValue(false, null));
                     }
                     if (nativeFrame != null) nativeFrame.failed();
