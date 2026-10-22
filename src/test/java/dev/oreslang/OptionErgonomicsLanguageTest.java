@@ -68,6 +68,33 @@ final class OptionErgonomicsLanguageTest {
     }
 
     @Test
+    void orElseContextuallyTypesLiteralNoneWithoutErasingOptionElementType() throws Exception {
+        String source = """
+                pub fnc main(): void {
+                  val Option<int> absent = None;
+                  val Option<int> still_absent = absent.or_else(() -> None);
+                  stdio.stdout.write(still_absent.is_none());
+                  stdio.stdout.write(":");
+                  val Option<int> present = Some(9);
+                  val Option<int> unchanged = present.or_else(() -> None);
+                  stdio.stdout.write(unchanged.unwrap());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("true:9", run(source));
+    }
+
+    @Test
+    void orElseNeverWidenOptionElementFromWrongSomePayload() {
+        assertRejects("""
+                fnc bad(Option<int> original): Option<int> {
+                  return original.or_else(() -> Some("not-an-int"));
+                }
+                """, "Option.or_else fallback");
+    }
+
+    @Test
     void rejectsIncorrectCallbacksAndAffinelyOwnedFallbacks() {
         assertRejects("""
                 fnc bad(Option<int> value): int {
