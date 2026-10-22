@@ -4419,6 +4419,11 @@ public final class TypeChecker {
                         "generic static function '" + klass.name() + "." + fn.name()
                                 + "' must be specialized by a direct call; polymorphic function values are not supported yet");
             }
+            if (!fn.effects().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "effectful static function '" + klass.name() + "." + fn.name()
+                                + "' is direct-call-only until Function types carry checked effects");
+            }
             requireClassMemberVisible(fn.visibility(), findDeclaringClass(klass, fn, new LinkedHashSet<>()), "static function", fn.name());
             return functionType(fn.parameters(), fn.returnType(), fn.async(), false, Set.of(), null);
         }
@@ -6526,6 +6531,11 @@ public final class TypeChecker {
         }
         for (Ast.MethodDecl method : klass.methods()) {
             if (!method.isStatic() && method.visibility() == Ast.Visibility.PUBLIC) {
+                if (!method.effects().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "effectful method '" + klass.name() + "." + method.name()
+                                    + "' cannot be erased into an interface or structural Function contract");
+                }
                 mergeMember(members,
                         methodContractKey(method.name(), method.arity(), method.genericParameters().size()),
                         callableContractType(method.genericParameters(), method.parameters(), method.returnType(), method.async(), false, generics, self),
