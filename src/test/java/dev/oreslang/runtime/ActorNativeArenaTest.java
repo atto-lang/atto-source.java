@@ -606,6 +606,19 @@ final class ActorNativeArenaTest {
     }
 
     @Test
+    void nativeTaskPhaseRejectsOverflowedOrTruncated64BitCodes() {
+        for (long code : new long[] {-1L, 6L, Integer.MAX_VALUE,
+                                     0x1_0000_0001L, Long.MAX_VALUE}) {
+            assertThrows(IllegalStateException.class,
+                    () -> ActorNativeArena.TaskPhase.fromCode(code));
+        }
+        for (int i = 0; i < ActorNativeArena.TaskPhase.values().length; ++i) {
+            assertEquals(ActorNativeArena.TaskPhase.values()[i],
+                    ActorNativeArena.TaskPhase.fromCode(i));
+        }
+    }
+
+    @Test
     void nativeFramePhaseLookupHandlesLongAlternatingAwaitAndCooperateSequences() {
         AtomicLong charged = new AtomicLong();
         try (ActorNativeArena arena = arena(4096, charged)) {
