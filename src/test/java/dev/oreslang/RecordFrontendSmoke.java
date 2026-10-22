@@ -17,6 +17,19 @@ public final class RecordFrontendSmoke {
     private RecordFrontendSmoke() { }
 
     public static void main(String[] args) {
+        // A mutable aggregate can change underneath a spread copy; until a
+        // synchronized/borrowed snapshot proof lands, the ownership pass
+        // must reject mutable source bindings even if fields are scalars.
+        Ast.Program mutableSpread = Parser.parse("""
+                fnc blocked_mutable_source(): int {
+                    val source = infer struct{x: 1};
+                    const copy = record{...source};
+                    return copy.x;
+                }
+                """);
+        denied(() -> OwnershipChecker.check(mutableSpread),
+                "mutable aggregate source must not bypass snapshot lease admission");
+
         // Closed scalar spreads now pass the actual front-end chain.
         // Non-scalar or unowned sources still fail independently at the type
         // and ownership gates. Guest execution is a separate release gate.
