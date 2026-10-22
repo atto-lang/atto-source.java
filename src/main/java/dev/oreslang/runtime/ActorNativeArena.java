@@ -134,7 +134,7 @@ public final class ActorNativeArena implements AutoCloseable {
     private final Runnable checkOwner;
     private final Budget budget;
     /** Trusted package-only fault injection, absent from normal runtime arenas. */
-    private final IntConsumer slabPublicationProbe;
+    private final IntConsumer nativePublicationProbe;
     private final long limit;
     private final ArrayList<ByteBuffer> slabs = new ArrayList<>();
     private final ArrayList<Long> slabBases = new ArrayList<>();
@@ -166,12 +166,12 @@ public final class ActorNativeArena implements AutoCloseable {
 
     /** Trusted test-only constructor: fails after a selected slab metadata append. */
     ActorNativeArena(long limit, Runnable checkOwner, Budget budget,
-            IntConsumer slabPublicationProbe) {
+            IntConsumer nativePublicationProbe) {
         if (limit <= 0) throw new IllegalArgumentException("native arena limit must be positive");
         this.limit = limit;
         this.checkOwner = Objects.requireNonNull(checkOwner);
         this.budget = Objects.requireNonNull(budget);
-        this.slabPublicationProbe = slabPublicationProbe;
+        this.nativePublicationProbe = nativePublicationProbe;
     }
 
     /** Fixed field names are layout metadata; values are stored only in native slots. */
@@ -762,19 +762,25 @@ public final class ActorNativeArena implements AutoCloseable {
         }
         Runnable release = budget.reserve(bytes);
         ByteBuffer memory = null;
+        Region region = null;
         try {
             NativeCarrierExecutor.ensureNativeLibraryLoaded();
             memory = allocateNative(bytes);
             if (memory == null) throw new OutOfMemoryError("native actor region allocation failed");
             long baseOffset = alignedActorOffset(bytes, Long.BYTES);
             long nextOffset = Math.addExact(baseOffset, bytes);
-            Region region = new Region(memory.order(ByteOrder.LITTLE_ENDIAN), bytes, baseOffset, release);
+            region = new Region(memory.order(ByteOrder.LITTLE_ENDIAN), bytes, baseOffset, release);
             regions.add(region);
+            // Trusted test-only checkpoint; production arenas provide no probe.
+            if (nativePublicationProbe != null) nativePublicationProbe.accept(0);
             nextActorOffset = nextOffset;
             committed += bytes;
             allocated += bytes;
             return region;
         } catch (RuntimeException | Error failure) {
+            // A failed append may have left an unpublished identity-map
+            // entry. Retract it before releasing the native allocation.
+            if (region != null) regions.remove(region);
             if (memory != null) releaseNative(memory);
             release.run();
             throw failure;
@@ -1123,11 +1129,11 @@ public final class ActorNativeArena implements AutoCloseable {
                 if (slab == null) throw new OutOfMemoryError("native actor arena allocation failed");
                 slab.order(ByteOrder.LITTLE_ENDIAN);
                 slabs.add(slab);
-                if (slabPublicationProbe != null) slabPublicationProbe.accept(1);
+                if (nativePublicationProbe != null) nativePublicationProbe.accept(1);
                 slabBases.add(boxedSlabBase);
-                if (slabPublicationProbe != null) slabPublicationProbe.accept(2);
+                if (nativePublicationProbe != null) nativePublicationProbe.accept(2);
                 releases.add(release);
-                if (slabPublicationProbe != null) slabPublicationProbe.accept(3);
+                if (nativePublicationProbe != null) nativePublicationProbe.accept(3);
                 nextActorOffset = nextOffset;
             } catch (RuntimeException | Error failure) {
                 // Undo partially appended metadata BEFORE freeing backing
