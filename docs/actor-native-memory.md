@@ -275,6 +275,24 @@ capacity allocates transactionally and leaves the previous value untouched if
 the actor quota cannot satisfy it. General lifetime-based reclamation of
 variable-size payloads remains unfinished.
 
+## Explicit lexical slot retirement (compiler drop primitive)
+
+`ActorNativeArena.ValueCell` now implements `AutoCloseable` and supports
+actor-owner-checked, idempotent `close()` as the low-level operation to retire
+a proven-dead lexical storage slot. A retired slot cannot be read, rewritten,
+or used as an actor-relative address. Its tagged payload is changed to null,
+immediately decrementing native-reference registry counts; retiring the final
+lexical reference removes the Java facade from the strong live-reference
+registry. Other slots referencing the same actor-native value remain valid.
+
+This is a **runtime primitive**, not yet automatic scope-drop lowering:
+compiler control-flow/lifetime analysis must emit drops for normal exits,
+exceptions, cancellations, and suspended locals before we can claim automatic
+reclamation. Moreover, compact slot storage and old text payloads remain
+allocated in arena-lifetime slabs until physical actor teardown. `close()`
+does not free or refund those native bytes, destruct owned transitive graphs,
+or replace the JVM garbage collector.
+
 ## Remaining work before strict no-managed-allocation admission
 
 This patch does **not** make the Java evaluator allocation-free. It still uses
