@@ -12,6 +12,11 @@ import java.util.concurrent.atomic.AtomicReference;
  * Cursor#nextAsync()} exposes one item (or end-of-sequence) per invocation.
  * Only runtime bookkeeping is executed from producer completion callbacks:
  * guest continuation placement stays with the awaiting OresScheduler.</p>
+ *
+ * <p>A channel read is committed before the consumer necessarily processes
+ * its item. Cancellation after commitment cannot requeue the value.
+ * This is an at-most-once cursor, NOT a TaskQueue ACK/NACK or exactly-once
+ * work processing primitive.</p>
  */
 public final class AsyncSequences {
     private AsyncSequences() { }
