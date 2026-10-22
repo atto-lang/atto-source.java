@@ -214,4 +214,28 @@ public class TaskOwnedLeasesTest {
                     task.cleanupFailures().get(3, TimeUnit.SECONDS));
         }
     }
+
+    @Test void cancellingOwningScopeRetiresEveryChildLeaseBeforeScopeDone()
+            throws Exception {
+        CountDownLatch registered = new CountDownLatch(2);
+        AtomicInteger released = new AtomicInteger();
+        OresFuture<Integer> waiting = new OresFuture<>();
+        try (OresScheduler scheduler = new OresScheduler(2);
+             TaskScope scope = scheduler.newTaskScope()) {
+            for (int i = 0; i < 2; i++) {
+                scope.startTask(resume -> {
+                    TaskOwnedLeases.register(released::incrementAndGet);
+                    registered.countDown();
+                    return OresScheduler.await(waiting);
+                });
+            }
+            assertTrue(registered.await(3, TimeUnit.SECONDS));
+            assertEquals(0, released.get());
+            assertTrue(scope.cancel("shutdown all owned children"));
+            assertNull(scope.getDone().get(4, TimeUnit.SECONDS));
+            assertEquals(2, released.get());
+            assertFalse(waiting.isCancelled(),
+                    "borrowed producer is independent of cancelled TaskScope");
+        }
+    }
 }
