@@ -103,6 +103,63 @@ final class ImmutableAggregateScalarSpreadRuntimeTest {
     }
 
     @Test
+    void suspendableInitializersPreserveSpreadOperandOrder() {
+        assertEquals("1\n2\n1\n", execute("""
+                async fnc nextValue(): int {
+                    return 2;
+                }
+                pub async fnc main(): void {
+                    const original = record{x: 1};
+                    const extended = record{...original, y: await nextValue()};
+                    stdio.println(extended.x);
+                    stdio.println(extended.y);
+                    stdio.println(original.x);
+                    return;
+                }
+                """));
+    }
+
+    @Test
+    void emptySpreadsAndQuotedStaticKeysRemainClosed() {
+        assertEquals("Ada\n5\n", execute("""
+                pub fnc main(): void {
+                    const empty = record{};
+                    const first = record{...empty, "first name": "Ada"};
+                    const second = infer struct{...first, score: 5};
+                    stdio.println(second["first name"]);
+                    stdio.println(second.score);
+                    return;
+                }
+                """));
+    }
+
+    @Test
+    void overridingDoesNotAuthorizeNonCopyIntermediateValues() {
+        String source = """
+                fnc invalid(): int {
+                    const bad = record{inner: record{x: 1}};
+                    const next = record{...bad, inner: 2};
+                    return next.inner;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(source)));
+        assertThrows(IllegalArgumentException.class, () -> OwnershipChecker.check(Parser.parse(source)));
+    }
+
+    @Test
+    void namedFieldCannotSmuggleNonScalarOverSpreadingConstructor() {
+        String source = """
+                fnc invalid(): int {
+                    const first = record{x: 1};
+                    const second = record{...first, inner: record{y: 2}};
+                    return second.x;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(source)));
+        assertThrows(IllegalArgumentException.class, () -> OwnershipChecker.check(Parser.parse(source)));
+    }
+
+    @Test
     void nestedOrMoveOnlySourcesRejectBeforeExecution() {
         String nested = """
                 fnc fail(): int {
