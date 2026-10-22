@@ -290,12 +290,23 @@ public final class OresMutex {
             return false;
         }
 
-        private final class LocalGuard implements Guard<T> {
+        private final class LocalGuard implements Guard<T>, TaskOwnedLockLedger.Lease {
             private final Object owningSegment;
             private final AtomicBoolean released = new AtomicBoolean();
+            private final TaskOwnedLockLedger taskLocks;
 
             private LocalGuard(Object owningSegment) {
                 this.owningSegment = owningSegment;
+                TaskOwnedLockLedger ledger = TaskHandle.currentLockLedger();
+                if (ledger != null) {
+                    try {
+                        ledger.register(this);
+                    } catch (RuntimeException | Error failure) {
+                        holderSegment.compareAndSet(owningSegment, null);
+                        throw failure;
+                    }
+                }
+                this.taskLocks = ledger;
             }
 
             private void requireOwningSegment() {
@@ -326,11 +337,22 @@ public final class OresMutex {
                 if (!holderSegment.compareAndSet(owningSegment, null)) {
                     throw new IllegalStateException("MutexGuard owner segment changed before release");
                 }
+                if (taskLocks != null) taskLocks.forget(this);
             }
 
             @Override
             public void fail() {
                 release();
+            }
+
+            @Override
+            public void revokeAfterQuiescence() {
+                // Trusted scheduler retirement only: do not unlock a host
+                // thread mutex or let a foreign physical carrier access T.
+                if (!released.compareAndSet(false, true)) return;
+                if (!holderSegment.compareAndSet(owningSegment, null)) {
+                    throw new IllegalStateException("actor-local permit owner changed during Task retirement");
+                }
             }
         }
     }
@@ -660,7 +682,15 @@ public final class OresMutex {
                 releasePermitOrHandoff();
                 throw failure;
             }
-            return new SharedGuard(ownerDomain, enforceOwnerDomain);
+            try {
+                return new SharedGuard(ownerDomain, enforceOwnerDomain,
+                        TaskHandle.currentLockLedger());
+            } catch (RuntimeException | Error failure) {
+                clearOwner(ownerDomain);
+                releaseDomain(ownerDomain);
+                releasePermitOrHandoff();
+                throw failure;
+            }
         }
 
         @Override
@@ -933,14 +963,22 @@ public final class OresMutex {
             return value;
         }
 
-        private final class SharedGuard implements Guard<T> {
+        private final class SharedGuard implements Guard<T>, TaskOwnedLockLedger.Lease {
             private final Object ownerDomain;
             private final boolean enforceOwnerDomain;
             private final AtomicBoolean released = new AtomicBoolean();
+            private final TaskOwnedLockLedger taskLocks;
 
             private SharedGuard(Object ownerDomain, boolean enforceOwnerDomain) {
+                this(ownerDomain, enforceOwnerDomain, null);
+            }
+
+            private SharedGuard(Object ownerDomain, boolean enforceOwnerDomain,
+                                TaskOwnedLockLedger ledger) {
                 this.ownerDomain = ownerDomain;
                 this.enforceOwnerDomain = enforceOwnerDomain;
+                if (ledger != null) ledger.register(this);
+                this.taskLocks = ledger;
             }
 
             private void requireOwnerDomain() {
@@ -970,17 +1008,30 @@ public final class OresMutex {
                 if (!released.compareAndSet(false, true)) return;
                 clearOwner(ownerDomain);
                 releaseDomain(ownerDomain);
+                if (taskLocks != null) taskLocks.forget(this);
                 releasePermitOrHandoff();
             }
 
             @Override
             public void fail() {
                 requireOwnerDomain();
+                failFromRuntime();
+            }
+
+            private void failFromRuntime() {
                 if (!released.compareAndSet(false, true)) return;
+                // A live guard surviving its Task's lexical scope is an
+                // abnormal critical-section exit, even on Task success.
                 poisoned.set(true);
                 clearOwner(ownerDomain);
                 releaseDomain(ownerDomain);
+                if (taskLocks != null) taskLocks.forget(this);
                 releasePermitOrHandoff();
+            }
+
+            @Override
+            public void revokeAfterQuiescence() {
+                failFromRuntime();
             }
         }
     }
