@@ -52,6 +52,9 @@ for required in (
         deny("filesystem facade missing strict provider edge: " + required)
 
 provider = text("src/main/java/dev/oreslang/runtime/LinuxUringFileIoProvider.java")
+if provider.count("() -> cancelNative(id), () -> { }") < 2:
+    deny("read/exists Future cancellation must require native revocation admission")
+
 for forbidden in (
     "ExecutorService",
     "Executors.",
@@ -87,6 +90,11 @@ for required in (
         deny("native provider missing required io_uring primitive: " + required)
 if native.count("pthread_create(") != 1:
     deny("strict filesystem provider must own exactly one reactor pthread")
+if "ores_retract_last_sqe_locked" not in native:
+    deny("failed io_uring submission must retract its unconsumed SQE")
+if "if (ctx->closed) op->cancelled = 1;" not in native:
+    deny("closed provider must not advance an operation to another I/O stage")
+
 
 build = text("scripts/build-native-thread.sh")
 if "src/main/c/oresuring.c" not in build:
