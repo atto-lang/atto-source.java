@@ -121,10 +121,23 @@ public final class TaskWaterfall {
                                 if (active != null) active.cancel("waterfall stage cancelled");
                             });
                     stageWaiter.set(watcher);
-                    // The producer may have settled synchronously before the
-                    // registration was stored. Never retain a terminal listener.
-                    if (future.isDone() && stageWaiter.compareAndSet(watcher, null)) {
-                        watcher.detach();
+                    // A source may finish (including cancellation) before
+                    // the watcher is stored. Preserve its authenticated
+                    // cancellation state before releasing the registration.
+                    // Cancellation revocation is a separate barrier from
+                    // Future.isDone(): the controller only requests its own
+                    // cancellation, never revokes the shared stage source.
+                    if (future.isDone()) {
+                        if (future.isCancelled()) {
+                            upstreamCancelled.set(true);
+                            TaskHandle<T> active = owner.get();
+                            if (active != null) {
+                                active.cancel("waterfall stage cancelled");
+                            }
+                        }
+                        if (stageWaiter.compareAndSet(watcher, null)) {
+                            watcher.detach();
+                        }
                     }
                     return OresScheduler.await(future);
                 }
