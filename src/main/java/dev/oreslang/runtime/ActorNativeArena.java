@@ -114,7 +114,7 @@ public final class ActorNativeArena implements AutoCloseable {
     }
 
     private static final int SLOT_BYTES = 24;
-    private static final int TASK_FRAME_BYTES = 56;
+    private static final int TASK_FRAME_BYTES = 72;
     private static final int LIST_HEADER_BYTES = 32;
     private static final int LIST_CHUNK_SLOTS = 16;
     private static final int LIST_CHUNK_HEADER_BYTES = Long.BYTES;
@@ -603,6 +603,8 @@ public final class ActorNativeArena implements AutoCloseable {
         write(base, 32, 0L); // active SuspensionKind, 0 when running/terminal
         write(base, 40, NO_OFFSET); // native spill-register slots
         write(base, 48, 0L); // declared spill-register count
+        write(base, 56, 0L); // source statement-site label, 0 before first site
+        write(base, 64, 0L); // label captured by the active suspension ticket
         return new TaskFrame(base);
     }
 
@@ -746,6 +748,31 @@ public final class ActorNativeArena implements AutoCloseable {
             }
         }
 
+        /**
+         * Compiler/evaluator-supplied source statement label. Labels are
+         * positive and stable within a linked code unit, not raw code pointers.
+         * They identify the statement that may suspend; the monotonic ticket
+         * disambiguates repeated suspensions inside the same statement/loop.
+         */
+        public void enterSourceSite(long site) {
+            synchronized (ActorNativeArena.this) {
+                checkFrame();
+                requireRunning();
+                if (site <= 0L) {
+                    throw new IllegalArgumentException("native continuation site must be positive");
+                }
+                write(base, 56, site);
+            }
+        }
+
+        /** Host-only/auditing view of the actor-owned statement label. */
+        public long sourceSite() {
+            synchronized (ActorNativeArena.this) {
+                checkFrame();
+                return read(base, 56);
+            }
+        }
+
         public void beginInitialResume() {
             synchronized (ActorNativeArena.this) {
                 checkFrame();
@@ -774,7 +801,9 @@ public final class ActorNativeArena implements AutoCloseable {
                 if (current != expectedKind.phase
                         || suspensionTicket <= 0L
                         || activeTicket != suspensionTicket
-                        || activeKind != expectedKind.code) {
+                        || activeKind != expectedKind.code
+                        || read(base, 64) <= 0L
+                        || read(base, 64) != read(base, 56)) {
                     throw new IllegalStateException(
                             "stale or mismatched native actor continuation resume: phase=" + current
                                     + " expected=" + expectedKind
@@ -783,6 +812,7 @@ public final class ActorNativeArena implements AutoCloseable {
                 }
                 long generation = Math.addExact(read(base, 16), 1L);
                 write(base, 32, 0L);
+                write(base, 64, 0L);
                 write(base, 16, generation);
                 write(base, 8, TaskPhase.RUNNING.code);
             }
@@ -798,6 +828,8 @@ public final class ActorNativeArena implements AutoCloseable {
                 clearSpills();
                 transitionFromRunning(TaskPhase.DONE);
                 write(base, 32, 0L);
+                write(base, 56, 0L);
+                write(base, 64, 0L);
             }
         }
 
@@ -825,6 +857,8 @@ public final class ActorNativeArena implements AutoCloseable {
                 }
                 clearSpills();
                 write(base, 32, 0L);
+                write(base, 56, 0L);
+                write(base, 64, 0L);
                 write(base, 8, TaskPhase.DONE.code);
             }
         }
@@ -841,6 +875,8 @@ public final class ActorNativeArena implements AutoCloseable {
                 if (current == TaskPhase.DONE || current == TaskPhase.FAILED) return;
                 clearSpills();
                 write(base, 32, 0L);
+                write(base, 56, 0L);
+                write(base, 64, 0L);
                 write(base, 8, TaskPhase.FAILED.code);
             }
         }
@@ -854,9 +890,15 @@ public final class ActorNativeArena implements AutoCloseable {
                             "native actor task suspension requires unsuspended RUNNING frame; phase="
                                     + current + " kind=" + kind);
                 }
+                long site = read(base, 56);
+                if (site <= 0L) {
+                    throw new IllegalStateException(
+                            "native actor task cannot suspend without an entered source site");
+                }
                 long ticket = Math.addExact(read(base, 24), 1L);
                 if (ticket <= 0L) throw new IllegalStateException("native actor suspension ticket exhausted");
                 write(base, 24, ticket);
+                write(base, 64, site);
                 write(base, 32, kind.code);
                 write(base, 8, kind.phase.code);
                 return ticket;
