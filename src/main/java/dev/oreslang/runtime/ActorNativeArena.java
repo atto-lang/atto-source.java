@@ -915,8 +915,11 @@ public final class ActorNativeArena implements AutoCloseable {
                 if (offset < 0 || length < 0 || offset > capacity || length > capacity - offset) {
                     throw new IndexOutOfBoundsException("read-only lease outside native region");
                 }
+                // Construct the lease before publishing a reader: an OOME
+                // must not leave a phantom outstanding native borrow.
+                ReadOnlyLease lease = new ReadOnlyLease(offset, length);
                 readLeases = Math.addExact(readLeases, 1);
-                return new ReadOnlyLease(offset, length);
+                return lease;
             }
         }
 
@@ -1395,9 +1398,19 @@ public final class ActorNativeArena implements AutoCloseable {
         }
     }
 
-    /** Called only after the runtime's actor/async physical quiescence barrier. */
+    /**
+     * Called only after the runtime's actor/async physical quiescence barrier.
+     * Fail closed if any native read borrow remains: never free backing pages
+     * while a supposedly live immutable region lease could dereference them.
+     */
     @Override public synchronized void close() {
         if (closed) return;
+        for (Region region : regions) {
+            if (region.readLeases != 0) {
+                throw new IllegalStateException(
+                        "actor native arena has outstanding read-only leases");
+            }
+        }
         closed = true;
         if (linearMemory != null) linearMemory.forgetReleasedPages();
         for (Region region : regions) region.revoke();
