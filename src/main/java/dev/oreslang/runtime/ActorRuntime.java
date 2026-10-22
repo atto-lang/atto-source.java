@@ -2008,11 +2008,15 @@ public final class ActorRuntime implements AutoCloseable {
         scope.getDone().whenCompleteRuntime((ignored, failure) -> {
             synchronized (cell.lifecycleLock) {
                 if (failure != null) {
+                    // A failed descendant-quiescence witness must never
+                    // unlock actor-owned native memory. Preserve the scope
+                    // pin and surface the failure to supervisors.
                     cell.ref.terminationCause.compareAndSet(
                             null, OresFuture.unwrap(failure));
+                } else {
+                    cell.activeSourceScopes.remove(scope);
+                    if (cell.stopped.get()) cell.finalizeStopLocked();
                 }
-                cell.activeSourceScopes.remove(scope);
-                if (cell.stopped.get()) cell.finalizeStopLocked();
                 cell.lifecycleLock.notifyAll();
             }
         });
