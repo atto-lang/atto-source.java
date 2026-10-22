@@ -4249,6 +4249,14 @@ public final class TypeChecker {
             Map<String, Type> members = new LinkedHashMap<>();
             for (Ast.ObjectField field : object.fields()) {
                 if (field.spread()) {
+                    if (field.value() instanceof Ast.NameExpr sourceName) {
+                        Env.Binding owner = env.lookup(sourceName.name());
+                        if (owner != null && owner.hasUninitializedFields()) {
+                            throw new IllegalArgumentException(
+                                    "aggregate spread cannot copy a partially initialized struct '"
+                                            + sourceName.name() + "'");
+                        }
+                    }
                     Type source = typeOf(field.value(), env, generics, self);
                     if (!(source instanceof Record row)
                             || row.kind() == AggregateKind.CONTRACT) {
