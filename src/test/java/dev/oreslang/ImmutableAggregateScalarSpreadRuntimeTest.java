@@ -173,6 +173,33 @@ final class ImmutableAggregateScalarSpreadRuntimeTest {
     }
 
     @Test
+    void namedInferredStructuralAliasesRemainLexicalNotNominal() {
+        assertEquals("5\\nfoo\\n42\\n", execute("""
+                pub fnc main(): void {
+                    const base = infer struct{foo: 5};
+                    const T2 v = infer struct{...base, bar: "foo"};
+                    const T3 w = infer record{...v, foo: 42};
+                    stdio.println(v.foo);
+                    stdio.println(w.bar);
+                    stdio.println(w.foo);
+                    return;
+                }
+                """));
+    }
+
+    @Test
+    void plainRecordMustNotCreateImplicitTypeAlias() {
+        String source = """
+                fnc invalid(): void {
+                    const base = infer struct{x: 1};
+                    const Unbound v = record{...base};
+                    return;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
     void explicitShapedStructSpreadRemainsUnsupported() {
         String source = """
                 fnc fail(): int {
