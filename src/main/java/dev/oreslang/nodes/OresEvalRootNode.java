@@ -4080,6 +4080,9 @@ public final class OresEvalRootNode extends RootNode {
                             result.put(key, value);
                         }
                     }
+                    if (hasAggregateSpread) {
+                        validateCompletedScalarAggregate(checkedPlan, result);
+                    }
                     built = object.structuralRecord()
                             ? new ReadonlyRecordValue(result)
                             : new MutableStructValue(result);
@@ -7089,6 +7092,9 @@ public final class OresEvalRootNode extends RootNode {
                         result.put(key, value);
                     }
                 }
+                if (hasAggregateSpread) {
+                    validateCompletedScalarAggregate(checkedPlan, result);
+                }
                 return object.structuralRecord()
                         ? new ReadonlyRecordValue(result)
                         : new MutableStructValue(result);
@@ -10026,6 +10032,29 @@ public final class OresEvalRootNode extends RootNode {
             snapshot.put(key, value);
         }
         return new ScalarSpreadSnapshot(snapshot);
+    }
+
+    /**
+     * Last line of defense against interpreter/continuation drift: the
+     * constructed row must contain exactly the compiler-admitted fields with
+     * their final checked Copy-only scalar types. This check applies to the
+     * unpublished candidate, before guest code can observe its result.
+     */
+    private static void validateCompletedScalarAggregate(
+            AggregateConstructionPlan.Plan plan, Map<String, Object> result) {
+        Map<String, Types.Type> expected = plan.resolvedFields();
+        if (result.size() != expected.size()
+                || !result.keySet().equals(expected.keySet())) {
+            throw new IllegalArgumentException(
+                    "aggregate spread produced a row outside its checked static shape");
+        }
+        for (Map.Entry<String, Types.Type> field : expected.entrySet()) {
+            if (!matchesScalarType(result.get(field.getKey()), field.getValue())) {
+                throw new IllegalArgumentException(
+                        "aggregate spread result violates checked field type '"
+                                + field.getKey() + "'");
+            }
+        }
     }
 
     private static void applyScalarSpreadElement(
