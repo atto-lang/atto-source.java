@@ -129,7 +129,10 @@ final class CompilerZordeLinkManifest {
                         .equals(target.sourceDigest()))
                     throw new IllegalArgumentException("Zorde parsed import hash mismatch");
                 for (String importedName : dep.getValue()) {
-                    long matches = target.schemaEntriesForLinker().keySet().stream()
+                    // Only explicitly public source declarations are valid
+                    // cross-unit imports. Generated private descriptors are
+                    // usable inside their compilation, not public exports.
+                    long matches = target.publicSchemaNames().stream()
                             .filter(name -> name.endsWith("." + importedName))
                             .limit(2).count();
                     if (matches != 1) {
