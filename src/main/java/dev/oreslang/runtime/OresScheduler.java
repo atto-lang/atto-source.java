@@ -455,9 +455,15 @@ public final class OresScheduler implements AutoCloseable {
      * Guest actor/tenant authority is not exposed by this staging API.
      */
     public TaskScope newTaskScope() {
+        return newTaskScope(() -> { });
+    }
+
+    /** Runtime-only actor-affine TaskScope admission check. */
+    TaskScope newTaskScope(Runnable checkAdmission) {
+        Objects.requireNonNull(checkAdmission, "checkAdmission");
         synchronized (taskAdmissionLock) {
             ensureOpen();
-            return new TaskScope(this);
+            return new TaskScope(this, checkAdmission);
         }
     }
 
