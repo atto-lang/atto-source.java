@@ -387,7 +387,12 @@ The `SourceTask.resume()` entry boundary also fails closed on malformed
 initial/resumed native authority: it clears pending managed continuation
 roots and marks the native frame FAILED, releasing spill references. The
 actor's guest-level `trap` does not convert a forged/stale resume into a
-successful absent-value result.
+successful absent-value result. Fatal `Error` paths now clear those managed
+callback roots and any original argument/receiver facades as well; this
+prevents a terminal `SourceTask` object from needlessly retaining guest
+payloads while it remains reachable from host scheduler cleanup state.
+Cancellation while suspended still needs a distinct, owner-authorized
+terminal-drop callback; that is **not** implemented by this change.
 
 ## Remaining work before strict no-managed-allocation admission
 
