@@ -2662,6 +2662,8 @@ public final class ActorRuntime implements AutoCloseable {
 
         public ActorGroupId id() { return id; }
 
+        boolean ownedBy(ActorRuntime runtime) { return ActorRuntime.this == runtime; }
+
         public Optional<ActorId> creatorId() {
             requireObserver("inspect ActorGroup creator");
             return Optional.ofNullable(creator);
