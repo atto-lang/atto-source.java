@@ -170,6 +170,21 @@ final class NominalErrorProofTest {
     }
 
     @Test
+    void compilerBuiltinAliasesCannotActAsNominalErrors() {
+        Ast.ClassDecl root = klass("define class Error as end");
+        for (String builtin : List.of("i32", "u64", "f32", "Bool",
+                "Symbol", "ActorId", "Future", "Channel")) {
+            Ast.ClassDecl impersonation = klass(
+                    "define class " + builtin + " extends Error as end");
+            var lookup = resolver(Map.of("Error", root, builtin, impersonation));
+            var failure = assertThrows(IllegalArgumentException.class, () ->
+                    NominalErrorProof.requireNominalError(
+                            Ast.TypeRef.simple(builtin), root, lookup), builtin);
+            assertTrue(failure.getMessage().contains("concrete"), builtin);
+        }
+    }
+
+    @Test
     void oversizedEffectRowsFailBeforeInvokingResolver() {
         Ast.ClassDecl root = klass("define class Error as end");
         List<Ast.TypeRef> large = java.util.stream.IntStream.range(0, 65)
