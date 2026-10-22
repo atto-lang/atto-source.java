@@ -293,9 +293,20 @@ public final class OresMutex {
         private final class LocalGuard implements Guard<T> {
             private final Object owningSegment;
             private final AtomicBoolean released = new AtomicBoolean();
+            private final TaskOwnedLeases.Lease taskLease;
 
             private LocalGuard(Object owningSegment) {
                 this.owningSegment = owningSegment;
+                // Registration is part of acquisition, not mutex creation.
+                // If the tracked Task cannot admit the lease, roll back the
+                // already acquired CAS gate before reporting the failure.
+                try {
+                    taskLease = TaskOwnedLeases.registerIfTracked(
+                            this::releaseFromRuntime, this::releaseFromRuntime);
+                } catch (RuntimeException | Error admissionFailure) {
+                    releaseFromRuntime();
+                    throw admissionFailure;
+                }
             }
 
             private void requireOwningSegment() {
@@ -322,6 +333,12 @@ public final class OresMutex {
             @Override
             public void release() {
                 requireOwningSegment();
+                if (taskLease == null) releaseFromRuntime();
+                else taskLease.close();
+            }
+
+            /** Only invoked by the owner or after physical Task quiescence. */
+            private void releaseFromRuntime() {
                 if (!released.compareAndSet(false, true)) return;
                 if (!holderSegment.compareAndSet(owningSegment, null)) {
                     throw new IllegalStateException("MutexGuard owner segment changed before release");
