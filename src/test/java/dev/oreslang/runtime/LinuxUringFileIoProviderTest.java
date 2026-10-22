@@ -165,6 +165,20 @@ final class LinuxUringFileIoProviderTest {
     }
 
     @Test
+    void unfinishedMutationOperationsFailClosedWithoutNativeSubmission() {
+        FakeBridge bridge = new FakeBridge();
+        LinuxUringFileIoProvider provider = new LinuxUringFileIoProvider(bridge);
+        OresFuture<Void> future = provider.writeText("/tmp/out", "value");
+        ExecutionException failure =
+                assertThrows(ExecutionException.class, future::get);
+        assertInstanceOf(UnsupportedOperationException.class, failure.getCause());
+        assertTrue(bridge.reads.isEmpty());
+        assertTrue(bridge.exists.isEmpty());
+        assertEquals(0, provider.pendingCount());
+        provider.close();
+    }
+
+    @Test
     void unsupportedProviderFailsClosedWithoutWorkerFallback() {
         StrictFileIoProvider provider = StrictFileIoProvider.Unsupported.INSTANCE;
         assertFalse(provider.supported());
