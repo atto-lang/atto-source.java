@@ -527,6 +527,13 @@ public final class TypeChecker {
                     if (!all.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in interface " + iface.name() + "." + fn.name());
                 }
                 functionType(fn.parameters(), fn.returnType(), false, false, all, interfaceSelf);
+                if (!fn.effects().isEmpty()) {
+                    List<Ast.TypeRef> effectTypes = new ArrayList<>();
+                    effectTypes.addAll(fn.effects().throwsTypes());
+                    effectTypes.addAll(fn.effects().raisesTypes());
+                    effectTypes.addAll(fn.effects().panicsTypes());
+                    validateCheckedEffectPayloads(effectTypes, all);
+                }
             } else {
                 Ast.InterfaceFieldDecl field = (Ast.InterfaceFieldDecl) member;
                 if (!memberKeys.add(field.name())) throw new IllegalArgumentException("duplicate interface member '" + iface.name() + "." + field.name() + "'");
@@ -3376,6 +3383,7 @@ public final class TypeChecker {
                         Ast.InterfaceDecl owner = target.owner();
                         Named ownerType = target.ownerType();
                         String label = "interface method " + owner.name() + "." + method.name();
+                        requireEffectsCovered(method.effects(), currentEffects, label);
                         validateCallTypeArgumentMarker(call, method.genericParameters(), label);
 
                         List<String> callableGenerics = new ArrayList<>(owner.genericParameters());
@@ -6572,6 +6580,12 @@ public final class TypeChecker {
         Type interfaceSelf = new SelfType(nominalInterfaceType(iface));
         for (Ast.InterfaceMember member : iface.members()) {
             if (member instanceof Ast.InterfaceFunctionDecl fn) {
+                if (!fn.effects().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "effectful interface method '" + iface.name() + "." + fn.name()
+                                    + "' cannot be represented by the current Function type; "
+                                    + "checked effects must not be erased from interface contracts");
+                }
                 mergeMember(members,
                         methodContractKey(fn.name(), fn.parameters().size(), fn.genericParameters().size()),
                         callableContractType(fn.genericParameters(), fn.parameters(), fn.returnType(), false, false, generics, interfaceSelf),
