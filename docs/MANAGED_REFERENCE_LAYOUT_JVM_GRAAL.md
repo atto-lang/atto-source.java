@@ -165,3 +165,33 @@ Ref<T>
 Hot loops should preserve indices rather than eagerly materializing object
 references. This keeps vectorization, cache locality and future GPU/accelerator
 lowering compatible with the same logical Oreslang program.
+
+## Actor-relative compressed32 byte-region bridge
+
+A dense ECS table index is **not** a byte pointer. The Graal bridge additionally
+provides `ManagedReferencePolicy.encodeArenaOffset32` /
+`decodeArenaOffset32` and `ActorArenaRef32` for trusted, checked accesses to
+a specific actor-owned `PrivateMemoryBlock`.
+
+The new codec matches LLVM's 8-byte quantum and zero-null convention bit for
+bit: `(byteOffset >> 3) + 1`, with a maximum span of 32 GiB minus 8 bytes.
+Java `int` words are treated as unsigned; values with the top bit set are
+legitimate offsets. The present `ByteBuffer` implementation can address
+only the particular block's Java `int` capacity. It does not reserve a
+32-GiB cage or require a 32-bit machine address.
+
+Every read/write goes through existing per-turn actor-ownership and liveness
+checks and validates the **entire access width**. Encoding itself does not
+establish a lifetime, actor-domain, or generation proof; a bare offset could
+be reused or interpreted against another region. Real source `Ref<T>`
+lowering must retain the original provenance/generation witness or quarantine
+published slots, and must not carry decoded addresses across await,
+cross-actor sends, FFI, or heap retirement. Existing JVM object references
+are still managed by the VM and are not bitcast to these offsets.
+
+`ActorRuntime` currently creates *multiple* owner-checked direct blocks;
+it has not yet lowered all guest allocations into one actor-wide linear object
+arena. Shared actor guest objects still use JVM-managed allocation. This bridge
+demonstrates correct 32-bit region addressing, not completed general Oreslang
+pointer compression.
+

@@ -44,6 +44,44 @@ public final class ManagedReferencePolicy {
         return OptionalLong.of(Integer.toUnsignedLong(encoded) - 1L);
     }
 
+    /**
+     * Eight-byte-quantized actor-region offset, interoperable with LLVM's
+     * CompressedActorRef codec. This is NOT a Java oop, native address, lifetime
+     * proof, or actor capability. The owning region and live allocation must
+     * still be authenticated before any access.
+     *
+     * 0 = null; 1 = byte offset 0; 0xffffffff = byte offset
+     * (2^32 - 2) * 8. The maximum representable region span is 32 GiB - 8.
+     */
+    public static final int ARENA_REF_ALIGNMENT_SHIFT = 3;
+    public static final long MAX_ARENA_OFFSET32 = 0xffff_fffeL << ARENA_REF_ALIGNMENT_SHIFT;
+    public static final long MAX_ARENA_SPAN32 = 0xffff_ffffL << ARENA_REF_ALIGNMENT_SHIFT;
+
+    private static void requireArenaSpan32(long arenaBytes) {
+        if (arenaBytes <= 0 || arenaBytes > MAX_ARENA_SPAN32) {
+            throw new IllegalArgumentException("actor region exceeds compressed32 span");
+        }
+    }
+
+    public static int encodeArenaOffset32(long byteOffset, long arenaBytes) {
+        requireArenaSpan32(arenaBytes);
+        if (byteOffset < 0 || byteOffset >= arenaBytes
+                || byteOffset > MAX_ARENA_OFFSET32 || (byteOffset & 7L) != 0) {
+            throw new IllegalArgumentException("actor region offset is out of bounds or unaligned");
+        }
+        return (int) ((byteOffset >>> ARENA_REF_ALIGNMENT_SHIFT) + 1);
+    }
+
+    public static OptionalLong decodeArenaOffset32(int encoded, long arenaBytes) {
+        if (encoded == 0) return OptionalLong.empty();
+        requireArenaSpan32(arenaBytes);
+        long offset = (Integer.toUnsignedLong(encoded) - 1L) << ARENA_REF_ALIGNMENT_SHIFT;
+        if (offset >= arenaBytes) {
+            throw new IllegalArgumentException("compressed32 reference outside actor region");
+        }
+        return OptionalLong.of(offset);
+    }
+
     public static boolean isNullDenseIndex32(int encoded) {
         return encoded == 0;
     }
