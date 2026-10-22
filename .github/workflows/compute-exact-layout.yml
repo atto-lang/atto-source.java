@@ -18,6 +18,11 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Run BigInt reference differential checks (host only)
+        run: |
+          set -euo pipefail
+          node --version
+          node --test formal/compute/checked-layout-reference.test.mjs
       - name: Prove BV8 analogue and mutation controls
         shell: bash
         run: |
