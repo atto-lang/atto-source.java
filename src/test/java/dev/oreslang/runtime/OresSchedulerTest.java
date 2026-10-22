@@ -616,6 +616,48 @@ final class OresSchedulerTest {
     }
 
     @Test
+    void failedPostCarrierRetirementReportsFailureNotSafeFinalization() throws Exception {
+        ExecutorService carrier = Executors.newSingleThreadExecutor();
+        CountDownLatch enteredGuest = new CountDownLatch(1);
+        CountDownLatch releaseGuest = new CountDownLatch(1);
+        CountDownLatch receiptDelivered = new CountDownLatch(1);
+        AtomicReference<Throwable> receipt = new AtomicReference<>();
+        AtomicInteger callbacks = new AtomicInteger();
+        IllegalStateException retirementError =
+                new IllegalStateException("deliberately failed actor quota retirement");
+        OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "runtime-retirement-failure", 1, carrier);
+        try {
+            scheduler.start(resume -> {
+                enteredGuest.countDown();
+                assertTrue(releaseGuest.await(5, TimeUnit.SECONDS));
+                return OresScheduler.done(1);
+            }, () -> {
+                callbacks.incrementAndGet();
+                throw retirementError;
+            });
+            assertTrue(enteredGuest.await(5, TimeUnit.SECONDS));
+            scheduler.requestCloseWithOutcome(failure -> {
+                receipt.set(failure);
+                receiptDelivered.countDown();
+            });
+            assertFalse(receiptDelivered.await(75, TimeUnit.MILLISECONDS),
+                    "no retirement result can precede a running guest's carrier exit");
+            releaseGuest.countDown();
+            assertTrue(receiptDelivered.await(5, TimeUnit.SECONDS),
+                    "a failed retirement callback still delivers an observable receipt");
+            assertSame(retirementError, receipt.get(),
+                    "native-heap finalization must not interpret failed cleanup as safe");
+            assertEquals(1, callbacks.get(),
+                    "physical retirement callback executes at most once");
+        } finally {
+            releaseGuest.countDown();
+            carrier.shutdownNow();
+            assertTrue(carrier.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void runtimeCloseDoesNotWaitForBlockedTerminalFutureSubscriber() throws Exception {
         ExecutorService carrier = Executors.newSingleThreadExecutor();
         CountDownLatch guestEntered = new CountDownLatch(1);
