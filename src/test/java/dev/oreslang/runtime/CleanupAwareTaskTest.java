@@ -222,6 +222,8 @@ final class CleanupAwareTaskTest {
             assertTrue(cleanupEntered.await(3, TimeUnit.SECONDS));
             assertFalse(future.isDone());
             scheduler.close();
+            assertTrue(scheduler.hasIncompleteCleanup(),
+                    "an incomplete source unwind must veto actor memory reclamation");
             var failed = assertThrows(java.util.concurrent.ExecutionException.class,
                     () -> future.get(4, TimeUnit.SECONDS));
             assertInstanceOf(OresScheduler.CleanupIncompleteError.class, failed.getCause());
