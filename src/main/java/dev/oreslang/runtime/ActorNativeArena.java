@@ -412,9 +412,10 @@ public final class ActorNativeArena implements AutoCloseable {
         return cell;
     }
 
-    public final class ValueCell implements NativeValue {
+    public final class ValueCell implements NativeValue, AutoCloseable {
         private final long slot;
         private final Object uninitialized;
+        private boolean dropped;
 
         private ValueCell(long slot, Object uninitialized) {
             this.slot = slot;
@@ -423,16 +424,21 @@ public final class ActorNativeArena implements AutoCloseable {
 
         @Override public ActorNativeArena nativeArena() { return ActorNativeArena.this; }
 
+        private void requireLiveCell() {
+            checkAccess();
+            if (dropped) throw new IllegalStateException("native lexical cell has been dropped");
+        }
+
         @Override public long nativeOffset() {
             synchronized (ActorNativeArena.this) {
-                checkAccess();
+                requireLiveCell();
                 return slot;
             }
         }
 
         public Object get() {
             synchronized (ActorNativeArena.this) {
-                checkAccess();
+                requireLiveCell();
                 return loadValue(slot, uninitialized);
             }
         }
@@ -444,10 +450,31 @@ public final class ActorNativeArena implements AutoCloseable {
          */
         public boolean trySet(Object value) {
             synchronized (ActorNativeArena.this) {
-                checkAccess();
+                requireLiveCell();
                 if (!supportsValue(value, uninitialized)) return false;
                 storeValue(slot, value, uninitialized);
                 return true;
+            }
+        }
+
+        /**
+         * Explicit compiler-lowered lexical scope drop. The tagged payload is
+         * cleared while this actor holds its arena authority, which decrements
+         * native facade/opaque-handle reference counts immediately. The slab
+         * storage itself remains actor-owned until physical finalization; no
+         * actor-relative address can be recycled during an actor lifetime.
+         *
+         * <p>A drop is terminal for this cell, even if the guest value was
+         * already null. Callers must prove the slot has no outstanding lexical
+         * aliases before dropping it; source Env teardown is not yet wired to
+         * this operation.</p>
+         */
+        @Override public void close() {
+            synchronized (ActorNativeArena.this) {
+                checkAccess();
+                if (dropped) return;
+                storeValue(slot, null, uninitialized);
+                dropped = true;
             }
         }
     }
