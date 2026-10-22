@@ -109,17 +109,26 @@ public final class AsyncSequences {
             try {
                 read = channel.readAsync();
             } catch (RuntimeException | Error failure) {
+                // Admission failed before a read was established. Block new
+                // reads and publish the actual failure before releasing the
+                // single-consumer reservation.
                 synchronized (lock) {
-                    if (pendingResult == result) pendingResult = null;
+                    closed = true;
+                    terminalFailure = failure;
                 }
-                result.failFromRuntime(failure);
+                try {
+                    result.failFromRuntime(failure);
+                } finally {
+                    synchronized (lock) {
+                        if (pendingResult == result) pendingResult = null;
+                    }
+                }
                 return result;
             }
             readRef.set(read);
             if (result.isCancelled()) read.cancel(false);
             read.whenCompleteRuntime((value, failure) -> {
                 synchronized (lock) {
-                    if (pendingResult == result) pendingResult = null;
                     if (failure instanceof ChannelRuntime.ChannelClosedException closedError) {
                         closed = true;
                         if (closedError.getCause() != null) {
@@ -131,20 +140,29 @@ public final class AsyncSequences {
                     }
                 }
 
-                if (result.isDone()) return;
-                if (failure == null) {
-                    // Channel rejects null on admission. This is never an EOS sentinel.
-                    result.completeFromRuntime(Optional.of(value));
-                } else if (read.isCancelled()) {
-                    result.cancel(false);
-                } else if (failure instanceof ChannelRuntime.ChannelClosedException
-                        && failure.getCause() == null) {
-                    result.completeFromRuntime(Optional.empty());
-                } else if (failure instanceof ChannelRuntime.ChannelClosedException
-                        && failure.getCause() != null) {
-                    result.failFromRuntime(failure.getCause());
-                } else {
-                    result.failFromRuntime(failure);
+                try {
+                    if (result.isDone()) return;
+                    if (failure == null) {
+                        // Channel rejects null on admission. Never an EOS sentinel.
+                        result.completeFromRuntime(Optional.of(value));
+                    } else if (read.isCancelled()) {
+                        result.cancel(false);
+                    } else if (failure instanceof ChannelRuntime.ChannelClosedException
+                            && failure.getCause() == null) {
+                        result.completeFromRuntime(Optional.empty());
+                    } else if (failure instanceof ChannelRuntime.ChannelClosedException
+                            && failure.getCause() != null) {
+                        result.failFromRuntime(failure.getCause());
+                    } else {
+                        result.failFromRuntime(failure);
+                    }
+                } finally {
+                    // Keep the cursor's one-reader lease until result
+                    // publication completes. A concurrent nextAsync cannot
+                    // overtake an in-flight terminal notification.
+                    synchronized (lock) {
+                        if (pendingResult == result) pendingResult = null;
+                    }
                 }
             });
             return result;
@@ -154,7 +172,6 @@ public final class AsyncSequences {
         public void close() {
             OresFuture<Optional<T>> pending;
             synchronized (lock) {
-                if (closed && !ownsChannel) return;
                 closed = true;
                 pending = pendingResult;
             }
