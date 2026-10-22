@@ -153,4 +153,31 @@ public class ActorResultsTest {
         assertEquals(List.of(new ActorResults.Reply<Void>(actor, id, null)),
                 result.get(3, TimeUnit.SECONDS));
     }
+
+    @Test void cancelledActorReplyCancelsAggregateNotSiblingActorProducer()
+            throws Exception {
+        OresFuture<Integer> stopped = new OresFuture<>();
+        OresFuture<Integer> unrelated = new OresFuture<>();
+        var gathered = ActorResults.gather(List.of(
+                reply(address(), UUID.randomUUID(), stopped),
+                reply(address(), UUID.randomUUID(), unrelated)));
+        stopped.cancel(false);
+        assertTrue(gathered.isCancelled());
+        assertFalse(unrelated.isCancelled());
+        assertTrue(unrelated.completeFromRuntime(7));
+    }
+
+    @Test void actorLifecycleFailureIsNotMistakenForCleanVoidResult() throws Exception {
+        IllegalStateException failedInit = new IllegalStateException("on_start failed");
+        var actor = address();
+        UUID request = UUID.randomUUID();
+        OresFuture<Void> ready = OresFuture.failed(failedInit);
+        var gathered = ActorResults.gatherSettled(List.of(
+                reply(actor, request, ready)));
+        var outcome = gathered.get(3, TimeUnit.SECONDS).get(0);
+        assertEquals(actor, outcome.address());
+        assertEquals(request, outcome.requestId());
+        assertEquals(FutureCombinators.Status.FAILURE, outcome.status());
+        assertSame(failedInit, outcome.error());
+    }
 }
