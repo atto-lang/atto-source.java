@@ -52,7 +52,7 @@ public final class TypedScalarSmt {
     /** Not public: consumers cannot bypass full frontend admission via AST input. */
     private static String fromCheckedProgram(Ast.Program checked, String module, String function) {
         if (checked == null || module == null || module.isBlank()
-                || !ARITY.containsKey(function)) {
+                || function == null || !ARITY.containsKey(function)) {
             throw new IllegalArgumentException("unsupported scalar proof target");
         }
         Ast.FunctionDecl target = null;
