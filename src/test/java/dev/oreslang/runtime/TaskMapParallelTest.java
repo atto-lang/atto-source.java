@@ -243,4 +243,137 @@ public class TaskMapParallelTest {
             assertNull(handle.getDone().get(10, TimeUnit.SECONDS));
         }
     }
+
+    @Test void authenticOwnerCancellationIsSeparateFromChildFailure() throws Exception {
+        OresFuture<Integer> never = new OresFuture<>();
+        CountDownLatch started = new CountDownLatch(1);
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            var handle = TaskMapParallel.mapLimit(
+                    scheduler, List.of(1), 1, value -> {
+                        started.countDown();
+                        return awaitValue(never);
+                    });
+            assertTrue(started.await(3, TimeUnit.SECONDS));
+            assertTrue(handle.cancel("requested by owner"));
+            assertTrue(handle.result().isCancelled());
+            assertNull(handle.getDone().get(3, TimeUnit.SECONDS));
+            List<TaskMapParallel.ChildFailure> details =
+                    handle.childFailures().get(3, TimeUnit.SECONDS);
+            assertEquals(1, details.size());
+            assertEquals(0, details.get(0).index());
+            assertTrue(details.get(0).cancelled());
+            assertInstanceOf(java.util.concurrent.CancellationException.class,
+                    details.get(0).cause());
+            assertFalse(never.isCancelled(),
+                    "cancel owned child Task, not its independent Future");
+        }
+    }
+
+    @Test void userThrownCancellationExceptionIsGenuineFailureNotTaskCancellation()
+            throws Exception {
+        java.util.concurrent.CancellationException raised =
+                new java.util.concurrent.CancellationException("ordinary guest exception");
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            var handle = TaskMapParallel.mapLimit(
+                    scheduler, List.of(1), 1, value -> resume -> {
+                        throw raised;
+                    });
+            ExecutionException failed = assertThrows(ExecutionException.class,
+                    () -> handle.result().get(3, TimeUnit.SECONDS));
+            assertSame(raised, failed.getCause());
+            assertFalse(handle.result().isCancelled());
+            assertNull(handle.getDone().get(3, TimeUnit.SECONDS));
+            List<TaskMapParallel.ChildFailure> details =
+                    handle.childFailures().get(3, TimeUnit.SECONDS);
+            assertEquals(1, details.size());
+            assertSame(raised, details.get(0).cause());
+            assertFalse(details.get(0).cancelled());
+        }
+    }
+
+    @Test void failFastPreservesPrimaryErrorAndCapturesCancelledSibling()
+            throws Exception {
+        IllegalArgumentException primary = new IllegalArgumentException("bad input");
+        OresFuture<Integer> left = new OresFuture<>();
+        CountDownLatch firstAdmitted = new CountDownLatch(1);
+        CountDownLatch secondAdmitted = new CountDownLatch(1);
+        try (OresScheduler scheduler = new OresScheduler(3)) {
+            var handle = TaskMapParallel.mapLimit(scheduler, List.of(0,1,2), 2,
+                    index -> {
+                        if (index == 0) {
+                            firstAdmitted.countDown();
+                            return awaitValue(left);
+                        }
+                        if (index == 1) {
+                            secondAdmitted.countDown();
+                            return awaitValue(OresFuture.failed(primary));
+                        }
+                        throw new AssertionError("third factory must not start");
+                    });
+            assertTrue(firstAdmitted.await(3, TimeUnit.SECONDS));
+            assertTrue(secondAdmitted.await(3, TimeUnit.SECONDS));
+            ExecutionException error = assertThrows(ExecutionException.class,
+                    () -> handle.result().get(3, TimeUnit.SECONDS));
+            assertSame(primary, error.getCause());
+            assertNull(handle.getDone().get(3, TimeUnit.SECONDS));
+            List<TaskMapParallel.ChildFailure> details =
+                    handle.childFailures().get(3, TimeUnit.SECONDS);
+            assertEquals(2, details.size());
+            assertEquals(0, details.get(0).index());
+            assertTrue(details.get(0).cancelled());
+            assertEquals(1, details.get(1).index());
+            assertSame(primary, details.get(1).cause());
+            assertFalse(details.get(1).cancelled());
+            assertFalse(left.isCancelled());
+        }
+    }
+
+    @Test void failuresRemainInputOrderedAfterParallelRetirement()
+            throws Exception {
+        IllegalArgumentException first = new IllegalArgumentException("first");
+        IllegalStateException second = new IllegalStateException("second");
+        OresFuture<Integer> a = new OresFuture<>();
+        OresFuture<Integer> b = new OresFuture<>();
+        CountDownLatch admitted = new CountDownLatch(2);
+        try (OresScheduler scheduler = new OresScheduler(3)) {
+            var handle = TaskMapParallel.mapLimit(scheduler, List.of(0,1), 2,
+                    index -> {
+                        admitted.countDown();
+                        return awaitValue(index == 0 ? a : b);
+                    });
+            assertTrue(admitted.await(3, TimeUnit.SECONDS));
+            b.failFromRuntime(second);
+            a.failFromRuntime(first);
+            assertThrows(ExecutionException.class,
+                    () -> handle.result().get(3, TimeUnit.SECONDS));
+            assertNull(handle.getDone().get(3, TimeUnit.SECONDS));
+            List<TaskMapParallel.ChildFailure> details =
+                    handle.childFailures().get(3, TimeUnit.SECONDS);
+            assertEquals(2, details.size());
+            assertEquals(0, details.get(0).index());
+            assertSame(first, details.get(0).cause());
+            assertEquals(1, details.get(1).index());
+            assertSame(second, details.get(1).cause());
+        }
+    }
+
+    @Test void failureDiagnosticsCannotBeCancelledAsFalseQuiescence()
+            throws Exception {
+        OresFuture<Integer> stillRunning = new OresFuture<>();
+        CountDownLatch admitted = new CountDownLatch(1);
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            var handle = TaskMapParallel.mapLimit(scheduler, List.of(7), 1, n -> {
+                admitted.countDown();
+                return awaitValue(stillRunning);
+            });
+            assertTrue(admitted.await(3, TimeUnit.SECONDS));
+            assertFalse(handle.childFailures().cancel(false),
+                    "failure diagnostics are an observation-only Future");
+            assertFalse(handle.getDone().cancel(false),
+                    "physical completion cannot be forged by observer cancellation");
+            handle.cancel("end");
+            assertNull(handle.getDone().get(3, TimeUnit.SECONDS));
+            assertEquals(1, handle.childFailures().get(3, TimeUnit.SECONDS).size());
+        }
+    }
 }
