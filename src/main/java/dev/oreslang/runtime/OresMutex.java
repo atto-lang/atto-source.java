@@ -311,6 +311,7 @@ public final class OresMutex {
 
             private void requireOwningSegment() {
                 requireOwnerDomain();
+                if (taskLease != null) taskLease.requireCurrentOwner();
                 // Identity is intentional: record value equality would merge
                 // separate physical actor turns in the same execution domain.
                 if (ActorRuntime.currentMutexExecutionSegment() != owningSegment) {
@@ -1066,6 +1067,7 @@ public final class OresMutex {
                     throw new WrongMutexDomainException(
                             "SharedMutex guard belongs to another actor/execution domain");
                 }
+                if (taskLease != null) taskLease.requireCurrentOwner();
             }
 
             @Override
