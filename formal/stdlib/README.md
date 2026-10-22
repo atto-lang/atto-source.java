@@ -1,6 +1,6 @@
 # Core and stdlib formal verification — pilot
 
-This pilot uses **Z3 over SMT-LIB2** to check two *reviewed, abstract*
+This pilot uses **Z3 over SMT-LIB2** to check three *reviewed, abstract*
 Oreslang stdlib models, and a Rust fail-closed gate for the solver's complete
 output. It is intentionally separate from the runtime's bounded actor models.
 
@@ -10,11 +10,12 @@ output. It is intentionally separate from the runtime's bounded actor models.
 | --- | --- | --- | --- |
 | `core-int64.smt2` | QF_BV signed 64-bit, arbitrary inputs | 16 UNSAT counterexample queries: min/max bounds, selection and commutativity; clamp reversed-bound policy, in-range selection, idempotence and monotonicity | 2 SAT queries: swapped min, missing upper clamp |
 | `trace-buffer-counters.smt2` | QF_BV signed 64-bit, single-owner counter transition | 8 UNSAT counterexample queries: valid capacity 1..65536, occupancy conservation, invalid-input no-op, full rejection, at-most-once admission, saturating dropped count, nondecrease | 2 SAT queries: incorrect full-buffer admission, missing dropped-counter saturation |
+| `testing-summary.smt2` | QF_BV signed 64-bit, one-step suite accounting for up to 1,024 processed cases | 8 UNSAT counterexample queries: total/filtered partition, passed/failed/skipped conservation, fail-fast state, single case advancement, and bounded progress | 2 SAT queries: uncounted failure and doubly counted skip |
 
 **UNSAT** means that no counterexample exists in the entire fixed-width bit-vector
 domain under the model's definitions and stated preconditions; this is not
 randomized testing or merely bounded enumeration of test inputs. For
-`Trace.Buffer`, this is an *inductive one-transition invariant* over all
+`Trace.Buffer` and `testing.run_suite`, this is an *inductive one-transition invariant* over all
 states meeting `Inv`. It does **not** prove that initialization establishes
 `Inv` unless the actual constructor is verified separately.
 
@@ -23,15 +24,19 @@ The models intentionally follow the *current* implementations:
 - `Trace.Buffer.record` rejects malformed events without increasing drops;
   valid events rejected at capacity increment `dropped` until 2147483647,
   after which the counter saturates. Accepted events increment occupancy once.
+- `testing.run_suite` maintains `total = passed + failed + skipped` for
+  attempted selected cases; `filtered` counts excluded cases, and fail-fast
+  stops iterating immediately after the first selected failure. The model uses
+  an explicit 1,024-step bound, not a proof of arbitrary unbounded loops.
 
 ## Guardrail: no silent source drift
 
-`verify.rs` compares the Git blob identities of `stdlib/core.ores` and
-`stdlib/trace.ores` to independently reviewed ids. Any source modification,
+`verify.rs` compares the Git blob identities of `stdlib/core.ores`,
+`stdlib/trace.ores`, and `stdlib/testing.ores` to independently reviewed ids. Any source modification,
 including a documentation-only modification, fails CI until a reviewer checks
 the implementation, updates the abstract model if necessary, and deliberately
 updates the source-identity constants. The gate then demands **exactly**
-16/8 `unsat` results followed by 2/2 `sat` negative controls. Missing solver,
+16/8/8 `unsat` results followed by 2/2/2 `sat` negative controls. Missing solver,
 nonzero process exit, wrong output, `unknown`, an extra result, or changed
 source all fail closed.
 
@@ -69,6 +74,9 @@ verified binary/digest and archive the proof transcript**.
 - Physical FIFO behavior of `Trace.Buffer.items`, event payloads, `at()`
   indexing, constructor failure, concurrent calls or capacity reclamation.
 - LLVM/.NET/Wasm/JS parity; there is no cross-backend proof here.
+- `testing.run_suite` callback scheduling, exact emitted output, early return
+  guest semantics, overflow for suites beyond the bound, or the ability to
+  construct the modeled `TestCase` list on every target.
 - Liveness/progress/fairness or arbitrary-width integers.
 
 **Promotion gates**: use the existing exact-head JVM/AOT guest invocation with
