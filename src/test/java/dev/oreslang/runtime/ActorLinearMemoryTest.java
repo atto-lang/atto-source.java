@@ -297,6 +297,39 @@ final class ActorLinearMemoryTest {
     }
 
     @Test
+    void immutableBorrowAllowsBoundsCheckedSelfCopyWithoutMutating() {
+        AtomicLong charged = new AtomicLong();
+        int page = ActorLinearMemory.PAGE_BYTES;
+        try (ActorNativeArena arena = arena(2L * page, charged)) {
+            ActorLinearMemory memory = arena.linearMemory(2, 2);
+            memory.writeLong(page - 4L, 0x1122334455667788L);
+            try (var borrow = memory.leaseReadOnlyPage(1, 0, 16)) {
+                assertEquals(16, borrow.length());
+                // No data changes: a self-copy does not require exclusive
+                // write authority, even if the range spans a page boundary.
+                memory.copy(page - 4L, page - 4L, 8);
+                memory.copy(page, page, 16);
+                assertEquals(0x1122334455667788L, memory.readLong(page - 4L));
+                assertThrows(IllegalStateException.class,
+                        () -> memory.copy(page - 4L, page, 8),
+                        "an actual overlapping destination still conflicts");
+                assertEquals(0x1122334455667788L, memory.readLong(page - 4L));
+                // Bounds checking is mandatory even on no-op requests.
+                assertThrows(IndexOutOfBoundsException.class,
+                        () -> memory.copy(-1, -1, 0));
+                assertThrows(IndexOutOfBoundsException.class,
+                        () -> memory.copy(2L * page, 2L * page, 1));
+                assertThrows(IndexOutOfBoundsException.class,
+                        () -> memory.copy(2L * page + 1L, 2L * page + 1L, 0));
+                // One-past-the-end, zero-length memmove is a legal no-op.
+                memory.copy(2L * page, 2L * page, 0);
+            }
+            assertEquals(0x1122334455667788L, memory.readLong(page - 4L));
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
     void deterministicBulkOperationsMatchArrayOracleAcrossNativePageBoundaries() {
         AtomicLong charged = new AtomicLong();
         final int size = ActorLinearMemory.PAGE_BYTES * 2;
