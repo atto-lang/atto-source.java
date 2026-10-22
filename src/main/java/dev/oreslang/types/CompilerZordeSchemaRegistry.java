@@ -29,6 +29,10 @@ import java.util.Objects;
  * API exists. In particular, a caller-provided fingerprint is never accepted.
  */
 final class CompilerZordeSchemaRegistry {
+    // Bound source-controlled import declarations independently of the
+    // linker's unit count, so even one source cannot induce unbounded work.
+    static final int MAX_NAMED_TYPE_IMPORTS = 128;
+    static final int MAX_TYPES_PER_IMPORTED_UNIT = 32;
     private final Object compilationSeal = new Object();
     private final String unitId;
     private final long generation;
@@ -87,9 +91,7 @@ final class CompilerZordeSchemaRegistry {
             String source, String compilationUnitId,
             long generation, boolean allowTypeImports) {
         Objects.requireNonNull(source, "source");
-        if (compilationUnitId == null || compilationUnitId.isBlank()
-                || compilationUnitId.length() > 256
-                || !compilationUnitId.matches("[A-Za-z_][A-Za-z_0-9./-]*")) {
+        if (!CompilerZordeLinkManifest.validUnitId(compilationUnitId)) {
             throw new IllegalArgumentException("invalid Zorde compilation unit identity");
         }
         if (generation < 0) {
@@ -103,6 +105,9 @@ final class CompilerZordeSchemaRegistry {
         Map<String, Set<String>> imported = new TreeMap<>();
         Set<String> importedSimpleNames = new HashSet<>();
         if (allowTypeImports) {
+            if (parsed.imports().size() > MAX_NAMED_TYPE_IMPORTS)
+                throw new IllegalArgumentException(
+                        "Zorde source type import budget exceeded");
             for (Ast.ImportDecl item : parsed.imports()) {
                 if (item.kind() != Ast.ImportKind.TYPE
                         || item.wildcard() || item.namespace() != null
@@ -121,7 +126,12 @@ final class CompilerZordeSchemaRegistry {
                     throw new IllegalArgumentException(
                             "invalid, duplicate, ambiguous or self Zorde import type");
                 }
-                imported.computeIfAbsent(module, ignored -> new TreeSet<>()).add(simple);
+                Set<String> unitNames = imported.computeIfAbsent(
+                        module, ignored -> new TreeSet<>());
+                if (unitNames.size() >= MAX_TYPES_PER_IMPORTED_UNIT)
+                    throw new IllegalArgumentException(
+                            "Zorde imported type budget exceeded for " + module);
+                unitNames.add(simple);
             }
         }
         // Source-to-schema inference remains strictly local. We remove
