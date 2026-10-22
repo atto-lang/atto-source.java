@@ -53,14 +53,31 @@ public final class TaskOwnedLeases {
      */
     public static final class CleanupFailure extends IllegalStateException {
         private final List<Throwable> failures;
+        private final TaskHandle.TaskOutcome<?> originalOutcome;
 
         CleanupFailure(List<Throwable> failures) {
-            super("task-owned lease cleanup failed (" + failures.size() + " leases)");
+            this(failures, null);
+        }
+
+        CleanupFailure(
+                List<Throwable> failures, TaskHandle.TaskOutcome<?> originalOutcome) {
+            super("task-owned lease cleanup failed (" + failures.size() + " leases)",
+                    originalOutcome instanceof TaskHandle.Failed<?> failed
+                            ? failed.failure() : null);
+            if (failures.isEmpty()) {
+                throw new IllegalArgumentException("cleanup failure requires failures");
+            }
             this.failures = List.copyOf(failures);
+            this.originalOutcome = originalOutcome;
         }
 
         public List<Throwable> failures() {
             return failures;
+        }
+
+        /** Preserves the exact primary source outcome; null at scope level. */
+        public TaskHandle.TaskOutcome<?> originalOutcome() {
+            return originalOutcome;
         }
     }
 
