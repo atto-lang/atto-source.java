@@ -32,6 +32,8 @@ if "context.nativeIo().submit" in fs_switch:
 for required in (
     'case "read_text_async" -> (Invokable) fs::readTextAsync',
     'case "exists_async" -> (Invokable) fs::existsAsync',
+    'case "write_text_async" -> (Invokable) fs::writeTextAsync',
+    'case "append_text_async" -> (Invokable) fs::appendTextAsync',
 ):
     if required not in fs_switch:
         deny("missing strict async dispatch: " + required)
@@ -46,6 +48,8 @@ if "context.nativeIo().submit" in facade:
 for required in (
     "context.strictFileIo().readText",
     "context.strictFileIo().exists",
+    "context.strictFileIo().writeText",
+    "context.strictFileIo().appendText",
     "context.requireStrictPathPermission",
 ):
     if required not in facade:
@@ -54,7 +58,8 @@ for required in (
 provider = text("src/main/java/dev/oreslang/runtime/LinuxUringFileIoProvider.java")
 if provider.count("() -> cancelNative(id), () -> { }") < 2:
     deny("read/exists Future cancellation must require native revocation admission")
-
+if provider.count("new OresFuture<>(() -> false, () -> { })") < 1:
+    deny("strict filesystem mutations must explicitly decline guest cancellation")
 for forbidden in (
     "ExecutorService",
     "Executors.",
@@ -80,6 +85,7 @@ native = text("src/main/c/oresuring.c")
 for required in (
     "IORING_OP_OPENAT2",
     "IORING_OP_READ",
+    "IORING_OP_WRITE",
     "IORING_OP_ASYNC_CANCEL",
     "IORING_OP_CLOSE",
     "RESOLVE_BENEATH",
@@ -115,7 +121,7 @@ method_names = {
     for method in entry.get("methods", [])
     if isinstance(method, dict)
 }
-if not {"nativeReadCompleted", "nativeExistsCompleted"} <= method_names:
+if not {"nativeReadCompleted", "nativeExistsCompleted", "nativeWriteCompleted"} <= method_names:
     deny("Native Image JNI callback methods are incomplete")
 
 # This PR is deliberately staged: legacy synchronous filesystem APIs remain
@@ -125,5 +131,5 @@ if 'case "read_text" -> (Invokable) fs::readText' not in fs_switch:
     deny("staged legacy-sync marker changed; update migration/audit together")
 
 print("STRICT_FILESYSTEM_IO=PASS")
-print("strict_async_operations=read_text_async,exists_async")
+print("strict_async_operations=read_text_async,exists_async,write_text_async,append_text_async")
 print("legacy_sync_surface=STAGED_NOT_STRICT")
