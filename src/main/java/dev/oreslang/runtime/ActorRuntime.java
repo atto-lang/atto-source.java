@@ -1343,11 +1343,13 @@ public final class ActorRuntime implements AutoCloseable {
                 java.util.Arrays.fill(old, 0.0);
                 values = null; // no reachable mutable buffer retained by this lease
                 cell.shardSnapshotLeases.remove(this);
-                if (cell.shardReservedBytes < bytes) {
+                if (cell.shardReservedBytes < bytes
+                        || cell.shardSnapshotReservedBytes < bytes) {
                     throw new IllegalStateException("snapshot accounting underflow");
                 }
-                cell.shardReservedBytes -= bytes;
                 releaseSharedRuntimeBytes(bytes);
+                cell.shardReservedBytes -= bytes;
+                cell.shardSnapshotReservedBytes -= bytes;
             }
         }
 
@@ -1370,8 +1372,26 @@ public final class ActorRuntime implements AutoCloseable {
                 throw terminated(cell.ref);
             }
             final long total = Math.addExact(cell.shardReservedBytes, bytes);
-            if (total > cell.policy.maxHeapBytes()) {
-                throw new IllegalStateException("actor snapshot quota exceeded");
+            final long nextSnapshotBytes =
+                    Math.addExact(cell.shardSnapshotReservedBytes, bytes);
+            final long alreadyUsed = isPrivateKind(cell.kind)
+                    ? Math.addExact(
+                            cell.memorySlice.usedBytes(),
+                            Math.addExact(
+                                    cell.outputBytes.get(),
+                                    cell.shardSnapshotReservedBytes))
+                    : Math.addExact(
+                            Math.addExact(
+                                    cell.nativeArenaBytes,
+                                    cell.sharedMailboxBytes.get()),
+                            Math.addExact(
+                                    cell.outputBytes.get(),
+                                    cell.shardSnapshotReservedBytes));
+            if (bytes > cell.policy.maxHeapBytes() - alreadyUsed) {
+                throw new IllegalStateException(
+                        "actor snapshot quota exceeded: requested=" + bytes
+                                + " used=" + alreadyUsed
+                                + " limit=" + cell.policy.maxHeapBytes());
             }
             reserveSharedRuntimeBytes(bytes, "actor column snapshot");
             final double[] contents;
@@ -1383,6 +1403,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
             ActorShardSnapshotLease lease = new ActorShardSnapshotLease(cell, contents, bytes);
             cell.shardReservedBytes = total;
+            cell.shardSnapshotReservedBytes = nextSnapshotBytes;
             cell.shardSnapshotLeases.add(lease);
             return lease;
         }
@@ -7095,8 +7116,10 @@ public final class ActorRuntime implements AutoCloseable {
         private long nativeArenaBytes;
         private final Set<ActorShardLease> shardLeases = ConcurrentHashMap.newKeySet();
         private final Set<ActorShardSnapshotLease> shardSnapshotLeases = ConcurrentHashMap.newKeySet();
-        /** Guarded by lifecycleLock; private and shared shard bytes both counted. */
+        /** Guarded by lifecycleLock; native shard + detached snapshot bytes. */
         private long shardReservedBytes;
+        /** Detached JVM snapshot bytes are outside ActorNativeArena/ActorMemorySlice. */
+        private long shardSnapshotReservedBytes;
         private final AtomicBoolean scheduled = new AtomicBoolean();
         /** Per-dispatch identity, guarded by lifecycleLock. A stale queued
          * runnable can never consume a newer scheduled=false->true claim. */
