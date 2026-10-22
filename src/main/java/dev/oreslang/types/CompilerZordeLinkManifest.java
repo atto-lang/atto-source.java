@@ -197,7 +197,8 @@ final class CompilerZordeLinkManifest {
                 || !registry.descriptor(qualifiedSchema).fingerprint().equals(
                         unit.exportedSchemas().get(qualifiedSchema)))
             throw new IllegalArgumentException("Zorde linker registry identity changed");
-        return registry.checkedTypeForAnalysis(qualifiedSchema, candidate);
+        return Types.scopeCheckedTypeToVerifiedLink(
+                registry.checkedTypeForAnalysis(qualifiedSchema, candidate), this);
     }
 
     String digest() { return treeDigest; }
@@ -206,6 +207,10 @@ final class CompilerZordeLinkManifest {
     int unitCount() { return units.size(); }
     Set<String> roots() { return roots; }
     List<String> dependencyFirstOrder() { return dependencyFirstOrder; }
+
+    // Package-only private authority. Never serialized in the deterministic
+    // manifest digest or exposed to Oreslang runtime/userland.
+    Object linkSeal() { return linkSeal; }
 
     boolean sameLinkInstance(CompilerZordeLinkManifest other) {
         return other != null && linkSeal == other.linkSeal;
