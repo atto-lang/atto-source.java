@@ -274,6 +274,10 @@ seal; types from different staging instances cannot be assigned to one
 another without a future explicit, checked compatibility/revalidation step.
 A public descriptor copy with the same SHA-256 digest is not the admitted
 descriptor object.
+The registry also records a deterministic SHA-256 digest of the exact staged
+source text for reproducibility and comparison. This digest, like the numeric
+generation or schema fingerprint, is public metadata and **never** sufficient
+to mint the private per-compilation seal.
 
 `checkedTypeForAnalysis` checks strict int64 or Unicode-string membership
 before returning an internal type marker; it **does not return a validated
