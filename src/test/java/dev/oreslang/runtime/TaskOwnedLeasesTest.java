@@ -238,4 +238,43 @@ public class TaskOwnedLeasesTest {
                     "borrowed producer is independent of cancelled TaskScope");
         }
     }
+
+    @Test void repeatedEarlyUnlocksReuseLiveLeaseCapacity() throws Exception {
+        AtomicInteger releases = new AtomicInteger();
+        int loops = TaskOwnedLeases.MAX_LEASES_PER_TASK + 3072;
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskHandle<Integer> handle = scheduler.startTracked(resume -> {
+                for (int i = 0; i < loops; i++) {
+                    TaskOwnedLeases.Lease lease =
+                            TaskOwnedLeases.register(releases::incrementAndGet);
+                    lease.close();
+                    if ((i & 127) == 0) OresScheduler.cancellationCheckpoint();
+                }
+                return OresScheduler.done(loops);
+            });
+            assertEquals(Integer.valueOf(loops),
+                    handle.result().get(5, TimeUnit.SECONDS));
+            assertInstanceOf(TaskHandle.Success.class,
+                    handle.getDone().get(5, TimeUnit.SECONDS));
+            assertEquals(loops, releases.get());
+            assertEquals(List.of(), handle.cleanupFailures().get(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test void outstandingLiveLeaseQuotaCannotBeBypassed() throws Exception {
+        AtomicInteger released = new AtomicInteger();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskHandle<Integer> handle = scheduler.startTracked(resume -> {
+                for (int i = 0; i < TaskOwnedLeases.MAX_LEASES_PER_TASK; i++) {
+                    TaskOwnedLeases.register(released::incrementAndGet);
+                }
+                assertThrows(IllegalStateException.class,
+                        () -> TaskOwnedLeases.register(released::incrementAndGet));
+                return OresScheduler.done(1);
+            });
+            assertInstanceOf(TaskHandle.Success.class,
+                    handle.getDone().get(5, TimeUnit.SECONDS));
+            assertEquals(TaskOwnedLeases.MAX_LEASES_PER_TASK, released.get());
+        }
+    }
 }
