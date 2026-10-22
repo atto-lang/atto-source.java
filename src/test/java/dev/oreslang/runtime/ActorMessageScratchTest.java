@@ -196,6 +196,174 @@ final class ActorMessageScratchTest {
     }
 
     @Test
+    void nestedLexicalScopesReclaimWithinMessageWithoutInvalidatingOuterValues() {
+        AtomicLong charged = new AtomicLong();
+        try (ActorNativeArena arena = new ActorNativeArena(16384, () -> {}, bytes -> {
+            charged.addAndGet(bytes);
+            return () -> charged.addAndGet(-bytes);
+        })) {
+            ActorMessageScratch scratch = new ActorMessageScratch(arena, 16384);
+            scratch.beginMessage();
+            var outer = scratch.allocate(16);
+            outer.writeLong(0, 111);
+            ActorMessageScratch.Slice staleChild;
+            ActorMessageScratch.Slice staleGrandchild;
+            try (var child = scratch.enterScope()) {
+                var inner = scratch.allocate(24);
+                inner.writeLong(0, 222);
+                staleChild = inner;
+                try (var grandchild = scratch.enterScope()) {
+                    var leaf = scratch.allocate(16);
+                    leaf.writeLong(0, 333);
+                    staleGrandchild = leaf;
+                    assertEquals(56L, scratch.usedBytes());
+                }
+                assertThrows(IllegalStateException.class, () -> staleGrandchild.readLong(0));
+                assertEquals(222L, staleChild.readLong(0));
+                assertEquals(111L, outer.readLong(0));
+                assertEquals(40L, scratch.usedBytes(),
+                        "closing a lexical child must restore the outer allocation cursor");
+                var reused = scratch.allocate(16);
+                assertEquals(0L, reused.readLong(0),
+                        "reusing a nested-scope span cannot reveal old content");
+                reused.writeLong(0, 444);
+                assertThrows(IllegalStateException.class,
+                        () -> staleGrandchild.writeLong(0, 999),
+                        "a revoked grandchild must not overwrite a later sibling allocation");
+                assertEquals(444L, reused.readLong(0));
+            }
+            assertEquals(16L, scratch.usedBytes());
+            assertEquals(111L, outer.readLong(0));
+            assertThrows(IllegalStateException.class, () -> staleChild.readLong(0));
+            try (var sibling = scratch.enterScope()) {
+                var newValue = scratch.allocate(24);
+                assertEquals(0L, newValue.readLong(0));
+                newValue.writeLong(0, 555);
+                assertThrows(IllegalStateException.class,
+                        () -> staleChild.writeLong(0, 999),
+                        "recycled native address must not resurrect a closed scope token");
+                assertEquals(555L, newValue.readLong(0));
+            }
+            assertEquals(16L, scratch.usedBytes());
+            assertEquals(4096L, scratch.reservedBytes());
+            scratch.finishMessage();
+            assertThrows(IllegalStateException.class, () -> outer.readLong(0));
+            scratch.beginMessage();
+            var next = scratch.allocate(16);
+            assertEquals(0L, next.readLong(0));
+            assertThrows(IllegalStateException.class, () -> outer.writeLong(0, 7),
+                    "reusing the root Scope object must not revive a previous epoch slice");
+            scratch.finishMessage();
+        }
+        assertEquals(0L, charged.get());
+    }
+
+    @Test
+    void lexicalScopesRejectOutOfOrderCloseAndLiveNativeReadBorrow() {
+        AtomicLong charged = new AtomicLong();
+        try (ActorNativeArena arena = new ActorNativeArena(8192, () -> {}, bytes -> {
+            charged.addAndGet(bytes);
+            return () -> charged.addAndGet(-bytes);
+        })) {
+            ActorMessageScratch scratch = new ActorMessageScratch(arena, 8192);
+            scratch.beginMessage();
+            var parent = scratch.enterScope();
+            var parentSlice = scratch.allocate(8);
+            parentSlice.writeLong(0, 77);
+            var child = scratch.enterScope();
+            var childSlice = scratch.allocate(8);
+            childSlice.writeLong(0, 88);
+            assertThrows(IllegalStateException.class, parent::close);
+            assertThrows(IllegalStateException.class, scratch::finishMessage);
+            var read = childSlice.borrowReadOnly();
+            assertThrows(IllegalStateException.class, child::close,
+                    "nested scope cannot return bytes while its native borrow is live");
+            assertEquals(88L, read.readLong(0));
+            assertEquals(77L, parentSlice.readLong(0));
+            read.close();
+            child.close();
+            assertThrows(IllegalStateException.class, () -> childSlice.readLong(0));
+            assertThrows(IllegalStateException.class, child::close,
+                    "scope double-close must not rewind a later allocation");
+            assertEquals(77L, parentSlice.readLong(0));
+            parent.close();
+            assertThrows(IllegalStateException.class, () -> parentSlice.readLong(0));
+            scratch.finishMessage();
+        }
+        assertEquals(0L, charged.get());
+    }
+
+    @Test
+    void multiBlockScopeRewindClearsOnlyScopedBytesAndPreservesActorPersistentRegion() {
+        AtomicLong charged = new AtomicLong();
+        try (ActorNativeArena arena = new ActorNativeArena(64 * 1024, () -> {}, bytes -> {
+            charged.addAndGet(bytes);
+            return () -> charged.addAndGet(-bytes);
+        })) {
+            var persistent = arena.region(16);
+            persistent.writeLong(0, 0x1122334455667788L);
+            ActorMessageScratch scratch = new ActorMessageScratch(arena, 64 * 1024);
+            scratch.beginMessage();
+            var root = scratch.allocate(8);
+            root.writeLong(0, 0x1111);
+            ActorMessageScratch.Slice stale;
+            try (var scope = scratch.enterScope()) {
+                var first = scratch.allocate(4000);
+                first.writeLong(0, 0x2222);
+                var second = scratch.allocate(4000);
+                second.writeLong(0, 0x3333);
+                stale = second;
+                assertEquals(8008L, scratch.usedBytes());
+            }
+            assertThrows(IllegalStateException.class, () -> stale.readLong(0));
+            assertEquals(8L, scratch.usedBytes());
+            assertEquals(0x1111L, root.readLong(0));
+            assertEquals(0x1122334455667788L, persistent.readLong(0));
+            try (var sibling = scratch.enterScope()) {
+                var replacement = scratch.allocate(4000);
+                assertEquals(0L, replacement.readLong(0));
+                replacement.writeLong(0, 0x4444);
+                assertThrows(IllegalStateException.class, () -> stale.writeLong(0, 999));
+                assertEquals(0x4444L, replacement.readLong(0));
+            }
+            scratch.finishMessage();
+            assertEquals(0x1122334455667788L, persistent.readLong(0));
+            persistent.close();
+        }
+        assertEquals(0L, charged.get());
+    }
+
+    @Test
+    void lexicalScopeAutomaticallyRewindsAfterExceptionalUnwind() {
+        AtomicLong charged = new AtomicLong();
+        try (ActorNativeArena arena = new ActorNativeArena(8192, () -> {}, bytes -> {
+            charged.addAndGet(bytes);
+            return () -> charged.addAndGet(-bytes);
+        })) {
+            ActorMessageScratch scratch = new ActorMessageScratch(arena, 8192);
+            scratch.beginMessage();
+            var root = scratch.allocate(8);
+            root.writeLong(0, 999);
+            AtomicReference<ActorMessageScratch.Slice> leaked = new AtomicReference<>();
+            assertThrows(IllegalArgumentException.class, () -> {
+                try (var scope = scratch.enterScope()) {
+                    leaked.set(scratch.allocate(128));
+                    leaked.get().writeLong(0, 123);
+                    throw new IllegalArgumentException("guest computation rejected input");
+                }
+            });
+            assertEquals(8L, scratch.usedBytes());
+            assertEquals(999L, root.readLong(0));
+            assertThrows(IllegalStateException.class, () -> leaked.get().readLong(0));
+            try (var sibling = scratch.enterScope()) {
+                assertEquals(0L, scratch.allocate(128).readLong(0));
+            }
+            scratch.finishMessage();
+        }
+        assertEquals(0L, charged.get());
+    }
+
+    @Test
     void invalidOffsetsAndEpochsFailBeforeNativeAccess() {
         AtomicLong charged = new AtomicLong();
         try (ActorNativeArena arena = new ActorNativeArena(8192, () -> {}, bytes -> {
