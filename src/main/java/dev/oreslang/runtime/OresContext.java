@@ -442,14 +442,29 @@ public final class OresContext implements AutoCloseable {
 
     @Override
     public void close() {
-        strictFileIo.close();
-        nativeIo.close();
-        http.close();
         RuntimeException failure = null;
+        try {
+            strictFileIo.close();
+        } catch (RuntimeException strictIoFailure) {
+            failure = strictIoFailure;
+        }
+        try {
+            nativeIo.close();
+        } catch (RuntimeException nativeIoFailure) {
+            if (failure == null) failure = nativeIoFailure;
+            else failure.addSuppressed(nativeIoFailure);
+        }
+        try {
+            http.close();
+        } catch (RuntimeException httpFailure) {
+            if (failure == null) failure = httpFailure;
+            else failure.addSuppressed(httpFailure);
+        }
         try {
             asyncRuntime.close();
         } catch (RuntimeException asyncFailure) {
-            failure = asyncFailure;
+            if (failure == null) failure = asyncFailure;
+            else failure.addSuppressed(asyncFailure);
         }
         try {
             actors.close();
