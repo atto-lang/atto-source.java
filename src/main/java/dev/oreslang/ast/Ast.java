@@ -499,7 +499,19 @@ public final class Ast {
             List<Param> parameters,
             TypeRef returnType,
             List<Annotation> annotations,
-            List<Stmt> body) {
+            List<Stmt> body,
+            EffectSpec effects) {
+        /** Compatibility for existing AST writers that do not specify checked effects. */
+        public MethodDecl(String name, Visibility visibility, boolean isStatic,
+                          boolean isAbstract, boolean async, boolean suspends, boolean structural,
+                          TypeRef explicitReceiverType, List<String> genericParameters,
+                          List<Param> parameters, TypeRef returnType,
+                          List<Annotation> annotations, List<Stmt> body) {
+            this(name, visibility, isStatic, isAbstract, async, suspends, structural,
+                    explicitReceiverType, genericParameters, parameters, returnType, annotations, body,
+                    EffectSpec.none());
+        }
+
         /** Preserve all existing AST construction sites without an explicit effect. */
         public MethodDecl(String name, Visibility visibility, boolean isStatic,
                           boolean isAbstract, boolean async, boolean structural,
@@ -511,6 +523,7 @@ public final class Ast {
         }
 
         public MethodDecl {
+            if (effects == null) throw new IllegalArgumentException("method checked effects cannot be null");
             genericParameters = List.copyOf(genericParameters);
             parameters = List.copyOf(parameters);
             annotations = List.copyOf(annotations);
