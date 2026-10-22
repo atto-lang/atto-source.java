@@ -23,6 +23,28 @@
           ]
         }
       ]
+    },
+    {
+      "type": "dev.oreslang.runtime.LinuxUringFileIoProvider",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "nativeReadCompleted",
+          "parameterTypes": [
+            "long",
+            "byte[]",
+            "int"
+          ]
+        },
+        {
+          "name": "nativeExistsCompleted",
+          "parameterTypes": [
+            "long",
+            "boolean",
+            "int"
+          ]
+        }
+      ]
     }
   ],
   "resources": [
