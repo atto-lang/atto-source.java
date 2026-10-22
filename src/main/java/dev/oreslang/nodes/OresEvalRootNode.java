@@ -2153,7 +2153,10 @@ public final class OresEvalRootNode extends RootNode {
                 // process-exit never replaces an already pending failure.
                 if (!(cleanupFailure instanceof ProcessExitSignal)
                         && isUnmaskableFailure(cleanupFailure)
-                        && !isUnmaskableFailure(earlier)) {
+                        && (!isUnmaskableFailure(earlier)
+                            || (earlier instanceof java.util.concurrent.CancellationException
+                                && cleanupFailure instanceof
+                                    dev.oreslang.runtime.UntrappableTaskFailure))) {
                     suppressCleanupFailure(cleanupFailure, earlier);
                     return SourceFlow.throwing(cleanupFailure);
                 }
