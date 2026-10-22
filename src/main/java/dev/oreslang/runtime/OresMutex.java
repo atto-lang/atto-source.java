@@ -123,12 +123,20 @@ public final class OresMutex {
         /** Scheduler-only, after physical Task quiescence. A queued request
          * must be unlinked first; a claimed, unpublished handoff is allowed
          * to lose to owner death and must discard its eventual guard. */
-        private boolean cancelAfterOwnerQuiescence() {
-            if (super.isDone()) return false;
+        private void cancelAfterOwnerQuiescence(Runnable afterPublication) {
+            if (super.isDone()) {
+                afterPublication.run();
+                return;
+            }
             // Task retirement may execute on a scheduler carrier. Never run
             // Java CompletableFuture dependents on that carrier.
-            Shared.executeNotification(() -> completeCancellationFromRuntime(false));
-            return true;
+            Shared.executeNotification(() -> {
+                try {
+                    completeCancellationFromRuntime(false);
+                } finally {
+                    afterPublication.run();
+                }
+            });
         }
 
         private void completeHandoffOnNotifier(
@@ -747,8 +755,12 @@ public final class OresMutex {
                 // claimed the queue entry. The waiter remains in the ledger
                 // until the physical handoff receipt settles.
                 boolean removed = revokeQueuedWaiter(this);
-                if (removed) physicalSettlement.complete(null);
-                future.cancelAfterOwnerQuiescence();
+                future.cancelAfterOwnerQuiescence(() -> {
+                    // A queued request has no physical carrier left; wait for
+                    // its Future cancellation to publish before declaring its
+                    // Task ledger retirement. Claimed grants settle elsewhere.
+                    if (removed) physicalSettlement.complete(null);
+                });
             }
 
             @Override
@@ -817,39 +829,42 @@ public final class OresMutex {
                     settleAsyncWaiterQuota(waiter);
                 }
 
+                // The selected waiter is stable after leaving the queue lock.
+                // Lambdas must capture this final token, not the loop variable.
+                final AsyncWaiter claimed = waiter;
                 if (poisoned.get()) {
-                    endWait(waiter.ownerDomain);
-                    releaseDomain(waiter.ownerDomain);
-                    waiter.future.failHandoffOnNotifier(
+                    endWait(claimed.ownerDomain);
+                    releaseDomain(claimed.ownerDomain);
+                    claimed.future.failHandoffOnNotifier(
                             new PoisonedMutexException(),
-                            () -> waiter.physicalSettlement.complete(null));
+                            () -> claimed.physicalSettlement.complete(null));
                     continue;
                 }
 
-                endWait(waiter.ownerDomain);
-                markOwner(waiter.ownerDomain);
+                endWait(claimed.ownerDomain);
+                markOwner(claimed.ownerDomain);
                 final SharedGuard guard;
                 try {
                     // Registration may fail if the origin Task terminated
                     // after dequeue. The physical permit remains ours.
                     guard = new SharedGuard(
-                            waiter.ownerDomain, waiter.enforceOwnerDomain,
-                            waiter.taskLocks);
+                            claimed.ownerDomain, claimed.enforceOwnerDomain,
+                            claimed.taskLocks);
                 } catch (RuntimeException | Error failedRegistration) {
-                    clearOwner(waiter.ownerDomain);
-                    releaseDomain(waiter.ownerDomain);
-                    waiter.future.failHandoffOnNotifier(
+                    clearOwner(claimed.ownerDomain);
+                    releaseDomain(claimed.ownerDomain);
+                    claimed.future.failHandoffOnNotifier(
                             failedRegistration,
-                            () -> waiter.physicalSettlement.complete(null));
+                            () -> claimed.physicalSettlement.complete(null));
                     continue;
                 }
-                waiter.future.completeHandoffOnNotifier(
+                claimed.future.completeHandoffOnNotifier(
                         guard,
                         // A cancelling Task may win while publication is
                         // queued. Reject the abandoned guard and arrange a
                         // fresh physical permit handoff on the host notifier.
                         () -> guard.releaseFromRuntime(),
-                        () -> waiter.physicalSettlement.complete(null));
+                        () -> claimed.physicalSettlement.complete(null));
                 return;
             }
         }
