@@ -262,7 +262,16 @@ public final class FutureCombinators {
         Objects.requireNonNull(scheduler, "scheduler");
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(mapper, "mapper");
-        return startObservingCancellation(source, () ->
+
+        java.util.concurrent.atomic.AtomicReference<OresFuture<U>> dependentRef =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<
+                OresFuture.RuntimeWaiterRegistration<?>> innerWaiter =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicBoolean innerCancelled =
+                new java.util.concurrent.atomic.AtomicBoolean();
+
+        OresFuture<U> dependent = startObservingCancellation(source, () ->
                 scheduler.start(new OresScheduler.Task<>() {
             private int phase;
 
@@ -286,6 +295,22 @@ public final class FutureCombinators {
                     T value = (T) resume.value();
                     OresFuture<? extends U> next = Objects.requireNonNull(
                             mapper.apply(value), "flatMap mapper returned null Future");
+                    // Only authenticated cancellation of the inner producer
+                    // cancels this downstream Task. A thrown
+                    // CancellationException that did not cancel the inner
+                    // Future remains an ordinary failure.
+                    OresFuture.RuntimeWaiterRegistration<?> watcher =
+                            next.whenCompleteRuntimeCancellable((ignored, failure) -> {
+                                if (!next.isCancelled()) return;
+                                innerCancelled.set(true);
+                                OresFuture<U> active = dependentRef.get();
+                                if (active != null) active.cancel(false);
+                            });
+                    innerWaiter.set(watcher);
+                    if (innerCancelled.get()) {
+                        OresFuture<U> active = dependentRef.get();
+                        if (active != null) active.cancel(false);
+                    }
                     phase = 2;
                     return OresScheduler.await(next);
                 }
@@ -298,6 +323,22 @@ public final class FutureCombinators {
                 throw new IllegalStateException("flatMap resumed after completion");
             }
         }));
+
+        dependentRef.set(dependent);
+        dependent.whenCompleteRuntime((value, failure) -> {
+            OresFuture.RuntimeWaiterRegistration<?> registration =
+                    innerWaiter.getAndSet(null);
+            if (registration != null) registration.detach();
+        });
+        if (innerCancelled.get()) dependent.cancel(false);
+        // An inner Future can settle synchronously before its waiter is
+        // stored. No late notification can pin that completed inner source.
+        if (dependent.isDone()) {
+            OresFuture.RuntimeWaiterRegistration<?> registration =
+                    innerWaiter.getAndSet(null);
+            if (registration != null) registration.detach();
+        }
+        return dependent;
     }
 
     private static RuntimeException propagate(Throwable failure) {
