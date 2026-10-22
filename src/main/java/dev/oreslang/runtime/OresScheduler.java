@@ -1088,7 +1088,10 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void deliverAwaitCompletion(Object value, Throwable failure) {
-            if (phase.get() == TERMINAL) {
+            if (phase.get() == TERMINAL
+                    || (task instanceof CleanupAwareTask<?>
+                        && completion.deferredCancellationCause() != null
+                        && !cleanupCancellationInjected.get())) {
                 removeAwaitDependency(completion);
                 return;
             }
@@ -1241,6 +1244,9 @@ public final class OresScheduler implements AutoCloseable {
         private void publishTerminalIfReady() {
             if (phase.get() != TERMINAL || completion.isDone()) return;
             TerminalOutcome<T> outcome = terminalOutcome.get();
+            // Terminal phase CAS can precede the outcome write. Never
+            // synthesize a clean cancellation receipt without an outcome.
+            if (outcome == null) return;
             java.util.concurrent.CancellationException pendingCancellation =
                     completion.deferredCancellationCause();
             if (pendingCancellation != null
@@ -1273,7 +1279,7 @@ public final class OresScheduler implements AutoCloseable {
             // will strengthen this staging classifier.
             Throwable cause = OresFuture.unwrap(failure);
             return cause instanceof Error
-                    && !(cause instanceof java.util.concurrent.CancellationException);
+                    || cause instanceof UntrappableTaskFailure;
         }
 
         private void requestCleanupCancellation() {
