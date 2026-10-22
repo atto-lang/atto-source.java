@@ -21,6 +21,9 @@ public final class TaskScope implements AutoCloseable {
     private final TaskCancellation cancellation = new TaskCancellation();
     private final Object admissionLock = new Object();
     private final OresFuture<Void> done = new OresFuture<>(() -> false, () -> { });
+    /** Stop/cancel retries must not spawn unbounded host notifier threads. */
+    private final java.util.concurrent.atomic.AtomicBoolean cancelNotifierStarted =
+            new java.util.concurrent.atomic.AtomicBoolean();
     private boolean sealed;
     private int active;
 
@@ -136,8 +139,16 @@ public final class TaskScope implements AutoCloseable {
         synchronized (admissionLock) {
             sealed = true;
         }
-        Thread.ofVirtual().name("ores-actor-scope-cancel")
-                .start(() -> cancel(reason));
+        if (!cancelNotifierStarted.compareAndSet(false, true)) return;
+        try {
+            Thread.ofVirtual().name("ores-actor-scope-cancel")
+                    .start(() -> cancel(reason));
+        } catch (RuntimeException | Error failure) {
+            // No notifier was admitted. A later explicit cancellation attempt
+            // may retry, but the parent must continue pinning native memory.
+            cancelNotifierStarted.set(false);
+            throw failure;
+        }
     }
 
     public boolean isCancellationRequested() {
