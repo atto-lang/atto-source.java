@@ -185,3 +185,32 @@ while another actor or scope still owns it.
 Until explicit source effect metadata and negative compiler tests exist,
 DO NOT claim full checked-chain error handling; the Java host
 TaskHandle outcome distinctions and failure diagnostics are partial.
+
+## Existing language-level Future ownership audit (October 22, 2026)
+
+The pre-existing `OresFutures.all/race/allSettled` implementation
+used aggregate cancellation hooks that **called cancel(true) on every
+source Future**. This was incorrect for shared Task, actor-readiness,
+actor-request and other borrowed Future values: an observer must not
+gain source cancellation authority. In draft #1887 these hooks have
+been changed to *detach their own runtime waiters only*; source work
+is left live unless an actual TaskScope / actor owner revokes it.
+The operation still propagates an authenticated **source**
+cancellation into the aggregate result, but never revokes siblings.
+
+The pre-existing `OresFutures.Settled(value,error)` view does not
+have an explicit CANCELLED field. Its API is retained for legacy
+compatibility, while the new
+`OresFutures.allSettledDetailed(inputs)` returns
+`FutureCombinators.Outcome<T>` with independent
+SUCCESS/FAILURE/CANCELLED status. A user-thrown
+CancellationException is FAILURE; runtime-cancelled Future is CANCELLED.
+This is HOST-runtime-only classification; the compiler MUST still
+reject attempts to wrap untrappable Oreslang panics into a result
+value, and an actor supervisor must receive those panics.
+
+Run `OresFuturesOwnershipTest` along with existing Future tests,
+especially when source consumers assume that cancelling all/race
+can implicitly revoke independent child Tasks. Such destructive
+ownership belongs on explicit owning TaskScope APIs, not Future
+observation. No exact-head passing test evidence is recorded.
