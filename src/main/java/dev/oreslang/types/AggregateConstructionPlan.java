@@ -40,6 +40,31 @@ public final class AggregateConstructionPlan {
                 new java.lang.ref.ReferenceQueue<>();
         private static final Map<IdentityKey, Plan> TYPED = new java.util.HashMap<>();
         private static final Map<IdentityKey, Plan> ADMITTED = new java.util.HashMap<>();
+        private static final java.lang.ref.ReferenceQueue<Ast.Program> PROGRAMS_CLEARED =
+                new java.lang.ref.ReferenceQueue<>();
+        /** Proof of which exact compilation unit admitted each AST node. */
+        private static final Map<ProgramIdentity, java.util.Set<IdentityKey>> TYPED_UNITS =
+                new java.util.HashMap<>();
+        private static final Map<ProgramIdentity, java.util.Set<IdentityKey>> ADMITTED_UNITS =
+                new java.util.HashMap<>();
+
+        private static final class ProgramIdentity
+                extends java.lang.ref.WeakReference<Ast.Program> {
+            private final int hash;
+            private ProgramIdentity(
+                    Ast.Program program,
+                    java.lang.ref.ReferenceQueue<Ast.Program> queue) {
+                super(Objects.requireNonNull(program, "compilation unit"), queue);
+                hash = System.identityHashCode(program);
+            }
+            @Override public int hashCode() { return hash; }
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof ProgramIdentity key)) return false;
+                Ast.Program value = get();
+                return value != null && value == key.get();
+            }
+        }
 
         private static final class IdentityKey
                 extends java.lang.ref.WeakReference<Ast.ObjectExpr> {
@@ -65,6 +90,11 @@ public final class AggregateConstructionPlan {
                 TYPED.remove(collected);
                 ADMITTED.remove(collected);
             }
+            java.lang.ref.Reference<? extends Ast.Program> unit;
+            while ((unit = PROGRAMS_CLEARED.poll()) != null) {
+                TYPED_UNITS.remove(unit);
+                ADMITTED_UNITS.remove(unit);
+            }
         }
 
         /**
@@ -72,9 +102,21 @@ public final class AggregateConstructionPlan {
          * Staging inside a single TypeChecker instance prevents a later error
          * from leaving a usable partial type proof behind.
          */
-        static synchronized void recordTypedUnit(Map<Ast.ObjectExpr, Plan> plans) {
+        static synchronized void recordTypedUnit(
+                Ast.Program program, Map<Ast.ObjectExpr, Plan> plans) {
+            Objects.requireNonNull(program, "typed compilation unit");
             Objects.requireNonNull(plans, "staged aggregate construction plans");
             expunge();
+            ProgramIdentity unit = new ProgramIdentity(program, PROGRAMS_CLEARED);
+            java.util.Set<IdentityKey> nodes = new java.util.HashSet<>();
+            for (Ast.ObjectExpr source : plans.keySet()) {
+                nodes.add(new IdentityKey(source, CLEARED));
+            }
+            java.util.Set<IdentityKey> priorUnit = TYPED_UNITS.get(unit);
+            if (priorUnit != null && !priorUnit.equals(nodes)) {
+                throw new IllegalStateException(
+                        "same compilation unit received inconsistent aggregate spread nodes");
+            }
             for (Map.Entry<Ast.ObjectExpr, Plan> entry : plans.entrySet()) {
                 Ast.ObjectExpr source = Objects.requireNonNull(entry.getKey(), "source AST");
                 Plan plan = Objects.requireNonNull(entry.getValue(), "typed construction plan");
@@ -94,6 +136,7 @@ public final class AggregateConstructionPlan {
             for (Map.Entry<Ast.ObjectExpr, Plan> entry : plans.entrySet()) {
                 TYPED.put(new IdentityKey(entry.getKey(), CLEARED), entry.getValue());
             }
+            TYPED_UNITS.put(unit, java.util.Set.copyOf(nodes));
         }
 
         /**
@@ -102,28 +145,46 @@ public final class AggregateConstructionPlan {
          * smoke checks may still run, but do not grant executable authority.
          */
         static synchronized void admitAfterOwnership(
-                java.util.Collection<Ast.ObjectExpr> checkedNodes) {
+                Ast.Program program, java.util.Collection<Ast.ObjectExpr> checkedNodes) {
+            Objects.requireNonNull(program, "ownership-checked compilation unit");
             Objects.requireNonNull(checkedNodes, "ownership-checked aggregates");
             expunge();
-            for (Ast.ObjectExpr source : checkedNodes) {
-                if (!TYPED.containsKey(new IdentityKey(source, null))) {
-                    throw new IllegalStateException(
-                            "cannot admit aggregate spread without checked static type plan");
-                }
-            }
+            ProgramIdentity unit = new ProgramIdentity(program, PROGRAMS_CLEARED);
+            java.util.Set<IdentityKey> typed = TYPED_UNITS.get(unit);
+            java.util.Set<IdentityKey> admittedNodes = new java.util.HashSet<>();
             for (Ast.ObjectExpr source : checkedNodes) {
                 IdentityKey key = new IdentityKey(source, CLEARED);
+                if (typed == null || !typed.contains(key) || !TYPED.containsKey(key)) {
+                    throw new IllegalStateException(
+                            "cannot admit aggregate spread outside its type-checked compilation unit");
+                }
+                admittedNodes.add(key);
+            }
+            // A checker path that silently skips an expression must not
+            // authorize only part of a compilation unit.
+            if (typed != null && !typed.equals(admittedNodes)) {
+                throw new IllegalStateException(
+                        "ownership pass did not validate every type-checked spread");
+            }
+            for (IdentityKey key : admittedNodes) {
                 ADMITTED.put(key, TYPED.get(key));
             }
+            ADMITTED_UNITS.put(unit, java.util.Set.copyOf(admittedNodes));
         }
 
-        /** Runtime must refuse spread ASTs without both checker approvals. */
-        public static synchronized Plan requireAdmitted(Ast.ObjectExpr source) {
+        /** Runtime authorization is scoped to both exact program and expression. */
+        public static synchronized Plan requireAdmitted(
+                Ast.Program program, Ast.ObjectExpr source) {
+            Objects.requireNonNull(program, "executing compilation unit");
+            Objects.requireNonNull(source, "executing aggregate AST");
             expunge();
-            Plan admitted = ADMITTED.get(new IdentityKey(source, null));
-            if (admitted == null) {
+            java.util.Set<IdentityKey> admittedUnit =
+                    ADMITTED_UNITS.get(new ProgramIdentity(program, null));
+            IdentityKey node = new IdentityKey(source, null);
+            Plan admitted = ADMITTED.get(node);
+            if (admittedUnit == null || !admittedUnit.contains(node) || admitted == null) {
                 throw new IllegalStateException(
-                        "aggregate spread requires exact-AST type and ownership admission");
+                        "aggregate spread requires exact-program and AST type and ownership admission");
             }
             return admitted;
         }
