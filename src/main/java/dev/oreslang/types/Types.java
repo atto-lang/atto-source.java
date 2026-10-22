@@ -27,14 +27,18 @@ public final class Types {
         // registry has a fresh per-compilation seal that cannot be recreated
         // from its digest/name/generation metadata.
         private final Object compilationSeal;
+        // Non-null only after an exact-tree linker has verified the complete
+        // build graph. This must be instance identity, not a digest string.
+        private final Object linkSeal;
 
         private CheckedScalarType(
                 Primitive scalar, String qualifiedSchemaName,
-                String schemaFingerprint, Object compilationSeal) {
+                String schemaFingerprint, Object compilationSeal, Object linkSeal) {
             this.scalar = Objects.requireNonNull(scalar, "scalar");
             this.qualifiedSchemaName = Objects.requireNonNull(qualifiedSchemaName, "schema identity");
             this.schemaFingerprint = Objects.requireNonNull(schemaFingerprint, "fingerprint");
             this.compilationSeal = compilationSeal;
+            this.linkSeal = linkSeal;
         }
 
         @Override public boolean equals(Object other) {
@@ -42,12 +46,14 @@ public final class Types {
                     && scalar == p.scalar
                     && qualifiedSchemaName.equals(p.qualifiedSchemaName)
                     && schemaFingerprint.equals(p.schemaFingerprint)
-                    && compilationSeal == p.compilationSeal;
+                    && compilationSeal == p.compilationSeal
+                    && linkSeal == p.linkSeal;
         }
 
         @Override public int hashCode() {
             return Objects.hash(scalar, qualifiedSchemaName,
-                    schemaFingerprint, System.identityHashCode(compilationSeal));
+                    schemaFingerprint, System.identityHashCode(compilationSeal),
+                    System.identityHashCode(linkSeal));
         }
 
         @Override public String toString() {
@@ -77,7 +83,7 @@ public final class Types {
             throw new IllegalArgumentException("Zorde nominal schema identity mismatch");
         if (!descriptor.accepts(candidate))
             throw new IllegalArgumentException("Zorde checked scalar did not satisfy schema");
-        return new CheckedScalarType(scalar, schemaName, descriptor.fingerprint(), null);
+        return new CheckedScalarType(scalar, schemaName, descriptor.fingerprint(), null, null);
     }
 
     /**
@@ -99,7 +105,26 @@ public final class Types {
         if (!descriptor.base().equals(scalar == Primitive.INT ? "int" : "string"))
             throw new IllegalArgumentException("Zorde registry scalar type mismatch");
         return new CheckedScalarType(scalar, schemaName, descriptor.fingerprint(),
-                registry.compilationSeal());
+                registry.compilationSeal(), null);
+    }
+
+    /**
+     * Bind a validated, compilation-local analysis type to an exact-tree
+     * linker instance. A copied digest cannot create this type. Only the
+     * linker provides the sealed staging marker and its own fresh link seal.
+     *
+     * No runtime Valid value is constructed by this reference operation.
+     */
+    static Type scopeCheckedTypeToVerifiedLink(
+            Type unlinked, CompilerZordeLinkManifest manifest) {
+        Objects.requireNonNull(manifest, "verified Zorde linker");
+        if (!(unlinked instanceof CheckedScalarType marker)
+                || marker.compilationSeal == null || marker.linkSeal != null) {
+            throw new IllegalArgumentException(
+                    "expected single-compilation unlinked Zorde checked type");
+        }
+        return new CheckedScalarType(marker.scalar, marker.qualifiedSchemaName,
+                marker.schemaFingerprint, marker.compilationSeal, manifest.linkSeal());
     }
 
     /** Whether a type (including nested generic/record/function) carries proof. */
