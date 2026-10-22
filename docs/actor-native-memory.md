@@ -324,6 +324,25 @@ This improves hot-path memory placement but does **not** eliminate managed
 values while an unsupported payload is active, allocate-free frame metadata,
 or provide lexical scope-drop/reclamation.
 
+## Explicit native lexical scope-drop primitive
+
+`ActorNativeArena.ValueCell` now has a terminal, owner-checked
+`close()` for future compiler-generated lexical scope drops. It clears the
+tagged slot, releases any native facade/capability registry reference retained
+by that slot, then rejects all later reads, writes or address queries through
+the dropped cell. Repeated `close()` is harmless **while the actor is live**;
+using the cell after arena shutdown remains a stale-access error. A dropped
+cell's actor-relative logical offset and slab bytes are **not** immediately
+recycled: safe deallocation and generational handle reuse remain separate
+tasks. The surrounding actor arena is reclaimed only after physical actor
+quiescence.
+
+This is deliberately only an API foundation. The source evaluator must
+**not** call `close()` on Env scope exit until ownership/borrow analysis has
+proved there are no nested captured aliases, live async continuations, or
+snapshot environments that can still read the cell. Early unconditional
+scope-drop would be a use-after-drop semantic regression.
+
 ## Remaining work before strict no-managed-allocation admission
 
 This patch does **not** make the Java evaluator allocation-free. It still uses
