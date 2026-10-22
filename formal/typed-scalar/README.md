@@ -72,3 +72,20 @@ runner provenance.
 failed with **zero executed steps on both jobs**, `runner_id:0`.
 Neither 24-case guest matrix nor compiler-backed SMT executed. This remains
 a draft unverified implementation.
+
+## Exact guest-source receipt (cross-backend parity)
+
+The guest stdout validator also consumes the raw
+`examples/native-core-math-24.ores` bytes, verifies Git blob
+`2d12b8632ad77c8dee34235ecfacfca6a0fa553f` and embeds
+`guestSourceGitBlob` alongside `contractGitBlob` in its normalized
+receipt. A changed, truncated, or stale guest source is rejected, even
+if a supplied guest stdout log happens to contain matching values.
+Numeric log parsing rejects noncanonical `-0` in addition to missing,
+malformed, duplicated, out-of-range, and incorrect signed-i64 cases.
+
+The source and contract receipt is consumed by the strict offline
+validator in [common-source draft #126](https://github.com/ores-truffle-oreslang/oreslang-common-source/pull/126),
+which also requires the LLVM source and real GitHub workflow/job identities.
+That offline structural validator **does not authenticate files or GitHub
+data supplied to it** and cannot substitute for real runner execution.
