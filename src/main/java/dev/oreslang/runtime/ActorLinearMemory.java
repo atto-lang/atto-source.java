@@ -115,7 +115,8 @@ public final class ActorLinearMemory {
 
     /**
      * Borrow one committed native page (or a bounded slice of it) read-only.
-     * Writes to that entire page are frozen until the lease is closed.
+     * Writes to the leased interval are frozen until the lease is closed.
+     * Disjoint bytes on the same page remain writable.
      * No address, ByteBuffer or mutable view escapes the actor arena.
      */
     public ActorNativeArena.Region.ReadOnlyLease leaseReadOnlyPage(
@@ -169,8 +170,9 @@ public final class ActorLinearMemory {
             }
             // A word spanning two pages must not be half-written if either
             // page is currently frozen by an immutable native borrow.
-            page(offset).assertWritable();
-            page(offset + Long.BYTES - 1).assertWritable();
+            int firstBytes = PAGE_BYTES - local;
+            page(offset).assertWritable(local, firstBytes);
+            page(offset + Long.BYTES - 1).assertWritable(0, Long.BYTES - firstBytes);
             for (int i = 0; i < Long.BYTES; i++) {
                 long position = offset + i;
                 page(position).writeByte(inPage(position), (byte) (value >>> (i * 8)));
@@ -179,23 +181,27 @@ public final class ActorLinearMemory {
     }
 
     /**
-     * Verify every destination page can be modified before changing a byte.
-     * This gives page-level read leases fail-closed all-or-nothing semantics
-     * for bulk operations, without allocating JVM temporary arrays.
+     * Verify every exact destination page interval before changing any bytes.
+     * Partial-page borrows outside the written span do not inhibit mutation.
+     * Every touched interval is preflighted under the same actor monitor,
+     * preserving all-or-nothing borrow rejection across page boundaries.
      */
     private void requireWritableSpan(long offset, int length) {
         checkRange(offset, length);
         if (length == 0) return;
-        long firstPage = offset / PAGE_BYTES;
-        long lastPage = (offset + (long) length - 1) / PAGE_BYTES;
-        for (long i = firstPage; i <= lastPage; i++) {
-            pages.get((int) i).assertWritable();
+        long end = offset + (long) length;
+        for (long cursor = offset; cursor < end;) {
+            int local = inPage(cursor);
+            int width = (int) Math.min(end - cursor, PAGE_BYTES - local);
+            page(cursor).assertWritable(local, width);
+            cursor += width;
         }
     }
 
     /**
      * Set an actor-owned byte range in place with no guest-buffer copy.
-     * An immutable borrow on any destination page rejects the whole operation.
+     * An immutable borrow overlapping any destination byte rejects the
+     * whole operation before the first byte is changed.
      */
     public void fill(long destination, int length, byte value) {
         synchronized (arena) {
