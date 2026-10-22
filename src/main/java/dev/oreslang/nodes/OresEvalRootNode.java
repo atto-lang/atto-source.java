@@ -7959,6 +7959,26 @@ public final class OresEvalRootNode extends RootNode {
                     requireOne(args, "Option.unwrap_or");
                     return option.present() ? option.value() : args.getFirst();
                 };
+                case "unwrap_or_else" -> (Invokable) args -> {
+                    requireSumCallback(args, "Option.unwrap_or_else");
+                    return option.present() ? option.value()
+                            : sumCallback(args, "Option.unwrap_or_else");
+                };
+                case "or_else" -> (Invokable) args -> {
+                    requireSumCallback(args, "Option.or_else");
+                    if (option.present()) return option;
+                    Object fallback = sumCallback(args, "Option.or_else");
+                    if (!(fallback instanceof OptionValue)) {
+                        throw new IllegalArgumentException("Option.or_else callback must return Option");
+                    }
+                    return fallback;
+                };
+                case "ok_or" -> (Invokable) args -> {
+                    requireOne(args, "Option.ok_or");
+                    return option.present()
+                            ? new ResultValue(true, option.value())
+                            : new ResultValue(false, args.getFirst());
+                };
                 case "map" -> (Invokable) args -> {
                     requireSumCallback(args, "Option.map");
                     return option.present()
@@ -8026,6 +8046,11 @@ public final class OresEvalRootNode extends RootNode {
                 case "unwrap_or" -> (Invokable) args -> {
                     requireOne(args, "Result.unwrap_or");
                     return result.ok() ? result.value() : args.getFirst();
+                };
+                case "unwrap_or_else" -> (Invokable) args -> {
+                    requireSumCallback(args, "Result.unwrap_or_else");
+                    return result.ok() ? result.value()
+                            : sumCallback(args, "Result.unwrap_or_else", result.value());
                 };
                 case "map" -> (Invokable) args -> {
                     requireSumCallback(args, "Result.map");

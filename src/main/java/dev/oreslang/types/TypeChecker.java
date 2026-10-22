@@ -2715,7 +2715,7 @@ public final class TypeChecker {
         if (expr instanceof Ast.CallExpr call) {
             if (call.callee() instanceof Ast.MemberExpr sumMethod
                     && Set.of("map", "map_err", "and_then", "or_else", "filter",
-                              "ok_or_else", "transpose", "ok").contains(sumMethod.member())) {
+                              "ok_or_else", "unwrap_or_else", "ok_or", "transpose", "ok").contains(sumMethod.member())) {
                 Type sumReceiver = deref(typeOf(sumMethod.receiver(), env, generics, self));
                 if (sumReceiver instanceof Named sum
                         && (sum.name().equals("Option") || sum.name().equals("Result"))) {
@@ -3804,7 +3804,7 @@ public final class TypeChecker {
                 // expose Unknown result parameters and bypass direct-call
                 // inference, allowing unsound generic widening.
                 if (Set.of("map", "map_err", "and_then", "or_else",
-                           "filter", "ok_or_else").contains(member.member())) {
+                           "filter", "ok_or_else", "unwrap_or_else", "ok_or").contains(member.member())) {
                     throw new IllegalArgumentException(
                             "Option/Result combinators require a direct call; "
                             + "first-class extraction is not yet type-safe");
@@ -6898,11 +6898,13 @@ public final class TypeChecker {
         final boolean noCallback = operation.equals("transpose") || operation.equals("ok");
 
         if (option) {
-            if (!Set.of("map", "and_then", "filter", "ok_or_else", "transpose")
+            if (!Set.of("map", "and_then", "or_else", "filter",
+                        "ok_or_else", "unwrap_or_else", "ok_or", "transpose")
                     .contains(operation)) {
                 throw new IllegalArgumentException("unknown Option member '" + operation + "'");
             }
-        } else if (!Set.of("map", "map_err", "and_then", "or_else", "ok")
+        } else if (!Set.of("map", "map_err", "and_then", "or_else",
+                           "unwrap_or_else", "ok")
                 .contains(operation)) {
             throw new IllegalArgumentException("unknown Result member '" + operation + "'");
         }
@@ -6913,7 +6915,8 @@ public final class TypeChecker {
         if (call.arguments().size() != (noCallback ? 0 : 1)
                 || (!noCallback && call.arguments().getFirst() instanceof Ast.SpreadExpr)) {
             throw new IllegalArgumentException(kind + "." + operation
-                    + " expects " + (noCallback ? "zero arguments" : "one callable"));
+                    + " expects " + (noCallback ? "zero arguments"
+                            : operation.equals("ok_or") ? "one eager error value" : "one callable"));
         }
         if (noCallback) {
             if (operation.equals("ok")) return new Named("Option", List.of(input));
@@ -6927,9 +6930,22 @@ public final class TypeChecker {
                     "Option.transpose requires Option<Result<T,E>>");
         }
 
-        final Type callbackInput = operation.equals("map_err") || operation.equals("or_else")
+        if (operation.equals("ok_or")) {
+            Type errorValue = typeOf(call.arguments().getFirst(), env, generics, self);
+            if (errorValue instanceof StringLiteral) errorValue = Primitive.STRING;
+            if (errorValue instanceof dev.oreslang.types.Types.BoolLiteral) errorValue = Primitive.BOOL;
+            if (containsUnknown(errorValue)
+                    || containsChannelBorrow(errorValue, new LinkedHashSet<>(), Map.of())) {
+                throw new IllegalArgumentException("Option.ok_or requires a concrete owned error type");
+            }
+            return new Named("Result", List.of(input, errorValue));
+        }
+        final Type callbackInput = !option && (operation.equals("map_err")
+                || operation.equals("or_else") || operation.equals("unwrap_or_else"))
                 ? error : input;
-        final boolean zeroArg = operation.equals("ok_or_else");
+        final boolean zeroArg = operation.equals("ok_or_else")
+                || (option && (operation.equals("or_else")
+                        || operation.equals("unwrap_or_else")));
         Ast.Expr callbackExpression = call.arguments().getFirst();
         Type callbackType = callbackExpression instanceof Ast.LambdaExpr lambda
                 ? inferSumLambda(lambda, callbackInput, zeroArg, env, generics, self,
@@ -6974,6 +6990,15 @@ public final class TypeChecker {
                     yield sum;
                 }
                 case "ok_or_else" -> new Named("Result", List.of(input, mapped));
+                case "unwrap_or_else" -> {
+                    requireAssignable(mapped, input, "Option.unwrap_or_else fallback");
+                    yield input;
+                }
+                case "or_else" -> {
+                    requireAssignable(mapped, sum, "Option.or_else fallback");
+                    requireAssignable(sum, mapped, "Option.or_else fallback");
+                    yield sum;
+                }
                 case "and_then" -> {
                     if (!(mapped instanceof Named nested) ||
                             !nested.name().equals("Option") ||
@@ -6987,6 +7012,10 @@ public final class TypeChecker {
             };
         }
         return switch (operation) {
+            case "unwrap_or_else" -> {
+                requireAssignable(mapped, input, "Result.unwrap_or_else fallback");
+                yield input;
+            }
             case "map" -> new Named("Result", List.of(mapped, error));
             case "map_err" -> new Named("Result", List.of(input, mapped));
             case "and_then", "or_else" -> {
@@ -7067,6 +7096,13 @@ public final class TypeChecker {
                         new Named("Result", List.of(element, new Named("OptionUnwrapError", List.of()))));
                 case "expect" -> new Function(List.of(Primitive.STRING), element);
                 case "unwrap_or" -> new Function(List.of(element), element);
+                case "unwrap_or_else" -> new Function(
+                        List.of(new Function(List.of(), element)), element);
+                case "or_else" -> new Function(
+                        List.of(new Function(List.of(), named)), named);
+                case "ok_or" -> new Function(
+                        List.of(Unknown.INSTANCE),
+                        new Named("Result", List.of(element, Unknown.INSTANCE)));
                 case "map" -> new Function(
                         List.of(new Function(List.of(element), Unknown.INSTANCE)),
                         new Named("Option", List.of(Unknown.INSTANCE)));
@@ -7095,6 +7131,8 @@ public final class TypeChecker {
                 case "unwrap_safe" -> new Function(List.of(), named);
                 case "expect" -> new Function(List.of(Primitive.STRING), ok);
                 case "unwrap_or" -> new Function(List.of(ok), ok);
+                case "unwrap_or_else" -> new Function(
+                        List.of(new Function(List.of(named.arguments().get(1)), ok)), ok);
                 case "map" -> new Function(
                         List.of(new Function(List.of(ok), Unknown.INSTANCE)),
                         new Named("Result", List.of(Unknown.INSTANCE, named.arguments().get(1))));
