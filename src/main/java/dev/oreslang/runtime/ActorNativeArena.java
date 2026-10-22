@@ -737,9 +737,11 @@ public final class ActorNativeArena implements AutoCloseable {
             NativeCarrierExecutor.ensureNativeLibraryLoaded();
             memory = allocateNative(bytes);
             if (memory == null) throw new OutOfMemoryError("native actor region allocation failed");
-            long baseOffset = reserveActorOffset(bytes, Long.BYTES);
+            long baseOffset = alignedActorOffset(bytes, Long.BYTES);
+            long nextOffset = Math.addExact(baseOffset, bytes);
             Region region = new Region(memory.order(ByteOrder.LITTLE_ENDIAN), bytes, baseOffset, release);
             regions.add(region);
+            nextActorOffset = nextOffset;
             committed += bytes;
             allocated += bytes;
             return region;
@@ -996,13 +998,14 @@ public final class ActorNativeArena implements AutoCloseable {
         checkOwner.run();
     }
 
-    private long reserveActorOffset(int bytes, int alignment) {
+    private long alignedActorOffset(int bytes, int alignment) {
         if (bytes < 0 || alignment <= 0 || (alignment & (alignment - 1)) != 0) {
             throw new IllegalArgumentException("invalid actor-relative allocation");
         }
         long mask = alignment - 1L;
         long base = Math.addExact(nextActorOffset, mask) & ~mask;
-        nextActorOffset = Math.addExact(base, bytes);
+        // Validate the end address without publishing the cursor.
+        Math.addExact(base, bytes);
         return base;
     }
 
@@ -1022,7 +1025,8 @@ public final class ActorNativeArena implements AutoCloseable {
                 slabs.ensureCapacity(slabs.size() + 1);
                 slabBases.ensureCapacity(slabBases.size() + 1);
                 releases.ensureCapacity(releases.size() + 1);
-                long slabBase = reserveActorOffset(capacity, Long.BYTES);
+                long slabBase = alignedActorOffset(capacity, Long.BYTES);
+                long nextOffset = Math.addExact(slabBase, capacity);
                 NativeCarrierExecutor.ensureNativeLibraryLoaded();
                 slab = allocateNative(capacity);
                 if (slab == null) throw new OutOfMemoryError("native actor arena allocation failed");
@@ -1030,6 +1034,7 @@ public final class ActorNativeArena implements AutoCloseable {
                 slabs.add(slab);
                 slabBases.add(slabBase);
                 releases.add(release);
+                nextActorOffset = nextOffset;
             } catch (RuntimeException | Error failure) {
                 if (slab != null) releaseNative(slab);
                 release.run();
