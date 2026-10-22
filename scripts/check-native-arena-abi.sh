@@ -3,14 +3,30 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 java_compiler="$(command -v javac)"
+os="$(uname -s)"
+
 if command -v realpath >/dev/null 2>&1; then
   java_compiler="$(realpath "$java_compiler")"
-elif [[ "$(uname -s)" == Darwin ]]; then
-  java_compiler="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$java_compiler")"
+  java_home="$(cd "$(dirname "$java_compiler")/.." && pwd)"
+elif [[ "$os" == Darwin && -x /usr/libexec/java_home ]]; then
+  java_home="$(/usr/libexec/java_home)"
+elif command -v readlink >/dev/null 2>&1 && readlink -f "$java_compiler" >/dev/null 2>&1; then
+  java_compiler="$(readlink -f "$java_compiler")"
+  java_home="$(cd "$(dirname "$java_compiler")/.." && pwd)"
+else
+  echo "cannot resolve JAVA_HOME from javac; set JAVA_HOME explicitly" >&2
+  exit 2
 fi
-java_home="$(cd "$(dirname "$java_compiler")/.." && pwd)"
 
-case "$(uname -s)" in
+if [[ -n "${JAVA_HOME:-}" ]]; then
+  java_home="$JAVA_HOME"
+fi
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+mkdir -p "$work/classes" "$work/src/dev/oreslang/runtime"
+
+case "$os" in
   Linux)
     jni_os="linux"
     probe_lib="$work/liboresarena_probe.so"
@@ -26,10 +42,6 @@ case "$(uname -s)" in
     exit 2
     ;;
 esac
-
-work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
-mkdir -p "$work/classes" "$work/src/dev/oreslang/runtime"
 
 cc -std=c11 -Wall -Wextra -Werror -O2 -fPIC "${shared_flags[@]}" \
   -I "$java_home/include" -I "$java_home/include/$jni_os" \
