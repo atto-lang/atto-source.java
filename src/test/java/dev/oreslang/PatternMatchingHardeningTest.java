@@ -793,4 +793,41 @@ final class PatternMatchingHardeningTest {
         }
         assertEquals("1\n2\n3", output.toString(StandardCharsets.UTF_8).trim().replace("\r", ""));
     }
+
+    @Test
+    void nestedResultErrorPatternsMustCoverEveryPossibleErrPayload() {
+        String hierarchy = """
+                define class Error as
+                end
+
+                define class IOError extends Error as
+                end
+
+                define class FileNotFoundError extends IOError as
+                end
+                """;
+
+        IllegalArgumentException incomplete = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse(hierarchy + """
+                        fnc classify(Result<int, Error> outcome): int {
+                          match outcome over
+                            on Ok(value) -> { return value; }
+                            on Err(FileNotFoundError missing) -> { return -1; }
+                            on Err(IOError io) -> { return -2; }
+                          end
+                        }
+                        """)));
+        assertTrue(incomplete.getMessage().contains("non-exhaustive match"));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(hierarchy + """
+                fnc classify(Result<int, Error> outcome): int {
+                  match outcome over
+                    on Ok(value) -> { return value; }
+                    on Err(FileNotFoundError missing) -> { return -1; }
+                    on Err(IOError io) -> { return -2; }
+                    on Err(Error other) -> { return -3; }
+                  end
+                }
+                """)));
+    }
 }
