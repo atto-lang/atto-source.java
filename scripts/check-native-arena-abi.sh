@@ -3,14 +3,37 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 java_compiler="$(command -v javac)"
-java_home="$(dirname "$(dirname "$(readlink -f "$java_compiler")")")"
+if command -v realpath >/dev/null 2>&1; then
+  java_compiler="$(realpath "$java_compiler")"
+elif [[ "$(uname -s)" == Darwin ]]; then
+  java_compiler="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$java_compiler")"
+fi
+java_home="$(cd "$(dirname "$java_compiler")/.." && pwd)"
+
+case "$(uname -s)" in
+  Linux)
+    jni_os="linux"
+    probe_lib="$work/liboresarena_probe.so"
+    shared_flags=(-shared)
+    ;;
+  Darwin)
+    jni_os="darwin"
+    probe_lib="$work/liboresarena_probe.dylib"
+    shared_flags=(-dynamiclib)
+    ;;
+  *)
+    echo "native arena ABI probe supports Linux and macOS only" >&2
+    exit 2
+    ;;
+esac
+
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/classes" "$work/src/dev/oreslang/runtime"
 
-cc -Wall -Wextra -Werror -O2 -fPIC -shared \
-  -I "$java_home/include" -I "$java_home/include/linux" \
-  -o "$work/liboresarena_probe.so" "$repo_root/src/main/c/oresarena.c"
+cc -std=c11 -Wall -Wextra -Werror -O2 -fPIC "${shared_flags[@]}" \
+  -I "$java_home/include" -I "$java_home/include/$jni_os" \
+  -o "$probe_lib" "$repo_root/src/main/c/oresarena.c"
 
 cat > "$work/src/dev/oreslang/runtime/ActorNativeArena.java" <<'JAVA'
 package dev.oreslang.runtime;
@@ -66,5 +89,5 @@ public final class ActorNativeArena {
 JAVA
 
 javac -d "$work/classes" "$work/src/dev/oreslang/runtime/ActorNativeArena.java"
-java -Dores.audit.lib="$work/liboresarena_probe.so" \
+java -Dores.audit.lib="$probe_lib" \
   -cp "$work/classes" dev.oreslang.runtime.ActorNativeArena
