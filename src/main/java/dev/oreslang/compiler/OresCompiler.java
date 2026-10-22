@@ -22,6 +22,16 @@ public final class OresCompiler {
         return checked.program();
     }
 
+    /** Imported module contracts participate in type proofs, not runtime declarations. */
+    public static Ast.Program analyze(
+            Ast.Program program, java.util.Map<String, Ast.InterfaceDecl> importedContracts) {
+        TypeChecker.TypeCheckResult checked =
+                TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
+                        program, java.util.Map.of(), java.util.Map.of(), importedContracts);
+        OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
+        return checked.program();
+    }
+
     /** Compiler diagnostics are returned explicitly instead of written to shared stderr. */
     public record AnalysisResult(Ast.Program program, java.util.List<String> warnings) {
         public AnalysisResult { warnings = java.util.List.copyOf(warnings); }
