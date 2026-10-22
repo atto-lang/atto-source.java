@@ -7846,6 +7846,15 @@ public final class TypeChecker {
 
     private Type resolve(Ast.TypeRef ref, Set<String> generics, Type self, boolean allowNullMarker) {
         if (ref == null) return Unknown.INSTANCE;
+        // Checking the AST, not only parser tokens, prevents linked metadata
+        // and synthetic/programmatically supplied TypeRefs from bypassing the
+        // source syntax gate and becoming ordinary Named/Generic values.
+        if (ref.name().equals("Valid") || ref.name().equals("Zorde.Valid")
+                || ref.name().equals("std.zorde.Valid")) {
+            throw new IllegalArgumentException(
+                    "Zorde Valid<T, SchemaId> is compiler-only and not yet executable: "
+                    + "trusted schema minting and owned/frozen validation are unavailable");
+        }
         if (ref.name().equals("_")) {
             // '_' has meaning only as an entire generic *call* argument.
             // In ordinary type positions it is neither a type variable nor
