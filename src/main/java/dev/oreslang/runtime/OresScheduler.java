@@ -187,7 +187,9 @@ public final class OresScheduler implements AutoCloseable {
     private final Object taskAdmissionLock = new Object();
     private final AtomicBoolean closed = new AtomicBoolean();
     /** Under taskAdmissionLock: callback fires after all physical retire callbacks. */
-    private Runnable fullyQuiescentListener;
+    private java.util.function.Consumer<Throwable> fullyQuiescentListener;
+    /** A failed revocation or retirement callback must never be reported safe. */
+    private final AtomicReference<Throwable> retirementFailure = new AtomicReference<>();
     private boolean closeRevocationsComplete;
     private final AtomicLong watchdogOverruns = new AtomicLong();
 
@@ -634,6 +636,22 @@ public final class OresScheduler implements AutoCloseable {
      */
     void requestClose(Runnable whenFullyQuiescent) {
         Objects.requireNonNull(whenFullyQuiescent, "whenFullyQuiescent");
+        requestCloseWithOutcome(failure -> {
+            if (failure != null) {
+                throw new IllegalStateException(
+                        "source scheduler quiescence failed", failure);
+            }
+            whenFullyQuiescent.run();
+        });
+    }
+
+    /**
+     * A null result proves successful post-carrier retirement callbacks. A
+     * non-null failure means physical cleanup cannot be trusted by actor
+     * lifetime reclamation; callers must not free the native arena.
+     */
+    void requestCloseWithOutcome(java.util.function.Consumer<Throwable> onRetired) {
+        Objects.requireNonNull(onRetired, "onRetired");
         final Set<TaskRunner<?>> admitted;
         synchronized (taskAdmissionLock) {
             if (ownedExecutor != null) {
@@ -643,7 +661,7 @@ public final class OresScheduler implements AutoCloseable {
             if (!closed.compareAndSet(false, true)) {
                 throw new IllegalStateException("runtime scheduler close requested twice");
             }
-            fullyQuiescentListener = whenFullyQuiescent;
+            fullyQuiescentListener = onRetired;
             admitted = Set.copyOf(tasks);
         }
         // Cancellation publishes synchronous user Future subscribers. Do not
@@ -654,7 +672,13 @@ public final class OresScheduler implements AutoCloseable {
                         // Revoke all source execution authority before any
                         // potentially blocking terminal Future notification.
                         for (TaskRunner<?> runner : admitted) {
-                            runner.revokeFromSchedulerClose();
+                            try {
+                                runner.revokeFromSchedulerClose();
+                            } catch (RuntimeException | Error failure) {
+                                recordRetirementFailure(failure);
+                                // A faulty single Task must not leave the
+                                // remaining cohort's await edges unrevoked.
+                            }
                         }
                     } finally {
                         synchronized (taskAdmissionLock) {
@@ -666,24 +690,37 @@ public final class OresScheduler implements AutoCloseable {
                     // snapshot. Only now may callbacks that can block or
                     // synchronously reenter host code be invoked.
                     for (TaskRunner<?> runner : admitted) {
-                        runner.retireRevokedFromSchedulerClose();
+                        try {
+                            runner.retireRevokedFromSchedulerClose();
+                        } catch (RuntimeException | Error failure) {
+                            recordRetirementFailure(failure);
+                        }
                     }
                     for (TaskRunner<?> runner : admitted) {
-                        runner.publishCancelledFromSchedulerClose();
+                        try {
+                            runner.publishCancelledFromSchedulerClose();
+                        } catch (RuntimeException | Error failure) {
+                            recordRetirementFailure(failure);
+                        }
                     }
                 });
     }
 
+    /** Preserve a failed physical-retirement receipt for the actor finalizer. */
+    private void recordRetirementFailure(Throwable failure) {
+        retirementFailure.compareAndSet(null, failure);
+    }
+
     /** Exactly once, outside the scheduler admission lock. */
     private void signalFullyQuiescentIfReady() {
-        Runnable callback = null;
+        java.util.function.Consumer<Throwable> callback = null;
         synchronized (taskAdmissionLock) {
             if (closeRevocationsComplete && tasks.isEmpty()) {
                 callback = fullyQuiescentListener;
                 fullyQuiescentListener = null;
             }
         }
-        if (callback != null) callback.run();
+        if (callback != null) callback.accept(retirementFailure.get());
     }
 
     @Override
@@ -1216,6 +1253,9 @@ public final class OresScheduler implements AutoCloseable {
                 cancelWallDeadline();
                 try {
                     onQuiescent.run();
+                } catch (RuntimeException | Error failure) {
+                    recordRetirementFailure(failure);
+                    throw failure;
                 } finally {
                     try {
                         deadlineQuiescenceRetired.set(true);
