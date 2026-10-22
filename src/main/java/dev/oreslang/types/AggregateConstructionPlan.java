@@ -91,6 +91,40 @@ public final class AggregateConstructionPlan {
             if (!resultType.members().equals(resolvedFields)) {
                 throw new IllegalArgumentException("plan result type differs from resolved fields");
             }
+            if (!(resultKind == Ast.ObjectKind.INFERRED_STRUCT
+                    && resultType.kind() == AggregateKind.STRUCT)
+                    && !(resultKind == Ast.ObjectKind.RECORD
+                    || resultKind == Ast.ObjectKind.INFERRED_RECORD)
+                    || ((resultKind == Ast.ObjectKind.RECORD
+                    || resultKind == Ast.ObjectKind.INFERRED_RECORD)
+                    && (resultType.kind() != AggregateKind.RECORD || !resultType.readOnly()))) {
+                throw new IllegalArgumentException("plan result kind and readonly capability mismatch");
+            }
+            LinkedHashMap<String, Type> reconstructed = new LinkedHashMap<>();
+            boolean spreadPresent = orderedSteps.stream().anyMatch(SpreadFields.class::isInstance);
+            for (int i = 0; i < orderedSteps.size(); i++) {
+                Step step = orderedSteps.get(i);
+                if (step.sourceIndex() != i) {
+                    throw new IllegalArgumentException("plan steps must follow unique source indices");
+                }
+                if (step instanceof NamedField named) {
+                    if (spreadPresent && !Builder.copyableScalar(named.type())) {
+                        throw new IllegalArgumentException("non-scalar initializer in spreading plan");
+                    }
+                    reconstructed.put(named.name(), named.type());
+                } else if (step instanceof SpreadFields spread) {
+                    for (Map.Entry<String, Type> field : spread.fields().entrySet()) {
+                        if (!Builder.copyableScalar(field.getValue())) {
+                            throw new IllegalArgumentException("non-scalar spread projection");
+                        }
+                    }
+                    reconstructed.putAll(spread.fields());
+                }
+            }
+            if (!reconstructed.equals(resolvedFields)) {
+                throw new IllegalArgumentException(
+                        "plan output shape must equal the ordered field-write result");
+            }
         }
 
         /**
