@@ -694,7 +694,9 @@ final class ActorNativeArenaTest {
         // Fail immediately AFTER each append; quota-denial tests only cover
         // failure BEFORE the first append and cannot establish rollback.
         for (int failureStage = 1; failureStage <= 3; failureStage++) {
+            for (int failureKind = 0; failureKind < 2; failureKind++) {
             final int expectedStage = failureStage;
+            final boolean fatal = failureKind == 1;
             AtomicLong charged = new AtomicLong();
             AtomicInteger armed = new AtomicInteger(0);
             Object marker = new Object();
@@ -704,6 +706,7 @@ final class ActorNativeArenaTest {
             }, stage -> {
                 if (stage == armed.get()) {
                     armed.set(0); // fail precisely once, then permit retry
+                    if (fatal) throw new OutOfMemoryError("synthetic metadata append stage " + stage);
                     throw new IllegalStateException("synthetic metadata append stage " + stage);
                 }
             })) {
@@ -718,8 +721,11 @@ final class ActorNativeArenaTest {
                 assertEquals(4096, charged.get());
                 assertEquals(0L, first.nativeOffset());
                 armed.set(expectedStage);
-                assertThrows(IllegalStateException.class,
-                        () -> arena.valueCell(170L, marker));
+                if (fatal) {
+                    assertThrows(OutOfMemoryError.class, () -> arena.valueCell(170L, marker));
+                } else {
+                    assertThrows(IllegalStateException.class, () -> arena.valueCell(170L, marker));
+                }
                 assertEquals(0, armed.get(), "only the selected append must throw");
                 assertEquals(4096, arena.committedBytes(), "no failed slab is published");
                 assertEquals(4080, arena.allocatedBytes(), "logical bytes unchanged");
@@ -735,7 +741,8 @@ final class ActorNativeArenaTest {
             }
             assertEquals(0L, charged.get(),
                     "actor teardown must refund every surviving slab (stage "
-                            + expectedStage + ")");
+                            + expectedStage + ", fatal=" + fatal + ")");
+            }
         }
     }
 
