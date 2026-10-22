@@ -8,44 +8,48 @@ cache entries, and logs.
 
 The policy file `.github/private-ci-approved-repositories.txt` is **empty by
 default**. No cross-repository mirroring is authorized until maintainers and
-security reviewers explicitly add an exact `owner/repo` destination through a
-reviewed, protected-branch change.
+the independent security owner `@ORESoftware` explicitly review an exact
+`owner/repo numeric-repository-id` destination.
 
-An allowlist line is necessary but no longer sufficient. The protected
-`.github/private-ci-carrier-contracts.json` must independently pin the live
-destination repository ID, an exact reviewed source-free carrier `main`
-commit, the carrier workflow blob, and the exact reviewed test-plan blob/PR
-set. A carrier `main` advance, repository delete/recreate, workflow change,
-or test-plan change fails closed until the source policy is reviewed again.
+An allowlist line is necessary but not sufficient. The reviewed
+`.github/private-ci-carrier-contracts.json` independently pins the live
+destination repository ID, an exact source-free carrier `main` commit, the
+carrier workflow blob, and exact test-plan blob/PR sets. Carrier `main`
+advance, repository delete/recreate, workflow change, or test-plan change
+fails closed until the source policy is reviewed again.
 
-**Origin protection is mandatory.** Before reading private source files, the
-publisher now checks the live GitHub identity of
-`ores-truffle-oreslang/oreslang-source.java`, verifies that its official
-`main` branch reports `protected: true`, and reads branch-protection rules
-from GitHub. It requires `required_pull_request_reviews.require_code_owner_reviews`,
-`required_pull_request_reviews.dismiss_stale_reviews`,
-at least one required approving review, and `enforce_admins.enabled` to be
-true. Force pushes and branch deletions must be explicitly disabled, and any
-pull-request review bypass allowances are rejected. Missing or unreadable rules fail
-closed, even if GitHub reports `protected: true`. The publisher pins the
-policy read to that branch's Git commit and compares its policy bytes
-with the local checkout policy. V3 also binds the executing destination guard,
-launcher, legacy publisher, and V3 publisher byte-for-byte to that same
-protected-`main` commit, and requires the executing Python modules to be the
-exact files beneath the supplied trusted checkout. A copied or locally modified
-dispatcher therefore cannot borrow authorization from genuine protected policy
-bytes.
-It repeats these checks immediately before publishing the new CI ref. Merely
-adding the allowlist line to an unreviewed checkout does not authorize export,
-and a CODEOWNERS file without enforced branch protection is not sufficient.
-**At the 2026-10-19 audit, GitHub reported `main protected: false`, so the
-publisher deliberately fails closed until administrators enable protection
-and verify that CODEOWNER reviews are required.** GitHub returned a 403
-for ruleset inspection on the available repository plan, so this tool session
-could not independently establish an equivalent enforced ruleset.
+V3 supports two fail-closed source-governance modes:
 
-Until that prerequisite is met, do not mirror private blobs even if an
-allowlist pull request is approved. Source-free test suites are permissible.
+1. **Protected-main mode.** If GitHub reports source `main protected: true`,
+   V3 delegates to the legacy protected-origin verifier. It requires CODEOWNER
+   review, stale-review dismissal, at least one approval, strict non-empty
+   required status checks, administrator enforcement, no review bypasses,
+   no force pushes, and no branch deletion.
+2. **Exact review-attested mode.** On a private-repository plan where those
+   protection features are unavailable, V3 requires authority PR #1724 to be
+   merged to source `main`. The latest review from immutable reviewer ID
+   `11139560` / login `ORESoftware` must be `APPROVED` on the authority
+   PR's exact head and must predate the merge. The authority PR author must be
+   a different account. V3 then compares every export-critical governance
+   Git entry and file byte-for-byte between that reviewed head and current
+   source `main`, including CODEOWNERS, destination policy, carrier contract,
+   preflight workflow, destination guard/launcher, and both publishers.
+   Policy digest and numeric destination repository ID must also match the
+   local checkout exactly.
+
+The review-attested fallback does **not** make unprotected `main` generally
+trusted. It authorizes only governance bytes that still exactly match the
+independently reviewed #1724 head. Any later edit, mode/type change, stale or
+revoked review, reviewer identity mismatch, repository-ID mismatch, or review
+history ambiguity fails closed. V3 repeats the authority check immediately
+before publication and again in the inert payload window before creating the
+one-use authorization ref. The legacy publisher remains protected-main-only.
+
+At the 2026-10-20 audit, source `main` still reported `protected: false`,
+and GitHub reported private-repository rulesets unavailable on the current
+plan. Therefore real V3 export must use the exact review-attested path unless
+the repository plan/protection state changes. Source-free tests remain
+permissible while the independent review is pending.
 
 Do **not** accept a CI destination allowlist from environment variables or
 unreviewed workflow inputs: a caller must not be able to grant its own approval.
@@ -101,6 +105,70 @@ present. The source-bearing commit may change only that source subtree plus
 the receipt; carrier workflow and test-plan bytes remain inherited from the
 pinned base.
 
+## Carrier checkout and execution isolation
+
+A private carrier repository may contain unrelated private project files. Those
+bytes are **not** implicitly authorized for disclosure to Oreslang code under
+test. The pinned carrier workflow therefore has to enforce a separate
+confidentiality boundary in addition to source-transfer authorization.
+
+The source-executing job must have read-only repository permissions and must
+materialize only the exact carrier control files, receipt/test plan, and
+`private-oreslang-source/` subtree needed for the run. When the carrier shares
+a repository with unrelated private material, use a blob-filtered partial clone
+plus sparse checkout; a sparse worktree alone is insufficient because omitted
+blobs may still exist in `.git/objects`. Authentication must be command-scoped
+for the fetch/checkout only, and the Git remote / credential configuration must
+be removed before any source-under-test command runs. The test subprocess gets
+a fresh HOME/XDG config domain and no token/secret/authentication environment.
+
+The reviewed workflow must prove before test execution that representative
+unrelated carrier paths are absent both from the worktree and from the local Git
+object database. The pinned workflow blob is part of the protected carrier
+contract, so replacing this isolation logic requires a new source-policy review.
+
+Reference cleanup is deliberately privilege-separated: the source-executing job
+does **not** receive write permission. A separate no-checkout cleanup job may
+receive narrowly scoped `contents: write` solely to verify and remove the exact
+`ci/authorized-<COMMIT>` and `ci/oreslang-<TREE>` refs after the run, including
+failed runs. Moving either ref causes cleanup to fail closed rather than delete
+an unexpected target.
+
+Deleting refs is hygiene, not erasure. Uploaded Git objects can remain retained
+and recoverable after the refs disappear. Destination authorization therefore
+authorizes a potential persistent private-source copy in the carrier repository;
+administrators must not describe ref cleanup as secure deletion.
+
+### Network and build-tool isolation
+
+The source under test is treated as potentially hostile even after an exact-tree
+handoff. It must never receive the carrier token, the runner user's HOME, the
+carrier's unrelated private files, or normal outbound Internet access.
+
+For Maven plans, the reviewed test plan must bind the exact `pom.xml` Git blob
+and every Maven command must use `-o` / `--offline`. Dependency preparation
+runs before source execution in a separate read-only job that materializes only
+the receipt, plan, carrier dependency controller, and the reviewed `pom.xml`.
+That controller uses a fresh HOME, rejects project-defined Maven repositories,
+plugin repositories, distribution management, and build extensions, forces
+`mirrorOf=*` to Maven Central, enables strict checksum verification, and invokes
+an exact `maven-dependency-plugin` coordinate. The resulting local repository is
+the only dependency artifact passed to the source-execution job.
+
+The source-execution job verifies the complete receipt/tree first, then copies
+the already-verified source into a dedicated gitless sandbox. The untrusted
+process runs as a newly-created non-sudo account under Linux `unshare --net`
+with `no_new_privs` and all inheritable, ambient, and bounding capabilities
+removed. It receives a fresh HOME/TMPDIR and a narrow environment with no
+credential-like variables. The trusted plan runner and receipt/plan copies are
+read-only and live outside the writable source directory. The carrier workflow
+must fail if the untrusted account can read the original Actions workspace.
+
+This split is intentional: the one networked phase can resolve dependencies but
+cannot see the private source tree beyond an exact reviewed build descriptor;
+the phase that can execute arbitrary private source has no external network and
+no privilege path back to the runner.
+
 An explicitly supplied `--source-commit` now pins the **exact original
 private Git commit**. Before uploading, the publisher retrieves that commit's
 source-tree hash and its complete, non-truncated recursive tree from the
@@ -128,8 +196,7 @@ the private destination; a follow-up retention policy is still needed.
 
 It does **not** intercept arbitrary connector/API tool writes, cannot
 completely prevent visibility changes between API checks, and cannot
-guarantee that the source directory itself is free of secrets. Run only
-from an authorized protected checkout using narrowly scoped credentials.
+guarantee that the source directory itself is free of secrets. Run only from a checkout whose private-CI governance exactly matches the protected-main or review-attested authority accepted by V3, using narrowly scoped credentials.
 There is no permission to use a public repository when CI minutes run out.
 
 Test without network access or sending any source:

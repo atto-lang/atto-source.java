@@ -6,6 +6,8 @@ import java.util.Objects;
 public final class SourceBoundaryTrace extends RuntimeException {
     private static final int MAX_BOUNDARIES = 64;
     private static final int MAX_CODE_UNIT_LENGTH = 160;
+    // Cap untrusted source metadata *before* any path/URI scanning or slicing.
+    private static final int MAX_CODE_UNIT_INPUT_LENGTH = 4_096;
     private static final int MAX_CALLABLE_LENGTH = 96;
     private static final int MAX_BOUNDARY_LENGTH = 64;
 
@@ -19,7 +21,7 @@ public final class SourceBoundaryTrace extends RuntimeException {
     private SourceBoundaryTrace(String codeUnit, String callable, String boundary) {
         super("ores " + sanitized(boundary, MAX_BOUNDARY_LENGTH) + " "
                 + sanitized(callable, MAX_CALLABLE_LENGTH) + " ["
-                + sanitized(codeUnit, MAX_CODE_UNIT_LENGTH) + "]", null, false, false);
+                + sanitizedCodeUnit(codeUnit) + "]", null, false, false);
     }
 
     /**
@@ -55,6 +57,44 @@ public final class SourceBoundaryTrace extends RuntimeException {
             }
         }
         return label.toString();
+    }
+
+    /**
+     * Untrusted source metadata can be an absolute filesystem path or a URI
+     * containing credentials. Display only a safe leaf name in that case;
+     * relative module and source names retain their useful path context.
+     */
+    private static String sanitizedCodeUnit(String value) {
+        if (value == null || value.isEmpty()) {
+            return sanitized(value, MAX_CODE_UNIT_LENGTH);
+        }
+        // Input sizes, not just rendered output sizes, must be bounded on
+        // failure paths. A large secret-bearing URL is never partially echoed.
+        if (value.length() > MAX_CODE_UNIT_INPUT_LENGTH) {
+            return "<source-id-too-long>";
+        }
+        int scheme = value.indexOf("://");
+        if (scheme >= 0) {
+            int pathStart = value.indexOf('/', scheme + 3);
+            if (pathStart < 0) return "<remote-source>";
+            value = value.substring(pathStart + 1);
+            // A URI authority must never appear in the printed trace.
+            value = value.substring(Math.max(value.lastIndexOf('/'),
+                    value.lastIndexOf('\\')) + 1);
+        } else if (value.startsWith("/") || value.startsWith("\\")
+                || value.startsWith("file:") || value.startsWith("jar:")
+                || (value.length() >= 3 && Character.isLetter(value.charAt(0))
+                        && value.charAt(1) == ':'
+                        && (value.charAt(2) == '/' || value.charAt(2) == '\\'))) {
+            int leafStart = Math.max(value.lastIndexOf('/'), value.lastIndexOf('\\'));
+            if (leafStart < 0) return "<unknown>";
+            value = value.substring(leafStart + 1);
+        }
+        int query = value.indexOf('?');
+        if (query >= 0) value = value.substring(0, query);
+        int fragment = value.indexOf('#');
+        if (fragment >= 0) value = value.substring(0, fragment);
+        return sanitized(value, MAX_CODE_UNIT_LENGTH);
     }
 
     /** Preserve the original failure type, cause and message, including cancellation. */
