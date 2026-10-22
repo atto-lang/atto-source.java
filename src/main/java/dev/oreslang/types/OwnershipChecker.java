@@ -1403,6 +1403,22 @@ public final class OwnershipChecker {
             }
             for (Ast.ObjectField field : object.fields()) {
                 if (field.spread()) {
+                    // Stage-one domain is a stable immutable source binding
+                    // or a newly constructed literal. Mutable struct carriers
+                    // require a synchronized/borrow-checked snapshot protocol.
+                    if (!(field.value() instanceof Ast.NameExpr)
+                            && !(field.value() instanceof Ast.ObjectExpr)) {
+                        throw error("aggregate spread scalar-only stage requires a direct closed aggregate binding or literal");
+                    }
+                    if (field.value() instanceof Ast.NameExpr name) {
+                        VarState sourceOwner = scope.lookup(name.name());
+                        if (sourceOwner == null) {
+                            throw error("aggregate spread source must be a local owned binding");
+                        }
+                        if (sourceOwner.mutable) {
+                            throw error("aggregate spread from a mutable referent requires a checked snapshot/borrow lease");
+                        }
+                    }
                     // A scalar-only projection preserves the source binding.
                     // Never consume the aggregate as a whole or silently move
                     // non-Copy fields out of it.
