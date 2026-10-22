@@ -91,4 +91,36 @@ public class OresFuturesOwnershipTest {
         assertEquals(java.util.Arrays.asList(null, null),
                 all.get(3, TimeUnit.SECONDS));
     }
+
+    @Test void detailedSettledSeparatesRealCancellationFromThrownException()
+            throws Exception {
+        OresFuture<Integer> successful = new OresFuture<>();
+        OresFuture<Integer> raised = new OresFuture<>();
+        OresFuture<Integer> cancelled = new OresFuture<>();
+        CancellationException guestRaised = new CancellationException("guest raised");
+        var detailed = OresFutures.<Integer>allSettledDetailed(
+                List.of(successful, raised, cancelled));
+        successful.completeFromRuntime(101);
+        raised.failFromRuntime(guestRaised);
+        cancelled.cancel(false);
+        var outcomes = detailed.get(3, TimeUnit.SECONDS);
+        assertEquals(FutureCombinators.Status.SUCCESS, outcomes.get(0).status());
+        assertEquals(Integer.valueOf(101), outcomes.get(0).value());
+        assertEquals(FutureCombinators.Status.FAILURE, outcomes.get(1).status());
+        assertSame(guestRaised, outcomes.get(1).failure());
+        assertEquals(FutureCombinators.Status.CANCELLED, outcomes.get(2).status());
+        assertInstanceOf(CancellationException.class, outcomes.get(2).failure());
+    }
+
+    @Test void cancellingDetailedObserverDoesNotCancelUnderlyingActors()
+            throws Exception {
+        OresFuture<String> actorA = new OresFuture<>();
+        OresFuture<String> actorB = new OresFuture<>();
+        var observer = OresFutures.<String>allSettledDetailed(List.of(actorA, actorB));
+        assertTrue(observer.cancel(false));
+        assertFalse(actorA.isCancelled());
+        assertFalse(actorB.isCancelled());
+        assertEquals(0, actorA.pendingRuntimeWaiterCount());
+        assertEquals(0, actorB.pendingRuntimeWaiterCount());
+    }
 }
