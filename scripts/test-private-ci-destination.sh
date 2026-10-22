@@ -13,13 +13,13 @@ policy="$work/fixture/.github/private-ci-approved-repositories.txt"
 printf '# Approved for this isolated test only\ntrusted/ci 246810\n' > "$policy"
 cat > "$work/gh" <<'MOCK'
 #!/usr/bin/env bash
-[[ "${GH_HOST:-}" == github.com ]] || exit 2
-[[ "${1:-}" == api && "${2:-}" == repos/trusted/ci ]] || exit 2
-if [[ " $* " == *" --method POST "* || "${2:-}" == *"/git/"* ]]; then
+[[ "${GH_HOST:-}" == github.com && "${GH_PROMPT_DISABLED:-}" == 1 ]] || exit 2
+[[ $# -eq 8 && "$1" == api && "$2" == --hostname && "$3" == github.com && "$4" == --method && "$5" == GET && "$6" == repos/trusted/ci && "$7" == --jq ]] || exit 2
+if [[ " $* " == *" --method POST "* || "${6:-}" == *"/git/"* ]]; then
   printf 'unexpected-write\n' >> "$MOCK_EXEC_LOG"
   exit 98
 fi
-[[ "${3:-}" == --jq ]] || exit 2
+[[ "${7:-}" == --jq ]] || exit 2
 [[ "${MOCK_API_FAILURE:-false}" != true ]] || exit 4
 printf '%s\t%s\t%s\t%s\t%s\t%s%s\n' "${MOCK_NAME:-trusted/ci}" "${MOCK_VISIBILITY:-private}" "${MOCK_PRIVATE_FLAG:-true}" "${MOCK_REPOSITORY_ID:-246810}" "${MOCK_ARCHIVED:-false}" "${MOCK_DISABLED:-false}" "${MOCK_EXTRA_LINE:-}"
 MOCK
