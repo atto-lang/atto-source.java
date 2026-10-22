@@ -61,6 +61,23 @@ public final class AggregateConstructionPlan {
         }
     }
 
+    /**
+     * One statically scheduled field write after evaluating its source operand.
+     * Every write targets a known result slot; overwritten writes are retained
+     * because their source expressions may have observable effects.
+     */
+    public record FieldWrite(
+            int sourceIndex, String fieldName, int targetSlot,
+            Type sourceFieldType, boolean fromSpread) {
+        public FieldWrite {
+            if (sourceIndex < 0 || targetSlot < 0) {
+                throw new IllegalArgumentException("negative static field write index");
+            }
+            Ast.validateStaticAggregateFieldName(fieldName);
+            Objects.requireNonNull(sourceFieldType, "static field write type");
+        }
+    }
+
     public record Plan(
             Ast.ObjectKind resultKind,
             List<Step> orderedSteps,
@@ -74,6 +91,32 @@ public final class AggregateConstructionPlan {
             if (!resultType.members().equals(resolvedFields)) {
                 throw new IllegalArgumentException("plan result type differs from resolved fields");
             }
+        }
+
+        /**
+         * Stable static write schedule suitable for non-reflective AOT lowering.
+         * The outer sourceIndex is evaluated exactly once; each spread projects
+         * its scalar slots in order, with rightmost overwrites addressing the
+         * same output slot. This is NOT a resource cleanup/ownership proof.
+         */
+        public List<FieldWrite> scheduledWrites() {
+            LinkedHashMap<String, Integer> slots = new LinkedHashMap<>();
+            for (String fieldName : resolvedFields.keySet()) {
+                slots.put(fieldName, slots.size());
+            }
+            ArrayList<FieldWrite> writes = new ArrayList<>();
+            for (Step step : orderedSteps) {
+                if (step instanceof NamedField named) {
+                    writes.add(new FieldWrite(named.sourceIndex(), named.name(),
+                            slots.get(named.name()), named.type(), false));
+                } else if (step instanceof SpreadFields spread) {
+                    for (Map.Entry<String, Type> field : spread.fields().entrySet()) {
+                        writes.add(new FieldWrite(spread.sourceIndex(), field.getKey(),
+                                slots.get(field.getKey()), field.getValue(), true));
+                    }
+                }
+            }
+            return List.copyOf(writes);
         }
     }
 
