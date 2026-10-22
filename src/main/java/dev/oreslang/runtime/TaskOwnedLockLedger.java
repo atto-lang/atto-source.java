@@ -4,6 +4,8 @@ import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CancellationException;
 
 /**
@@ -19,6 +21,15 @@ final class TaskOwnedLockLedger {
     interface Lease {
         /** Idempotent, runtime-only. Guest code is already quiescent. */
         void revokeAfterQuiescence();
+
+        /** A claimed asynchronous handoff may still be physically in flight.
+         * By default, ordinary guards settle immediately. Runtime-owned
+         * asynchronous waiters override this and return a non-cancellable
+         * settlement witness, not their public GuardFuture. */
+        default CompletionStage<Void> settleAfterQuiescence() {
+            revokeAfterQuiescence();
+            return CompletableFuture.completedFuture(null);
+        }
     }
 
     private static final int MAX_PERMITS_PER_TASK = 4096;
@@ -76,6 +87,21 @@ final class TaskOwnedLockLedger {
      * subscribers or nested lock handoffs.
      */
     void revokeAfterQuiescence() {
+        CompletableFuture<Void> settled = retireAfterQuiescence();
+        if (!settled.isDone()) {
+            throw new IllegalStateException(
+                    "Task lock retirement has pending physical handoffs; use the async barrier");
+        }
+        settled.join();
+    }
+
+    /**
+     * Stage trusted revocation immediately, then keep physical handoff
+     * witnesses alive until all claimed grants have fully unwound. Never
+     * wait on an actor or scheduler carrier. Failure retains the entry and
+     * propagates to the barrier rather than reporting a false Task DONE.
+     */
+    CompletableFuture<Void> retireAfterQuiescence() {
         final List<Lease> snapshot;
         synchronized (this) {
             admissionFenced = true;
@@ -87,22 +113,22 @@ final class TaskOwnedLockLedger {
                 snapshot.add(entry.lease);
             }
         }
-        Throwable first = null;
+        List<CompletableFuture<Void>> settle = new ArrayList<>(snapshot.size());
         for (Lease permit : snapshot) {
             try {
-                permit.revokeAfterQuiescence();
-                forget(permit);
+                CompletionStage<Void> pending =
+                        Objects.requireNonNull(permit.settleAfterQuiescence(),
+                                "null permit retirement witness");
+                // Only a successful, physically settled receipt can release
+                // this ledger's reverse ownership index.
+                settle.add(pending.toCompletableFuture().thenRun(
+                        () -> forget(permit)));
             } catch (Throwable failure) {
-                // Preserve the lease as a quarantine root: never declare DONE
-                // or run another owner's protected callback on an unknown
-                // release outcome.
-                if (first == null) first = failure;
-                else first.addSuppressed(failure);
+                CompletableFuture<Void> failed = new CompletableFuture<>();
+                failed.completeExceptionally(failure);
+                settle.add(failed);
             }
         }
-        if (first != null) {
-            throw new IllegalStateException(
-                    "Task lock retirement could not prove every permit revoked", first);
-        }
+        return CompletableFuture.allOf(settle.toArray(new CompletableFuture<?>[0]));
     }
 }
