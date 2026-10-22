@@ -108,6 +108,13 @@ migration; untracked actor dispatches use their distinct current physical
 turn context; ordinary host calls use the current carrier identity. This
 key is *not* an ownership capability for reading a foreign actor arena.
 
+**Actor-domain authorization is independent of logical Task ownership.**
+A `SharedGuard` acquired during actor execution captures the requesting
+actor's stable execution domain separately from the Task/turn owner. Both
+must match for guard access/release, even if the actual async permit was
+granted on an unrelated scheduler/host carrier. The runtime-only abandoned
+cleanup path bypasses guest authorization only after physical retirement.
+
 Async acquisition reserves the logical owner and waiter quotas before
 admitting its Task-owned lease; a failed admission rolls back the earlier
 reservations. A request that ends with no grant disarms its lease without
@@ -120,7 +127,8 @@ New **unexecuted** JUnit regressions cover: distinct logical Tasks
 sharing a single scheduler carrier, more than 4,096 zero-timeout async
 requests in one Task, recursive admission rejects without leaking Task
 leases, equal-valued actor turn records remaining distinct lock owners,
-and disarming an ungranted lease without touching its release callback.
+disarming an ungranted lease without touching its release callback,
+and refusing a foreign actor access to a still-live guard.
 These complement the original eight Task-owned guard regressions; passing
 results are not claimed.
 
