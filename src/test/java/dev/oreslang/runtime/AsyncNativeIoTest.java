@@ -24,33 +24,35 @@ class AsyncNativeIoTest {
         return output.toString();
     }
 
-    @Test void strictFilesystemReadAndExistsCompleteWithoutMutationWorkerFallback() throws Exception {
+    @Test void strictFilesystemReadWriteAppendAndExistsCompleteWithoutWorkerFallback()
+            throws Exception {
         Path path = root.resolve("item.txt");
         Path missing = root.resolve("missing.txt");
-        Files.writeString(path, "hello");
         String output = run("""
             pub async routine main(): void {
+              await fs.write_text_async("%s", "hello");
+              await fs.append_text_async("%s", " world");
               stdio.println(await fs.exists_async("%s"));
               stdio.println(await fs.read_text_async("%s"));
               stdio.println(await fs.exists_async("%s"));
               try { await fs.read_text_async("%s"); }
               catch (failure) { stdio.println("missing-caught"); }
-              try { await fs.write_text_async("%s", "blocked"); }
-              catch (failure) { stdio.println("mutation-provider-pending"); }
+              try { await fs.remove_async("%s"); }
+              catch (failure) { stdio.println("remove-provider-pending"); }
               return;
             }
-            """.formatted(path, path, missing, missing, root.resolve("out.txt")),
+            """.formatted(path, path, path, path, missing, missing, path),
             RuntimePermissions.denyAll()
                 .withAllowed(RuntimePermissions.Permission.READ, root.toString())
                 .withAllowed(RuntimePermissions.Permission.WRITE, root.toString()),
             new ByteArrayOutputStream());
         assertEquals(
-                "true\nhello\nfalse\nmissing-caught\nmutation-provider-pending\n",
+                "true\nhello world\nfalse\nmissing-caught\nremove-provider-pending\n",
                 output.replace("\r", ""));
-        assertFalse(Files.exists(root.resolve("out.txt")));
+        assertEquals("hello world", Files.readString(path));
     }
 
-    @Test void untrustedActorCannotLaunderParentFilesystemCapabilityThroughWorker() throws Exception {
+    @Test void untrustedActorCannotLaunderParentFilesystemCapabilityThroughStrictProvider() throws Exception {
         Path path = root.resolve("blocked.txt");
         RuntimeException failure = assertThrows(RuntimeException.class, () -> run("""
             define untrusted actor Worker as
@@ -74,7 +76,7 @@ class AsyncNativeIoTest {
         assertFalse(Files.exists(path));
     }
 
-    @Test void strictAsyncMutationFailsClosedBeforeSymlinkCanEscape() throws Exception {
+    @Test void strictAsyncWriteRejectsSymlinkEscape() throws Exception {
         Path permitted = Files.createDirectory(root.resolve("permitted"));
         Path outside = Files.createDirectory(root.resolve("outside"));
         Files.createSymbolicLink(permitted.resolve("escape"), outside);
