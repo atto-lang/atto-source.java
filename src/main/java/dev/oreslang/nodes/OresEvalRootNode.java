@@ -4082,9 +4082,17 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(t, null, failure);
                             return;
                         }
-                        // Retain each evaluated source value in lexical order.
-                        // Its AST field metadata determines name vs spread later.
-                        values.add(value);
+                        // Snapshot spread fields at *this operand's* evaluation
+                        // point. A later initializer may mutate the source
+                        // before this continuation assembles the result.
+                        try {
+                            values.add(field.spread()
+                                    ? snapshotScalarSpreadFields(value)
+                                    : value);
+                        } catch (RuntimeException invalid) {
+                            continuation.accept(t, null, invalid);
+                            return;
+                        }
                         evalSuspendableObjectField(
                                 t,
                                 object,
@@ -9952,8 +9960,17 @@ public final class OresEvalRootNode extends RootNode {
                 || value instanceof String;
     }
 
-    private static void putScalarSpreadFields(
-            Object source, LinkedHashMap<String, Object> destination) {
+    /**
+     * Evaluated spread operand with immutable, Copy-only scalar slots.
+     * Prevents evaluation-order drift across synchronous/awaiting interpreters.
+     */
+    private record ScalarSpreadSnapshot(Map<String, Object> fields) {
+        private ScalarSpreadSnapshot {
+            fields = java.util.Collections.unmodifiableMap(new LinkedHashMap<>(fields));
+        }
+    }
+
+    private static ScalarSpreadSnapshot snapshotScalarSpreadFields(Object source) {
         Map<String, Object> fields;
         if (source instanceof ReadonlyRecordValue record) {
             fields = record;
@@ -9963,14 +9980,23 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException(
                     "aggregate spread requires a closed Oreslang record/struct runtime tag");
         }
+        LinkedHashMap<String, Object> snapshot = new LinkedHashMap<>();
         for (Map.Entry<String, Object> item : fields.entrySet()) {
             Object value = item.getValue();
             if (!isScalarAggregateValue(value)) {
                 throw new IllegalArgumentException(
                         "aggregate spread scalar-only stage cannot copy field '" + item.getKey() + "'");
             }
-            destination.put(item.getKey(), value);
+            snapshot.put(item.getKey(), value);
         }
+        return new ScalarSpreadSnapshot(snapshot);
+    }
+
+    private static void putScalarSpreadFields(
+            Object source, LinkedHashMap<String, Object> destination) {
+        ScalarSpreadSnapshot snapshot = source instanceof ScalarSpreadSnapshot saved
+                ? saved : snapshotScalarSpreadFields(source);
+        destination.putAll(snapshot.fields());
     }
 
     /** Runtime tag for closed mutable struct values; never conflated with generic maps. */
