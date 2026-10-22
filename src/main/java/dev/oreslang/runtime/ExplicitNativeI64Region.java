@@ -56,14 +56,23 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
         }
 
         @Override public void close() {
-            if (!released.compareAndSet(false, true)) return;
             synchronized (ExplicitNativeI64Region.this) {
-                if (slotLoans[slot.index] <= 0 || loanCount <= 0) {
-                    throw new IllegalStateException("actor-native loan accounting underflow");
+                if (!released.get()) {
+                    // A released loan must decrement counts exactly once.
+                    if (slotLoans[slot.index] <= 0 || loanCount <= 0) {
+                        throw new IllegalStateException("actor-native loan accounting underflow");
+                    }
+                    slotLoans[slot.index]--;
+                    loanCount--;
+                    released.set(true);
                 }
-                slotLoans[slot.index]--;
-                loanCount--;
-                if (closed.get() && loanCount == 0) finishPhysicalClose();
+                // A failed native close/accounting callback must be retryable
+                // by the *same* completion lease after logical release.
+                // Otherwise the retired actor may have no remaining carrier
+                // that can call region.retireFromActor() a second time.
+                if (closed.get() && loanCount == 0 && !physicalClosed.get()) {
+                    finishPhysicalClose();
+                }
             }
         }
     }
@@ -232,28 +241,34 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
     /** Stop admission immediately; defer FFM arena close until loans drain. */
     void retireFromActor() {
         synchronized (this) {
-            if (!closed.compareAndSet(false, true)) return;
-            if (loanCount == 0) finishPhysicalClose();
+            closed.set(true);
+            // Retry a failed FFM close rather than permanently stranding
+            // physically retained bytes behind an already-retired flag.
+            // An outstanding loan still pins native storage until released.
+            if (loanCount == 0 && !physicalClosed.get()) finishPhysicalClose();
         }
     }
 
+    private boolean nativeScopeClosed;
+
     private void finishPhysicalClose() {
         if (!closed.get() || loanCount != 0 || physicalClosed.get()) return;
-        try {
-            closeArena.invoke(nativeArena);
-        } catch (IllegalAccessException | InvocationTargetException error) {
-            // Do not report successful physical release or reimburse the
-            // actor's quota when the native FFM scope failed to close.
-            throw new IllegalStateException("failed physically releasing actor-native region", error);
+        if (!nativeScopeClosed) {
+            try {
+                closeArena.invoke(nativeArena);
+            } catch (IllegalAccessException | InvocationTargetException error) {
+                // Keep the reservation pinned if native memory was not closed.
+                throw new IllegalStateException("failed physically releasing actor-native region", error);
+            }
+            nativeScopeClosed = true;
+            Arrays.fill(live, false);
+            occupied = 0;
         }
+        // If bookkeeping fails after Arena.close(), retries must NOT close the
+        // native Arena twice. The reservation itself is retryable/idempotent.
+        reservation.close();
+        onRetired.run();
         physicalClosed.set(true);
-        Arrays.fill(live, false);
-        occupied = 0;
-        try {
-            reservation.close();
-        } finally {
-            onRetired.run();
-        }
     }
 
     private void requireOpen() {

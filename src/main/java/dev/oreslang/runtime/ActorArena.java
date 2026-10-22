@@ -100,7 +100,7 @@ public final class ActorArena implements AutoCloseable {
 
     public final class ScratchTurn implements AutoCloseable {
         private final ArrayDeque<ExplicitNativeI64Region.Slot> slots = new ArrayDeque<>();
-        private boolean done;
+        private volatile boolean done;
 
         private ScratchTurn() { }
 
@@ -161,10 +161,19 @@ public final class ActorArena implements AutoCloseable {
         if (activeTurn != null) {
             throw new IllegalStateException("close the scratch turn before actor arena retirement");
         }
-        // Each FFM scope revokes accesses immediately and retains native bytes
-        // until the last outstanding persistent loan closes.
-        scratch.close();
-        persistent.close();
+        // Revoke both FFM regions even if the first physical close fails.
+        // Failed native release is retryable and must not be misreported as
+        // completed; do not unregister this arena on incomplete cleanup.
+        Throwable failure = null;
+        try { scratch.close(); }
+        catch (RuntimeException | Error error) { failure = error; }
+        try { persistent.close(); }
+        catch (RuntimeException | Error error) {
+            if (failure == null) failure = error;
+            else if (failure != error) failure.addSuppressed(error);
+        }
+        if (failure instanceof RuntimeException error) throw error;
+        if (failure instanceof Error error) throw error;
         owner.unregisterArena(this);
     }
 }

@@ -826,10 +826,18 @@ public final class ActorRuntime implements AutoCloseable {
          * ScratchTurn must close before an await/cooperate suspension.
          */
         public ActorArena newActorArena(int persistentSlots, int scratchSlots) {
-            requireCurrentOwner();
-            ActorArena arena = ActorArena.open(this, persistentSlots, scratchSlots);
-            actorArenas.add(arena);
-            return arena;
+            ActorCell<?> cell = requireCurrentOwner();
+            // Register the composite arena under the same lifecycle monitor
+            // as its two constituent FFM regions. Actor shutdown must never
+            // observe the native allocations but miss this scratch-scope fence.
+            synchronized (cell.lifecycleLock) {
+                if (sliceClosed.get() || cell.stopped.get()) {
+                    throw new IllegalStateException("actor heap retired during arena admission");
+                }
+                ActorArena arena = ActorArena.open(this, persistentSlots, scratchSlots);
+                actorArenas.add(arena);
+                return arena;
+            }
         }
 
         /** Zero-allocation admission for hot native arena reads and writes. */
@@ -939,14 +947,17 @@ public final class ActorRuntime implements AutoCloseable {
         private void releasePhysicalNative(long bytes) {
             if (bytes == 0) return;
             synchronized (memoryBudgetLock) {
-                long remainingNative = retainedNativeBytes.addAndGet(-bytes);
-                long remainingHeap = usedBytes.addAndGet(-bytes);
-                if (remainingNative < 0 || remainingHeap < 0) {
-                    retainedNativeBytes.addAndGet(bytes);
-                    usedBytes.addAndGet(bytes);
+                // Check ALL counters before publishing any subtraction. The
+                // previous code could decrement actor counters, then fail on
+                // the global counter without rolling the actor changes back.
+                if (bytes < 0 || bytes > retainedNativeBytes.get()
+                        || bytes > usedBytes.get()
+                        || bytes > privateMemoryBytes.get()) {
                     throw new IllegalStateException("actor native budget accounting underflow");
                 }
                 releasePrivateRuntimeBytes(bytes, owner);
+                retainedNativeBytes.addAndGet(-bytes);
+                usedBytes.addAndGet(-bytes);
             }
         }
 
@@ -967,36 +978,76 @@ public final class ActorRuntime implements AutoCloseable {
 
         @Override
         public synchronized void close() {
-            if (!sliceClosed.compareAndSet(false, true)) return;
-            // Graph retirement comes before releasing actor quota. An
-            // outstanding host/native lease defers payload destruction until
-            // the final lease closes. Actor access is fenced immediately.
+            // Revocation is monotonic, but cleanup is RETRYABLE. Do not return
+            // early merely because another pass already fenced admissions.
+            // Failed native scopes remain in the registry until physically
+            // released; completion-thread loans remove themselves on release.
+            sliceClosed.set(true);
+            Throwable failure = null;
             for (ActorOwnedGraphArena<?> graph : List.copyOf(ownedGraphs)) {
-                graph.retireFromActor();
-            }
-            ownedGraphs.clear();
-            for (ActorOwnedI64Region region : List.copyOf(ownedI64Regions)) {
-                region.retireFromActor();
-            }
-            ownedI64Regions.clear();
-            // Native FFM scopes close while the actor is quiescent; the host
-            // wrapper may remain managed but physical guest bytes are freed.
-            for (ExplicitNativeI64Region region : List.copyOf(explicitNativeI64Regions)) {
-                region.retireFromActor();
-            }
-            explicitNativeI64Regions.clear();
-            for (PrivateMemoryBlock block : List.copyOf(blocks)) block.invalidateFromSlice();
-            blocks.clear();
-            synchronized (memoryBudgetLock) {
-                long bytes = usedBytes.get();
-                long pinned = retainedNativeBytes.get();
-                if (pinned > bytes) {
-                    throw new IllegalStateException("physically pinned native memory exceeds actor accounting");
+                try {
+                    graph.retireFromActor();
+                    ownedGraphs.remove(graph);
+                } catch (RuntimeException | Error error) {
+                    if (failure == null) failure = error;
+                    else if (failure != error) failure.addSuppressed(error);
                 }
-                usedBytes.set(pinned);
-                long released = bytes - pinned;
-                if (released != 0) releasePrivateRuntimeBytes(released, owner);
             }
+            for (ActorOwnedI64Region region : List.copyOf(ownedI64Regions)) {
+                try {
+                    region.retireFromActor();
+                    ownedI64Regions.remove(region);
+                } catch (RuntimeException | Error error) {
+                    if (failure == null) failure = error;
+                    else if (failure != error) failure.addSuppressed(error);
+                }
+            }
+            // Retire every FFM region even if an earlier one failed; do not
+            // clear pinned regions or silently write off their global quota.
+            for (ExplicitNativeI64Region region : List.copyOf(explicitNativeI64Regions)) {
+                try {
+                    region.retireFromActor();
+                    if (region.physicallyClosed()) explicitNativeI64Regions.remove(region);
+                } catch (RuntimeException | Error error) {
+                    if (failure == null) failure = error;
+                    else if (failure != error) failure.addSuppressed(error);
+                }
+            }
+            for (PrivateMemoryBlock block : List.copyOf(blocks)) {
+                try {
+                    block.invalidateFromSlice();
+                    blocks.remove(block);
+                } catch (RuntimeException | Error error) {
+                    if (failure == null) failure = error;
+                    else if (failure != error) failure.addSuppressed(error);
+                }
+            }
+            // A destructor failure may leave ordinary actor storage live.
+            // Do not refund its aggregate quota until every retirement
+            // attempt has completed successfully; retry via close().
+            if (failure == null) try {
+                synchronized (memoryBudgetLock) {
+                    long bytes = usedBytes.get();
+                    long pinned = retainedNativeBytes.get();
+                    if (pinned > bytes) {
+                        throw new IllegalStateException(
+                                "physically pinned native memory exceeds actor accounting");
+                    }
+                    // Release only non-native logical quota. Pinned native
+                    // allocations continue to occupy quota until FFM close.
+                    // A repeated cleanup sees bytes == pinned (no double refund).
+                    long released = bytes - pinned;
+                    if (released != 0) {
+                        releasePrivateRuntimeBytes(released, owner);
+                        usedBytes.addAndGet(-released);
+                    }
+                }
+            } catch (RuntimeException | Error error) {
+                if (failure == null) failure = error;
+                else if (failure != error) failure.addSuppressed(error);
+            }
+            if (failure instanceof RuntimeException error) throw error;
+            if (failure instanceof Error error) throw error;
         }
 
         private void unregister(PrivateMemoryBlock block) {
@@ -1105,18 +1156,26 @@ public final class ActorRuntime implements AutoCloseable {
             memory = null;
         }
 
-        private void invalidateFromSlice() {
-            if (!blockClosed.compareAndSet(false, true)) return;
+        private synchronized void invalidateFromSlice() {
+            if (blockClosed.get()) return;
+            // Keep a failed wipe retryable. The slice's closed flag already
+            // fences all reads, so marking this block closed *before* the
+            // wipe would otherwise strand still-attached native bytes.
             zeroAndDetachMemory();
+            blockClosed.set(true);
         }
 
         @Override
-        public void close() {
-            openMemory(); // owner + liveness check before invalidation
-            if (!blockClosed.compareAndSet(false, true)) return;
-            zeroAndDetachMemory();
-            slice.unregister(this);
+        public synchronized void close() {
+            if (!blockClosed.get()) {
+                openMemory(); // owner + liveness check before invalidation
+                zeroAndDetachMemory();
+                blockClosed.set(true);
+            }
+            // A quota-release failure must not poison an already-detached
+            // block and prevent its next explicit close from retrying.
             reservation.close();
+            slice.unregister(this);
         }
     }
 
@@ -1137,11 +1196,13 @@ public final class ActorRuntime implements AutoCloseable {
         public long bytes() { return bytes; }
 
         @Override
-        public void close() {
-            if (released.compareAndSet(false, true)) {
-                if (physicalNative) slice.releasePhysicalNative(bytes);
-                else slice.release(bytes);
-            }
+        public synchronized void close() {
+            if (released.get()) return;
+            // Do not mark released before accounting succeeds. If a native
+            // release fails, the lease/retirement path can safely retry.
+            if (physicalNative) slice.releasePhysicalNative(bytes);
+            else slice.release(bytes);
+            released.set(true);
         }
     }
 
@@ -6227,12 +6288,49 @@ public final class ActorRuntime implements AutoCloseable {
                     // cancellation is best-effort after the actor has finalized.
                 }
             }
-            drainMailboxReservations();
+            Throwable cleanupFailure = null;
+            try {
+                drainMailboxReservations();
+            } catch (RuntimeException | Error failure) {
+                cleanupFailure = failure;
+            }
             staticSelectCursors.clear();
             codeActorState = null;
-            Throwable terminalOutput = ref.terminationCause.get();
-            outputStream.close(terminalOutput);
-            if (memorySlice != null) memorySlice.close();
+            try {
+                outputStream.close(ref.terminationCause.get());
+            } catch (RuntimeException | Error failure) {
+                if (cleanupFailure == null) cleanupFailure = failure;
+                else if (cleanupFailure != failure) cleanupFailure.addSuppressed(failure);
+            }
+            if (memorySlice != null) {
+                try {
+                    memorySlice.close();
+                } catch (RuntimeException | Error failure) {
+                    // The slice is logically revoked but physical FFM cleanup
+                    // may fail once after native Arena.close(). Retry once so
+                    // a transient bookkeeping callback cannot strand bytes.
+                    // Even after a successful retry preserve the first fault
+                    // in the actor's terminal result for supervisor diagnosis.
+                    if (cleanupFailure == null) cleanupFailure = failure;
+                    else if (cleanupFailure != failure) cleanupFailure.addSuppressed(failure);
+                    try {
+                        memorySlice.close();
+                    } catch (RuntimeException | Error retryFailure) {
+                        if (cleanupFailure != retryFailure) cleanupFailure.addSuppressed(retryFailure);
+                    }
+                }
+            }
+            if (cleanupFailure != null) {
+                Throwable previous = ref.terminationCause.get();
+                if (previous == null) {
+                    if (!ref.terminationCause.compareAndSet(null, cleanupFailure)) {
+                        previous = ref.terminationCause.get();
+                    }
+                }
+                if (previous != null && previous != cleanupFailure) {
+                    previous.addSuppressed(cleanupFailure);
+                }
+            }
             try {
                 actorExitHook.accept(executionDomain);
             } catch (VirtualMachineError | ThreadDeath fatal) {
