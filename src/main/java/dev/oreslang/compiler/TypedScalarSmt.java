@@ -15,6 +15,18 @@ import java.util.Map;
 public final class TypedScalarSmt {
     private TypedScalarSmt() { }
 
+    private static final int MAX_SOURCE_CHARS = 2_000_000;
+    private static final int MAX_BRANCH_DEPTH = 64;
+    private static final int MAX_TYPED_NODES = 512;
+    private static final int MAX_SMT_CHARS = 65_536;
+
+    private static final class Budget {
+        int nodes;
+        void tick() {
+            require(++nodes <= MAX_TYPED_NODES, "typed proof AST exceeds node budget");
+        }
+    }
+
     private static final Map<String, Integer> ARITY = Map.of(
             "min_int", 2, "max_int", 2, "clamp_int", 3);
     private static final Map<String, String> COMPARISONS = Map.of(
@@ -32,6 +44,8 @@ public final class TypedScalarSmt {
     public static String fromSource(String source, String module, String function) {
         // Important: the real parser, type checker, and ownership admission
         // run before any IR node is imported into the proof domain.
+        require(source != null && source.length() <= MAX_SOURCE_CHARS,
+                "null or oversized Oreslang proof source");
         return fromCheckedProgram(OresCompiler.parseAndTypeCheck(source), module, function);
     }
 
@@ -45,6 +59,8 @@ public final class TypedScalarSmt {
         int found = 0;
         for (Ast.ModuleDecl m : checked.modules()) {
             if (!module.equals(m.name())) continue;
+            require(m.annotations().isEmpty() && m.contracts().isEmpty(),
+                    "module annotations and contracts require explicit proof semantics");
             for (Ast.Decl d : m.declarations()) {
                 if (d instanceof Ast.FunctionDecl f && function.equals(f.name())) {
                     found++;
@@ -74,7 +90,7 @@ public final class TypedScalarSmt {
                     "duplicate/invalid input name");
         }
 
-        String implementation = lower(target.body(), null, arguments);
+        String implementation = lower(target.body(), null, arguments, 0, new Budget());
         require(implementation != null, "non-returning control-flow path");
         String[] variables = {"x", "y", "z"};
         int n = target.parameters().size();
@@ -102,6 +118,8 @@ public final class TypedScalarSmt {
         smt.append("(push 1)\n(assert (distinct ")
                 .append(MUTANT.get(function)).append(" (contract")
                 .append(callArguments).append(")))\n(check-sat)\n(pop 1)\n");
+        require(smt.length() <= MAX_SMT_CHARS,
+                "generated proof exceeds size budget");
         return smt.toString();
     }
 
@@ -111,9 +129,11 @@ public final class TypedScalarSmt {
     }
 
     private static String lower(List<Ast.Stmt> statements, String continuation,
-                                Map<String, String> arguments) {
+                                Map<String, String> arguments, int depth, Budget budget) {
+        require(depth <= MAX_BRANCH_DEPTH, "typed proof exceeds branch-depth limit");
         String result = continuation;
         for (int i = statements.size() - 1; i >= 0; i--) {
+            budget.tick();
             Ast.Stmt s = statements.get(i);
             if (s instanceof Ast.ReturnStmt r) {
                 require(i == statements.size() - 1, "unreachable statements after return");
@@ -123,8 +143,8 @@ public final class TypedScalarSmt {
                         "only single-condition if branches supported");
                 Ast.IfBranch branch = conditional.branches().getFirst();
                 String cond = comparison(branch.condition(), arguments);
-                String yes = lower(branch.body(), result, arguments);
-                String no = lower(conditional.elseBody(), result, arguments);
+                String yes = lower(branch.body(), result, arguments, depth + 1, budget);
+                String no = lower(conditional.elseBody(), result, arguments, depth + 1, budget);
                 require(yes != null && no != null,
                         "non-returning branch or unsupported fallthrough");
                 result = "(ite " + cond + " " + yes + " " + no + ")";
