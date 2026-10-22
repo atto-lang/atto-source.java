@@ -195,4 +195,85 @@ final class CheckedEffectsTest {
               + "fnc bad(): int throws int { return risky(); }"));
         assertTrue(error.getMessage().contains("checked panics"));
     }
+
+    @Test
+    void parserRetainsCheckedMethodAndStaticEffects() {
+        Ast.Program parsed = Parser.parse(
+                "define class Work as "
+              + "  risky(): int panics int throws string raises bool { return 1; }"
+              + "  static fnc reset(): int throws int { return 1; }"
+              + "end");
+        Ast.ClassDecl klass = (Ast.ClassDecl) parsed.modules().getFirst().declarations().getFirst();
+        Ast.MethodDecl instance = klass.methods().getFirst();
+        Ast.MethodDecl statik = klass.methods().get(1);
+        assertEquals(java.util.List.of(Ast.TypeRef.simple("int")), instance.effects().panicsTypes());
+        assertEquals(java.util.List.of(Ast.TypeRef.simple("string")), instance.effects().throwsTypes());
+        assertEquals(java.util.List.of(Ast.TypeRef.simple("bool")), instance.effects().raisesTypes());
+        assertEquals(java.util.List.of(Ast.TypeRef.simple("int")), statik.effects().throwsTypes());
+    }
+
+    @Test
+    void instanceMethodsMustDeclareTransitiveEffects() {
+        String prefix = "define class Work as "
+                + "  risky(): int panics int { return 1; }";
+        var missing = assertThrows(IllegalArgumentException.class, () -> checked(
+                prefix + "  bad(): int { return self.risky(); } end"));
+        assertTrue(missing.getMessage().contains("checked panics"));
+        assertDoesNotThrow(() -> checked(
+                prefix + "  good(): int panics int { return self.risky(); } end"));
+    }
+
+    @Test
+    void staticMethodCallsRequireMatchingCallerCategory() {
+        String klass = "define class Work as "
+                + "  static fnc risky(): int raises int { return 1; }"
+                + "end";
+        var missing = assertThrows(IllegalArgumentException.class, () -> checked(
+                klass + "fnc call(): int { return Work.risky(); }"));
+        assertTrue(missing.getMessage().contains("checked raises"));
+        assertDoesNotThrow(() -> checked(
+                klass + "fnc call(): int raises int { return Work.risky(); }"));
+    }
+
+    @Test
+    void wideningInheritedMethodEffectsIsRejected() {
+        var widened = assertThrows(IllegalArgumentException.class, () -> checked(
+                "define class Parent as pub run(): int { return 1; } end"
+              + "define class Child extends Parent as "
+              + "  pub run(): int panics int { return 2; }"
+              + "end"));
+        assertTrue(widened.getMessage().contains("checked panics"));
+    }
+
+    @Test
+    void effectfulStaticFunctionsCannotBeErasedIntoFunctionValues() {
+        var erased = assertThrows(IllegalArgumentException.class, () -> checked(
+                "define class Work as "
+              + "  static fnc risky(): int panics int { return 1; }"
+              + "end"
+              + "fnc store(): void panics int { val callback = Work.risky; return; }"));
+        assertTrue(erased.getMessage().contains("direct-call-only"));
+    }
+
+    @Test
+    void interfaceConformanceCannotEraseMethodEffects() {
+        var erased = assertThrows(IllegalArgumentException.class, () -> checked(
+                "define interface Service as fnc handle(): int; end"
+              + "define class Work implements Service as "
+              + "  pub handle(): int panics int { return 1; }"
+              + "end"));
+        assertTrue(erased.getMessage().contains("interface"));
+    }
+
+    @Test
+    void catchStillCannotConsumePanicFromInstanceMethod() {
+        var escaped = assertThrows(IllegalArgumentException.class, () -> checked(
+                "define class Work as "
+              + "  panicWork(): int panics int { return 1; }"
+              + "  bad(): int { "
+              + "    try { return self.panicWork(); } catch (err) { return 0; }"
+              + "  }"
+              + "end"));
+        assertTrue(escaped.getMessage().contains("checked panics"));
+    }
 }
