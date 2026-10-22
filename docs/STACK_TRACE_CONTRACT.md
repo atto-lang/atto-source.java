@@ -76,6 +76,29 @@ Hardening in this branch bounds and sanitizes metadata before attaching a
 marker. Source labels cannot inject newline/ANSI/bidi control characters or
 grow without limit; the original Throwable identity/message/cause stays intact.
 
+## Source-location confidentiality
+
+Host-boundary `SourceBoundaryTrace` code-unit labels are metadata supplied to a
+diagnostic renderer, not trusted filesystem paths or credential-free URLs.
+Absolute Unix/Windows paths are reduced to their final filename; URL
+authorities (including userinfo), query strings and fragments are not printed.
+Ordinary relative source/module names remain recognizable. All rendered
+labels are still bounded and control-character sanitized. For code-unit
+metadata, an input longer than **4,096 UTF-16 units** is rejected before
+any path or URL parsing: it renders exactly `<source-id-too-long>`.
+This guards the error-reporting path against expensive processing of giant
+credential-bearing source identifiers. A label that is at most 4,096 units
+can still be scanned, but its rendered code-unit component is capped at 160
+UTF-16 units (including any ellipsis).
+
+**Scope:** this redaction applies to source *marker labels*. It does not
+rewrite the original Throwable message/cause, arbitrary user-created
+exceptions, separate structured diagnostic outputs or externally emitted
+logs. Consumers displaying exception messages must enforce their own
+privacy policy. Runtime source-path metadata must never confer filesystem
+authority or be used as a trusted source-map lookup key merely because a
+label is sanitized.
+
 ## Critical diagnostic/classification invariant
 
 The Java host `TrapFailurePolicy` has a 64-node limit on real Throwable
@@ -86,6 +109,35 @@ because tracing was enabled. Trusted `SourceBoundaryTrace` markers are now
 excluded from that classifier budget. **All non-marker suppressed failures**
 remain part of traversal, including cancellation/panic/fatal during cleanup.
 The regression test verifies both sides of the invariant.
+
+## Bounded diagnostic truncation behavior
+
+Java source boundary capture retains a maximum of **64 suppressed entries**.
+Once the 64th entry would be used by a source boundary, it is replaced with
+the stackless notice `ores source trace truncated: one or more source boundaries omitted`.
+At most 63 earlier source boundaries are preserved when no other suppressed
+entries exist. The notice is intentionally conservative: it signals an omitted
+boundary at the cap, not the exact omitted count. Existing non-marker
+suppressed failures remain intact and retain their classification (panic,
+cancellation, fatal, ordinary throw).
+
+A source trace that does not reach the limit must not show a truncation notice.
+The real Throwable remains the authoritative failure; source markers are
+diagnostic-only and excluded from `TrapFailurePolicy`'s classification-node
+budget.
+
+## Host-fatal emergency path
+
+Java source diagnostic capture is intentionally **best effort** for fatal JVM
+failures. `SourceBoundaryTrace.record` returns the **same** `VirtualMachineError`,
+`ThreadDeath`, or `LinkageError` without creating source markers or allocating
+additional diagnostic strings. This avoids multiplying allocation and
+stack-use failures during VM out-of-memory, stack overflow, or linkage faults.
+Such failures are terminal host conditions, not ordinary `throw` values.
+
+This emergency fast path does **not** suppress Oreslang guest panic source
+markers, which remain typed and non-trappable. The compiler must never treat a
+fatal host exception as an ordinary guest `throw` or convert it to `None`.
 
 ## Admission matrix
 

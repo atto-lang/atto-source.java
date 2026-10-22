@@ -1,0 +1,37 @@
+name: GenServer reply ledger generational smoke
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/GenServerReplyLedger.java'
+      - 'src/test/java/dev/oreslang/runtime/GenServerReplyLedgerSmoke.java'
+      - 'src/test/java/dev/oreslang/runtime/GenServerReplyLedgerGenerationalSmoke.java'
+      - '.github/workflows/genserver-reply-ledger-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  jdk21-slot-ledger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Compile standalone host-only correlation ledger
+        run: |
+          mkdir -p /tmp/ores-genserver-test
+          javac -d /tmp/ores-genserver-test \
+            src/main/java/dev/oreslang/runtime/GenServerReplyLedger.java \
+            src/test/java/dev/oreslang/runtime/GenServerReplyLedgerSmoke.java \
+            src/test/java/dev/oreslang/runtime/GenServerReplyLedgerGenerationalSmoke.java
+      - name: Prove one-shot races, ABA fencing and generation exhaustion
+        run: |
+          java -cp /tmp/ores-genserver-test dev.oreslang.runtime.GenServerReplyLedgerSmoke
+          java -cp /tmp/ores-genserver-test dev.oreslang.runtime.GenServerReplyLedgerGenerationalSmoke
