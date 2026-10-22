@@ -30,7 +30,7 @@ public final class SupervisorLifecycleFsm {
     public sealed interface Event permits
             RestartRequested, RestartCommitted, ShutdownRequested,
             BeforeHookFinished, ChildFinished, ChildReclaimed, ActorsFinished,
-            AfterHookFinished, PhysicalRelease, DeadlineExpired {
+            AfterHookFinished, PhysicalRelease, DeadlineExpired, CoordinatorFailed {
         long epoch();
     }
 
@@ -51,6 +51,8 @@ public final class SupervisorLifecycleFsm {
     public record AfterHookFinished(long epoch, boolean failed) implements Event {}
     public record PhysicalRelease(long epoch) implements Event {}
     public record DeadlineExpired(long epoch) implements Event {}
+    /** CONTROL loss is a failed outcome, not a fake transition to STOPPED. */
+    public record CoordinatorFailed(long epoch) implements Event {}
 
     public record State(
             Phase phase,
@@ -197,6 +199,9 @@ public final class SupervisorLifecycleFsm {
             post = true;
             failed |= result.failed();
             next = released && reclaimed.equals(expected) ? Phase.RECLAIMED : Phase.STOPPED;
+        } else if (e instanceof CoordinatorFailed) {
+            if (failed) return s;
+            failed = true;
         } else if (e instanceof DeadlineExpired) {
             if (timedOut || p == Phase.RECLAIMED || p == Phase.STOPPED) return s;
             require(p != Phase.RUNNING && p != Phase.RESTARTING,
