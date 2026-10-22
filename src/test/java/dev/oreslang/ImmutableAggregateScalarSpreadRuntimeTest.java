@@ -200,6 +200,44 @@ final class ImmutableAggregateScalarSpreadRuntimeTest {
     }
 
     @Test
+    void structuralNarrowingDoesNotExposeOrValidateHiddenRuntimeFields() {
+        // The wider runtime value also owns a nested non-Copy aggregate, but
+        // the declared parameter exposes only "visible". Spread may project
+        // only that static field; it must never enumerate the hidden object.
+        assertEquals("7\\n", execute("""
+                fnc narrow(record{visible: int} source): record{visible: int} {
+                    return record{...source};
+                }
+
+                pub fnc main(): void {
+                    const wide = record{
+                        visible: 7,
+                        hidden: record{secret: 99}
+                    };
+                    const result = narrow(wide);
+                    stdio.println(result.visible);
+                    return;
+                }
+                """));
+    }
+
+    @Test
+    void structuralNarrowingStillAdmitsExplicitScalarOverride() {
+        assertEquals("42\\n", execute("""
+                fnc override(record{visible: int} source): record{visible: int} {
+                    return record{...source, visible: 42};
+                }
+
+                pub fnc main(): void {
+                    const wide = record{visible: 7, hidden: true};
+                    const result = override(wide);
+                    stdio.println(result.visible);
+                    return;
+                }
+                """));
+    }
+
+    @Test
     void emptySpreadsAndQuotedStaticKeysRemainClosed() {
         assertEquals("Ada\n5\n", execute("""
                 pub fnc main(): void {
