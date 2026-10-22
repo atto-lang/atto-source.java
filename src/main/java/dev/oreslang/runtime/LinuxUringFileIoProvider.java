@@ -214,14 +214,20 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
         }
     }
 
-    private void releaseBytes(long bytes) {
-        if (bytes == 0) return;
-        long remaining = reservedBytes.addAndGet(-bytes);
-        if (remaining < 0) {
-            reservedBytes.set(0);
-            throw new IllegalStateException(
-                    "strict filesystem byte reservation underflow");
+    private boolean releaseBytes(long bytes) {
+        if (bytes == 0) return true;
+        for (;;) {
+            long current = reservedBytes.get();
+            if (current < bytes) return false;
+            if (reservedBytes.compareAndSet(current, current - bytes)) {
+                return true;
+            }
         }
+    }
+
+    private static IllegalStateException reservationAccountingFailure() {
+        return new IllegalStateException(
+                "strict filesystem byte reservation accounting corrupted");
     }
 
     private long nextId() {
@@ -271,9 +277,13 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
     void nativeReadCompleted(long id, byte[] bytes, int error) {
         Pending<?> raw = pending.remove(id);
         if (raw == null) return;
-        releaseBytes(raw.reservedBytes);
+        boolean released = releaseBytes(raw.reservedBytes);
         if (raw.kind != Kind.READ) return;
         OresFuture<String> future = (OresFuture<String>) raw.future;
+        if (!released) {
+            future.failFromRuntime(reservationAccountingFailure());
+            return;
+        }
         if (future.isCancelled()) return;
         if (error != 0) {
             future.failFromRuntime(ioFailure("read", error));
@@ -296,9 +306,13 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
     void nativeExistsCompleted(long id, boolean exists, int error) {
         Pending<?> raw = pending.remove(id);
         if (raw == null) return;
-        releaseBytes(raw.reservedBytes);
+        boolean released = releaseBytes(raw.reservedBytes);
         if (raw.kind != Kind.EXISTS) return;
         OresFuture<Boolean> future = (OresFuture<Boolean>) raw.future;
+        if (!released) {
+            future.failFromRuntime(reservationAccountingFailure());
+            return;
+        }
         if (future.isCancelled()) return;
         if (error != 0) {
             future.failFromRuntime(ioFailure("exists", error));
@@ -311,9 +325,13 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
     void nativeWriteCompleted(long id, int error) {
         Pending<?> raw = pending.remove(id);
         if (raw == null) return;
-        releaseBytes(raw.reservedBytes);
+        boolean released = releaseBytes(raw.reservedBytes);
         if (raw.kind != Kind.WRITE) return;
         OresFuture<Void> future = (OresFuture<Void>) raw.future;
+        if (!released) {
+            future.failFromRuntime(reservationAccountingFailure());
+            return;
+        }
         if (error != 0) {
             future.failFromRuntime(ioFailure("write", error));
             return;
