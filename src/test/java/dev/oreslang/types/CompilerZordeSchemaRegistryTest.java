@@ -24,6 +24,7 @@ final class CompilerZordeSchemaRegistryTest {
         assertEquals("service.api", registry.unitId());
         assertEquals(7, registry.generation());
         assertEquals(2, registry.size());
+        assertEquals(64, registry.sourceDigest().length());
         assertEquals("", registry.descriptor("app.Port").nominalIdentity());
         Type a = registry.checkedTypeForAnalysis("app.Port", 5L);
         Type b = registry.checkedTypeForAnalysis("app.Port", 8L);
@@ -74,6 +75,9 @@ final class CompilerZordeSchemaRegistryTest {
         assertFalse(isAssignable(new Named("Valid", List.of(Primitive.INT)), proof));
         assertEquals(left.descriptor("app.Port").fingerprint(),
                 anotherBuild.descriptor("app.Port").fingerprint());
+        assertEquals(left.sourceDigest(), anotherBuild.sourceDigest());
+        assertEquals(left.sourceDigest(), newerGeneration.sourceDigest());
+        assertNotEquals(left.sourceDigest(), changedSource.sourceDigest());
 
         // A public descriptor of identical data is NOT the admitted object.
         RefinementRules.Descriptor original = left.descriptor("app.Port");
