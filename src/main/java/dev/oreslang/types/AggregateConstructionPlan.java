@@ -67,19 +67,32 @@ public final class AggregateConstructionPlan {
             }
         }
 
-        /** Called by the type checker; never grants executable spread authority. */
-        static synchronized void recordTyped(Ast.ObjectExpr source, Plan plan) {
-            Objects.requireNonNull(plan, "typed aggregate construction plan");
-            if (!source.kind().equals(plan.resultKind())
-                    || source.fields().size() != plan.orderedSteps().size()) {
-                throw new IllegalArgumentException("typed plan does not describe this aggregate AST");
-            }
+        /**
+         * Publish no candidate until the WHOLE type-checking pass succeeds.
+         * Staging inside a single TypeChecker instance prevents a later error
+         * from leaving a usable partial type proof behind.
+         */
+        static synchronized void recordTypedUnit(Map<Ast.ObjectExpr, Plan> plans) {
+            Objects.requireNonNull(plans, "staged aggregate construction plans");
             expunge();
-            IdentityKey key = new IdentityKey(source, CLEARED);
-            Plan prior = TYPED.putIfAbsent(key, plan);
-            if (prior != null && !prior.equals(plan)) {
-                throw new IllegalStateException(
-                        "the same aggregate expression has inconsistent checked type plans");
+            for (Map.Entry<Ast.ObjectExpr, Plan> entry : plans.entrySet()) {
+                Ast.ObjectExpr source = Objects.requireNonNull(entry.getKey(), "source AST");
+                Plan plan = Objects.requireNonNull(entry.getValue(), "typed construction plan");
+                if (source.kind() != plan.resultKind()
+                        || source.fields().size() != plan.orderedSteps().size()) {
+                    throw new IllegalArgumentException(
+                            "typed construction plan does not describe its source AST");
+                }
+                Plan prior = TYPED.get(new IdentityKey(source, null));
+                if (prior != null && !prior.equals(plan)) {
+                    throw new IllegalStateException(
+                            "same aggregate AST received inconsistent complete type proofs");
+                }
+            }
+            // The preflight above is deliberately separate from mutation:
+            // one collision must never publish a subset of this pass.
+            for (Map.Entry<Ast.ObjectExpr, Plan> entry : plans.entrySet()) {
+                TYPED.put(new IdentityKey(entry.getKey(), CLEARED), entry.getValue());
             }
         }
 
