@@ -600,6 +600,27 @@ final class ActorNativeArenaTest {
     }
 
     @Test
+    void rejectedNativeTaskSpillLayoutLeavesFrameUnconfigured() {
+        AtomicLong charged = new AtomicLong();
+        // The frame consumes 56 bytes and leaves too little capacity
+        // for even one 24-byte spill slot.
+        try (ActorNativeArena arena = arena(64, charged)) {
+            ActorNativeArena.TaskFrame frame = arena.taskFrame();
+            long priorAllocated = arena.allocatedBytes();
+            long priorCommitted = arena.committedBytes();
+            assertThrows(IllegalStateException.class, () -> frame.configureSpillSlots(1));
+            assertEquals(0, frame.spillSlotCount(),
+                    "failed reservation must not publish a partial native spill bank");
+            assertEquals(priorAllocated, arena.allocatedBytes());
+            assertEquals(priorCommitted, arena.committedBytes());
+            frame.beginInitialResume();
+            frame.done();
+            assertEquals(ActorNativeArena.TaskPhase.DONE, frame.phase());
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
     void taskFrameFailureReleasesSuspendedSpillsAndRejectsForeignFacades() {
         AtomicLong charged = new AtomicLong();
         Object marker = new Object();
