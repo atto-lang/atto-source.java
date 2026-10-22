@@ -2014,9 +2014,10 @@ public final class ActorRuntime implements AutoCloseable {
             terminalSubscribersDrained.set(true);
             releaseTimedWhenSafe.run();
         };
-        OresFuture<T> future;
-        try {
-            future = cell.sourceScheduler().startWithWallDeadline(resume -> {
+        // Preserve the source's verified terminal-unwind contract through
+        // budget wrappers: a plain lambda erases CleanupAwareTask and would
+        // bypass defer/finally when an untrusted actor Task is cancelled.
+        OresScheduler.Task<T> quotaTurn = resume -> {
                 UntrustedLogicalQuota previous = CURRENT_UNTRUSTED_QUOTA.get();
                 CURRENT_UNTRUSTED_QUOTA.set(quota);
                 boolean entered = false;
@@ -2035,7 +2036,15 @@ public final class ActorRuntime implements AutoCloseable {
                         else CURRENT_UNTRUSTED_QUOTA.set(previous);
                     }
                 }
-            }, retireOnce, quota.remainingWallNanos(),
+            };
+        OresScheduler.Task<T> quotaChecked =
+                task instanceof OresScheduler.CleanupAwareTask<?>
+                        ? (OresScheduler.CleanupAwareTask<T>) quotaTurn::resume
+                        : quotaTurn;
+        OresFuture<T> future;
+        try {
+            future = cell.sourceScheduler().startWithWallDeadline(
+                    quotaChecked, retireOnce, quota.remainingWallNanos(),
                     new UntrustedActorQuotaExceededException(
                             UntrustedActorQuotaExceededException.Resource.WALL_TIME,
                             "untrusted logical task exceeded wall-time budget while suspended"),
