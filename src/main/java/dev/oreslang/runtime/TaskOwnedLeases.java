@@ -65,6 +65,9 @@ public final class TaskOwnedLeases {
     static final class Registry {
         private final Object lock = new Object();
         private final ArrayDeque<Entry> stack = new ArrayDeque<>();
+        // An explicit early close may fail and be caught by host code.
+        // That still invalidates the cleanup proof at physical retirement.
+        private final ArrayList<Throwable> earlyFailures = new ArrayList<>();
         private boolean retired;
 
         Lease register(TransferableRelease token) {
@@ -87,7 +90,11 @@ public final class TaskOwnedLeases {
                 reversed = new ArrayList<>(stack.size());
                 while (!stack.isEmpty()) reversed.add(stack.removeLast());
             }
-            ArrayList<Throwable> errors = new ArrayList<>();
+            ArrayList<Throwable> errors;
+            synchronized (lock) {
+                errors = new ArrayList<>(earlyFailures);
+                earlyFailures.clear();
+            }
             // Do not invoke any release while holding the registry lock.
             for (Entry entry : reversed) {
                 try {
@@ -122,7 +129,14 @@ public final class TaskOwnedLeases {
                 }
                 // A logical lease can be released early inside its owning
                 // Task; retirement's stack entry is safely idempotent.
-                releaseOnce();
+                try {
+                    releaseOnce();
+                } catch (RuntimeException | Error failed) {
+                    synchronized (owner.lock) {
+                        owner.earlyFailures.add(failed);
+                    }
+                    throw failed;
+                }
             }
         }
     }
