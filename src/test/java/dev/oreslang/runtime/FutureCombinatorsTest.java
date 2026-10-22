@@ -6,6 +6,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -220,5 +221,92 @@ public class FutureCombinatorsTest {
         assertTrue(result.cancel(false));
         assertEquals(0, source.pendingRuntimeWaiterCount());
         assertFalse(source.isCancelled());
+    }
+
+    @Test void mapperRunsOnSchedulerNotProducerCompletionThread() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> producer = new OresFuture<>();
+            AtomicReference<Thread> producerThread = new AtomicReference<>();
+            AtomicReference<Thread> mappingThread = new AtomicReference<>();
+            OresFuture<Integer> result = FutureCombinators.map(
+                    scheduler, producer, value -> {
+                        mappingThread.set(Thread.currentThread());
+                        return value * 2;
+                    });
+            Thread publisher = Thread.ofPlatform().start(() -> {
+                producerThread.set(Thread.currentThread());
+                producer.completeFromRuntime(17);
+            });
+            publisher.join(3_000);
+            assertFalse(publisher.isAlive());
+            assertEquals(Integer.valueOf(34), result.get(3, TimeUnit.SECONDS));
+            assertNotNull(mappingThread.get());
+            assertNotSame(producerThread.get(), mappingThread.get());
+        }
+    }
+
+    @Test void flatMapCanAwaitANestedFutureWithoutBlockingCarrier() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> source = new OresFuture<>();
+            OresFuture<String> dependent = new OresFuture<>();
+            CountDownLatch mapperEntered = new CountDownLatch(1);
+            OresFuture<String> flattened = FutureCombinators.flatMap(
+                    scheduler, source, value -> {
+                        assertEquals(Integer.valueOf(3), value);
+                        mapperEntered.countDown();
+                        return dependent;
+                    });
+            source.completeFromRuntime(3);
+            assertTrue(mapperEntered.await(3, TimeUnit.SECONDS));
+            assertFalse(flattened.isDone());
+            dependent.completeFromRuntime("flattened");
+            assertEquals("flattened", flattened.get(3, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test void sourceFailureSkipsMapFunction() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> source = new OresFuture<>();
+            AtomicInteger invoked = new AtomicInteger();
+            OresFuture<Integer> result = FutureCombinators.map(
+                    scheduler, source, value -> {
+                        invoked.incrementAndGet();
+                        return value + 1;
+                    });
+            IllegalStateException failure = new IllegalStateException("source failed");
+            source.failFromRuntime(failure);
+            assertSame(failure, assertThrows(ExecutionException.class,
+                    () -> result.get(3, TimeUnit.SECONDS)).getCause());
+            assertEquals(0, invoked.get());
+        }
+    }
+
+    @Test void zipCombinesHeterogeneousTasksInInputOrder() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            OresFuture<Integer> left = new OresFuture<>();
+            OresFuture<String> right = new OresFuture<>();
+            OresFuture<FutureCombinators.Pair<Integer, String>> zipped =
+                    FutureCombinators.zip(scheduler, left, right);
+            right.completeFromRuntime("ok");
+            assertFalse(zipped.isDone());
+            left.completeFromRuntime(19);
+            assertEquals(new FutureCombinators.Pair<>(19, "ok"),
+                    zipped.get(3, TimeUnit.SECONDS));
+            assertEquals(0, left.pendingRuntimeWaiterCount());
+            assertEquals(0, right.pendingRuntimeWaiterCount());
+        }
+    }
+
+    @Test void cancellingMappedTaskDoesNotRevokeSharedProducer() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> source = new OresFuture<>();
+            OresFuture<Integer> mapped =
+                    FutureCombinators.map(scheduler, source, v -> v + 3);
+            mapped.cancel(false);
+            assertTrue(mapped.isCancelled());
+            assertFalse(source.isCancelled());
+            source.completeFromRuntime(2);
+            assertTrue(mapped.isCancelled());
+        }
     }
 }
