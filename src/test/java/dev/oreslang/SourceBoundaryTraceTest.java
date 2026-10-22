@@ -75,4 +75,30 @@ final class SourceBoundaryTraceTest {
         assertEquals("native failure", cause.getMessage());
         assertEquals(0, cause.getSuppressed()[0].getStackTrace().length);
     }
+
+    @Test
+    void sourceMetadataIsBoundedAndCannotForgeStackTraceLines() {
+        var cause = new IllegalStateException("original cause");
+        String malicious = "orders.ores\\nFORGED-PANIC\\u001b[31m\\u202e"
+                .replace("\\n", "\n")
+                .replace("\\u001b", "\u001b")
+                .replace("\\u202e", "\u202e")
+                + "x".repeat(5000);
+        for (int i = 0; i < 1000; i++) {
+            assertSame(cause, SourceBoundaryTrace.record(
+                    cause, malicious, "leaf", "resumed source task"));
+        }
+
+        assertEquals(64, cause.getSuppressed().length);
+        String label = cause.getSuppressed()[0].getMessage();
+        assertTrue(label.length() <= 350, label);
+        assertFalse(label.contains("\n"), label);
+        assertFalse(label.contains("\r"), label);
+        assertFalse(label.contains("\u001b"), label);
+        assertFalse(label.contains("\u202e"), label);
+        assertEquals("original cause", cause.getMessage());
+        assertEquals(0, cause.getSuppressed()[0].getStackTrace().length);
+        assertNotNull(SourceBoundaryTrace.record(cause, null, null, null));
+    }
+
 }

@@ -1308,13 +1308,26 @@ Top-level/module callables use the same **name + exact arity** overload rule. Sa
 
 ## Ternary expressions
 
-The ternary operator is right-associative and lazy in its selected branch:
+The ternary operator is the value-producing conditional form:
 
 ```ores
 fnc find(bool found): Option<int> {
   return found ? Some(42) : None;
 }
 ```
+
+Its condition must have static type `bool`; Oreslang has no integer, pointer,
+string, collection, or object truthiness conversion for ternary conditions.
+The condition is evaluated exactly once and only the selected value arm is
+evaluated at runtime. Both arms are still checked statically for type,
+ownership/borrow, capability, actor-isolation, and definite-initialization
+rules, and their post-states must admit the compiler's branch join.
+
+Ternary is right-associative, so `a ? b : c ? d : e` means
+`a ? b : (c ? d : e)`. Its precedence is below logical OR and above
+assignment. It is the conditional **expression** counterpart to
+statement-only `if ... then ... fi`; an `if` never substitutes for a
+ternary or yields a branch value.
 
 ## Standalone lexical blocks and conditional bodies
 
@@ -1353,6 +1366,20 @@ fi
 ```
 
 The older `do ... fi` spelling remains accepted for source compatibility, but `then ... fi` is canonical for keyword-delimited conditionals.
+
+`if` is a **statement-only** control-flow form. It never yields a value, and the final expression statement in a branch is never an implicit branch result or function return. Consequently, `const y = if ... fi`, `return if ... fi`, and passing an `if` directly as a call argument are syntax errors. Use the lazy `condition ? when_true : when_false` expression for direct value selection. When branch bodies require multiple statements, put the control flow in a callable and use explicit `return` statements; every path of a non-void callable must explicitly return.
+
+```ores
+fnc get_val(bool condition): int {
+  if condition then
+    return 1;
+  else
+    return 2;
+  fi
+}
+
+const y = condition ? a : b;
+```
 
 ## Loops, iterators, and scheduler safepoints
 
@@ -1980,3 +2007,20 @@ When explicit thread/task spawning is added, cross-thread transfer will require 
 `@FromJson("key")` is a compiler annotation for typed class fields. It expands before type/ownership checking into public typed getters/setters; no JVM reflection or guest-code macro execution is involved. The field must have an explicit type and mutable storage. The name-first shorthand `field_name: Type` is mutable only when annotated with `@FromJson`; otherwise it is an immutable `val` field.
 
 Generated setters still require a mutable owner at the call site. Duplicate/blank keys, immutable annotated fields, accessor collisions, annotations on module bindings/callables, and annotations on actor state all fail closed. JSON wire keys participate in incremental ABI fingerprints.
+
+## Incremental imported module-contract reconciliation (2026-10-20)
+
+An unqualified module-contract field requires readable exported access of the
+declared type. An explicit binding retains the current rebindability and
+referent-mutability requirements; equivalent capability spellings stay equivalent.
+
+Named, exported contract imports and aliases supply type-only linker metadata.
+They do not splice foreign declarations into runtime modules or exports.
+Inherited foreign contracts and foreign nominal member types without linked
+provenance remain rejected. Class-field imports, private alias provenance,
+short inferred type aliases and return-cleanup admission share the same
+type/ownership pipeline with these contract imports.
+
+Module conformance names, contract/interface identity and field capabilities
+participate in the incremental ABI. This snapshot needs exact-head Maven tests;
+conflict reconciliation alone is not test evidence.
