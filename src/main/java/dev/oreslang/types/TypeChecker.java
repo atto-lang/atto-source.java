@@ -4093,6 +4093,11 @@ public final class TypeChecker {
             // necessarily during initialization. It must never inherit the
             // constructor's one-time fixed-field initialization privilege.
             currentConstructorOwner = null;
+            // Anonymous Function types have no throws/raises/panics fields yet.
+            // Never launder a caller's effect permissions into a lambda that
+            // can be stored or invoked independently of that caller.
+            Ast.EffectSpec previousEffects = currentEffects;
+            currentEffects = Ast.EffectSpec.none();
             Type result;
             try {
                 if (lambda.expressionBody() != null) {
@@ -4108,6 +4113,7 @@ public final class TypeChecker {
                 env.restoreInitialization(outerInitialization);
                 currentClassOwner = previousClassOwner;
                 currentConstructorOwner = previousConstructorOwner;
+                currentEffects = previousEffects;
             }
             return new Function(parameters, result);
         }
@@ -4768,6 +4774,8 @@ public final class TypeChecker {
         Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
         if (nonLexical) currentClassOwner = null;
         currentConstructorOwner = null;
+        Ast.EffectSpec previousEffects = currentEffects;
+        currentEffects = Ast.EffectSpec.none();
         try {
             if (lambda.expressionBody() != null) {
                 Type actual = typeOfAgainstExpected(
@@ -4779,6 +4787,7 @@ public final class TypeChecker {
         } finally {
             currentClassOwner = previousClassOwner;
             currentConstructorOwner = previousConstructorOwner;
+            currentEffects = previousEffects;
         }
     }
 
@@ -4815,6 +4824,8 @@ public final class TypeChecker {
         Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
         if (nonLexical) currentClassOwner = null;
         currentConstructorOwner = null;
+        Ast.EffectSpec previousEffects = currentEffects;
+        currentEffects = Ast.EffectSpec.none();
         try {
             if (lambda.expressionBody() != null) {
                 Type actual = typeOfAgainstExpected(
@@ -4830,6 +4841,7 @@ public final class TypeChecker {
         } finally {
             currentClassOwner = previousClassOwner;
             currentConstructorOwner = previousConstructorOwner;
+            currentEffects = previousEffects;
         }
         if (lambda.blockBody() != null
                 && expected.result() != Primitive.VOID
