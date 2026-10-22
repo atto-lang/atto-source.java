@@ -272,7 +272,9 @@ the imported unit names from the source AST with the independently pinned
 dependency map; an edge may not be added, removed, or redirected simply by
 supplying an otherwise well-formed lockfile entry. For every named import
 the target staged source must export exactly one schema with that imported
-simple type name. The target's source digest must match the independently
+simple type name. Only an explicitly `pub` refined alias/newtype counts as
+a cross-unit export; private generated schemas cannot be imported merely
+because their names and descriptors are present in linker analysis. The target's source digest must match the independently
 pinned hash, the target and pin sets must be complete, and the pre-existing
 cycle/orphan/ABI/generation/schema collision checks still apply. The older
 \`verifyForAnalysis\` graph-only route explicitly rejects units with parsed
