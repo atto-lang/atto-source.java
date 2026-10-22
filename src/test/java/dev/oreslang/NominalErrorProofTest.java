@@ -170,6 +170,22 @@ final class NominalErrorProofTest {
     }
 
     @Test
+    void matchingQualifiedClassSpellingStillRequiresModuleAuthentication() {
+        Ast.ClassDecl root = klass("define class Error as end");
+        Ast.ClassDecl original = klass("define class DerivedError extends Error as end");
+        Ast.ClassDecl qualified = new Ast.ClassDecl(
+                "other.DerivedError", original.visibility(), original.isAbstract(),
+                original.actorKind(), original.genericParameters(), original.parents(),
+                original.interfaces(), original.fields(), original.constructor(),
+                original.methods(), original.actorConcurrency());
+        var lookup = resolver(Map.of("Error", root, "other.DerivedError", qualified));
+        var failure = assertThrows(IllegalArgumentException.class, () ->
+                NominalErrorProof.requireNominalError(
+                        Ast.TypeRef.simple("other.DerivedError"), root, lookup));
+        assertTrue(failure.getMessage().contains("authenticated module ownership"));
+    }
+
+    @Test
     void inferredObjectParentCannotBeSkippedAsOrdinaryObject() {
         Ast.ClassDecl root = klass("define class Error as end");
         Ast.ClassDecl parsed = klass("define class ChildError extends Error as end");
