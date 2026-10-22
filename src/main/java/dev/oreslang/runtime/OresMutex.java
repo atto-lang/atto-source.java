@@ -98,6 +98,17 @@ public final class OresMutex {
             }
         }
 
+        /** Scheduler-only, after physical Task quiescence. A queued request
+         * must be unlinked first; a claimed, unpublished handoff is allowed
+         * to lose to owner death and must discard its eventual guard. */
+        private boolean cancelAfterOwnerQuiescence() {
+            try {
+                return super.cancel(false);
+            } finally {
+                if (super.isDone()) revokeQueuedWaiter = null;
+            }
+        }
+
         private boolean completeFromRuntime(Guard<T> guard) {
             try {
                 return super.complete(guard);
@@ -663,11 +674,14 @@ public final class OresMutex {
 
             @Override
             public void revokeAfterQuiescence() {
-                // No guest code can still run for this Task. Completing a
-                // cancellable Future may synchronously run host observers;
-                // publication outside the physical lock queue remains a
-                // separate release gate (Java #754/#769).
-                future.cancel(false);
+                // Caller Task is physically quiescent. Revoke the queued
+                // request before publishing cancellation. Unlike public
+                // cancel(), owner death also cancels an already-dequeued but
+                // unpublished handoff: its subsequent guard must be dropped.
+                revokeQueuedWaiter(this);
+                // Completing this host Future can run synchronous subscribers.
+                // Off-carrier publication remains a P0 release gate (#769).
+                future.cancelAfterOwnerQuiescence();
             }
         }
 
