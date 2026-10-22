@@ -506,6 +506,19 @@ public final class OresScheduler implements AutoCloseable {
                 deadlineFailure, () -> { });
     }
 
+    /**
+     * Physical reclamation gate for runtime-owned actor schedulers.
+     * True means at least one lexical cleanup continuation was aborted and
+     * its guarded state must remain quarantined. Closing the scheduler does
+     * not turn this into a successful heap retirement receipt.
+     */
+    public boolean hasIncompleteCleanup() {
+        for (TaskRunner<?> runner : tasks) {
+            if (runner.cleanupIncomplete.get()) return true;
+        }
+        return false;
+    }
+
     /** Called only after the winning Future's terminal callbacks have drained. */
     <T> OresFuture<T> startWithWallDeadline(
             Task<T> task, Runnable onQuiescent, long remainingNanos,
