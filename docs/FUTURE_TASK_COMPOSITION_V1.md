@@ -207,3 +207,39 @@ G. LLVM lowering with native continuation/ownership and sanitizers;
 Each milestone needs stepful exact-head tests. No private-source mirror is
 authorized by this document. Existing private CI allowlist/security review
 must be satisfied before cross-organization transfer.
+
+
+## 10. Follow-up Java host implementation checkpoint (2026-10-22)
+
+This PR now includes runtime-only `FutureCombinators.any`:
+first successful existing Future wins; if all sources fail, an
+`AnyFailedException` retains input-ordered causes; if all are authentically
+cancelled, the aggregate is cancelled. Consumers only detach non-owned source
+observers. See `FutureCombinatorsTest` for success/failure/cancel regressions.
+
+The same branch adds `AsyncSequences.Cursor<T>` adapters:
+- `fromChannel(channel)` observes a pre-existing MPMC Channel as one
+  sequential, nonparking `nextAsync(): Future<Optional<T>>` cursor;
+- `owningChannel(channel)` additionally owns channel close, whereas
+  borrowed cursors NEVER close caller-owned channels;
+- `fromFuture(future)` observes a single existing Future only once,
+  preserving failure vs cancellation and rejecting null as an event;
+- normal channel closure => empty Option (EOF); channel.close(cause)
+  => a failed Future after any buffered items drain;
+- source listener cleanup and runtime callbacks remain host bookkeeping
+  only, never guest continuation execution;
+- in-flight next cancellation detaches the read without closing the
+  borrowed producer. Concurrency on one cursor fails closed.
+
+**Delivery safety boundary:** `Channel.readAsync` commits an item
+atomically before the consumer Task necessarily processes it. Cancellation
+AFTER channel read commitment cannot roll that item back into the queue.
+This cursor is an *at-most-once delivery* view and MUST NOT be used to
+claim at-least-once, exactly-once or durable TaskQueue processing. A
+reliable TaskQueue requires job reservation, explicit ACK/NACK,
+requeue/dead-letter policy, and credits refunded at physical quiescence.
+
+These adapters are Java host-runtime building blocks ONLY. Source
+`Stream<T>` generic binding, `for await`, full Observable, scheduler-aware
+operators and LLVM parity remain follow-ups. Exact-head full Maven
+and GraalVM tests are not yet verified.
