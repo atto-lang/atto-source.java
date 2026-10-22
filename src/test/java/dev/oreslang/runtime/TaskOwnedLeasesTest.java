@@ -192,4 +192,26 @@ public class TaskOwnedLeasesTest {
             assertEquals(List.of(), task.cleanupFailures().get(3, TimeUnit.SECONDS));
         }
     }
+
+    @Test void caughtExplicitReleaseErrorStillBlocksCleanRetirement()
+            throws Exception {
+        IllegalStateException failedUnlock = new IllegalStateException("not unlocked");
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskHandle<Integer> task = scheduler.startTracked(resume -> {
+                TaskOwnedLeases.Lease lease =
+                        TaskOwnedLeases.register(() -> { throw failedUnlock; });
+                // Even if trusted host code catches its own failed early
+                // release, physical retirement must retain that diagnostic.
+                assertSame(failedUnlock, assertThrows(
+                        IllegalStateException.class, lease::close));
+                return OresScheduler.done(7);
+            });
+            assertEquals(Integer.valueOf(7), task.result().get(3, TimeUnit.SECONDS));
+            var failed = assertInstanceOf(TaskHandle.Failed.class,
+                    task.getDone().get(3, TimeUnit.SECONDS));
+            assertInstanceOf(TaskOwnedLeases.CleanupFailure.class, failed.failure());
+            assertEquals(List.of(failedUnlock),
+                    task.cleanupFailures().get(3, TimeUnit.SECONDS));
+        }
+    }
 }
