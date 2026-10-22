@@ -170,6 +170,20 @@ final class NominalErrorProofTest {
     }
 
     @Test
+    void oversizedEffectRowsFailBeforeInvokingResolver() {
+        Ast.ClassDecl root = klass("define class Error as end");
+        List<Ast.TypeRef> large = java.util.stream.IntStream.range(0, 65)
+                .mapToObj(i -> Ast.TypeRef.simple("ErrorType" + i))
+                .toList();
+        Ast.EffectSpec spec = new Ast.EffectSpec(large, List.of(), List.of());
+        var error = assertThrows(IllegalArgumentException.class, () ->
+                NominalErrorProof.requireNominalEffects(spec, root, ref -> {
+                    throw new AssertionError("resolver must not be called for oversized effect rows");
+                }));
+        assertTrue(error.getMessage().contains("budget"));
+    }
+
+    @Test
     void emptyEffectRowsStillRequireValidProofInputs() {
         Ast.EffectSpec empty = Ast.EffectSpec.none();
         Ast.ClassDecl invalid = klass("define class Unrelated as end");
