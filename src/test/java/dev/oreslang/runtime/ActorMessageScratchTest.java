@@ -626,6 +626,31 @@ final class ActorMessageScratchTest {
     }
 
     @Test
+    @Timeout(20)
+    void actorOwnedTaskScopeRejectsTaskInjectionFromExternalHostThread()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch published = new CountDownLatch(1);
+            AtomicReference<TaskScope> leakedScope = new AtomicReference<>();
+            var actor = runtime.<Integer>spawnSharedTrusted(ctx -> (message, turn) -> {
+                leakedScope.set(runtime.newActorTaskScope());
+                published.countDown();
+            });
+            actor.send(1);
+            assertTrue(published.await(8, TimeUnit.SECONDS));
+            TaskScope scope = leakedScope.get();
+            assertNotNull(scope);
+            assertThrows(SecurityException.class,
+                    () -> scope.startTask(resume -> OresScheduler.done(123)),
+                    "host code outside the owning actor must not inject Tasks");
+            actor.stop();
+            assertTrue(actor.awaitTermination(8, TimeUnit.SECONDS),
+                    "failed injection must not strand the real actor-owned scope");
+            assertEquals(0L, runtime.actorMemoryBytes());
+        }
+    }
+
+    @Test
     @Timeout(25)
     void actorOwnedTaskScopePinsNativeHeapUntilChildPhysicallyRetires() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
