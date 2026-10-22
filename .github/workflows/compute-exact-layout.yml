@@ -55,5 +55,6 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
-          mvn -B -ntp -DskipTests compile exec:java -Dexec.args="examples/native-compute-exact-layout.ores" | tee "${RUNNER_TEMP}/layout-guest.out"
+          mvn -B -ntp -DskipTests compile
+          mvn -B -ntp exec:java -Dexec.args="examples/native-compute-exact-layout.ores" | tee "${RUNNER_TEMP}/layout-guest.out"
           grep -Fx 'COMPUTE-EXACT-LAYOUT-OK' "${RUNNER_TEMP}/layout-guest.out"
