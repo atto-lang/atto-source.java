@@ -333,8 +333,22 @@ public final class ActorNativeArena implements AutoCloseable {
             synchronized (ActorNativeArena.this) {
                 checkList();
                 int count = Math.toIntExact(read(header, 8));
-                for (int i = 0; i < count; i++) {
-                    storeValue(elementSlot(i), null, null);
+                // Walk the native chunk chain once. Calling elementSlot(i)
+                // for every element re-traversed all preceding chunks, turning
+                // large actor-list scope cleanup into quadratic work.
+                int cleared = 0;
+                long chunk = read(header, 16);
+                while (cleared < count) {
+                    if (chunk == NO_OFFSET) {
+                        throw new IllegalStateException("native actor List chunk chain is truncated");
+                    }
+                    int elements = Math.min(LIST_CHUNK_SLOTS, count - cleared);
+                    for (int lane = 0; lane < elements; lane++) {
+                        storeValue(chunk + LIST_CHUNK_HEADER_BYTES
+                                + (long) lane * SLOT_BYTES, null, null);
+                    }
+                    cleared += elements;
+                    chunk = read(chunk, 0);
                 }
                 write(header, 8, 0L);
                 // Preserve first-chunk ownership for bounded append reuse.
