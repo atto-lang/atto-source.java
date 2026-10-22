@@ -8,7 +8,9 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -73,40 +75,86 @@ public final class OresMutex {
         // timeout publication. If a handoff already claimed the waiter, its
         // grant or explicit failure wins rather than forging an early cancel.
         private volatile java.util.function.BooleanSupplier revokeQueuedWaiter;
+        // Each accepted async request reserves one notification slot before
+        // its Future becomes visible. The slot remains live while arbitrary
+        // synchronous host subscribers are executing on a notifier worker.
+        private volatile Runnable releaseNotificationAdmission;
+        private final AtomicBoolean notificationReleased = new AtomicBoolean();
 
         private GuardFuture() { }
+
+        private void notificationComplete() {
+            Runnable release = releaseNotificationAdmission;
+            if (release != null && notificationReleased.compareAndSet(false, true)) {
+                releaseNotificationAdmission = null;
+                release.run();
+            }
+        }
 
         @Override
         public boolean cancel(boolean mayInterruptIfRunning) {
             if (super.isDone()) return false;
             java.util.function.BooleanSupplier revoke = revokeQueuedWaiter;
             if (revoke != null && !revoke.getAsBoolean()) return false;
+            if (ActorRuntime.inActorExecution() || OresScheduler.currentTaskDomain() != null) {
+                Shared.executeNotification(
+                        () -> completeCancellationFromRuntime(mayInterruptIfRunning));
+                return true;
+            }
+            return completeCancellationFromRuntime(mayInterruptIfRunning);
+        }
+
+        private boolean completeCancellationFromRuntime(boolean mayInterruptIfRunning) {
             try {
                 return super.cancel(mayInterruptIfRunning);
             } finally {
                 if (super.isDone()) revokeQueuedWaiter = null;
+                notificationComplete();
             }
         }
 
         private boolean failQueuedFromRuntime(Throwable failure) {
             java.util.function.BooleanSupplier revoke = revokeQueuedWaiter;
             if (super.isDone() || revoke == null || !revoke.getAsBoolean()) return false;
-            try {
-                return super.completeExceptionally(failure);
-            } finally {
-                if (super.isDone()) revokeQueuedWaiter = null;
-            }
+            Shared.executeNotification(() -> failFromRuntime(failure));
+            return true;
         }
 
         /** Scheduler-only, after physical Task quiescence. A queued request
          * must be unlinked first; a claimed, unpublished handoff is allowed
          * to lose to owner death and must discard its eventual guard. */
         private boolean cancelAfterOwnerQuiescence() {
-            try {
-                return super.cancel(false);
-            } finally {
-                if (super.isDone()) revokeQueuedWaiter = null;
-            }
+            if (super.isDone()) return false;
+            // Task retirement may execute on a scheduler carrier. Never run
+            // Java CompletableFuture dependents on that carrier.
+            Shared.executeNotification(() -> completeCancellationFromRuntime(false));
+            return true;
+        }
+
+        private void completeHandoffOnNotifier(
+                Guard<T> guard, Runnable rejected, Runnable physicalSettled) {
+            Shared.executeNotification(() -> {
+                boolean published = false;
+                try {
+                    published = completeFromRuntime(guard);
+                } finally {
+                    try {
+                        if (!published) rejected.run();
+                    } finally {
+                        physicalSettled.run();
+                    }
+                }
+            });
+        }
+
+        private void failHandoffOnNotifier(Throwable failure, Runnable physicalSettled) {
+            Shared.executeNotification(() -> {
+                try {
+                    failFromRuntime(failure);
+                } finally {
+                    physicalSettled.run();
+                }
+            });
         }
 
         private boolean completeFromRuntime(Guard<T> guard) {
@@ -114,6 +162,7 @@ public final class OresMutex {
                 return super.complete(guard);
             } finally {
                 if (super.isDone()) revokeQueuedWaiter = null;
+                notificationComplete();
             }
         }
 
@@ -122,6 +171,7 @@ public final class OresMutex {
                 return super.completeExceptionally(failure);
             } finally {
                 if (super.isDone()) revokeQueuedWaiter = null;
+                notificationComplete();
             }
         }
 
@@ -418,6 +468,20 @@ public final class OresMutex {
         private static final int MAX_ASYNC_WAITERS = 8_192;
         private static final int MAX_GLOBAL_ASYNC_WAITERS = 32_768;
         private static final AtomicInteger GLOBAL_ASYNC_WAITERS = new AtomicInteger();
+        private static final int MAX_ASYNC_NOTIFICATIONS = 32_768;
+        private static final AtomicInteger NOTIFICATION_ADMISSIONS = new AtomicInteger();
+        private static final ThreadPoolExecutor NOTIFIERS =
+                new ThreadPoolExecutor(4, 4, 0L, TimeUnit.MILLISECONDS,
+                        new ArrayBlockingQueue<>(MAX_ASYNC_NOTIFICATIONS),
+                        Thread.ofPlatform().daemon(true)
+                                .name("ores-lock-host-notifier-", 0L).factory(),
+                        new ThreadPoolExecutor.AbortPolicy());
+
+        private static void executeNotification(Runnable action) {
+            // No CallerRunsPolicy: an arbitrary whenComplete subscriber must
+            // never execute on an actor, lock-releaser, or deadline carrier.
+            NOTIFIERS.execute(action);
+        }
         private static final ConcurrentHashMap<Object, Shared<?>> WAITING_ON =
                 new ConcurrentHashMap<>();
         private static final ScheduledExecutorService ASYNC_TIMEOUTS =
@@ -756,11 +820,9 @@ public final class OresMutex {
                 if (poisoned.get()) {
                     endWait(waiter.ownerDomain);
                     releaseDomain(waiter.ownerDomain);
-                    try {
-                        waiter.future.failFromRuntime(new PoisonedMutexException());
-                    } finally {
-                        waiter.physicalSettlement.complete(null);
-                    }
+                    waiter.future.failHandoffOnNotifier(
+                            new PoisonedMutexException(),
+                            () -> waiter.physicalSettlement.complete(null));
                     continue;
                 }
 
@@ -776,25 +838,19 @@ public final class OresMutex {
                 } catch (RuntimeException | Error failedRegistration) {
                     clearOwner(waiter.ownerDomain);
                     releaseDomain(waiter.ownerDomain);
-                    try {
-                        waiter.future.failFromRuntime(failedRegistration);
-                    } finally {
-                        waiter.physicalSettlement.complete(null);
-                    }
+                    waiter.future.failHandoffOnNotifier(
+                            failedRegistration,
+                            () -> waiter.physicalSettlement.complete(null));
                     continue;
                 }
-                boolean published = false;
-                try {
-                    published = waiter.future.completeFromRuntime(guard);
-                } finally {
-                    if (!published) {
-                        // Cancellation won before publication, so no guest
-                        // ever received this permit. Clear without poisoning.
-                        guard.discardUnpublishedWithoutHandoff();
-                    }
-                    waiter.physicalSettlement.complete(null);
-                }
-                if (published) return;
+                waiter.future.completeHandoffOnNotifier(
+                        guard,
+                        // A cancelling Task may win while publication is
+                        // queued. Reject the abandoned guard and arrange a
+                        // fresh physical permit handoff on the host notifier.
+                        () -> guard.releaseFromRuntime(),
+                        () -> waiter.physicalSettlement.complete(null));
+                return;
             }
         }
 
@@ -904,10 +960,19 @@ public final class OresMutex {
                 return failedGuardFuture(new IllegalStateException(
                         "SharedMutex process-wide async waiter limit exceeded: " + MAX_GLOBAL_ASYNC_WAITERS));
             }
+            if (!reserveWaiter(NOTIFICATION_ADMISSIONS, MAX_ASYNC_NOTIFICATIONS)) {
+                releaseGlobalAsyncWaiter();
+                releaseAsyncWaiter();
+                releaseDomain(ownerDomain);
+                return failedGuardFuture(new IllegalStateException(
+                        "SharedMutex host notification capacity exceeded"));
+            }
 
             TaskOwnedLockLedger ledger = TaskHandle.currentLockLedger();
             boolean enforceOwnerDomain = ActorRuntime.inActorExecution() || ledger != null;
             GuardFuture<T> future = new GuardFuture<>();
+            future.releaseNotificationAdmission =
+                    () -> releaseWaiter(NOTIFICATION_ADMISSIONS, "notification");
             AsyncWaiter waiter = new AsyncWaiter(
                     ownerDomain, enforceOwnerDomain, future, ledger);
             future.revokeQueuedWaiter = () -> revokeQueuedWaiter(waiter);
@@ -918,6 +983,7 @@ public final class OresMutex {
                     releaseAsyncWaiter();
                     releaseGlobalAsyncWaiter();
                     releaseDomain(ownerDomain);
+                    releaseWaiter(NOTIFICATION_ADMISSIONS, "notification");
                     return failedGuardFuture(rejected);
                 }
             }
