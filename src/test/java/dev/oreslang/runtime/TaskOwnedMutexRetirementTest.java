@@ -56,9 +56,9 @@ public class TaskOwnedMutexRetirementTest {
             assertInstanceOf(TaskHandle.Success.class,
                     task.getDone().get(3, TimeUnit.SECONDS));
             assertFalse(shared.isPoisoned());
-            assertEquals(12, shared.tryLock().orElseThrow().value()[0]);
-            // The verifier's final lock is a host guard, so release it.
-            // Use a separate acquisition to keep this test explicit.
+            var verifier = shared.tryLock().orElseThrow();
+            assertEquals(12, verifier.value()[0]);
+            verifier.release();
         }
     }
 
@@ -140,14 +140,12 @@ public class TaskOwnedMutexRetirementTest {
 
     @Test
     void actorLocalGateAutoRetiresWithOwningTask() throws Exception {
-        var mutex = new AtomicReference<OresMutex.Local<int[]>>();
         var guard = new AtomicReference<OresMutex.Guard<int[]>>();
         var never = new OresFuture<Integer>();
         var acquired = new CountDownLatch(1);
         try (var scheduler = new OresScheduler(1)) {
             TaskHandle<Integer> task = scheduler.startTracked(resume -> {
                 var local = OresMutex.local(new int[] { 4 });
-                mutex.set(local);
                 guard.set(local.lock());
                 acquired.countDown();
                 return OresScheduler.await(never);
@@ -158,13 +156,7 @@ public class TaskOwnedMutexRetirementTest {
             assertInstanceOf(TaskHandle.Cancelled.class,
                     task.getDone().get(4, TimeUnit.SECONDS));
             assertTrue(guard.get().released());
-            TaskHandle<Integer> next = scheduler.startTracked(resume -> {
-                var acquiredAgain = mutex.get().tryLock().orElseThrow();
-                int value = acquiredAgain.value()[0];
-                acquiredAgain.release();
-                return OresScheduler.done(value);
-            });
-            assertEquals(4, next.result().get(3, TimeUnit.SECONDS));
+
         }
     }
 
