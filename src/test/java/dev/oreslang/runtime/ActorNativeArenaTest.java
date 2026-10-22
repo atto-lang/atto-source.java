@@ -573,6 +573,8 @@ final class ActorNativeArenaTest {
         region.writeLong(8, 100L);
         assertEquals(100L, region.readLong(8));
         var outstanding = region.leaseReadOnly(8, 8);
+        assertTrue(arena.hasOutstandingReadLeases(),
+                "host physical finalization preflight must see the active native lease");
         // A purported quiescence barrier must not deallocate memory while
         // an issued native read lease still retains its backing region.
         assertThrows(IllegalStateException.class, arena::close);
@@ -580,6 +582,8 @@ final class ActorNativeArenaTest {
         assertEquals(100L, outstanding.readLong(0));
         assertEquals(64L, charged.get());
         outstanding.close();
+        assertFalse(arena.hasOutstandingReadLeases(),
+                "preflight must clear after the real owner releases the final lease");
         arena.close();
         assertThrows(IllegalStateException.class, () -> outstanding.readLong(0));
         assertThrows(IllegalStateException.class, () -> outstanding.readByte(0));
