@@ -602,18 +602,36 @@ public final class OresMutex {
             return future;
         }
 
-        private final class AsyncWaiter {
+        /**
+         * One pending Task-owned request. Register before publication so Task
+         * retirement can cancel a suspended waiter without relying on a guest
+         * finally/defer. Once granted, a separate SharedGuard becomes the
+         * authoritative held-permit entry in the same Task ledger.
+         */
+        private final class AsyncWaiter implements TaskOwnedLockLedger.Lease {
             private final Object ownerDomain;
             private final boolean enforceOwnerDomain;
             private final GuardFuture<T> future;
+            private final TaskOwnedLockLedger taskLocks;
 
             private AsyncWaiter(
                     Object ownerDomain,
                     boolean enforceOwnerDomain,
-                    GuardFuture<T> future) {
+                    GuardFuture<T> future,
+                    TaskOwnedLockLedger taskLocks) {
                 this.ownerDomain = ownerDomain;
                 this.enforceOwnerDomain = enforceOwnerDomain;
                 this.future = future;
+                this.taskLocks = taskLocks;
+            }
+
+            @Override
+            public void revokeAfterQuiescence() {
+                // No guest code can still run for this Task. Completing a
+                // cancellable Future may synchronously run host observers;
+                // publication outside the physical lock queue remains a
+                // separate release gate (Java #754/#769).
+                future.cancel(false);
             }
         }
 
@@ -663,14 +681,26 @@ public final class OresMutex {
 
                 endWait(waiter.ownerDomain);
                 markOwner(waiter.ownerDomain);
-                SharedGuard guard = new SharedGuard(
-                        waiter.ownerDomain,
-                        waiter.enforceOwnerDomain);
+                final SharedGuard guard;
+                try {
+                    // The originator's Task ledger, not the releasing carrier,
+                    // owns the grant. Its terminal fence can race this handoff.
+                    guard = new SharedGuard(
+                            waiter.ownerDomain, waiter.enforceOwnerDomain,
+                            waiter.taskLocks);
+                } catch (RuntimeException | Error failedRegistration) {
+                    clearOwner(waiter.ownerDomain);
+                    releaseDomain(waiter.ownerDomain);
+                    waiter.future.failFromRuntime(failedRegistration);
+                    // Physical permit remains in hand for the next waiter.
+                    continue;
+                }
                 if (waiter.future.completeFromRuntime(guard)) return;
 
-                // Cancellation won after dequeue but before completion.
-                clearOwner(waiter.ownerDomain);
-                releaseDomain(waiter.ownerDomain);
+                // Cancellation/timeout beat future publication. This guard
+                // was never published: clear both registries without
+                // poisoning user state, then retry the held physical permit.
+                guard.discardUnpublishedWithoutHandoff();
             }
         }
 
@@ -781,12 +811,21 @@ public final class OresMutex {
                         "SharedMutex process-wide async waiter limit exceeded: " + MAX_GLOBAL_ASYNC_WAITERS));
             }
 
-            boolean enforceOwnerDomain = ActorRuntime.inActorExecution();
+            TaskOwnedLockLedger ledger = TaskHandle.currentLockLedger();
+            boolean enforceOwnerDomain = ActorRuntime.inActorExecution() || ledger != null;
             GuardFuture<T> future = new GuardFuture<>();
             AsyncWaiter waiter = new AsyncWaiter(
-                    ownerDomain,
-                    enforceOwnerDomain,
-                    future);
+                    ownerDomain, enforceOwnerDomain, future, ledger);
+            if (ledger != null) {
+                try {
+                    ledger.register(waiter);
+                } catch (RuntimeException | Error rejected) {
+                    releaseAsyncWaiter();
+                    releaseGlobalAsyncWaiter();
+                    releaseDomain(ownerDomain);
+                    return failedGuardFuture(rejected);
+                }
+            }
 
             future.whenComplete((ignored, failure) -> {
                 boolean removed;
@@ -799,6 +838,7 @@ public final class OresMutex {
                 }
                 releaseAsyncWaiter();
                 releaseGlobalAsyncWaiter();
+                if (ledger != null) ledger.forget(waiter);
             });
 
             boolean acquired = false;
@@ -841,18 +881,19 @@ public final class OresMutex {
                 releaseDomain(ownerDomain);
                 future.failFromRuntime(new PoisonedMutexException());
             } else if (acquired) {
+                markOwner(ownerDomain);
+                final SharedGuard guard;
                 try {
-                    markOwner(ownerDomain);
-                    SharedGuard guard = new SharedGuard(
-                            ownerDomain,
-                            enforceOwnerDomain);
-                    if (!future.completeFromRuntime(guard)) {
-                        guard.releaseFromRuntime();
-                    }
-                } catch (RuntimeException | Error failure) {
+                    guard = new SharedGuard(ownerDomain, enforceOwnerDomain, ledger);
+                } catch (RuntimeException | Error failedRegistration) {
+                    clearOwner(ownerDomain);
                     releaseDomain(ownerDomain);
                     releasePermitOrHandoff();
-                    future.failFromRuntime(failure);
+                    future.failFromRuntime(failedRegistration);
+                    return future;
+                }
+                if (!future.completeFromRuntime(guard)) {
+                    guard.releaseFromRuntime();
                 }
             }
 
@@ -1016,6 +1057,14 @@ public final class OresMutex {
                 releaseDomain(ownerDomain);
                 if (taskLocks != null) taskLocks.forget(this);
                 releasePermitOrHandoff();
+            }
+
+            private void discardUnpublishedWithoutHandoff() {
+                if (!released.compareAndSet(false, true)) return;
+                clearOwner(ownerDomain);
+                releaseDomain(ownerDomain);
+                if (taskLocks != null) taskLocks.forget(this);
+                // The current handoff loop still owns the physical permit.
             }
 
             @Override
