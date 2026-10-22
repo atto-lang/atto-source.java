@@ -249,6 +249,52 @@ final class RecoveryHandlerChainTest {
         assertThrows(NullPointerException.class, () -> builder.onRaise(null));
     }
 
+    @Test void seededDifferentialReferenceModelCoversMasksAndDelegation() {
+        java.util.Random random = new java.util.Random(0x0E5A2026L);
+        for (int scenario = 0; scenario < 400; scenario++) {
+            int depth = random.nextInt(64);
+            int[] masks = new int[depth];
+            boolean[] resolves = new boolean[depth];
+            var trace = new ArrayList<Integer>();
+            var builder = RecoveryHandlerChain.<Integer>builder();
+            for (int i = 0; i < depth; i++) {
+                masks[i] = 1 + random.nextInt(3);
+                resolves[i] = random.nextBoolean();
+                final int index = i;
+                RecoveryHandlerChain.Handler<Integer> handler = (e, c) -> {
+                    trace.add(index);
+                    if (resolves[index]) c.resolve(index);
+                    else c.next();
+                };
+                if (masks[i] == 1) builder.onThrow(handler);
+                else if (masks[i] == 2) builder.onRaise(handler);
+                else builder.register(handler);
+            }
+            var kind = random.nextBoolean()
+                    ? RecoveryHandlerChain.FailureKind.THROW
+                    : RecoveryHandlerChain.FailureKind.RAISE;
+            int bit = kind == RecoveryHandlerChain.FailureKind.THROW ? 1 : 2;
+            var expectedTrace = new ArrayList<Integer>();
+            Integer expectedResult = null;
+            for (int i = depth - 1; i >= 0; i--) {
+                if ((masks[i] & bit) == 0) continue;
+                expectedTrace.add(i);
+                if (resolves[i]) { expectedResult = i; break; }
+            }
+            Throwable pending = new RuntimeException("scenario-" + scenario);
+            var result = builder.freeze().dispatch(kind, pending);
+            assertEquals(expectedTrace, trace, "scenario=" + scenario);
+            if (expectedResult == null) {
+                var unhandled = assertInstanceOf(
+                        RecoveryHandlerChain.Unhandled.class, result);
+                assertSame(pending, unhandled.error());
+                assertEquals(kind, unhandled.kind());
+            } else {
+                assertEquals(new RecoveryHandlerChain.Recovered<>(expectedResult), result);
+            }
+        }
+    }
+
     @Test void longDelegationChainIsIterative() {
         var builder = RecoveryHandlerChain.<Integer>builder();
         builder.register((e, c) -> c.resolve(123));
