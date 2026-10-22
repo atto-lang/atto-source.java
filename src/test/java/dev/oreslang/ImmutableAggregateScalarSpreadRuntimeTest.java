@@ -120,6 +120,45 @@ final class ImmutableAggregateScalarSpreadRuntimeTest {
     }
 
     @Test
+    void syncAndSuspendedNestedSpreadsProduceSameRightmostValues() {
+        String synchronous = """
+                fnc value(): int { return 8; }
+                pub fnc main(): void {
+                    const base = record{first: 7};
+                    const merged = record{
+                        first: 1,
+                        ...record{first: 2, awaited: value()},
+                        ...base,
+                        last: 9
+                    };
+                    stdio.println(merged.first);
+                    stdio.println(merged.awaited);
+                    stdio.println(merged.last);
+                    return;
+                }
+                """;
+        String suspended = """
+                async fnc value(): int { return 8; }
+                pub async fnc main(): void {
+                    const base = record{first: 7};
+                    const merged = record{
+                        first: 1,
+                        ...record{first: 2, awaited: await value()},
+                        ...base,
+                        last: 9
+                    };
+                    stdio.println(merged.first);
+                    stdio.println(merged.awaited);
+                    stdio.println(merged.last);
+                    return;
+                }
+                """;
+        assertEquals("7\n8\n9\n", execute(synchronous));
+        assertEquals(execute(synchronous), execute(suspended),
+                "suspension must not reorder or duplicate spread field writes");
+    }
+
+    @Test
     void emptySpreadsAndQuotedStaticKeysRemainClosed() {
         assertEquals("Ada\n5\n", execute("""
                 pub fnc main(): void {
