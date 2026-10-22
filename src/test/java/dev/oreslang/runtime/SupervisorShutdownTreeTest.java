@@ -304,6 +304,83 @@ final class SupervisorShutdownTreeTest {
         }
     }
 
+    private static volatile SupervisorShutdownTree actorVisibleTree;
+    private static volatile CountDownLatch coordinatorActorEntered;
+    private static volatile CountDownLatch coordinatorActorRelease;
+
+    @Test
+    void actorCodeCannotExerciseHostSupervisorShutdownAuthority() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             var control = Executors.newSingleThreadExecutor()) {
+            SupervisorShutdownTree tree = new SupervisorShutdownTree(runtime, control);
+            tree.setRoot("root", runtime.createActorGroup(), new SupervisorShutdownTree.Hooks() {});
+            actorVisibleTree = tree;
+            CountDownLatch checked = new CountDownLatch(1);
+            ActorRuntime.ActorRef<Integer> worker = runtime.spawnShared(() ->
+                    (message, context) -> {
+                        assertThrows(SecurityException.class, () ->
+                                actorVisibleTree.shutdown(SupervisorShutdownTree.Reason.REQUESTED));
+                        checked.countDown();
+                        context.self().stop();
+                    });
+            worker.send(1);
+            assertTrue(checked.await(3, TimeUnit.SECONDS));
+            assertTrue(worker.awaitTermination(5, TimeUnit.SECONDS));
+            tree.shutdown(SupervisorShutdownTree.Reason.NORMAL).get(5, TimeUnit.SECONDS);
+        } finally {
+            actorVisibleTree = null;
+        }
+    }
+
+    @Test
+    void brokenInlineControlExecutorDoesNotReportTerminationBeforeWorkerExit() throws Exception {
+        coordinatorActorEntered = new CountDownLatch(1);
+        coordinatorActorRelease = new CountDownLatch(1);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorRef<Integer> worker = group.spawnWorker(
+                    ActorRuntime.ActorKind.PRIVATE,
+                    IsolatePolicy.developer(),
+                    ctx -> (message, actorContext) -> {
+                        coordinatorActorEntered.countDown();
+                        // A cancellation request cannot manufacture physical
+                        // exit while the active Java carrier is still running.
+                        while (coordinatorActorRelease.getCount() > 0) {
+                            try {
+                                coordinatorActorRelease.await(1, TimeUnit.SECONDS);
+                            } catch (InterruptedException ignored) {
+                                // Intentionally keep the lease until release.
+                            }
+                        }
+                    });
+            worker.send(1);
+            assertTrue(coordinatorActorEntered.await(3, TimeUnit.SECONDS));
+            AtomicInteger hooksInvoked = new AtomicInteger();
+            SupervisorShutdownTree tree = new SupervisorShutdownTree(runtime, Runnable::run);
+            tree.setRoot("root", group, new SupervisorShutdownTree.Hooks() {
+                @Override public OresFuture<Void> onShutdown(
+                        SupervisorShutdownTree.Reason reason) {
+                    hooksInvoked.incrementAndGet();
+                    return OresFuture.completed(null);
+                }
+            });
+            OresFuture<Void> done = tree.shutdown(SupervisorShutdownTree.Reason.REQUESTED);
+            assertEquals(0, hooksInvoked.get(), "invalid CONTROL executor cannot execute guest hooks");
+            assertFalse(done.isDone(), "emergency fallback must wait for physical actor finalization");
+            try {
+                assertFalse(worker.done().isDone(), "active actor has not finished");
+            } finally {
+                coordinatorActorRelease.countDown();
+            }
+            ExecutionException failure = assertThrows(ExecutionException.class,
+                    () -> done.get(5, TimeUnit.SECONDS));
+            assertTrue(failure.getCause().getMessage().contains("CONTROL"));
+            assertTrue(worker.awaitTermination(5, TimeUnit.SECONDS));
+        } finally {
+            coordinatorActorRelease.countDown();
+        }
+    }
+
     private static volatile CountDownLatch firstEntered;
     private static volatile CountDownLatch firstMayExit;
     private static final AtomicInteger processed = new AtomicInteger();
