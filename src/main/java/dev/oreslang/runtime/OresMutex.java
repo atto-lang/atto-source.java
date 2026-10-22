@@ -514,12 +514,18 @@ public final class OresMutex {
             }
         }
 
+        // Package-private proof seam: different value-equal actor turns must
+        // never collapse into a single logical lock/deadlock owner.
+        static Object logicalOwnerKey(Object execution) {
+            return new LogicalOwner(execution);
+        }
+
         private static Object currentLogicalLockOwner() {
             // Actor domain != execution owner. Task identity survives await
             // and carrier migration; an untracked actor uses its physical
             // dispatch instance, and an ordinary host uses its Thread.
             Object taskDomain = OresScheduler.currentTaskDomain();
-            return new LogicalOwner(taskDomain != null
+            return logicalOwnerKey(taskDomain != null
                     ? taskDomain : ActorRuntime.currentMutexExecutionSegment());
         }
 
