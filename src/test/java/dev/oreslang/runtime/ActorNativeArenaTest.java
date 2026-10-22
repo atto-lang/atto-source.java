@@ -573,10 +573,16 @@ final class ActorNativeArenaTest {
         region.writeLong(8, 100L);
         assertEquals(100L, region.readLong(8));
         var outstanding = region.leaseReadOnly(8, 8);
+        // A purported quiescence barrier must not deallocate memory while
+        // an issued native read lease still retains its backing region.
+        assertThrows(IllegalStateException.class, arena::close);
+        assertFalse(arena.closed());
+        assertEquals(100L, outstanding.readLong(0));
+        assertEquals(64L, charged.get());
+        outstanding.close();
         arena.close();
         assertThrows(IllegalStateException.class, () -> outstanding.readLong(0));
         assertThrows(IllegalStateException.class, () -> outstanding.readByte(0));
-        outstanding.close();
         assertEquals(0, charged.get());
     }
 
