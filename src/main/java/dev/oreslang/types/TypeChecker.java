@@ -7120,11 +7120,22 @@ public final class TypeChecker {
         Function sameShapeWithInheritedEffects = new Function(
                 child.parameters(), child.mutableParameters(), child.async(),
                 child.result(), parent.effects());
-        if (!sameShapeWithInheritedEffects.equals(parent)
-                || !child.effects().isSubsetOf(parent.effects())) {
+        if (!sameShapeWithInheritedEffects.equals(parent)) {
             throw new IllegalArgumentException("override '" + name + "' in " + owner
-                    + " changes callable signature or widens checked effects: "
+                    + " changes the callable parameter/return contract: "
                     + parent + " vs " + child);
+        }
+        if (!parent.effects().throwsTypes().containsAll(child.effects().throwsTypes())) {
+            throw new IllegalArgumentException("override '" + name
+                    + "' widens checked throws in " + owner);
+        }
+        if (!parent.effects().raisesTypes().containsAll(child.effects().raisesTypes())) {
+            throw new IllegalArgumentException("override '" + name
+                    + "' widens checked raises in " + owner);
+        }
+        if (!parent.effects().panicsTypes().containsAll(child.effects().panicsTypes())) {
+            throw new IllegalArgumentException("override '" + name
+                    + "' widens checked panics in " + owner);
         }
         members.put(name, replacement);
     }
