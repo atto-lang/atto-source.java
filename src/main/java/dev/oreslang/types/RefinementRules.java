@@ -312,7 +312,7 @@ public final class RefinementRules {
     public static final class NominalValue {
         private final String qualifiedTypeName;
         private final String schemaFingerprint;
-        private final Object underlying;
+        private Object underlying;
         private NominalValue(String qualifiedTypeName, String schemaFingerprint,
                              Object underlying) {
             if (!qualifiedIdentity(qualifiedTypeName))
@@ -320,13 +320,24 @@ public final class RefinementRules {
             if (schemaFingerprint == null
                     || !schemaFingerprint.matches("[0-9a-f]{64}"))
                 throw new IllegalArgumentException("canonical schema fingerprint is required");
+            if (!(underlying instanceof Long) && !(underlying instanceof String))
+                throw new IllegalArgumentException("nominal scalar must be immutable int64/String");
             this.qualifiedTypeName = qualifiedTypeName;
             this.schemaFingerprint = schemaFingerprint;
             this.underlying = Objects.requireNonNull(underlying);
         }
         public String qualifiedTypeName() { return qualifiedTypeName; }
         public String schemaFingerprint() { return schemaFingerprint; }
-        public Object intoInner() { return underlying; }
+
+        // Same one-shot ownership rule as the schema-first CheckedScalar
+        // preview. Metadata remains diagnostic, not an authoritative proof.
+        public synchronized Object intoInner() {
+            if (underlying == null)
+                throw new IllegalStateException("Zorde nominal scalar was already consumed");
+            Object taken = underlying;
+            underlying = null;
+            return taken;
+        }
     }
     public record CheckedValue(boolean ok, Object value, String error) { }
 

@@ -36,6 +36,17 @@ public final class TypeChecker {
     // Keep the stage-one default-type allowlist consistent with concrete
     // compiler-known scalar and nominal constructors. Do not allocate it per
     // recursive validation node or admit arbitrary unresolved nominal names.
+    // Reserved for compiler-issued schema proofs. User-defined classes,
+    // aliases, interfaces, imports and generic parameters cannot shadow it.
+    // Parsing/execution remain disabled until checked minting is implemented.
+    private static void rejectZordeProofShadow(String name, String origin) {
+        if ("Valid".equals(name)) {
+            throw new IllegalArgumentException(
+                    "Zorde Valid<T, SchemaId> is a reserved compiler-only proof; "
+                    + origin + " cannot define or shadow it");
+        }
+    }
+
     private static final Set<String> GENERIC_DEFAULT_BUILTINS = Set.of(
             "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
             "int", "uint", "bigint", "f32", "f64", "float",
@@ -187,7 +198,7 @@ public final class TypeChecker {
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
-                "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
+                "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future", "Valid",
                 "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
@@ -208,6 +219,7 @@ public final class TypeChecker {
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
             for (String name : ImportRules.exposedBindings(imported)) {
+                rejectZordeProofShadow(name, "import");
                 if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
                 if (localNames.contains(name)) {
                     throw new IllegalArgumentException("imported name '" + name + "' conflicts with a local or builtin name");
@@ -232,12 +244,15 @@ public final class TypeChecker {
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putFunction(module.name(), fn);
                 } else if (decl instanceof Ast.ClassDecl klass) {
+                    rejectZordeProofShadow(klass.name(), "class");
                     putQualified(classes, ambiguousClasses, module.name(), klass.name(), klass, "class");
                     classOwners.put(klass, module.name());
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
+                    rejectZordeProofShadow(iface.name(), "interface");
                     putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface, "interface");
                     interfaceOwners.put(iface, module.name());
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    rejectZordeProofShadow(alias.name(), "type alias/newtype");
                     putQualified(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias, "type alias");
                     typeAliasOwners.put(alias, module.name());
                 }
@@ -7831,6 +7846,14 @@ public final class TypeChecker {
 
     private Type resolve(Ast.TypeRef ref, Set<String> generics, Type self, boolean allowNullMarker) {
         if (ref == null) return Unknown.INSTANCE;
+        // Checking the AST, not only parser tokens, prevents linked metadata
+        // and synthetic/programmatically supplied TypeRefs from bypassing the
+        // source syntax gate and becoming ordinary Named/Generic values.
+        if (ref.name().equals("Valid") || ref.name().endsWith(".Valid")) {
+            throw new IllegalArgumentException(
+                    "Zorde Valid<T, SchemaId> is compiler-only and not yet executable: "
+                    + "trusted schema minting and owned/frozen validation are unavailable");
+        }
         if (ref.name().equals("_")) {
             // '_' has meaning only as an entire generic *call* argument.
             // In ordinary type positions it is neither a type variable nor
@@ -8114,6 +8137,17 @@ public final class TypeChecker {
     }
 
     private boolean assignable(Type actual, Type expected) {
+        if (Types.containsForgedZordeProofName(actual)
+                || Types.containsForgedZordeProofName(expected))
+            return false;
+        // A future compiler-minted Zorde proof is opaque. Do not allow this
+        // checker's structural, nominal-supertype or generic substitution
+        // fallbacks to erase its schema identity. Type-layer invariance is
+        // deliberately stricter until authenticated proof lowering exists.
+        if (Types.containsCompilerCheckedScalar(actual)
+                || Types.containsCompilerCheckedScalar(expected)) {
+            return Types.isAssignable(actual, expected);
+        }
         // A negative constraint requires positive evidence that values are disjoint.
         // The generic/Unknown and dynamic compatibility paths below are not evidence.
         if (expected instanceof Types.Not) return Types.isAssignable(actual, expected);
@@ -8360,7 +8394,10 @@ public final class TypeChecker {
 
     private Set<String> uniqueGenerics(List<String> names, String owner) {
         Set<String> result = new HashSet<>();
-        for (String name : names) if (!result.add(name)) throw new IllegalArgumentException("duplicate generic '" + name + "' in " + owner);
+        for (String name : names) {
+            rejectZordeProofShadow(name, "generic parameter");
+            if (!result.add(name)) throw new IllegalArgumentException("duplicate generic '" + name + "' in " + owner);
+        }
         return result;
     }
 

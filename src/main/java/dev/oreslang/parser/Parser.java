@@ -1591,6 +1591,18 @@ public final class Parser {
         else if (match(NULL)) name = "null";
         else name = parseQualifiedName();
 
+        // Valid<T, SchemaId> is a future compiler-minted capability, not a
+        // nominal type or a generic that user source can instantiate.
+        // Parse-time refusal covers nested aliases, Result/Option, borrow,
+        // function signatures, pattern targets, and new/spawn expressions.
+        // The compiler cannot safely lower it until trusted schema identity
+        // and transitive owned/frozen construction are implemented.
+        if (name.equals("Valid") || name.endsWith(".Valid")) {
+            throw error(previous(),
+                    "Zorde Valid<T, SchemaId> proof is compiler-only and not yet executable; "
+                    + "source construction, casts, and unverified transfers are forbidden");
+        }
+
         List<Ast.TypeRef> args = new ArrayList<>();
         boolean infer = false;
         if (match(LT)) {

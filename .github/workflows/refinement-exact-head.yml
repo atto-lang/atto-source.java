@@ -11,6 +11,9 @@ on:
       - 'src/main/java/dev/oreslang/compiler/ZordeSchemaGenerator.java'
       - 'src/test/java/dev/oreslang/RefinementRulesTest.java'
       - 'src/test/java/dev/oreslang/RefinementSyntaxGateTest.java'
+      - 'src/test/java/dev/oreslang/ZordeValidAdmissionGateTest.java'
+      - 'src/test/java/dev/oreslang/ZordeCheckedScalarMoveTest.java'
+      - 'src/test/java/dev/oreslang/types/ZordeCheckedTypeIdentityTest.java'
       - 'src/test/java/dev/oreslang/ZordeSchemaGeneratorTest.java'
       - 'src/test/java/dev/oreslang/ZordeStdlibSourceTest.java'
       - 'stdlib/zorde.ores'
@@ -48,7 +51,7 @@ jobs:
           distribution: 'graalvm'
           cache: maven
       - name: Execute refinement parser, schema, and stdlib regressions
-        run: mvn -B -ntp -Dtest=RefinementRulesTest,RefinementSyntaxGateTest,ZordeSchemaGeneratorTest,ZordeStdlibSourceTest test
+        run: mvn -B -ntp -Dtest=RefinementRulesTest,RefinementSyntaxGateTest,ZordeSchemaGeneratorTest,ZordeStdlibSourceTest,ZordeValidAdmissionGateTest,ZordeCheckedScalarMoveTest,ZordeCheckedTypeIdentityTest test
       - name: Recheck source tree after tests
         shell: bash
         env:
