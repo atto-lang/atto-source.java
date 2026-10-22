@@ -1,0 +1,20 @@
+// Shared legacy channel and typed Future syntax are tested together on this integration.
+pub routine main(): void {
+  val Channel<int> primary = Channel.new<int>(1);
+  val Channel<int> secondary = Channel.new<int>(1);
+  writech primary, 7;
+  writech secondary, 9;
+  do select first {
+    when readch primary: const value {
+      stdio.stdout.write("first:");
+      stdio.stdout.write(value);
+    }
+    when readch secondary: const value {
+      stdio.stdout.write("wrong:");
+      stdio.stdout.write(value);
+    }
+  }
+  stdio.stdout.write(":");
+  stdio.stdout.write(readch secondary);
+  return;
+}

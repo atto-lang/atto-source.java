@@ -1,0 +1,27 @@
+name: Target ABI (x86-64 and ARM64)
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  target-abi:
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Verify target ABI without build-system dependencies
+        run: bash scripts/verify-target-abi.sh
+      - name: Validate target ABI registry and bounds
+        run: mvn -B -ntp -Dtest=TargetAbiTest test
