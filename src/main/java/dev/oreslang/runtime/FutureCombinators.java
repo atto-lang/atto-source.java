@@ -307,6 +307,15 @@ public final class FutureCombinators {
                                 if (active != null) active.cancel(false);
                             });
                     innerWaiter.set(watcher);
+                    // A concurrent dependent cancellation can drain its
+                    // terminal subscribers BEFORE the inner subscription is
+                    // published. Retire any late registration immediately.
+                    OresFuture<U> terminalDependent = dependentRef.get();
+                    if (terminalDependent != null && terminalDependent.isDone()) {
+                        if (innerWaiter.compareAndSet(watcher, null)) {
+                            watcher.detach();
+                        }
+                    }
                     if (innerCancelled.get()) {
                         OresFuture<U> active = dependentRef.get();
                         if (active != null) active.cancel(false);
