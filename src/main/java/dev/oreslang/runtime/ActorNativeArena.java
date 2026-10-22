@@ -1094,6 +1094,9 @@ public final class ActorNativeArena implements AutoCloseable {
             int capacity = (int) Math.max(size, Math.min(SLAB_BYTES, remaining));
             Runnable release = budget.reserve(capacity);
             ByteBuffer slab = null;
+            // All three metadata lists have the same published prefix. Track
+            // its boundary so even an exceptional append can be undone.
+            int publishedSlabs = slabs.size();
             try {
                 // Grow both metadata arrays before owning native bytes, so an
                 // OOME cannot leave a freed slab published in only one list.
@@ -1114,6 +1117,17 @@ public final class ActorNativeArena implements AutoCloseable {
                 releases.add(release);
                 nextActorOffset = nextOffset;
             } catch (RuntimeException | Error failure) {
+                // Undo partially appended metadata BEFORE freeing backing
+                // memory. Otherwise a later lookup can use a stale freed slab.
+                while (releases.size() > publishedSlabs) {
+                    releases.remove(releases.size() - 1);
+                }
+                while (slabBases.size() > publishedSlabs) {
+                    slabBases.remove(slabBases.size() - 1);
+                }
+                while (slabs.size() > publishedSlabs) {
+                    slabs.remove(slabs.size() - 1);
+                }
                 if (slab != null) releaseNative(slab);
                 release.run();
                 throw failure;
