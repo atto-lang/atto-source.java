@@ -444,3 +444,51 @@ or Native Image runtime. The source-org Actions runner still reports
 zero-step jobs. The initial compiler-owned deterministic `drop` path
 must be implemented and tested before using this allocator for
 ordinary source-level object graphs.
+
+## Runtime-owned source Task physical-quiescence barrier (stacked draft #1856)
+
+The actor-owned `OresScheduler.runtimeOwned(...)` facade now has a
+**nonblocking** `requestClose(whenFullyQuiescent)` lifecycle API. This
+is separate from user-owned `OresScheduler.close()`, which may shut
+down private executor threads. The actor owns an already-shared carrier
+executor and must never await its termination under `lifecycleLock`.
+
+- `requestClose` immediately seals scheduler admission under
+  `taskAdmissionLock` and captures its live task cohort. It then performs
+  task revocation on a separate host virtual notifier, outside all actor
+  lifecycle locks.
+- The first shutdown pass revokes the state/await registrations of **all**
+  admitted tasks before performing any potentially blocking physical
+  retirement callback or synchronous Future-subscriber notification.
+- The scheduler retains each `TaskRunner` in its live set until the
+  *post-carrier* `onQuiescent` callback and task-quota retirement have
+  actually returned. Its one-shot `whenFullyQuiescent` callback fires
+  only once after the revocation pass is complete and the live set is
+  empty. Terminal `OresFuture` notification alone is not a carrier
+  or memory-lifetime witness.
+- `ActorCell.finalizeStopLocked()` requests shutdown once, returns with
+  the actor still unfinalized, then retries when the scheduler's
+  fully-quiescent callback reenters the actor lifecycle lock. It does
+  **not** detach source scheduler state, close `ActorNativeArena`, refund
+  the memory slice or resolve `actor.done` before this barrier.
+- After the scheduler is quiescent, existing native read-lease checks
+  still independently forbid physical arena release while a real
+  native loan is live. Release errors must not be misreported as
+  successful actor finalization.
+
+New **unexecuted** regression source on this draft covers (a) an
+actively executing source Task held beyond actor stop, (b) a Task
+suspended on an unresolved Future, (c) a blocked post-carrier
+retirement callback, (d) blocking terminal Future subscribers not
+masquerading as physical guest execution, and (e) two suspended
+Tasks whose await registrations must *both* be revoked before any
+retirement callback can block.
+
+This implementation does **not** complete issue [#1566](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/1566)
+for arbitrary independently scheduled `TaskScope` descendants,
+untrusted timed quota lineage or borrowed child captures. Physical
+descendant lineage and compiler-emitted drop glue still require their
+own runtime gates and executable cancellation/stop-race tests.
+A stranded native read lease remains a deliberate stop/fail-closed
+condition, not permission to force-free live memory. No hard-real-time,
+no-tracing-GC, Native Image or cross-backend parity claim follows.
