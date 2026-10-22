@@ -392,9 +392,10 @@ public final class TreeShaker {
             if (expression instanceof Ast.ObjectExpr object) {
                 List<Ast.ObjectField> fields = new ArrayList<>();
                 for (Ast.ObjectField field : object.fields()) {
-                    fields.add(Ast.ObjectField.named(
-                            field.name(),
-                            substitute(field.value(), substitutions, shadowed)));
+                    Ast.Expr value = substitute(field.value(), substitutions, shadowed);
+                    fields.add(field.spread()
+                            ? Ast.ObjectField.spreading(value)
+                            : Ast.ObjectField.named(field.name(), value));
                 }
                 return new Ast.ObjectExpr(fields, object.kind(), object.declaredFields());
             }
@@ -1004,9 +1005,10 @@ public final class TreeShaker {
             if (expression instanceof Ast.ObjectExpr object) {
                 List<Ast.ObjectField> fields = new ArrayList<>();
                 for (Ast.ObjectField field : object.fields()) {
-                    fields.add(Ast.ObjectField.named(
-                            field.name(),
-                            rewriteExpression(field.value(), module, locals)));
+                    Ast.Expr value = rewriteExpression(field.value(), module, locals);
+                    fields.add(field.spread()
+                            ? Ast.ObjectField.spreading(value)
+                            : Ast.ObjectField.named(field.name(), value));
                 }
                 return new Ast.ObjectExpr(fields, object.kind(), object.declaredFields());
             }
