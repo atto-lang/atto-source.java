@@ -43,6 +43,13 @@
             "boolean",
             "int"
           ]
+        },
+        {
+          "name": "nativeWriteCompleted",
+          "parameterTypes": [
+            "long",
+            "int"
+          ]
         }
       ]
     }
