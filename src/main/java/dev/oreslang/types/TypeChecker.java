@@ -7849,8 +7849,7 @@ public final class TypeChecker {
         // Checking the AST, not only parser tokens, prevents linked metadata
         // and synthetic/programmatically supplied TypeRefs from bypassing the
         // source syntax gate and becoming ordinary Named/Generic values.
-        if (ref.name().equals("Valid") || ref.name().equals("Zorde.Valid")
-                || ref.name().equals("std.zorde.Valid")) {
+        if (ref.name().equals("Valid") || ref.name().endsWith(".Valid")) {
             throw new IllegalArgumentException(
                     "Zorde Valid<T, SchemaId> is compiler-only and not yet executable: "
                     + "trusted schema minting and owned/frozen validation are unavailable");
