@@ -41,7 +41,8 @@ public final class AggregateConstructionPlan {
 
     /**
      * Statically admitted projection of a closed record or struct.
-     * The projection field map preserves source declaration order for codegen.
+     * Projection fields use stable static-name order; source evaluation order
+     * belongs to orderedSteps and is independent of physical storage order.
      */
     public record SpreadFields(
             int sourceIndex, AggregateKind sourceKind, Map<String, Type> fields)
@@ -127,7 +128,10 @@ public final class AggregateConstructionPlan {
             // Evaluate and validate the entire projection before inserting it:
             // a failed spread must not make a partially admitted compiler plan.
             LinkedHashMap<String, Type> projection = new LinkedHashMap<>();
-            for (Map.Entry<String, Type> field : row.members().entrySet()) {
+            // Types.Record uses an order-independent map; derive deterministic
+            // projection slots instead of trusting its iteration order.
+            for (Map.Entry<String, Type> field : row.members().entrySet().stream()
+                    .sorted(Map.Entry.comparingByKey()).toList()) {
                 if (!copyableScalar(field.getValue())) {
                     throw new IllegalArgumentException(
                             "aggregate spread scalar-only stage rejects field '" + field.getKey() + "'");
