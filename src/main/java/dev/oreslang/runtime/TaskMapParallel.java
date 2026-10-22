@@ -154,15 +154,18 @@ public final class TaskMapParallel {
             Function<? super T, ? extends OresScheduler.Task<R>> factory) {
         Objects.requireNonNull(scheduler, "scheduler");
         Objects.requireNonNull(factory, "factory");
-        List<T> items = List.copyOf(Objects.requireNonNull(inputs, "inputs"));
+        Objects.requireNonNull(inputs, "inputs");
+        // Bound before copying: otherwise an oversized malicious caller can
+        // force a large retained input snapshot merely to be rejected.
+        if (inputs.size() > MAX_INPUTS) {
+            throw new IllegalArgumentException(
+                    "map_parallel input size exceeds " + MAX_INPUTS);
+        }
         if (maxConcurrent < 1 || maxConcurrent > MAX_INPUTS) {
             throw new IllegalArgumentException(
                     "maxConcurrent must be between 1 and " + MAX_INPUTS);
         }
-        if (items.size() > MAX_INPUTS) {
-            throw new IllegalArgumentException(
-                    "map_parallel input size exceeds " + MAX_INPUTS);
-        }
+        List<T> items = List.copyOf(inputs);
         TaskScope scope = scheduler.newTaskScope();
         TaskHandle<?>[] admittedHandles = new TaskHandle<?>[items.size()];
         AtomicReference<TaskHandle<List<R>>> coordinatorOwner = new AtomicReference<>();
