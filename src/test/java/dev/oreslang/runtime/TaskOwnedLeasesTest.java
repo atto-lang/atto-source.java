@@ -277,4 +277,44 @@ public class TaskOwnedLeasesTest {
             assertEquals(TaskOwnedLeases.MAX_LEASES_PER_TASK, released.get());
         }
     }
+
+    @Test void cleanupFailurePoisonsOwningScopeEvenAfterChildPhysicallyRetires()
+            throws Exception {
+        IllegalStateException leakedLock = new IllegalStateException("logical release failed");
+        try (OresScheduler scheduler = new OresScheduler(2);
+             TaskScope scope = scheduler.newTaskScope()) {
+            TaskHandle<Integer> child = scope.startTask(resume -> {
+                TaskOwnedLeases.register(() -> { throw leakedLock; });
+                return OresScheduler.done(14);
+            });
+            scope.seal();
+            var failure = assertThrows(ExecutionException.class,
+                    () -> scope.getDone().get(4, TimeUnit.SECONDS));
+            var cleanup = assertInstanceOf(
+                    TaskOwnedLeases.CleanupFailure.class, failure.getCause());
+            assertSame(leakedLock, cleanup.failures().get(0));
+            assertEquals(List.of(leakedLock),
+                    scope.cleanupFailures().get(4, TimeUnit.SECONDS));
+            assertInstanceOf(TaskHandle.Failed.class,
+                    child.getDone().get(4, TimeUnit.SECONDS));
+            assertFalse(scope.getDone().isCancelled());
+        }
+    }
+
+    @Test void healthyScopeAfterSeveralChildReleasesRemainsClean() throws Exception {
+        AtomicInteger released = new AtomicInteger();
+        try (OresScheduler scheduler = new OresScheduler(2);
+             TaskScope scope = scheduler.newTaskScope()) {
+            for (int i = 0; i < 4; i++) {
+                scope.startTask(resume -> {
+                    TaskOwnedLeases.register(released::incrementAndGet);
+                    return OresScheduler.done(1);
+                });
+            }
+            scope.seal();
+            assertNull(scope.getDone().get(4, TimeUnit.SECONDS));
+            assertEquals(List.of(), scope.cleanupFailures().get(4, TimeUnit.SECONDS));
+            assertEquals(4, released.get());
+        }
+    }
 }
