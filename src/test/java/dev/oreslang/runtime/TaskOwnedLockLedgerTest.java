@@ -98,8 +98,8 @@ public final class TaskOwnedLockLedgerTest {
             try {
                 assertTrue(requested.await(3, TimeUnit.SECONDS));
                 assertFalse(pending.get().isDone());
-                hostGuard.release(); // handoff is delivered on this host thread
-                assertTrue(pending.get().isDone());
+                hostGuard.release(); // public callbacks must run off this carrier
+                assertNotNull(pending.get().get(3, TimeUnit.SECONDS));
             } finally {
                 allowTaskToObserve.countDown();
             }
@@ -180,12 +180,16 @@ public final class TaskOwnedLockLedgerTest {
                 cancellation.join();
             }
             assertNull(unexpected.get());
-            assertTrue(pending.get().isDone());
-            if (!pending.get().isCancelled()) {
+            // A handoff now posts public notification off the releasing
+            // carrier. Wait for that bounded asynchronous publication.
+            try {
                 var grant = pending.get().get(3, TimeUnit.SECONDS);
                 assertFalse(grant.released());
                 grant.release();
+            } catch (java.util.concurrent.CancellationException expected) {
+                assertTrue(pending.get().isCancelled());
             }
+            assertTrue(pending.get().isDone());
             var next = mutex.tryLock().orElseThrow();
             next.release();
         }
