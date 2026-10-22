@@ -94,7 +94,12 @@ public final class AsyncSequences {
                 pendingResult = result;
             }
 
-            if (result.isCancelled()) return result;
+            if (result.isCancelled()) {
+                synchronized (lock) {
+                    if (pendingResult == result) pendingResult = null;
+                }
+                return result;
+            }
             final OresFuture<T> read;
             try {
                 read = channel.readAsync();
