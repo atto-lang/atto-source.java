@@ -93,6 +93,28 @@ final class OptionErgonomicsLanguageTest {
                 """, "one eager error value");
     }
 
+    @Test
+    void resultOrElsePreservesAffinePayloadAndChecksItsReceiverOnce() {
+        String legal = """
+                define class Box as
+                end
+                fnc recover(Result<Box, String> value): Result<Box, String> {
+                  return value.or_else((String reason) -> Err(reason));
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(legal));
+
+        assertRejects("""
+                define class Box as
+                end
+                fnc misuse(Result<Box, String> value): void {
+                  val first = value.or_else((String reason) -> Err(reason));
+                  val second = value.or_else((String reason) -> Err(reason));
+                  return;
+                }
+                """, "moved value");
+    }
+
     private static void assertRejects(String source, String message) {
         Throwable failure = assertThrows(RuntimeException.class,
                 () -> OresCompiler.parseAndTypeCheck(source));
