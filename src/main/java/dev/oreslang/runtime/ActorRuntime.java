@@ -7164,6 +7164,9 @@ public final class ActorRuntime implements AutoCloseable {
          */
         private boolean sourceHandoffRequested;
         private OresScheduler sourceScheduler;
+        /** Guarded by lifecycleLock: separate cancellation from physical retirement. */
+        private boolean sourceSchedulerCloseRequested;
+        private boolean sourceSchedulerFullyQuiescent;
         /** self.end()/self.endWithCleanup(...) lifecycle state; guarded by lifecycleLock. */
         private boolean endRequested;
         private Runnable finalCleanup;
@@ -7397,6 +7400,10 @@ public final class ActorRuntime implements AutoCloseable {
         private OresScheduler sourceScheduler() {
             synchronized (lifecycleLock) {
                 if (sourceScheduler != null) return sourceScheduler;
+                if (stopped.get() || finalizing || finalized) {
+                    throw new RejectedExecutionException(
+                            "actor " + ref.id() + " cannot create a scheduler during shutdown");
+                }
 
                 java.util.concurrent.Executor mailboxExecutor = command -> {
                     if (!enqueueContinuation(ref.id(), command)) {
@@ -7501,6 +7508,23 @@ public final class ActorRuntime implements AutoCloseable {
                     || scheduled.get()
                     || carrierActive
                     || !children.isEmpty()) return;
+            // Actor Tasks are not necessarily quiescent when their Futures
+            // become terminal. Request nonblocking scheduler cancellation and
+            // await the post-carrier, post-retirement-callback barrier BEFORE
+            // releasing source state, native memory, or publishing done.
+            if (sourceScheduler != null && !sourceSchedulerFullyQuiescent) {
+                if (!sourceSchedulerCloseRequested) {
+                    sourceSchedulerCloseRequested = true;
+                    sourceScheduler.requestClose(() -> {
+                        synchronized (lifecycleLock) {
+                            sourceSchedulerFullyQuiescent = true;
+                            if (stopped.get()) finalizeStopLocked();
+                            lifecycleLock.notifyAll();
+                        }
+                    });
+                }
+                return;
+            }
             // Native arena close refuses active read leases. Never set
             // finalized=true, unlink the scheduler or drain resources before
             // this preflight, or actor.done could be stranded behind a falsely
@@ -7512,16 +7536,9 @@ public final class ActorRuntime implements AutoCloseable {
             }
             finalizing = true;
             try {
-                OresScheduler scheduler = sourceScheduler;
+                // requestClose() sealed admission and retired every physical
+                // source task; it never blocked the actor lifecycle monitor.
                 sourceScheduler = null;
-                if (scheduler != null) {
-                    try {
-                        scheduler.close();
-                    } catch (RuntimeException ignored) {
-                        // Actor teardown remains authoritative; source scheduler
-                        // cancellation is best-effort after the actor has finalized.
-                    }
-                }
                 drainMailboxReservations();
                 staticSelectCursors.clear();
                 codeActorState = null;
