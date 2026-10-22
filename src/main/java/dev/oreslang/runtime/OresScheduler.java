@@ -109,6 +109,14 @@ public final class OresScheduler implements AutoCloseable {
      */
     public interface CleanupAwareTask<T> extends Task<T> { }
 
+    /** Fatal failure of the physical cleanup witness; do not reclaim loans. */
+    public static final class CleanupIncompleteError extends Error {
+        public CleanupIncompleteError(String message) { super(message); }
+        public CleanupIncompleteError(String message, Throwable cause) {
+            super(message, cause);
+        }
+    }
+
     /** Result of one resumable task turn. */
     public sealed interface Step<T> permits Done, Await, Cooperate { }
 
@@ -708,6 +716,7 @@ public final class OresScheduler implements AutoCloseable {
          */
         private final AtomicBoolean checkpointCancellationPending = new AtomicBoolean();
         private final AtomicBoolean cleanupCancellationInjected = new AtomicBoolean();
+        private final AtomicBoolean cleanupIncomplete = new AtomicBoolean();
         private final AtomicReference<Resume> pendingResume =
                 new AtomicReference<>(Resume.initialResume());
         private final AtomicReference<TerminalOutcome<T>> terminalOutcome =
@@ -1146,6 +1155,13 @@ public final class OresScheduler implements AutoCloseable {
          */
         private void expireFromWallDeadline(Throwable failure) {
             Objects.requireNonNull(failure, "failure");
+            if (task instanceof CleanupAwareTask<?>
+                    && cleanupCancellationInjected.get()) {
+                cleanupIncomplete.set(true);
+                failure = new CleanupIncompleteError(
+                        "deadline terminated in-progress source cleanup; quarantine loans",
+                        failure);
+            }
             detachActiveAwaitRegistration();
             int observed;
             do {
@@ -1173,6 +1189,17 @@ public final class OresScheduler implements AutoCloseable {
 
         private void failTerminal(Throwable failure) {
             Objects.requireNonNull(failure, "failure");
+            if (task instanceof CleanupAwareTask<?>
+                    && completion.deferredCancellationCause() != null
+                    && (failure instanceof RejectedExecutionException
+                            || failure instanceof CleanupIncompleteError)) {
+                cleanupIncomplete.set(true);
+                if (!(failure instanceof CleanupIncompleteError)) {
+                    failure = new CleanupIncompleteError(
+                            "scheduler rejected source cleanup; quarantine loans",
+                            failure);
+                }
+            }
             detachActiveAwaitRegistration();
             int observed;
             do {
@@ -1191,6 +1218,10 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void retireWhenQuiescent() {
+            // A stopped guest carrier is not evidence that its suspended
+            // lexical defer/finally was executed. Keep actor/FFI loans
+            // quarantined when cleanup could not finish.
+            if (cleanupIncomplete.get()) return;
             if (phase.get() == TERMINAL && !executing.get()
                     && quiescenceNotified.compareAndSet(false, true)) {
                 // Keep the task observable in the scheduler's live set while a
@@ -1289,7 +1320,8 @@ public final class OresScheduler implements AutoCloseable {
             // while lexical guards may still remain.
             if (task instanceof CleanupAwareTask<?>) {
                 completion.cancel(false);
-                failTerminal(new RejectedExecutionException(
+                cleanupIncomplete.set(true);
+                failTerminal(new CleanupIncompleteError(
                         "scheduler closed before source Task unwind completed"));
             } else {
                 cancelFromFuture();
