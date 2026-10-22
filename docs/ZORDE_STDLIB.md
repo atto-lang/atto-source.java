@@ -138,7 +138,8 @@ compile-time plan over already parsed Oreslang aliases/newtypes:
   descriptor and returns private-constructor `CheckedScalar` or structured
   `ConstraintError`. It is **not** guest `T.try_from()`.
 
-- Host `CheckedScalar.intoInner()` now **consumes its payload exactly once**,
+- Host `CheckedScalar.intoInner()` and `RefinementRules.NominalValue.intoInner()`
+  now **consume their scalar payload exactly once**,
   including under concurrent Java calls. A second unwrap or transfer throws
   `IllegalStateException`; string/long metadata remains diagnostic only.
 - `Plan.revalidateInto(targetType, source)` explicitly checks a source
