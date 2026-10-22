@@ -571,9 +571,8 @@ final class ActorNativeArenaTest {
             assertThrows(IllegalStateException.class, () -> frame.spill(0, 1L));
             assertThrows(IllegalArgumentException.class,
                     () -> arena.taskFrame().configureSpillSlots(0));
-            assertThrows(IndexOutOfBoundsException.class, () -> frame.restore(3));
-
             frame.beginInitialResume();
+            assertThrows(IndexOutOfBoundsException.class, () -> frame.restore(3));
             frame.spill(0, child);
             frame.spill(1, "saved-over-await");
             frame.spill(2, -0.0d);
