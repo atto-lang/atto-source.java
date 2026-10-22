@@ -8137,6 +8137,17 @@ public final class TypeChecker {
     }
 
     private boolean assignable(Type actual, Type expected) {
+        if (Types.containsForgedZordeProofName(actual)
+                || Types.containsForgedZordeProofName(expected))
+            return false;
+        // A future compiler-minted Zorde proof is opaque. Do not allow this
+        // checker's structural, nominal-supertype or generic substitution
+        // fallbacks to erase its schema identity. Type-layer invariance is
+        // deliberately stricter until authenticated proof lowering exists.
+        if (Types.containsCompilerCheckedScalar(actual)
+                || Types.containsCompilerCheckedScalar(expected)) {
+            return Types.isAssignable(actual, expected);
+        }
         // A negative constraint requires positive evidence that values are disjoint.
         // The generic/Unknown and dynamic compatibility paths below are not evidence.
         if (expected instanceof Types.Not) return Types.isAssignable(actual, expected);

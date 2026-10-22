@@ -138,6 +138,21 @@ compile-time plan over already parsed Oreslang aliases/newtypes:
   descriptor and returns private-constructor `CheckedScalar` or structured
   `ConstraintError`. It is **not** guest `T.try_from()`.
 
+- Host `CheckedScalar.intoInner()` and `RefinementRules.NominalValue.intoInner()`
+  now **consume their scalar payload exactly once**,
+  including under concurrent Java calls. A second unwrap or transfer throws
+  `IllegalStateException`; string/long metadata remains diagnostic only.
+- `Plan.revalidateInto(targetType, source)` explicitly checks a source
+  scalar against this plan's trusted-at-call-site target descriptor and moves
+  the immutable scalar on success. Failure preserves the source unchanged;
+  arbitrary source fingerprints and nominal names are NEVER an admission
+  shortcut. A descriptor digest is an equality check, not provenance.
+- This host facility is deliberately **not** the guest `Valid<T,SchemaId>`
+  feature. Analysis plans are constructible from arbitrary source, the host
+  wrapper is allocated/managed by the JVM, and no actor, FFI, arena or code
+  generation trust boundary has been certified. Future AOT/zero-GC profiles
+  must lower ownership directly, not retain this Java reference wrapper.
+
 Stable schema ABI v1 fingerprints SHA-256 over a canonical representation
 of normalized base, property, inclusive interval, sorted effective exclusions
 and compiler-qualified nominal identity. The independently implemented Python
@@ -241,10 +256,41 @@ the same fixtures before those backends admit executable refinements.
   typed parsing requires immutable scalar payloads and deep freeze/ownership
   transfer for mutable collections.
 
+### Internal checked scalar type identity (non-executable prototype)
+
+The Java type system has a private, sealed \`Types.CheckedScalarType\`
+representation. The only same-package compiler analysis factory checks an
+immutable signed-int64/Unicode scalar against a normalized descriptor and
+records both the compiler-qualified schema name and semantic fingerprint.
+Even two schemas accepting identical values do not become assignable when
+their qualified identities differ. A changed descriptor invalidates
+assignability for the same name.
+
+This **is not schema admission authority**. Host \`Descriptor\` records and
+\`ZordeSchemaGenerator.planSource\` can be produced from arbitrary source
+text. The factory is deliberately unavailable to Oreslang guest source,
+and does not grant code generation, serialization, actor transfer or
+runtime representation. The parser and typechecker still reject all
+source-level \`Valid<T,SchemaId>\` construction.
+
+Both \`Types.isAssignable\` and the higher-level \`TypeChecker.assignable\`
+protect compiler-checked types against structural aliasing, \`Unknown\` and
+generic erasure (including nested \`Option\`, \`Result\`, records, borrows,
+function signatures and unions). Stale linked nominal metadata named
+\`Valid\` or \`*.Valid\` is also rejected rather than normalized into a
+forged proof. Actor/async/FFI transfer remains **forbidden** until the
+compiler and runtime prove ownership and generation safety.
+
+The next trusted-construction gate must bind a reviewed, exact-tree
+compiled schema registry and domain/generation capability to this marker,
+then lower checked owned construction and consuming unwrap without boxing
+or managed wrappers. This is prerequisite—not sufficient evidence—for
+actual guest-language Zorde support.
+
 ### Implementation status and remaining release gate
 
 The Java AST planner and static schema DSL exist and are exercised on
-source-exact components with a funded CI carrier. Guest codegen for
+source-level tests, but the latest GitHub Actions jobs failed before runner steps executed; no exact-head Maven/JUnit pass is verified. Guest codegen for
 `Zorde.infer`, `schema<T>()`, `T.try_from()` and `safeParse` is not
 enabled yet. Source-first real `Parser.parse` JUnit testing and native Zorde
 wire-decoding tests are required before claiming complete integration. LLVM

@@ -72,6 +72,34 @@ public final class ZordeSchemaGenerator {
             return new Conversion(
                     new CheckedScalar(qualifiedTypeName, contract.fingerprint(), raw), null);
         }
+
+        /**
+         * Explicit reference-level, transactional revalidation into another
+         * schema. This is NOT an implicit subtype proof or a guest intrinsic.
+         *
+         * A source holder can come from another untrusted analysis Plan, so
+         * target membership is rechecked against THIS Plan's exact descriptor,
+         * never inferred from the candidate's publicly readable fingerprint.
+         * On mismatch the source remains usable; on success its payload moves
+         * exactly once, including when several threads race to consume it.
+         */
+        public Conversion revalidateInto(String qualifiedTypeName, CheckedScalar source) {
+            Objects.requireNonNull(source, "checked scalar");
+            RefinementRules.Descriptor contract = schema(qualifiedTypeName);
+            synchronized (source) {
+                Object raw = source.requireActive();
+                if (!contract.accepts(raw)) {
+                    return new Conversion(null, new ConstraintError(
+                            "constraint_violation", qualifiedTypeName, contract.fingerprint()));
+                }
+                // Allocate the destination before consuming the source: a
+                // failed allocation must not lose the caller's owned value.
+                CheckedScalar transferred = new CheckedScalar(
+                        qualifiedTypeName, contract.fingerprint(), raw);
+                source.takeActive();
+                return new Conversion(transferred, null);
+            }
+        }
     }
 
     /**
@@ -144,18 +172,42 @@ public final class ZordeSchemaGenerator {
     public static final class CheckedScalar {
         private final String qualifiedTypeName;
         private final String schemaFingerprint;
-        private final Object underlying;
+        // The host scalar preview owns exactly one immutable String/Long.
+        // Do not expose it as a reusable witness after an owned unwrap or
+        // explicit schema transfer. Keep the fast path wrapper-only; no
+        // AtomicReference object or native allocation per scalar.
+        private Object underlying;
 
         private CheckedScalar(String qualifiedTypeName, String schemaFingerprint,
                               Object underlying) {
-            this.qualifiedTypeName = qualifiedTypeName;
-            this.schemaFingerprint = schemaFingerprint;
-            this.underlying = underlying;
+            this.qualifiedTypeName = Objects.requireNonNull(qualifiedTypeName);
+            this.schemaFingerprint = Objects.requireNonNull(schemaFingerprint);
+            this.underlying = Objects.requireNonNull(underlying);
+            if (!(underlying instanceof Long) && !(underlying instanceof String)) {
+                throw new IllegalArgumentException("Zorde scalar must be an immutable int64/String");
+            }
         }
 
         public String qualifiedTypeName() { return qualifiedTypeName; }
         public String schemaFingerprint() { return schemaFingerprint; }
-        public Object intoInner() { return underlying; }
+
+        private Object requireActive() {
+            if (underlying == null) {
+                throw new IllegalStateException("Zorde checked scalar was already consumed");
+            }
+            return underlying;
+        }
+
+        private Object takeActive() {
+            Object raw = requireActive();
+            underlying = null;
+            return raw;
+        }
+
+        /** Consume this host scalar once; the return value carries no proof. */
+        public synchronized Object intoInner() {
+            return takeActive();
+        }
     }
 
     /** Result<T,E> substrate for the compiler, not the guest Oreslang API. */
