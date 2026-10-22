@@ -236,6 +236,45 @@ final class TaskPipelineTest {
     }
 
     @Test
+    void concurrentProducerSettlementAndPipelineCancellationDoNotDuplicateStages()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            for (int iteration = 0; iteration < 64; iteration++) {
+                OresFuture<Integer> producer = new OresFuture<>();
+                AtomicInteger stageCalls = new AtomicInteger();
+                OresFuture<Integer> output = TaskPipeline.start(scheduler, producer,
+                        List.of(value -> {
+                            stageCalls.incrementAndGet();
+                            return ((Integer) value) + 1;
+                        }));
+                CountDownLatch go = new CountDownLatch(1);
+                AtomicReference<Throwable> producerFailure = new AtomicReference<>();
+                Thread completer = Thread.startVirtualThread(() -> {
+                    try {
+                        if (!go.await(5, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("race gate did not open");
+                        }
+                        assertTrue(producer.completeFromRuntime(41));
+                    } catch (Throwable failure) {
+                        producerFailure.set(failure);
+                    }
+                });
+                go.countDown();
+                output.cancel(false);
+                completer.join(5_000);
+                assertFalse(completer.isAlive());
+                assertNull(producerFailure.get(), () -> String.valueOf(producerFailure.get()));
+                if (!output.isCancelled()) {
+                    assertEquals(42, output.get(5, TimeUnit.SECONDS));
+                }
+                assertTrue(stageCalls.get() <= 1, "a pipeline stage ran twice");
+                assertFalse(producer.isCancelled());
+                waitForNoWaiter(producer);
+            }
+        }
+    }
+
+    @Test
     void rejectsNullStageAndUnboundedPipeline() {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             OresFuture<Integer> input = OresFuture.completed(1);
