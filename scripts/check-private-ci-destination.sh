@@ -36,8 +36,17 @@ while IFS= read -r candidate || [[ -n "$candidate" ]]; do
   if [[ "$key" == "${target,,}" ]]; then approved_id="$numeric_id"; fi
 done < "$policy"
 [[ -n "$approved_id" ]] || fail 'destination is absent from reviewed repository policy'
-command -v gh >/dev/null 2>&1 || fail 'GitHub CLI is required'
-metadata="$(GH_HOST=github.com GH_PROMPT_DISABLED=1 gh api --hostname github.com --method GET "repos/$target" --jq '[.full_name, .visibility, (.private|tostring), (.id|tostring), (.archived|tostring), (.disabled|tostring)] | @tsv' 2>/dev/null)" ||
+# Never admit repository metadata produced by an inherited Bash function or
+# alias named 'gh'. Noninteractive Bash imports exported functions from the
+# caller's environment, allowing a forged response with no GitHub API call.
+# The actual gh executable's placement/integrity remains the publisher's
+# independently authenticated runner/bootstrap responsibility.
+[[ "$(type -t gh 2>/dev/null || true)" == file ]] ||
+  fail 'GitHub CLI must resolve to an executable file, not a shell function or alias'
+gh_cli="$(command -v gh)"
+[[ "$gh_cli" == /* && -f "$gh_cli" && -x "$gh_cli" ]] ||
+  fail 'GitHub CLI must resolve to an absolute executable path'
+metadata="$(GH_HOST=github.com GH_PROMPT_DISABLED=1 "$gh_cli" api --hostname github.com --method GET "repos/$target" --jq '[.full_name, .visibility, (.private|tostring), (.id|tostring), (.archived|tostring), (.disabled|tostring)] | @tsv' 2>/dev/null)" ||
   fail 'cannot verify repository identity and visibility from live GitHub API'
 [[ -n "$metadata" && "$metadata" != *$'\n'* ]] ||
   fail 'API returned empty or multiline repository metadata'
