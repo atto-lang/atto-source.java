@@ -255,6 +255,37 @@ final class ActorMessageScratchTest {
 
     @Test
     @Timeout(15)
+    void forgottenReadBorrowFailsActorBeforeRecyclingScratchOrProcessingAnotherMessage()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicLong processed = new AtomicLong();
+            AtomicReference<ActorMessageScratch.ReadBorrow> escaped = new AtomicReference<>();
+            var actor = runtime.<Integer>spawnSharedTrusted(ctx -> (message, turn) -> {
+                processed.incrementAndGet();
+                var scratch = ActorRuntime.currentMessageScratch();
+                var local = scratch.allocate(8);
+                local.writeLong(0, message.longValue());
+                // Deliberately omit close to simulate missing guest drop glue.
+                // The actor must fail rather than silently reuse borrowed bytes.
+                escaped.set(local.borrowReadOnly());
+            });
+            actor.send(7);
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS),
+                    "leaked immutable borrow must fail-stop the actor");
+            Throwable failure = actor.failure().orElseThrow(
+                    () -> new AssertionError("actor must report the failed cleanup"));
+            assertInstanceOf(IllegalStateException.class, failure);
+            assertTrue(failure.getMessage().contains("scratch borrows"));
+            assertEquals(1L, processed.get());
+            assertThrows(IllegalStateException.class, () -> escaped.get().readLong(0),
+                    "post-termination borrow must never read released native storage");
+            assertEquals(0L, runtime.actorMemoryBytes(),
+                    "failed cleanup must not leak native storage beyond physical actor stop");
+        }
+    }
+
+    @Test
+    @Timeout(15)
     void actorScratchResetsButEachPersistentDopLayoutSurvivesAcrossMessages() throws Exception {
         for (ActorShardColumns.Layout layout : ActorShardColumns.Layout.values()) {
             try (ActorRuntime runtime = new ActorRuntime()) {
