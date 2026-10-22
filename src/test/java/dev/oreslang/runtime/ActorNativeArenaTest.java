@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.*;
@@ -623,6 +624,129 @@ final class ActorNativeArenaTest {
     }
 
     @Test
+    void rejectedNativeRegionReservationDoesNotConsumeActorRelativeAddress() {
+        AtomicLong charged = new AtomicLong();
+        AtomicBoolean reject = new AtomicBoolean();
+        try (ActorNativeArena arena = new ActorNativeArena(128, () -> {}, bytes -> {
+            if (reject.get()) throw new IllegalStateException("synthetic quota denial");
+            charged.addAndGet(bytes);
+            return () -> charged.addAndGet(-bytes);
+        })) {
+            try (ActorNativeArena.Region first = arena.region(9)) {
+                assertEquals(0L, first.nativeOffset());
+            }
+            assertEquals(0L, charged.get());
+            reject.set(true);
+            assertThrows(IllegalStateException.class, () -> arena.region(9));
+            assertEquals(0L, charged.get());
+            reject.set(false);
+            try (ActorNativeArena.Region next = arena.region(9)) {
+                // A closed allocation is never recycled; a failed admission
+                // must not create an additional phantom logical allocation.
+                assertEquals(16L, next.nativeOffset());
+                next.writeByte(0, (byte) 42);
+                assertEquals((byte) 42, next.readByte(0));
+            }
+            assertEquals(0L, charged.get());
+        }
+        assertEquals(0L, charged.get());
+    }
+
+    @Test
+    void rejectedSlabGrowthPreservesPublishedMetadataAndExistingValues() {
+        AtomicLong charged = new AtomicLong();
+        AtomicBoolean reject = new AtomicBoolean();
+        try (ActorNativeArena arena = new ActorNativeArena(8192, () -> {}, bytes -> {
+            if (reject.get()) throw new IllegalStateException("synthetic growth quota denial");
+            charged.addAndGet(bytes);
+            return () -> charged.addAndGet(-bytes);
+        })) {
+            ActorNativeArena.ValueCell first = null;
+            ActorNativeArena.ValueCell last = null;
+            for (int index = 0; index < 170; index++) {
+                last = arena.valueCell((long) index, new Object());
+                if (first == null) first = last;
+            }
+            assertEquals(4096, arena.committedBytes());
+            assertEquals(4080, arena.allocatedBytes());
+            assertEquals(4096, charged.get());
+
+            reject.set(true);
+            assertThrows(IllegalStateException.class,
+                    () -> arena.valueCell(170L, new Object()));
+            assertEquals(4096, arena.committedBytes());
+            assertEquals(4080, arena.allocatedBytes());
+            assertEquals(4096, charged.get());
+
+            reject.set(false);
+            ActorNativeArena.ValueCell resumed = arena.valueCell(170L, new Object());
+            assertEquals(0L, first.get());
+            assertEquals(169L, last.get());
+            assertEquals(170L, resumed.get());
+            assertEquals(8192, arena.committedBytes());
+            assertEquals(8192, charged.get());
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
+    void eachFailedSlabMetadataAppendRollsBackNativeBytesAndLogicalOffset() {
+        // Fail immediately AFTER each append; quota-denial tests only cover
+        // failure BEFORE the first append and cannot establish rollback.
+        for (int failureStage = 1; failureStage <= 3; failureStage++) {
+            for (int failureKind = 0; failureKind < 2; failureKind++) {
+                final int expectedStage = failureStage;
+                final boolean fatal = failureKind == 1;
+                AtomicLong charged = new AtomicLong();
+                AtomicInteger armed = new AtomicInteger(0);
+                Object marker = new Object();
+                try (ActorNativeArena arena = new ActorNativeArena(8192, () -> {}, bytes -> {
+                    charged.addAndGet(bytes);
+                    return () -> charged.addAndGet(-bytes);
+                }, stage -> {
+                    if (stage == armed.get()) {
+                        armed.set(0); // fail precisely once, then permit retry
+                        if (fatal) throw new OutOfMemoryError("synthetic metadata append stage " + stage);
+                        throw new IllegalStateException("synthetic metadata append stage " + stage);
+                    }
+                })) {
+                    ActorNativeArena.ValueCell first = null;
+                    ActorNativeArena.ValueCell last = null;
+                    for (int index = 0; index < 170; index++) {
+                        last = arena.valueCell((long) index, marker);
+                        if (first == null) first = last;
+                    }
+                    assertEquals(4096, arena.committedBytes());
+                    assertEquals(4080, arena.allocatedBytes());
+                    assertEquals(4096, charged.get());
+                    assertEquals(0L, first.nativeOffset());
+                    armed.set(expectedStage);
+                    if (fatal) {
+                        assertThrows(OutOfMemoryError.class, () -> arena.valueCell(170L, marker));
+                    } else {
+                        assertThrows(IllegalStateException.class, () -> arena.valueCell(170L, marker));
+                    }
+                    assertEquals(0, armed.get(), "only the selected append must throw");
+                    assertEquals(4096, arena.committedBytes(), "no failed slab is published");
+                    assertEquals(4080, arena.allocatedBytes(), "logical bytes unchanged");
+                    assertEquals(4096, charged.get(), "failed slab quota refunded");
+                    assertEquals(0L, first.get());
+                    assertEquals(169L, last.get());
+
+                    ActorNativeArena.ValueCell resumed = arena.valueCell(170L, marker);
+                    assertEquals(4096L, resumed.nativeOffset(),
+                            "failure may not consume or recycle native logical offsets");
+                    assertEquals(170L, resumed.get());
+                    assertEquals(8192, charged.get());
+                }
+                assertEquals(0L, charged.get(),
+                        "actor teardown must refund every surviving slab (stage "
+                                + expectedStage + ", fatal=" + fatal + ")");
+            }
+        }
+    }
+
+    @Test
     void nativeObjectsRegionsAndLinearPagesShareOneNonRecycledActorOffsetSpace() {
         AtomicLong charged = new AtomicLong();
         Object marker = new Object();
@@ -755,6 +879,73 @@ final class ActorNativeArenaTest {
                             region.readDouble((2 * row) * Double.BYTES));
                 }
             }
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
+    void nativeLexicalScopeDropRetiresSlotAndReleasesRegistryReferences() {
+        AtomicLong charged = new AtomicLong();
+        Object marker = new Object();
+        try (ActorNativeArena arena = arena(64 * 1024, charged)) {
+            var list = arena.nativeList();
+            var first = arena.valueCell(list, marker);
+            var second = arena.valueCell(list, marker);
+            assertEquals(1, arena.nativeReferenceCount(),
+                    "two references to one native payload share one registry entry");
+            assertSame(list, first.get());
+            assertSame(list, second.get());
+
+            first.close();
+            first.close(); // idempotent within the actor owner
+            assertEquals(1, arena.nativeReferenceCount(),
+                    "retiring one borrower cannot invalidate a second live reference");
+            assertSame(list, second.get());
+            assertThrows(IllegalStateException.class, first::get);
+            assertThrows(IllegalStateException.class, first::nativeOffset);
+            assertThrows(IllegalStateException.class, () -> first.trySet(42L));
+
+            second.close();
+            assertEquals(0, arena.nativeReferenceCount(),
+                    "the final lexical slot drop must release its facade root");
+
+            var text = arena.valueCell("temporary", marker);
+            text.close();
+            assertThrows(IllegalStateException.class, text::get);
+            assertThrows(IllegalStateException.class, () -> text.trySet("reused"));
+            // The owning actor arena still holds its slab until physical
+            // actor teardown; this API does not claim per-slot byte refunds.
+            assertTrue(charged.get() > 0);
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
+    void foreignThreadCannotRetireAnotherActorsNativeLexicalCell() throws Exception {
+        AtomicLong charged = new AtomicLong();
+        Thread owner = Thread.currentThread();
+        try (ActorNativeArena arena = new ActorNativeArena(4096, () -> {
+            if (Thread.currentThread() != owner) {
+                throw new SecurityException("foreign actor memory owner");
+            }
+        }, bytes -> {
+            charged.addAndGet(bytes);
+            return () -> charged.addAndGet(-bytes);
+        })) {
+            Object uninitialized = new Object();
+            ActorNativeArena.ValueCell cell = arena.valueCell(42L, uninitialized);
+            AtomicReference<Throwable> rejected = new AtomicReference<>();
+            Thread foreign = new Thread(() -> {
+                try { cell.close(); }
+                catch (Throwable failure) { rejected.set(failure); }
+            });
+            foreign.start();
+            foreign.join(5000);
+            assertFalse(foreign.isAlive(), "foreign close attempt must terminate");
+            assertInstanceOf(SecurityException.class, rejected.get());
+            assertEquals(42L, cell.get(), "failed foreign retirement must preserve state");
+            cell.close();
+            assertThrows(IllegalStateException.class, cell::get);
         }
         assertEquals(0, charged.get());
     }

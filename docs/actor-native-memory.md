@@ -250,8 +250,8 @@ addresses.
 bounds-checked native slice. An active lease rejects overlapping writes
 and explicit region release. Writes to disjoint native byte ranges remain
 permitted. The lease has no exported memory address,
-cannot be used by a foreign actor, and becomes invalid on physical actor
-finalization; a closed lease cannot read again.
+cannot be used by a foreign actor, and prevents physical arena
+finalization while still live. A closed lease cannot read again.
 
 `ActorShardColumns.leaseColumnReadOnly(field)` applies this to a physically
 contiguous SoA column without a copy. AoS, AoSoA and grouped SoAoS do not
@@ -274,6 +274,42 @@ preserving the same non-recycled actor-relative address. Growth beyond retained
 capacity allocates transactionally and leaves the previous value untouched if
 the actor quota cannot satisfy it. General lifetime-based reclamation of
 variable-size payloads remains unfinished.
+
+## Explicit lexical slot retirement (compiler drop primitive)
+
+`ActorNativeArena.ValueCell` now implements `AutoCloseable` and supports
+actor-owner-checked, idempotent `close()` as the low-level operation to retire
+a proven-dead lexical storage slot. A retired slot cannot be read, rewritten,
+or used as an actor-relative address. Its tagged payload is changed to null,
+immediately decrementing native-reference registry counts; retiring the final
+lexical reference removes the Java facade from the strong live-reference
+registry. Other slots referencing the same actor-native value remain valid.
+
+This is a **runtime primitive**, not yet automatic scope-drop lowering:
+compiler control-flow/lifetime analysis must emit drops for normal exits,
+exceptions, cancellations, and suspended locals before we can claim automatic
+reclamation. Moreover, compact slot storage and old text payloads remain
+allocated in arena-lifetime slabs until physical actor teardown. `close()`
+does not free or refund those native bytes, destruct owned transitive graphs,
+or replace the JVM garbage collector.
+
+## Transactional actor-relative allocation publication
+
+Actor-relative logical offsets are never host pointers and are never reused
+after **successful** native allocation publication. Region and slab creation
+first checks aligned-offset arithmetic without advancing the arena cursor;
+the cursor advances only after the new region or all three slab metadata
+entries have been registered. If native allocation, metadata construction or
+publication fails, the allocator removes any newly appended slab metadata
+**before** freeing its backing bytes and invoking the quota refund callback.
+Previously published slabs, issued handles and actor state stay registered.
+
+This closes the metadata/address publication failure window, not every
+possible process-level allocation hazard. The committed JUnit regressions
+cover quota denial and retry at both region and slab-growth boundaries;
+they do not inject `OutOfMemoryError` into each individual list append or
+prove behavior under a failing native free/refund callback. Those fault
+injection tests and real JDK/GraalVM native execution remain merge gates.
 
 ## Remaining work before strict no-managed-allocation admission
 

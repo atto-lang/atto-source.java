@@ -221,8 +221,12 @@ public final class ActorLinearMemory {
     public void copy(long destination, long source, int length) {
         synchronized (arena) {
             checkRange(source, length);
-            requireWritableSpan(destination, length);
+            checkRange(destination, length);
+            // A validated self-copy changes no bytes, and therefore must not
+            // conflict with a read-only source lease. Keep the bounds/owner
+            // checks above even when the operation is a no-op.
             if (length == 0 || destination == source) return;
+            requireWritableSpan(destination, length);
             if (destination > source && destination < source + (long) length) {
                 for (int i = length - 1; i >= 0; i--) {
                     long from = source + i;
