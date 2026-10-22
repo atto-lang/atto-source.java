@@ -492,6 +492,10 @@ class PrivateCiV3Test(unittest.TestCase):
                 "fork": False,
                 "default_branch": "main",
             },
+        ), patch.object(
+            v3.legacy,
+            "checked_protected_destination_main",
+            return_value=BASE,
         ), patch.object(v3.legacy, "gh_api", side_effect=api):
             with self.assertRaisesRegex(v3.Denied, "not source-free"):
                 v3.checked_destination("trusted/ci", carrier)
@@ -542,27 +546,42 @@ class PrivateCiV3Test(unittest.TestCase):
 
     def test_authorize_write_rechecks_carrier_eligibility(self):
         carrier = contract()
-        ineligible = {
-            "id": carrier["repository_id"],
-            "full_name": "trusted/ci",
-            "private": True,
-            "visibility": "private",
-            "archived": True,
-            "disabled": False,
-            "fork": False,
-            "default_branch": "main",
-        }
         with (
             patch.object(
                 v3.legacy,
                 "checked_policy_approval",
                 return_value=(POLICY, carrier["repository_id"]),
             ),
-            patch.object(v3.legacy, "checked_repo", return_value=ineligible),
+            patch.object(v3.legacy, "require_source_protection_epoch"),
+            patch.object(
+                v3.legacy,
+                "checked_protected_destination_main",
+                side_effect=v3.Denied("carrier identity/state changed during transfer"),
+            ),
         ):
             with self.assertRaisesRegex(v3.Denied, "identity/state"):
                 v3.authorize_write(
-                    Path("."), "trusted/ci", POLICY, carrier)
+                    Path("."), "trusted/ci", POLICY, carrier, PROTECTED)
+
+    def test_authorize_write_rejects_source_epoch_change_before_carrier_check(self):
+        carrier = contract()
+        with (
+            patch.object(
+                v3.legacy,
+                "checked_policy_approval",
+                return_value=(POLICY, carrier["repository_id"]),
+            ),
+            patch.object(
+                v3.legacy,
+                "require_source_protection_epoch",
+                side_effect=v3.Denied("source protected-main epoch changed during transfer"),
+            ),
+            patch.object(v3.legacy, "checked_protected_destination_main") as carrier_check,
+        ):
+            with self.assertRaisesRegex(v3.Denied, "source protected-main epoch"):
+                v3.authorize_write(
+                    Path("."), "trusted/ci", POLICY, carrier, PROTECTED)
+            carrier_check.assert_not_called()
 
     def test_authorize_write_rejects_reviewed_repository_id_change(self):
         carrier = contract()
@@ -572,12 +591,14 @@ class PrivateCiV3Test(unittest.TestCase):
                 "checked_policy_approval",
                 return_value=(POLICY, carrier["repository_id"] + 1),
             ),
-            patch.object(v3.legacy, "checked_repo") as checked_repo,
+            patch.object(v3.legacy, "require_source_protection_epoch") as source_epoch,
+            patch.object(v3.legacy, "checked_protected_destination_main") as carrier_epoch,
         ):
             with self.assertRaisesRegex(v3.Denied, "repository identity changed"):
                 v3.authorize_write(
-                    Path("."), "trusted/ci", POLICY, carrier)
-            checked_repo.assert_not_called()
+                    Path("."), "trusted/ci", POLICY, carrier, PROTECTED)
+            source_epoch.assert_not_called()
+            carrier_epoch.assert_not_called()
 
     def test_publish_rejects_contract_repository_id_not_in_reviewed_allowlist(self):
         carrier = contract()

@@ -134,6 +134,42 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         shell.assert_not_called()
         source.assert_not_called()
 
+    def test_unprotected_destination_rejected_before_source_read(self):
+        original = self.fake_api
+        def unprotected(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/branches/main":
+                return {"name": "main", "protected": False, "commit": {"sha": A}}
+            return original(route, method, payload)
+        with (
+            patch.object(pub, "verify_protected_origin", return_value=A),
+            patch.object(pub, "gh_api", side_effect=unprotected),
+            patch.object(pub, "collect_source") as collect,
+        ):
+            with self.assertRaisesRegex(pub.Denied, "destination main is not protected"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root, A)
+        collect.assert_not_called()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_destination_epoch_advance_denies_before_first_source_write(self):
+        original = self.fake_api
+        reads = [0]
+        def advanced(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/branches/main":
+                reads[0] += 1
+                if reads[0] == 1:
+                    return {"name": "main", "protected": True, "commit": {"sha": A}}
+                return {"name": "main", "protected": True, "commit": {"sha": C}}
+            return original(route, method, payload)
+        with (
+            patch.object(pub, "verify_protected_origin", return_value=A),
+            patch.object(pub, "verified_exact_source_tree", return_value=D),
+            patch.object(pub, "gh_api", side_effect=advanced),
+        ):
+            with self.assertRaisesRegex(pub.Denied, "advanced during transfer"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root, A)
+        self.assertEqual(reads[0], 2)
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
     def test_descriptor_safety_flags_require_distinct_positive_integers(self):
         with (
             patch.object(pub.os, "O_DIRECTORY", 1, create=True),
@@ -162,7 +198,12 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.route_calls.append((method, route, payload))
         if route == "repos/trusted/ci":
             return dict(id=246810, full_name="trusted/ci", visibility=self.visibility.pop(0),
-                        private=True, default_branch="main")
+                        private=True, default_branch="main", archived=False,
+                        disabled=False, fork=False)
+        if route == "repos/trusted/ci/branches/main":
+            return {"name": "main", "protected": True, "commit": {"sha": A}}
+        if route == "repos/"+pub.SOURCE_REPO+"/branches/main":
+            return {"name": "main", "protected": True, "commit": {"sha": A}}
         if route == "repos/trusted/ci/git/blobs":
             raw = base64.b64decode(payload["content"])
             return {"sha": hashlib.sha1(b"blob " + str(len(raw)).encode("ascii")
@@ -172,7 +213,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             return {"sha": E if "base_tree" in payload else D}
         mapping = {
             "repos/trusted/ci/git/ref/heads/main": {"object": {"sha": A}},
-            "repos/trusted/ci/git/commits/"+A: {"tree": {"sha": B}},
+            "repos/trusted/ci/git/commits/"+A: {"sha": A, "tree": {"sha": B}},
             "repos/trusted/ci/git/commits": {"sha": A},
             "repos/trusted/ci/git/refs": {"ref": "refs/heads/ci/oreslang-test"},
         }
@@ -409,7 +450,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual((sha, count), (A, 1))
         branch_reads = [r for r in routes
                         if r == "repos/"+pub.SOURCE_REPO+"/branches/main"]
-        self.assertEqual(len(branch_reads), 2)
+        self.assertGreaterEqual(len(branch_reads), 3)
 
     def test_protected_origin_recheck_rejects_last_minute_revocation(self):
         api, routes = self.verified_origin_api(protected=True)
@@ -424,7 +465,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "verify_protected_origin",
                           side_effect=ORIGINAL_VERIFY_PROTECTED_ORIGIN):
             with patch.object(pub, "gh_api", side_effect=revoke):
-                with self.assertRaisesRegex(pub.Denied, "not protected"):
+                with self.assertRaisesRegex(pub.Denied, "epoch changed"):
                     pub.publish("trusted/ci", self.source,
                                 "ci/oreslang-test", self.root, A)
         self.assertEqual(calls[0], 2)

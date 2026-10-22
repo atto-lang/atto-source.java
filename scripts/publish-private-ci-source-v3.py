@@ -508,11 +508,9 @@ def checked_destination(repository, contract):
             or repo.get("fork") is not False
             or repo.get("default_branch") != "main"):
         raise Denied("carrier identity/state differs from protected contract")
-    ref = legacy.gh_api(f"repos/{repository}/git/ref/heads/main")
-    base_sha = valid_sha(ref.get("object", {}).get("sha"),
-                         "carrier main ref invalid")
-    if base_sha != contract["base_sha"]:
-        raise Denied("carrier main advanced beyond reviewed protected base")
+    base_sha = legacy.checked_protected_destination_main(
+        repository, contract["repository_id"], contract["base_sha"]
+    )
     commit = legacy.gh_api(f"repos/{repository}/git/commits/{base_sha}")
     if commit.get("sha") != base_sha:
         raise Denied("carrier base commit mismatch")
@@ -612,16 +610,13 @@ def manifest(files):
     return rows, hashlib.sha256(canonical_bytes(rows)).hexdigest()
 
 
-def authorize_write(root, repository, approved_policy, contract):
-    """Cheap per-write guard: local approval bytes plus live carrier identity.
+def authorize_write(root, repository, approved_policy, contract, authority_sha):
+    """Per-write guard for local approval plus live protected branch epochs.
 
-    Protected-source main and the full immutable carrier contract are checked
-    before reading source bytes and again before refs are attached. Repeating
-    those multi-endpoint reads for every blob would multiply API traffic by
-    the file count without adding integrity: the reviewed source commit and
-    pinned destination base SHA are immutable. Privacy and repository identity
-    are the state that can change between individual writes, so those are
-    rechecked immediately before every write.
+    Full governance and immutable contract checks still run before source read
+    and before ref attachment. Immediately before every source-bearing Git
+    write, also require both source and carrier main to remain protected and
+    pinned to the exact authority/base SHAs already reviewed.
     """
     current_policy, current_repository_id = legacy.checked_policy_approval(
         root, repository
@@ -631,13 +626,10 @@ def authorize_write(root, repository, approved_policy, contract):
         raise Denied(
             "private CI destination approval or repository identity changed during transfer"
         )
-    repo = legacy.checked_repo(repository, contract["repository_id"])
-    if (repo.get("id") != contract["repository_id"]
-            or repo.get("archived") is not False
-            or repo.get("disabled") is not False
-            or repo.get("fork") is not False
-            or repo.get("default_branch") != "main"):
-        raise Denied("carrier identity/state changed during transfer")
+    legacy.require_source_protection_epoch(authority_sha)
+    legacy.checked_protected_destination_main(
+        repository, contract["repository_id"], contract["base_sha"]
+    )
 
 
 def _gh_ref_request(repository, ref_name, method):
@@ -754,7 +746,9 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     branch = "ci/oreslang-" + source_tree
 
     def auth():
-        authorize_write(trusted_root, repository, approved_policy, contract)
+        authorize_write(
+            trusted_root, repository, approved_policy, contract, authority_sha
+        )
 
     elements = []
     for rel, data, mode in files:

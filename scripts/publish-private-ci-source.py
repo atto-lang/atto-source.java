@@ -128,6 +128,33 @@ def checked_repo(repository, expected_repository_id=None):
     return result
 
 
+def checked_protected_destination_main(repository, expected_repository_id, expected_sha=None):
+    """Require the live carrier default branch to remain protected and pinned."""
+    repo = checked_repo(repository, expected_repository_id)
+    if (repo.get("archived") is not False
+            or repo.get("disabled") is not False
+            or repo.get("fork") is not False
+            or repo.get("default_branch") != "main"):
+        raise Denied("destination must be an active non-fork with main as default")
+    branch = gh_api(f"repos/{repository}/branches/main")
+    if (branch.get("name") != "main"
+            or branch.get("protected") is not True):
+        raise Denied("destination main is not protected")
+    main_sha = valid_sha(branch.get("commit", {}).get("sha"))
+    if expected_sha is not None and main_sha != valid_sha(expected_sha):
+        raise Denied("destination protected main advanced during transfer")
+    return main_sha
+
+
+def require_source_protection_epoch(expected_sha):
+    """Cheap live epoch check used immediately before each source-bearing write."""
+    branch = gh_api(f"repos/{SOURCE_REPO}/branches/{SOURCE_PROTECTED_BRANCH}")
+    if (branch.get("name") != SOURCE_PROTECTED_BRANCH
+            or branch.get("protected") is not True
+            or valid_sha(branch.get("commit", {}).get("sha")) != valid_sha(expected_sha)):
+        raise Denied("source protected-main epoch changed during transfer")
+
+
 def require_preflight(repository, root):
     guard = root / "scripts" / "check-private-ci-destination.sh"
     if guard.is_symlink() or not guard.is_file():
@@ -490,14 +517,18 @@ def publish(repository, source, branch, trusted_root, source_commit):
         trusted_root, repository
     )
     # Must check the GitHub origin's protected main before reading private bytes.
-    verify_protected_origin(
+    source_authority_sha = verify_protected_origin(
         repository, approved_policy, approved_repository_id
     )
-    # Retain the early live-private destination gate that the former shell
-    # preflight provided, but authenticate it through the data-only publisher
-    # after protected source governance has been established. Do not touch
-    # private source bytes before validating destination identity/privacy.
-    checked_repo(repository, approved_repository_id)
+    # Establish a protected, exact carrier-main epoch before reading source.
+    # A private repository identity alone is not sufficient authorization.
+    base_sha = checked_protected_destination_main(
+        repository, approved_repository_id
+    )
+    base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
+    if base_commit.get("sha") != base_sha:
+        raise Denied("destination base commit identity changed")
+    base_tree = valid_sha(base_commit.get("tree", {}).get("sha"))
     trusted = trusted_root.resolve(strict=True)
     checked_source = source.resolve(strict=True)
     try:
@@ -506,19 +537,16 @@ def publish(repository, source, branch, trusted_root, source_commit):
         raise Denied("source directory escapes the trusted checkout") from exc
     files = collect_source(source, trusted_root)
     expected_source_tree = verified_exact_source_tree(files, source_commit)
-    base = checked_repo(repository, approved_repository_id)
-    default = base.get("default_branch")
-    if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
-        raise Denied("destination default branch is invalid")
-    base_ref = gh_api(f"repos/{repository}/git/ref/heads/{default}")
-    base_sha = valid_sha(base_ref.get("object", {}).get("sha"))
-    base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
-    base_tree = valid_sha(base_commit.get("tree", {}).get("sha"))
     def authorize_write():
         if checked_policy_approval(trusted_root, repository) != (
                 approved_policy, approved_repository_id):
             raise Denied("private CI destination approval policy changed during transfer")
-        checked_repo(repository, approved_repository_id)
+        # Narrow the unavoidable check/write race by pinning both mutable
+        # branch epochs immediately before every source-bearing Git write.
+        require_source_protection_epoch(source_authority_sha)
+        checked_protected_destination_main(
+            repository, approved_repository_id, base_sha
+        )
 
     elements = []
     for rel, data, mode in files:
