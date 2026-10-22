@@ -170,6 +170,20 @@ final class NominalErrorProofTest {
     }
 
     @Test
+    void emptyEffectRowsStillRequireValidProofInputs() {
+        Ast.EffectSpec empty = Ast.EffectSpec.none();
+        Ast.ClassDecl invalid = klass("define class Unrelated as end");
+        var resolver = resolver(Map.of("Unrelated", invalid));
+        assertThrows(NullPointerException.class, () ->
+                NominalErrorProof.requireNominalEffects(empty, null, resolver));
+        assertThrows(IllegalArgumentException.class, () ->
+                NominalErrorProof.requireNominalEffects(empty, invalid, resolver));
+        Ast.ClassDecl root = klass("define class Error as end");
+        assertThrows(NullPointerException.class, () ->
+                NominalErrorProof.requireNominalEffects(empty, root, null));
+    }
+
+    @Test
     void invalidTrustedRootMetadataIsRejected() {
         Ast.ClassDecl notRoot = klass("define class SomethingElse as end");
         assertThrows(IllegalArgumentException.class, () ->
