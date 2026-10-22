@@ -6733,7 +6733,8 @@ public final class TypeChecker {
         if (call.arguments().size() != (noCallback ? 0 : 1)
                 || (!noCallback && call.arguments().getFirst() instanceof Ast.SpreadExpr)) {
             throw new IllegalArgumentException(kind + "." + operation
-                    + " expects " + (noCallback ? "zero arguments" : "one callable"));
+                    + " expects " + (noCallback ? "zero arguments"
+                            : operation.equals("ok_or") ? "one eager error value" : "one callable"));
         }
         if (noCallback) {
             if (operation.equals("ok")) return new Named("Option", List.of(input));
