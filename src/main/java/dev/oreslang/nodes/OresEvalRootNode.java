@@ -4036,40 +4036,40 @@ public final class OresEvalRootNode extends RootNode {
                 // its completion callback.
                 Object built;
                 try {
-                LinkedHashMap<String, Object> result = new LinkedHashMap<>();
-                if (object.explicitStruct()) {
-                    for (Ast.StructFieldSpec field : object.declaredFields()) {
-                        if (result.putIfAbsent(field.name(), UNINITIALIZED_FIELD) != null) {
-                            throw new IllegalArgumentException(
-                                    "duplicate explicit struct field " + field.name());
-                        }
-                    }
-                }
-                for (int fieldIndex = 0; fieldIndex < values.size(); fieldIndex++) {
-                    Ast.ObjectField field = object.fields().get(fieldIndex);
-                    Object value = values.get(fieldIndex);
-                    if (hasAggregateSpread) {
-                        applyScalarSpreadElement(field, value, result);
-                        continue;
-                    }
-                    String key = field.name();
+                    LinkedHashMap<String, Object> result = new LinkedHashMap<>();
                     if (object.explicitStruct()) {
-                        if (!result.containsKey(key)) {
-                            throw new IllegalArgumentException(
-                                    "explicit struct initializer contains undeclared field " + key);
+                        for (Ast.StructFieldSpec field : object.declaredFields()) {
+                            if (result.putIfAbsent(field.name(), UNINITIALIZED_FIELD) != null) {
+                                throw new IllegalArgumentException(
+                                        "duplicate explicit struct field " + field.name());
+                            }
                         }
-                        if (result.get(key) != UNINITIALIZED_FIELD) {
-                            throw new IllegalArgumentException(
-                                    "duplicate explicit struct initializer field " + key);
-                        }
-                        result.put(key, value);
-                    } else {
-                        result.put(key, value);
                     }
-                }
-                built = object.structuralRecord()
-                        ? new ReadonlyRecordValue(result)
-                        : new MutableStructValue(result);
+                    for (int fieldIndex = 0; fieldIndex < values.size(); fieldIndex++) {
+                        Ast.ObjectField field = object.fields().get(fieldIndex);
+                        Object value = values.get(fieldIndex);
+                        if (hasAggregateSpread) {
+                            applyScalarSpreadElement(field, value, result);
+                            continue;
+                        }
+                        String key = field.name();
+                        if (object.explicitStruct()) {
+                            if (!result.containsKey(key)) {
+                                throw new IllegalArgumentException(
+                                        "explicit struct initializer contains undeclared field " + key);
+                            }
+                            if (result.get(key) != UNINITIALIZED_FIELD) {
+                                throw new IllegalArgumentException(
+                                        "duplicate explicit struct initializer field " + key);
+                            }
+                            result.put(key, value);
+                        } else {
+                            result.put(key, value);
+                        }
+                    }
+                    built = object.structuralRecord()
+                            ? new ReadonlyRecordValue(result)
+                            : new MutableStructValue(result);
                 } catch (RuntimeException assemblyFailure) {
                     continuation.accept(task, null, assemblyFailure);
                     return;
