@@ -79,7 +79,7 @@ final class CleanupAwareTaskTest {
             try {
                 assertTrue(future.cancel(false));
                 assertFalse(future.isDone());
-                assertEquals(0, cleanup.getCount() == 0 ? 1 : 0,
+                assertEquals(1L, cleanup.getCount(),
                         "cleanup must wait for physically running turn");
             } finally {
                 unblock.countDown();
