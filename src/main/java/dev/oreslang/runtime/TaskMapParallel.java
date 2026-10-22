@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
 /**
@@ -28,6 +29,18 @@ public final class TaskMapParallel {
     private record Running<R>(int index, TaskHandle<R> handle) { }
 
     /**
+     * Indexed child diagnostic. True cancellation comes only from an
+     * authenticated TaskHandle.Cancelled outcome; a user-thrown
+     * CancellationException remains an ordinary failure.
+     */
+    public record ChildFailure(int index, Throwable cause, boolean cancelled) {
+        public ChildFailure {
+            if (index < 0) throw new IllegalArgumentException("negative child index");
+            Objects.requireNonNull(cause, "cause");
+        }
+    }
+
+    /**
      * The task's result may settle before all children are physically retired
      * on error/cancellation. getDone() is a separate scope+coordinator
      * physical-quiescence barrier; cancelling it cannot forge completion.
@@ -36,10 +49,16 @@ public final class TaskMapParallel {
         private final TaskHandle<List<R>> coordinator;
         private final TaskScope scope;
         private final OresFuture<Void> done = new OresFuture<>(() -> false, () -> { });
+        private final OresFuture<List<ChildFailure>> failures =
+                new OresFuture<>(() -> false, () -> { });
+        private final AtomicBoolean published = new AtomicBoolean();
+        private final TaskHandle<?>[] admitted;
 
-        private MapHandle(TaskHandle<List<R>> coordinator, TaskScope scope) {
+        private MapHandle(TaskHandle<List<R>> coordinator, TaskScope scope,
+                          TaskHandle<?>[] admitted) {
             this.coordinator = Objects.requireNonNull(coordinator, "coordinator");
             this.scope = Objects.requireNonNull(scope, "scope");
+            this.admitted = Objects.requireNonNull(admitted, "admitted");
 
             coordinator.result().whenCompleteRuntime((value, failure) -> {
                 try {
@@ -60,9 +79,31 @@ public final class TaskMapParallel {
         }
 
         private void publishIfQuiescent() {
-            if (coordinator.getDone().isDone() && scope.getDone().isDone()) {
-                done.completeFromRuntime(null);
+            if (!coordinator.getDone().isDone() || !scope.getDone().isDone()) {
+                return;
             }
+            if (!published.compareAndSet(false, true)) return;
+
+            // Join only already-retired child outcomes. No guest callback is
+            // run here and no scheduler carrier is parked. Capture secondary
+            // genuine failures as well as sibling cancellations, in input
+            // order, without MUTATING or WRAPPING the primary Throwable.
+            ArrayList<ChildFailure> diagnostic = new ArrayList<>();
+            for (int index = 0; index < admitted.length; index++) {
+                TaskHandle<?> child = admitted[index];
+                if (child == null) continue; // never admitted
+                admitted[index] = null;       // do not retain retired arenas
+                TaskHandle.TaskOutcome<?> outcome = child.getDone().join();
+                if (outcome instanceof TaskHandle.Failed<?> failed) {
+                    diagnostic.add(new ChildFailure(index, failed.failure(), false));
+                } else if (outcome instanceof TaskHandle.Cancelled<?> cancelled) {
+                    diagnostic.add(new ChildFailure(index,
+                            new java.util.concurrent.CancellationException(
+                                    cancelled.reason()), true));
+                }
+            }
+            failures.completeFromRuntime(List.copyOf(diagnostic));
+            done.completeFromRuntime(null);
         }
 
         public OresFuture<List<R>> result() {
@@ -72,6 +113,15 @@ public final class TaskMapParallel {
         /** Neither the parent nor its owned children are physically active. */
         public OresFuture<Void> getDone() {
             return done;
+        }
+
+        /**
+         * After physical retirement, report ALL admitted child failures
+         * and cancellations in input order. Secondary errors are not lost
+         * behind the fail-fast caller-facing result. Observation-only Future.
+         */
+        public OresFuture<List<ChildFailure>> childFailures() {
+            return failures;
         }
 
         public boolean cancel(String reason) {
@@ -94,9 +144,10 @@ public final class TaskMapParallel {
      * <p>Output order is INPUT order even if children finish out of order.
      * On first observed child failure/cancellation, stop admitting, cancel
      * siblings and retain their memory permits until physical retirement.
-     * A cancelled child is currently surfaced as a Failed composition with
-     * a CancellationException; guest typed cancellation classification
-     * requires later compiler/TaskScope integration.</p>
+     * An authenticated cancelled child requests cancellation of the
+     * coordinator; an unauthenticated user-thrown CancellationException
+     * stays a failure. childFailures() preserves secondary outcomes after
+     * physical retirement. Source-level effect signatures remain separate.</p>
      */
     public static <T, R> MapHandle<R> mapLimit(
             OresScheduler scheduler, List<T> inputs, int maxConcurrent,
@@ -113,6 +164,9 @@ public final class TaskMapParallel {
                     "map_parallel input size exceeds " + MAX_INPUTS);
         }
         TaskScope scope = scheduler.newTaskScope();
+        TaskHandle<?>[] admittedHandles = new TaskHandle<?>[items.size()];
+        AtomicReference<TaskHandle<List<R>>> coordinatorOwner = new AtomicReference<>();
+        OresFuture<Void> ownerReady = new OresFuture<>();
 
         OresScheduler.Task<List<R>> driver = new OresScheduler.Task<>() {
             private final Object[] ordered = new Object[items.size()];
@@ -120,28 +174,48 @@ public final class TaskMapParallel {
             private int nextIndex;
             private int completed;
             private boolean started;
+            private boolean ownerReadyObserved;
 
             private void inspectRetiredChildren() throws Exception {
+                Throwable genuineFailure = null;
+                int firstFailureIndex = Integer.MAX_VALUE;
+                String authenticatedCancellation = null;
                 for (int i = active.size() - 1; i >= 0; i--) {
                     Running<R> running = active.get(i);
                     OresFuture<TaskHandle.TaskOutcome<R>> physical =
                             running.handle().getDone();
                     if (!physical.isDone()) continue;
-                    // Settled-read only: TaskHandle.getDone() has already
-                    // verified that the source Task and descendants retired.
                     TaskHandle.TaskOutcome<R> outcome = physical.join();
                     active.remove(i);
                     if (outcome instanceof TaskHandle.Success<?> success) {
                         ordered[running.index()] = success.value();
                         completed++;
                     } else if (outcome instanceof TaskHandle.Failed<?> failed) {
-                        throwOriginal(failed.failure());
+                        // Preserve the original cause, and prefer a genuine
+                        // failure over a sibling cancelled during fail-fast.
+                        // For simultaneously retired errors, use input index
+                        // for deterministic primary-error selection.
+                        if (running.index() < firstFailureIndex) {
+                            firstFailureIndex = running.index();
+                            genuineFailure = failed.failure();
+                        }
                     } else if (outcome instanceof TaskHandle.Cancelled<?> cancelled) {
-                        throw new java.util.concurrent.CancellationException(
-                                "map_parallel child cancelled: " + cancelled.reason());
+                        authenticatedCancellation = cancelled.reason();
                     } else {
                         throw new IllegalStateException("unrecognized TaskOutcome");
                     }
+                }
+                if (genuineFailure != null) throwOriginal(genuineFailure);
+                if (authenticatedCancellation != null) {
+                    TaskHandle<List<R>> authority = coordinatorOwner.get();
+                    if (authority == null) {
+                        throw new IllegalStateException("map coordinator has no owner");
+                    }
+                    authority.cancel("map_parallel child cancelled");
+                    // A runtime-authenticated checkpoint makes this a true
+                    // TaskHandle.Cancelled, NOT a Failed(CancellationException).
+                    OresScheduler.cancellationCheckpoint();
+                    throw new IllegalStateException("cancellation checkpoint missed");
                 }
             }
 
@@ -158,6 +232,7 @@ public final class TaskMapParallel {
                     OresScheduler.Task<R> task = Objects.requireNonNull(
                             factory.apply(items.get(at)), "map factory returned null Task");
                     TaskHandle<R> child = scope.startTask(task);
+                    admittedHandles[at] = child;
                     active.add(new Running<>(at, child));
                 }
 
@@ -193,9 +268,20 @@ public final class TaskMapParallel {
                                 "map_parallel started with noninitial resume");
                     }
                     started = true;
-                } else if (resume.initial()) {
+                    // No child factory may execute before its TaskScope owner,
+                    // error observers and parent cancellation authority exist.
+                    return OresScheduler.await(ownerReady);
+                }
+                if (resume.initial()) {
                     throw new IllegalStateException(
                             "map_parallel resumed with duplicate initial resume");
+                }
+                if (!ownerReadyObserved) {
+                    ownerReadyObserved = true;
+                    if (resume.failure() != null) {
+                        throwOriginal(OresFuture.unwrap(resume.failure()));
+                    }
+                    return dispatch();
                 }
                 if (resume.failure() != null) {
                     throwOriginal(OresFuture.unwrap(resume.failure()));
@@ -215,7 +301,10 @@ public final class TaskMapParallel {
             }
             throw rejected;
         }
-        return new MapHandle<>(coordinator, scope);
+        MapHandle<R> operation = new MapHandle<>(coordinator, scope, admittedHandles);
+        coordinatorOwner.set(coordinator);
+        ownerReady.completeFromRuntime(null);
+        return operation;
     }
 
     /** Direct sequential mapping uses the same physical retirement semantics. */
