@@ -627,6 +627,71 @@ final class ActorMessageScratchTest {
 
     @Test
     @Timeout(25)
+    void actorOwnedTaskScopePinsNativeHeapUntilChildPhysicallyRetires() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch childEntered = new CountDownLatch(1);
+            CountDownLatch releaseChild = new CountDownLatch(1);
+            AtomicReference<TaskScope> ownedScope = new AtomicReference<>();
+            var actor = runtime.<Integer>spawnSharedTrusted(ctx -> (message, turn) -> {
+                TaskScope scope = runtime.newActorTaskScope();
+                ownedScope.set(scope);
+                scope.startTask(resume -> {
+                    childEntered.countDown();
+                    if (!releaseChild.await(10, TimeUnit.SECONDS)) {
+                        throw new AssertionError("child scope carrier unexpectedly timed out");
+                    }
+                    return OresScheduler.done(message);
+                });
+            });
+            try {
+                actor.send(1);
+                assertTrue(childEntered.await(8, TimeUnit.SECONDS));
+                actor.stop();
+                assertFalse(actor.done().isDone(),
+                        "actor.done must wait for source TaskScope physical descendants");
+                assertFalse(actor.awaitTermination(75, TimeUnit.MILLISECONDS));
+                assertFalse(ownedScope.get().getDone().isDone(),
+                        "scope cannot join when child is still on its guest carrier");
+            } finally {
+                releaseChild.countDown();
+            }
+            assertTrue(actor.awaitTermination(8, TimeUnit.SECONDS));
+            assertTrue(ownedScope.get().getDone().isDone());
+            assertEquals(0L, runtime.actorMemoryBytes(),
+                    "actor heap must be refunded only after scoped child retirement");
+        }
+    }
+
+    @Test
+    @Timeout(25)
+    void actorStopCancelsSuspendedTaskScopeChildWithoutCancellingSharedProducer()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            OresFuture<Integer> producer = new OresFuture<>();
+            CountDownLatch childEntered = new CountDownLatch(1);
+            AtomicReference<TaskScope> ownedScope = new AtomicReference<>();
+            var actor = runtime.<Integer>spawnSharedTrusted(ctx -> (message, turn) -> {
+                TaskScope scope = runtime.newActorTaskScope();
+                ownedScope.set(scope);
+                scope.startTask(resume -> {
+                    childEntered.countDown();
+                    return OresScheduler.await(producer);
+                });
+            });
+            actor.send(1);
+            assertTrue(childEntered.await(8, TimeUnit.SECONDS));
+            actor.stop();
+            assertTrue(actor.awaitTermination(8, TimeUnit.SECONDS));
+            assertTrue(ownedScope.get().getDone().isDone());
+            assertFalse(producer.isDone(),
+                    "closing a child TaskScope must never cancel its shared producer");
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+            assertEquals(0L, runtime.actorMemoryBytes());
+        }
+    }
+
+    @Test
+    @Timeout(25)
     void stoppedActorDoesNotReleaseMemoryWhileSourceTaskStillRunsOnItsCarrier()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
