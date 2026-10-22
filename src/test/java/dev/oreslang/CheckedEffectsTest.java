@@ -276,4 +276,40 @@ final class CheckedEffectsTest {
               + "end"));
         assertTrue(escaped.getMessage().contains("checked panics"));
     }
+
+    @Test
+    void interfaceParserRetainsIndependentCheckedCategories() {
+        Ast.Program parsed = Parser.parse(
+                "define interface Worker as "
+              + "  fnc handle(): int throws string raises bool panics int;"
+              + "end");
+        Ast.InterfaceDecl iface = (Ast.InterfaceDecl)
+                parsed.modules().getFirst().declarations().getFirst();
+        Ast.InterfaceFunctionDecl fn = (Ast.InterfaceFunctionDecl) iface.members().getFirst();
+        assertEquals(java.util.List.of(Ast.TypeRef.simple("string")), fn.effects().throwsTypes());
+        assertEquals(java.util.List.of(Ast.TypeRef.simple("bool")), fn.effects().raisesTypes());
+        assertEquals(java.util.List.of(Ast.TypeRef.simple("int")), fn.effects().panicsTypes());
+    }
+
+    @Test
+    void effectfulInterfaceFunctionTypeIsRejectedRatherThanErased() {
+        var erased = assertThrows(IllegalArgumentException.class, () -> checked(
+                "define interface Worker as fnc handle(): int panics int; end"));
+        assertTrue(erased.getMessage().contains("cannot be represented"));
+        assertTrue(erased.getMessage().contains("effects"));
+    }
+
+    @Test
+    void duplicateAndMissingInterfaceEffectsAreParserErrors() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                "define interface Worker as fnc handle(): int panics int panics bool; end"));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                "define interface Worker as fnc handle(): int raises; end"));
+    }
+
+    @Test
+    void effectlessInterfaceRemainsAccepted() {
+        assertDoesNotThrow(() -> checked(
+                "define interface Worker as fnc handle(): int; end"));
+    }
 }
