@@ -180,7 +180,9 @@ public final class ActorMessageScratch {
         ActorNativeArena.Region region = blocks.get(index);
         // Reused scratch memory never discloses previous-message bytes, even
         // if the guest reads a field before explicitly initializing it.
-        for (int i = 0; i < bytes; i++) region.writeByte(start + i, (byte) 0);
+        // Clear the full requested span under one actor-arena monitor. A loop
+        // of Region.writeByte would reacquire that monitor once per byte.
+        region.clearRange(start, bytes);
         long nextUsed = Math.addExact(usedBytes, bytes);
         Slice result = new Slice(epoch, region, start, bytes);
         cursorBlock = index;
