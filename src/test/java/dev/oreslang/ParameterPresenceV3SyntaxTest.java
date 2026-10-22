@@ -47,7 +47,7 @@ final class ParameterPresenceV3SyntaxTest {
                   @DefaultArgVals(b: "fallback")
                   pub fnc foo(bool? a, string b?): void { return; }
                   fnc maybe(bool? value?): void { return; }
-                  fnc select(bool flag): int { return flag ? 1 : 2; }
+                  fnc choose(bool flag): int { return flag ? 1 : 2; }
                 end
                 """);
         List<Ast.FunctionDecl> declarations = parsed.modules().stream()
@@ -69,7 +69,7 @@ final class ParameterPresenceV3SyntaxTest {
         assertTrue(combined.optionTypeSugar());
         assertTrue(combined.omittable());
         assertEquals("Option", combined.type().name());
-        assertEquals("select", declarations.get(2).name());
+        assertEquals("choose", declarations.get(2).name());
 
         // Grammar admission is separate from executable default binding.
         assertThrows(IllegalArgumentException.class,
