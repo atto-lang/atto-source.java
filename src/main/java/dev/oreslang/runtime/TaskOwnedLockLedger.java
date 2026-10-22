@@ -21,7 +21,16 @@ final class TaskOwnedLockLedger {
         void revokeAfterQuiescence();
     }
 
-    private final IdentityHashMap<Lease, Boolean> held = new IdentityHashMap<>();
+    private static final int MAX_PERMITS_PER_TASK = 4096;
+    private static final class Entry {
+        final Lease lease;
+        Entry previous;
+        Entry next;
+        Entry(Lease lease) { this.lease = lease; }
+    }
+
+    private final IdentityHashMap<Lease, Entry> held = new IdentityHashMap<>();
+    private Entry latest;
     private boolean admissionFenced;
     private boolean quiescent;
 
@@ -30,13 +39,27 @@ final class TaskOwnedLockLedger {
         if (admissionFenced || quiescent) {
             throw new CancellationException("Task lock admission has been fenced");
         }
-        if (held.put(permit, Boolean.TRUE) != null) {
+        if (held.containsKey(permit)) {
             throw new IllegalStateException("duplicate Task lock permit registration");
         }
+        if (held.size() >= MAX_PERMITS_PER_TASK) {
+            throw new IllegalStateException("Task lock permit quota exceeded");
+        }
+        Entry entry = new Entry(permit);
+        entry.previous = latest;
+        if (latest != null) latest.next = entry;
+        latest = entry;
+        held.put(permit, entry);
     }
 
     synchronized void forget(Lease permit) {
-        held.remove(permit);
+        Entry entry = held.remove(permit);
+        if (entry == null) return;
+        if (entry.previous != null) entry.previous.next = entry.next;
+        if (entry.next != null) entry.next.previous = entry.previous;
+        if (latest == entry) latest = entry.previous;
+        entry.previous = null;
+        entry.next = null;
     }
 
     synchronized void fence() {
@@ -58,7 +81,11 @@ final class TaskOwnedLockLedger {
             admissionFenced = true;
             if (quiescent && held.isEmpty()) return;
             quiescent = true;
-            snapshot = new ArrayList<>(held.keySet());
+            snapshot = new ArrayList<>(held.size());
+            // A Task that nests multiple acquisitions releases in LIFO order.
+            for (Entry entry = latest; entry != null; entry = entry.previous) {
+                snapshot.add(entry.lease);
+            }
         }
         Throwable first = null;
         for (Lease permit : snapshot) {
