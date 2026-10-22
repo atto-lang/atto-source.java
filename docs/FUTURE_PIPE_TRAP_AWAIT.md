@@ -9,6 +9,13 @@ and internally also has a scheduler completion Future; do not claim that only
 one Future allocation occurs. It does not yet create a source-visible Task,
 TaskHandle, or structured TaskScope.
 
+The parser now retains `Ast.CallExpr.origin` for value-pipe argument injection
+and Option/Result receiver combinators, distinct from ordinary calls and actor
+`pipe`. This is syntax provenance only: it is not a typed/effect-checked
+pipeline plan and does not authorize asynchronous execution. The standalone
+`bash scripts/test-future-pipeline-provenance.sh` check requires JDK 21 and
+verifies only parser/AST behavior; Maven/runtime acceptance remains separate.
+
 The existing Java source-language `|>` operator still eagerly injects the
 left value as the first argument of the stage call. The proposed *source-level*
 statically checked lifting rule remains unimplemented: there is no
@@ -140,3 +147,4 @@ lambdas to untrusted Oreslang source.
    or isolated model proofs.
 
 Related Java Future host hardening: PR #1915; source callbacks: issue #1916.
+

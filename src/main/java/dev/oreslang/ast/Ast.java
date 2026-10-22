@@ -1004,17 +1004,38 @@ public final class Ast {
     /** Argument-list spread. The parser only constructs this inside call argument lists. */
     public record SpreadExpr(Expr expression) implements Expr { }
 
+    /** Syntax provenance, not proof that asynchronous pipeline lowering exists. */
+    public enum CallOrigin {
+        DIRECT,
+        /** The upstream value occupies argument zero: value |> stage(args). */
+        VALUE_PIPE_ARGUMENT,
+        /** Option/Result namespace combinators use the upstream as receiver. */
+        VALUE_PIPE_RECEIVER
+    }
+
     public record CallExpr(
             Expr callee,
             List<TypeRef> typeArguments,
             boolean typeArgumentsPresent,
-            List<Expr> arguments) implements Expr {
+            List<Expr> arguments,
+            CallOrigin origin) implements Expr {
         public CallExpr {
             typeArguments = List.copyOf(typeArguments);
             arguments = List.copyOf(arguments);
+            java.util.Objects.requireNonNull(origin, "call origin");
+            if (origin == CallOrigin.VALUE_PIPE_ARGUMENT && arguments.isEmpty()) {
+                throw new IllegalArgumentException("value pipeline requires an upstream argument");
+            }
+            if (origin == CallOrigin.VALUE_PIPE_RECEIVER && !(callee instanceof MemberExpr)) {
+                throw new IllegalArgumentException("receiver pipeline requires a member callee");
+            }
             if (!typeArgumentsPresent && !typeArguments.isEmpty()) {
                 throw new IllegalArgumentException("call type arguments require an explicit <...> marker");
             }
+        }
+        public CallExpr(Expr callee, List<TypeRef> typeArguments,
+                        boolean typeArgumentsPresent, List<Expr> arguments) {
+            this(callee, typeArguments, typeArgumentsPresent, arguments, CallOrigin.DIRECT);
         }
         public CallExpr(Expr callee, List<Expr> arguments) {
             this(callee, List.of(), false, arguments);
@@ -1498,3 +1519,4 @@ public final class Ast {
         }
     }
 }
+
