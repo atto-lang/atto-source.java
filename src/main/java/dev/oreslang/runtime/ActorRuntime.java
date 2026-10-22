@@ -2630,6 +2630,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicBoolean groupClosed = new AtomicBoolean();
         // Manager-owned shutdown admission fence; mailbox work already admitted may drain.
         private boolean workerAdmissionFenced; // guarded by authorityLock
+        // A group has precisely one supervisor shutdown owner across ALL
+        // coordinators in this ActorRuntime; cannot be rebound after closing.
+        private SupervisorShutdownTree shutdownTreeOwner; // guarded by authorityLock
         // Runtime-owned, non-cancellable observer; actor retirement may outlive
         // group admission revocation and clearing managed-worker references.
         private final OresFuture<Void> closedWorkersDone =
@@ -2663,6 +2666,19 @@ public final class ActorRuntime implements AutoCloseable {
         public ActorGroupId id() { return id; }
 
         boolean ownedBy(ActorRuntime runtime) { return ActorRuntime.this == runtime; }
+
+        /** Trusted-host exclusive supervisor assignment, before CONTROL publication. */
+        void bindSupervisorShutdownTree(SupervisorShutdownTree owner) {
+            Objects.requireNonNull(owner, "owner");
+            requireSupervisorContext("bind an ActorGroup to a shutdown supervisor");
+            synchronized (authorityLock) {
+                requireOpen();
+                if (workerAdmissionFenced || shutdownTreeOwner != null) {
+                    throw new IllegalStateException("ActorGroup already fenced or supervised: " + id);
+                }
+                shutdownTreeOwner = owner;
+            }
+        }
 
         public Optional<ActorId> creatorId() {
             requireObserver("inspect ActorGroup creator");
