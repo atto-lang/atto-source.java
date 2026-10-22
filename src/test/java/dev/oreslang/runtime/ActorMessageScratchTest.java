@@ -294,6 +294,42 @@ final class ActorMessageScratchTest {
     }
 
     @Test
+    void lexicalScratchScopeCannotBeClosedByForeignPhysicalOwner() throws Exception {
+        AtomicLong charged = new AtomicLong();
+        AtomicReference<Thread> owner = new AtomicReference<>(Thread.currentThread());
+        try (ActorNativeArena arena = new ActorNativeArena(8192, () -> {
+            if (Thread.currentThread() != owner.get()) {
+                throw new SecurityException("foreign physical actor owner");
+            }
+        }, bytes -> {
+            charged.addAndGet(bytes);
+            return () -> charged.addAndGet(-bytes);
+        })) {
+            ActorMessageScratch scratch = new ActorMessageScratch(arena, 8192);
+            scratch.beginMessage();
+            var scoped = scratch.enterScope();
+            var value = scratch.allocate(8);
+            value.writeLong(0, 1234L);
+            AtomicReference<Throwable> failedClose = new AtomicReference<>();
+            Thread foreign = new Thread(() -> {
+                try { scoped.close(); }
+                catch (Throwable error) { failedClose.set(error); }
+            });
+            foreign.start();
+            foreign.join(3000);
+            assertFalse(foreign.isAlive());
+            assertInstanceOf(SecurityException.class, failedClose.get());
+            assertEquals(1234L, value.readLong(0),
+                    "foreign close must not advance cursor or revoke the real owner");
+            assertThrows(IllegalStateException.class, scratch::finishMessage);
+            scoped.close();
+            assertThrows(IllegalStateException.class, () -> value.readLong(0));
+            scratch.finishMessage();
+        }
+        assertEquals(0L, charged.get());
+    }
+
+    @Test
     void multiBlockScopeRewindClearsOnlyScopedBytesAndPreservesActorPersistentRegion() {
         AtomicLong charged = new AtomicLong();
         try (ActorNativeArena arena = new ActorNativeArena(64 * 1024, () -> {}, bytes -> {
