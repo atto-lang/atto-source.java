@@ -256,6 +256,47 @@ the same fixtures before those backends admit executable refinements.
   typed parsing requires immutable scalar payloads and deep freeze/ownership
   transfer for mutable collections.
 
+### Closed-world pinned linker manifests (non-executable)
+
+\`CompilerZordeLinkManifest.verifyForAnalysis\` now builds a deterministic,
+length-prefixed SHA-256 **exact-tree integrity manifest** from an explicitly
+pinned, closed graph of source-staged \`CompilerZordeSchemaRegistry\` instances.
+The manifest commits to the named compiler build, target ABI, entry roots,
+each unit's source digest and generation, statically inferred schema exports,
+and dependency edges with the exact pinned source digest of each target.
+Exports, dependency edges and units are sorted before hashing.
+
+The verifier rejects missing or extra pins, stale unit source/generation,
+unknown dependencies, source-digest mismatch, schema-name collisions,
+self-dependencies, cycles, unreachable units, invalid unit keys, and graphs
+above 128 units. A separately constructed manifest with the same exact tree
+has the same digest but a distinct non-serializable **link-instance seal**.
+The compiler's internal checked type marker is now scoped to both its
+compilation-instance seal and its verified link-instance seal. A type issued
+for another linkage or target ABI cannot be assigned interchangeably merely
+because the schema name and hash match.
+
+This is deliberately a **compiler-analysis prototype**, not a complete
+linker or a runtime capability:
+
+- The caller must obtain source-digest/generation pins from independently
+  approved build inputs; deriving pins from untrusted candidate sources
+  defeats the integrity check. Hash equality alone never authenticates code.
+- Dependency edges are supplied by the build driver, not yet resolved from
+  imported Oreslang module ASTs. Full imported-symbol/interface resolution
+  and actual source-to-module dependency attestation remain separate gates.
+- The compiler build ID and ABI label are pinned metadata, not a signature,
+  compiler-binary attestation or permission to run on that target.
+- The \`checkedTypeForLinkedAnalysis\` method creates only a private static
+  type marker, **not** an owned/frozen \`Valid<T,SchemaId>\` runtime value.
+  Source syntax and all production proof construction remain unavailable.
+- Shared-library load/unload, actor transfer, FFI, generation rollback and
+  immutable native actor-arena codegen remain unimplemented.
+
+The next prerequisite is a trusted linker context that derives the pinned
+graph from verified module imports and an approved exact-tree lockfile,
+followed by checked owned construction and independent native CI execution.
+
 ### Compiler-local schema registry staging (non-executable)
 
 `CompilerZordeSchemaRegistry` is a non-public compiler-package structure that
