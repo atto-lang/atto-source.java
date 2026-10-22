@@ -317,4 +317,55 @@ public class TaskOwnedLeasesTest {
             assertEquals(4, released.get());
         }
     }
+
+    @Test void failedUnlockDoesNotEraseOriginalThrownTaskError()
+            throws Exception {
+        IllegalArgumentException original = new IllegalArgumentException("source throw");
+        IllegalStateException unlock = new IllegalStateException("unlock failed");
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskHandle<Integer> task = scheduler.startTracked(resume -> {
+                TaskOwnedLeases.register(() -> { throw unlock; });
+                throw original;
+            });
+            assertSame(original, assertThrows(ExecutionException.class,
+                    () -> task.result().get(4, TimeUnit.SECONDS)).getCause());
+            var physical = assertInstanceOf(TaskHandle.Failed.class,
+                    task.getDone().get(4, TimeUnit.SECONDS));
+            var cleanup = assertInstanceOf(
+                    TaskOwnedLeases.CleanupFailure.class, physical.failure());
+            assertSame(unlock, cleanup.failures().get(0));
+            assertSame(original, cleanup.getCause());
+            var primary = assertInstanceOf(
+                    TaskHandle.Failed.class, cleanup.originalOutcome());
+            assertSame(original, primary.failure());
+            assertEquals(List.of(unlock),
+                    task.cleanupFailures().get(4, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test void failedUnlockRetainsAuthenticTaskCancellationReason()
+            throws Exception {
+        IllegalStateException unlock = new IllegalStateException("unlock failed");
+        CountDownLatch acquired = new CountDownLatch(1);
+        OresFuture<Integer> pending = new OresFuture<>();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskHandle<Integer> task = scheduler.startTracked(resume -> {
+                TaskOwnedLeases.register(() -> { throw unlock; });
+                acquired.countDown();
+                return OresScheduler.await(pending);
+            });
+            assertTrue(acquired.await(3, TimeUnit.SECONDS));
+            assertTrue(task.cancel("owner revoked"));
+            assertTrue(task.result().isCancelled());
+            var physical = assertInstanceOf(TaskHandle.Failed.class,
+                    task.getDone().get(4, TimeUnit.SECONDS));
+            var cleanup = assertInstanceOf(
+                    TaskOwnedLeases.CleanupFailure.class, physical.failure());
+            var original = assertInstanceOf(
+                    TaskHandle.Cancelled.class, cleanup.originalOutcome());
+            assertEquals("owner revoked", original.reason());
+            assertSame(unlock, cleanup.failures().get(0));
+            assertFalse(pending.isCancelled());
+        }
+    }
 }
