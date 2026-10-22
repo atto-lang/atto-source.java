@@ -21,6 +21,7 @@ final class ZordeValidAdmissionGateTest {
                 "type Proof = Valid<int, UserSchema>;",
                 "type Proof = Zorde.Valid<int, UserSchema>;",
                 "type Proof = std.zorde.Valid<int, UserSchema>;",
+                "type Proof = adversarial.Valid<int, UserSchema>;",
                 "type Proof = Option<Valid<int, UserSchema>>;",
                 "type Proof = Result<int, Valid<int, UserSchema>>;",
                 "type Proof = borrow Valid<int, UserSchema>;",
@@ -53,7 +54,7 @@ final class ZordeValidAdmissionGateTest {
     }
 
     @Test void syntheticAstCannotBypassTheSourceParserGate() {
-        Ast.TypeRef counterfeit = new Ast.TypeRef("Valid",
+        Ast.TypeRef counterfeit = new Ast.TypeRef("attacker.Valid",
                 List.of(Ast.TypeRef.simple("int"), Ast.TypeRef.simple("Schema")), false);
         Ast.TypeAliasDecl wrapper = new Ast.TypeAliasDecl(
                 "Untrusted", List.of(), counterfeit);
