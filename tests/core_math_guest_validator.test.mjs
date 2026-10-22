@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
-import {loadContract,validateCapturedGuestLog} from "../scripts/check_core_math_guest.mjs";
+import {loadContract,validateCapturedGuestLog,validateGuestSource,EXPECTED_GUEST_GIT_BLOB} from "../scripts/check_core_math_guest.mjs";
 const file=new URL("../formal/typed-scalar/core-math-i64-v1.json",import.meta.url);
 const cases=loadContract(readFileSync(file));
 const valid=[...cases].map(([id,value])=>"CORE-MATH-CASE|"+id+"|"+value)
@@ -33,4 +33,16 @@ test("contract fixture is byte-locked and fails on mutation",()=>{
     Buffer.from(raw.toString().replace('"schemaVersion": 1','"schemaVersion": 2'))]){
     assert.throws(()=>loadContract(different));
   }
+});
+
+test("reviewed guest source identity is exact, no changed bytes accepted",()=>{
+  const guest=new URL("../examples/native-core-math-24.ores",import.meta.url);
+  const raw=readFileSync(guest);
+  assert.equal(validateGuestSource(raw),EXPECTED_GUEST_GIT_BLOB);
+  for(const mutant of [Buffer.concat([raw,Buffer.from(" ")]),
+                       raw.subarray(1),
+                       Buffer.from(raw.toString("utf8").replace("min_int","max_int"))]){
+    assert.throws(()=>validateGuestSource(mutant));
+  }
+  assert.throws(()=>validateGuestSource("not raw source bytes"));
 });
