@@ -700,6 +700,48 @@ final class ActorNativeArenaTest {
     }
 
     @Test
+    void nativeTaskPhaseRejectsOverflowedOrTruncated64BitCodes() {
+        for (long code : new long[] {-1L, 6L, Integer.MAX_VALUE,
+                                     0x1_0000_0001L, Long.MAX_VALUE}) {
+            assertThrows(IllegalStateException.class,
+                    () -> ActorNativeArena.TaskPhase.fromCode(code));
+        }
+        for (int i = 0; i < ActorNativeArena.TaskPhase.values().length; ++i) {
+            assertEquals(ActorNativeArena.TaskPhase.values()[i],
+                    ActorNativeArena.TaskPhase.fromCode(i));
+        }
+    }
+
+    @Test
+    void nativeFramePhaseLookupHandlesLongAlternatingAwaitAndCooperateSequences() {
+        AtomicLong charged = new AtomicLong();
+        try (ActorNativeArena arena = arena(4096, charged)) {
+            var frame = arena.taskFrame();
+            assertEquals(ActorNativeArena.TaskPhase.NEW, frame.phase());
+            frame.beginInitialResume();
+            for (int iteration = 0; iteration < 2048; iteration++) {
+                boolean awaiting = (iteration & 1) == 0;
+                var kind = awaiting ? ActorNativeArena.SuspensionKind.AWAIT
+                                    : ActorNativeArena.SuspensionKind.COOPERATE;
+                long ticket = awaiting ? frame.awaiting() : frame.cooperating();
+                assertEquals(awaiting ? ActorNativeArena.TaskPhase.AWAITING
+                                      : ActorNativeArena.TaskPhase.COOPERATING,
+                             frame.phase());
+                frame.beginResume(kind, ticket);
+                assertEquals(ActorNativeArena.TaskPhase.RUNNING, frame.phase());
+                assertEquals(iteration + 2L, frame.resumeCount());
+            }
+            frame.done();
+            assertEquals(ActorNativeArena.TaskPhase.DONE, frame.phase());
+
+            var faulted = arena.taskFrame();
+            faulted.failed();
+            assertEquals(ActorNativeArena.TaskPhase.FAILED, faulted.phase());
+        }
+        assertEquals(0L, charged.get());
+    }
+
+    @Test
     void nativeObjectsRegionsAndLinearPagesShareOneNonRecycledActorOffsetSpace() {
         AtomicLong charged = new AtomicLong();
         Object marker = new Object();
