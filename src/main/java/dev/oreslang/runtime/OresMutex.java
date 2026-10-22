@@ -660,6 +660,11 @@ public final class OresMutex {
             private final GuardFuture<T> future;
             private final TaskOwnedLockLedger taskLocks;
             private final AtomicBoolean quotaSettled = new AtomicBoolean();
+            // A dequeued handoff still owns a physical permit until its
+            // guard has been published or discarded, including synchronous
+            // Java Future subscribers. Do not use Future.isDone() as proof.
+            private final CompletableFuture<Void> physicalSettlement =
+                    new CompletableFuture<>();
 
             private AsyncWaiter(
                     Object ownerDomain,
@@ -674,14 +679,18 @@ public final class OresMutex {
 
             @Override
             public void revokeAfterQuiescence() {
-                // Caller Task is physically quiescent. Revoke the queued
-                // request before publishing cancellation. Unlike public
-                // cancel(), owner death also cancels an already-dequeued but
-                // unpublished handoff: its subsequent guard must be dropped.
-                revokeQueuedWaiter(this);
-                // Completing this host Future can run synchronous subscribers.
-                // Off-carrier publication remains a P0 release gate (#769).
+                // Task quiescence fences the Future even if a releasing carrier
+                // claimed the queue entry. The waiter remains in the ledger
+                // until the physical handoff receipt settles.
+                boolean removed = revokeQueuedWaiter(this);
+                if (removed) physicalSettlement.complete(null);
                 future.cancelAfterOwnerQuiescence();
+            }
+
+            @Override
+            public java.util.concurrent.CompletionStage<Void> settleAfterQuiescence() {
+                revokeAfterQuiescence();
+                return physicalSettlement;
             }
         }
 
@@ -724,6 +733,7 @@ public final class OresMutex {
                         endWait(candidate.ownerDomain);
                         releaseDomain(candidate.ownerDomain);
                         settleAsyncWaiterQuota(candidate);
+                        candidate.physicalSettlement.complete(null);
                     }
 
                     if (waiter == null) {
@@ -746,7 +756,11 @@ public final class OresMutex {
                 if (poisoned.get()) {
                     endWait(waiter.ownerDomain);
                     releaseDomain(waiter.ownerDomain);
-                    waiter.future.failFromRuntime(new PoisonedMutexException());
+                    try {
+                        waiter.future.failFromRuntime(new PoisonedMutexException());
+                    } finally {
+                        waiter.physicalSettlement.complete(null);
+                    }
                     continue;
                 }
 
@@ -754,24 +768,33 @@ public final class OresMutex {
                 markOwner(waiter.ownerDomain);
                 final SharedGuard guard;
                 try {
-                    // The originator's Task ledger, not the releasing carrier,
-                    // owns the grant. Its terminal fence can race this handoff.
+                    // Registration may fail if the origin Task terminated
+                    // after dequeue. The physical permit remains ours.
                     guard = new SharedGuard(
                             waiter.ownerDomain, waiter.enforceOwnerDomain,
                             waiter.taskLocks);
                 } catch (RuntimeException | Error failedRegistration) {
                     clearOwner(waiter.ownerDomain);
                     releaseDomain(waiter.ownerDomain);
-                    waiter.future.failFromRuntime(failedRegistration);
-                    // Physical permit remains in hand for the next waiter.
+                    try {
+                        waiter.future.failFromRuntime(failedRegistration);
+                    } finally {
+                        waiter.physicalSettlement.complete(null);
+                    }
                     continue;
                 }
-                if (waiter.future.completeFromRuntime(guard)) return;
-
-                // Cancellation/timeout beat future publication. This guard
-                // was never published: clear both registries without
-                // poisoning user state, then retry the held physical permit.
-                guard.discardUnpublishedWithoutHandoff();
+                boolean published = false;
+                try {
+                    published = waiter.future.completeFromRuntime(guard);
+                } finally {
+                    if (!published) {
+                        // Cancellation won before publication, so no guest
+                        // ever received this permit. Clear without poisoning.
+                        guard.discardUnpublishedWithoutHandoff();
+                    }
+                    waiter.physicalSettlement.complete(null);
+                }
+                if (published) return;
             }
         }
 
@@ -907,9 +930,14 @@ public final class OresMutex {
                 if (removed) {
                     endWait(ownerDomain);
                     releaseDomain(ownerDomain);
+                    waiter.physicalSettlement.complete(null);
                 }
                 settleAsyncWaiterQuota(waiter);
-                if (ledger != null) ledger.forget(waiter);
+            });
+            // Public Future settlement is not a carrier/handoff completion
+            // witness. Retain Task ownership until this private receipt.
+            waiter.physicalSettlement.whenComplete((ignored, failure) -> {
+                if (ledger != null && failure == null) ledger.forget(waiter);
             });
 
             boolean acquired = false;
@@ -947,10 +975,18 @@ public final class OresMutex {
 
             if (waitFailure != null) {
                 releaseDomain(ownerDomain);
-                future.failFromRuntime(waitFailure);
+                try {
+                    future.failFromRuntime(waitFailure);
+                } finally {
+                    waiter.physicalSettlement.complete(null);
+                }
             } else if (poisonedNow) {
                 releaseDomain(ownerDomain);
-                future.failFromRuntime(new PoisonedMutexException());
+                try {
+                    future.failFromRuntime(new PoisonedMutexException());
+                } finally {
+                    waiter.physicalSettlement.complete(null);
+                }
             } else if (acquired) {
                 markOwner(ownerDomain);
                 final SharedGuard guard;
@@ -959,12 +995,20 @@ public final class OresMutex {
                 } catch (RuntimeException | Error failedRegistration) {
                     clearOwner(ownerDomain);
                     releaseDomain(ownerDomain);
-                    releasePermitOrHandoff();
-                    future.failFromRuntime(failedRegistration);
+                    try {
+                        releasePermitOrHandoff();
+                        future.failFromRuntime(failedRegistration);
+                    } finally {
+                        waiter.physicalSettlement.complete(null);
+                    }
                     return future;
                 }
-                if (!future.completeFromRuntime(guard)) {
-                    guard.releaseFromRuntime();
+                boolean published = false;
+                try {
+                    published = future.completeFromRuntime(guard);
+                } finally {
+                    if (!published) guard.releaseFromRuntime();
+                    waiter.physicalSettlement.complete(null);
                 }
             }
 
