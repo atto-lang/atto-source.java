@@ -22,6 +22,7 @@ test("missing, duplicated, broken, unknown or incorrect guest outputs fail",()=>
     valid.replace(lines[0],lines[0]+"\n"+lines[0]),
     valid.replace(lines[0],lines[0].replace(/-?[0-9]+$/, "999")),
     valid.replace(lines[0],lines[0]+"garbage"),
+    valid.replace("CORE-MATH-CASE|clamp-all-zero|0","CORE-MATH-CASE|clamp-all-zero|-0"),
     "",
   ];
   for(const bad of mutations)assert.throws(()=>validateCapturedGuestLog(bad,cases));
