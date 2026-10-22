@@ -1,10 +1,19 @@
 # Future-aware value pipelines and trap/await ordering
 
-Status: **proposed future-pipeline lowering; not executable parity yet**.
-The existing Java source-language `|>` operator eagerly injects the left value
-as the first argument of the stage call. This document specifies a *new*
-statically checked lifting rule for Future inputs; do not claim it works before
-the compiler, runtime, formatter, LLVM, and conformance tests pass.
+Status: **partial host/runtime implementation; source syntax and parity
+remain unimplemented and unverified**. The Java runtime now has the staging
+helper `dev.oreslang.runtime.TaskPipeline.start`: one `OresScheduler.Task`
+executes deferred stages, awaiting any Future returned by a stage without
+allocating a new task for each stage. The helper returns an exposed Future
+and internally also has a scheduler completion Future; do not claim that only
+one Future allocation occurs. It does not yet create a source-visible Task,
+TaskHandle, or structured TaskScope.
+
+The existing Java source-language `|>` operator still eagerly injects the
+left value as the first argument of the stage call. The proposed *source-level*
+statically checked lifting rule remains unimplemented: there is no
+`Task.pipeline` source intrinsic or compiler-to-runtime lowering, and no
+Java/LLVM/JS/Wasm executable parity. Do not claim the sample below runs.
 
 ## Canonical spelling
 
@@ -83,6 +92,34 @@ lowers `|>` to ordinary `save(load())`, so this is *not* yet supported.
 - Pipeline return types and failure effects are inferred statically. Wrong
   port types, unsupported effect propagation, unowned cross-actor values,
   and unimplemented backends **fail closed** at compile time.
+
+## Host runtime staged helper (Java only)
+
+Trusted runtimes may call:
+
+```java
+OresFuture<Integer> result = TaskPipeline.start(scheduler, source,
+    List.of(
+        value -> validate(value),
+        value -> TaskPipeline.owned(saveAsync(value)),
+        value -> notifyUser(value)));
+```
+
+Each `Stage.apply` closure captures its stage arguments and computes them
+only when invoked after upstream success. Bare `OresFuture` results are
+**shared observations**; `TaskPipeline.owned(future)` explicitly transfers
+cancellation responsibility for that stage's Future. Canceling the pipeline
+detaches from shared producers and cancels explicitly owned pending work.
+A cancelled source produces a cancelled pipeline, not an ordinary failure.
+The source compiler must guarantee stage types, verified ownership transfer,
+checked effects, and no unproven borrowed value across await.
+
+Limitations: this host staging helper alone does **not** implement structured
+child-scope retirement, source `Task.pipeline` spelling, or compiler effect
+checking. The returned Future's terminal status is not by itself a physical
+actor/child quiescence witness; use the actor/task lifetime barrier before
+reclaiming arenas or other resources. Do not expose arbitrary host Stage
+lambdas to untrusted Oreslang source.
 
 ## Required executable acceptance matrix
 
