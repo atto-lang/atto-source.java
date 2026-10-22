@@ -2,6 +2,10 @@ package dev.oreslang;
 
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.ast.Ast;
+import dev.oreslang.types.TypeChecker;
+
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -46,6 +50,20 @@ final class ZordeValidAdmissionGateTest {
                     () -> "proof identity shadowing must be diagnosed explicitly: "
                             + failure.getMessage());
         }
+    }
+
+    @Test void syntheticAstCannotBypassTheSourceParserGate() {
+        Ast.TypeRef counterfeit = new Ast.TypeRef("Valid",
+                List.of(Ast.TypeRef.simple("int"), Ast.TypeRef.simple("Schema")), false);
+        Ast.TypeAliasDecl wrapper = new Ast.TypeAliasDecl(
+                "Untrusted", List.of(), counterfeit);
+        Ast.Program program = new Ast.Program(List.of(
+                new Ast.ModuleDecl(Parser.ROOT_MODULE, List.of(wrapper))));
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.checkTypesWithDiagnostics(program));
+        assertTrue(error.getMessage().contains("Zorde Valid<T, SchemaId>"),
+                error::getMessage);
     }
 
     @Test void ordinaryTypesAndUnrelatedNamesStillCompile() {
