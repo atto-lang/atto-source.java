@@ -194,6 +194,9 @@ public final class TypeChecker {
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
         rejectUnloweredCheckedEffects(program);
         program = AnnotationExpander.expand(program);
+        // Expansion can synthesize declarations; recheck before type or
+        // structural projection can discard newly introduced effect rows.
+        rejectUnloweredCheckedEffects(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
@@ -242,6 +245,9 @@ public final class TypeChecker {
             rejectUnloweredCheckedInterfaceEffects(linked);
         }
         program = AnnotationExpander.expand(program);
+        // Expansion can synthesize declarations; recheck before type or
+        // structural projection can discard newly introduced effect rows.
+        rejectUnloweredCheckedEffects(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
