@@ -494,9 +494,10 @@ public final class Parser {
             Ast.TypeRef returnType = check(LBRACE)
                     ? Ast.TypeRef.simple("void")
                     : parseTypeRef();
+            Ast.EffectSpec effects = parseCheckedEffects();
             List<Ast.Stmt> body = parseBlock();
             return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind,
-                    generics, params, returnType, annotations, body, specs);
+                    generics, params, returnType, annotations, body, specs, effects);
         }
 
         consume(LPAREN, "expected '(' after callable name or '=' for lambda-style declaration");
@@ -504,9 +505,10 @@ public final class Parser {
         List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN, structuralNames), annotations);
         consume(RPAREN, "expected ')' after parameters");
         Ast.TypeRef returnType = parseReturnType(annotations);
+        Ast.EffectSpec effects = parseCheckedEffects();
         List<Ast.Stmt> body = parseBlock();
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
-                returnType, annotations, body, specs);
+                returnType, annotations, body, specs, effects);
     }
 
     private Ast.ClassDecl parseClass(
@@ -961,8 +963,9 @@ public final class Parser {
                 List<Ast.Param> params = parseParametersUntil(RPAREN);
                 consume(RPAREN, "expected ')' after interface parameters");
                 Ast.TypeRef returns = match(FAT_ARROW, COLON) ? parseTypeRef() : Ast.TypeRef.simple("void");
+                Ast.EffectSpec effects = parseCheckedEffects();
                 consumeMemberTerminator(terminator, "interface function signature should end with ';'");
-                members.add(new Ast.InterfaceFunctionDecl(memberName, callableStructural.enabled(), memberGenerics, params, returns));
+                members.add(new Ast.InterfaceFunctionDecl(memberName, callableStructural.enabled(), memberGenerics, params, returns, effects));
                 continue;
             }
 
@@ -1169,6 +1172,7 @@ public final class Parser {
         }
 
         Ast.TypeRef returnType = parseReturnType(annotations);
+        Ast.EffectSpec effects = parseCheckedEffects();
         // An abstract class may declare required slots as `name(args): Type;`.
         // Such signatures are abstract, but remain private unless explicitly pub.
         // Their identity is still name + arity only.
@@ -1184,7 +1188,7 @@ public final class Parser {
             body = List.of();
         } else body = parseBlock();
         return new Ast.MethodDecl(name, mods.visibility, mods.isStatic, mods.isAbstract || implicitAbstract, mods.async, mods.suspends, structural.enabled(),
-                receiverType, generics, params, returnType, annotations, body);
+                receiverType, generics, params, returnType, annotations, body, effects);
     }
 
     private String parseMethodName() {
@@ -1377,6 +1381,46 @@ public final class Parser {
                 before.isAbstract || after.isAbstract,
                 before.shared || after.shared,
                 before.untrusted || after.untrusted);
+    }
+
+    /**
+     * Parse signature-only checked exceptional effects. These names remain
+     * contextual so source-level throw/raise/panic keywords cannot be
+     * misinterpreted as executable statements.
+     */
+    private Ast.EffectSpec parseCheckedEffects() {
+        List<Ast.TypeRef> thrown = List.of();
+        List<Ast.TypeRef> raised = List.of();
+        List<Ast.TypeRef> panicked = List.of();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        while (isContextualIdentifier("throws")
+                || isContextualIdentifier("raises")
+                || isContextualIdentifier("panics")) {
+            String category = advance().lexeme();
+            if (!seen.add(category)) {
+                throw error(previous(), "duplicate checked " + category + " clause");
+            }
+            List<Ast.TypeRef> types = new ArrayList<>();
+            if (check(LBRACE) || check(SEMICOLON) || check(END)
+                    || check(EOF) || check(RBRACE)
+                    || isContextualIdentifier("throws")
+                    || isContextualIdentifier("raises")
+                    || isContextualIdentifier("panics")) {
+                throw error(peek(), "checked " + category + " requires a type");
+            }
+            types.add(parseTypeRef());
+            while (match(COMMA)) types.add(parseTypeRef());
+            if (new java.util.HashSet<>(types).size() != types.size()) {
+                throw error(previous(), "duplicate checked " + category + " type");
+            }
+            switch (category) {
+                case "throws" -> thrown = List.copyOf(types);
+                case "raises" -> raised = List.copyOf(types);
+                case "panics" -> panicked = List.copyOf(types);
+                default -> throw new IllegalStateException("unknown checked effect");
+            }
+        }
+        return new Ast.EffectSpec(thrown, raised, panicked);
     }
 
     private Ast.TypeRef parseReturnType(List<Ast.Annotation> annotations) {
