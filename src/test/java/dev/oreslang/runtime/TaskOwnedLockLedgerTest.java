@@ -171,18 +171,14 @@ public final class TaskOwnedLockLedgerTest {
                     unexpected.set(error);
                 }
             });
-            Thread releaser = Thread.ofPlatform().start(() -> {
-                try {
-                    if (!go.await(3, TimeUnit.SECONDS))
-                        throw new IllegalStateException("release barrier");
-                    holder.release();
-                } catch (Throwable error) {
-                    unexpected.set(error);
-                }
-            });
+            // Release from the acquiring host thread. A foreign host
+            // carrier must not be able to close that thread's live guard.
             go.countDown();
-            cancellation.join();
-            releaser.join();
+            try {
+                holder.release();
+            } finally {
+                cancellation.join();
+            }
             assertNull(unexpected.get());
             assertTrue(pending.get().isDone());
             if (!pending.get().isCancelled()) {
