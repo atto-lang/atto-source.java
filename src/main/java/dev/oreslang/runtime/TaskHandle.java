@@ -71,7 +71,8 @@ public final class TaskHandle<T> {
     // Only the executing host Task turn can install this token. It is restored
     // after each resume, including nested inline scheduler dispatches, and is
     // never exposed as an actor/tenant cancellation capability.
-    private record CancellationContext(TaskCancellation token, Object taskDomain) { }
+    private record CancellationContext(
+            TaskCancellation token, Object taskDomain, TaskOwnedLockLedger locks) { }
 
     private static final ThreadLocal<CancellationContext> CURRENT_CANCELLATION =
             new ThreadLocal<>();
@@ -88,6 +89,14 @@ public final class TaskHandle<T> {
                 && context.token().isCancelled();
     }
 
+    /** Only the authenticated, currently executing tracked Task may register guards. */
+    static TaskOwnedLockLedger currentLockLedger() {
+        CancellationContext context = CURRENT_CANCELLATION.get();
+        return context != null
+                && context.taskDomain() == OresScheduler.currentTaskDomain()
+                ? context.locks() : null;
+    }
+
     /** Compiler/host safepoint only: never call while holding guest locks. */
     static void checkCurrentCancellationCheckpoint() {
         if (!currentCancellationRequested()) return;
@@ -96,6 +105,7 @@ public final class TaskHandle<T> {
     }
 
     private final TaskCancellation cancellation;
+    private final TaskOwnedLockLedger locks = new TaskOwnedLockLedger();
     // Observation only: cancelling getDone() must never forge a quiescence
     // witness or suppress the scheduler's eventual terminal outcome.
     private final OresFuture<TaskOutcome<T>> done =
@@ -124,7 +134,10 @@ public final class TaskHandle<T> {
         // The source Future might not exist when cancellation arrives. bind()
         // rechecks the token after publication, and the admission wrapper
         // checks it at every compiler-generated resume boundary.
-        revoker = cancellation.onRevoke(this::cancelResultIfBound);
+        revoker = cancellation.onRevoke(() -> {
+            locks.fence(); // No permit may be acquired after STOP authority.
+            cancelResultIfBound(); // Never release an executing Task's lock here.
+        });
     }
 
     /** The result Future may become terminal before the physical task exits. */
@@ -205,7 +218,7 @@ public final class TaskHandle<T> {
         // cancellation authority of the caller.
         CancellationContext previous = CURRENT_CANCELLATION.get();
         CURRENT_CANCELLATION.set(
-                new CancellationContext(cancellation, OresScheduler.currentTaskDomain()));
+                new CancellationContext(cancellation, OresScheduler.currentTaskDomain(), locks));
         boolean returnedNormally = false;
         try {
             // Invalid null Steps remain a guest failure rather than being
@@ -239,6 +252,10 @@ public final class TaskHandle<T> {
     }
 
     private void onQuiescent() {
+        // The scheduler has proved this Task left its final physical carrier.
+        // Built-in lock cleanup must precede getDone() and descendant retirement.
+        // A failed revocation retains the permit and prevents false DONE.
+        locks.revokeAfterQuiescence();
         quiescent.set(true);
         maybePublish();
     }
