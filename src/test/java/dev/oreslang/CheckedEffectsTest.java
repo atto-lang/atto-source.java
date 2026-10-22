@@ -387,4 +387,46 @@ final class CheckedEffectsTest {
               + "fnc wrong(): int throws string raises bool { val f = risky; return f(); }"));
         assertTrue(mismatch.getMessage().contains("checked effects not covered"));
     }
+
+    @Test
+    void inheritedMethodsMayNarrowCheckedPanicEffects() {
+        assertDoesNotThrow(() -> checked(
+                "define class Parent as "
+              + "  pub work(): int panics int { return 1; } "
+              + "end "
+              + "define class Child extends Parent as "
+              + "  pub work(): int { return 2; } "
+              + "end"));
+    }
+
+    @Test
+    void inheritedPublicMethodsMayNarrowThrowsAndRaises() {
+        assertDoesNotThrow(() -> checked(
+                "define class Parent as "
+              + "  pub work(): int throws string raises bool { return 1; } "
+              + "end "
+              + "define class Child extends Parent as "
+              + "  pub work(): int throws string { return 2; } "
+              + "end"));
+    }
+
+    @Test
+    void overrideCannotChangeReturnShapeWhileNarrowingEffects() {
+        var err = assertThrows(IllegalArgumentException.class, () -> checked(
+                "define class Parent as pub work(): int panics int { return 1; } end "
+              + "define class Child extends Parent as "
+              + "  pub work(): string { return \"oops\"; } "
+              + "end"));
+        assertTrue(err.getMessage().contains("callable") || err.getMessage().contains("override"));
+    }
+
+    @Test
+    void publicClassShapeDoesNotEraseEffectfulMethodDuringInterfaceCheck() {
+        var err = assertThrows(IllegalArgumentException.class, () -> checked(
+                "define interface PureService as fnc run(): int; end "
+              + "define class Actorless implements PureService as "
+              + "  pub run(): int panics int { return 1; } "
+              + "end"));
+        assertTrue(err.getMessage().contains("interface"));
+    }
 }
