@@ -40,6 +40,16 @@ denies host access after dispatch. The GraalVM 25 native-memory test
 workflow includes this class. A hosted check is a real pass **only when
 its exact-head test steps execute successfully**.
 
+Zero-copy `leaseSoaColumnReadOnly(field)` returns a checked bounded
+native slice of a physically contiguous SoA field without exposing a
+mutable buffer. The underlying `Region.ReadOnlyLease` currently **freezes
+writes and release of the whole region**, not just the borrowed field.
+`integrate` preflights that write fence before the first row mutation.
+The regression deliberately attempts both an ordinary field write and
+an ECS kernel while the loan is alive, verifies no partial update,
+then closes the loan and retries successfully. This is deliberately
+conservative until field-sensitive ownership is proven by the compiler.
+
 Known limitations: Java-managed geometry/name maps remain; input data
 structures are constructor-snapshot but metadata caches still use the
 JVM heap; zero-copy borrower lifetimes need compiler-generated lowering;
