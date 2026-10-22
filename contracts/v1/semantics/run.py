@@ -2,7 +2,8 @@
 """Independent compiler admission, diagnostic class and native-result contract runner.
 
 Semantics here belong to the suite, not either compiler implementation.
-Only the LLVM backend currently has a native exit-result adapter.
+Both LLVM native execution and the explicitly configured Graal guest adapter
+require real compilation and execution before a native_exit case can pass.
 """
 import argparse
 import hashlib
@@ -50,6 +51,8 @@ def validate_suite():
         if case["id"] in ids:
             raise ValueError("duplicate case: " + case["id"])
         ids.add(case["id"])
+        if case["source"] in files:
+            raise ValueError("duplicate fixture source: " + case["source"])
         f = (ROOT / case["source"]).resolve()
         if not f.is_relative_to((ROOT / "fixtures").resolve()) or not f.is_file():
             raise ValueError("invalid fixture: " + case["source"])
@@ -61,7 +64,10 @@ def validate_suite():
             raise ValueError("pending requires reason and resolved cases cannot retain one: " + case["id"])
         if all(s == "pending" for s in case["backends"].values()):
             raise ValueError("a case cannot be pending on both backends: " + case["id"])
-    on_disk = {"fixtures/" + f.name for f in (ROOT / "fixtures").glob("*.ores")}
+    # The strict inventory includes nested .ores programs. A top-level glob
+    # would let an unregistered fixture escape the suite completeness gate.
+    on_disk = {path.relative_to(ROOT).as_posix()
+               for path in (ROOT / "fixtures").rglob("*.ores")}
     if files != on_disk:
         raise ValueError("orphan or missing fixtures: " + str(sorted(files ^ on_disk)))
     # Bind the suite identity to the actual programs and normative contracts.
@@ -84,6 +90,12 @@ def validate_command(command):
         raise ValueError("compiler command must contain exactly one {source}")
     return argv
 
+def requires_guest_runner(suite, backend):
+    return backend == "graal" and any(
+        case["kind"] == "native_exit" and case["backends"]["graal"] == "required"
+        for case in suite["cases"]
+    )
+
 def check_diagnostic(returncode, stdout, stderr, category, backend):
     # A crash, missing compiler, signal or setup failure cannot satisfy a rejection.
     # A valid rejection must also identify the intended semantic error.
@@ -91,7 +103,7 @@ def check_diagnostic(returncode, stdout, stderr, category, backend):
         return False
     return bool(re.search(CLASSES[backend][category], stderr, flags=re.IGNORECASE))
 
-def run_case(case, backend, argv, clang, timeout):
+def run_case(case, backend, argv, clang, timeout, run_argv=None):
     source = str((ROOT / case["source"]).resolve())
     command = [piece.replace("{source}", source) for piece in argv]
     try:
@@ -107,6 +119,24 @@ def run_case(case, backend, argv, clang, timeout):
         if compiled.returncode != 0:
             return {"id": case["id"], "status": "fail",
                     "detail": f"compiler exit={compiled.returncode}: {compiled.stderr[:450]}"}
+        if backend == "graal":
+            # The Java/Graal launcher runs guest main(): int as the process exit
+            # status, so no LLVM IR or Clang is involved. The compiler check
+            # above is still mandatory: runtime crashes cannot satisfy a
+            # negative diagnostic and a missing executable cannot be a pass.
+            if run_argv is None:
+                return {"id": case["id"], "status": "fail",
+                        "detail": "Graal source-execution command not configured"}
+            guest_command = [part.replace("{source}", source) for part in run_argv]
+            guest = subprocess.run(guest_command, capture_output=True, text=True,
+                                   check=False, timeout=timeout)
+            expected = case["expected_exit"]
+            passed = guest.returncode == expected and not guest.stdout and not guest.stderr
+            return {"id": case["id"], "status": "pass" if passed else "fail",
+                    "observed_exit": guest.returncode,
+                    "detail": "" if passed else
+                        f"expected exit={expected}; actual={guest.returncode}; "
+                        f"stdout={guest.stdout[:160]!r}; stderr={guest.stderr[:160]!r}"}
         if backend != "llvm" or not compiled.stdout.startswith("; ModuleID"):
             return {"id": case["id"], "status": "fail",
                     "detail": "native result adapter unavailable or compiler did not emit LLVM IR"}
@@ -135,6 +165,7 @@ def main():
     p.add_argument("--backend", choices=["llvm", "graal"])
     p.add_argument("--command", help="shell-free argv with one {source} placeholder")
     p.add_argument("--clang", default="")
+    p.add_argument("--run-command", help="Graal OresMain guest process argv with one {source}")
     p.add_argument("--revision", help="40-character Git commit SHA for the compiled backend")
     p.add_argument("--timeout", type=int, default=30)
     p.add_argument("--report", type=Path)
@@ -152,13 +183,18 @@ def main():
     if not 1 <= args.timeout <= 300:
         p.error("--timeout must be 1..300 seconds")
     argv = validate_command(args.command)
+    if args.run_command and args.backend != "graal":
+        p.error("--run-command is only applicable to the graal backend")
+    run_argv = validate_command(args.run_command) if args.run_command else None
+    if requires_guest_runner(suite, args.backend) and run_argv is None:
+        p.error("--run-command is mandatory for required Graal native_exit cases")
     results = []
     for case in suite["cases"]:
         if case["backends"][args.backend] == "pending":
             result = {"id": case["id"], "status": "pending",
                       "detail": case["pending_reason"]}
         else:
-            result = run_case(case, args.backend, argv, args.clang, args.timeout)
+            result = run_case(case, args.backend, argv, args.clang, args.timeout, run_argv)
         results.append(result)
         print(f"{result['status'].upper()} {case['id']} ({args.backend})"
               + (f": {result.get('detail','')}" if result["status"] == "fail" else ""))
