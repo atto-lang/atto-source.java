@@ -24,7 +24,7 @@ printf '%s\n' "$FAKE_GH_METADATA"
 MOCK
 chmod 700 "$tmp/bin/gh"
 export PATH="$tmp/bin:$PATH"
-valid=$'sonus-auris-test/clients-api-contract\tprivate\ttrue\t1323599063'
+valid=$'sonus-auris-test/clients-api-contract\tprivate\ttrue\t1323599063\tfalse\tfalse'
 
 reject() {
   local label="$1" repo="$2" metadata="$3"
@@ -45,11 +45,11 @@ printf '%s\n' "$approved" > "$policy"
 reject "invalid slug" "../clients-api-contract" "$valid"
 reject "different repository name" "other-org/clients-api-contract" "$valid"
 reject "wrong immutable ID" "$target" \
-  $'sonus-auris-test/clients-api-contract\tprivate\ttrue\t999'
+  $'sonus-auris-test/clients-api-contract\tprivate\ttrue\t999\tfalse\tfalse'
 reject "public visibility" "$target" \
-  $'sonus-auris-test/clients-api-contract\tpublic\tfalse\t1323599063'
+  $'sonus-auris-test/clients-api-contract\tpublic\tfalse\t1323599063\tfalse\tfalse'
 reject "incorrect reported owner/repo" "$target" \
-  $'other/clients-api-contract\tprivate\ttrue\t1323599063'
+  $'other/clients-api-contract\tprivate\ttrue\t1323599063\tfalse\tfalse'
 reject "multiline response" "$target" "$valid"$'\ninjected'
 reject "missing metadata field" "$target" \
   $'sonus-auris-test/clients-api-contract\tprivate\ttrue'

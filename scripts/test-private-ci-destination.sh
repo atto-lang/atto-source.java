@@ -21,7 +21,7 @@ if [[ " $* " == *" --method POST "* || "${2:-}" == *"/git/"* ]]; then
 fi
 [[ "${3:-}" == --jq ]] || exit 2
 [[ "${MOCK_API_FAILURE:-false}" != true ]] || exit 4
-printf '%s\t%s\t%s\t%s%s\n' "${MOCK_NAME:-trusted/ci}" "${MOCK_VISIBILITY:-private}" "${MOCK_PRIVATE_FLAG:-true}" "${MOCK_REPOSITORY_ID:-246810}" "${MOCK_EXTRA_LINE:-}"
+printf '%s\t%s\t%s\t%s\t%s\t%s%s\n' "${MOCK_NAME:-trusted/ci}" "${MOCK_VISIBILITY:-private}" "${MOCK_PRIVATE_FLAG:-true}" "${MOCK_REPOSITORY_ID:-246810}" "${MOCK_ARCHIVED:-false}" "${MOCK_DISABLED:-false}" "${MOCK_EXTRA_LINE:-}"
 MOCK
 mkdir -p "$work/fixture/source"
 printf 'pub fnc main(): int { return 42; }\n' > "$work/fixture/source/main.ores"
@@ -64,6 +64,17 @@ done
 export MOCK_VISIBILITY=private MOCK_PRIVATE_FLAG=false
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
+export MOCK_PRIVATE_FLAG=true
+for inactive in archived disabled; do
+  if [[ "$inactive" == archived ]]; then
+    export MOCK_ARCHIVED=true
+  else
+    export MOCK_DISABLED=true
+  fi
+  expect_fail trusted/ci
+  expect_wrapper_reject trusted/ci
+  unset MOCK_ARCHIVED MOCK_DISABLED
+done
 export MOCK_PRIVATE_FLAG=true MOCK_NAME=other/repo
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
