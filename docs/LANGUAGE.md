@@ -2007,3 +2007,20 @@ When explicit thread/task spawning is added, cross-thread transfer will require 
 `@FromJson("key")` is a compiler annotation for typed class fields. It expands before type/ownership checking into public typed getters/setters; no JVM reflection or guest-code macro execution is involved. The field must have an explicit type and mutable storage. The name-first shorthand `field_name: Type` is mutable only when annotated with `@FromJson`; otherwise it is an immutable `val` field.
 
 Generated setters still require a mutable owner at the call site. Duplicate/blank keys, immutable annotated fields, accessor collisions, annotations on module bindings/callables, and annotations on actor state all fail closed. JSON wire keys participate in incremental ABI fingerprints.
+
+## Incremental imported module-contract reconciliation (2026-10-20)
+
+An unqualified module-contract field requires readable exported access of the
+declared type. An explicit binding retains the current rebindability and
+referent-mutability requirements; equivalent capability spellings stay equivalent.
+
+Named, exported contract imports and aliases supply type-only linker metadata.
+They do not splice foreign declarations into runtime modules or exports.
+Inherited foreign contracts and foreign nominal member types without linked
+provenance remain rejected. Class-field imports, private alias provenance,
+short inferred type aliases and return-cleanup admission share the same
+type/ownership pipeline with these contract imports.
+
+Module conformance names, contract/interface identity and field capabilities
+participate in the incremental ABI. This snapshot needs exact-head Maven tests;
+conflict reconciliation alone is not test evidence.
