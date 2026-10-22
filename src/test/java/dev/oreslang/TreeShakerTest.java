@@ -73,6 +73,43 @@ final class TreeShakerTest {
     }
 
     @Test
+    void rawOptimizerCannotTransferSpreadAdmissionByASTEquality() {
+        String source = """
+                pub fnc main(): void {
+                    const base = record{x: 1};
+                    const copy = record{...base, x: 2};
+                    stdio.println(copy.x);
+                    return;
+                }
+                """;
+        TreeShaker.Result raw = TreeShaker.shake(
+                OresCompiler.parseAndTypeCheck(source),
+                BuildOptions.executable(Map.of()));
+        assertTrue(raw.needsSpreadRecheck(),
+                "rewritten aggregate AST nodes must invalidate original checked identity");
+        Ast.ObjectExpr rawCopy = raw.program().modules().stream()
+                .flatMap(m -> m.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(f -> f.name().equals("main"))
+                .flatMap(f -> f.body().stream())
+                .filter(Ast.BindingStmt.class::isInstance)
+                .map(Ast.BindingStmt.class::cast)
+                .filter(b -> b.name().equals("copy"))
+                .map(Ast.BindingStmt::initializer)
+                .filter(Ast.ObjectExpr.class::isInstance)
+                .map(Ast.ObjectExpr.class::cast)
+                .findFirst().orElseThrow();
+        assertThrows(IllegalStateException.class,
+                () -> AggregateConstructionPlan.Checked.requireAdmitted(rawCopy),
+                "raw tree shaking must never inherit type or ownership admission");
+
+        TreeShaker.Result admitted = OresCompiler.compileForBuild(
+                source, BuildOptions.executable(Map.of()));
+        assertFalse(admitted.needsSpreadRecheck());
+    }
+
+    @Test
     void cliDefinesOverrideEnvironmentDefinesDeterministically() {
         Map<String, String> merged = BuildOptions.mergeDefines(
                 Map.of(
