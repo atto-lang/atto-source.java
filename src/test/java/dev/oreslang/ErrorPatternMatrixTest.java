@@ -196,6 +196,12 @@ final class ErrorPatternMatrixTest {
         if (cases.stream().map(Scenario::name).distinct().count() != 100) {
             throw new IllegalStateException("Duplicate named pattern-matching scenario");
         }
+        if (cases.stream().map(Scenario::source).distinct().count() != 100) {
+            throw new IllegalStateException("Duplicate Oreslang program in the 100-case corpus");
+        }
+        if (cases.stream().filter(Scenario::shouldAccept).count() != 55) {
+            throw new IllegalStateException("Expected 55 accepts and 45 rejects");
+        }
         return List.copyOf(cases);
     }
 
