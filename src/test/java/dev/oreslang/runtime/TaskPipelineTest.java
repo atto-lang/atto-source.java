@@ -275,6 +275,72 @@ final class TaskPipelineTest {
     }
 
     @Test
+    void trackedPipelineDoneWaitsForPhysicalStageUnwindOnCancellation()
+            throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskPipeline.PipelineHandle<Integer> handle = TaskPipeline.startTracked(
+                    scheduler, OresFuture.completed(1),
+                    List.of(value -> {
+                        entered.countDown();
+                        if (!release.await(5, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("blocked stage did not resume");
+                        }
+                        return ((Integer) value) + 1;
+                    }));
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            try {
+                assertTrue(handle.cancel());
+                assertTrue(handle.result().isCancelled(),
+                        "result cancellation is visible before physical retirement");
+                assertFalse(handle.getDone().isDone(),
+                        "running physical task must not claim quiescence");
+            } finally {
+                release.countDown();
+            }
+            TaskHandle.TaskOutcome<Integer> retired =
+                    handle.getDone().get(5, TimeUnit.SECONDS);
+            assertInstanceOf(TaskHandle.Cancelled.class, retired);
+        }
+    }
+
+    @Test
+    void cancellingOwningTaskScopeCancelsPipelineButNotBorrowedInput()
+            throws Exception {
+        OresFuture<Integer> source = new OresFuture<>();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskScope scope = scheduler.newTaskScope();
+            TaskPipeline.PipelineHandle<Integer> handle =
+                    TaskPipeline.startInScope(scope, source,
+                            List.of(value -> ((Integer) value) + 1));
+            awaitWaiter(source);
+            assertTrue(scope.cancel("owner stopped"));
+            assertNull(scope.getDone().get(5, TimeUnit.SECONDS),
+                    "scope completion is a separate retirement witness");
+            assertInstanceOf(TaskHandle.Cancelled.class,
+                    handle.getDone().get(5, TimeUnit.SECONDS));
+            assertTrue(handle.result().isCancelled());
+            assertFalse(source.isCancelled(), "shared producer must survive scope cancellation");
+            waitForNoWaiter(source);
+            assertTrue(source.completeFromRuntime(17));
+        }
+    }
+
+    @Test
+    void sealedScopeRejectsPipelineWithoutChangingInputFuture() {
+        OresFuture<Integer> input = new OresFuture<>();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskScope scope = scheduler.newTaskScope();
+            scope.seal();
+            assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                    () -> TaskPipeline.startInScope(scope, input, List.of(v -> v)));
+            assertFalse(input.isDone());
+            assertEquals(0, input.pendingRuntimeWaiterCount());
+        }
+    }
+
+    @Test
     void rejectsNullStageAndUnboundedPipeline() {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             OresFuture<Integer> input = OresFuture.completed(1);
