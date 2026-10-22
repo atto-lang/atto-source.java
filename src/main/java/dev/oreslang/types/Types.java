@@ -93,6 +93,31 @@ public final class Types {
         return false;
     }
 
+    /**
+     * Stale linked metadata must not smuggle a user-defined nominal named
+     * Valid through a typechecker that has reserved that source spelling.
+     */
+    static boolean containsForgedZordeProofName(Type type) {
+        if (type instanceof Named n) {
+            if (n.name().equals("Valid") || n.name().endsWith(".Valid")) return true;
+            return n.arguments().stream().anyMatch(Types::containsForgedZordeProofName);
+        }
+        if (type instanceof Borrow b) return containsForgedZordeProofName(b.target());
+        if (type instanceof SelfType s) return containsForgedZordeProofName(s.bound());
+        if (type instanceof ListType l) return containsForgedZordeProofName(l.element());
+        if (type instanceof Tuple t)
+            return t.elements().stream().anyMatch(Types::containsForgedZordeProofName);
+        if (type instanceof Record r)
+            return r.members().values().stream().anyMatch(Types::containsForgedZordeProofName);
+        if (type instanceof Union u)
+            return u.options().stream().anyMatch(Types::containsForgedZordeProofName);
+        if (type instanceof Function fn)
+            return fn.parameters().stream().anyMatch(Types::containsForgedZordeProofName)
+                    || containsForgedZordeProofName(fn.result());
+        if (type instanceof Not n) return containsForgedZordeProofName(n.excluded());
+        return false;
+    }
+
     public enum Primitive implements Type {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
     }
@@ -273,6 +298,8 @@ public final class Types {
     public static boolean isAssignable(Type from, Type to) {
         Objects.requireNonNull(from);
         Objects.requireNonNull(to);
+        if (containsForgedZordeProofName(from) || containsForgedZordeProofName(to))
+            return false;
         // Proof identity is not ordinary structural, Unknown or Generic
         // assignability. These checks MUST precede permissive wildcard paths.
         if (from instanceof CheckedScalarType || to instanceof CheckedScalarType) {
