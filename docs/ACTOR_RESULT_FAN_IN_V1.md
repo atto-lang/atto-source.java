@@ -73,8 +73,8 @@ test execution has yet been verified on exact head.
 ## Proposed source-facing APIs (illustrative and NOT implemented)
 
     // A typed asynchronous ask must have its own capability / signature:
-    let reqA = workerA.ask_async(#compute, inputA);
-    let reqB = workerB.ask_async(#compute, inputB);
+    let reqA = workerA.ask(#compute, inputA);
+    let reqB = workerB.ask(#compute, inputB);
 
     // Observes requests already in flight without cancelling workers.
     let replies = await Actor.collect([reqA, reqB]);
@@ -84,7 +84,7 @@ test execution has yet been verified on exact head.
 
     // Explicitly bounded actor fanout from lazy request factories.
     let mapped = await Actor.map_parallel(actors, actor =>
-        actor.ask_async(#analyze, payload),
+        actor.ask(#analyze, payload),
         concurrency: 8,
         order: #input);
 
@@ -96,8 +96,8 @@ test execution has yet been verified on exact head.
     // Typed heterogeneous collection should create a record/tuple,
     // not erase all results into Any or a string-keyed map:
     let summary = await Actor.zip(
-        priceWorker.ask_async(#quote, product),
-        inventoryWorker.ask_async(#stock, product));
+        priceWorker.ask(#quote, product),
+        inventoryWorker.ask(#stock, product));
 
     // ActorGroup workersReady / workersDone are lifecycle APIs and
     // must remain distinct from ask/collect application-level replies.
@@ -107,6 +107,21 @@ already-running Future values, provided source-level generic typing
 and effect signatures allow them. A collection that OWNS TaskSteps
 may cancel Task children; it must never gain actor cancellation
 authority merely because an ActorRef contributed a reply Future.
+
+## Public API naming decision (2026-10-22)
+
+Use **`ActorRef.ask(message, ...)`**, not `ask_async`. The `ask`
+operation is intrinsically asynchronous and returns `Future<R>` (or a
+checked awaitable that projects to `Future<R>`) without parking the actor
+or caller scheduler. Awaiting is explicit: `let answer = await worker.ask(...)`.
+
+`send(message)` remains one-way admission and MUST NOT be confused with
+the typed `ask(message)` reply Future. A `Task.waterfall` stage may
+return the Future from `ask` just like any other awaitable. This name
+choice does not weaken the required correlation, deadline, ownership,
+cancellation, typed error/effect or generation-fencing semantics.
+`ask` is a SOURCE API proposal: persistent-actor reply transport is not
+implemented by this document or the host-only ActorResults collector.
 
 ## Request/reply transport still REQUIRED
 
