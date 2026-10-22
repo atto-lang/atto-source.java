@@ -3,7 +3,6 @@ package dev.oreslang;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.NominalErrorProof;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -136,6 +135,38 @@ final class NominalErrorProofTest {
                 NominalErrorProof.requireNominalError(
                         Ast.TypeRef.simple("MultiError"), root, lookup));
         assertTrue(failure.getMessage().contains("unresolved"));
+    }
+
+    @Test
+    void rejectsQualifiedNameWithoutOwnedModuleBinding() {
+        Ast.ClassDecl root = klass("define class Error as end");
+        var lookup = resolver(Map.of("other.Error", root, "Error", root));
+        var failure = assertThrows(IllegalArgumentException.class, () ->
+                NominalErrorProof.requireNominalError(
+                        Ast.TypeRef.simple("other.Error"), root, lookup));
+        assertTrue(failure.getMessage().contains("does not match"));
+    }
+
+    @Test
+    void rejectsSuperclassResolutionWithMismatchedClassIdentity() {
+        Ast.ClassDecl root = klass("define class Error as end");
+        Ast.ClassDecl child = klass("define class ChildError extends OtherBase as end");
+        var lookup = resolver(Map.of("OtherBase", root, "Error", root, "ChildError", child));
+        var failure = assertThrows(IllegalArgumentException.class, () ->
+                NominalErrorProof.requireNominalError(
+                        Ast.TypeRef.simple("ChildError"), root, lookup));
+        assertTrue(failure.getMessage().contains("superclass name does not match"));
+    }
+
+    @Test
+    void reservedPrimitiveTypeRemainsNonNominal() {
+        Ast.ClassDecl root = klass("define class Error as end");
+        Ast.ClassDecl primitiveClass = klass("define class MyInt extends Error as end");
+        var lookup = resolver(Map.of("Error", root, "int", primitiveClass));
+        var failure = assertThrows(IllegalArgumentException.class, () ->
+                NominalErrorProof.requireNominalError(
+                        Ast.TypeRef.simple("int"), root, lookup));
+        assertTrue(failure.getMessage().contains("concrete"));
     }
 
     @Test
