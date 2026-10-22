@@ -161,6 +161,24 @@ public class TaskOwnedMutexRetirementTest {
     }
 
     @Test
+    void frequentEarlyReleasesDoNotExhaustActiveLeaseQuota() throws Exception {
+        var shared = OresMutex.shared(new int[] { 0 });
+        try (var scheduler = new OresScheduler(1)) {
+            TaskHandle<Integer> task = scheduler.startTracked(resume -> {
+                for (int i = 0; i < TaskOwnedLeases.MAX_LEASES_PER_TASK + 128; i++) {
+                    var guard = shared.tryLock().orElseThrow();
+                    guard.release();
+                }
+                return OresScheduler.done(1);
+            });
+            assertInstanceOf(TaskHandle.Success.class,
+                    task.getDone().get(4, TimeUnit.SECONDS));
+            assertTrue(task.cleanupFailures().get(3, TimeUnit.SECONDS).isEmpty());
+            assertFalse(shared.isPoisoned());
+        }
+    }
+
+    @Test
     void cannotRetireRunningCarrierLockBeforePhysicalQuiescence() throws Exception {
         var shared = OresMutex.shared(new int[] { 0 });
         var entered = new CountDownLatch(1);
