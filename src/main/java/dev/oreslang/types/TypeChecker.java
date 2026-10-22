@@ -3669,6 +3669,11 @@ public final class TypeChecker {
                                 "generic static function '" + klass.name() + "." + fn.name()
                                         + "' must be specialized by a direct call; polymorphic function values are not supported yet");
                     }
+                    if (!fn.effects().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "effectful static function '" + klass.name() + "." + fn.name()
+                                        + "' is direct-call-only until Function types carry checked effects");
+                    }
                     // Generator declarations are deliberately restricted to top-level/module
                     // callables, so class static functions cannot produce generator activations.
                     return functionType(fn.parameters(), fn.returnType(), fn.async(), false, Set.of(), null);
