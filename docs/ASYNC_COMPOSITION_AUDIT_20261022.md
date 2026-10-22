@@ -137,3 +137,30 @@ callers before merge.
 This code is intentionally still a draft. Do NOT use a second
 GitHub organization to mirror private source or run CI without
 an approved allowlist/protected-main security policy.
+
+
+## Additional audit: cleanup failure across structured Task scopes
+
+Source runtime previously reported successful TaskScope/TaskMapParallel
+physical `getDone()` even if a child logical lock release had thrown.
+Child TaskHandle.getDone() was Failed(CleanupFailure), but TaskScope
+ignored the outcome; a parent could incorrectly treat successful
+quiescence as proof of safe lock/arena reclamation.
+
+TaskScope now aggregates exact child cleanup errors and fails its
+observation-only getDone on a release failure. TaskMapParallel preserves
+that scope failure in its own getDone rather than replacing it with
+successful completion. All sibling child cleanup attempts still run.
+An original Task throw/cancellation remains visible on result() and
+CleanupFailure.originalOutcome(), separate from cleanup diagnostics.
+
+Automatic release of *arbitrary native/thread-affine mutexes* remains
+unimplemented; attempting it from an external cancellation notifier
+would be unsafe. Only transferable, nonblocking logical lease tokens
+are eligible. SourceTask continuation unwinding and typed raise ->
+defer -> recover remain P0 implementation gaps.
+
+GitHub Actions on the source org failed without recorded steps. The
+checked source policy and empty allowlist explicitly block private
+mirroring to a different org until security-owner approval of PR #1538.
+No test-success, verified minutes exhaustion, or approved mirror claim.
