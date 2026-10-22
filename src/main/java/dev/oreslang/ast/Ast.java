@@ -25,6 +25,11 @@ public final class Ast {
         return name;
     }
 
+    /** Validate a field identity once using the same Unicode rule as parsed AST fields. */
+    public static void validateStaticAggregateFieldName(String name) {
+        requireStaticFieldName(name);
+    }
+
     public record Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules) {
         public Program {
             imports = List.copyOf(imports);
