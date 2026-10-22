@@ -633,8 +633,11 @@ final class ActorNativeArenaTest {
                 first.writeLong(0, 101L);
                 second.writeLong(0, 202L);
                 try (var loan = second.leaseReadOnly(0, borrowedBytes)) {
+                    assertTrue(arena.hasOutstandingReadLeases(),
+                            "owner-independent finalization preflight must see all live loans");
                     assertThrows(IllegalStateException.class, arena::close,
                             "an outstanding immutable lease must block whole-arena retirement");
+                    assertTrue(arena.hasOutstandingReadLeases());
                     assertFalse(arena.closed());
                     assertFalse(first.closed(), "unrelated earlier region must remain alive");
                     assertFalse(second.closed(), "borrowed region must remain alive");
@@ -644,7 +647,10 @@ final class ActorNativeArenaTest {
                             "failed whole-arena close cannot partially refund native quota");
                     assertEquals(borrowedBytes, loan.length());
                 }
+                assertFalse(arena.hasOutstandingReadLeases(),
+                        "closing the last loan must unblock arena finalization");
                 arena.close();
+                assertFalse(arena.hasOutstandingReadLeases());
                 assertTrue(first.closed());
                 assertTrue(second.closed());
                 assertEquals(0L, charged.get());
