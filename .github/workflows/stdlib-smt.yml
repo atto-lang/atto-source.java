@@ -70,13 +70,16 @@ jobs:
         run: |
           set -euo pipefail
           git rev-parse HEAD
-          mvn -B -ntp -DskipTests compile exec:java -Dexec.args="examples/native-core-smt-refinement.ores" | tee "${RUNNER_TEMP}/core-refinement.out"
+          mvn -B -ntp -DskipTests compile
+          mvn -B -ntp exec:java -Dexec.args="examples/native-core-smt-refinement.ores" | tee "${RUNNER_TEMP}/core-refinement.out"
           grep -Fx 'CORE-SMT-REFINEMENT-OK' "${RUNNER_TEMP}/core-refinement.out"
       - name: Run real Oreslang testing.run_suite guest refinement
         run: |
           set -euo pipefail
-          mvn -B -ntp -DskipTests compile exec:java -Dexec.args="examples/native-testing.ores" | tee "${RUNNER_TEMP}/testing-refinement.out"
+          mvn -B -ntp -DskipTests compile
+          mvn -B -ntp exec:java -Dexec.args="examples/native-testing.ores" | tee "${RUNNER_TEMP}/testing-refinement.out"
           grep -F 'ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0' "${RUNNER_TEMP}/testing-refinement.out"
-          mvn -B -ntp -DskipTests compile exec:java -Dexec.args="examples/native-testing-semantics.ores" | tee "${RUNNER_TEMP}/testing-semantics.out"
+          mvn -B -ntp -DskipTests compile
+          mvn -B -ntp exec:java -Dexec.args="examples/native-testing-semantics.ores" | tee "${RUNNER_TEMP}/testing-semantics.out"
           grep -F 'ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=2' "${RUNNER_TEMP}/testing-semantics.out"
           grep -F 'ORES_TEST|SUMMARY|total=2|passed=1|failed=1|skipped=0|filtered=0' "${RUNNER_TEMP}/testing-semantics.out"
