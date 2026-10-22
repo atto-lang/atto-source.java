@@ -4193,10 +4193,10 @@ public final class TypeChecker {
             return new Tuple(tuple.elements().stream().map(item -> typeOf(item, env, generics, self)).toList());
         }
         if (expr instanceof Ast.ObjectExpr object) {
-            if (object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
+            if (object.explicitStruct()
+                    && object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
                 throw new IllegalArgumentException(
-                        "aggregate spread is parsed but not yet type/ownership/lowering checked; "
-                                + "use explicit static field initializers until the v1 contract is implemented");
+                        "aggregate spread into explicitly shaped structs requires checked partial-initialization lowering");
             }
             if (object.explicitStruct()) {
                 Map<String, Type> members = new LinkedHashMap<>();
@@ -4248,15 +4248,34 @@ public final class TypeChecker {
 
             Map<String, Type> members = new LinkedHashMap<>();
             for (Ast.ObjectField field : object.fields()) {
+                if (field.spread()) {
+                    Type source = typeOf(field.value(), env, generics, self);
+                    if (!(source instanceof Record row)
+                            || row.kind() == AggregateKind.CONTRACT) {
+                        throw new IllegalArgumentException(
+                                "aggregate spread requires an owned, closed struct or record value");
+                    }
+                    // First executable slice: only immutable, value-copyable
+                    // scalar fields. Reject nested aggregates, pointers,
+                    // capabilities and all unknown/generic/borrowed fields.
+                    for (Map.Entry<String, Type> item : row.members().entrySet()) {
+                        Type itemType = item.getValue();
+                        if (itemType != Primitive.INT && itemType != Primitive.FLOAT
+                                && itemType != Primitive.STRING && itemType != Primitive.BOOL) {
+                            throw new IllegalArgumentException(
+                                    "aggregate spread scalar-only stage rejects field '" + item.getKey() + "'");
+                        }
+                        members.put(item.getKey(), itemType);
+                    }
+                    continue;
+                }
                 Type exactValueType = typeOf(field.value(), env, generics, self);
-                if (members.putIfAbsent(
-                        field.name(),
+                // The AST has already rejected duplicate explicitly written
+                // fields; a named field after a spread overrides it.
+                members.put(field.name(),
                         object.inferredFieldTypes()
                                 ? widenCollectionElement(exactValueType)
-                                : exactValueType) != null) {
-                    throw new IllegalArgumentException(
-                            "duplicate struct field '" + field.name() + "'");
-                }
+                                : exactValueType);
             }
             if (object.structuralRecord()) return new Record(members, true, AggregateKind.RECORD);
             if (object.inferredStruct()) return Record.struct(members);
