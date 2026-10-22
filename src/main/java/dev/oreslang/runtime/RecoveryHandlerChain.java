@@ -18,7 +18,7 @@ import java.util.Objects;
 public final class RecoveryHandlerChain<T> {
     public enum FailureKind { THROW, RAISE, PANIC, CANCELLATION, HOST_FATAL }
 
-    public sealed interface Outcome<T> permits Recovered, Unhandled { }
+    public sealed interface Outcome<T> permits Recovered, Unhandled, HandlerFailure { }
 
     public record Recovered<T>(T value) implements Outcome<T> { }
 
@@ -26,6 +26,16 @@ public final class RecoveryHandlerChain<T> {
         public Unhandled {
             Objects.requireNonNull(kind);
             Objects.requireNonNull(error);
+        }
+    }
+
+    /** A callback's host failure cannot silently replace an in-flight raise. */
+    public record HandlerFailure<T>(FailureKind pendingKind, Throwable pendingError,
+                                    RuntimeException callbackError) implements Outcome<T> {
+        public HandlerFailure {
+            Objects.requireNonNull(pendingKind);
+            Objects.requireNonNull(pendingError);
+            Objects.requireNonNull(callbackError);
         }
     }
 
@@ -83,7 +93,14 @@ public final class RecoveryHandlerChain<T> {
             byte decision;
             T resolved;
             try {
-                handlers[i].handle(failure, cursor);
+                try {
+                    handlers[i].handle(failure, cursor);
+                } catch (RuntimeException callbackFailure) {
+                    // Do not downgrade or discard the pending signal. A higher
+                    // layer must classify the callback error as a separate
+                    // runtime/control failure and preserve both identities.
+                    return new HandlerFailure<>(kind, failure, callbackFailure);
+                }
                 decision = cursor.state;
                 resolved = cursor.value;
             } finally {
