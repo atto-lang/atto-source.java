@@ -248,3 +248,23 @@ GraalVM/LLVM conformance and performance.
 
 DO NOT CLAIM this document introduces implemented runtime operators.
 Existing draft PR #1887 remains non-owning Future observer primitives only.
+
+
+## Implemented Java host substrate checkpoint (2026-10-22)
+
+Related Java draft PR #1887 contains `AsyncSequences.Cursor<T>` with
+`fromChannel`, `owningChannel` and `fromFuture`, plus nonparking
+`nextAsync(): OresFuture<Optional<T>>` and focused JUnit source tests.
+This is an *unicast observer* bridge, **not Observable multicast**, not an
+Oreslang guest `for await` implementation and not TaskQueue job ACK/NACK.
+
+A channel read committed before consumer cancellation cannot be un-read;
+reliable queue execution needs a separate reservation/ack/retry protocol
+before delivery can be described as at-least-once. A single borrowed
+cursor close does not close a source shared with other consumers.
+
+`FutureCombinators.any` additionally performs first-success
+composition; `Future.all`/any/race compose already-started operations.
+None supplies physical Task quiescence authority.
+
+No CI passing claim until jobs actually execute tests.
