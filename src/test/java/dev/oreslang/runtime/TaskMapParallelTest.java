@@ -372,4 +372,32 @@ public class TaskMapParallelTest {
             assertEquals(1, handle.childFailures().get(3, TimeUnit.SECONDS).size());
         }
     }
+
+    @Test void mapParallelCannotReportCleanJoinIfChildLockReleaseFailed()
+            throws Exception {
+        IllegalStateException unable = new IllegalStateException("lease release refused");
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            var mapped = TaskMapParallel.mapLimit(
+                    scheduler, List.of(4), 1,
+                    value -> resume -> {
+                        TaskOwnedLeases.register(() -> { throw unable; });
+                        return OresScheduler.done(value * 2);
+                    });
+            // The child Task's value may have succeeded before cleanup.
+            // Its physical TaskOutcome and the owning scope must not
+            // advertise clean resource retirement.
+            ExecutionException bad = assertThrows(ExecutionException.class,
+                    () -> mapped.getDone().get(4, TimeUnit.SECONDS));
+            var physical = assertInstanceOf(
+                    TaskOwnedLeases.CleanupFailure.class, bad.getCause());
+            assertSame(unable, physical.failures().get(0));
+            List<TaskMapParallel.ChildFailure> diagnostic =
+                    mapped.childFailures().get(4, TimeUnit.SECONDS);
+            assertEquals(1, diagnostic.size());
+            assertEquals(0, diagnostic.get(0).index());
+            assertFalse(diagnostic.get(0).cancelled());
+            assertInstanceOf(TaskOwnedLeases.CleanupFailure.class,
+                    diagnostic.get(0).cause());
+        }
+    }
 }
