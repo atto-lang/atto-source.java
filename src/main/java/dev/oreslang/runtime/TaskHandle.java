@@ -113,6 +113,13 @@ public final class TaskHandle<T> {
     private final AtomicReference<OresFuture<T>> result = new AtomicReference<>();
     private final AtomicReference<TaskOutcome<T>> settledOutcome = new AtomicReference<>();
     private final AtomicBoolean quiescent = new AtomicBoolean();
+    // A failed trusted permit revoker fences Task DONE; the originating
+    // supervisor can inspect this host-only diagnostic for quarantine.
+    private final AtomicReference<Throwable> lockRetirementFailure = new AtomicReference<>();
+
+    Throwable lockRetirementFailure() {
+        return lockRetirementFailure.get();
+    }
     // Only one thread may seal child admission / subscribe to descendant
     // retirement. Publishing remains distinct from installing this barrier.
     private final AtomicBoolean retirementArmed = new AtomicBoolean();
@@ -252,10 +259,34 @@ public final class TaskHandle<T> {
     }
 
     private void onQuiescent() {
-        // The scheduler has proved this Task left its final physical carrier.
-        // Built-in lock cleanup must precede getDone() and descendant retirement.
-        // A failed revocation retains the permit and prevents false DONE.
-        locks.revokeAfterQuiescence();
+        // Physical guest execution is over, but a foreign lock-releaser may
+        // still be completing a dequeued grant. No Task DONE is published
+        // until the noncancellable settlement receipts have drained.
+        java.util.concurrent.CompletableFuture<Void> settled =
+                locks.retireAfterQuiescence();
+        if (settled.isDone()) {
+            completeLockRetirement(settled);
+        } else {
+            // The final grant may settle on a foreign host/actor carrier.
+            // Never run parent/DONE publication inline on that carrier.
+            settled.whenCompleteAsync((ignored, failure) -> {
+                if (failure != null) lockRetirementFailure.compareAndSet(null, failure);
+                else {
+                    quiescent.set(true);
+                    maybePublish();
+                }
+            });
+        }
+    }
+
+    private void completeLockRetirement(
+            java.util.concurrent.CompletableFuture<Void> settled) {
+        try {
+            settled.join();
+        } catch (java.util.concurrent.CompletionException failure) {
+            lockRetirementFailure.compareAndSet(null, failure);
+            return; // quarantine; never manufacture successful Task DONE
+        }
         quiescent.set(true);
         maybePublish();
     }
