@@ -1202,8 +1202,8 @@ public final class OresEvalRootNode extends RootNode {
                     initialBlockEnv = null;
                     // Preserve control/authority failures even when a future
                     // or resumed continuation wraps the original exception.
-                    if (function != null && function.trapped()
-                            && isTrappableFailure(failure)) {
+                    if (!cancellationUnwinding && function != null
+                            && function.trapped() && isTrappableFailure(failure)) {
                         return OresScheduler.done(new OptionValue(false, null));
                     }
                     throw dev.oreslang.runtime.SourceBoundaryTrace.record(failure, codeUnitId,
@@ -1357,17 +1357,25 @@ public final class OresEvalRootNode extends RootNode {
                     return;
                 }
                 frame.disarmed = true;
+                boolean[] delivered = { false };
                 try {
                     frame.action.unwind(this, (t, flow) -> {
+                        if (delivered[0]) {
+                            throw new IllegalStateException(
+                                    "source cleanup frame delivered twice");
+                        }
+                        delivered[0] = true;
                         if (flow.kind() == SourceFlowKind.THROW
                                 && flow.failure() != cancellationCause) {
                             noteCancelledCleanupFailure(flow.failure());
                         }
-                        // Every frame completes only once, including when its
-                        // defer/finally awaited another Future before resuming.
+                        // The final callback can synchronously advance outer
+                        // frames and ultimately throw a fatal panic. Never
+                        // restart a frame that has already delivered.
                         t.unwindCancelledSource();
                     });
                 } catch (RuntimeException | Error failed) {
+                    if (delivered[0]) throw failed;
                     noteCancelledCleanupFailure(failed);
                     unwindCancelledSource();
                 }
