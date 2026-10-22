@@ -97,6 +97,15 @@ public final class OresScheduler implements AutoCloseable {
     @FunctionalInterface
     public interface Task<T> {
         Step<T> resume(Resume resume) throws Exception;
+
+        /**
+         * Called after the final guest carrier has unwound, before the owning
+         * task is retired. Structured Tasks may defer retirement until their
+         * descendants are physically quiescent. Must not execute guest code.
+         */
+        default void afterCarrierQuiescent(Runnable retire) {
+            retire.run();
+        }
     }
 
     /** Result of one resumable task turn. */
@@ -678,6 +687,8 @@ public final class OresScheduler implements AutoCloseable {
         private final ExecutionContext executionContext;
         private final Runnable onQuiescent;
         private final AtomicBoolean quiescenceNotified = new AtomicBoolean();
+        /** The deferred physical retirement callback is idempotent. */
+        private final AtomicBoolean physicalRetirementCompleted = new AtomicBoolean();
         private final java.util.Map<String, dev.oreslang.interop.MixedInteropBridge.Invoker>
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
         private final AtomicInteger phase = new AtomicInteger(NEW);
@@ -1146,14 +1157,20 @@ public final class OresScheduler implements AutoCloseable {
                 // Keep the task observable in the scheduler's live set while a
                 // cancelled/failed guest turn is still physically executing.
                 // A terminal Future is not a carrier-exit witness.
-                tasks.remove(this);
-                cancelWallDeadline();
-                try {
-                    onQuiescent.run();
-                } finally {
-                    deadlineQuiescenceRetired.set(true);
-                    releaseDeadlineSlotIfRetired();
-                }
+                task.afterCarrierQuiescent(() -> {
+                    if (!physicalRetirementCompleted.compareAndSet(false, true)) return;
+                    // A parent task may have left its carrier but still own
+                    // scoped child tasks. The scheduler's live entry and its
+                    // arena owner stay valid until descendants retire.
+                    tasks.remove(this);
+                    cancelWallDeadline();
+                    try {
+                        onQuiescent.run();
+                    } finally {
+                        deadlineQuiescenceRetired.set(true);
+                        releaseDeadlineSlotIfRetired();
+                    }
+                });
             }
         }
 
