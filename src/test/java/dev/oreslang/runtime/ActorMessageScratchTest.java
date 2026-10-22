@@ -423,32 +423,47 @@ final class ActorMessageScratchTest {
 
     @Test
     @Timeout(15)
-    void forgottenReadBorrowFailsActorBeforeRecyclingScratchOrProcessingAnotherMessage()
+    void actorRefusesLogicalMessageFinishWhileBorrowedThenSafelyReusesScratch()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch completed = new CountDownLatch(2);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            AtomicReference<ActorMessageScratch.Slice> previous = new AtomicReference<>();
             AtomicLong processed = new AtomicLong();
-            AtomicReference<ActorMessageScratch.ReadBorrow> escaped = new AtomicReference<>();
             var actor = runtime.<Integer>spawnSharedTrusted(ctx -> (message, turn) -> {
-                processed.incrementAndGet();
-                var scratch = ActorRuntime.currentMessageScratch();
-                var local = scratch.allocate(8);
-                local.writeLong(0, message.longValue());
-                // Deliberately omit close to simulate missing guest drop glue.
-                // The actor must fail rather than silently reuse borrowed bytes.
-                escaped.set(local.borrowReadOnly());
+                try {
+                    var scratch = ActorRuntime.currentMessageScratch();
+                    var local = scratch.allocate(8);
+                    if (message == 1) {
+                        local.writeLong(0, 1234L);
+                        var borrow = local.borrowReadOnly();
+                        assertThrows(IllegalStateException.class, scratch::finishMessage,
+                                "the owner must not end its receive with an issued native lease");
+                        assertEquals(1234L, borrow.readLong(0));
+                        // Compiler-generated drops must close this before return.
+                        borrow.close();
+                        previous.set(local);
+                    } else {
+                        assertThrows(IllegalStateException.class,
+                                () -> previous.get().readLong(0),
+                                "the prior message's old reference cannot be revived");
+                        assertEquals(0L, local.readLong(0));
+                    }
+                    processed.incrementAndGet();
+                } catch (Throwable error) {
+                    failure.compareAndSet(null, error);
+                } finally {
+                    completed.countDown();
+                }
             });
-            actor.send(7);
-            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS),
-                    "leaked immutable borrow must fail-stop the actor");
-            Throwable failure = actor.failure().orElseThrow(
-                    () -> new AssertionError("actor must report the failed cleanup"));
-            assertInstanceOf(IllegalStateException.class, failure);
-            assertTrue(failure.getMessage().contains("scratch borrows"));
-            assertEquals(1L, processed.get());
-            assertThrows(IllegalStateException.class, () -> escaped.get().readLong(0),
-                    "post-termination borrow must never read released native storage");
-            assertEquals(0L, runtime.actorMemoryBytes(),
-                    "failed cleanup must not leak native storage beyond physical actor stop");
+            actor.send(1);
+            actor.send(2);
+            assertTrue(completed.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            assertEquals(2L, processed.get());
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0L, runtime.actorMemoryBytes());
         }
     }
 
