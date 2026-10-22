@@ -7,6 +7,7 @@ import java.util.Optional;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 /** Real ChannelRuntime/OresFuture nonparking stream adapter regression tests. */
@@ -149,5 +150,42 @@ public class AsyncSequencesTest {
         assertEquals(List.of(Optional.of(8), Optional.of(21)),
                 results.get(3, TimeUnit.SECONDS));
         cursor.close();
+    }
+
+    @Test void channelCompletionResumesOnAwaitingSchedulerNotProducerThread()
+            throws Exception {
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
+        AsyncSequences.Cursor<Integer> cursor = AsyncSequences.fromChannel(channel);
+        AtomicReference<Thread> waiterCarrier = new AtomicReference<>();
+        AtomicReference<Thread> producerThread = new AtomicReference<>();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> result = scheduler.start(new OresScheduler.Task<>() {
+                private int pc;
+                @Override
+                public OresScheduler.Step<Integer> resume(OresScheduler.Resume resume) {
+                    if (pc++ == 0) return OresScheduler.await(cursor.nextAsync());
+                    waiterCarrier.set(Thread.currentThread());
+                    if (resume.failure() != null) {
+                        throw new IllegalStateException("unexpected stream failure",
+                                resume.failure());
+                    }
+                    @SuppressWarnings("unchecked")
+                    Optional<Integer> next = (Optional<Integer>) resume.value();
+                    return OresScheduler.done(next.orElseThrow());
+                }
+            });
+            Thread producer = Thread.ofPlatform().start(() -> {
+                producerThread.set(Thread.currentThread());
+                channel.writeAsync(34);
+            });
+            producer.join(3_000);
+            assertFalse(producer.isAlive());
+            assertEquals(Integer.valueOf(34), result.get(3, TimeUnit.SECONDS));
+            assertNotNull(waiterCarrier.get());
+            assertNotSame(producerThread.get(), waiterCarrier.get(),
+                    "source callback must not execute guest continuation inline");
+        } finally {
+            cursor.close();
+        }
     }
 }
