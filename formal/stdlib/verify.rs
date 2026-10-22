@@ -73,8 +73,8 @@ fn verify() -> Result<(), String> {
     let version = command("z3", &["-version"])?;
     println!("solver: {}", version.trim());
     run_solver("formal/stdlib/core-int64.smt2", 16, 2)?;
-    run_solver("formal/stdlib/trace-buffer-counters.smt2", 8, 2)?;
-    run_solver("formal/stdlib/testing-summary.smt2", 8, 2)?;
+    run_solver("formal/stdlib/trace-buffer-counters.smt2", 9, 3)?;
+    run_solver("formal/stdlib/testing-summary.smt2", 9, 3)?;
     Ok(())
 }
 
