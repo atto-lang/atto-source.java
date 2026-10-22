@@ -117,6 +117,50 @@ final class RoutineAndLoopTest {
     }
 
     @Test
+    void ternaryIsLazyBooleanOnlyAndRightAssociative() throws Exception {
+        String output = run("""
+                fnc condition(): bool {
+                  stdio.stdout.write("C");
+                  return true;
+                }
+
+                fnc when_true(): int {
+                  stdio.stdout.write("T");
+                  return 4;
+                }
+
+                fnc when_false(): int {
+                  stdio.stdout.write("F");
+                  return 9;
+                }
+
+                pub routine main(): void {
+                  stdio.stdout.write(condition() ? when_true() : when_false());
+                  stdio.stdout.write(false ? 1 : true ? 2 : 3);
+                  return;
+                }
+                """);
+        assertEquals("CT42", output);
+
+        IllegalArgumentException nonBoolean = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(): int {
+                          return 1 ? 2 : 3;
+                        }
+                        """)));
+        assertTrue(nonBoolean.getMessage().contains("ternary condition"));
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc incompatible(bool condition): int {
+                          return condition ? 1 : "wrong";
+                        }
+                        """)));
+    }
+
+    @Test
     void ternaryWorksWithOption() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc find(bool found): Option<int> {
