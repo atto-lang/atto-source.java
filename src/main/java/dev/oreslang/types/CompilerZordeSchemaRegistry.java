@@ -103,6 +103,11 @@ final class CompilerZordeSchemaRegistry {
     long generation() { return generation; }
     int size() { return schemas.size(); }
 
+    /** Closed-world export view only; the link stage must not re-register it. */
+    Map<String, RefinementRules.Descriptor> schemaEntriesForLinker() {
+        return schemas;
+    }
+
     RefinementRules.Descriptor descriptor(String qualifiedName) {
         RefinementRules.Descriptor descriptor = schemas.get(qualifiedName);
         if (descriptor == null)
