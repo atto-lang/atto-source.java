@@ -68,4 +68,15 @@ public final class TypedScalarSmtTest {
         assertThrows(IllegalArgumentException.class, () ->
                 TypedScalarSmt.fromSource(literal, "core", "clamp_int"));
     }
+
+    @Test
+    void invalidProofInputsFailClosed() throws Exception {
+        String source = core();
+        assertThrows(IllegalArgumentException.class, () ->
+                TypedScalarSmt.fromSource(null, "core", "min_int"));
+        assertThrows(IllegalArgumentException.class, () ->
+                TypedScalarSmt.fromSource(source, "core", null));
+        assertThrows(IllegalArgumentException.class, () ->
+                TypedScalarSmt.fromSource(" ".repeat(2_000_001), "core", "min_int"));
+    }
 }
