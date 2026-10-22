@@ -44,6 +44,10 @@ public final class SupervisorShutdownTree {
 
     public final class Supervisor {
         private final String name;
+        private final long supervisorId;
+        private final java.util.concurrent.atomic.AtomicReference<SupervisorLifecycleFsm.State>
+                lifecycle = new java.util.concurrent.atomic.AtomicReference<>(
+                        SupervisorLifecycleFsm.State.initial());
         private final ActorRuntime.ActorGroup group;
         private final Hooks hooks;
         private final int depth;
@@ -52,8 +56,10 @@ public final class SupervisorShutdownTree {
         private volatile List<ActorRuntime.ActorRef<?>> shutdownWorkers = List.of();
         private final OresFuture<Void> terminated = new OresFuture<>(() -> false, () -> { });
 
-        private Supervisor(String name, ActorRuntime.ActorGroup group, Hooks hooks, int depth) {
+        private Supervisor(String name, ActorRuntime.ActorGroup group, Hooks hooks,
+                int depth, long supervisorId) {
             this.name = Objects.requireNonNull(name, "name");
+            this.supervisorId = supervisorId;
             if (name.isBlank()) throw new IllegalArgumentException("empty supervisor name");
             this.group = Objects.requireNonNull(group, "group");
             this.hooks = Objects.requireNonNull(hooks, "hooks");
@@ -61,6 +67,17 @@ public final class SupervisorShutdownTree {
         }
 
         public String name() { return name; }
+        public long supervisorId() { return supervisorId; }
+
+        /** Immutable state observation; no guest hooks are invoked. */
+        public SupervisorLifecycleFsm.State lifecycle() {
+            runtime.requireSupervisorShutdownAuthority("inspect supervisor lifecycle");
+            return lifecycle.get();
+        }
+
+        private void transition(SupervisorLifecycleFsm.Event event) {
+            lifecycle.updateAndGet(state -> SupervisorLifecycleFsm.reduce(state, event));
+        }
 
         /**
          * Noncancellable graceful-completion outcome. Failed or timed-out
@@ -70,6 +87,39 @@ public final class SupervisorShutdownTree {
 
         public Supervisor addChild(String childName, ActorRuntime.ActorGroup childGroup, Hooks childHooks) {
             return SupervisorShutdownTree.this.addChild(this, childName, childGroup, childHooks);
+        }
+    }
+
+    /** Coherent tree snapshot. Logical stop never implies physical reclamation. */
+    public record NodeStatus(
+            long id, Long parentId, String name, SupervisorLifecycleFsm.State lifecycle) {}
+    public record TreeStatus(
+            List<NodeStatus> nodes,
+            boolean allLogicallyStopped,
+            boolean allPhysicallyReclaimed,
+            boolean hasFailures,
+            boolean hasDeadlineOverruns) {
+        public TreeStatus { nodes = List.copyOf(nodes); }
+    }
+
+    private static void statuses(Supervisor node, Long parentId, List<NodeStatus> out) {
+        out.add(new NodeStatus(node.supervisorId, parentId, node.name, node.lifecycle.get()));
+        for (Supervisor child : node.children) statuses(child, node.supervisorId, out);
+    }
+
+    /** Snapshot under the tree registration/shutdown fence. */
+    public TreeStatus status() {
+        runtime.requireSupervisorShutdownAuthority("inspect supervisor tree status");
+        synchronized (treeLock) {
+            if (root == null) throw new IllegalStateException("supervisor root missing");
+            List<NodeStatus> nodes = new ArrayList<>(supervisorCount);
+            statuses(root, null, nodes);
+            return new TreeStatus(nodes,
+                    nodes.stream().allMatch(n -> n.lifecycle.logicallyStopped()),
+                    nodes.stream().allMatch(n -> n.lifecycle.phase()
+                            == SupervisorLifecycleFsm.Phase.RECLAIMED),
+                    nodes.stream().anyMatch(n -> n.lifecycle.failed()),
+                    nodes.stream().anyMatch(n -> n.lifecycle.deadlineExpired()));
         }
     }
 
@@ -101,7 +151,7 @@ public final class SupervisorShutdownTree {
             if (root != null || shuttingDown) {
                 throw new IllegalStateException("supervisor root already installed or stopping");
             }
-            Supervisor next = new Supervisor(name, group, hooks, 1);
+            Supervisor next = new Supervisor(name, group, hooks, 1, 1L);
             verifyGroup(group);
             group.bindSupervisorShutdownTree(this);
             boundGroups.add(group);
@@ -122,7 +172,8 @@ public final class SupervisorShutdownTree {
             if (parent.depth >= MAX_DEPTH || supervisorCount >= MAX_NODES) {
                 throw new IllegalStateException("supervisor tree capacity exceeded");
             }
-            Supervisor child = new Supervisor(name, group, hooks, parent.depth + 1);
+            Supervisor child = new Supervisor(
+                    name, group, hooks, parent.depth + 1, (long) supervisorCount + 1L);
             verifyGroup(group);
             if (boundGroups.contains(group)) {
                 throw new IllegalArgumentException("ActorGroup already belongs to this supervisor");
@@ -230,6 +281,10 @@ public final class SupervisorShutdownTree {
     private void sealSubtree(Supervisor node) {
         node.group.fenceWorkerAdmissions();
         node.shutdownWorkers = node.group.workers();
+        node.transition(new SupervisorLifecycleFsm.ShutdownRequested(
+                node.lifecycle.get().epoch(),
+                node.children.stream().map(child -> child.supervisorId)
+                        .collect(java.util.stream.Collectors.toSet())));
         for (Supervisor child : node.children) sealSubtree(child);
     }
 
@@ -417,6 +472,8 @@ public final class SupervisorShutdownTree {
         callShutdownHook(node, reason).whenCompleteRuntime((ignored, failure) ->
                 dispatch(() -> {
                     if (failure != null) failures.add(failure);
+                    node.transition(new SupervisorLifecycleFsm.BeforeHookFinished(
+                            node.lifecycle.get().epoch(), failure != null));
                     stopChildren(node, reason, node.children.size() - 1, failures);
                 }));
     }
@@ -431,6 +488,8 @@ public final class SupervisorShutdownTree {
         child.terminated.whenCompleteRuntime((ignored, failure) ->
                 dispatch(() -> {
                     if (failure != null) failures.add(failure);
+                    node.transition(new SupervisorLifecycleFsm.ChildFinished(
+                            node.lifecycle.get().epoch(), child.supervisorId, failure != null));
                     stopChildren(node, reason, position - 1, failures);
                 }));
         start(child, Reason.PARENT_EXIT);
@@ -455,10 +514,14 @@ public final class SupervisorShutdownTree {
         done.whenCompleteRuntime((ignored, failure) ->
                 dispatch(() -> {
                     if (failure != null) failures.add(failure);
+                    node.transition(new SupervisorLifecycleFsm.ActorsFinished(
+                            node.lifecycle.get().epoch(), failure != null));
                     node.shutdownWorkers = List.of();
                     callStoppedHook(node, reason).whenCompleteRuntime((result, hookFailure) ->
                             dispatch(() -> {
                                 if (hookFailure != null) failures.add(hookFailure);
+                                node.transition(new SupervisorLifecycleFsm.AfterHookFinished(
+                                        node.lifecycle.get().epoch(), hookFailure != null));
                                 if (failures.isEmpty()) {
                                     node.terminated.completeFromRuntime(null);
                                 } else {
