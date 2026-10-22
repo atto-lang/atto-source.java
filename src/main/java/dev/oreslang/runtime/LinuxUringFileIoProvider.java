@@ -23,6 +23,7 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
     static final int DEFAULT_ENTRIES = 512;
     static final int MAX_PENDING = 128;
     static final int MAX_READ_BYTES = 16 * 1024 * 1024;
+    static final long MAX_RESERVED_BYTES = 64L * 1024 * 1024;
     static final int ECANCELED = 125;
 
     interface NativeBridge {
@@ -56,9 +57,11 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
     private static final class Pending<T> {
         final Kind kind;
         final OresFuture<T> future;
-        Pending(Kind kind, OresFuture<T> future) {
+        final long reservedBytes;
+        Pending(Kind kind, OresFuture<T> future, long reservedBytes) {
             this.kind = kind;
             this.future = future;
+            this.reservedBytes = reservedBytes;
         }
     }
 
@@ -66,6 +69,7 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
     private final long handle;
     private final AtomicLong ids = new AtomicLong();
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final AtomicLong reservedBytes = new AtomicLong();
     private final ConcurrentHashMap<Long, Pending<?>> pending =
             new ConcurrentHashMap<>();
 
@@ -98,13 +102,18 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
     @Override
     public OresFuture<String> readText(String absolutePath) {
         byte[] path = encodeAbsolutePath(absolutePath);
+        if (!reserveBytes(MAX_READ_BYTES)) {
+            return OresFuture.failed(new IllegalStateException(
+                    "strict filesystem read byte reservation exhausted"));
+        }
         long id = nextId();
         OresFuture<String> future = new OresFuture<>(
                 () -> cancelNative(id), () -> { });
-        pending.put(id, new Pending<>(Kind.READ, future));
+        pending.put(id, new Pending<>(Kind.READ, future, MAX_READ_BYTES));
         if (!submitReadNative(id, path)) {
             Pending<?> removed = pending.remove(id);
             if (removed != null) {
+                releaseBytes(removed.reservedBytes);
                 future.failFromRuntime(new IllegalStateException(
                         closed.get()
                                 ? "strict filesystem provider is closed"
@@ -120,7 +129,7 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
         long id = nextId();
         OresFuture<Boolean> future = new OresFuture<>(
                 () -> cancelNative(id), () -> { });
-        pending.put(id, new Pending<>(Kind.EXISTS, future));
+        pending.put(id, new Pending<>(Kind.EXISTS, future, 0));
         if (!submitExistsNative(id, path)) {
             Pending<?> removed = pending.remove(id);
             if (removed != null) {
@@ -141,6 +150,27 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
     private synchronized boolean submitExistsNative(long id, byte[] path) {
         if (closed.get() || pending.size() > MAX_PENDING) return false;
         return bridge.submitExists(handle, id, path);
+    }
+
+    private boolean reserveBytes(long bytes) {
+        if (bytes < 0 || bytes > MAX_RESERVED_BYTES) return false;
+        for (;;) {
+            long current = reservedBytes.get();
+            if (current > MAX_RESERVED_BYTES - bytes) return false;
+            if (reservedBytes.compareAndSet(current, current + bytes)) {
+                return true;
+            }
+        }
+    }
+
+    private void releaseBytes(long bytes) {
+        if (bytes == 0) return;
+        long remaining = reservedBytes.addAndGet(-bytes);
+        if (remaining < 0) {
+            reservedBytes.set(0);
+            throw new IllegalStateException(
+                    "strict filesystem byte reservation underflow");
+        }
     }
 
     private long nextId() {
@@ -165,7 +195,9 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
     @SuppressWarnings("unchecked")
     void nativeReadCompleted(long id, byte[] bytes, int error) {
         Pending<?> raw = pending.remove(id);
-        if (raw == null || raw.kind != Kind.READ) return;
+        if (raw == null) return;
+        releaseBytes(raw.reservedBytes);
+        if (raw.kind != Kind.READ) return;
         OresFuture<String> future = (OresFuture<String>) raw.future;
         if (future.isCancelled()) return;
         if (error != 0) {
@@ -188,7 +220,9 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
     @SuppressWarnings("unchecked")
     void nativeExistsCompleted(long id, boolean exists, int error) {
         Pending<?> raw = pending.remove(id);
-        if (raw == null || raw.kind != Kind.EXISTS) return;
+        if (raw == null) return;
+        releaseBytes(raw.reservedBytes);
+        if (raw.kind != Kind.EXISTS) return;
         OresFuture<Boolean> future = (OresFuture<Boolean>) raw.future;
         if (future.isCancelled()) return;
         if (error != 0) {
@@ -208,6 +242,7 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
     }
 
     int pendingCount() { return pending.size(); }
+    long reservedByteCount() { return reservedBytes.get(); }
 
     @Override
     public synchronized void close() {
@@ -217,7 +252,10 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
         for (Map.Entry<Long, Pending<?>> entry : pending.entrySet()) {
             bridge.cancel(handle, entry.getKey());
             Pending<?> removed = pending.remove(entry.getKey());
-            if (removed != null) removed.future.failFromRuntime(failure);
+            if (removed != null) {
+                releaseBytes(removed.reservedBytes);
+                removed.future.failFromRuntime(failure);
+            }
         }
         bridge.close(handle);
     }
