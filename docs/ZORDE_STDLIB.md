@@ -256,6 +256,37 @@ the same fixtures before those backends admit executable refinements.
   typed parsing requires immutable scalar payloads and deep freeze/ownership
   transfer for mutable collections.
 
+### Internal checked scalar type identity (non-executable prototype)
+
+The Java type system has a private, sealed \`Types.CheckedScalarType\`
+representation. The only same-package compiler analysis factory checks an
+immutable signed-int64/Unicode scalar against a normalized descriptor and
+records both the compiler-qualified schema name and semantic fingerprint.
+Even two schemas accepting identical values do not become assignable when
+their qualified identities differ. A changed descriptor invalidates
+assignability for the same name.
+
+This **is not schema admission authority**. Host \`Descriptor\` records and
+\`ZordeSchemaGenerator.planSource\` can be produced from arbitrary source
+text. The factory is deliberately unavailable to Oreslang guest source,
+and does not grant code generation, serialization, actor transfer or
+runtime representation. The parser and typechecker still reject all
+source-level \`Valid<T,SchemaId>\` construction.
+
+Both \`Types.isAssignable\` and the higher-level \`TypeChecker.assignable\`
+protect compiler-checked types against structural aliasing, \`Unknown\` and
+generic erasure (including nested \`Option\`, \`Result\`, records, borrows,
+function signatures and unions). Stale linked nominal metadata named
+\`Valid\` or \`*.Valid\` is also rejected rather than normalized into a
+forged proof. Actor/async/FFI transfer remains **forbidden** until the
+compiler and runtime prove ownership and generation safety.
+
+The next trusted-construction gate must bind a reviewed, exact-tree
+compiled schema registry and domain/generation capability to this marker,
+then lower checked owned construction and consuming unwrap without boxing
+or managed wrappers. This is prerequisite—not sufficient evidence—for
+actual guest-language Zorde support.
+
 ### Implementation status and remaining release gate
 
 The Java AST planner and static schema DSL exist and are exercised on
