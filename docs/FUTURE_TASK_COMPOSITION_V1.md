@@ -257,8 +257,12 @@ mapper)\`, \`flatMap(scheduler, future, mapper)\`, and \`zip(scheduler, a, b)\`:
 - zip is a heterogeneously typed Pair of already-started Futures and
   preserves positional order;
 - cancellation of a dependent Task does not revoke either shared input
-  Future; source/inner cancellation-to-dependent classification is an
-  explicit **remaining parity gate**, not a claimed implemented guarantee.
+  Future; the Java host now registers an upstream cancellation-only witness
+  *before* starting map/flatMap Tasks; authenticated source cancellation
+  requests downstream cancellation without revoking upstream. flatMap also
+  observes authenticated nested-source cancellation. These changes are
+  **committed but not executed against production CI**; source/LLVM parity,
+  physical retirement stress and guest effect checks remain release gates.
 - guest callback effects, ownership and Send/Sync proofs are **not**
   established by the Java host-only Function API. Do not bind this
   directly to untrusted guest functions before source checking.
