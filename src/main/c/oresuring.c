@@ -45,6 +45,7 @@ struct ores_io_op {
     size_t path_len;
     unsigned char *buffer;
     size_t capacity;
+    size_t limit;
     size_t used;
     struct open_how how;
     uint64_t current_user_data;
@@ -210,7 +211,15 @@ static int ores_submit_open_locked(ores_uring_ctx *ctx, ores_io_op *op) {
 }
 
 static int ores_submit_read_locked(ores_uring_ctx *ctx, ores_io_op *op) {
-    if (op->used >= op->capacity) return -EFBIG;
+    if (op->used >= op->limit) return -EFBIG;
+    if (op->used >= op->capacity) {
+        size_t next = op->capacity < 64U * 1024U ? 64U * 1024U : op->capacity * 2U;
+        if (next > op->limit) next = op->limit;
+        unsigned char *grown = (unsigned char *)realloc(op->buffer, next);
+        if (grown == NULL) return -ENOMEM;
+        op->buffer = grown;
+        op->capacity = next;
+    }
     struct io_uring_sqe *sqe = ores_get_sqe_locked(ctx);
     if (sqe == NULL) return -EAGAIN;
     uint64_t user_data = ORES_UD(op, ORES_STAGE_READ);
@@ -546,7 +555,8 @@ static ores_io_op *ores_new_op(JNIEnv *env, uint64_t id, ores_io_kind kind,
             free(op);
             return NULL;
         }
-        op->capacity = max_bytes + 1;
+        op->limit = max_bytes + 1;
+        op->capacity = op->limit < 64U * 1024U ? op->limit : 64U * 1024U;
         op->buffer = (unsigned char *)malloc(op->capacity);
         if (op->buffer == NULL) {
             *error = ENOMEM;
