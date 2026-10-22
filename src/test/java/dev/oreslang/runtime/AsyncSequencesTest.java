@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -186,6 +187,59 @@ public class AsyncSequencesTest {
                     "source callback must not execute guest continuation inline");
         } finally {
             cursor.close();
+        }
+    }
+
+    @Test void closeVsReadRegistrationRaceNeverRetainsChannelWaiters()
+            throws Exception {
+        for (int round = 0; round < 128; round++) {
+            ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(0);
+            AsyncSequences.Cursor<Integer> cursor = AsyncSequences.fromChannel(channel);
+            CountDownLatch go = new CountDownLatch(1);
+            AtomicReference<OresFuture<Optional<Integer>>> result = new AtomicReference<>();
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            Thread reader = Thread.ofPlatform().start(() -> {
+                try {
+                    go.await();
+                    result.set(cursor.nextAsync());
+                } catch (Throwable thrown) {
+                    failure.set(thrown);
+                }
+            });
+            go.countDown();
+            cursor.close();
+            reader.join(3_000);
+            assertFalse(reader.isAlive(), "cursor read registration stalled");
+            assertNull(failure.get());
+            assertNotNull(result.get());
+            assertTrue(result.get().isDone());
+            assertEquals(0, channel.pendingRegistrations());
+            assertFalse(channel.isClosed(), "borrowed Channel must remain open");
+        }
+    }
+
+    @Test void futureSourceSettlementVsCursorCloseDoesNotRetainListener()
+            throws Exception {
+        for (int round = 0; round < 128; round++) {
+            OresFuture<Integer> source = new OresFuture<>();
+            AsyncSequences.Cursor<Integer> cursor = AsyncSequences.fromFuture(source);
+            OresFuture<Optional<Integer>> result = cursor.nextAsync();
+            CountDownLatch go = new CountDownLatch(1);
+            Thread producer = Thread.ofPlatform().start(() -> {
+                try {
+                    go.await();
+                    source.completeFromRuntime(15);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            go.countDown();
+            cursor.close();
+            producer.join(3_000);
+            assertFalse(producer.isAlive());
+            assertTrue(result.isDone());
+            assertEquals(0, source.pendingRuntimeWaiterCount());
+            assertFalse(source.isCancelled(), "observer close cannot revoke source");
         }
     }
 }
