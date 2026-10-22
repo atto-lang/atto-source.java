@@ -396,6 +396,62 @@ final class TaskPipelineTest {
     }
 
     @Test
+    void mutuallyAwaitingPipelineBridgesFailInsteadOfDeadlocking() throws Exception {
+        OresFuture<Integer> seedA = new OresFuture<>();
+        OresFuture<Integer> seedB = new OresFuture<>();
+        AtomicReference<OresFuture<Integer>> aRef = new AtomicReference<>();
+        AtomicReference<OresFuture<Integer>> bRef = new AtomicReference<>();
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            OresFuture<Integer> a = TaskPipeline.start(scheduler, seedA,
+                    List.of(value -> bRef.get()));
+            OresFuture<Integer> b = TaskPipeline.start(scheduler, seedB,
+                    List.of(value -> aRef.get()));
+            aRef.set(a);
+            bRef.set(b);
+            awaitWaiter(seedA);
+            awaitWaiter(seedB);
+            assertTrue(seedA.completeFromRuntime(1));
+            assertTrue(seedB.completeFromRuntime(2));
+            ExecutionException aFailure = assertThrows(ExecutionException.class,
+                    () -> a.get(5, TimeUnit.SECONDS));
+            ExecutionException bFailure = assertThrows(ExecutionException.class,
+                    () -> b.get(5, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, aFailure.getCause());
+            assertInstanceOf(IllegalStateException.class, bFailure.getCause());
+            assertTrue(aFailure.getCause().getMessage().contains("cyclic pipeline")
+                    || bFailure.getCause().getMessage().contains("cyclic pipeline"));
+            waitForNoPipelineEdges();
+        }
+    }
+
+    @Test
+    void completedAndCancelledPipelineAwaitEdgesAreRetired() throws Exception {
+        OresFuture<Integer> seed = new OresFuture<>();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> done = TaskPipeline.start(scheduler,
+                    OresFuture.completed(20),
+                    List.of(value -> ((Integer) value) + 1));
+            assertEquals(21, done.get(5, TimeUnit.SECONDS));
+            OresFuture<Integer> stopped = TaskPipeline.start(scheduler, seed,
+                    List.of(value -> ((Integer) value) + 1));
+            awaitWaiter(seed);
+            assertTrue(stopped.cancel(false));
+            waitForNoWaiter(seed);
+            waitForNoPipelineEdges();
+        }
+    }
+
+    private static void waitForNoPipelineEdges() throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (TaskPipeline.pendingPipelineAwaitCount() != 0
+                && System.nanoTime() < deadline) {
+            Thread.sleep(2);
+        }
+        assertEquals(0, TaskPipeline.pendingPipelineAwaitCount(),
+                "terminal pipelines retained live await dependencies");
+    }
+
+    @Test
     void rejectsNullStageAndUnboundedPipeline() {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             OresFuture<Integer> input = OresFuture.completed(1);
