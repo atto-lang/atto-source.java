@@ -198,6 +198,50 @@ final class ActorNativeArenaTest {
     }
 
     @Test
+    void nativeListPersistentPreflightAdmitsIssuedCapabilitiesAndRejectsAliasBeforeAllocation() {
+        AtomicLong charged = new AtomicLong();
+        Object marker = new Object();
+        try (ActorNativeArena arena = arena(8192, charged)) {
+            ActorNativeArena.NativeList list = arena.nativeList();
+
+            ActorNativeArena.NativeCapability capability = () -> arena;
+            arena.issueNativeCapability(capability);
+            list.add(capability);
+            assertSame(capability, list.get(0));
+            assertEquals(1, arena.capabilityCount());
+            list.clear();
+            assertEquals(0, arena.capabilityCount());
+
+            Map<String, Object> rawBacking = arena.fields(List.of("value"), marker);
+            ActorNativeArena.NativeValue backing =
+                    (ActorNativeArena.NativeValue) rawBacking;
+            long offset = backing.nativeOffset();
+            ActorNativeArena.NativeValue alias = new ActorNativeArena.NativeValue() {
+                @Override public ActorNativeArena nativeArena() { return arena; }
+                @Override public long nativeOffset() { return offset; }
+            };
+            arena.registerNativeFacade(alias, backing);
+
+            Map<String, Object> holder = arena.fields(List.of("value"), marker);
+            holder.put("value", backing);
+            long allocated = arena.allocatedBytes();
+            long committed = arena.committedBytes();
+
+            SecurityException duplicate = assertThrows(
+                    SecurityException.class,
+                    () -> list.add(alias));
+            assertTrue(
+                    duplicate.getMessage().contains("duplicate actor-relative native address"),
+                    duplicate.toString());
+            assertEquals(0, list.size());
+            assertEquals(allocated, arena.allocatedBytes(),
+                    "rejected alias must not reserve a new List chunk");
+            assertEquals(committed, arena.committedBytes());
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
     void clearingAndRefillingNativeListReusesItsHistoricalChunkCapacity() {
         AtomicLong charged = new AtomicLong();
         try (ActorNativeArena arena = arena(8192, charged)) {
