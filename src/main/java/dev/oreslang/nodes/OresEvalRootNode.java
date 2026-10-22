@@ -7149,13 +7149,19 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof FileSystemFacade fs) {
                 return switch (name) {
-                    case "read_text", "write_text", "write_text_atomic", "append_text",
-                            "list_dir", "is_dir", "is_symlink", "exists", "remove", "mkdir_all" ->
-                            (Invokable) args -> {
-                                throw new UnsupportedOperationException(
-                                        "fs." + name
-                                                + " is disabled in the strict filesystem profile; use the async completion API");
-                            };
+                    // Legacy synchronous filesystem surface remains reachable
+                    // until every operation has an equivalent completion
+                    // provider. It is NOT part of the strict async contract.
+                    case "read_text" -> (Invokable) fs::readText;
+                    case "write_text" -> (Invokable) fs::writeText;
+                    case "write_text_atomic" -> (Invokable) fs::writeTextAtomic;
+                    case "append_text" -> (Invokable) fs::appendText;
+                    case "list_dir" -> (Invokable) fs::listDir;
+                    case "is_dir" -> (Invokable) fs::isDir;
+                    case "is_symlink" -> (Invokable) fs::isSymlink;
+                    case "exists" -> (Invokable) fs::exists;
+                    case "remove" -> (Invokable) fs::remove;
+                    case "mkdir_all" -> (Invokable) fs::mkdirAll;
                     case "read_text_async" -> (Invokable) fs::readTextAsync;
                     case "write_text_async" -> (Invokable) fs::writeTextAsync;
                     case "append_text_async" -> (Invokable) fs::appendTextAsync;
@@ -10241,6 +10247,63 @@ public final class OresEvalRootNode extends RootNode {
     }
 
     private record FileSystemFacade(OresContext context) {
+        private Object readText(List<Object> args) {
+            return NativeIo.readText(context, requireStringArg(args, "fs.read_text"));
+        }
+
+        private Object writeText(List<Object> args) {
+            requireTwo(args, "fs.write_text");
+            NativeIo.writeText(
+                    context,
+                    requireString(args.get(0), "fs.write_text path"),
+                    requireString(args.get(1), "fs.write_text value"));
+            return null;
+        }
+
+        private Object writeTextAtomic(List<Object> args) {
+            requireTwo(args, "fs.write_text_atomic");
+            NativeIo.writeTextAtomic(
+                    context,
+                    requireString(args.get(0), "fs.write_text_atomic path"),
+                    requireString(args.get(1), "fs.write_text_atomic value"));
+            return null;
+        }
+
+        private Object appendText(List<Object> args) {
+            requireTwo(args, "fs.append_text");
+            NativeIo.appendText(
+                    context,
+                    requireString(args.get(0), "fs.append_text path"),
+                    requireString(args.get(1), "fs.append_text value"));
+            return null;
+        }
+
+        private Object exists(List<Object> args) {
+            return NativeIo.exists(context, requireStringArg(args, "fs.exists"));
+        }
+
+        private Object listDir(List<Object> args) {
+            return NativeIo.listDir(context, requireStringArg(args, "fs.list_dir"));
+        }
+
+        private Object isDir(List<Object> args) {
+            return NativeIo.isDir(context, requireStringArg(args, "fs.is_dir"));
+        }
+
+        private Object isSymlink(List<Object> args) {
+            return NativeIo.isSymlink(context, requireStringArg(args, "fs.is_symlink"));
+        }
+
+        private Object remove(List<Object> args) {
+            NativeIo.remove(context, requireStringArg(args, "fs.remove"));
+            return null;
+        }
+
+        private Object mkdirAll(List<Object> args) {
+            NativeIo.createDirectories(context, requireStringArg(args, "fs.mkdir_all"));
+            return null;
+        }
+
         private String readPath(List<Object> args, String operation) {
             String raw = requireStringArg(args, operation);
             return context.requireStrictPathPermission(
