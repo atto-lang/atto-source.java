@@ -19,6 +19,7 @@ on:
       - 'src/test/java/dev/oreslang/types/CompilerZordeSchemaRegistryTest.java'
       - 'src/main/java/dev/oreslang/types/CompilerZordeLinkManifest.java'
       - 'src/test/java/dev/oreslang/types/CompilerZordeLinkManifestTest.java'
+      - 'src/test/java/dev/oreslang/types/CompilerZordeParsedImportLinkTest.java'
       - 'src/test/java/dev/oreslang/ZordeSchemaGeneratorTest.java'
       - 'src/test/java/dev/oreslang/ZordeStdlibSourceTest.java'
       - 'stdlib/zorde.ores'
@@ -56,7 +57,7 @@ jobs:
           distribution: 'graalvm'
           cache: maven
       - name: Execute refinement parser, schema, and stdlib regressions
-        run: mvn -B -ntp -Dtest=RefinementRulesTest,RefinementSyntaxGateTest,ZordeSchemaGeneratorTest,ZordeStdlibSourceTest,ZordeValidAdmissionGateTest,ZordeCheckedScalarMoveTest,ZordeCheckedTypeIdentityTest,CompilerZordeSchemaRegistryTest,CompilerZordeLinkManifestTest test
+        run: mvn -B -ntp -Dtest=RefinementRulesTest,RefinementSyntaxGateTest,ZordeSchemaGeneratorTest,ZordeStdlibSourceTest,ZordeValidAdmissionGateTest,ZordeCheckedScalarMoveTest,ZordeCheckedTypeIdentityTest,CompilerZordeSchemaRegistryTest,CompilerZordeLinkManifestTest,CompilerZordeParsedImportLinkTest test
       - name: Recheck source tree after tests
         shell: bash
         env:
