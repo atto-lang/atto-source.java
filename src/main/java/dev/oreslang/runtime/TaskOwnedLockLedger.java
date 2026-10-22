@@ -92,7 +92,13 @@ final class TaskOwnedLockLedger {
             throw new IllegalStateException(
                     "Task lock retirement has pending physical handoffs; use the async barrier");
         }
-        settled.join();
+        try {
+            settled.join();
+        } catch (java.util.concurrent.CompletionException failure) {
+            throw new IllegalStateException(
+                    "Task lock retirement could not prove every permit revoked",
+                    failure.getCause() == null ? failure : failure.getCause());
+        }
     }
 
     /**
