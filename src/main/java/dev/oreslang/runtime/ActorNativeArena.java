@@ -569,7 +569,7 @@ public final class ActorNativeArena implements AutoCloseable {
         private final long code;
         TaskPhase(long code) { this.code = code; }
 
-        private static TaskPhase fromCode(long code) {
+        static TaskPhase fromCode(long code) {
             // Enum.values() clones an array on every invocation. Native task
             // frames decode this on resume, suspension and transition; direct
             // dispatch avoids allocating managed garbage in the hot path.
