@@ -47,8 +47,11 @@ public final class RecordFrontendSmoke {
         Ast.ObjectExpr orphan = aggregateBinding(partlyTyped, "copy");
         denied(() -> TypeChecker.checkTypesWithDiagnostics(partlyTyped),
                 "later type error must fail the full compilation unit");
+        // Ownership intentionally does not prove return type assignability;
+        // running it independently must not recover a partial type proof.
+        OwnershipChecker.check(partlyTyped);
         deniedState(() -> AggregateConstructionPlan.Checked.requireAdmitted(orphan),
-                "failed type-check must never grant runtime spread admission");
+                "standalone ownership cannot promote an orphan type candidate");
 
         // Type checking alone cannot authorize interpreter spread execution.
         // A structurally equal parse never inherits another AST's approval.
