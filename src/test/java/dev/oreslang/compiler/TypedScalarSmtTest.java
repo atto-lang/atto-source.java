@@ -107,4 +107,19 @@ public final class TypedScalarSmtTest {
         assertThrows(IllegalArgumentException.class, () ->
                 TypedScalarSmt.fromSource(" ".repeat(2_000_001), "core", "min_int"));
     }
+
+    @Test
+    void pureScalarProofRejectsAddedLocalBindingAndArithmetic() throws Exception {
+        String source = core();
+        String withBinding = source.replace("return left;",
+                "val int unchecked = 0; return left;");
+        String withArithmetic = source.replace("return right;",
+                "return right + 1;");
+        assertNotEquals(source, withBinding);
+        assertNotEquals(source, withArithmetic);
+        assertThrows(RuntimeException.class, () ->
+                TypedScalarSmt.fromSource(withBinding, "core", "min_int"));
+        assertThrows(RuntimeException.class, () ->
+                TypedScalarSmt.fromSource(withArithmetic, "core", "min_int"));
+    }
 }
