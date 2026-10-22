@@ -4,6 +4,9 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.List;
 import java.util.HashSet;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -105,6 +108,45 @@ final class ActorMixedRegionTest {
             }
         }
         assertEquals(0, charged.get());
+    }
+
+    @Test
+    void scheduledActorOwnsMixedBackingAndHostCannotReadIt() throws Exception {
+        assertThrows(SecurityException.class, () ->
+                ActorMixedRegion.forCurrentActor(FIELDS, 3,
+                        ActorMixedRegion.Layout.SOA, 1, null));
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var done = new CountDownLatch(1);
+            var failure = new AtomicReference<Throwable>();
+            var retained = new AtomicReference<ActorMixedRegion>();
+            var actor = runtime.<Integer>spawnSharedTrusted(ctx -> (message, turn) -> {
+                try (var store = ActorMixedRegion.forCurrentActor(
+                        FIELDS, 3, ActorMixedRegion.Layout.SOA, 1, null)) {
+                    store.writeU32(0, "id", 42);
+                    store.writeBool(1, "flag", true);
+                    store.writeF64(2, "x", 19.5);
+                    retained.set(store);
+                    assertEquals(42L, store.readU32(0, "id"));
+                    assertTrue(store.readBool(1, "flag"));
+                    assertEquals(19.5, store.readF64(2, "x"));
+                } catch (Throwable error) {
+                    failure.set(error);
+                } finally {
+                    done.countDown();
+                }
+            });
+            actor.send(1);
+            assertTrue(done.await(5, TimeUnit.SECONDS),
+                    "real actor mixed-region turn must complete");
+            assertNull(failure.get());
+            assertNotNull(retained.get());
+            assertThrows(SecurityException.class, retained.get()::segments);
+            assertThrows(SecurityException.class,
+                    () -> retained.get().readU32(0, "id"));
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0, runtime.actorMemoryBytes());
+        }
     }
 
     @Test
