@@ -160,8 +160,9 @@ public final class NominalErrorProof {
             // ancestry must not become invisible just because the first
             // path happened to reach Error.
             for (Ast.TypeRef parentRef : candidate.parents()) {
-                if (parentRef.name().equals("Object") && parentRef.arguments().isEmpty()) {
-                    continue; // ordinary object ancestry proves no Error relationship
+                if (parentRef.name().equals("Object") && parentRef.arguments().isEmpty()
+                        && !parentRef.inferArguments()) {
+                    continue; // only a concrete ordinary Object parent is ignorable
                 }
                 ensureConcrete(parentRef, "checked error superclass");
                 Ast.ClassDecl parent = resolveClass.apply(parentRef);
