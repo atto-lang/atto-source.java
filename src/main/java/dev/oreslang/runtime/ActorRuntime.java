@@ -2000,7 +2000,19 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new RejectedExecutionException(
                         "actor " + cell.ref.id() + " cannot admit a TaskScope after stop");
             }
-            scope = cell.sourceScheduler().newTaskScope();
+            scope = cell.sourceScheduler().newTaskScope(() -> {
+                // Actor-owned scopes may not be used as host-side or
+                // cross-actor task-injection capabilities. Admission must
+                // occur in the same executing actor domain and before stop.
+                if (currentActor.get() != cell) {
+                    throw new SecurityException(
+                            "actor TaskScope cannot admit work from a foreign owner");
+                }
+                if (cell.stopped.get() || cell.finalizing || cell.finalized) {
+                    throw new RejectedExecutionException(
+                            "actor TaskScope cannot admit work after actor stop");
+                }
+            });
             cell.activeSourceScopes.add(scope);
         }
         // A racing stop is allowed to cancel the newly published scope before
