@@ -777,8 +777,13 @@ public final class OresMutex {
                 endWait(waiter.ownerDomain);
                 releaseDomain(waiter.ownerDomain);
                 settleAsyncWaiterQuota(waiter);
-                return true;
             }
+            // Queue revocation itself is the physical settlement witness;
+            // its eventual public Future notification is separate. Publish
+            // this receipt outside asyncQueueLock and never leak a cancelled
+            // waiter into a Task retirement barrier.
+            waiter.physicalSettlement.complete(null);
+            return true;
         }
 
         private void settleAsyncWaiterQuota(AsyncWaiter waiter) {
