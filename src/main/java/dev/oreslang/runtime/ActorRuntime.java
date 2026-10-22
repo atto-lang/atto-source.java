@@ -7276,7 +7276,10 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (lifecycleLock) {
                 if (finalized || closed.get()) throw new IllegalStateException("actor allocation after shutdown");
                 long next = Math.addExact(nativeArenaBytes, bytes);
-                if (next > policy.maxHeapBytes() - sharedMailboxBytes.get() - outputBytes.get()) {
+                if (next > policy.maxHeapBytes()
+                        - sharedMailboxBytes.get()
+                        - outputBytes.get()
+                        - shardSnapshotReservedBytes) {
                     throw new IllegalStateException("actor native object memory limit exceeded");
                 }
                 reserveSharedRuntimeBytes(bytes, "actor native objects");
@@ -7657,6 +7660,7 @@ public final class ActorRuntime implements AutoCloseable {
                                 policy.maxHeapBytes()
                                         - sharedMailboxBytes.get()
                                         - nativeArenaBytes
+                                        - shardSnapshotReservedBytes
                                         - current);
                 if (bytes > actorAvailable) {
                     throw new IllegalStateException(
@@ -7700,7 +7704,10 @@ public final class ActorRuntime implements AutoCloseable {
                 } catch (ArithmeticException overflow) {
                     throw new IllegalStateException("shared actor mailbox memory accounting overflow");
                 }
-                if (next > policy.maxHeapBytes() - nativeArenaBytes - outputBytes.get()) {
+                if (next > policy.maxHeapBytes()
+                        - nativeArenaBytes
+                        - outputBytes.get()
+                        - shardSnapshotReservedBytes) {
                     throw new IllegalStateException("shared actor mailbox memory limit exceeded for " + ref.id()
                             + ": requested=" + bytes + " used=" + current + " limit=" + policy.maxHeapBytes());
                 }
