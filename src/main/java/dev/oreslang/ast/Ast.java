@@ -418,8 +418,16 @@ public final class Ast {
             boolean structural,
             List<String> genericParameters,
             List<Param> parameters,
-            TypeRef returnType) implements InterfaceMember {
+            TypeRef returnType,
+            EffectSpec effects) implements InterfaceMember {
+        /** Preserve existing interface declarations without checked effects. */
+        public InterfaceFunctionDecl(String name, boolean structural,
+                List<String> genericParameters, List<Param> parameters, TypeRef returnType) {
+            this(name, structural, genericParameters, parameters, returnType, EffectSpec.none());
+        }
+
         public InterfaceFunctionDecl {
+            if (effects == null) throw new IllegalArgumentException("interface checked effects cannot be null");
             genericParameters = List.copyOf(genericParameters);
             parameters = List.copyOf(parameters);
         }
