@@ -26,6 +26,7 @@ final class LinuxUringFileIoProviderTest {
         final List<Long> exists = new ArrayList<>();
         final List<Long> cancels = new ArrayList<>();
         final List<WriteCall> writes = new ArrayList<>();
+        final List<Long> removes = new ArrayList<>();
         boolean accept = true;
         boolean cancelAccept = true;
         int closes;
@@ -62,6 +63,14 @@ final class LinuxUringFileIoProviderTest {
             assertEquals(77L, handle);
             assertEquals('/', (char) path[0]);
             writes.add(new WriteCall(id, path.clone(), value.clone(), append));
+            return accept;
+        }
+
+        @Override
+        public boolean submitRemove(long handle, long id, byte[] path) {
+            assertEquals(77L, handle);
+            assertEquals('/', (char) path[0]);
+            removes.add(id);
             return accept;
         }
 
@@ -270,6 +279,25 @@ final class LinuxUringFileIoProviderTest {
     }
 
     @Test
+    void removeDeclinesGuestCancellationAndSettlesFromNativeCompletion()
+            throws Exception {
+        FakeBridge bridge = new FakeBridge();
+        LinuxUringFileIoProvider provider = new LinuxUringFileIoProvider(bridge);
+        OresFuture<Void> future = provider.remove("/tmp/remove-me");
+
+        assertEquals(1, bridge.removes.size());
+        long id = bridge.removes.getFirst();
+        assertFalse(future.cancel(false),
+                "filesystem removal cannot promise rollback");
+        assertTrue(bridge.cancels.isEmpty());
+        provider.nativeRemoveCompleted(id, 0);
+        assertNull(future.get(1, TimeUnit.SECONDS));
+        assertEquals(0, provider.pendingCount());
+        assertEquals(0, provider.reservedByteCount());
+        provider.close();
+    }
+
+    @Test
     void writeSubmissionFailureAndInvalidUnicodeFailClosed() {
         FakeBridge bridge = new FakeBridge();
         bridge.accept = false;
@@ -389,6 +417,58 @@ final class LinuxUringFileIoProviderTest {
             } catch (UnsupportedOperationException
                     | java.nio.file.FileSystemException unsupported) {
                 // The deterministic bridge tests still cover write ownership.
+            }
+
+            Path removable = root.resolve("remove-me.txt");
+            Files.writeString(removable, "bye", StandardCharsets.UTF_8);
+            assertNull(provider.remove(removable.toAbsolutePath().toString())
+                    .get(5, TimeUnit.SECONDS));
+            assertFalse(Files.exists(removable));
+
+            Path emptyDirectory = root.resolve("remove-dir");
+            Files.createDirectory(emptyDirectory);
+            assertNull(provider.remove(emptyDirectory.toAbsolutePath().toString())
+                    .get(5, TimeUnit.SECONDS));
+            assertFalse(Files.exists(emptyDirectory));
+
+            Path outsideDirectory =
+                    Files.createTempDirectory("ores-remove-outside-");
+            Path outsideFile = outsideDirectory.resolve("keep.txt");
+            Files.writeString(outsideFile, "keep", StandardCharsets.UTF_8);
+            Path ancestorLink = root.resolve("ancestor-link");
+            try {
+                Files.createSymbolicLink(ancestorLink, outsideDirectory);
+                ExecutionException ancestorEscape =
+                        assertThrows(ExecutionException.class, () ->
+                                provider.remove(
+                                                ancestorLink.resolve("keep.txt")
+                                                        .toAbsolutePath().toString())
+                                        .get(5, TimeUnit.SECONDS));
+                assertNotNull(ancestorEscape.getCause());
+                assertTrue(Files.exists(outsideFile));
+            } catch (UnsupportedOperationException
+                    | java.nio.file.FileSystemException unsupported) {
+                // Deterministic tests still cover remove ownership.
+            } finally {
+                Files.deleteIfExists(ancestorLink);
+                Files.deleteIfExists(outsideFile);
+                Files.deleteIfExists(outsideDirectory);
+            }
+
+            Path terminalTarget = root.resolve("terminal-target.txt");
+            Path terminalLink = root.resolve("terminal-link.txt");
+            Files.writeString(terminalTarget, "target", StandardCharsets.UTF_8);
+            try {
+                Files.createSymbolicLink(terminalLink, terminalTarget);
+                assertNull(provider.remove(terminalLink.toAbsolutePath().toString())
+                        .get(5, TimeUnit.SECONDS));
+                assertFalse(Files.exists(terminalLink, java.nio.file.LinkOption.NOFOLLOW_LINKS));
+                assertEquals(
+                        "target",
+                        Files.readString(terminalTarget, StandardCharsets.UTF_8));
+            } catch (UnsupportedOperationException
+                    | java.nio.file.FileSystemException unsupported) {
+                // No symlink support on this test filesystem.
             }
 
             Path link = root.resolve("link.txt");
