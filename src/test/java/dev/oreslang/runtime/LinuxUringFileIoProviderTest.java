@@ -211,6 +211,47 @@ final class LinuxUringFileIoProviderTest {
     }
 
     @Test
+    void realLinuxBlockedFifoOpenCancelsAndPhysicallyDrainsWhenAvailable()
+            throws Exception {
+        StrictFileIoProvider candidate = LinuxUringFileIoProvider.tryCreate();
+        Assumptions.assumeTrue(candidate instanceof LinuxUringFileIoProvider,
+                "kernel/JNI io_uring provider unavailable");
+        LinuxUringFileIoProvider provider =
+                (LinuxUringFileIoProvider) candidate;
+        try {
+            Path fifo = root.resolve("blocked.fifo");
+            Process mkfifo;
+            try {
+                mkfifo = new ProcessBuilder("mkfifo", fifo.toString()).start();
+            } catch (java.io.IOException unavailable) {
+                Assumptions.abort("mkfifo unavailable");
+                return;
+            }
+            Assumptions.assumeTrue(
+                    mkfifo.waitFor(5, TimeUnit.SECONDS) && mkfifo.exitValue() == 0,
+                    "mkfifo unavailable");
+
+            OresFuture<String> future =
+                    provider.readText(fifo.toAbsolutePath().toString());
+            assertEquals(1, provider.pendingCount());
+            assertTrue(future.cancel(false),
+                    "native async-cancel admission is required");
+            assertTrue(future.isCancelled());
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (provider.pendingCount() != 0
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            assertEquals(0, provider.pendingCount(),
+                    "physical io_uring completion must release native ownership");
+            assertTrue(future.isCancelled());
+        } finally {
+            provider.close();
+        }
+    }
+
+    @Test
     void realLinuxProviderReadsAndProbesThroughIoUringWhenAvailable()
             throws Exception {
         StrictFileIoProvider candidate = LinuxUringFileIoProvider.tryCreate();
