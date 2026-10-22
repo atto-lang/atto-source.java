@@ -42,10 +42,17 @@ terminal completions back into `OresFuture`. It never executes guest code.
 
 Admission is bounded to 128 pending operations on a 512-entry submission ring.
 The extra SQ capacity is deliberate headroom for cancellation, close and reactor
-wake operations rather than additional guest admission. Read buffers start at
-64 KiB and grow geometrically only as data arrives, up to a 16 MiB text limit
-plus one byte used to detect overflow. The provider therefore does not reserve
-16 MiB for every admitted read.
+wake operations rather than additional guest admission.
+
+Read/write buffering has a shared conservative 64 MiB per-context reservation
+budget. Each admitted text read reserves its full 16 MiB growth ceiling before
+native submission; strict writes reserve their actual encoded UTF-8 payload
+bytes. This prevents concurrent reads and writes from bypassing each other's
+memory bound. Reservations are released only when submission is rejected,
+physical completion arrives, or provider shutdown removes the pending owner.
+Native read buffers themselves still start at 64 KiB and grow geometrically
+only as data arrives; the reservation is admission accounting, not eager native
+allocation.
 
 Provider construction includes a JVM-attach startup barrier: a native handle is
 not returned to Java until the reactor can deliver JNI callbacks. The callback
