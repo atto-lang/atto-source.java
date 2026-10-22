@@ -33,6 +33,58 @@ final class NativeCarrierExecutorTest {
 
 
     @Test
+    void coldPoolIsNotTerminatedUntilShutdown() throws Exception {
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
+        try (NativeCarrierExecutor executor =
+                     new NativeCarrierExecutor(1, 1, 4, "ores-native-cold-wait-")) {
+            assertEquals(0, executor.getLiveCarrierCount());
+            assertFalse(executor.isTerminated(), "a cold but open executor accepts work");
+            assertFalse(executor.awaitTermination(0, TimeUnit.NANOSECONDS),
+                    "no native threads does not imply executor termination");
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(1, TimeUnit.SECONDS));
+            assertTrue(executor.isTerminated());
+            assertEquals(0, executor.getLiveCarrierCount());
+        }
+    }
+
+    @Test
+    void shutdownWaitsForNativeReaperAfterActiveTurn() throws Exception {
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
+        try (NativeCarrierExecutor executor =
+                     new NativeCarrierExecutor(1, 1, 4, "ores-native-reap-wait-")) {
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            try {
+                executor.execute(() -> {
+                    entered.countDown();
+                    while (release.getCount() != 0L) {
+                        try {
+                            release.await(10, TimeUnit.MILLISECONDS);
+                        } catch (InterruptedException ignored) {
+                            // shutdownNow interrupts the turn; retain it solely
+                            // to prove that native retirement awaits its exit.
+                        }
+                    }
+                });
+                assertTrue(entered.await(5, TimeUnit.SECONDS), "native carrier must start");
+                assertFalse(executor.awaitTermination(0, TimeUnit.NANOSECONDS));
+                executor.shutdownNow();
+                assertFalse(executor.isTerminated(), "joined pthreads are not yet retired");
+                assertFalse(executor.awaitTermination(50, TimeUnit.MILLISECONDS),
+                        "a live noncooperative task prevents native-pool retirement");
+            } finally {
+                release.countDown();
+            }
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS),
+                    "JNI reaper must signal termination after pthread_join");
+            assertTrue(executor.isTerminated());
+        }
+    }
+
+    @Test
     void manyLogicalTurnsMultiplexOntoOnePthreadCarrier() throws Exception {
         String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
         assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
