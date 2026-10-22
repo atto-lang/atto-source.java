@@ -1,0 +1,157 @@
+package dev.oreslang.types;
+
+import dev.oreslang.ast.Ast;
+import dev.oreslang.types.Types.AggregateKind;
+import dev.oreslang.types.Types.Primitive;
+import dev.oreslang.types.Types.Record;
+import dev.oreslang.types.Types.Type;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+
+/**
+ * Immutable, type-checked construction recipe for a closed anonymous aggregate.
+ *
+ * <p>This is FRONTEND METADATA, not runtime authority. In particular it does not
+ * prove a source is owned, immutable or actor-sendable: OwnershipChecker retains
+ * the independent Copy/borrowing/snapshot proof, and the runtime has its own
+ * tagged-value guard. No dynamic Map, reflection or implicit heap promotion is
+ * admitted. Future LLVM/Wasm/JS/.NET lowering must consume a fully checked
+ * version of these ordered steps instead of reinterpreting source syntax.
+ */
+public final class AggregateConstructionPlan {
+    private AggregateConstructionPlan() { }
+
+    public sealed interface Step permits NamedField, SpreadFields {
+        int sourceIndex();
+    }
+
+    /** A directly initialized compile-time field, possibly replacing a spread field. */
+    public record NamedField(int sourceIndex, String name, Type type) implements Step {
+        public NamedField {
+            if (sourceIndex < 0) throw new IllegalArgumentException("negative aggregate source index");
+            Objects.requireNonNull(name, "static aggregate field name");
+            Objects.requireNonNull(type, "named aggregate field type");
+        }
+    }
+
+    /**
+     * Statically admitted projection of a closed record or struct.
+     * The projection field map preserves source declaration order for codegen.
+     */
+    public record SpreadFields(
+            int sourceIndex, AggregateKind sourceKind, Map<String, Type> fields)
+            implements Step {
+        public SpreadFields {
+            if (sourceIndex < 0) throw new IllegalArgumentException("negative aggregate source index");
+            if (sourceKind != AggregateKind.RECORD && sourceKind != AggregateKind.STRUCT) {
+                throw new IllegalArgumentException("aggregate spread cannot project a contract row");
+            }
+            Objects.requireNonNull(fields, "spread projection fields");
+            fields = Collections.unmodifiableMap(new LinkedHashMap<>(fields));
+        }
+    }
+
+    public record Plan(
+            Ast.ObjectKind resultKind,
+            List<Step> orderedSteps,
+            Map<String, Type> resolvedFields,
+            Record resultType) {
+        public Plan {
+            Objects.requireNonNull(resultKind, "aggregate result kind");
+            orderedSteps = List.copyOf(orderedSteps);
+            resolvedFields = Collections.unmodifiableMap(new LinkedHashMap<>(resolvedFields));
+            Objects.requireNonNull(resultType, "checked aggregate result type");
+            if (!resultType.members().equals(resolvedFields)) {
+                throw new IllegalArgumentException("plan result type differs from resolved fields");
+            }
+        }
+    }
+
+    public static final class Builder {
+        private final Ast.ObjectExpr source;
+        private final boolean hasSpread;
+        private final ArrayList<Step> steps = new ArrayList<>();
+        private final LinkedHashMap<String, Type> resolved = new LinkedHashMap<>();
+
+        public Builder(Ast.ObjectExpr source) {
+            this.source = Objects.requireNonNull(source, "aggregate expression");
+            if (source.explicitStruct()) {
+                throw new IllegalArgumentException(
+                        "explicitly shaped structs require a separate definite-initialization plan");
+            }
+            hasSpread = source.fields().stream().anyMatch(Ast.ObjectField::spread);
+        }
+
+        private void requireNext(int index, boolean spread) {
+            if (index != steps.size() || index >= source.fields().size()) {
+                throw new IllegalArgumentException("aggregate plan source step is missing, repeated or out of order");
+            }
+            if (source.fields().get(index).spread() != spread) {
+                throw new IllegalArgumentException("aggregate plan step disagrees with source AST");
+            }
+        }
+
+        private static boolean copyableScalar(Type type) {
+            return type == Primitive.INT || type == Primitive.FLOAT
+                    || type == Primitive.BOOL || type == Primitive.STRING;
+        }
+
+        /** Named-field types must already have undergone ordinary literal widening. */
+        public Builder addNamed(int sourceIndex, String name, Type type) {
+            requireNext(sourceIndex, false);
+            Ast.ObjectField field = source.fields().get(sourceIndex);
+            if (!field.name().equals(name)) {
+                throw new IllegalArgumentException("aggregate plan field identity mismatch");
+            }
+            Objects.requireNonNull(type, "aggregate named field type");
+            if (hasSpread && !copyableScalar(type)) {
+                throw new IllegalArgumentException(
+                        "aggregate spread scalar-only stage rejects initializer field '" + name + "'");
+            }
+            steps.add(new NamedField(sourceIndex, name, type));
+            resolved.put(name, type);
+            return this;
+        }
+
+        public Builder addSpread(int sourceIndex, Type sourceType) {
+            requireNext(sourceIndex, true);
+            if (!(sourceType instanceof Record row) || row.kind() == AggregateKind.CONTRACT) {
+                throw new IllegalArgumentException(
+                        "aggregate spread requires an owned, closed struct or record type");
+            }
+            // Evaluate and validate the entire projection before inserting it:
+            // a failed spread must not make a partially admitted compiler plan.
+            LinkedHashMap<String, Type> projection = new LinkedHashMap<>();
+            for (Map.Entry<String, Type> field : row.members().entrySet()) {
+                if (!copyableScalar(field.getValue())) {
+                    throw new IllegalArgumentException(
+                            "aggregate spread scalar-only stage rejects field '" + field.getKey() + "'");
+                }
+                projection.put(field.getKey(), field.getValue());
+            }
+            steps.add(new SpreadFields(sourceIndex, row.kind(), projection));
+            resolved.putAll(projection);
+            return this;
+        }
+
+        public Plan finish() {
+            if (steps.size() != source.fields().size()) {
+                throw new IllegalArgumentException("incomplete aggregate construction plan");
+            }
+            Record type;
+            if (source.structuralRecord()) {
+                type = new Record(resolved, true, AggregateKind.RECORD);
+            } else if (source.inferredStruct()) {
+                type = Record.struct(resolved);
+            } else {
+                throw new IllegalArgumentException("unsupported aggregate result kind " + source.kind());
+            }
+            return new Plan(source.kind(), steps, resolved, type);
+        }
+    }
+}
