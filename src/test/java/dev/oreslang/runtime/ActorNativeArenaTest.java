@@ -558,6 +558,100 @@ final class ActorNativeArenaTest {
     }
 
     @Test
+    void taskFrameSpillsSurviveAwaitAndReleaseReferencesAtCompletion() {
+        AtomicLong charged = new AtomicLong();
+        Object marker = new Object();
+        try (ActorNativeArena arena = arena(16 * 1024, charged)) {
+            Map<String, Object> child = arena.fields(List.of("value"), marker);
+            child.put("value", 101L);
+            ActorNativeArena.TaskFrame frame = arena.taskFrame();
+            frame.configureSpillSlots(3);
+            assertEquals(3, frame.spillSlotCount());
+            assertThrows(IllegalStateException.class, () -> frame.configureSpillSlots(1));
+            assertThrows(IllegalStateException.class, () -> frame.spill(0, 1L));
+            assertThrows(IllegalArgumentException.class,
+                    () -> arena.taskFrame().configureSpillSlots(0));
+            assertThrows(IndexOutOfBoundsException.class, () -> frame.restore(3));
+
+            frame.beginInitialResume();
+            frame.spill(0, child);
+            frame.spill(1, "saved-over-await");
+            frame.spill(2, -0.0d);
+            assertEquals(1, arena.nativeReferenceCount());
+            assertThrows(IllegalArgumentException.class, () -> frame.spill(1, new Object()));
+            assertEquals("saved-over-await", frame.restore(1),
+                    "failed native spill must preserve prior payload");
+
+            long ticket = frame.awaiting();
+            assertThrows(IllegalStateException.class, () -> frame.restore(0),
+                    "a suspended actor frame must not be read from outside a resumed turn");
+            assertThrows(IllegalStateException.class, () -> frame.spill(2, 9L));
+            frame.beginResume(ActorNativeArena.SuspensionKind.AWAIT, ticket);
+            assertSame(child, frame.restore(0));
+            assertEquals("saved-over-await", frame.restore(1));
+            assertEquals(Double.doubleToRawLongBits(-0.0d),
+                    Double.doubleToRawLongBits((double) frame.restore(2)));
+            frame.done();
+            assertEquals(0, arena.nativeReferenceCount(),
+                    "terminal native frames must release all spilled native facade roots");
+            assertThrows(IllegalStateException.class, () -> frame.restore(0));
+            assertThrows(IllegalStateException.class, () -> frame.spill(0, child));
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
+    void taskFrameFailureReleasesSuspendedSpillsAndRejectsForeignFacades() {
+        AtomicLong charged = new AtomicLong();
+        Object marker = new Object();
+        try (ActorNativeArena arena = arena(16 * 1024, charged);
+             ActorNativeArena foreign = arena(16 * 1024, new AtomicLong())) {
+            ActorNativeArena.TaskFrame frame = arena.taskFrame();
+            frame.configureSpillSlots(1);
+            Map<String, Object> foreignChild = foreign.fields(List.of("value"), marker);
+            frame.beginInitialResume();
+            assertThrows(SecurityException.class, () -> frame.spill(0, foreignChild));
+            assertNull(frame.restore(0));
+            Map<String, Object> local = arena.fields(List.of("value"), marker);
+            frame.spill(0, local);
+            long ticket = frame.cooperating();
+            assertEquals(1, arena.nativeReferenceCount());
+            frame.failed();
+            assertEquals(ActorNativeArena.TaskPhase.FAILED, frame.phase());
+            assertEquals(0, arena.nativeReferenceCount(),
+                    "failure during suspension must drop actor-local reference roots");
+            assertThrows(IllegalStateException.class,
+                    () -> frame.beginResume(ActorNativeArena.SuspensionKind.COOPERATE, ticket));
+            assertThrows(IllegalStateException.class, () -> frame.restore(0));
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
+    void nativeListClearDropsReferencesAcrossChunksAndReusesExistingStorage() {
+        AtomicLong charged = new AtomicLong();
+        Object marker = new Object();
+        try (ActorNativeArena arena = arena(256 * 1024, charged)) {
+            ActorNativeArena.NativeList list = arena.nativeList();
+            Map<String, Object> child = arena.fields(List.of("v"), marker);
+            for (int i = 0; i < 161; i++) list.add(i % 16 == 0 ? child : (long) i);
+            assertEquals(161, list.size());
+            assertEquals(1, arena.nativeReferenceCount(),
+                    "multiple list references to one child use one identity entry");
+            long allocated = arena.allocatedBytes();
+            list.clear();
+            assertEquals(0, list.size());
+            assertEquals(0, arena.nativeReferenceCount());
+            for (int i = 0; i < 161; i++) list.add((long) i);
+            assertEquals(161, list.size());
+            assertEquals(160L, list.get(160));
+            assertEquals(allocated, arena.allocatedBytes(),
+                    "cleared native chunks must be reusable without new actor allocation");
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
     void actorTaskFramesPersistResumeAuthorityInNativeMemory() {
         AtomicLong charged = new AtomicLong();
         try (ActorNativeArena arena = arena(4096, charged)) {
