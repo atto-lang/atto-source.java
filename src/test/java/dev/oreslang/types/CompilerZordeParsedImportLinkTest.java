@@ -211,6 +211,11 @@ final class CompilerZordeParsedImportLinkTest {
                 staged(API.replace("\"svc.users\"", "\"svc.users.\""), "svc.api"));
         assertThrows(IllegalArgumentException.class, () ->
                 staged(API.replace("\"svc.users\"", "\"svc..users\""), "svc.api"));
+        assertThrows(IllegalArgumentException.class, () ->
+                staged("namespace api; import type "
+                        + "A".repeat(129)
+                        + " from \"svc.users\"; "
+                        + "@Range(min=1,max=100) type Port = int;", "svc.api"));
     }
 
     @Test void singleValidImportStillCannotInventRuntimeProofAuthority() {
