@@ -243,3 +243,39 @@ These adapters are Java host-runtime building blocks ONLY. Source
 `Stream<T>` generic binding, `for await`, full Observable, scheduler-aware
 operators and LLVM parity remain follow-ups. Exact-head full Maven
 and GraalVM tests are not yet verified.
+
+
+## 11. Scheduler-bound Future chains and strict bounded collector
+
+The Java host foundation adds \`FutureCombinators.map(scheduler, future,
+mapper)\`, \`flatMap(scheduler, future, mapper)\`, and \`zip(scheduler, a, b)\`:
+- mapper callbacks execute only as Task turns on the specified scheduler,
+  NOT inline on a producer-completion/I/O/JNI/timer thread;
+- a dependent Task awaits without parking an OS carrier; a flatMap's
+  returned Future is dynamically awaited through the scheduler's
+  dependency/cycle guard;
+- zip is a heterogeneously typed Pair of already-started Futures and
+  preserves positional order;
+- cancellation of a dependent Task does not revoke either shared input
+  Future; source/inner cancellation-to-dependent classification is an
+  explicit **remaining parity gate**, not a claimed implemented guarantee.
+- guest callback effects, ownership and Send/Sync proofs are **not**
+  established by the Java host-only Function API. Do not bind this
+  directly to untrusted guest functions before source checking.
+
+The Java host \`AsyncSequenceCollectors.collect(scheduler, cursor,
+maxItems)\` uses a resumable Task for nonrecursive, nonparking
+\`Cursor.nextAsync\` iteration; reads at most maxItems+1 values so an
+oversized input raises \`LimitExceededException\` rather than allocating
+unbounded result storage. The extra consumed value cannot be rolled back
+into an at-most-once Channel cursor. The collector takes the cursor's
+consumption lifetime, and closes it only after the tracked Task retires.
+\`CollectionHandle.result()\` observes logical result while
+\`CollectionHandle.getDone()\` is a separate physical-quiescence plus
+cursor-close barrier. Cancellation releases that cursor's pending read;
+borrowed Channel producer remains live. Limits are item counts only:
+byte quotas are still required before guest-facing or strict zero-GC use.
+
+No source generic binders, native continuation lowering, full reactive
+multicast, Task.parallel TaskScope lifecycle or native/java performance
+claim is provided by these host primitives.
