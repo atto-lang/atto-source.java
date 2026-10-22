@@ -8,6 +8,7 @@ on:
       - 'src/main/java/dev/oreslang/parser/RefinementSyntax.java'
       - 'src/main/java/dev/oreslang/types/RefinementRules.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/types/Types.java'
       - 'src/main/java/dev/oreslang/compiler/ZordeSchemaGenerator.java'
       - 'src/test/java/dev/oreslang/RefinementRulesTest.java'
       - 'src/test/java/dev/oreslang/RefinementSyntaxGateTest.java'
