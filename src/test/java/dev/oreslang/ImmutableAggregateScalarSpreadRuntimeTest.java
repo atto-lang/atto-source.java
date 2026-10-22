@@ -64,6 +64,24 @@ final class ImmutableAggregateScalarSpreadRuntimeTest {
                     "raw parser AST must fail specifically at checked spread provenance");
         }
 
+        // Even when the exact spread expression was approved inside another
+        // complete program, a new root wrapping the same child declarations
+        // has no executable proof. This closes the cross-unit AST graft path.
+        Ast.Program approved = OresCompiler.parseAndTypeCheck(source);
+        Ast.Program grafted = new Ast.Program(
+                approved.namespace(), approved.imports(), approved.modules());
+        assertNotSame(approved, grafted);
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false).build();
+             OresLanguage.PrecheckedProgramScope ignored =
+                     OresLanguage.openPrecheckedProgram(
+                             "unapproved-spread.ores", source, grafted)) {
+            RuntimeException failure = assertThrows(
+                    RuntimeException.class, () -> context.eval(guest));
+            assertTrue(failure.toString().contains("type and ownership admission"),
+                    "a grafted program must not borrow an approved child AST's authority");
+        }
+
         Ast.Program typeOnly = TypeChecker.checkTypesWithDiagnostics(Parser.parse(source)).program();
         try (Context context = Context.newBuilder(OresLanguage.ID)
                     .allowAllAccess(false).build();
