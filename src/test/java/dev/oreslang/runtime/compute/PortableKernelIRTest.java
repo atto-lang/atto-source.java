@@ -2,6 +2,10 @@ package dev.oreslang.runtime.compute;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+
 import static dev.oreslang.runtime.compute.PortableKernelIR.*;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -107,6 +111,95 @@ final class PortableKernelIRTest {
         assertEquals(32, raw.length);
         assertEquals((byte) 0x00, raw[8], "AoS padding must remain untouched");
         assertEquals((byte) 0x00, raw[15], "AoS padding must remain untouched");
+    }
+
+    @Test
+    void openClLoweringMatchesG2AdmissionAndNeverFallsBack() {
+        var plan = new Plan(Layout.AOSOA, 5, 2, 4, 16, 4);
+        var kernel = new Kernel(plan, Element.F32, Operation.SCALE_BIAS, 1.5f, -2.0f);
+        var artifact = lowerOpenCl(kernel, new GpuTarget(64, 4096, 100, true));
+
+        assertEquals("oreslang_dop_f32", artifact.kernelName());
+        assertEquals(plan.byteLength(), artifact.requiredBytes());
+        assertEquals(5, artifact.globalRows());
+        assertEquals(2, artifact.globalFields());
+        assertEquals(1, artifact.artifactAbiVersion());
+        assertEquals(64, artifact.requiredAddressBits());
+        assertTrue(artifact.requiredFloat32());
+        assertTrue(artifact.requiredLittleEndian());
+        assertTrue(artifact.deviceSource().startsWith("#pragma OPENCL FP_CONTRACT OFF\n"));
+        assertTrue(artifact.deviceSource().contains("get_global_id(1)"));
+        assertTrue(artifact.deviceSource().contains("dst[slot]"));
+        assertTrue(artifact.deviceSource().contains("1.50000000e+00f"));
+        assertTrue(artifact.deviceSource().contains("-2.00000000e+00f"));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> lowerOpenCl(kernel, new GpuTarget(32, 4096, 100, true)));
+        assertThrows(IllegalArgumentException.class,
+                () -> lowerOpenCl(kernel, new GpuTarget(64, 0, 100, true)));
+        assertThrows(IllegalArgumentException.class,
+                () -> lowerOpenCl(kernel, new GpuTarget(64, 4096, 0, true)));
+        assertThrows(IllegalArgumentException.class,
+                () -> lowerOpenCl(kernel, new GpuTarget(64, 4096, 100, false)));
+        assertThrows(IllegalArgumentException.class,
+                () -> lowerOpenCl(kernel, new GpuTarget(64, plan.byteLength() - 1, 100, true)));
+        assertThrows(IllegalArgumentException.class,
+                () -> lowerOpenCl(kernel, new GpuTarget(64, 4096, 4, true)));
+
+        var empty = new Plan(Layout.AOS, 0, 1, 4, 4, 1);
+        var emptyKernel = new Kernel(empty, Element.F32, Operation.SCALE, 1.0f, 0.0f);
+        assertThrows(IllegalArgumentException.class,
+                () -> lowerOpenCl(emptyKernel, new GpuTarget(64, 4096, 100, true)));
+    }
+
+    @Test
+    void cpuReferenceExecutionSerializesReversedBufferPairsWithoutDeadlock() throws Exception {
+        var plan = new Plan(Layout.AOS, 1, 1, 4, 4, 1);
+        var kernel = new Kernel(plan, Element.F32, Operation.SCALE, 2.0f, 0.0f);
+
+        for (int iteration = 0; iteration < 100; iteration++) {
+            var a = new HostBuffer(plan);
+            var b = new HostBuffer(plan);
+            a.write(0, 0, 1.0f);
+            b.write(0, 0, 3.0f);
+
+            var start = new CountDownLatch(1);
+            var failure = new AtomicReference<Throwable>();
+            Thread left = new Thread(() -> {
+                try {
+                    start.await();
+                    CpuReferenceProvider.execute(kernel, a, b);
+                } catch (Throwable thrown) {
+                    failure.compareAndSet(null, thrown);
+                }
+            });
+            Thread right = new Thread(() -> {
+                try {
+                    start.await();
+                    CpuReferenceProvider.execute(kernel, b, a);
+                } catch (Throwable thrown) {
+                    failure.compareAndSet(null, thrown);
+                }
+            });
+            left.start();
+            right.start();
+            start.countDown();
+
+            left.join(TimeUnit.SECONDS.toMillis(5));
+            right.join(TimeUnit.SECONDS.toMillis(5));
+            assertFalse(left.isAlive(), "left CPU execution deadlocked");
+            assertFalse(right.isAlive(), "right CPU execution deadlocked");
+            if (failure.get() != null) {
+                fail(failure.get());
+            }
+
+            float av = a.read(0, 0);
+            float bv = b.read(0, 0);
+            boolean leftFirst = av == 4.0f && bv == 2.0f;
+            boolean rightFirst = av == 6.0f && bv == 12.0f;
+            assertTrue(leftFirst || rightFirst,
+                    () -> "non-serializable CPU result: a=" + av + " b=" + bv);
+        }
     }
 
     @Test
