@@ -20,6 +20,7 @@ import java.util.function.Function;
  */
 public final class NominalErrorProof {
     private static final int MAX_ANCESTRY_NODES = 128;
+    private static final int MAX_DECLARED_EFFECT_TYPES = 64;
 
     private NominalErrorProof() { }
 
@@ -53,6 +54,15 @@ public final class NominalErrorProof {
         Objects.requireNonNull(effects, "checked effects");
         validateRootMetadata(trustedRoot);
         Objects.requireNonNull(resolveClass, "nominal class resolver");
+        // Validate the total row before walking any ancestry graph. This caps
+        // up-front work from compiler-generated or linked metadata as well as
+        // guest parser input. A type repeated across categories still counts
+        // once per category because those may-effects are independent.
+        long declared = (long) effects.throwsTypes().size()
+                + effects.raisesTypes().size() + effects.panicsTypes().size();
+        if (declared > MAX_DECLARED_EFFECT_TYPES) {
+            throw new IllegalArgumentException("checked effect declaration exceeds payload budget");
+        }
         requireCategory(effects.throwsTypes(), "throws", trustedRoot, resolveClass);
         requireCategory(effects.raisesTypes(), "raises", trustedRoot, resolveClass);
         requireCategory(effects.panicsTypes(), "panics", trustedRoot, resolveClass);
