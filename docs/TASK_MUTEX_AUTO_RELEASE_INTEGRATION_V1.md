@@ -137,6 +137,42 @@ owner-key wrapper with a **stable generation-checked numeric handle**,
 maintaining the same identity and compare-and-set invariants. The current
 wrapper is a correctness staging bridge, not a physical layout commitment.
 
+## Additional cancellation-versus-publication hardening (draft)
+
+A queued async lock grant has **three distinct milestones**: permit
+reservation, internal `TaskBoundRequest.bindGuard`, and successful
+`GuardFuture` completion. Only the last is externally published to
+the requesting Task. The runtime must **not poison shared mutable
+state merely because a guard object was bound internally**.
+
+When Task physical retirement races with the grant:
+- Mark the request retired to deny a future bind.
+- Cancel the pending Future (outside the request monitor) if it is
+  not already successfully completed.
+- Test the Future's terminal state *after* the cancellation attempt:
+  successful completion means the guard was published and an abandoned
+  holder must poison/release; cancellation/timeout/exception means no
+  payload was exposed and the permit must be released **without poison**.
+- Retain guard exact-once CAS release and existing Task lease/queue
+  accounting. Do not execute source defer/recover on a granting carrier.
+
+New Java JUnit tests check the publication predicate for pending,
+cancelled, timed-out, and successful Futures, and race async permit
+handoff against owner cancellation across 64 fresh locks. Tests are
+**committed but not executed** on the required JDK25/GraalVM runner.
+
+A separate local JDK21 **protocol model**, not compiled Oreslang source,
+completed three deterministic schedules plus 10,000 concurrent
+Future-completion/cancellation schedules with one release and
+poison iff successfully published. This is only limited evidence for the
+publication rule; it does **not** verify actual mutex integration, JUnit,
+actor lifecycle or physical memory reclamation.
+
+Private source mirrors require an independently approved exact destination
+and source policy, not just a working runner. The default-branch
+`.github/private-ci-approved-repositories.txt` currently has no active
+entries; do not use an unapproved test organization.
+
 ## Required safety ordering
 
 ```text
