@@ -15,7 +15,7 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 final class CompilerZordeParsedImportLinkTest {
     private static final String USERS =
-            "namespace users; @MinLength(1) define newtype Username(string);";
+            "namespace users; @MinLength(1) define pub newtype Username(string);";
     private static final String API =
             "namespace api; "
             + "import type Username from \"svc.users\"; "
@@ -129,6 +129,20 @@ final class CompilerZordeParsedImportLinkTest {
                         unresolved.get("svc.users").sourceDigest(), 3, Map.of()));
         assertThrows(IllegalArgumentException.class,
                 () -> verify(unresolved, wrongPin));
+    }
+
+    @Test void aPrivateSchemaCannotBeImportedAcrossSourceUnits() {
+        String privateSource =
+                "namespace users; @MinLength(1) define newtype Username(string);";
+        var candidates = Map.of(
+                "svc.api", staged(API, "svc.api"),
+                "svc.users", staged(privateSource, "svc.users"));
+        assertTrue(candidates.get("svc.users")
+                .schemaEntriesForLinker().containsKey("users.Username"));
+        assertFalse(candidates.get("svc.users")
+                .publicSchemaNames().contains("users.Username"));
+        assertThrows(IllegalArgumentException.class,
+                () -> verify(candidates, pinned(candidates)));
     }
 
     @Test void dynamicWildcardAliasAndDuplicateImportsFailClosed() {
