@@ -115,9 +115,13 @@ public final class IncrementalCompiler {
                 try {
                     // Foreign layouts are used for type and ownership proofs;
                     // their declarations are never executed in the importer.
-                    checked = TypeChecker.checkTypesWithImportedClasses(
-                            Parser.parse(normalized.get(id)), linked.classes(), linked.aliases());
-                    OwnershipChecker.checkWithImportedClasses(checked, linked.classes());
+                    TypeChecker.TypeCheckResult analysis =
+                            TypeChecker.checkTypesWithImportedClassesWithDiagnostics(
+                                    Parser.parse(normalized.get(id)),
+                                    linked.classes(), linked.aliases());
+                    checked = analysis.program();
+                    OwnershipChecker.checkWithImportedClasses(
+                            checked, linked.classes(), analysis.shortInferredAliases());
                 } catch (IllegalArgumentException invalid) {
                     throw new IllegalArgumentException(
                             "Oreslang source unit '" + id + "': " + invalid.getMessage(), invalid);
@@ -245,6 +249,17 @@ public final class IncrementalCompiler {
             abi.append(" implements ");
             for (Ast.TypeRef iface : klass.interfaces()) abi.append(typeRef(iface)).append(',');
             abi.append('\n');
+            // Computed class indexing is checked against the complete instance-field
+            // domain, not only the public ABI surface. The first non-public field
+            // changes an external dynamic receiver[key] from safe to rejected, so
+            // that safety-domain transition must invalidate linked dependents.
+            if (klass.actorKind() == Ast.ActorKind.NONE) {
+                boolean hasNonPublicComputedIndexField = klass.fields().stream()
+                        .anyMatch(field -> field.visibility() != Ast.Visibility.PUBLIC);
+                abi.append(" computed-index-has-nonpublic-field=")
+                        .append(hasNonPublicComputedIndexField)
+                        .append('\n');
+            }
             if (klass.constructor() != null
                     && klass.constructor().visibility() == Ast.Visibility.PUBLIC) {
                 abi.append(" constructor");

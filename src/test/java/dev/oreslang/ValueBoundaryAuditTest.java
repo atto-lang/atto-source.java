@@ -39,7 +39,7 @@ final class ValueBoundaryAuditTest {
         assertEquals("42742", run("""
                 fnc pair(): [int,int] { return (19,23); }
                 fnc record(): {left: int, right: int} {
-                  return struct{left: int, right: int}{right: 23, left: 19};
+                  return record{right: 23, left: 19};
                 }
                 fnc add(int a, int b): int { return a+b; }
                 fnc recordArg({right: int, left: int} value): int {
