@@ -80,9 +80,13 @@ public final class ActorResults {
         if (replies.size() > MAX_FAN_IN) {
             throw new IllegalArgumentException("actor fan-in exceeds " + MAX_FAN_IN);
         }
-        ArrayList<Pending<R>> snapshot = new ArrayList<>(replies.size());
+        // Capture an immutable input snapshot BEFORE installing a single
+        // reply observer; a caller-owned mutable list is not stable while
+        // another Task or actor appends new requests.
+        List<? extends Pending<R>> fixed = List.copyOf(replies);
+        ArrayList<Pending<R>> snapshot = new ArrayList<>(fixed.size());
         Set<UUID> requests = new HashSet<>();
-        for (Pending<R> entry : replies) {
+        for (Pending<R> entry : fixed) {
             Objects.requireNonNull(entry, "actor reply");
             if (!requests.add(entry.requestId())) {
                 throw new IllegalArgumentException(
