@@ -177,14 +177,22 @@ public final class NativeHttp implements AutoCloseable {
     public Exchange claim(String token) {
         Exchange exchange = transfers.get(token);
         if (exchange == null) throw new IllegalStateException("unknown or already claimed HTTP transfer");
+        final ActorNativeArena arena;
         synchronized (exchange.state) {
             exchange.checkOwner();
             if (!transfers.remove(token, exchange)) throw new IllegalStateException("HTTP transfer already claimed");
             exchange.state.ticket = null;
             exchange.state.claimedNanos = System.nanoTime();
             CorePerf.elapsed(CorePerf.HTTP_CLAIM, exchange.state.spawnNanos, exchange.state.claimedNanos);
-            return exchange;
+            arena = ActorRuntime.currentNativeArena();
+            if (arena == null) {
+                throw new SecurityException("HTTP transfer claim requires actor native memory authority");
+            }
         }
+        // Claim is the trusted core/runtime handoff point. Mint native-slot
+        // authority here, not from a later ownership query such as nativeArena().
+        arena.issueNativeCapability(exchange);
+        return exchange;
     }
 
     private Object owner() {
@@ -444,18 +452,12 @@ public final class NativeHttp implements AutoCloseable {
         }
         /** Host transport stays on the control plane; guest slots store a checked handle ID. */
         @Override public ActorNativeArena nativeArena() {
-            final ActorNativeArena arena;
             synchronized (state) {
                 checkOwner();
-                arena = ActorRuntime.currentNativeArena();
+                ActorNativeArena arena = ActorRuntime.currentNativeArena();
                 if (arena == null) throw new SecurityException("HTTP actor handle requires actor ownership");
+                return arena;
             }
-            // Do not acquire the arena monitor while holding State's monitor.
-            // Native slot writes check arena -> State, and concurrent actor
-            // handlers must not deadlock against the reverse lock order.
-            // The HTTP core issues the opaque handle only after owner checks.
-            arena.issueNativeCapability(this);
-            return arena;
         }
         private void checkOwner() {
             if (state.terminal) throw new IllegalStateException("HTTP exchange is closed");
