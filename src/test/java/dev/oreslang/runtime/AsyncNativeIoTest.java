@@ -24,7 +24,7 @@ class AsyncNativeIoTest {
         return output.toString();
     }
 
-    @Test void strictFilesystemReadWriteAppendAndExistsCompleteWithoutWorkerFallback()
+    @Test void strictFilesystemReadWriteAppendRemoveAndExistsCompleteWithoutWorkerFallback()
             throws Exception {
         Path path = root.resolve("item.txt");
         Path missing = root.resolve("missing.txt");
@@ -37,19 +37,24 @@ class AsyncNativeIoTest {
               stdio.println(await fs.exists_async("%s"));
               try { await fs.read_text_async("%s"); }
               catch (failure) { stdio.println("missing-caught"); }
-              try { await fs.remove_async("%s"); }
-              catch (failure) { stdio.println("remove-provider-pending"); }
+              await fs.remove_async("%s");
+              stdio.println(await fs.exists_async("%s"));
+              try { await fs.mkdir_all_async("%s"); }
+              catch (failure) { stdio.println("mkdir-provider-pending"); }
               return;
             }
-            """.formatted(path, path, path, path, missing, missing, path),
+            """.formatted(
+                    path, path, path, path, missing, missing,
+                    path, path, root.resolve("pending-dir")),
             RuntimePermissions.denyAll()
                 .withAllowed(RuntimePermissions.Permission.READ, root.toString())
                 .withAllowed(RuntimePermissions.Permission.WRITE, root.toString()),
             new ByteArrayOutputStream());
         assertEquals(
-                "true\nhello world\nfalse\nmissing-caught\nremove-provider-pending\n",
+                "true\nhello world\nfalse\nmissing-caught\nfalse\nmkdir-provider-pending\n",
                 output.replace("\r", ""));
-        assertEquals("hello world", Files.readString(path));
+        assertFalse(Files.exists(path));
+        assertFalse(Files.exists(root.resolve("pending-dir")));
     }
 
     @Test void untrustedActorCannotLaunderParentFilesystemCapabilityThroughStrictProvider() throws Exception {
