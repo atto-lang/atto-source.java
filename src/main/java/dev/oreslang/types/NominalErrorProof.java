@@ -40,14 +40,10 @@ public final class NominalErrorProof {
         if (candidate == null) {
             throw new IllegalArgumentException("checked effect payload must resolve to a nominal class: " + payload);
         }
-        // Refuse a class resolver that maps a primitive or unrelated source
-        // spelling to a nominal Error handle. Imported aliases require their
-        // own authenticated identity proof before this restriction is lifted.
-        if (!payload.name().equals(candidate.name())
-                && !payload.name().endsWith("." + candidate.name())) {
-            throw new IllegalArgumentException(
-                    "checked effect payload name does not match resolved class identity: " + payload);
-        }
+        // Identity-resolving import aliases and qualified names need separate
+        // trusted module ownership proof. A suffix check is NOT sufficient:
+        // attacker.Error must not resolve to a trusted class named Error.
+        requireExactNominalReference(payload, candidate, "effect payload");
         Set<Ast.ClassDecl> ancestry = Collections.newSetFromMap(new IdentityHashMap<>());
         if (!descendsFromRoot(candidate, trustedRoot, resolveClass, ancestry, new int[]{0})) {
             throw new IllegalArgumentException(
@@ -80,13 +76,32 @@ public final class NominalErrorProof {
         }
     }
 
+    private static final Set<String> NON_NOMINAL_TYPE_NAMES = Set.of(
+            "int", "float", "decimal", "complex", "bool", "boolean",
+            "string", "String", "void", "null", "Object", "obj", "arr",
+            "Fnc", "Function", "Option", "Result", "Future", "Task",
+            "List", "Array", "Map", "Set", "Any", "Unknown");
+
     private static void ensureConcrete(Ast.TypeRef reference, String label) {
         // Generic error instantiation requires separate substitution, ownership,
         // wire-serialization and payload bounds. Reject rather than guess.
         if (reference.inferArguments() || !reference.arguments().isEmpty()
-                || reference.name().startsWith("$")) {
+                || reference.name().isBlank() || reference.name().startsWith("$")
+                || NON_NOMINAL_TYPE_NAMES.contains(reference.name())) {
             throw new IllegalArgumentException(label
                     + " must be a concrete, non-generic nominal class: " + reference);
+        }
+    }
+
+    private static void requireExactNominalReference(
+            Ast.TypeRef reference, Ast.ClassDecl resolved, String label) {
+        // The verifier receives an untrusted resolver function and must not
+        // accept arbitrary mismatched class objects returned for a spelling.
+        // Until an authenticated qualified-name resolver is wired, deliberately
+        // reject source-qualified aliases rather than accepting a suffix match.
+        if (!reference.name().equals(resolved.name())) {
+            throw new IllegalArgumentException(
+                    label + " name does not match resolved class identity: " + reference);
         }
     }
 
@@ -123,6 +138,7 @@ public final class NominalErrorProof {
                     throw new IllegalArgumentException(
                             "unresolved checked error superclass: " + parentRef);
                 }
+                requireExactNominalReference(parentRef, parent, "checked error superclass");
                 foundTrustedRoot = descendsFromRoot(
                         parent, trustedRoot, resolveClass, ancestry, visited) || foundTrustedRoot;
             }
