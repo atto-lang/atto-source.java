@@ -4,6 +4,7 @@ import dev.oreslang.compiler.BuildOptions;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.compiler.TreeShaker;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.types.AggregateConstructionPlan;
 import dev.oreslang.parser.Parser;
 import org.junit.jupiter.api.Test;
 
@@ -62,6 +63,13 @@ final class TreeShakerTest {
         assertTrue(specialized.fields().getFirst().spread());
         assertNull(specialized.fields().getFirst().name());
         assertEquals("bar", specialized.fields().get(1).name());
+
+        // Compiler entry point must revalidate both new optimizer-created ASTs
+        // rather than inherit the input program's identity-bound authority.
+        assertFalse(result.needsSpreadRecheck(),
+                "compileForBuild must not return a pending spread validation");
+        assertDoesNotThrow(() -> AggregateConstructionPlan.Checked.requireAdmitted(copied));
+        assertDoesNotThrow(() -> AggregateConstructionPlan.Checked.requireAdmitted(specialized));
     }
 
     @Test
