@@ -162,6 +162,14 @@ public final class SupervisorShutdownTree {
         Objects.requireNonNull(grace, "grace");
         Objects.requireNonNull(watchdog, "watchdog");
         if (grace.isNegative()) throw new IllegalArgumentException("negative shutdown grace");
+        // A huge positive Duration must not launch shutdown and then throw
+        // during conversion before installing the deadline observer.
+        long graceNanos;
+        try {
+            graceNanos = grace.toNanos();
+        } catch (ArithmeticException overflow) {
+            graceNanos = Long.MAX_VALUE;
+        }
         OresFuture<Void> done = shutdown(reason);
         var timeout = watchdog.schedule(() -> {
             if (done.isDone()) return;
@@ -187,7 +195,7 @@ public final class SupervisorShutdownTree {
                     deadline.addSuppressed(failure);
                 }
             }
-        }, grace.toNanos(), TimeUnit.NANOSECONDS);
+        }, graceNanos, TimeUnit.NANOSECONDS);
         done.whenCompleteRuntime((ignored, failure) -> timeout.cancel(false));
         return done;
     }
