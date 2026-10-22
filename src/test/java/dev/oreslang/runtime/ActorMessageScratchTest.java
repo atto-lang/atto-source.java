@@ -626,6 +626,71 @@ final class ActorMessageScratchTest {
     }
 
     @Test
+    @Timeout(25)
+    void stoppedActorDoesNotReleaseMemoryWhileSourceTaskStillRunsOnItsCarrier()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch sourceEntered = new CountDownLatch(1);
+            CountDownLatch releaseSource = new CountDownLatch(1);
+            AtomicReference<Throwable> guestFailure = new AtomicReference<>();
+            var actor = runtime.<Integer>spawnSharedTrusted(ctx -> (message, turn) -> {
+                runtime.startActorTask(resume -> {
+                    sourceEntered.countDown();
+                    if (!releaseSource.await(10, TimeUnit.SECONDS)) {
+                        throw new AssertionError("timed out before source Task was released");
+                    }
+                    return OresScheduler.done(1);
+                });
+            });
+            try {
+                actor.send(1);
+                assertTrue(sourceEntered.await(8, TimeUnit.SECONDS),
+                        "source Task must be physically executing before stop");
+                actor.stop();
+                assertFalse(actor.done().isDone(),
+                        "actor done cannot publish while the source carrier still executes");
+                assertFalse(actor.awaitTermination(75, TimeUnit.MILLISECONDS),
+                        "physical actor completion cannot precede carrier retirement");
+            } finally {
+                releaseSource.countDown();
+            }
+            assertTrue(actor.awaitTermination(8, TimeUnit.SECONDS));
+            assertTrue(actor.done().isDone());
+            assertEquals(0L, runtime.actorMemoryBytes(),
+                    "native memory refunds must follow source Task carrier retirement");
+            assertNull(guestFailure.get());
+        }
+    }
+
+    @Test
+    @Timeout(25)
+    void stoppingActorWithSuspendedSourceTaskCancelsAwaitAndCompletesPhysicalRetirement()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            OresFuture<Integer> producer = new OresFuture<>();
+            CountDownLatch taskSuspended = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            var actor = runtime.<Integer>spawnSharedTrusted(ctx -> (message, turn) -> {
+                runtime.startActorTask(resume -> {
+                    taskSuspended.countDown();
+                    return OresScheduler.await(producer);
+                });
+            });
+            actor.send(1);
+            assertTrue(taskSuspended.await(8, TimeUnit.SECONDS));
+            actor.stop();
+            assertTrue(actor.awaitTermination(8, TimeUnit.SECONDS),
+                    "stopped suspended Task must not strand actor physical retirement");
+            assertTrue(actor.done().isDone());
+            assertFalse(producer.isDone(),
+                    "cancelling a waiting source Task must not cancel its producer");
+            assertEquals(0, producer.pendingRuntimeWaiterCount(),
+                    "scheduler close must detach the abandoned async continuation");
+            assertEquals(0L, runtime.actorMemoryBytes());
+        }
+    }
+
+    @Test
     @Timeout(15)
     void suspendedSourceReceiveKeepsScratchUntilFutureCompletion() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
