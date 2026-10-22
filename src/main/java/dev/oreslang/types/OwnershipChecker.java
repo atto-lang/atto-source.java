@@ -75,7 +75,7 @@ public final class OwnershipChecker {
         OwnershipChecker checker = new OwnershipChecker(program, validatedShortAliases);
         checker.validate(program);
         AggregateConstructionPlan.Checked.admitAfterOwnership(
-                checker.validatedAggregateSpreads);
+                program, checker.validatedAggregateSpreads);
         return program;
     }
 
@@ -111,7 +111,7 @@ public final class OwnershipChecker {
         }
         checker.validate(program);
         AggregateConstructionPlan.Checked.admitAfterOwnership(
-                checker.validatedAggregateSpreads);
+                program, checker.validatedAggregateSpreads);
         return program;
     }
 
