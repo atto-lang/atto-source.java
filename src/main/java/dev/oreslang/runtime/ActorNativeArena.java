@@ -285,7 +285,7 @@ public final class ActorNativeArena implements AutoCloseable {
                 // Reject unsupported or foreign payloads before reserving a
                 // new native chunk. Otherwise each rejected append can consume
                 // lifetime arena budget without changing the list length.
-                if (!supportsValue(value, null)) {
+                if (!canStorePersistentValue(value, null)) {
                     throw new IllegalArgumentException("native actor List element requires native value lowering");
                 }
                 int inChunk = currentSize % LIST_CHUNK_SLOTS;
@@ -471,6 +471,14 @@ public final class ActorNativeArena implements AutoCloseable {
             Long issued = issuedNativeOffsets.get(nativeValue);
             if (address < 0 || issued == null || issued.longValue() != address) {
                 throw new SecurityException("actor-native reference was not issued by this arena");
+            }
+            Long prior = referenceOffsets.get(nativeValue);
+            if (prior != null && prior.longValue() != address) {
+                throw new SecurityException("actor-native value changed logical address");
+            }
+            NativeValue occupant = referencesByOffset.get(address);
+            if (occupant != null && occupant != nativeValue) {
+                throw new SecurityException("duplicate actor-relative native address");
             }
             return true;
         }
