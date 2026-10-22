@@ -41,7 +41,9 @@ public final class TaskOwnedLeases {
      * lock lowering may call this only after checking actual token ownership
      * and cross-thread release safety. Do NOT pass java.util.concurrent.Lock::unlock.
      */
-    public static Lease register(TransferableRelease release) {
+    // Package-private: only trusted runtime lowering/adapters may register.
+    // Never surface a generic host callback registration to Oreslang guest code.
+    static Lease register(TransferableRelease release) {
         return TaskHandle.registerTransferableLease(Objects.requireNonNull(release, "release"));
     }
 
