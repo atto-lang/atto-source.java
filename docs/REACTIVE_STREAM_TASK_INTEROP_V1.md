@@ -247,7 +247,8 @@ merge/concat/switch/exhaust -> TaskQueue streams/hot queue events ->
 GraalVM/LLVM conformance and performance.
 
 DO NOT CLAIM this document introduces implemented runtime operators.
-Existing draft PR #1887 remains non-owning Future observer primitives only.
+Draft PR #1887 now also has a bounded host stream collector and scheduler-owned
+Future map/flatMap/zip operations. None are source-level guest operators.
 
 
 ## Implemented Java host substrate checkpoint (2026-10-22)
@@ -273,27 +274,27 @@ No CI passing claim until jobs actually execute tests.
 ## Strict finite collector and scheduler-affine mapping checkpoint
 
 Java draft PR #1887 now contains:
-- \`AsyncSequenceCollectors.collect(OresScheduler, Cursor<T>, maxItems)\`
+- `AsyncSequenceCollectors.collect(OresScheduler, Cursor<T>, maxItems)`
   with a bounded, explicit scheduler Task, no recursive callback chaining,
-  a \`CollectionHandle.result()\` and a distinct \`getDone()\` barrier that
+  a `CollectionHandle.result()` and a distinct `getDone()` barrier that
   completes only after physical task retirement AND cursor close;
 - strict count admission: maxItems+1 observed values detect overflow,
-  return a \`LimitExceededException\` and do not build an unbounded List;
+  return a `LimitExceededException` and do not build an unbounded List;
   the extra value is consumed (at-most-once) and cannot be rolled back;
 - task cancellation tears down only its borrowed stream read, never a
   caller-owned Channel producer;
-- \`FutureCombinators.map/flatMap/zip\` with scheduler ownership for mapper
+- `FutureCombinators.map/flatMap/zip` with scheduler ownership for mapper
   execution. The host Java lambdas are trusted callbacks: they DO NOT prove
   effect/ownership safety for Oreslang guest captures.
-- \`AsyncSequences\` retains its sequential-next reservation through
+- `AsyncSequences` retains its sequential-next reservation through
   terminal/revocation publication; runtime callbacks may reenter next
   once the last result is truly terminal, never while cancellation
   revocation is still pending.
 
-**Remaining:** source \`await observable.first/single/to_array\`
-and \`for await\` compiler and stdlib glue; backpressure-aware mapping
+**Remaining:** source `await observable.first/single/to_array`
+and `for await` compiler and stdlib glue; backpressure-aware mapping
 with concurrency >1; ownership/effect-proofed mapper captures; ordered
 reassembly quota, full Observable subscription, multi-target parity,
-per-actor native arena reclamation proof; transparent cancellation
-classification for scheduler-mapped Futures and byte-aware collect quotas.
+per-actor native arena reclamation proof; executed proof of cancellation races in scheduler-mapped Futures, plus
+byte-aware collect quotas.
 Neither this design nor draft source files constitutes a passing test run.
