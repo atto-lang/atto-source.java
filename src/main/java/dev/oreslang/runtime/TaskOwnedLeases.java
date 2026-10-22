@@ -84,14 +84,14 @@ public final class TaskOwnedLeases {
 
         List<Throwable> releaseOnRetirement() {
             final ArrayList<Entry> reversed;
+            final ArrayList<Throwable> errors;
             synchronized (lock) {
                 if (retired) return List.of();
                 retired = true;
                 reversed = new ArrayList<>(stack.size());
                 while (!stack.isEmpty()) reversed.add(stack.removeLast());
-            }
-            ArrayList<Throwable> errors;
-            synchronized (lock) {
+                // One linearized snapshot of earlier failed releases; no
+                // registration or same-task close may follow retirement.
                 errors = new ArrayList<>(earlyFailures);
                 earlyFailures.clear();
             }
