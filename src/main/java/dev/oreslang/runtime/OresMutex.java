@@ -8,9 +8,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.Executors;
-import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -80,6 +78,9 @@ public final class OresMutex {
         // synchronous host subscribers are executing on a notifier worker.
         private volatile Runnable releaseNotificationAdmission;
         private final AtomicBoolean notificationReleased = new AtomicBoolean();
+        // One scheduled terminal publication per Future, even when timeout,
+        // client cancellation, owner death and claimed handoff race.
+        private final AtomicBoolean publicationClaimed = new AtomicBoolean();
 
         private GuardFuture() { }
 
@@ -96,6 +97,7 @@ public final class OresMutex {
             if (super.isDone()) return false;
             java.util.function.BooleanSupplier revoke = revokeQueuedWaiter;
             if (revoke != null && !revoke.getAsBoolean()) return false;
+            if (!publicationClaimed.compareAndSet(false, true)) return false;
             if (ActorRuntime.inActorExecution() || OresScheduler.currentTaskDomain() != null) {
                 Shared.executeNotification(
                         () -> completeCancellationFromRuntime(mayInterruptIfRunning));
@@ -116,6 +118,7 @@ public final class OresMutex {
         private boolean failQueuedFromRuntime(Throwable failure) {
             java.util.function.BooleanSupplier revoke = revokeQueuedWaiter;
             if (super.isDone() || revoke == null || !revoke.getAsBoolean()) return false;
+            if (!publicationClaimed.compareAndSet(false, true)) return false;
             Shared.executeNotification(() -> failFromRuntime(failure));
             return true;
         }
@@ -124,7 +127,7 @@ public final class OresMutex {
          * must be unlinked first; a claimed, unpublished handoff is allowed
          * to lose to owner death and must discard its eventual guard. */
         private void cancelAfterOwnerQuiescence(Runnable afterPublication) {
-            if (super.isDone()) {
+            if (super.isDone() || !publicationClaimed.compareAndSet(false, true)) {
                 afterPublication.run();
                 return;
             }
@@ -141,6 +144,11 @@ public final class OresMutex {
 
         private void completeHandoffOnNotifier(
                 Guard<T> guard, Runnable rejected, Runnable physicalSettled) {
+            if (!publicationClaimed.compareAndSet(false, true)) {
+                try { rejected.run(); }
+                finally { physicalSettled.run(); }
+                return;
+            }
             Shared.executeNotification(() -> {
                 boolean published = false;
                 try {
@@ -156,6 +164,10 @@ public final class OresMutex {
         }
 
         private void failHandoffOnNotifier(Throwable failure, Runnable physicalSettled) {
+            if (!publicationClaimed.compareAndSet(false, true)) {
+                physicalSettled.run();
+                return;
+            }
             Shared.executeNotification(() -> {
                 try {
                     failFromRuntime(failure);
@@ -478,17 +490,13 @@ public final class OresMutex {
         private static final AtomicInteger GLOBAL_ASYNC_WAITERS = new AtomicInteger();
         private static final int MAX_ASYNC_NOTIFICATIONS = 32_768;
         private static final AtomicInteger NOTIFICATION_ADMISSIONS = new AtomicInteger();
-        private static final ThreadPoolExecutor NOTIFIERS =
-                new ThreadPoolExecutor(4, 4, 0L, TimeUnit.MILLISECONDS,
-                        new ArrayBlockingQueue<>(MAX_ASYNC_NOTIFICATIONS),
-                        Thread.ofPlatform().daemon(true)
-                                .name("ores-lock-host-notifier-", 0L).factory(),
-                        new ThreadPoolExecutor.AbortPolicy());
-
         private static void executeNotification(Runnable action) {
-            // No CallerRunsPolicy: an arbitrary whenComplete subscriber must
-            // never execute on an actor, lock-releaser, or deadline carrier.
-            NOTIFIERS.execute(action);
+            // Each Future has exactly one claimed notification with one
+            // reserved capacity slot. A blocking subscriber cannot starve
+            // unrelated notices, and the releaser never invokes host code.
+            // Virtual threads, unlike a four-worker fixed pool, allow an
+            // otherwise independent mutex handoff to make progress.
+            Thread.ofVirtual().name("ores-lock-host-notifier").start(action);
         }
         private static final ConcurrentHashMap<Object, Shared<?>> WAITING_ON =
                 new ConcurrentHashMap<>();
