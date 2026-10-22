@@ -4028,6 +4028,8 @@ public final class OresEvalRootNode extends RootNode {
                 int index,
                 SourceValueCont continuation) {
             if (index >= object.fields().size()) {
+                boolean hasAggregateSpread =
+                        object.fields().stream().anyMatch(Ast.ObjectField::spread);
                 LinkedHashMap<String, Object> result = new LinkedHashMap<>();
                 if (object.explicitStruct()) {
                     for (Ast.StructFieldSpec field : object.declaredFields()) {
@@ -4045,6 +4047,10 @@ public final class OresEvalRootNode extends RootNode {
                         continue;
                     }
                     String key = field.name();
+                    if (hasAggregateSpread && !isScalarAggregateValue(value)) {
+                        throw new IllegalArgumentException(
+                                "aggregate spread requires scalar-only initializer field " + key);
+                    }
                     if (object.explicitStruct()) {
                         if (!result.containsKey(key)) {
                             throw new IllegalArgumentException(
@@ -7012,8 +7018,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().map(item -> eval(item, env)).toList();
             if (expr instanceof Ast.ObjectExpr object) {
-                if (object.explicitStruct()
-                        && object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
+                boolean hasAggregateSpread =
+                        object.fields().stream().anyMatch(Ast.ObjectField::spread);
+                if (object.explicitStruct() && hasAggregateSpread) {
                     throw new IllegalArgumentException("spread into explicitly shaped structs is not yet supported");
                 }
                 LinkedHashMap<String, Object> result = new LinkedHashMap<>();
@@ -7032,6 +7039,10 @@ public final class OresEvalRootNode extends RootNode {
                         continue;
                     }
                     String key = field.name();
+                    if (hasAggregateSpread && !isScalarAggregateValue(value)) {
+                        throw new IllegalArgumentException(
+                                "aggregate spread requires scalar-only initializer field " + key);
+                    }
                     if (object.explicitStruct()) {
                         if (!result.containsKey(key)) {
                             throw new IllegalArgumentException(
@@ -9935,6 +9946,12 @@ public final class OresEvalRootNode extends RootNode {
      * The destination is still local/unpublished and is abandoned on failure.
      * No resource-owning nested values are admitted by the type/ownership pass.
      */
+    private static boolean isScalarAggregateValue(Object value) {
+        return value instanceof Long || value instanceof Integer
+                || value instanceof Double || value instanceof Boolean
+                || value instanceof String;
+    }
+
     private static void putScalarSpreadFields(
             Object source, LinkedHashMap<String, Object> destination) {
         Map<String, Object> fields;
@@ -9948,9 +9965,7 @@ public final class OresEvalRootNode extends RootNode {
         }
         for (Map.Entry<String, Object> item : fields.entrySet()) {
             Object value = item.getValue();
-            if (!(value instanceof Long || value instanceof Integer
-                    || value instanceof Double || value instanceof Boolean
-                    || value instanceof String)) {
+            if (!isScalarAggregateValue(value)) {
                 throw new IllegalArgumentException(
                         "aggregate spread scalar-only stage cannot copy field '" + item.getKey() + "'");
             }
