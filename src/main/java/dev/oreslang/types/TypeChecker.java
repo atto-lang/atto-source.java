@@ -4271,7 +4271,13 @@ public final class TypeChecker {
                                     : fieldType);
                 }
             }
-            return plan.finish().resultType();
+            AggregateConstructionPlan.Plan checked = plan.finish();
+            if (object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
+                // Not executable authority until the ownership checker
+                // independently validates the full compilation unit.
+                AggregateConstructionPlan.Checked.recordTyped(object, checked);
+            }
+            return checked.resultType();
         }
         if (expr instanceof Ast.LambdaExpr lambda) {
             boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
