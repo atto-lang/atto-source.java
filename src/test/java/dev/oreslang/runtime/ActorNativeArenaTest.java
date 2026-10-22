@@ -526,6 +526,16 @@ final class ActorNativeArenaTest {
         assertThrows(IndexOutOfBoundsException.class, () -> region.leaseReadOnly(60, 8));
         assertThrows(IllegalStateException.class, () -> region.writeLong(8, 100L));
         assertThrows(IllegalStateException.class, () -> region.writeDouble(8, 1.0));
+        // Borrowed [8,24); exactly adjacent writes may proceed.
+        region.writeLong(0, 12L);
+        region.writeLong(24, 99L);
+        assertEquals(12L, region.readLong(0));
+        assertEquals(99L, region.readLong(24));
+        assertThrows(IllegalStateException.class, () -> region.writeLong(1, 12L),
+                "partially overlapping word must fail before any byte changes");
+        assertEquals(12L, region.readLong(0));
+        assertThrows(IllegalStateException.class, () -> region.writeByte(23, (byte) 5));
+        assertEquals(0, region.readByte(23));
         assertThrows(IllegalStateException.class, region::close);
         AtomicReference<Throwable> foreign = new AtomicReference<>();
         Thread other = new Thread(() -> {
@@ -541,11 +551,18 @@ final class ActorNativeArenaTest {
         assertThrows(IllegalStateException.class, () -> first.readByte(0));
         assertThrows(IllegalStateException.class, () -> region.writeLong(8, 100L));
         second.close();
+        // Zero-length leases freeze no bytes but still retain region lifetime.
+        var empty = region.leaseReadOnly(8, 0);
+        // A zero-width lease at byte 8 must NOT reject a write spanning
+        // bytes [4,12), even though its anchor lies inside the write.
+        region.writeLong(4, 333L);
+        assertEquals(333L, region.readLong(4));
         region.writeLong(8, 100L);
+        assertThrows(IllegalStateException.class, region::close);
+        empty.close();
         assertEquals(100L, region.readLong(8));
         var outstanding = region.leaseReadOnly(8, 8);
-        // A scheduler's erroneous assertion of physical quiescence may not
-        // free memory that still has an issued native borrow.
+        // A false physical-quiescence report must not revoke a live borrow.
         assertThrows(IllegalStateException.class, arena::close);
         assertFalse(arena.closed());
         assertEquals(100L, outstanding.readLong(0));
@@ -686,6 +703,60 @@ final class ActorNativeArenaTest {
                 assertEquals(0, runtime.actorMemoryBytes());
             }
         }
+    }
+
+    @Test
+    void nativeDenseKernelNeverAdvancesAfterFinalValidRow() {
+        AtomicLong charged = new AtomicLong();
+        try (ActorNativeArena arena = arena(4096, charged)) {
+            try (ActorNativeArena.Region region = arena.region(32)) {
+                region.writeDouble(8, 5.0);
+                region.writeDouble(16, 2.0);
+                // A one-row layout may use a huge row stride because no
+                // second row is addressed. Advancing AFTER the last write
+                // used to overflow, even though every access was in-bounds.
+                region.integrateDoubleStridedBlocks(
+                        1, 2, 1, Integer.MAX_VALUE, 1, 0, 0.5);
+                assertEquals(6.0, region.readDouble(8));
+                assertEquals(2.0, region.readDouble(16));
+            }
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
+    void lateBorrowConflictCannotPartiallyIntegrateOptimizedNativeRows() {
+        AtomicLong charged = new AtomicLong();
+        final int rows = 6;
+        try (ActorNativeArena arena = arena(4096, charged);
+             ActorNativeArena.Region region = arena.region(rows * 2 * Double.BYTES)) {
+            for (int row = 0; row < rows; row++) {
+                region.writeDouble((2 * row) * Double.BYTES, row + 1.0);
+                region.writeDouble((2 * row + 1) * Double.BYTES, 10.0 + row);
+            }
+            // Borrow only the FIFTH destination, not the first. Geometry is
+            // otherwise valid. Preflight must detect this before mutating row 0.
+            try (var destination = region.leaseReadOnly(8 * Double.BYTES, Double.BYTES)) {
+                assertThrows(IllegalStateException.class,
+                        () -> region.integrateDoubleStridedBlocks(
+                                0, 1, rows, 2, rows, 0, 0.5));
+                for (int row = 0; row < rows; row++) {
+                    assertEquals(row + 1.0,
+                            region.readDouble((2 * row) * Double.BYTES),
+                            "later borrowed row must prevent any earlier write");
+                }
+            }
+            // Reading a disjoint velocity/source value is legal, including
+            // through the single-monitor optimized strided kernel.
+            try (var velocity = region.leaseReadOnly(11 * Double.BYTES, Double.BYTES)) {
+                region.integrateDoubleStridedBlocks(0, 1, rows, 2, rows, 0, 0.5);
+                for (int row = 0; row < rows; row++) {
+                    assertEquals(row + 1.0 + (10.0 + row) * 0.5,
+                            region.readDouble((2 * row) * Double.BYTES));
+                }
+            }
+        }
+        assertEquals(0, charged.get());
     }
 
     private static ActorNativeArena arena(long limit, AtomicLong charged) {
