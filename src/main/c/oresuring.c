@@ -23,6 +23,7 @@ typedef enum {
     ORES_IO_READ = 1,
     ORES_IO_EXISTS = 2,
     ORES_IO_WRITE = 3,
+    ORES_IO_REMOVE = 4,
 } ores_io_kind;
 
 typedef enum {
@@ -30,6 +31,8 @@ typedef enum {
     ORES_STAGE_READ = 2,
     ORES_STAGE_WRITE = 3,
     ORES_STAGE_CLOSE = 4,
+    ORES_STAGE_UNLINK = 5,
+    ORES_STAGE_RMDIR = 6,
 } ores_io_stage;
 
 typedef struct ores_io_op ores_io_op;
@@ -46,6 +49,7 @@ struct ores_io_op {
     int append;
     unsigned char *path;
     size_t path_len;
+    unsigned char *leaf;
     unsigned char *buffer;
     size_t capacity;
     size_t limit;
@@ -54,12 +58,21 @@ struct ores_io_op {
     uint64_t current_user_data;
 };
 
+static void ores_free_op_memory(ores_io_op *op) {
+    if (op == NULL) return;
+    free(op->path);
+    free(op->leaf);
+    free(op->buffer);
+    free(op);
+}
+
 struct ores_uring_ctx {
     JavaVM *jvm;
     jobject owner;
     jmethodID read_completed;
     jmethodID exists_completed;
     jmethodID write_completed;
+    jmethodID remove_completed;
 
     int ring_fd;
     int root_fd;
@@ -281,6 +294,24 @@ static int ores_submit_write_locked(ores_uring_ctx *ctx, ores_io_op *op) {
     return result;
 }
 
+static int ores_submit_unlink_locked(
+        ores_uring_ctx *ctx, ores_io_op *op, int removedir) {
+    if (op->leaf == NULL) return -EINVAL;
+    struct io_uring_sqe *sqe = ores_get_sqe_locked(ctx);
+    if (sqe == NULL) return -EAGAIN;
+    uint64_t user_data = ORES_UD(
+            op, removedir ? ORES_STAGE_RMDIR : ORES_STAGE_UNLINK);
+    sqe->opcode = IORING_OP_UNLINKAT;
+    sqe->fd = op->fd;
+    sqe->addr = (uint64_t)(uintptr_t)op->leaf;
+    sqe->unlink_flags = removedir ? AT_REMOVEDIR : 0;
+    sqe->user_data = user_data;
+    op->current_user_data = user_data;
+    int result = ores_submit_one_locked(ctx);
+    if (result < 0) op->current_user_data = 0;
+    return result;
+}
+
 static int ores_submit_close_locked(ores_uring_ctx *ctx, ores_io_op *op) {
     if (op->fd < 0) return 0;
     struct io_uring_sqe *sqe = ores_get_sqe_locked(ctx);
@@ -348,9 +379,7 @@ static ores_completion ores_terminal_locked(ores_uring_ctx *ctx, ores_io_op *op)
         op->buffer = NULL;
     }
     ores_remove_op_locked(ctx, op);
-    free(op->path);
-    free(op->buffer);
-    free(op);
+    ores_free_op_memory(op);
     return completion;
 }
 
@@ -393,6 +422,15 @@ static ores_completion ores_handle_cqe_locked(
             int close_result = ores_submit_close_locked(ctx, op);
             if (close_result == 0) return none;
             op->terminal_error = -close_result;
+            return ores_terminal_locked(ctx, op);
+        }
+
+        if (op->kind == ORES_IO_REMOVE) {
+            int unlink_result = ores_submit_unlink_locked(ctx, op, 0);
+            if (unlink_result == 0) return none;
+            op->terminal_error = -unlink_result;
+            int close_result = ores_submit_close_locked(ctx, op);
+            if (close_result == 0) return none;
             return ores_terminal_locked(ctx, op);
         }
 
@@ -470,6 +508,24 @@ static ores_completion ores_handle_cqe_locked(
         return ores_terminal_locked(ctx, op);
     }
 
+    if (stage == ORES_STAGE_UNLINK || stage == ORES_STAGE_RMDIR) {
+        if (op->cancelled) {
+            op->terminal_error = ECANCELED;
+        } else if (res < 0 && stage == ORES_STAGE_UNLINK && -res == EISDIR) {
+            int retry = ores_submit_unlink_locked(ctx, op, 1);
+            if (retry == 0) return none;
+            op->terminal_error = -retry;
+        } else if (res < 0) {
+            op->terminal_error = -res;
+        } else {
+            op->terminal_error = 0;
+        }
+        int close_result = ores_submit_close_locked(ctx, op);
+        if (close_result == 0) return none;
+        if (op->terminal_error == 0) op->terminal_error = -close_result;
+        return ores_terminal_locked(ctx, op);
+    }
+
     if (stage == ORES_STAGE_CLOSE) {
         op->fd = -1;
         if (res < 0 && op->terminal_error == 0) op->terminal_error = -res;
@@ -522,8 +578,15 @@ static void ores_notify_completion(JNIEnv *env, ores_uring_ctx *ctx,
             (*env)->ExceptionDescribe(env);
             (*env)->ExceptionClear(env);
         }
-    } else {
+    } else if (completion->kind == ORES_IO_WRITE) {
         (*env)->CallVoidMethod(env, ctx->owner, ctx->write_completed,
+                (jlong)completion->id, (jint)completion->error);
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionDescribe(env);
+            (*env)->ExceptionClear(env);
+        }
+    } else {
+        (*env)->CallVoidMethod(env, ctx->owner, ctx->remove_completed,
                 (jlong)completion->id, (jint)completion->error);
         if ((*env)->ExceptionCheck(env)) {
             (*env)->ExceptionDescribe(env);
@@ -540,9 +603,7 @@ static void ores_free_ctx(JNIEnv *env, ores_uring_ctx *ctx) {
     while (op != NULL) {
         ores_io_op *next = op->next;
         if (op->fd >= 0) close(op->fd);
-        free(op->path);
-        free(op->buffer);
-        free(op);
+        ores_free_op_memory(op);
         op = next;
     }
     ctx->ops = NULL;
@@ -650,6 +711,32 @@ static int ores_copy_path(JNIEnv *env, jbyteArray encoded, unsigned char **out, 
     return 0;
 }
 
+static int ores_prepare_parent_leaf(ores_io_op *op) {
+    if (op == NULL || op->path == NULL
+            || strcmp((char *)op->path, ".") == 0) {
+        return EBUSY;
+    }
+    char *path = (char *)op->path;
+    char *slash = strrchr(path, '/');
+    const char *leaf = slash == NULL ? path : slash + 1;
+    if (*leaf == 0 || strcmp(leaf, ".") == 0 || strcmp(leaf, "..") == 0) {
+        return EINVAL;
+    }
+    op->leaf = (unsigned char *)strdup(leaf);
+    if (op->leaf == NULL) return ENOMEM;
+    if (slash == NULL) {
+        unsigned char *parent = (unsigned char *)strdup(".");
+        if (parent == NULL) return ENOMEM;
+        free(op->path);
+        op->path = parent;
+        op->path_len = 1;
+    } else {
+        *slash = 0;
+        op->path_len = (size_t)(slash - path);
+    }
+    return 0;
+}
+
 static ores_io_op *ores_new_op(JNIEnv *env, uint64_t id, ores_io_kind kind,
         jbyteArray encoded_path, size_t max_bytes, jbyteArray write_bytes,
         int append, int *error) {
@@ -685,6 +772,13 @@ static ores_io_op *ores_new_op(JNIEnv *env, uint64_t id, ores_io_kind kind,
             free(op);
             return NULL;
         }
+    } else if (kind == ORES_IO_REMOVE) {
+        *error = ores_prepare_parent_leaf(op);
+        if (*error != 0) {
+            ores_free_op_memory(op);
+            return NULL;
+        }
+        op->how.flags = O_PATH | O_DIRECTORY | O_CLOEXEC;
     } else if (kind == ORES_IO_WRITE) {
         if (write_bytes == NULL) {
             *error = EINVAL;
@@ -775,9 +869,11 @@ Java_dev_oreslang_runtime_LinuxUringFileIoProvider_nativeCreate(
             "nativeExistsCompleted", "(JZI)V");
     ctx->write_completed = (*env)->GetMethodID(env, owner_class,
             "nativeWriteCompleted", "(JI)V");
+    ctx->remove_completed = (*env)->GetMethodID(env, owner_class,
+            "nativeRemoveCompleted", "(JI)V");
     (*env)->DeleteLocalRef(env, owner_class);
     if (ctx->read_completed == NULL || ctx->exists_completed == NULL
-            || ctx->write_completed == NULL) {
+            || ctx->write_completed == NULL || ctx->remove_completed == NULL) {
         if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
         ores_free_ctx(env, ctx);
         return 0;
@@ -821,17 +917,13 @@ static jboolean ores_submit(JNIEnv *env, jlong handle, jlong id,
     pthread_mutex_lock(&ctx->mutex);
     if (ctx->closed) {
         pthread_mutex_unlock(&ctx->mutex);
-        free(op->path);
-        free(op->buffer);
-        free(op);
+        ores_free_op_memory(op);
         return JNI_FALSE;
     }
     for (ores_io_op *cursor = ctx->ops; cursor != NULL; cursor = cursor->next) {
         if (cursor->id == op->id) {
             pthread_mutex_unlock(&ctx->mutex);
-            free(op->path);
-            free(op->buffer);
-            free(op);
+            ores_free_op_memory(op);
             return JNI_FALSE;
         }
     }
@@ -842,9 +934,7 @@ static jboolean ores_submit(JNIEnv *env, jlong handle, jlong id,
     pthread_mutex_unlock(&ctx->mutex);
 
     if (submit_result < 0) {
-        free(op->path);
-        free(op->buffer);
-        free(op);
+        ores_free_op_memory(op);
         return JNI_FALSE;
     }
     return JNI_TRUE;
@@ -874,6 +964,14 @@ Java_dev_oreslang_runtime_LinuxUringFileIoProvider_nativeSubmitWrite(
     (void)cls;
     return ores_submit(env, handle, id, path, ORES_IO_WRITE, 0,
             value, append == JNI_TRUE);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_dev_oreslang_runtime_LinuxUringFileIoProvider_nativeSubmitRemove(
+        JNIEnv *env, jclass cls, jlong handle, jlong id, jbyteArray path) {
+    (void)cls;
+    return ores_submit(env, handle, id, path, ORES_IO_REMOVE, 0,
+            NULL, 0);
 }
 
 JNIEXPORT jboolean JNICALL
@@ -945,6 +1043,12 @@ Java_dev_oreslang_runtime_LinuxUringFileIoProvider_nativeSubmitWrite(
         jbyteArray path, jbyteArray value, jboolean append) {
     (void)env; (void)cls; (void)handle; (void)id;
     (void)path; (void)value; (void)append;
+    return JNI_FALSE;
+}
+JNIEXPORT jboolean JNICALL
+Java_dev_oreslang_runtime_LinuxUringFileIoProvider_nativeSubmitRemove(
+        JNIEnv *env, jclass cls, jlong handle, jlong id, jbyteArray path) {
+    (void)env; (void)cls; (void)handle; (void)id; (void)path;
     return JNI_FALSE;
 }
 JNIEXPORT jboolean JNICALL
