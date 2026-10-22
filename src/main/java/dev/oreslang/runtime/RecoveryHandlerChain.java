@@ -1,7 +1,14 @@
 package dev.oreslang.runtime;
 
+import java.util.ArrayDeque;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Bounded, stackless host prototype for compiler-owned recovery dispatch.
@@ -13,7 +20,10 @@ import java.util.Objects;
  *
  * <p>Only a trusted VM/compiler path may classify a failure as THROW or RAISE.
  * Never construct an admitted kind from guest strings or an arbitrary host
- * Throwable. Panic, cancellation and fatal failures always bypass handlers.
+ * Throwable. This helper does not mint classification authority: the source
+ * interpreter still needs a sealed guest-effect carrier. Fatal/cancellation
+ * indicators in bounded host cause/suppressed graphs bypass handlers even
+ * when a caller accidentally supplies THROW or RAISE.
  */
 public final class RecoveryHandlerChain<T> {
     public enum FailureKind { THROW, RAISE, PANIC, CANCELLATION, HOST_FATAL }
@@ -56,6 +66,7 @@ public final class RecoveryHandlerChain<T> {
     private static final int RAISE = 2;
     private static final int BOTH = THROW | RAISE;
     public static final int MAX_HANDLERS = 1024;
+    private static final int MAX_FAILURE_GRAPH_NODES = 64;
 
     private final Handler<T>[] handlers;
     private final byte[] effectMasks;
@@ -83,7 +94,12 @@ public final class RecoveryHandlerChain<T> {
             case RAISE -> RAISE;
             case PANIC, CANCELLATION, HOST_FATAL -> 0;
         };
-        if (mask == 0 || handlers.length == 0) return new Unhandled<>(kind, failure);
+        // Kind and underlying host cause must both be eligible: never allow a
+        // mislabeled THROW/RAISE to downgrade terminal cancellation, security
+        // denial, a native/VM fatal error or an excessively complex causal graph.
+        if (mask == 0 || handlers.length == 0 || containsTerminalControl(failure)) {
+            return new Unhandled<>(kind, failure);
+        }
 
         for (int i = handlers.length - 1; i >= 0; i--) {
             if ((effectMasks[i] & mask) == 0) continue;
@@ -107,12 +123,39 @@ public final class RecoveryHandlerChain<T> {
                 cursor.invalidate();
             }
             if (decision == Cursor.OPEN) {
-                throw new IllegalStateException(
-                        "recovery handler must resolve or delegate");
+                // Fail closed while preserving the pending original error.
+                return new HandlerFailure<>(kind, failure,
+                        new IllegalStateException("recovery handler must resolve or delegate"));
             }
             if (decision == Cursor.RESOLVED) return new Recovered<>(resolved);
         }
         return new Unhandled<>(kind, failure);
+    }
+
+    /**
+     * Conservative preflight for this host-only prototype. This is NOT a
+     * substitute for compiler-minted GuestEffect provenance: unrecognized host
+     * Throwable types must never be admitted as guest source errors later.
+     * Bounds also prevent hostile cyclic or huge cause graphs from becoming
+     * an unbounded preflight denial-of-service.
+     */
+    private static boolean containsTerminalControl(Throwable failure) {
+        ArrayDeque<Throwable> pending = new ArrayDeque<>();
+        Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        pending.add(failure);
+        while (!pending.isEmpty()) {
+            Throwable current = pending.removeFirst();
+            if (!seen.add(current) || seen.size() > MAX_FAILURE_GRAPH_NODES) return true;
+            if (current instanceof Error
+                    || current instanceof CancellationException
+                    || current instanceof InterruptedException
+                    || current instanceof RejectedExecutionException
+                    || current instanceof TimeoutException
+                    || current instanceof SecurityException) return true;
+            if (current.getCause() != null) pending.addLast(current.getCause());
+            for (Throwable suppressed : current.getSuppressed()) pending.addLast(suppressed);
+        }
+        return false;
     }
 
     private static final class Cursor<T> implements Continuation<T> {
@@ -120,12 +163,19 @@ public final class RecoveryHandlerChain<T> {
         private static final byte DELEGATED = 1;
         private static final byte RESOLVED = 2;
         private static final byte INVALID = 3;
+        private final Thread ownerThread = Thread.currentThread();
         private byte state = OPEN;
         private T value;
 
         void invalidate() { state = INVALID; value = null; }
 
         private void checkOpen() {
+            // Temporary synchronous host fence. The eventual guest continuation
+            // must use authenticated *logical Task/actor* identity rather than
+            // carrier-thread identity across await.
+            if (Thread.currentThread() != ownerThread) {
+                throw new IllegalStateException("recovery continuation used from another thread");
+            }
             if (state != OPEN) {
                 throw new IllegalStateException("recovery continuation already consumed");
             }
