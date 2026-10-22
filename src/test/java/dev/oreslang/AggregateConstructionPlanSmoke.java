@@ -83,6 +83,24 @@ public final class AggregateConstructionPlanSmoke {
         check(record.resultType().readOnly(), "record remains readonly");
         check(record.resultType().kind() == Types.AggregateKind.RECORD,
                 "struct source does not erase record result identity");
+        String bmpPrivateUse = Character.toString(0xE000);
+        String astral = new String(Character.toChars(0x10000));
+        check(bmpPrivateUse.compareTo(astral) > 0,
+                "regression setup: Java UTF-16 sort differs from scalar order");
+        check(AggregateConstructionPlan.compareStaticFieldNames(bmpPrivateUse, astral) < 0,
+                "static key ordering follows Unicode scalar values");
+        Ast.ObjectExpr unicodeSource = new Ast.ObjectExpr(
+                List.of(Ast.ObjectField.spreading(new Ast.NameExpr("source"))),
+                Ast.ObjectKind.RECORD, List.of());
+        AggregateConstructionPlan.Plan unicodePlan = new AggregateConstructionPlan.Builder(
+                unicodeSource).addSpread(0,
+                        Types.Record.struct(Map.of(
+                                astral, Types.Primitive.INT,
+                                bmpPrivateUse, Types.Primitive.BOOL))).finish();
+        check(List.copyOf(unicodePlan.resolvedFields().keySet())
+                        .equals(List.of(bmpPrivateUse, astral)),
+                "native-compatible UTF-8 lexicographic projection order");
+
 
         denied(() -> new AggregateConstructionPlan.Plan(
                         Ast.ObjectKind.RECORD,
