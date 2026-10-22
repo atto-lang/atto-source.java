@@ -9841,12 +9841,17 @@ public final class OresEvalRootNode extends RootNode {
                 Object value,
                 Ast.BindingKind kind,
                 Ast.ClassDecl staticClassView) {
-            if (slots.putIfAbsent(name, new Slot(value, kind, staticClassView)) != null) {
+            // Check first: constructing Slot may reserve native arena bytes.
+            // putIfAbsent(name, new Slot(...)) eagerly allocated the rejected
+            // slot even when a binding with this name already existed.
+            if (slots.containsKey(name)) {
                 throw new IllegalArgumentException("duplicate binding " + name);
             }
+            slots.put(name, new Slot(value, kind, staticClassView));
         }
         private void reserve(String name, Ast.BindingKind kind) {
-            if (slots.putIfAbsent(name, new Slot(MISSING, kind, null)) != null) throw new IllegalArgumentException("duplicate binding " + name);
+            if (slots.containsKey(name)) throw new IllegalArgumentException("duplicate binding " + name);
+            slots.put(name, new Slot(MISSING, kind, null));
         }
         private void initialize(String name, Object value) {
             Slot slot = slots.get(name);
@@ -10033,36 +10038,43 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object value() {
-            return nativeCell == null ? value : nativeCell.get();
+            // A native cell remains allocated even while a managed-only
+            // transitional value is active. A null managed field marks the
+            // native cell authoritative; null guest values are themselves
+            // representable in the cell and never require managed fallback.
+            return nativeCell != null && value == null ? nativeCell.get() : value;
         }
 
         private void setValue(Object next) {
             if (nativeCell != null) {
-                if (nativeCell.trySet(next)) return;
-                // Preserve language semantics while a value family still lacks
-                // native lowering. Clear the old native payload first so an
-                // opaque capability handle is not retained merely because the
-                // lexical slot downgrades to managed fallback storage.
+                if (nativeCell.trySet(next)) {
+                    value = null;
+                    return;
+                }
+                // Keep the already-budgeted native cell for future supported
+                // values rather than permanently degrading this binding to
+                // managed storage. Drop the prior native reference before
+                // publishing the managed-only value.
                 if (!nativeCell.trySet(null)) {
                     throw new IllegalStateException("native lexical cell refused null retirement");
                 }
-                nativeCell = null;
                 value = next;
                 return;
             }
 
-            // Reserved bindings have not published a payload yet. Lower their
-            // first real value directly into the actor arena when possible.
-            if (value == Env.MISSING) {
-                ActorNativeArena arena = ActorRuntime.currentNativeArena();
-                if (arena != null) {
-                    try {
-                        nativeCell = arena.valueCell(next, Env.MISSING);
-                        value = null;
-                        return;
-                    } catch (IllegalArgumentException notLoweredYet) {
-                        // Explicit managed fallback pending native lowering.
-                    }
+            // An initially managed-only binding may later receive a native-
+            // representable value. This matters for long-running async/actor
+            // locals: managed fallback must never be permanently sticky.
+            ActorNativeArena arena = ActorRuntime.currentNativeArena();
+            if (arena != null) {
+                // Validate native/capability provenance even when the actual
+                // payload stays managed (e.g. an issued host capability).
+                boolean supported = arena.canStorePersistentValue(next, Env.MISSING);
+                if (supported && !(next instanceof ActorNativeArena.NativeCapability)) {
+                    ActorNativeArena.ValueCell cell = arena.valueCell(next, Env.MISSING);
+                    nativeCell = cell;
+                    value = null;
+                    return;
                 }
             }
             value = next;
