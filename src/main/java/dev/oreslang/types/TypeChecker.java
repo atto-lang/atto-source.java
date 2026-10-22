@@ -6,6 +6,7 @@ import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.Types.Function;
+import dev.oreslang.types.Types.CheckedEffects;
 import dev.oreslang.types.Types.Borrow;
 import dev.oreslang.types.Types.ClassNamespace;
 import dev.oreslang.types.Types.Generic;
@@ -452,20 +453,16 @@ public final class TypeChecker {
         for (Ast.Decl decl : module.declarations()) {
             if (decl instanceof Ast.FunctionDecl fn && fn.visibility() == Ast.Visibility.PUBLIC
                     && fn.actorKind() == Ast.ActorKind.NONE) {
-                if (!fn.effects().isEmpty()) {
-                    throw new IllegalArgumentException(
-                            "effectful function '" + module.name() + "." + fn.name()
-                                    + "' cannot be represented as a structural module value "
-                                    + "until Function types carry checked effect metadata");
-                }
                 Type signature = callableContractType(
-                        fn.genericParameters(), fn.parameters(), fn.returnType(), fn.async(), fn.generator(), Set.of(), null);
+                        fn.genericParameters(), fn.parameters(), fn.returnType(), fn.async(),
+                        fn.generator(), Set.of(), null, fn.effects());
                 if (fn.trapped() && signature instanceof Function trappedSignature) {
                     signature = new Function(
                             trappedSignature.parameters(),
                             trappedSignature.mutableParameters(),
                             trappedSignature.async(),
-                            trapResult(true, trappedSignature.result()));
+                            trapResult(true, trappedSignature.result()),
+                            trappedSignature.effects());
                 }
 
                 // Only concretely reifiable fnc declarations become raw
@@ -718,6 +715,24 @@ public final class TypeChecker {
                 required.raisesTypes(), declared.raisesTypes(), "raises", label);
         requireEffectCategoryCovered(
                 required.panicsTypes(), declared.panicsTypes(), "panics", label);
+    }
+
+    private CheckedEffects resolvedCheckedEffects(Ast.EffectSpec effects,
+                                                  Set<String> generics, Type self) {
+        return new CheckedEffects(
+                effects.throwsTypes().stream().map(t -> resolve(t, generics, self)).toList(),
+                effects.raisesTypes().stream().map(t -> resolve(t, generics, self)).toList(),
+                effects.panicsTypes().stream().map(t -> resolve(t, generics, self)).toList());
+    }
+
+    private void requireCallableEffectsCovered(CheckedEffects required,
+                                               Set<String> generics, Type self, String label) {
+        CheckedEffects available = resolvedCheckedEffects(currentEffects, generics, self);
+        if (!required.isSubsetOf(available)) {
+            throw new IllegalArgumentException(label
+                    + " has checked effects not covered by caller signature: "
+                    + required + "; caller: " + available);
+        }
     }
 
     private void checkFunction(String module, Ast.FunctionDecl fn) {
@@ -2359,11 +2374,6 @@ public final class TypeChecker {
                             "generic callable '" + fn.name()
                                     + "' must be specialized by a direct call; polymorphic function values are not supported yet");
                 }
-                if (!fn.effects().isEmpty()) {
-                    throw new IllegalArgumentException(
-                            "effectful function '" + fn.name()
-                                    + "' is direct-call-only until Function types carry checked effects");
-                }
                 return trapFunctionType(fn, Set.of(), null);
             }
             throw new IllegalArgumentException("unknown name '" + name.name() + "'");
@@ -3333,6 +3343,8 @@ public final class TypeChecker {
                                             fn.parameters().get(i),
                                             "argument " + (i + 1));
                                 }
+                                requireCallableEffectsCovered(fn.effects(), generics, self,
+                                        "function-valued field call " + member.member());
                                 return fn.result();
                             }
                             throw new IllegalArgumentException(
@@ -3435,6 +3447,7 @@ public final class TypeChecker {
                         "argument " + (i + 1) + " to mutable function parameter");
                 requireAssignable(actualArgument, fn.parameters().get(i), "argument " + (i + 1));
             }
+            requireCallableEffectsCovered(fn.effects(), generics, self, "function value call");
             return fn.result();
         }
         if (expr instanceof Ast.MemberExpr member) {
@@ -3677,14 +3690,10 @@ public final class TypeChecker {
                                 "generic static function '" + klass.name() + "." + fn.name()
                                         + "' must be specialized by a direct call; polymorphic function values are not supported yet");
                     }
-                    if (!fn.effects().isEmpty()) {
-                        throw new IllegalArgumentException(
-                                "effectful static function '" + klass.name() + "." + fn.name()
-                                        + "' is direct-call-only until Function types carry checked effects");
-                    }
                     // Generator declarations are deliberately restricted to top-level/module
                     // callables, so class static functions cannot produce generator activations.
-                    return functionType(fn.parameters(), fn.returnType(), fn.async(), false, Set.of(), null);
+                    return functionType(fn.parameters(), fn.returnType(), fn.async(), false,
+                            Set.of(), null, fn.effects());
                 }
                 if (functions.size() > 1) throw new IllegalArgumentException("overloaded static function '" + member.member() + "' must be called so arity can select the overload");
                 throw new IllegalArgumentException("unknown static member '" + member.member() + "' on " + klass.name());
@@ -4433,13 +4442,9 @@ public final class TypeChecker {
                         "generic static function '" + klass.name() + "." + fn.name()
                                 + "' must be specialized by a direct call; polymorphic function values are not supported yet");
             }
-            if (!fn.effects().isEmpty()) {
-                throw new IllegalArgumentException(
-                        "effectful static function '" + klass.name() + "." + fn.name()
-                                + "' is direct-call-only until Function types carry checked effects");
-            }
             requireClassMemberVisible(fn.visibility(), findDeclaringClass(klass, fn, new LinkedHashSet<>()), "static function", fn.name());
-            return functionType(fn.parameters(), fn.returnType(), fn.async(), false, Set.of(), null);
+            return functionType(fn.parameters(), fn.returnType(), fn.async(), false, Set.of(), null,
+                    fn.effects());
         }
 
         // An instance method always requires its receiver. Even an expected
@@ -4875,7 +4880,8 @@ public final class TypeChecker {
         if (type instanceof Function fn) return new Function(
                 fn.parameters().stream().map(t -> bindReceiverSelf(t, receiver)).toList(),
                 fn.mutableParameters(), fn.async(),
-                bindReceiverSelf(fn.result(), receiver));
+                bindReceiverSelf(fn.result(), receiver),
+                mapCheckedEffects(fn.effects(), t -> bindReceiverSelf(t, receiver)));
         if (type instanceof Record record) {
             Map<String, Type> members = new LinkedHashMap<>();
             record.members().forEach((name, member) -> members.put(name, bindReceiverSelf(member, receiver)));
@@ -6154,7 +6160,8 @@ public final class TypeChecker {
                             .toList(),
                     fn.mutableParameters(),
                     fn.async(),
-                    resolveSharedGeneric(fn.result(), bindings));
+                    resolveSharedGeneric(fn.result(), bindings),
+                    mapCheckedEffects(fn.effects(), t -> resolveSharedGeneric(t, bindings)));
         }
         if (type instanceof Record record) {
             Map<String, Type> members = new LinkedHashMap<>();
@@ -6520,9 +6527,10 @@ public final class TypeChecker {
         for (Ast.FieldDecl field : klass.fields()) mergeMember(members, field.name(), classFieldType(klass, field), "class " + klass.name());
         for (Ast.MethodDecl method : klass.methods()) {
             if (method.isStatic()) continue;
-            mergeMember(members,
+            mergeOverridingMethod(members,
                     methodContractKey(method.name(), method.arity(), method.genericParameters().size()),
-                    callableContractType(method.genericParameters(), method.parameters(), method.returnType(), method.async(), false, generics, self),
+                    callableContractType(method.genericParameters(), method.parameters(), method.returnType(),
+                            method.async(), false, generics, self, method.effects()),
                     "class " + klass.name());
         }
         stack.remove(klass);
@@ -6551,14 +6559,10 @@ public final class TypeChecker {
         }
         for (Ast.MethodDecl method : klass.methods()) {
             if (!method.isStatic() && method.visibility() == Ast.Visibility.PUBLIC) {
-                if (!method.effects().isEmpty()) {
-                    throw new IllegalArgumentException(
-                            "effectful method '" + klass.name() + "." + method.name()
-                                    + "' cannot be erased into an interface or structural Function contract");
-                }
-                mergeMember(members,
+                mergeOverridingMethod(members,
                         methodContractKey(method.name(), method.arity(), method.genericParameters().size()),
-                        callableContractType(method.genericParameters(), method.parameters(), method.returnType(), method.async(), false, generics, self),
+                        callableContractType(method.genericParameters(), method.parameters(), method.returnType(),
+                                method.async(), false, generics, self, method.effects()),
                         "class " + klass.name());
             }
         }
@@ -7095,6 +7099,47 @@ public final class TypeChecker {
         return parent;
     }
 
+    /**
+     * Local overrides replace an inherited virtual slot only if its complete
+     * function shape is unchanged except for a *narrower* checked-effect set.
+     * Parent-vs-parent merging still uses mergeMember's exact collision rule,
+     * so this does not hide ambiguous multiple-inheritance contracts.
+     */
+    private void mergeOverridingMethod(Map<String, Type> members, String name,
+                                       Type replacement, String owner) {
+        Type inherited = members.get(name);
+        if (inherited == null) {
+            mergeMember(members, name, replacement, owner);
+            return;
+        }
+        if (!(inherited instanceof Function parent)
+                || !(replacement instanceof Function child)) {
+            throw new IllegalArgumentException("conflicting override '" + name
+                    + "' in " + owner + ": " + inherited + " vs " + replacement);
+        }
+        Function sameShapeWithInheritedEffects = new Function(
+                child.parameters(), child.mutableParameters(), child.async(),
+                child.result(), parent.effects());
+        if (!sameShapeWithInheritedEffects.equals(parent)) {
+            throw new IllegalArgumentException("override '" + name + "' in " + owner
+                    + " changes the callable parameter/return contract: "
+                    + parent + " vs " + child);
+        }
+        if (!parent.effects().throwsTypes().containsAll(child.effects().throwsTypes())) {
+            throw new IllegalArgumentException("override '" + name
+                    + "' widens checked throws in " + owner);
+        }
+        if (!parent.effects().raisesTypes().containsAll(child.effects().raisesTypes())) {
+            throw new IllegalArgumentException("override '" + name
+                    + "' widens checked raises in " + owner);
+        }
+        if (!parent.effects().panicsTypes().containsAll(child.effects().panicsTypes())) {
+            throw new IllegalArgumentException("override '" + name
+                    + "' widens checked panics in " + owner);
+        }
+        members.put(name, replacement);
+    }
+
     private void mergeMember(Map<String, Type> members, String name, Type type, String owner) {
         Type existing = members.get(name);
         boolean methodSlot = name.contains("$arity") && existing instanceof Function && type instanceof Function;
@@ -7117,13 +7162,15 @@ public final class TypeChecker {
                 fn.async(),
                 fn.generator(),
                 generics,
-                self);
+                self,
+                fn.effects());
         if (!fn.trapped()) return raw;
         return new Function(
                 raw.parameters(),
                 raw.mutableParameters(),
                 raw.async(),
-                trapResult(true, raw.result()));
+                trapResult(true, raw.result()),
+                raw.effects());
     }
 
     private Type generatorYieldType(boolean async, Type declared) {
@@ -7163,11 +7210,24 @@ public final class TypeChecker {
             boolean generator,
             Set<String> generics,
             Type self) {
+        return functionType(params, returns, async, generator, generics, self,
+                Ast.EffectSpec.none());
+    }
+
+    private Function functionType(
+            List<Ast.Param> params,
+            Ast.TypeRef returns,
+            boolean async,
+            boolean generator,
+            Set<String> generics,
+            Type self,
+            Ast.EffectSpec effects) {
         return new Function(
                 params.stream().map(p -> resolveParam(p, generics, self)).toList(),
                 params.stream().map(Ast.Param::mutable).toList(),
                 async,
-                callableResult(async, generator, resolve(returns, generics, self)));
+                callableResult(async, generator, resolve(returns, generics, self)),
+                resolvedCheckedEffects(effects, generics, self));
     }
 
     private Function callableContractType(
@@ -7178,9 +7238,22 @@ public final class TypeChecker {
             boolean generator,
             Set<String> ownerGenerics,
             Type self) {
+        return callableContractType(callableGenerics, params, returns, async, generator,
+                ownerGenerics, self, Ast.EffectSpec.none());
+    }
+
+    private Function callableContractType(
+            List<String> callableGenerics,
+            List<Ast.Param> params,
+            Ast.TypeRef returns,
+            boolean async,
+            boolean generator,
+            Set<String> ownerGenerics,
+            Type self,
+            Ast.EffectSpec effects) {
         Set<String> all = new HashSet<>(ownerGenerics);
         all.addAll(callableGenerics);
-        Function raw = functionType(params, returns, async, generator, all, self);
+        Function raw = functionType(params, returns, async, generator, all, self, effects);
         // Contract comparison must preserve the fact that a slot is
         // receiver-polymorphic without baking in the declaring class. Parent,
         // child, and interface declarations of (...): self therefore compare
@@ -7725,6 +7798,14 @@ public final class TypeChecker {
         }
     }
 
+    private static CheckedEffects mapCheckedEffects(CheckedEffects effects,
+                                                   java.util.function.Function<Type, Type> transform) {
+        return new CheckedEffects(
+                effects.throwsTypes().stream().map(transform).toList(),
+                effects.raisesTypes().stream().map(transform).toList(),
+                effects.panicsTypes().stream().map(transform).toList());
+    }
+
     private Type substituteGenerics(Type type, Map<String, Type> bindings) {
         if (type instanceof Generic generic) return bindings.getOrDefault(generic.name(), type);
         if (type instanceof SelfType receiverSelf) return new SelfType(substituteGenerics(receiverSelf.bound(), bindings));
@@ -7738,7 +7819,8 @@ public final class TypeChecker {
                 fn.parameters().stream().map(t -> substituteGenerics(t, bindings)).toList(),
                 fn.mutableParameters(),
                 fn.async(),
-                substituteGenerics(fn.result(), bindings));
+                substituteGenerics(fn.result(), bindings),
+                mapCheckedEffects(fn.effects(), t -> substituteGenerics(t, bindings)));
         if (type instanceof Record record) {
             Map<String, Type> members = new LinkedHashMap<>();
             record.members().forEach((name, member) -> members.put(name, substituteGenerics(member, bindings)));
@@ -7757,7 +7839,10 @@ public final class TypeChecker {
         if (type instanceof Types.Not not) return containsUnknown(not.excluded());
         if (type instanceof Named named) return named.arguments().stream().anyMatch(this::containsUnknown);
         if (type instanceof Function fn) return fn.parameters().stream().anyMatch(this::containsUnknown)
-                || containsUnknown(fn.result());
+                || containsUnknown(fn.result())
+                || fn.effects().throwsTypes().stream().anyMatch(this::containsUnknown)
+                || fn.effects().raisesTypes().stream().anyMatch(this::containsUnknown)
+                || fn.effects().panicsTypes().stream().anyMatch(this::containsUnknown);
         if (type instanceof Record record) return record.members().values().stream().anyMatch(this::containsUnknown);
         return false;
     }
@@ -7773,7 +7858,10 @@ public final class TypeChecker {
         if (type instanceof Types.Not not) return containsGenericNamed(not.excluded(), names);
         if (type instanceof Named named) return named.arguments().stream().anyMatch(t -> containsGenericNamed(t, names));
         if (type instanceof Function fn) return fn.parameters().stream().anyMatch(t -> containsGenericNamed(t, names))
-                || containsGenericNamed(fn.result(), names);
+                || containsGenericNamed(fn.result(), names)
+                || fn.effects().throwsTypes().stream().anyMatch(t -> containsGenericNamed(t, names))
+                || fn.effects().raisesTypes().stream().anyMatch(t -> containsGenericNamed(t, names))
+                || fn.effects().panicsTypes().stream().anyMatch(t -> containsGenericNamed(t, names));
         if (type instanceof Record record) return record.members().values().stream().anyMatch(t -> containsGenericNamed(t, names));
         return false;
     }
@@ -8411,6 +8499,7 @@ public final class TypeChecker {
         if (actual instanceof Function source && expected instanceof Function target) {
             if (source.parameters().size() != target.parameters().size()) return false;
             if (source.async() != target.async()) return false;
+            if (!source.effects().isSubsetOf(target.effects())) return false;
             if (!source.mutableParameters().equals(target.mutableParameters())) return false;
             for (int i = 0; i < source.parameters().size(); i++) {
                 if (!assignable(target.parameters().get(i), source.parameters().get(i))) return false;

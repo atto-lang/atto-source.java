@@ -46,18 +46,55 @@ public final class Types {
         public Record(Map<String, Type> members) { this(members, false); }
     }
 
+    /**
+     * A callable's checked effects, kept separate from its result type.
+     * Immutable resolved types prevent passing an effectful function through
+     * an apparently pure Fnc value.
+     */
+    public record CheckedEffects(List<Type> throwsTypes, List<Type> raisesTypes,
+                                 List<Type> panicsTypes) {
+        public CheckedEffects {
+            throwsTypes = List.copyOf(throwsTypes);
+            raisesTypes = List.copyOf(raisesTypes);
+            panicsTypes = List.copyOf(panicsTypes);
+        }
+
+        public static CheckedEffects none() {
+            return new CheckedEffects(List.of(), List.of(), List.of());
+        }
+
+        public boolean isEmpty() {
+            return throwsTypes.isEmpty() && raisesTypes.isEmpty() && panicsTypes.isEmpty();
+        }
+
+        /** Effect widening on assignment is allowed; effect erasure is not. */
+        public boolean isSubsetOf(CheckedEffects allowance) {
+            return allowance.throwsTypes.containsAll(throwsTypes)
+                    && allowance.raisesTypes.containsAll(raisesTypes)
+                    && allowance.panicsTypes.containsAll(panicsTypes);
+        }
+    }
+
     public record Function(
             List<Type> parameters,
             List<Boolean> mutableParameters,
             boolean async,
-            Type result) implements Type {
+            Type result,
+            CheckedEffects effects) implements Type {
         public Function {
             parameters = List.copyOf(parameters);
             mutableParameters = List.copyOf(mutableParameters);
+            Objects.requireNonNull(effects, "checked function effects");
             if (parameters.size() != mutableParameters.size()) {
                 throw new IllegalArgumentException(
                         "function parameter mutability metadata must match parameter arity");
             }
+        }
+
+        /** Compatibility for pure callables and intrinsic Function producers. */
+        public Function(List<Type> parameters, List<Boolean> mutableParameters,
+                        boolean async, Type result) {
+            this(parameters, mutableParameters, async, result, CheckedEffects.none());
         }
 
         /**
@@ -66,7 +103,8 @@ public final class Types {
          * otherwise.
          */
         public Function(List<Type> parameters, Type result) {
-            this(parameters, java.util.Collections.nCopies(parameters.size(), false), false, result);
+            this(parameters, java.util.Collections.nCopies(parameters.size(), false), false,
+                    result, CheckedEffects.none());
         }
     }
 
@@ -178,7 +216,10 @@ public final class Types {
         if (type instanceof ListType list) return containsUncertainType(list.element());
         if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof Function function) return function.parameters().stream().anyMatch(Types::containsUncertainType)
-                || containsUncertainType(function.result());
+                || containsUncertainType(function.result())
+                || function.effects().throwsTypes().stream().anyMatch(Types::containsUncertainType)
+                || function.effects().raisesTypes().stream().anyMatch(Types::containsUncertainType)
+                || function.effects().panicsTypes().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof Borrow borrow) return containsUncertainType(borrow.target());
         if (type instanceof SelfType self) return containsUncertainType(self.bound());
         return false;
@@ -195,6 +236,11 @@ public final class Types {
         }
         if (from instanceof Not) return to == Unknown.INSTANCE;
         if (from instanceof BoolLiteral && to == Primitive.BOOL) return true;
+        // Unknown has no checked-effect witness. Do not manufacture a pure
+        // callback from it, or erase an effectful callback to Unknown.
+        if (from == Unknown.INSTANCE && to instanceof Function) return false;
+        if (to == Unknown.INSTANCE && from instanceof Function fn
+                && !fn.effects().isEmpty()) return false;
         if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
         if (to instanceof Generic || from instanceof Generic) return true;
         if (from.equals(to)) return true;
@@ -254,6 +300,7 @@ public final class Types {
         if (from instanceof Function source && to instanceof Function target) {
             if (source.parameters().size() != target.parameters().size()) return false;
             if (source.async() != target.async()) return false;
+            if (!source.effects().isSubsetOf(target.effects())) return false;
             // Parameter mutation authority is part of the callable contract.
             // Keep it invariant: callers and implementations must agree exactly
             // on which arguments may be mutated.
