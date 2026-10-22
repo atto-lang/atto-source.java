@@ -108,6 +108,40 @@ final class ActorNativeArenaTest {
     }
 
     @Test
+    void explicitLexicalScopeDropReleasesNativeRootsAndFencesStaleCells() {
+        AtomicLong charged = new AtomicLong();
+        Object marker = new Object();
+        ActorNativeArena.ValueCell stale;
+        try (ActorNativeArena arena = arena(16 * 1024, charged)) {
+            Map<String, Object> owned = arena.fields(List.of("value"), marker);
+            stale = arena.valueCell(owned, marker);
+            assertSame(owned, stale.get());
+            assertEquals(1, arena.nativeReferenceCount());
+            long nativeAddress = stale.nativeOffset();
+            long allocated = arena.allocatedBytes();
+            assertTrue(nativeAddress >= 0);
+
+            stale.close();
+            assertEquals(0, arena.nativeReferenceCount(),
+                    "scope drop must retire the slot's native reference without actor termination");
+            assertEquals(allocated, arena.allocatedBytes(),
+                    "scope drop does not silently recycle actor-relative slab space");
+            assertThrows(IllegalStateException.class, stale::get);
+            assertThrows(IllegalStateException.class, stale::nativeOffset);
+            assertThrows(IllegalStateException.class, () -> stale.trySet(owned));
+            assertThrows(IllegalStateException.class, () -> stale.trySet(null));
+            stale.close(); // idempotent while the owning actor arena is live
+
+            ActorNativeArena.ValueCell nulled = arena.valueCell(null, marker);
+            nulled.close();
+            assertThrows(IllegalStateException.class, nulled::get);
+        }
+        assertEquals(0, charged.get(), "arena close still refunds every native slab");
+        assertThrows(IllegalStateException.class, stale::close,
+                "post-arena-close access must never resurrect native authority");
+    }
+
+    @Test
     void nativeListUsesArenaSlotsAcrossChunksAndReleasesElementReferences() {
         AtomicLong charged = new AtomicLong();
         AtomicLong foreignCharged = new AtomicLong();
