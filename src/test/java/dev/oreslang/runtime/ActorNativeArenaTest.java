@@ -624,6 +624,51 @@ final class ActorNativeArenaTest {
     }
 
     @Test
+    void failedRegionRegistrationRetractsNativeBackingBeforeRetryAndClose() {
+        for (int failureKind = 0; failureKind < 2; failureKind++) {
+            final boolean fatal = failureKind == 1;
+            AtomicLong charged = new AtomicLong();
+            AtomicInteger armed = new AtomicInteger(0);
+            try (ActorNativeArena arena = new ActorNativeArena(128, () -> {}, bytes -> {
+                charged.addAndGet(bytes);
+                return () -> charged.addAndGet(-bytes);
+            }, stage -> {
+                if (stage == 0 && armed.getAndSet(0) == 1) {
+                    if (fatal) throw new OutOfMemoryError("synthetic region publication failure");
+                    throw new IllegalStateException("synthetic region publication failure");
+                }
+            })) {
+                try (ActorNativeArena.Region published = arena.region(9)) {
+                    assertEquals(0L, published.nativeOffset());
+                    published.writeByte(0, (byte) 77);
+                    assertEquals((byte) 77, published.readByte(0));
+                }
+                assertEquals(0L, charged.get());
+                armed.set(1);
+                if (fatal) {
+                    assertThrows(OutOfMemoryError.class, () -> arena.region(9));
+                } else {
+                    assertThrows(IllegalStateException.class, () -> arena.region(9));
+                }
+                assertEquals(0, armed.get(), "the publication fault must be consumed");
+                assertEquals(0L, charged.get(), "failed native region must be refunded");
+                assertEquals(0L, arena.committedBytes());
+
+                try (ActorNativeArena.Region retried = arena.region(9)) {
+                    assertEquals(16L, retried.nativeOffset(),
+                            "failed registration must not advance actor-relative addresses");
+                    retried.writeLong(0, 123L);
+                    assertEquals(123L, retried.readLong(0));
+                }
+                assertEquals(0L, charged.get());
+            }
+            // A leaked reference to the already-freed region would make
+            // final arena teardown attempt an unsafe second native free.
+            assertEquals(0L, charged.get(), "arena teardown must not refund twice");
+        }
+    }
+
+    @Test
     void rejectedNativeRegionReservationDoesNotConsumeActorRelativeAddress() {
         AtomicLong charged = new AtomicLong();
         AtomicBoolean reject = new AtomicBoolean();
