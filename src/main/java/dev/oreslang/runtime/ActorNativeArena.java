@@ -114,7 +114,7 @@ public final class ActorNativeArena implements AutoCloseable {
     }
 
     private static final int SLOT_BYTES = 24;
-    private static final int TASK_FRAME_BYTES = 40;
+    private static final int TASK_FRAME_BYTES = 56;
     private static final int LIST_HEADER_BYTES = 32;
     private static final int LIST_CHUNK_SLOTS = 16;
     private static final int LIST_CHUNK_HEADER_BYTES = Long.BYTES;
@@ -560,6 +560,8 @@ public final class ActorNativeArena implements AutoCloseable {
         write(base, 16, 0L); // resume generation/count
         write(base, 24, 0L); // suspension ticket generation
         write(base, 32, 0L); // active SuspensionKind, 0 when running/terminal
+        write(base, 40, NO_OFFSET); // native spill-register slots
+        write(base, 48, 0L); // declared spill-register count
         return new TaskFrame(base);
     }
 
@@ -619,6 +621,90 @@ public final class ActorNativeArena implements AutoCloseable {
             }
         }
 
+
+        /**
+         * Reserve a fixed, native-backed register bank for compiler-lowered
+         * locals that must survive await/cooperate. Register payloads are the
+         * normal tagged arena values, not Java Object[] references.
+         *
+         * <p>Configuration is single-shot before the first resume. A failed
+         * admission does not publish a half-initialized bank or consume a
+         * second bank on retry.</p>
+         */
+        public void configureSpillSlots(int count) {
+            synchronized (ActorNativeArena.this) {
+                checkFrame();
+                if (TaskPhase.fromCode(read(base, 8)) != TaskPhase.NEW
+                        || read(base, 40) != NO_OFFSET) {
+                    throw new IllegalStateException("native task spill layout is already sealed");
+                }
+                if (count <= 0 || count > 1024) {
+                    throw new IllegalArgumentException("native task spill count must be in [1,1024]");
+                }
+                long location = allocate(Math.multiplyExact(count, SLOT_BYTES));
+                for (int i = 0; i < count; i++) {
+                    long slot = location + (long) i * SLOT_BYTES;
+                    write(slot, 0, NULL);
+                    write(slot, 8, 0L);
+                    write(slot, 16, 0L);
+                }
+                write(base, 40, location);
+                write(base, 48, count);
+            }
+        }
+
+        public int spillSlotCount() {
+            synchronized (ActorNativeArena.this) {
+                checkFrame();
+                return Math.toIntExact(read(base, 48));
+            }
+        }
+
+        public void spill(int index, Object value) {
+            synchronized (ActorNativeArena.this) {
+                checkFrame();
+                requireRunning();
+                long slot = spillAddress(index);
+                if (!supportsValue(value, null)) {
+                    throw new IllegalArgumentException(
+                            "native task spill requires native value lowering");
+                }
+                storeValue(slot, value, null);
+            }
+        }
+
+        public Object restore(int index) {
+            synchronized (ActorNativeArena.this) {
+                checkFrame();
+                requireRunning();
+                return loadValue(spillAddress(index), null);
+            }
+        }
+
+        /** Deterministically drop native reference roots when a task terminates. */
+        private void clearSpills() {
+            int count = Math.toIntExact(read(base, 48));
+            if (count == 0) return;
+            long first = read(base, 40);
+            for (int i = 0; i < count; i++) {
+                storeValue(first + (long) i * SLOT_BYTES, null, null);
+            }
+        }
+
+        private long spillAddress(int index) {
+            int count = Math.toIntExact(read(base, 48));
+            if (index < 0 || index >= count) {
+                throw new IndexOutOfBoundsException("native task spill index outside declared frame");
+            }
+            return read(base, 40) + (long) index * SLOT_BYTES;
+        }
+
+        private void requireRunning() {
+            if (TaskPhase.fromCode(read(base, 8)) != TaskPhase.RUNNING) {
+                throw new IllegalStateException("native task spill access requires RUNNING");
+            }
+        }
+
         public void beginInitialResume() {
             synchronized (ActorNativeArena.this) {
                 checkFrame();
@@ -666,6 +752,9 @@ public final class ActorNativeArena implements AutoCloseable {
 
         public void done() {
             synchronized (ActorNativeArena.this) {
+                checkFrame();
+                requireRunning();
+                clearSpills();
                 transitionFromRunning(TaskPhase.DONE);
                 write(base, 32, 0L);
             }
@@ -681,6 +770,7 @@ public final class ActorNativeArena implements AutoCloseable {
                 checkFrame();
                 TaskPhase current = TaskPhase.fromCode(read(base, 8));
                 if (current == TaskPhase.DONE || current == TaskPhase.FAILED) return;
+                clearSpills();
                 write(base, 32, 0L);
                 write(base, 8, TaskPhase.FAILED.code);
             }
