@@ -22,12 +22,14 @@
 typedef enum {
     ORES_IO_READ = 1,
     ORES_IO_EXISTS = 2,
+    ORES_IO_WRITE = 3,
 } ores_io_kind;
 
 typedef enum {
     ORES_STAGE_OPEN = 1,
     ORES_STAGE_READ = 2,
-    ORES_STAGE_CLOSE = 3,
+    ORES_STAGE_WRITE = 3,
+    ORES_STAGE_CLOSE = 4,
 } ores_io_stage;
 
 typedef struct ores_io_op ores_io_op;
@@ -41,6 +43,7 @@ struct ores_io_op {
     int fd;
     int terminal_error;
     int terminal_exists;
+    int append;
     unsigned char *path;
     size_t path_len;
     unsigned char *buffer;
@@ -56,6 +59,7 @@ struct ores_uring_ctx {
     jobject owner;
     jmethodID read_completed;
     jmethodID exists_completed;
+    jmethodID write_completed;
 
     int ring_fd;
     int root_fd;
@@ -260,6 +264,23 @@ static int ores_submit_read_locked(ores_uring_ctx *ctx, ores_io_op *op) {
     return result;
 }
 
+static int ores_submit_write_locked(ores_uring_ctx *ctx, ores_io_op *op) {
+    if (op->used >= op->capacity) return 1;
+    struct io_uring_sqe *sqe = ores_get_sqe_locked(ctx);
+    if (sqe == NULL) return -EAGAIN;
+    uint64_t user_data = ORES_UD(op, ORES_STAGE_WRITE);
+    sqe->opcode = IORING_OP_WRITE;
+    sqe->fd = op->fd;
+    sqe->off = op->append ? (uint64_t)-1 : op->used;
+    sqe->addr = (uint64_t)(uintptr_t)(op->buffer + op->used);
+    sqe->len = (uint32_t)(op->capacity - op->used);
+    sqe->user_data = user_data;
+    op->current_user_data = user_data;
+    int result = ores_submit_one_locked(ctx);
+    if (result < 0) op->current_user_data = 0;
+    return result;
+}
+
 static int ores_submit_close_locked(ores_uring_ctx *ctx, ores_io_op *op) {
     if (op->fd < 0) return 0;
     struct io_uring_sqe *sqe = ores_get_sqe_locked(ctx);
@@ -375,6 +396,23 @@ static ores_completion ores_handle_cqe_locked(
             return ores_terminal_locked(ctx, op);
         }
 
+        if (op->kind == ORES_IO_WRITE) {
+            if (op->capacity == 0) {
+                int close_result = ores_submit_close_locked(ctx, op);
+                if (close_result == 0) return none;
+                op->terminal_error = -close_result;
+                return ores_terminal_locked(ctx, op);
+            }
+            int write_result = ores_submit_write_locked(ctx, op);
+            if (write_result == 0) return none;
+            if (write_result > 0) op->terminal_error = 0;
+            else op->terminal_error = -write_result;
+            int close_result = ores_submit_close_locked(ctx, op);
+            if (close_result == 0) return none;
+            if (op->terminal_error == 0) op->terminal_error = -close_result;
+            return ores_terminal_locked(ctx, op);
+        }
+
         int read_result = ores_submit_read_locked(ctx, op);
         if (read_result == 0) return none;
         op->terminal_error = -read_result;
@@ -398,6 +436,32 @@ static ores_completion ores_handle_cqe_locked(
                 int read_result = ores_submit_read_locked(ctx, op);
                 if (read_result == 0) return none;
                 op->terminal_error = -read_result;
+            }
+        }
+        int close_result = ores_submit_close_locked(ctx, op);
+        if (close_result == 0) return none;
+        if (op->terminal_error == 0) op->terminal_error = -close_result;
+        return ores_terminal_locked(ctx, op);
+    }
+
+    if (stage == ORES_STAGE_WRITE) {
+        if (op->cancelled) {
+            op->terminal_error = ECANCELED;
+        } else if (res < 0) {
+            op->terminal_error = -res;
+        } else if (res == 0) {
+            op->terminal_error = EIO;
+        } else {
+            size_t remaining = op->capacity - op->used;
+            if ((size_t)res > remaining) {
+                op->terminal_error = EIO;
+            } else {
+                op->used += (size_t)res;
+                if (op->used < op->capacity) {
+                    int write_result = ores_submit_write_locked(ctx, op);
+                    if (write_result == 0) return none;
+                    if (write_result < 0) op->terminal_error = -write_result;
+                }
             }
         }
         int close_result = ores_submit_close_locked(ctx, op);
@@ -449,11 +513,18 @@ static void ores_notify_completion(JNIEnv *env, ores_uring_ctx *ctx,
             (*env)->ExceptionClear(env);
         }
         if (bytes != NULL) (*env)->DeleteLocalRef(env, bytes);
-    } else {
+    } else if (completion->kind == ORES_IO_EXISTS) {
         (*env)->CallVoidMethod(env, ctx->owner, ctx->exists_completed,
                 (jlong)completion->id,
                 completion->exists ? JNI_TRUE : JNI_FALSE,
                 (jint)completion->error);
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionDescribe(env);
+            (*env)->ExceptionClear(env);
+        }
+    } else {
+        (*env)->CallVoidMethod(env, ctx->owner, ctx->write_completed,
+                (jlong)completion->id, (jint)completion->error);
         if ((*env)->ExceptionCheck(env)) {
             (*env)->ExceptionDescribe(env);
             (*env)->ExceptionClear(env);
@@ -580,7 +651,8 @@ static int ores_copy_path(JNIEnv *env, jbyteArray encoded, unsigned char **out, 
 }
 
 static ores_io_op *ores_new_op(JNIEnv *env, uint64_t id, ores_io_kind kind,
-        jbyteArray encoded_path, size_t max_bytes, int *error) {
+        jbyteArray encoded_path, size_t max_bytes, jbyteArray write_bytes,
+        int append, int *error) {
     ores_io_op *op = (ores_io_op *)calloc(1, sizeof(*op));
     if (op == NULL) {
         *error = ENOMEM;
@@ -613,6 +685,45 @@ static ores_io_op *ores_new_op(JNIEnv *env, uint64_t id, ores_io_kind kind,
             free(op);
             return NULL;
         }
+    } else if (kind == ORES_IO_WRITE) {
+        if (write_bytes == NULL) {
+            *error = EINVAL;
+            free(op->path);
+            free(op);
+            return NULL;
+        }
+        jsize length = (*env)->GetArrayLength(env, write_bytes);
+        if (length < 0 || (size_t)length > 64U * 1024U * 1024U) {
+            *error = EFBIG;
+            free(op->path);
+            free(op);
+            return NULL;
+        }
+        op->capacity = (size_t)length;
+        op->limit = op->capacity;
+        op->append = append != 0;
+        if (op->capacity != 0) {
+            op->buffer = (unsigned char *)malloc(op->capacity);
+            if (op->buffer == NULL) {
+                *error = ENOMEM;
+                free(op->path);
+                free(op);
+                return NULL;
+            }
+            (*env)->GetByteArrayRegion(env, write_bytes, 0, length,
+                    (jbyte *)op->buffer);
+            if ((*env)->ExceptionCheck(env)) {
+                (*env)->ExceptionClear(env);
+                *error = EINVAL;
+                free(op->path);
+                free(op->buffer);
+                free(op);
+                return NULL;
+            }
+        }
+        op->how.flags = O_WRONLY | O_CREAT | O_CLOEXEC
+                | (op->append ? O_APPEND : O_TRUNC);
+        op->how.mode = 0666;
     } else {
         op->how.flags = O_PATH | O_CLOEXEC;
     }
@@ -662,8 +773,11 @@ Java_dev_oreslang_runtime_LinuxUringFileIoProvider_nativeCreate(
             "nativeReadCompleted", "(J[BI)V");
     ctx->exists_completed = (*env)->GetMethodID(env, owner_class,
             "nativeExistsCompleted", "(JZI)V");
+    ctx->write_completed = (*env)->GetMethodID(env, owner_class,
+            "nativeWriteCompleted", "(JI)V");
     (*env)->DeleteLocalRef(env, owner_class);
-    if (ctx->read_completed == NULL || ctx->exists_completed == NULL) {
+    if (ctx->read_completed == NULL || ctx->exists_completed == NULL
+            || ctx->write_completed == NULL) {
         if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
         ores_free_ctx(env, ctx);
         return 0;
@@ -694,12 +808,14 @@ Java_dev_oreslang_runtime_LinuxUringFileIoProvider_nativeCreate(
 }
 
 static jboolean ores_submit(JNIEnv *env, jlong handle, jlong id,
-        jbyteArray path, ores_io_kind kind, jint max_bytes) {
+        jbyteArray path, ores_io_kind kind, jint max_bytes,
+        jbyteArray write_bytes, int append) {
     ores_uring_ctx *ctx = (ores_uring_ctx *)(intptr_t)handle;
     if (ctx == NULL || id <= 0) return JNI_FALSE;
     int error = 0;
     ores_io_op *op = ores_new_op(env, (uint64_t)id, kind, path,
-            max_bytes < 0 ? 0U : (size_t)max_bytes, &error);
+            max_bytes < 0 ? 0U : (size_t)max_bytes,
+            write_bytes, append, &error);
     if (op == NULL) return JNI_FALSE;
 
     pthread_mutex_lock(&ctx->mutex);
@@ -739,14 +855,25 @@ Java_dev_oreslang_runtime_LinuxUringFileIoProvider_nativeSubmitRead(
         JNIEnv *env, jclass cls, jlong handle, jlong id,
         jbyteArray path, jint max_bytes) {
     (void)cls;
-    return ores_submit(env, handle, id, path, ORES_IO_READ, max_bytes);
+    return ores_submit(env, handle, id, path, ORES_IO_READ, max_bytes,
+            NULL, 0);
 }
 
 JNIEXPORT jboolean JNICALL
 Java_dev_oreslang_runtime_LinuxUringFileIoProvider_nativeSubmitExists(
         JNIEnv *env, jclass cls, jlong handle, jlong id, jbyteArray path) {
     (void)cls;
-    return ores_submit(env, handle, id, path, ORES_IO_EXISTS, 0);
+    return ores_submit(env, handle, id, path, ORES_IO_EXISTS, 0,
+            NULL, 0);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_dev_oreslang_runtime_LinuxUringFileIoProvider_nativeSubmitWrite(
+        JNIEnv *env, jclass cls, jlong handle, jlong id,
+        jbyteArray path, jbyteArray value, jboolean append) {
+    (void)cls;
+    return ores_submit(env, handle, id, path, ORES_IO_WRITE, 0,
+            value, append == JNI_TRUE);
 }
 
 JNIEXPORT jboolean JNICALL
@@ -811,6 +938,14 @@ JNIEXPORT jboolean JNICALL
 Java_dev_oreslang_runtime_LinuxUringFileIoProvider_nativeSubmitExists(
         JNIEnv *env, jclass cls, jlong handle, jlong id, jbyteArray path) {
     (void)env; (void)cls; (void)handle; (void)id; (void)path; return JNI_FALSE;
+}
+JNIEXPORT jboolean JNICALL
+Java_dev_oreslang_runtime_LinuxUringFileIoProvider_nativeSubmitWrite(
+        JNIEnv *env, jclass cls, jlong handle, jlong id,
+        jbyteArray path, jbyteArray value, jboolean append) {
+    (void)env; (void)cls; (void)handle; (void)id;
+    (void)path; (void)value; (void)append;
+    return JNI_FALSE;
 }
 JNIEXPORT jboolean JNICALL
 Java_dev_oreslang_runtime_LinuxUringFileIoProvider_nativeCancel(
