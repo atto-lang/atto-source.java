@@ -830,4 +830,40 @@ final class PatternMatchingHardeningTest {
                 }
                 """)));
     }
+
+    @Test
+    void errorInterfaceMustBeNominalRatherThanACompatibleMethodShape() {
+        String hierarchy = """
+                define interface CodedError as
+                  fnc code() => int;
+                end
+
+                define class Error implements CodedError as
+                  pub code(): int { return 0; }
+                end
+
+                define class ShapeImpostor as
+                  pub code(): int { return 0; }
+                end
+                """;
+
+        IllegalArgumentException incomplete = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse(hierarchy + """
+                        fnc classify(Error | ShapeImpostor failure): int {
+                          match failure over
+                            on CodedError coded -> { return coded.code(); }
+                          end
+                        }
+                        """)));
+        assertTrue(incomplete.getMessage().contains("non-exhaustive match"));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(hierarchy + """
+                fnc classify(Error | ShapeImpostor failure): int {
+                  match failure over
+                    on CodedError coded -> { return coded.code(); }
+                    on ShapeImpostor fake -> { return -1; }
+                  end
+                }
+                """)));
+    }
 }
