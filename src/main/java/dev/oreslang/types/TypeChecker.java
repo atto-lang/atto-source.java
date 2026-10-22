@@ -73,6 +73,9 @@ public final class TypeChecker {
     private final Set<String> inferredTypeNames = new HashSet<>();
     /** Short named inference is resolved only for otherwise unbound capitalized row type names. */
     private final IdentityHashMap<Ast.BindingStmt, String> shortInferredTypeNames = new IdentityHashMap<>();
+    /** Staged identity-bound plans, not executable until the full type pass succeeds. */
+    private final IdentityHashMap<Ast.ObjectExpr, AggregateConstructionPlan.Plan>
+            stagedAggregatePlans = new IdentityHashMap<>();
 
     private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.InterfaceDecl, String> interfaceOwners = new IdentityHashMap<>();
@@ -149,6 +152,7 @@ public final class TypeChecker {
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
+        AggregateConstructionPlan.Checked.recordTypedUnit(checker.stagedAggregatePlans);
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
     }
 
@@ -207,6 +211,7 @@ public final class TypeChecker {
             throw new IllegalArgumentException("orphaned linked class field alias metadata");
         }
         checker.validate(program);
+        AggregateConstructionPlan.Checked.recordTypedUnit(checker.stagedAggregatePlans);
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
     }
 
@@ -4275,7 +4280,12 @@ public final class TypeChecker {
             if (object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
                 // Not executable authority until the ownership checker
                 // independently validates the full compilation unit.
-                AggregateConstructionPlan.Checked.recordTyped(object, checked);
+                AggregateConstructionPlan.Plan previous =
+                        stagedAggregatePlans.putIfAbsent(object, checked);
+                if (previous != null && !previous.equals(checked)) {
+                    throw new IllegalStateException(
+                            "inconsistent aggregate plans within one type-checking pass");
+                }
             }
             return checked.resultType();
         }
