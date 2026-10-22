@@ -91,13 +91,14 @@ public final class AggregateConstructionPlan {
             if (!resultType.members().equals(resolvedFields)) {
                 throw new IllegalArgumentException("plan result type differs from resolved fields");
             }
-            if (!(resultKind == Ast.ObjectKind.INFERRED_STRUCT
-                    && resultType.kind() == AggregateKind.STRUCT)
-                    && !(resultKind == Ast.ObjectKind.RECORD
+            boolean validStruct = resultKind == Ast.ObjectKind.INFERRED_STRUCT
+                    && resultType.kind() == AggregateKind.STRUCT
+                    && !resultType.readOnly();
+            boolean validRecord = (resultKind == Ast.ObjectKind.RECORD
                     || resultKind == Ast.ObjectKind.INFERRED_RECORD)
-                    || ((resultKind == Ast.ObjectKind.RECORD
-                    || resultKind == Ast.ObjectKind.INFERRED_RECORD)
-                    && (resultType.kind() != AggregateKind.RECORD || !resultType.readOnly()))) {
+                    && resultType.kind() == AggregateKind.RECORD
+                    && resultType.readOnly();
+            if (!validStruct && !validRecord) {
                 throw new IllegalArgumentException("plan result kind and readonly capability mismatch");
             }
             LinkedHashMap<String, Type> reconstructed = new LinkedHashMap<>();
