@@ -699,8 +699,13 @@ public final class OresScheduler implements AutoCloseable {
                     for (TaskRunner<?> runner : admitted) {
                         try {
                             runner.publishCancelledFromSchedulerClose();
-                        } catch (RuntimeException | Error failure) {
-                            recordRetirementFailure(failure);
+                        } catch (RuntimeException | Error ignored) {
+                            // Arbitrary terminal Future subscribers can
+                            // throw after the physical-retirement receipt
+                            // has already fired. Such observer failures
+                            // cannot retroactively invalidate a completed
+                            // post-carrier cleanup barrier.
+                            // Continue notifying the remaining cohort.
                         }
                     }
                 });
@@ -1260,6 +1265,9 @@ public final class OresScheduler implements AutoCloseable {
                     try {
                         deadlineQuiescenceRetired.set(true);
                         releaseDeadlineSlotIfRetired();
+                    } catch (RuntimeException | Error failure) {
+                        recordRetirementFailure(failure);
+                        throw failure;
                     } finally {
                         // A runner remains live until its physical-retirement
                         // callback and quota refunds have finished. Removing
