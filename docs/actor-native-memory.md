@@ -492,3 +492,51 @@ own runtime gates and executable cancellation/stop-race tests.
 A stranded native read lease remains a deliberate stop/fail-closed
 condition, not permission to force-free live memory. No hard-real-time,
 no-tracing-GC, Native Image or cross-backend parity claim follows.
+
+## Actor-owned structured TaskScope lifetime bridge (draft #1856)
+
+For trusted actor execution, `ActorRuntime.newActorTaskScope()` now creates
+an explicitly actor-affine host/compiler `TaskScope` with a lifetime pin
+in `ActorCell.activeSourceScopes`. The actor removes the pin only when
+`TaskScope.getDone()` reports complete. This distinct scope barrier
+includes the physical lifetime of TaskHandle descendants (rather than
+only their terminal Future results). An exceptional scope completion
+does **not** release the pin or authorize native actor heap reclamation.
+
+- Scope creation requires an actual executing owning actor; attempts
+  during stop/finalizing and attempts from an external host or different
+  actor to enqueue new Tasks into an existing actor-owned scope are
+  rejected. Admission authorization is checked under the scope's
+  atomic seal/child-reservation lock.
+- `terminateTree()` captures active scopes while holding
+  `lifecycleLock`, then **requests cancellation outside the lock**.
+  The scope is sealed immediately; a once-only virtual host notifier
+  delivers potentially blocking child cancellation callbacks. Repeated
+  actor-stop requests cannot create unlimited cancellation threads.
+- `ActorCell.finalizeStopLocked()` refuses native heap release while
+  any actor-owned structured scope is still live. Once all scopes join,
+  the actor additionally waits for its source scheduler's post-carrier
+  fully-quiescent receipt and enforces native arena read-loan guards.
+  A successful terminal `OresFuture` or cancellation request is not
+  sufficient on its own.
+- **UNTRUSTED actors are deliberately denied this scope bridge.**
+  Their `startActorTask` path already enforces a shared logical wall
+  and fuel quota. The ordinary `TaskScope.startTask` path does not yet
+  attach that quota to all nested children, so enabling it for untrusted
+  code would create an admission bypass. No such promotion is enabled.
+- Scheduler revocation or post-carrier quota-cleanup failures produce
+  an explicit unsuccessful retirement receipt. The actor leaves its
+  native heap pinned instead of treating the failed callback as proof
+  that memory is safe to release. Terminal Future subscriber failures
+  are not mistaken for physical guest execution.
+
+Regression **sources** added on this draft exercise actor stop while a
+structured child is physically executing or awaits an unresolved Future,
+host-side Task injection denial, a blocked child Future subscriber,
+scheduler post-carrier callback failure, and multiple pending child
+await registrations. These must be compiled and executed on the exact
+branch head before merging; source-org Actions have historically failed
+before runner steps executed. The new host/compiler bridge is not
+automatic source-language `TaskScope` lowering, does not approve
+cross-actor borrowed capture, and does not establish complete descendant
+lineage across arbitrary independent schedulers.
