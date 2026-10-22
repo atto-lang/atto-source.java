@@ -35,6 +35,9 @@ public final class ActorMessageScratch {
     private long reservedBytes;
     /** An outstanding checked borrow pins its logical message and native backing. */
     private int readBorrows;
+    /** Parent/child lexical scratch scopes are an exclusive LIFO stack. */
+    private Scope currentScope;
+    private Scope rootScope;
 
     ActorMessageScratch(ActorNativeArena arena, long actorLimit) {
         this.arena = Objects.requireNonNull(arena, "arena");
@@ -46,10 +49,16 @@ public final class ActorMessageScratch {
         arena.assertOwner();
         if (active) throw new IllegalStateException("actor already owns a logical message scratch epoch");
         if (epoch == Long.MAX_VALUE) throw new IllegalStateException("actor message epoch exhausted");
-        epoch++;
+        // Allocate the managed scope authority before changing the state. A
+        // failed JVM allocation cannot leave an active, scope-less message.
+        long nextEpoch = epoch + 1;
+        Scope nextRoot = new Scope(null, nextEpoch, 0, 0, 0);
+        epoch = nextEpoch;
         cursorBlock = 0;
         cursorByte = 0;
         usedBytes = 0;
+        currentScope = nextRoot;
+        rootScope = nextRoot;
         active = true;
     }
 
@@ -59,6 +68,9 @@ public final class ActorMessageScratch {
         if (readBorrows != 0) {
             throw new IllegalStateException("cannot complete a message with live scratch borrows");
         }
+        if (currentScope != rootScope) {
+            throw new IllegalStateException("cannot complete a message with live scratch scopes");
+        }
         // Epoch checks guard stale pointers; eagerly scrub used native spans so
         // plaintext does not linger between messages. Backing is kept/charged.
         for (int index = 0; index <= cursorBlock && index < blocks.size(); index++) {
@@ -66,6 +78,9 @@ public final class ActorMessageScratch {
             int bytes = index == cursorBlock ? cursorByte : block.capacity();
             block.clearRange(0, bytes);
         }
+        rootScope.live = false;
+        currentScope = null;
+        rootScope = null;
         active = false;
         usedBytes = 0;
         cursorBlock = 0;
@@ -101,6 +116,75 @@ public final class ActorMessageScratch {
     synchronized void assertActive() {
         arena.assertOwner();
         if (!active) throw new IllegalStateException("message scratch is not active");
+    }
+
+    /**
+     * Enter a compiler-proven nonescaping lexical scratch region inside the
+     * current logical message. Close it in LIFO order only after all of its
+     * borrows are retired. Its allocations can reuse native bytes immediately
+     * without invalidating values in enclosing scopes.
+     *
+     * <p>For now this is a compiler/runtime substrate: Oreslang frontend
+     * lowering must prove drops and escapes before allocating guest locals
+     * in a scoped region. A scope cannot silently span another actor's turn.</p>
+     */
+    public synchronized Scope enterScope() {
+        assertActive();
+        Scope child = new Scope(currentScope, epoch,
+                cursorBlock, cursorByte, usedBytes);
+        currentScope = child;
+        return child;
+    }
+
+    public final class Scope implements AutoCloseable {
+        private final Scope parent;
+        private final long issuedEpoch;
+        private final int savedBlock;
+        private final int savedByte;
+        private final long savedUsedBytes;
+        private boolean live = true;
+
+        private Scope(Scope parent, long issuedEpoch, int savedBlock,
+                int savedByte, long savedUsedBytes) {
+            this.parent = parent;
+            this.issuedEpoch = issuedEpoch;
+            this.savedBlock = savedBlock;
+            this.savedByte = savedByte;
+            this.savedUsedBytes = savedUsedBytes;
+        }
+
+        @Override public void close() {
+            synchronized (ActorMessageScratch.this) {
+                assertActive();
+                if (issuedEpoch != epoch || !live) {
+                    throw new IllegalStateException("stale actor scratch scope");
+                }
+                if (this == rootScope) {
+                    throw new IllegalStateException("root message scope must finish with the message");
+                }
+                if (this != currentScope) {
+                    throw new IllegalStateException("scratch scopes must close in LIFO order");
+                }
+                if (readBorrows != 0) {
+                    throw new IllegalStateException("cannot close a scratch scope with live borrows");
+                }
+                // Clear only this scope's address interval. Outer allocations
+                // are untouched; a child token is revoked before any recycled
+                // bytes can become accessible to a later child scope.
+                for (int index = savedBlock;
+                        index <= cursorBlock && index < blocks.size(); index++) {
+                    ActorNativeArena.Region block = blocks.get(index);
+                    int start = index == savedBlock ? savedByte : 0;
+                    int end = index == cursorBlock ? cursorByte : block.capacity();
+                    block.clearRange(start, end - start);
+                }
+                live = false;
+                currentScope = parent;
+                cursorBlock = savedBlock;
+                cursorByte = savedByte;
+                usedBytes = savedUsedBytes;
+            }
+        }
     }
 
     public synchronized long usedBytes() {
@@ -184,7 +268,9 @@ public final class ActorMessageScratch {
         // of Region.writeByte would reacquire that monitor once per byte.
         region.clearRange(start, bytes);
         long nextUsed = Math.addExact(usedBytes, bytes);
-        Slice result = new Slice(epoch, region, start, bytes);
+        // Bind the slice to the exact lexical scope authority. Reusing the
+        // same physical address after a scope closes cannot resurrect it.
+        Slice result = new Slice(epoch, currentScope, region, start, bytes);
         cursorBlock = index;
         cursorByte = Math.addExact(start, Math.toIntExact(alignedBytes));
         usedBytes = nextUsed;
@@ -193,12 +279,15 @@ public final class ActorMessageScratch {
 
     public final class Slice {
         private final long issuedEpoch;
+        private final Scope owningScope;
         private final ActorNativeArena.Region region;
         private final int start;
         private final int length;
 
-        private Slice(long issuedEpoch, ActorNativeArena.Region region, int start, int length) {
+        private Slice(long issuedEpoch, Scope owningScope,
+                ActorNativeArena.Region region, int start, int length) {
             this.issuedEpoch = issuedEpoch;
+            this.owningScope = owningScope;
             this.region = region;
             this.start = start;
             this.length = length;
@@ -206,8 +295,8 @@ public final class ActorMessageScratch {
 
         private int checkedIndex(int relative, int width) {
             ActorMessageScratch.this.assertActive();
-            if (issuedEpoch != epoch) {
-                throw new IllegalStateException("stale actor message scratch epoch");
+            if (issuedEpoch != epoch || !owningScope.live) {
+                throw new IllegalStateException("stale actor message scratch lifetime");
             }
             if (relative < 0 || width > length || relative > length - width) {
                 throw new IndexOutOfBoundsException("message scratch slice bounds");
