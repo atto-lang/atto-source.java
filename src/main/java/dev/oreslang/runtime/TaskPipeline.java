@@ -1,5 +1,6 @@
 package dev.oreslang.runtime;
 
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
@@ -17,6 +18,53 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public final class TaskPipeline {
     private TaskPipeline() { }
+
+    /**
+     * The scheduler's own await graph tracks *internal* Task Futures. A
+     * pipeline exposes a distinct bridge Future, so cycles A -> B -> A through
+     * those bridges require a second bounded, identity-based dependency map.
+     * Only currently pending awaits are retained; no global completed Task
+     * or actor graph is kept here.
+     */
+    private static final Object PIPELINE_GRAPH_LOCK = new Object();
+    private static final IdentityHashMap<OresFuture<?>, OresFuture<?>> PIPELINE_AWAITS =
+            new IdentityHashMap<>();
+
+    private static void armPipelineAwait(OresFuture<?> owner, OresFuture<?> awaited) {
+        if (owner == null) return; // inline first dispatch before result publication
+        synchronized (PIPELINE_GRAPH_LOCK) {
+            OresFuture<?> cursor = awaited;
+            int remaining = PIPELINE_AWAITS.size() + 1;
+            while (cursor != null && remaining-- > 0) {
+                if (cursor == owner) {
+                    throw new IllegalStateException(
+                            "cyclic pipeline await dependency detected");
+                }
+                cursor = PIPELINE_AWAITS.get(cursor);
+            }
+            if (cursor != null) {
+                throw new IllegalStateException("existing cyclic pipeline await graph");
+            }
+            if (PIPELINE_AWAITS.putIfAbsent(owner, awaited) != null) {
+                throw new IllegalStateException("pipeline already has a pending await dependency");
+            }
+        }
+    }
+
+    private static void retirePipelineAwait(OresFuture<?> owner, OresFuture<?> expected) {
+        if (owner == null) return;
+        synchronized (PIPELINE_GRAPH_LOCK) {
+            if (expected == null || PIPELINE_AWAITS.get(owner) == expected) {
+                PIPELINE_AWAITS.remove(owner);
+            }
+        }
+    }
+
+    static int pendingPipelineAwaitCount() {
+        synchronized (PIPELINE_GRAPH_LOCK) {
+            return PIPELINE_AWAITS.size();
+        }
+    }
 
     /**
      * Result settlement and verified physical Task retirement are different
@@ -146,6 +194,7 @@ public final class TaskPipeline {
                         throw new IllegalStateException("pipeline did not start on initial dispatch");
                     }
                     started = true;
+                    armPipelineAwait(exposedRef.get(), input);
                     awaited = input;
                     return OresScheduler.await(input);
                 }
@@ -155,6 +204,7 @@ public final class TaskPipeline {
 
                 OresFuture<?> previous = awaited;
                 awaited = null;
+                retirePipelineAwait(exposedRef.get(), previous);
                 // An owned child is no longer current once its await resumes;
                 // a concurrent pipeline cancellation may already have
                 // cancelled it. No later stage may reuse its ownership token.
@@ -194,6 +244,12 @@ public final class TaskPipeline {
                             if (ownedStage.compareAndSet(child, null)) child.cancel(false);
                             throw new UpstreamCancelled();
                         }
+                        try {
+                            armPipelineAwait(exposedRef.get(), child);
+                        } catch (RuntimeException failure) {
+                            if (ownedStage.compareAndSet(child, null)) child.cancel(false);
+                            throw failure;
+                        }
                         awaited = child;
                         return OresScheduler.await(child);
                     }
@@ -202,6 +258,7 @@ public final class TaskPipeline {
                             throw new IllegalStateException(
                                     "pipeline cannot await its own exposed completion Future");
                         }
+                        armPipelineAwait(exposedRef.get(), nextFuture);
                         awaited = nextFuture;
                         return OresScheduler.await(nextFuture);
                     }
@@ -213,6 +270,7 @@ public final class TaskPipeline {
 
         OresFuture<T> task = tracked.result();
         OresFuture<T> exposed = new OresFuture<>(() -> {
+            retirePipelineAwait(exposedRef.get(), null);
             tracked.cancel("pipeline cancelled");
             OresFuture<?> currentOwned = ownedStage.getAndSet(null);
             if (currentOwned != null) currentOwned.cancel(false);
@@ -234,6 +292,7 @@ public final class TaskPipeline {
                             exposed.failFromRuntime(OresFuture.unwrap(failure));
                         }
                     } finally {
+                        retirePipelineAwait(exposedRef.get(), null);
                         ownedStage.set(null);
                         OresFuture.RuntimeWaiterRegistration<T> current =
                                 subscription.getAndSet(null);
