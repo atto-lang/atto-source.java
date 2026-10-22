@@ -3242,7 +3242,7 @@ public final class ActorRuntime implements AutoCloseable {
             // Keep only a future, not strong actor heap/arena references.
             for (ActorRef<?> worker : owned) {
                 worker.done().whenCompleteRuntime((ignored, failure) -> {
-                    if (failure != null) closeTerminalFailure.compareAndSet(null, failure);
+                    if (failure != null) recordCloseFailure(failure);
                     if (closePendingWorkers.decrementAndGet() == 0) {
                         completeCloseIfReady();
                     }
@@ -3277,19 +3277,19 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             }
             if (cancellationFailure != null) {
-                closeTerminalFailure.compareAndSet(null, cancellationFailure);
+                recordCloseFailure(cancellationFailure);
             }
             try {
                 GroupMailmanState<?> mailman = mailmanState.getAndSet(null);
                 if (mailman != null) mailman.close();
             } catch (RuntimeException | Error teardownFailure) {
-                closeTerminalFailure.compareAndSet(null, teardownFailure);
+                recordCloseFailure(teardownFailure);
                 throw teardownFailure;
             } finally {
                 try {
                     eventBus.closeFromGroup();
                 } catch (RuntimeException | Error teardownFailure) {
-                    closeTerminalFailure.compareAndSet(null, teardownFailure);
+                    recordCloseFailure(teardownFailure);
                     throw teardownFailure;
                 } finally {
                     actorGroups.remove(id, this);
@@ -3298,6 +3298,23 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             }
             if (cancellationFailure != null) throw cancellationFailure;
+        }
+
+        /**
+         * Preserve secondary cleanup failures without allowing concurrent
+         * terminal worker callbacks to overwrite the first authoritative
+         * failure. Throwable.addSuppressed is synchronized by the JDK.
+         */
+        private void recordCloseFailure(Throwable failure) {
+            if (failure == null) return;
+            for (;;) {
+                Throwable first = closeTerminalFailure.get();
+                if (first != null) {
+                    if (first != failure) first.addSuppressed(failure);
+                    return;
+                }
+                if (closeTerminalFailure.compareAndSet(null, failure)) return;
+            }
         }
 
         private void completeCloseIfReady() {
