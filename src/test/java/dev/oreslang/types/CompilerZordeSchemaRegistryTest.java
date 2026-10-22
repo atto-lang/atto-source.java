@@ -65,6 +65,12 @@ final class CompilerZordeSchemaRegistryTest {
         assertFalse(isAssignable(proof, sameSource));
         assertFalse(isAssignable(proof, newer));
         assertFalse(isAssignable(proof, changed));
+        assertFalse(isAssignable(
+                new Named("Option", List.of(proof)),
+                new Named("Option", List.of(sameSource))));
+        assertFalse(isAssignable(
+                new Types.Record(java.util.Map.of("value", proof)),
+                new Types.Record(java.util.Map.of("value", newer))));
         assertFalse(isAssignable(new Named("Valid", List.of(Primitive.INT)), proof));
         assertEquals(left.descriptor("app.Port").fingerprint(),
                 anotherBuild.descriptor("app.Port").fingerprint());
@@ -79,6 +85,13 @@ final class CompilerZordeSchemaRegistryTest {
         assertThrows(IllegalArgumentException.class, () ->
                 Types.checkedScalarTypeFromRegistry(
                         Primitive.INT, "app.Port", userDescriptor, left));
+        assertThrows(IllegalArgumentException.class, () ->
+                Types.checkedScalarTypeFromRegistry(
+                        Primitive.STRING, "app.Port", original, left));
+        assertThrows(IllegalArgumentException.class, () ->
+                Types.checkedScalarTypeFromRegistry(
+                        Primitive.INT, "app.Port",
+                        anotherBuild.descriptor("app.Port"), left));
         // The legacy analysis factory has no registry seal and cannot spoof it.
         Type legacy = Types.checkedScalarTypeForCompilerAnalysis(
                 Primitive.INT, "app.Port", original, 5L);
