@@ -33,7 +33,7 @@ public final class RecordFrontendSmoke {
         // Closed scalar spreads now pass the actual front-end chain.
         // Non-scalar or unowned sources still fail independently at the type
         // and ownership gates. Guest execution is a separate release gate.
-        accepted("""
+        acceptedThroughFullFrontend("""
                 fnc copy_scalars(): int {
                     const base = infer struct{x: 1};
                     const next = infer struct{...base, y: 2};
@@ -263,6 +263,13 @@ public final class RecordFrontendSmoke {
 
     private static void accepted(String source) {
         TypeChecker.check(Parser.parse(source));
+    }
+
+    /** Scalar spread admission must run the production type + ownership handoff. */
+    private static void acceptedThroughFullFrontend(String source) {
+        TypeChecker.TypeCheckResult typed =
+                TypeChecker.checkTypesWithDiagnostics(Parser.parse(source));
+        OwnershipChecker.check(typed.program(), typed.shortInferredAliases());
     }
 
     private static void check(boolean condition, String message) {
