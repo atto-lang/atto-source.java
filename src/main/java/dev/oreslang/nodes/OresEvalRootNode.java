@@ -1154,6 +1154,8 @@ public final class OresEvalRootNode extends RootNode {
             private final ArrayDeque<SourceCleanupFrame> activeCleanup =
                     new ArrayDeque<>();
             private boolean cancellationUnwinding;
+            private boolean drainingCancellationCleanup;
+            private boolean cancellationCleanupNeedsAdvance;
             private java.util.concurrent.CancellationException cancellationCause;
             private Throwable fatalCleanupFailure;
             private OresScheduler.Step<Object> nextStep;
@@ -1342,42 +1344,56 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             private void unwindCancelledSource() {
-                while (!activeCleanup.isEmpty() && activeCleanup.peekLast().disarmed) {
-                    activeCleanup.removeLast();
-                }
-                SourceCleanupFrame frame = activeCleanup.pollLast();
-                if (frame == null) {
-                    // Cleanup is finished. The scheduler's deferred-cancel
-                    // Future publishes cancellation only AFTER this turn
-                    // physically exits. A fatal cleanup failure cannot be
-                    // converted to a normal cancellation receipt.
-                    if (fatalCleanupFailure instanceof Error fatal) throw fatal;
-                    if (fatalCleanupFailure instanceof RuntimeException fatal) throw fatal;
-                    done(null);
+                if (drainingCancellationCleanup) {
+                    // An immediately settled defer may complete synchronously.
+                    // Retain its advance request rather than recursively
+                    // consuming the next heap frame on the same Java stack.
+                    cancellationCleanupNeedsAdvance = true;
                     return;
                 }
-                frame.disarmed = true;
-                boolean[] delivered = { false };
+                drainingCancellationCleanup = true;
                 try {
-                    frame.action.unwind(this, (t, flow) -> {
-                        if (delivered[0]) {
-                            throw new IllegalStateException(
-                                    "source cleanup frame delivered twice");
+                    do {
+                        cancellationCleanupNeedsAdvance = false;
+                        while (!activeCleanup.isEmpty()
+                                && activeCleanup.peekLast().disarmed) {
+                            activeCleanup.removeLast();
                         }
-                        delivered[0] = true;
-                        if (flow.kind() == SourceFlowKind.THROW
-                                && flow.failure() != cancellationCause) {
-                            noteCancelledCleanupFailure(flow.failure());
+                        SourceCleanupFrame frame = activeCleanup.pollLast();
+                        if (frame == null) {
+                            // The scheduler publishes cancellation only after
+                            // this entire cleanup turn physically unwinds.
+                            if (fatalCleanupFailure instanceof Error fatal) throw fatal;
+                            if (fatalCleanupFailure instanceof RuntimeException fatal)
+                                throw fatal;
+                            done(null);
+                            return;
                         }
-                        // The final callback can synchronously advance outer
-                        // frames and ultimately throw a fatal panic. Never
-                        // restart a frame that has already delivered.
-                        t.unwindCancelledSource();
-                    });
-                } catch (RuntimeException | Error failed) {
-                    if (delivered[0]) throw failed;
-                    noteCancelledCleanupFailure(failed);
-                    unwindCancelledSource();
+                        frame.disarmed = true;
+                        boolean[] delivered = { false };
+                        try {
+                            frame.action.unwind(this, (t, flow) -> {
+                                if (delivered[0]) {
+                                    throw new IllegalStateException(
+                                            "source cleanup frame delivered twice");
+                                }
+                                delivered[0] = true;
+                                if (flow.kind() == SourceFlowKind.THROW
+                                        && flow.failure() != cancellationCause) {
+                                    noteCancelledCleanupFailure(flow.failure());
+                                }
+                                t.unwindCancelledSource();
+                            });
+                        } catch (RuntimeException | Error failed) {
+                            if (delivered[0]) throw failed;
+                            noteCancelledCleanupFailure(failed);
+                            cancellationCleanupNeedsAdvance = true;
+                        }
+                        // A suspended deferred Future owns the continuation
+                        // until its next scheduler dispatch; no busy waiting.
+                    } while (cancellationCleanupNeedsAdvance && nextStep == null);
+                } finally {
+                    drainingCancellationCleanup = false;
                 }
             }
 
