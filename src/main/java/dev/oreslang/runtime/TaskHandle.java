@@ -74,14 +74,26 @@ public final class TaskHandle<T> {
      * logical, cross-thread-releasable lease into its own retirement stack.
      * An actor/source guest MUST NOT acquire arbitrary Java lock ownership.
      */
+    static boolean isCurrentTrackedTaskTurn() {
+        CancellationContext current = CURRENT_CANCELLATION.get();
+        return current != null
+                && current.taskDomain() == OresScheduler.currentTaskDomain();
+    }
+
     static TaskOwnedLeases.Lease registerTransferableLease(
             TaskOwnedLeases.TransferableRelease release) {
+        return registerTransferableLease(release, release);
+    }
+
+    static TaskOwnedLeases.Lease registerTransferableLease(
+            TaskOwnedLeases.TransferableRelease ordinary,
+            TaskOwnedLeases.TransferableRelease abandoned) {
         CancellationContext current = CURRENT_CANCELLATION.get();
-        if (current == null || current.taskDomain() != OresScheduler.currentTaskDomain()) {
+        if (!isCurrentTrackedTaskTurn()) {
             throw new IllegalStateException(
                     "task lease registration requires current tracked Task turn");
         }
-        return current.leases().register(release);
+        return current.leases().register(ordinary, abandoned);
     }
 
     static boolean isCurrentLeaseOwner(TaskOwnedLeases.Registry owner) {
