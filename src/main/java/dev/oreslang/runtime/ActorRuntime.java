@@ -2628,6 +2628,8 @@ public final class ActorRuntime implements AutoCloseable {
         // into a different supervisor before stop actually dispatches.
         private final Set<ActorId> stoppingWorkers = new java.util.HashSet<>();
         private final AtomicBoolean groupClosed = new AtomicBoolean();
+        // Manager-owned shutdown admission fence; mailbox work already admitted may drain.
+        private boolean workerAdmissionFenced; // guarded by authorityLock
         // Runtime-owned, non-cancellable observer; actor retirement may outlive
         // group admission revocation and clearing managed-worker references.
         private final OresFuture<Void> closedWorkersDone =
@@ -2694,6 +2696,7 @@ public final class ActorRuntime implements AutoCloseable {
             requireActorLifecycleAuthority(worker, "manage an ActorGroup worker");
             synchronized (authorityLock) {
                 requireOpen();
+                requireWorkerAdmissionOpen();
                 ActorCell<?> cell = actors.get(worker.id());
                 if (cell == null || cell.stopped.get() || stoppingWorkers.contains(worker.id())) {
                     throw new IllegalStateException("cannot manage a stopped, stopping or unknown worker");
@@ -2735,7 +2738,10 @@ public final class ActorRuntime implements AutoCloseable {
                 IsolatePolicy policy,
                 BehaviorFactory<M> behaviorFactory) {
             requireManager("spawn an ActorGroup worker");
-            requireOpen();
+            synchronized (authorityLock) {
+                requireOpen();
+                requireWorkerAdmissionOpen();
+            }
             ActorRef<M> worker = ActorRuntime.this.spawn(kind, policy, behaviorFactory);
             try {
                 return manageWorker(worker);
@@ -2771,6 +2777,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
             synchronized (authorityLock) {
                 requireOpen();
+                requireWorkerAdmissionOpen();
                 if (stoppingWorkers.contains(worker.id())) {
                     throw new IllegalStateException(
                             "cannot transfer worker after stop/cancellation was admitted");
@@ -2819,6 +2826,36 @@ public final class ActorRuntime implements AutoCloseable {
          */
         public OresFuture<Void> closedDone() {
             requireObserver("observe ActorGroup close completion");
+            return closedWorkersDone;
+        }
+
+        /**
+         * Fence new managed-worker admissions without sealing actor mailboxes.
+         * An in-flight spawn that loses this fence cancels its unpublished worker.
+         * This is a CONTROL/manager operation, not a cooperation-membership right.
+         */
+        public void fenceWorkerAdmissions() {
+            requireManager("fence ActorGroup worker admissions");
+            synchronized (authorityLock) {
+                if (!groupClosed.get()) workerAdmissionFenced = true;
+            }
+        }
+
+        private void requireWorkerAdmissionOpen() {
+            if (workerAdmissionFenced) {
+                throw new IllegalStateException("ActorGroup worker admission is sealed: " + id);
+            }
+        }
+
+        /**
+         * Gracefully close the managed group: atomically revoke new admissions,
+         * preserve accepted mailbox work and await each actor's done barrier.
+         * Cancellation/timeout escalation belongs to the supervisor CONTROL
+         * coordinator and must never forge successful physical finalization.
+         */
+        public OresFuture<Void> gracefulCloseAsync() {
+            requireManager("gracefully close ActorGroup");
+            closeFromRuntime(true);
             return closedWorkersDone;
         }
 
@@ -3130,9 +3167,14 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void closeFromRuntime() {
+            closeFromRuntime(false);
+        }
+
+        private void closeFromRuntime(boolean graceful) {
             List<ActorRef<?>> owned;
             synchronized (authorityLock) {
                 if (!groupClosed.compareAndSet(false, true)) return;
+                workerAdmissionFenced = true;
                 // Revocation is part of close: even a capability held by code
                 // racing teardown can no longer pass validation.
                 joinSecret = UUID.randomUUID();
@@ -3186,7 +3228,8 @@ public final class ActorRuntime implements AutoCloseable {
             RuntimeException cancellationFailure = null;
             for (ActorRef<?> worker : owned) {
                 try {
-                    worker.cancel();
+                    if (graceful) worker.gracefulStop();
+                    else worker.cancel();
                 } catch (RuntimeException failure) {
                     if (worker.isAlive()) {
                         if (cancellationFailure == null) cancellationFailure = failure;
