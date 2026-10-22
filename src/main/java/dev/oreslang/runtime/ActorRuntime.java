@@ -1977,12 +1977,6 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
-     * Start one stackless source continuation in the current actor's logical
-     * scheduler. The scheduler's executor is mailbox-backed, so every resume
-     * is serialized with ordinary actor messages and uses no second concurrency
-     * identity or carrier pool.
-     */
-    /**
      * Host/compiler bridge for a structured actor TaskScope. The actor retains
      * the scope until its physical child-lifetime barrier settles. This is not
      * a source-level TaskScope escape permission or cross-actor capability.
@@ -2023,6 +2017,12 @@ public final class ActorRuntime implements AutoCloseable {
         return scope;
     }
 
+    /**
+     * Start one stackless source continuation in the current actor's logical
+     * scheduler. The scheduler's executor is mailbox-backed, so every resume
+     * is serialized with ordinary actor messages and uses no second concurrency
+     * identity or carrier pool.
+     */
     public <T> OresFuture<T> startActorTask(OresScheduler.Task<T> task) {
         Objects.requireNonNull(task, "task");
         ActorCell<?> cell = currentActor.get();
@@ -7560,21 +7560,28 @@ public final class ActorRuntime implements AutoCloseable {
             if (sourceScheduler != null && !sourceSchedulerFullyQuiescent) {
                 if (!sourceSchedulerCloseRequested) {
                     sourceSchedulerCloseRequested = true;
-                    sourceScheduler.requestCloseWithOutcome(retirementFailure -> {
-                        synchronized (lifecycleLock) {
-                            if (retirementFailure != null) {
-                                // A failed post-carrier cleanup does not prove
-                                // that all guest-owned resources are retired.
-                                // Preserve the backing native heap rather than
-                                // publishing an unsafe actor.done completion.
-                                ref.terminationCause.compareAndSet(null, retirementFailure);
-                            } else {
-                                sourceSchedulerFullyQuiescent = true;
-                                if (stopped.get()) finalizeStopLocked();
+                    try {
+                        sourceScheduler.requestCloseWithOutcome(retirementFailure -> {
+                            synchronized (lifecycleLock) {
+                                if (retirementFailure != null) {
+                                    // Preserve the native heap after failed
+                                    // post-carrier cleanup. Never mark this
+                                    // retirement receipt successful.
+                                    ref.terminationCause.compareAndSet(
+                                            null, retirementFailure);
+                                } else {
+                                    sourceSchedulerFullyQuiescent = true;
+                                    if (stopped.get()) finalizeStopLocked();
+                                }
+                                lifecycleLock.notifyAll();
                             }
-                            lifecycleLock.notifyAll();
-                        }
-                    });
+                        });
+                    } catch (RuntimeException | Error shutdownFailure) {
+                        // Starting the host shutdown notifier itself can fail.
+                        // Leave the physical retirement gate closed and publish
+                        // the diagnostic rather than freeing still-live memory.
+                        ref.terminationCause.compareAndSet(null, shutdownFailure);
+                    }
                 }
                 return;
             }
