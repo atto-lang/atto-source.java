@@ -30,6 +30,27 @@ public final class AggregateConstructionPlan {
         int sourceIndex();
     }
 
+    /**
+     * Unicode scalar-value lexicographic order; identical to unsigned UTF-8
+     * byte lexicographic order for valid Unicode. Java String.compareTo uses
+     * UTF-16 code units and gives a different answer for some astral keys.
+     * This choice is reproducible in native LLVM/WASM/JS/.NET code generation.
+     */
+    public static int compareStaticFieldNames(String left, String right) {
+        Ast.validateStaticAggregateFieldName(left);
+        Ast.validateStaticAggregateFieldName(right);
+        int i = 0;
+        int j = 0;
+        while (i < left.length() && j < right.length()) {
+            int a = left.codePointAt(i);
+            int b = right.codePointAt(j);
+            if (a != b) return Integer.compare(a, b);
+            i += Character.charCount(a);
+            j += Character.charCount(b);
+        }
+        return Boolean.compare(i < left.length(), j < right.length());
+    }
+
     /** A directly initialized compile-time field, possibly replacing a spread field. */
     public record NamedField(int sourceIndex, String name, Type type) implements Step {
         public NamedField {
@@ -213,7 +234,8 @@ public final class AggregateConstructionPlan {
             // Types.Record uses an order-independent map; derive deterministic
             // projection slots instead of trusting its iteration order.
             for (Map.Entry<String, Type> field : row.members().entrySet().stream()
-                    .sorted(Map.Entry.comparingByKey()).toList()) {
+                    .sorted((a, b) -> compareStaticFieldNames(a.getKey(), b.getKey()))
+                    .toList()) {
                 if (!copyableScalar(field.getValue())) {
                     throw new IllegalArgumentException(
                             "aggregate spread scalar-only stage rejects field '" + field.getKey() + "'");
