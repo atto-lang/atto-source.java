@@ -2,7 +2,11 @@ package dev.oreslang.types;
 
 import dev.oreslang.compiler.ZordeSchemaGenerator;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Collections;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -22,13 +26,16 @@ final class CompilerZordeSchemaRegistry {
     private final Object compilationSeal = new Object();
     private final String unitId;
     private final long generation;
+    // Reproducibility/debugging only; this digest does NOT grant authority.
+    private final String sourceDigest;
     private final Map<String, RefinementRules.Descriptor> schemas;
 
     private CompilerZordeSchemaRegistry(
-            String unitId, long generation,
+            String unitId, long generation, String sourceDigest,
             Map<String, RefinementRules.Descriptor> schemas) {
         this.unitId = unitId;
         this.generation = generation;
+        this.sourceDigest = sourceDigest;
         this.schemas = Collections.unmodifiableMap(new LinkedHashMap<>(schemas));
     }
 
@@ -74,13 +81,25 @@ final class CompilerZordeSchemaRegistry {
             }
             entries.put(name, descriptor);
         }
-        return new CompilerZordeSchemaRegistry(compilationUnitId, generation, entries);
+        return new CompilerZordeSchemaRegistry(
+                compilationUnitId, generation, sha256(source), entries);
+    }
+
+    private static String sha256(String text) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(
+                    digest.digest(text.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException unavailable) {
+            throw new IllegalStateException("required SHA-256 unavailable", unavailable);
+        }
     }
 
     // Only code in the trusted compiler package can see the opaque seal.
     // Neither the compilation identifier nor the SHA-256 descriptor is it.
     Object compilationSeal() { return compilationSeal; }
     String unitId() { return unitId; }
+    String sourceDigest() { return sourceDigest; }
     long generation() { return generation; }
     int size() { return schemas.size(); }
 
