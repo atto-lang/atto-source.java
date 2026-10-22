@@ -30,6 +30,12 @@ import java.util.function.Function;
 public final class OresMutex {
     private OresMutex() { }
 
+    /** A logical scheduler Task owns its own lock permits even inside an actor. */
+    private static Object currentLogicalLockOwner() {
+        ExecutionContext task = OresScheduler.currentExecutionContext();
+        return task == null ? ActorRuntime.currentExecutionDomain() : task;
+    }
+
     private static long saturatedNanos(Duration timeout) {
         try {
             return timeout.toNanos();
@@ -495,7 +501,7 @@ public final class OresMutex {
          */
         private Object reserveDomain(boolean tryOnly) {
             requireActorAccess();
-            Object domain = ActorRuntime.currentExecutionDomain();
+            Object domain = currentLogicalLockOwner();
             if (activeDomains.add(domain)) return domain;
             if (tryOnly) return null;
             throw new RecursiveLockException("SharedMutex<T>");
@@ -983,7 +989,7 @@ public final class OresMutex {
 
             private void requireOwnerDomain() {
                 if (enforceOwnerDomain
-                        && !Objects.equals(ActorRuntime.currentExecutionDomain(), ownerDomain)) {
+                        && !Objects.equals(currentLogicalLockOwner(), ownerDomain)) {
                     throw new WrongMutexDomainException(
                             "SharedMutex guard belongs to another actor/execution domain");
                 }
