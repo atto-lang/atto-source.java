@@ -5,6 +5,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** Real typed Oreslang frontend admission; real installed Z3 required. */
@@ -30,13 +32,35 @@ public final class TypedScalarSmtTest {
         return stdout.trim();
     }
 
+
+    private static void writeReceipt(String label, String source, String smt, String verdict)
+            throws Exception {
+        Path dir = Path.of("target", "formal-typed-scalar");
+        Files.createDirectories(dir);
+        String sourceDigest = HexFormat.of().formatHex(
+                MessageDigest.getInstance("SHA-256")
+                        .digest(source.getBytes(StandardCharsets.UTF_8)));
+        String smtDigest = HexFormat.of().formatHex(
+                MessageDigest.getInstance("SHA-256")
+                        .digest(smt.getBytes(StandardCharsets.UTF_8)));
+        Files.writeString(dir.resolve(label + ".smt2"), smt, StandardCharsets.UTF_8);
+        Files.writeString(dir.resolve(label + ".z3.out"), verdict + "\n", StandardCharsets.UTF_8);
+        Files.writeString(dir.resolve(label + ".receipt.txt"),
+                "source-sha256=" + sourceDigest + "\n"
+                + "smt-sha256=" + smtDigest + "\n"
+                + "verdicts=" + verdict.replace("\n", ",") + "\n",
+                StandardCharsets.UTF_8);
+    }
+
     @Test
     void genuineCheckedJavaAstRefinesAllThreeCoreFunctions() throws Exception {
         String source = core();
         for (String name : new String[]{"min_int","max_int","clamp_int"}) {
             String smt = TypedScalarSmt.fromSource(source, "core", name);
             assertTrue(smt.contains("(define-fun implementation"));
-            assertEquals("unsat\nsat", evaluateWithZ3(smt),
+            String observed = evaluateWithZ3(smt);
+            writeReceipt("checked-" + name, source, smt, observed);
+            assertEquals("unsat\nsat", observed,
                     "typed AST did not refine BV64 contract: " + name);
         }
     }
@@ -48,10 +72,14 @@ public final class TypedScalarSmtTest {
         assertTrue(source.contains("if lower > upper; do"));
         String badMin = source.replace("if left < right; do", "if left > right; do");
         String badClamp = source.replace("if lower > upper; do", "if lower < upper; do");
-        assertEquals("sat\nsat", evaluateWithZ3(
-                TypedScalarSmt.fromSource(badMin, "core", "min_int")));
-        assertEquals("sat\nsat", evaluateWithZ3(
-                TypedScalarSmt.fromSource(badClamp, "core", "clamp_int")));
+        String minSmt = TypedScalarSmt.fromSource(badMin, "core", "min_int");
+        String minVerdict = evaluateWithZ3(minSmt);
+        writeReceipt("mutated-min_int", badMin, minSmt, minVerdict);
+        assertEquals("sat\nsat", minVerdict);
+        String clampSmt = TypedScalarSmt.fromSource(badClamp, "core", "clamp_int");
+        String clampVerdict = evaluateWithZ3(clampSmt);
+        writeReceipt("mutated-clamp_int", badClamp, clampSmt, clampVerdict);
+        assertEquals("sat\nsat", clampVerdict);
     }
 
     @Test
