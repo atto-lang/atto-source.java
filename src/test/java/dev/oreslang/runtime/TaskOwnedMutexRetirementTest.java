@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -175,6 +176,97 @@ public class TaskOwnedMutexRetirementTest {
                     task.getDone().get(4, TimeUnit.SECONDS));
             assertTrue(task.cleanupFailures().get(3, TimeUnit.SECONDS).isEmpty());
             assertFalse(shared.isPoisoned());
+        }
+    }
+
+
+    @Test
+    void differentLogicalTasksOnOneSchedulerCanQueueSameSharedMutex()
+            throws Exception {
+        var shared = OresMutex.shared(new int[] { 0 });
+        var firstSuspended = new OresFuture<Integer>();
+        var secondSuspended = new OresFuture<Integer>();
+        var acquired = new CountDownLatch(1);
+        var queued = new CountDownLatch(1);
+        var pending = new AtomicReference<CompletableFuture<OresMutex.Guard<int[]>>>();
+        try (var scheduler = new OresScheduler(1)) {
+            TaskHandle<Integer> first = scheduler.startTracked(resume -> {
+                shared.tryLock().orElseThrow().value()[0] = 17;
+                acquired.countDown();
+                return OresScheduler.await(firstSuspended);
+            });
+            assertTrue(acquired.await(3, TimeUnit.SECONDS));
+
+            // Both turns use the single scheduler carrier, but the first
+            // task's suspended lock must not make the second a recursive owner.
+            TaskHandle<Integer> second = scheduler.startTracked(resume -> {
+                pending.set(shared.lockAsync());
+                queued.countDown();
+                return OresScheduler.await(secondSuspended);
+            });
+            assertTrue(queued.await(3, TimeUnit.SECONDS));
+            assertNotNull(pending.get());
+            assertFalse(pending.get().isDone(),
+                    "a distinct Task must queue rather than be rejected as recursive");
+            assertTrue(second.cancel("queued Task cancelled"));
+            assertInstanceOf(TaskHandle.Cancelled.class,
+                    second.getDone().get(4, TimeUnit.SECONDS));
+            assertTrue(pending.get().isCancelled());
+            assertFalse(shared.isPoisoned(), "cancelling only a waiter must not poison");
+            assertTrue(second.cleanupFailures().get(3, TimeUnit.SECONDS).isEmpty());
+
+            assertTrue(first.cancel("holder finished"));
+            assertInstanceOf(TaskHandle.Cancelled.class,
+                    first.getDone().get(4, TimeUnit.SECONDS));
+            assertTrue(shared.isPoisoned());
+        }
+    }
+
+    @Test
+    void timedOutAsyncRequestsDoNotExhaustLiveLeaseQuota() throws Exception {
+        var shared = OresMutex.shared(new int[] { 0 });
+        var holder = shared.lock();
+        try (var scheduler = new OresScheduler(1)) {
+            TaskHandle<Integer> task = scheduler.startTracked(resume -> {
+                for (int i = 0; i < TaskOwnedLeases.MAX_LEASES_PER_TASK + 256; i++) {
+                    var timedOut = shared.lockAsyncFor(Duration.ZERO);
+                    assertTrue(timedOut.isCompletedExceptionally(),
+                            "zero-duration wait must fail without a grant");
+                }
+                return OresScheduler.done(1);
+            });
+            assertInstanceOf(TaskHandle.Success.class,
+                    task.getDone().get(5, TimeUnit.SECONDS));
+            assertTrue(task.cleanupFailures().get(3, TimeUnit.SECONDS).isEmpty(),
+                    "failed requests never owned a mutex permit");
+            assertFalse(shared.isPoisoned());
+        } finally {
+            holder.release();
+        }
+        assertFalse(shared.isPoisoned());
+    }
+
+    @Test
+    void recursiveAsyncAdmissionsDoNotLeakReservedTaskLeases() throws Exception {
+        var shared = OresMutex.shared(new int[] { 0 });
+        var holder = shared.lock();
+        try (var scheduler = new OresScheduler(1)) {
+            TaskHandle<Integer> task = scheduler.startTracked(resume -> {
+                var pending = shared.lockAsync();
+                assertFalse(pending.isDone());
+                for (int i = 0; i < TaskOwnedLeases.MAX_LEASES_PER_TASK + 256; i++) {
+                    assertThrows(OresMutex.RecursiveLockException.class,
+                            shared::lockAsync);
+                }
+                assertTrue(pending.cancel(false));
+                return OresScheduler.done(1);
+            });
+            assertInstanceOf(TaskHandle.Success.class,
+                    task.getDone().get(5, TimeUnit.SECONDS));
+            assertTrue(task.cleanupFailures().get(3, TimeUnit.SECONDS).isEmpty());
+            assertFalse(shared.isPoisoned());
+        } finally {
+            holder.release();
         }
     }
 
