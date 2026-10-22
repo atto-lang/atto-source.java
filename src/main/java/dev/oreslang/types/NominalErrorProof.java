@@ -92,10 +92,21 @@ public final class NominalErrorProof {
         }
     }
 
+    // Synchronize these always-builtin source spellings with TypeChecker.resolve.
+    // They cannot become nominal Error descendants by a caller-supplied
+    // class resolver. Types that can resolve to explicit user classes (Box,
+    // Arc, etc.) deliberately are not blacklisted here.
     private static final Set<String> NON_NOMINAL_TYPE_NAMES = Set.of(
-            "int", "float", "decimal", "complex", "bool", "boolean",
-            "string", "String", "void", "null", "Object", "obj", "arr",
+            "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
+            "int", "uint", "bigint", "f32", "f64", "float",
+            "decimal", "complex64", "complex128", "complex",
+            "bool", "boolean", "Bool", "string", "String", "Symbol",
+            "void", "null", "Object", "obj", "arr", "self",
+            "DynamicStruct", "ActorId", "ActorKind", "ActorStream",
+            "StreamOperator", "ActorMail", "ActorOutput", "ActorOutputStream",
             "Fnc", "Function", "Option", "Result", "Future", "Task",
+            "Generator", "AsyncGenerator", "Iterator", "AsyncIterator", "IteratorResult",
+            "Mutex", "MutexGuard", "SharedMutex", "Channel",
             "List", "Array", "Map", "Set", "Any", "Unknown");
 
     private static void ensureConcrete(Ast.TypeRef reference, String label) {
