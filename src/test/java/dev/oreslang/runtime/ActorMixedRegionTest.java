@@ -128,7 +128,7 @@ final class ActorMixedRegionTest {
                             new ActorMixedRegion.Field("id", ActorMixedRegion.Kind.U32),
                             new ActorMixedRegion.Field("id", ActorMixedRegion.Kind.F64)),
                             3, ActorMixedRegion.Layout.SOA, 1, null));
-            assertThrows(ArithmeticException.class, () ->
+            assertThrows(IllegalArgumentException.class, () ->
                     new ActorMixedRegion(arena, FIELDS, Integer.MAX_VALUE,
                             ActorMixedRegion.Layout.AOS, 1, null));
             assertEquals(0, charged.get());
