@@ -27,6 +27,15 @@ MAX_DIRECTORIES = 1024
 PREFIX = "private-oreslang-source"
 SOURCE_REPO = "ores-truffle-oreslang/oreslang-source.java"
 SOURCE_REPOSITORY_ID = 1400792274
+BLOCKING_INCIDENT_REPO = "ores-truffle-oreslang/oreslang-platform-conformance"
+BLOCKING_INCIDENT_REPOSITORY_ID = 1413795502
+BLOCKING_INCIDENT_IDS = {
+    22: 5832921751,
+    77: 5904679716,
+    127: 5935338521,
+}
+BLOCKING_INCIDENTS = (22, 77, 127)
+QUARANTINED_DESTINATIONS = ("zed-pkg-test/java-app",)
 SOURCE_PROTECTED_BRANCH = "main"
 POLICY_PATH = ".github/private-ci-approved-repositories.txt"
 CODEOWNERS_PATH = ".github/CODEOWNERS"
@@ -128,7 +137,44 @@ def checked_repo(repository, expected_repository_id=None):
     return result
 
 
+def require_resolved_blocking_incidents():
+    """Fail closed until the independently tracked P0 export incidents are resolved."""
+    repo = gh_api("repos/" + BLOCKING_INCIDENT_REPO)
+    if (repo.get("id") != BLOCKING_INCIDENT_REPOSITORY_ID
+            or repo.get("full_name") != BLOCKING_INCIDENT_REPO
+            or repo.get("private") is not True
+            or repo.get("visibility") != "private"
+            or repo.get("archived") is not False
+            or repo.get("disabled") is not False
+            or repo.get("fork") is not False):
+        raise Denied("blocking incident repository identity/state invalid")
+    expected_repository_url = "https://api.github.com/repos/" + BLOCKING_INCIDENT_REPO
+    for number in BLOCKING_INCIDENTS:
+        issue = gh_api(
+            "repos/" + BLOCKING_INCIDENT_REPO + "/issues/" + str(number)
+        )
+        expected_issue_url = expected_repository_url + "/issues/" + str(number)
+        expected_html_url = (
+            "https://github.com/" + BLOCKING_INCIDENT_REPO + "/issues/" + str(number)
+        )
+        if (issue.get("id") != BLOCKING_INCIDENT_IDS[number]
+                or issue.get("number") != number
+                or issue.get("repository_url") != expected_repository_url
+                or issue.get("url") != expected_issue_url
+                or issue.get("html_url") != expected_html_url
+                or "pull_request" in issue):
+            raise Denied("blocking P0 incident identity invalid")
+        if (issue.get("state") != "closed"
+                or issue.get("state_reason") != "completed"):
+            raise Denied(
+                "blocking P0 incident #" + str(number) + " remains unresolved"
+            )
+
+
 def require_preflight(repository, root):
+    if repository.casefold() in {item.casefold() for item in QUARANTINED_DESTINATIONS}:
+        raise Denied("destination is quarantined by private-source incident policy")
+    require_resolved_blocking_incidents()
     guard = root / "scripts" / "check-private-ci-destination.sh"
     if guard.is_symlink() or not guard.is_file():
         raise Denied("trusted destination approval guard missing")
@@ -506,6 +552,9 @@ def publish(repository, source, branch, trusted_root, source_commit):
     base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
     base_tree = valid_sha(base_commit.get("tree", {}).get("sha"))
     def authorize_write():
+        # Incident closure is mutable: a P0 can reopen after preflight.
+        # Guard every blob/tree/commit/ref write, not only the first one.
+        require_resolved_blocking_incidents()
         if checked_policy_approval(trusted_root, repository) != (
                 approved_policy, approved_repository_id):
             raise Denied("private CI destination approval policy changed during transfer")

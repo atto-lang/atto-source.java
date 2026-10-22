@@ -679,7 +679,7 @@ def manifest(files):
 
 
 def authorize_write(root, repository, approved_policy, contract):
-    """Cheap per-write guard: local approval bytes plus live carrier identity.
+    """Per-write fail-closed guard: incident closure, policy and carrier identity.
 
     Protected-source main and the full immutable carrier contract are checked
     before reading source bytes and again before refs are attached. Repeating
@@ -687,8 +687,13 @@ def authorize_write(root, repository, approved_policy, contract):
     the file count without adding integrity: the reviewed source commit and
     pinned destination base SHA are immutable. Privacy and repository identity
     are the state that can change between individual writes, so those are
-    rechecked immediately before every write.
+    rechecked immediately before every write. P0 incident status can also
+    change after preflight, so recheck it before EVERY source-bearing write
+    rather than relying on a single initial closure observation.
     """
+    # The incidents may be reopened after initial preflight. Never upload
+    # another Git blob/tree/ref while either P0 remains unresolved.
+    legacy.require_resolved_blocking_incidents()
     current_policy, current_repository_id = legacy.checked_policy_approval(
         root, repository
     )

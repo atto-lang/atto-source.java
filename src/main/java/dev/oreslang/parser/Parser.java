@@ -83,6 +83,7 @@ public final class Parser {
         List<Ast.Decl> rootDeclarations = new ArrayList<>();
 
         while (!check(EOF)) {
+            rejectUnsupportedAcceleratorSyntax();
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers modifiers = parseModifiers();
 
@@ -127,8 +128,9 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                ActorPrefix actorPrefix = parseActorPrefix();
                 if (match(ACTOR, ISOACTOR)) {
-                    rootDeclarations.add(parseDefinedActorClass(previous(), modifiers, annotations));
+                    rootDeclarations.add(parseDefinedActorClass(previous(), modifiers, annotations, actorPrefix));
                     continue;
                 }
                 if (modifiers.shared) {
@@ -281,7 +283,15 @@ public final class Parser {
         return new Ast.ModuleDecl(name, annotations, contracts, declarations);
     }
 
+    private void rejectUnsupportedAcceleratorSyntax() {
+        if (check(GPU) || check(QUANTUM)) {
+            throw error(peek(), "gpu/quantum execution requires validated effect and ownership checking, "
+                    + "device lowering and explicit backend admission; implicit CPU fallback is forbidden");
+        }
+    }
+
     private Ast.Decl parseModuleMember() {
+        rejectUnsupportedAcceleratorSyntax();
         List<Ast.Annotation> annotations = parseAnnotations();
         Modifiers modifiers = parseModifiers();
 
@@ -320,8 +330,9 @@ public final class Parser {
 
         if (match(DEFINE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
+            ActorPrefix actorPrefix = parseActorPrefix();
             if (match(ACTOR, ISOACTOR)) {
-                return parseDefinedActorClass(previous(), modifiers, annotations);
+                return parseDefinedActorClass(previous(), modifiers, annotations, actorPrefix);
             }
             if (modifiers.shared || modifiers.untrusted) {
                 throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
@@ -364,6 +375,7 @@ public final class Parser {
     }
 
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
+        rejectUnsupportedAcceleratorSyntax();
         if (isLegacyFnSpelling()) {
             throw error(peek(), "functions are declared with 'fnc', not 'fn'");
         }
@@ -705,10 +717,53 @@ public final class Parser {
      * allocation primitive. Actor construction/spawn must still be lowered by
      * the runtime before source programs may instantiate actor classes.
      */
+    private record ActorPrefix(Ast.ActorTransport transport, boolean serial) {
+        private static final ActorPrefix DEFAULT =
+                new ActorPrefix(Ast.ActorTransport.GENERIC, false);
+    }
+
+    /**
+     * Contextual actor-only modifiers preserve ordinary variables named
+     * "serial", "http", "tcp", "websocket" in unrelated grammar positions.
+     * Recognizes both "define http actor" and "define serial http actor".
+     */
+    private ActorPrefix parseActorPrefix() {
+        boolean serial = false;
+        Ast.ActorTransport transport = Ast.ActorTransport.GENERIC;
+        boolean recognized = false;
+        for (;;) {
+            if (matchContextualIdentifier("serial")) {
+                if (serial) throw error(previous(), "duplicate serial actor modifier");
+                serial = true;
+                recognized = true;
+            } else if (matchContextualIdentifier("http")) {
+                if (transport != Ast.ActorTransport.GENERIC)
+                    throw error(previous(), "actor cannot have multiple transport kinds");
+                transport = Ast.ActorTransport.HTTP;
+                recognized = true;
+            } else if (matchContextualIdentifier("tcp")) {
+                if (transport != Ast.ActorTransport.GENERIC)
+                    throw error(previous(), "actor cannot have multiple transport kinds");
+                transport = Ast.ActorTransport.TCP;
+                recognized = true;
+            } else if (matchContextualIdentifier("websocket")
+                    || matchContextualIdentifier("ws")) {
+                if (transport != Ast.ActorTransport.GENERIC)
+                    throw error(previous(), "actor cannot have multiple transport kinds");
+                transport = Ast.ActorTransport.WEBSOCKET;
+                recognized = true;
+            } else break;
+        }
+        if (recognized && !check(ACTOR) && !check(ISOACTOR))
+            throw error(peek(), "serial/http/tcp/websocket modifiers require an actor declaration");
+        return new ActorPrefix(transport, serial);
+    }
+
     private Ast.ClassDecl parseDefinedActorClass(
             Token actorToken,
             Modifiers modifiers,
-            List<Ast.Annotation> annotations) {
+            List<Ast.Annotation> annotations,
+            ActorPrefix prefix) {
         modifiers = mergeModifiers(modifiers, parseModifiers());
         Ast.ActorKind kind = resolveActorKind(
                 actorToken, actorToken.type() == ISOACTOR, modifiers);
@@ -720,7 +775,7 @@ public final class Parser {
         }
         rejectCallableStructuralAnnotation(annotations, "actor class declarations");
         rejectDiscardedDeclarationAnnotations(annotations, "actor class declarations");
-        return parseActorClass(kind, modifiers.visibility);
+        return parseActorClass(kind, modifiers.visibility, prefix);
     }
 
     private boolean matchContextualIdentifier(String lexeme) {
@@ -746,6 +801,11 @@ public final class Parser {
     }
 
     private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility) {
+        return parseActorClass(actorKind, visibility, ActorPrefix.DEFAULT);
+    }
+
+    private Ast.ClassDecl parseActorClass(
+            Ast.ActorKind actorKind, Ast.Visibility visibility, ActorPrefix prefix) {
         String name = consume(IDENT, "expected actor name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
@@ -756,10 +816,47 @@ public final class Parser {
         Token.Type terminator = braceStyle ? RBRACE : END;
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
+        int requestConcurrency = 1;
+        int messageConcurrency = 1;
+        boolean declaredRequestConcurrency = false;
+        boolean declaredMessageConcurrency = false;
 
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
+            if (isContextualIdentifier("int") && current + 1 < tokens.size()
+                    && (tokens.get(current + 1).lexeme().equals("requestConcurrency")
+                        || tokens.get(current + 1).lexeme().equals("messageConcurrency"))) {
+                if (prefix.transport() == Ast.ActorTransport.GENERIC)
+                    throw error(peek(), "requestConcurrency/messageConcurrency require an http/tcp/websocket actor");
+                if (!annotations.isEmpty() || mods.visibilitySeen || mods.async
+                        || mods.generator || mods.isStatic || mods.isAbstract
+                        || mods.shared || mods.untrusted || mods.structural
+                        || mods.nonLexical || mods.trapped)
+                    throw error(peek(), "actor concurrency declarations cannot use modifiers or annotations");
+                advance(); // int is a contextual type name
+                String property = consume(IDENT, "expected actor concurrency property").lexeme();
+                consume(EQUAL, "actor concurrency configuration requires a constant initializer");
+                Token value = consume(INT, "actor concurrency must be a positive integer literal");
+                int count;
+                try {
+                    count = Integer.parseInt(value.lexeme().replace("_", ""));
+                } catch (NumberFormatException overflow) {
+                    throw error(value, "actor concurrency limit exceeds the supported int range");
+                }
+                if (count < 1) throw error(value, "actor concurrency must be >= 1");
+                consume(SEMICOLON, "actor concurrency configuration requires ';'");
+                if (property.equals("requestConcurrency")) {
+                    if (declaredRequestConcurrency) throw error(value, "duplicate requestConcurrency");
+                    requestConcurrency = count;
+                    declaredRequestConcurrency = true;
+                } else {
+                    if (declaredMessageConcurrency) throw error(value, "duplicate messageConcurrency");
+                    messageConcurrency = count;
+                    declaredMessageConcurrency = true;
+                }
+                continue;
+            }
             if (isLegacyFnSpelling()) {
                 if (mods.isStatic) throw error(peek(), "static actor functions use 'static fnc', not 'static fn'");
                 throw error(peek(), "actor methods omit 'fn'/'fnc'; declare the method name directly");
@@ -817,8 +914,12 @@ public final class Parser {
         consume(terminator, braceStyle
                 ? "expected '}' to close actor " + name
                 : "expected 'end' to close actor " + name);
+        if (prefix.serial() && (requestConcurrency != 1 || messageConcurrency != 1)) {
+            throw error(previous(), "serial actors require requestConcurrency = 1 and messageConcurrency = 1");
+        }
         return new Ast.ClassDecl(
-                name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods);
+                name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods,
+                new Ast.ActorConcurrency(prefix.transport(), requestConcurrency, messageConcurrency));
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {
@@ -887,8 +988,10 @@ public final class Parser {
                         "interface-field annotations are not represented by the current AST and must not be silently discarded");
             }
 
-            Ast.BindingKind fieldBindingKind = Ast.BindingKind.VAL;
-            boolean fieldMutableReferent = true;
+            // A bare module-contract field requires readable access only.
+            // Explicit bindings retain the current rebindability/referent model.
+            Ast.BindingKind fieldBindingKind = moduleContract ? null : Ast.BindingKind.VAL;
+            boolean fieldMutableReferent = !moduleContract;
             if (isBindingKind(peek().type())) {
                 fieldBindingKind = parseBindingKind();
                 fieldMutableReferent = parseReferentMutability(fieldBindingKind);
@@ -1005,10 +1108,13 @@ public final class Parser {
         rejectCallableStructuralAnnotation(annotations, "module bindings");
         Ast.BindingKind kind = parseBindingKind();
         boolean mutableReferent = parseReferentMutability(kind);
-        boolean fncBinding = match(FNC);
         Ast.TypeRef type = null;
         String name;
-        if (fncBinding) name = consume(IDENT, "expected fnc binding name").lexeme();
+        boolean functionShorthand = match(FNC);
+        if (functionShorthand && (kind != Ast.BindingKind.CONST || mutableReferent)) {
+            throw error(previous(), "lambda binding shorthand requires 'const fnc'");
+        }
+        if (functionShorthand) name = consume(IDENT, "expected function binding name").lexeme();
         else if (check(IDENT) && checkNext(EQUAL)) name = advance().lexeme();
         else {
             type = parseTypeRef();
@@ -1017,8 +1123,8 @@ public final class Parser {
         if (type != null) type = applyTypeMetadataAnnotations(type, annotations, false);
         consume(EQUAL, "module bindings require an initializer");
         Ast.Expr initializer = parseExpression();
-        if (fncBinding && !(initializer instanceof Ast.LambdaExpr)) {
-            throw error(previous(), "const fnc binding requires a lambda initializer");
+        if (functionShorthand && !(initializer instanceof Ast.LambdaExpr)) {
+            throw error(previous(), "'const fnc' requires a lambda initializer");
         }
         consumeExpressionStatementTerminator(initializer, "module binding should end with ';'");
         return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer, mutableReferent);
@@ -1314,6 +1420,22 @@ public final class Parser {
         return declared != null ? declared : annotated != null ? annotated : Ast.TypeRef.simple("void");
     }
 
+    // A pipe after a name-first type may be a union separator or the
+    // parameter-list terminator. The latter is followed by the slim arrow.
+    // Preserve unrestricted unions in ordinary (...) parameter declarations.
+    private Ast.TypeRef parsePipeParameterType() {
+        Ast.TypeRef first = parseTypeAtom();
+        if (!check(PIPE) || checkNext(ARROW)) return first;
+
+        List<Ast.TypeRef> options = new ArrayList<>();
+        options.add(first);
+        do {
+            consume(PIPE, "expected '|' between union parameter types");
+            options.add(parseTypeAtom());
+        } while (check(PIPE) && !checkNext(ARROW));
+        return Ast.TypeRef.union(options);
+    }
+
     private List<Ast.Param> parseDeclaredPipeParameters() {
         if (check(PIPE)) return List.of();
         List<Ast.Param> params = new ArrayList<>();
@@ -1325,13 +1447,13 @@ public final class Parser {
             if (!structural && check(IDENT) && checkNext(COLON)) {
                 String name = advance().lexeme();
                 consume(COLON, "expected ':' after compatibility parameter name");
-                Ast.TypeRef type = parseTypeRef();
+                Ast.TypeRef type = parsePipeParameterType();
                 boolean mutable = match(MUT);
                 params.add(new Ast.Param(type, name, false, mutable));
                 continue;
             }
 
-            Ast.TypeRef type = parseTypeRef();
+            Ast.TypeRef type = parsePipeParameterType();
             boolean mutable = match(MUT);
             String name = consume(IDENT, "lambda-style callable declaration parameters require canonical 'Type name'").lexeme();
             if (structural && mutable) {
@@ -1714,6 +1836,7 @@ public final class Parser {
     }
 
     private Ast.Stmt parseStatement() {
+        rejectUnsupportedAcceleratorSyntax();
         // Keep these distinct from ordinary calls/identifiers. Exception
         // effect checking, typed recovery and actor CONTROL delivery have
         // not yet been lowered in the Java/Graal production compiler.
@@ -2434,11 +2557,14 @@ public final class Parser {
     private Ast.BindingStmt parseBindingStatement(List<Ast.Annotation> annotations) {
         Ast.BindingKind kind = parseBindingKind();
         boolean mutableReferent = parseReferentMutability(kind);
-        boolean fncBinding = match(FNC);
         Ast.TypeRef type = null;
         String name;
-        if (fncBinding) {
-            name = consume(IDENT, "expected fnc binding name").lexeme();
+        boolean functionShorthand = match(FNC);
+        if (functionShorthand && (kind != Ast.BindingKind.CONST || mutableReferent)) {
+            throw error(previous(), "lambda binding shorthand requires 'const fnc'");
+        }
+        if (functionShorthand) {
+            name = consume(IDENT, "expected function binding name").lexeme();
         } else if (check(IDENT) && checkNext(COLON)) {
             name = advance().lexeme();
             consume(COLON, "expected ':' after binding name");
@@ -2489,8 +2615,8 @@ public final class Parser {
         } else {
             initializer = parseExpression();
         }
-        if (fncBinding && !(initializer instanceof Ast.LambdaExpr)) {
-            throw error(previous(), "const fnc binding requires a lambda initializer");
+        if (functionShorthand && !(initializer instanceof Ast.LambdaExpr)) {
+            throw error(previous(), "'const fnc' requires a lambda initializer");
         }
         consumeExpressionStatementTerminator(initializer, "binding should end with ';'");
         return new Ast.BindingStmt(kind, type, name, initializer, mutableReferent, inferredTypeName);
@@ -3152,13 +3278,18 @@ public final class Parser {
     private Ast.Expr parsePipeline() {
         Ast.Expr value = parseConditional();
         int stages = 0;
-        while (match(PIPE_FORWARD)) {
+        while (true) {
+            boolean functional = match(PIPE_FORWARD);
+            boolean actorPipe = !functional && matchContextualKeyword("pipe");
+            if (!functional && !actorPipe) break;
             Token operator = previous();
             if (++stages > 128) {
                 throw error(operator, "pipeline exceeds 128 stages");
             }
             Ast.Expr stage = parsePostfix();
-            if (stage instanceof Ast.CallExpr call) {
+            if (actorPipe) {
+                value = new Ast.BinaryExpr("pipe", value, stage);
+            } else if (stage instanceof Ast.CallExpr call) {
                 if (call.callee() instanceof Ast.MemberExpr member
                         && member.receiver() instanceof Ast.NameExpr namespace
                         && (namespace.name().equals("Option") || namespace.name().equals("Result"))) {
@@ -3184,7 +3315,17 @@ public final class Parser {
     }
 
     private static boolean isPipelineCallable(Ast.Expr stage) {
-        return stage instanceof Ast.NameExpr;
+        if (stage instanceof Ast.NameExpr || stage instanceof Ast.LambdaExpr) return true;
+        if (stage instanceof Ast.MemberExpr member)
+            return isNamedPipelineCallee(member.receiver());
+        return false;
+    }
+
+    private static boolean isNamedPipelineCallee(Ast.Expr callee) {
+        if (callee instanceof Ast.NameExpr) return true;
+        if (callee instanceof Ast.MemberExpr member)
+            return isNamedPipelineCallee(member.receiver());
+        return false;
     }
 
     private Ast.Expr parseConditional() {
@@ -3820,8 +3961,14 @@ public final class Parser {
                 if (check(IDENT) && (checkNext(COMMA) || checkNext(PIPE))) {
                     String name = advance().lexeme();
                     params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, false));
+                } else if (check(IDENT) && checkNext(COLON)) {
+                    String name = advance().lexeme();
+                    consume(COLON, "expected ':' after lambda parameter name");
+                    Ast.TypeRef type = parsePipeParameterType();
+                    boolean mutable = match(MUT);
+                    params.add(new Ast.Param(type, name, false, mutable));
                 } else {
-                    Ast.TypeRef type = parseTypeRef();
+                    Ast.TypeRef type = parsePipeParameterType();
                     boolean mutable = match(MUT);
                     String name = consume(IDENT, "expected lambda parameter name").lexeme();
                     params.add(new Ast.Param(type, name, false, mutable));

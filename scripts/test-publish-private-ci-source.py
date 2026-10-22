@@ -14,6 +14,8 @@ pub = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pub)
 ORIGINAL_VERIFY_PROTECTED_ORIGIN = pub.verify_protected_origin
 ORIGINAL_VERIFY_EXACT_SOURCE_TREE = pub.verified_exact_source_tree
+ORIGINAL_REQUIRE_PREFLIGHT = pub.require_preflight
+ORIGINAL_REQUIRE_RESOLVED = pub.require_resolved_blocking_incidents
 A, B, C, D, E = ("a"*40, "b"*40, "c"*40, "d"*40, "e"*40)
 
 
@@ -33,6 +35,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.preflight = patch.object(pub, "require_preflight")
         self.preflight.start()
         self.addCleanup(self.preflight.stop)
+        # Other publisher tests exercise the downstream write path. The real
+        # incident API predicate is tested separately with identity fixtures.
+        self.incident_guard = patch.object(pub, "require_resolved_blocking_incidents")
+        self.incident_mock = self.incident_guard.start()
+        self.addCleanup(self.incident_guard.stop)
         # Existing isolated transfer/FS tests model the downstream publisher;
         # protected-source provenance gets independent real-guard tests below.
         self.origin_guard = patch.object(pub, "verify_protected_origin")
@@ -44,6 +51,139 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             pub, "verified_exact_source_tree", return_value=D)
         self.source_tree_mock = self.source_tree_guard.start()
         self.addCleanup(self.source_tree_guard.stop)
+
+    def incident_api(self, states=None, repository_id=None, issue_ids=None):
+        states = states or {
+            22: ("closed", "completed"),
+            77: ("closed", "completed"),
+            127: ("closed", "completed"),
+        }
+        repository_id = (
+            pub.BLOCKING_INCIDENT_REPOSITORY_ID
+            if repository_id is None else repository_id
+        )
+        issue_ids = dict(pub.BLOCKING_INCIDENT_IDS if issue_ids is None else issue_ids)
+        def api(route, method="GET", payload=None):
+            if route == "repos/" + pub.BLOCKING_INCIDENT_REPO:
+                return {
+                    "id": repository_id,
+                    "full_name": pub.BLOCKING_INCIDENT_REPO,
+                    "private": True,
+                    "visibility": "private",
+                    "archived": False,
+                    "disabled": False,
+                    "fork": False,
+                }
+            prefix = "repos/" + pub.BLOCKING_INCIDENT_REPO + "/issues/"
+            if route.startswith(prefix):
+                number = int(route[len(prefix):])
+                state, reason = states[number]
+                repository_url = (
+                    "https://api.github.com/repos/"
+                    + pub.BLOCKING_INCIDENT_REPO
+                )
+                return {
+                    "id": issue_ids[number],
+                    "number": number,
+                    "repository_url": repository_url,
+                    "url": repository_url + "/issues/" + str(number),
+                    "html_url": (
+                        "https://github.com/"
+                        + pub.BLOCKING_INCIDENT_REPO
+                        + "/issues/"
+                        + str(number)
+                    ),
+                    "state": state,
+                    "state_reason": reason,
+                }
+            raise AssertionError((method, route))
+        return api
+
+    def test_blocking_p0_incidents_accept_only_completed_closure(self):
+        with patch.object(pub, "gh_api", side_effect=self.incident_api()):
+            ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_open_issue(self):
+        states = {
+            22: ("closed", "completed"),
+            77: ("open", None),
+        }
+        with patch.object(pub, "gh_api", side_effect=self.incident_api(states)):
+            with self.assertRaisesRegex(pub.Denied, "#77 remains unresolved"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_open_issue_127(self):
+        states = {
+            22: ("closed", "completed"),
+            77: ("closed", "completed"),
+            127: ("open", None),
+        }
+        with patch.object(pub, "gh_api", side_effect=self.incident_api(states)):
+            with self.assertRaisesRegex(pub.Denied, "#127 remains unresolved"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_not_planned_closure(self):
+        states = {
+            22: ("closed", "not_planned"),
+            77: ("closed", "completed"),
+        }
+        with patch.object(pub, "gh_api", side_effect=self.incident_api(states)):
+            with self.assertRaisesRegex(pub.Denied, "#22 remains unresolved"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_issue_identity_drift(self):
+        ids = dict(pub.BLOCKING_INCIDENT_IDS)
+        ids[22] += 1
+        with patch.object(
+            pub, "gh_api",
+            side_effect=self.incident_api(issue_ids=ids),
+        ):
+            with self.assertRaisesRegex(pub.Denied, "incident identity"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_issue_127_identity_drift(self):
+        ids = dict(pub.BLOCKING_INCIDENT_IDS)
+        ids[127] += 1
+        with patch.object(
+            pub, "gh_api",
+            side_effect=self.incident_api(issue_ids=ids),
+        ):
+            with self.assertRaisesRegex(pub.Denied, "incident identity"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_repository_identity_drift(self):
+        with patch.object(
+            pub, "gh_api",
+            side_effect=self.incident_api(
+                repository_id=pub.BLOCKING_INCIDENT_REPOSITORY_ID + 1
+            ),
+        ):
+            with self.assertRaisesRegex(pub.Denied, "repository identity/state"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_quarantined_incident_carrier_rejected_before_incident_or_local_guard(self):
+        with (
+            patch.object(pub, "require_resolved_blocking_incidents") as incidents,
+            patch.object(pub.subprocess, "run") as run,
+            patch.object(pub, "gh_api") as api,
+        ):
+            with self.assertRaisesRegex(pub.Denied, "quarantined"):
+                ORIGINAL_REQUIRE_PREFLIGHT("zed-pkg-test/java-app", self.root)
+            incidents.assert_not_called()
+            run.assert_not_called()
+            api.assert_not_called()
+
+    def test_preflight_checks_blocking_incidents_before_local_guard(self):
+        with (
+            patch.object(
+                pub, "require_resolved_blocking_incidents",
+                side_effect=pub.Denied("blocking incident"),
+            ),
+            patch.object(pub.subprocess, "run") as run,
+        ):
+            with self.assertRaisesRegex(pub.Denied, "blocking incident"):
+                ORIGINAL_REQUIRE_PREFLIGHT("trusted/ci", self.root)
+            run.assert_not_called()
 
     def test_descriptor_safety_flags_require_distinct_positive_integers(self):
         with (
@@ -94,6 +234,17 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def publish(self, repo="trusted/ci", branch="ci/oreslang-test"):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root, A)
+
+    def test_reopened_p0_blocks_legacy_write_before_git_object_creation(self):
+        self.incident_mock.side_effect = pub.Denied(
+            "blocking P0 incident #77 remains unresolved"
+        )
+        with self.assertRaisesRegex(pub.Denied, "#77 remains unresolved"):
+            self.publish()
+        self.incident_mock.assert_called_once_with()
+        self.assertFalse(
+            any(method == "POST" for method, _, _ in self.route_calls)
+        )
 
     def verified_origin_api(self, protected=True, policy=b"trusted/ci 246810\n",
                             codeowners=True, stale=True, admins=True,
