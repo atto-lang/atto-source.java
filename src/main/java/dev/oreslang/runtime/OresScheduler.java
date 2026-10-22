@@ -56,6 +56,8 @@ public final class OresScheduler implements AutoCloseable {
     private static final ThreadLocal<Long> CURRENT_DISPATCH_ID = new ThreadLocal<>();
     private static final ThreadLocal<ExecutionContext> CURRENT_EXECUTION_CONTEXT = new ThreadLocal<>();
     private static final ThreadLocal<Boolean> SCHEDULER_CARRIER = new ThreadLocal<>();
+    private static final ThreadLocal<Boolean> CURRENT_CANCELLATION_CLEANUP =
+            new ThreadLocal<>();
     private static final ThreadLocal<ActorTurnWatchdog.Lease> CURRENT_WATCHDOG_LEASE =
             new ThreadLocal<>();
     private static final int DEFAULT_QUEUE_CAPACITY = 65_536;
@@ -417,6 +419,15 @@ public final class OresScheduler implements AutoCloseable {
      */
     public static boolean cancellationRequested() {
         return TaskHandle.currentCancellationRequested();
+    }
+
+    /**
+     * Source interpreter only: true while the scheduler delivers the first
+     * authenticated terminal-cleanup resume. It is NOT a caller-provided
+     * CancellationException classifier and never grants cancellation rights.
+     */
+    public static boolean cancellationCleanupTurn() {
+        return Boolean.TRUE.equals(CURRENT_CANCELLATION_CLEANUP.get());
     }
 
     /**
@@ -841,6 +852,7 @@ public final class OresScheduler implements AutoCloseable {
                 // saved lexical continuation rather than clearing it. Only
                 // one resume is injected; later awaits belong to shielded
                 // cleanup, and must be allowed to complete normally.
+                boolean injectedCleanup = false;
                 java.util.concurrent.CancellationException requested =
                         completion.deferredCancellationCause();
                 if (requested != null && !cleanupCancellationInjected.get()
@@ -850,10 +862,14 @@ public final class OresScheduler implements AutoCloseable {
                         return;
                     }
                     cleanupCancellationInjected.set(true);
+                    injectedCleanup = true;
                     resume = Resume.completed(null, requested);
                 }
 
                 final Step<T> step;
+                Boolean priorCleanup = CURRENT_CANCELLATION_CLEANUP.get();
+                if (injectedCleanup) CURRENT_CANCELLATION_CLEANUP.set(true);
+                else CURRENT_CANCELLATION_CLEANUP.remove();
                 try {
                     step = Objects.requireNonNull(
                             task.resume(resume),
@@ -876,6 +892,9 @@ public final class OresScheduler implements AutoCloseable {
                     if (failure instanceof ThreadDeath fatal) throw fatal;
                     if (failure instanceof LinkageError fatal) throw fatal;
                     return;
+                } finally {
+                    if (priorCleanup == null) CURRENT_CANCELLATION_CLEANUP.remove();
+                    else CURRENT_CANCELLATION_CLEANUP.set(priorCleanup);
                 }
 
                 if (step instanceof Done<?> done) {
