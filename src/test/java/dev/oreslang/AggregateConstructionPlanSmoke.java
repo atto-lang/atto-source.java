@@ -84,6 +84,42 @@ public final class AggregateConstructionPlanSmoke {
         check(record.resultType().kind() == Types.AggregateKind.RECORD,
                 "struct source does not erase record result identity");
 
+        denied(() -> new AggregateConstructionPlan.Plan(
+                        Ast.ObjectKind.RECORD,
+                        List.of(new AggregateConstructionPlan.NamedField(
+                                3, "foo", Types.Primitive.INT)),
+                        Map.of("foo", Types.Primitive.INT),
+                        new Types.Record(Map.of("foo", Types.Primitive.INT),
+                                true, Types.AggregateKind.RECORD)),
+                "forged out-of-order plan step");
+        denied(() -> new AggregateConstructionPlan.Plan(
+                        Ast.ObjectKind.RECORD,
+                        List.of(new AggregateConstructionPlan.NamedField(
+                                0, "foo", Types.Primitive.INT)),
+                        Map.of("foo", Types.Primitive.STRING),
+                        new Types.Record(Map.of("foo", Types.Primitive.STRING),
+                                true, Types.AggregateKind.RECORD)),
+                "forged result type inconsistent with writes");
+        denied(() -> new AggregateConstructionPlan.Plan(
+                        Ast.ObjectKind.INFERRED_STRUCT,
+                        List.of(new AggregateConstructionPlan.NamedField(
+                                0, "foo", Types.Primitive.INT)),
+                        Map.of("foo", Types.Primitive.INT),
+                        new Types.Record(Map.of("foo", Types.Primitive.INT),
+                                true, Types.AggregateKind.RECORD)),
+                "forged struct/record result domain");
+        denied(() -> new AggregateConstructionPlan.Plan(
+                        Ast.ObjectKind.RECORD,
+                        List.of(new AggregateConstructionPlan.SpreadFields(
+                                0, Types.AggregateKind.RECORD,
+                                Map.of("nested", Types.Record.struct(
+                                        Map.of("value", Types.Primitive.INT))))),
+                        Map.of("nested", Types.Record.struct(
+                                Map.of("value", Types.Primitive.INT))),
+                        new Types.Record(Map.of("nested", Types.Record.struct(
+                                Map.of("value", Types.Primitive.INT))),
+                                true, Types.AggregateKind.RECORD)),
+                "forged non-copy aggregate projection");
         denied(() -> new AggregateConstructionPlan.Builder(source).finish(),
                 "incomplete construction plan");
         denied(() -> new AggregateConstructionPlan.Builder(source)
