@@ -152,7 +152,8 @@ public final class TypeChecker {
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
-        AggregateConstructionPlan.Checked.recordTypedUnit(checker.stagedAggregatePlans);
+        AggregateConstructionPlan.Checked.recordTypedUnit(
+                program, checker.stagedAggregatePlans);
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
     }
 
@@ -211,7 +212,8 @@ public final class TypeChecker {
             throw new IllegalArgumentException("orphaned linked class field alias metadata");
         }
         checker.validate(program);
-        AggregateConstructionPlan.Checked.recordTypedUnit(checker.stagedAggregatePlans);
+        AggregateConstructionPlan.Checked.recordTypedUnit(
+                program, checker.stagedAggregatePlans);
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
     }
 
