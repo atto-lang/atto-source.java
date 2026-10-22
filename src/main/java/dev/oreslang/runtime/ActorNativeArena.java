@@ -570,8 +570,19 @@ public final class ActorNativeArena implements AutoCloseable {
         TaskPhase(long code) { this.code = code; }
 
         private static TaskPhase fromCode(long code) {
-            for (TaskPhase phase : values()) if (phase.code == code) return phase;
-            throw new IllegalStateException("invalid native actor task-frame phase " + code);
+            // Enum.values() clones an array on every invocation. Native task
+            // frames decode this on resume, suspension and transition; direct
+            // dispatch avoids allocating managed garbage in the hot path.
+            return switch (code) {
+                case 0L -> NEW;
+                case 1L -> RUNNING;
+                case 2L -> AWAITING;
+                case 3L -> COOPERATING;
+                case 4L -> DONE;
+                case 5L -> FAILED;
+                default -> throw new IllegalStateException(
+                        "invalid native actor task-frame phase " + code);
+            };
         }
     }
 
