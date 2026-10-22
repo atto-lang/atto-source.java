@@ -1115,7 +1115,22 @@ public final class OresEvalRootNode extends RootNode {
          * current continuation is stored here and OresScheduler.Task returns
          * Await to unwind the carrier completely.
          */
-        private final class SourceTask implements OresScheduler.Task<Object> {
+        @FunctionalInterface
+        private interface SourceCleanupAction {
+            void unwind(SourceTask task, SourceFlowCont continuation);
+        }
+
+        /** Lexically registered, once-disarmed source cleanup capability. */
+        private static final class SourceCleanupFrame {
+            private final SourceCleanupAction action;
+            private boolean disarmed;
+
+            private SourceCleanupFrame(SourceCleanupAction action) {
+                this.action = Objects.requireNonNull(action, "action");
+            }
+        }
+
+        private final class SourceTask implements OresScheduler.CleanupAwareTask<Object> {
             // The trampoline prevents recursive loop iterations from retaining
             // interpreter Java frames until a quantum is exhausted.
             // The reduction counter and clock belong to the heap-owned
@@ -1133,6 +1148,14 @@ public final class OresEvalRootNode extends RootNode {
             private Env initialBlockEnv;
 
             private SourceValueCont awaitingContinuation;
+            // Kept in the heap-owned SourceTask across awaits. A cancellation
+            // resume discards the normal expression continuation and unwinds
+            // these frames instead; guest catch/trap never receives the marker.
+            private final ArrayDeque<SourceCleanupFrame> activeCleanup =
+                    new ArrayDeque<>();
+            private boolean cancellationUnwinding;
+            private java.util.concurrent.CancellationException cancellationCause;
+            private Throwable fatalCleanupFailure;
             private OresScheduler.Step<Object> nextStep;
 
             private SourceTask(
@@ -1246,6 +1269,19 @@ public final class OresEvalRootNode extends RootNode {
                             body,
                             params,
                             this::finishSourceFlow);
+                } else if (!cancellationUnwinding
+                        && resume.failure() instanceof java.util.concurrent.CancellationException
+                        && OresScheduler.cancellationCleanupTurn()) {
+                    // Only the scheduler's authenticated cleanup dispatch
+                    // may switch a source Task into terminal unwind. Do not
+                    // forward this into an expression/guest catch callback.
+                    cancellationUnwinding = true;
+                    cancellationCause =
+                            (java.util.concurrent.CancellationException) resume.failure();
+                    awaitingContinuation = null;
+                    pendingLoopContinuation = null;
+                    pendingLoopGuardEnv = null;
+                    unwindCancelledSource();
                 } else {
                     SourceValueCont continuation = awaitingContinuation;
                     awaitingContinuation = null;
@@ -1271,6 +1307,69 @@ public final class OresEvalRootNode extends RootNode {
                 OresScheduler.Step<Object> result = nextStep;
                 nextStep = null;
                 return result;
+            }
+
+            private SourceCleanupFrame registerSourceCleanup(SourceCleanupAction action) {
+                SourceCleanupFrame frame = new SourceCleanupFrame(action);
+                activeCleanup.addLast(frame);
+                return frame;
+            }
+
+            private void disarmSourceCleanup(SourceCleanupFrame frame) {
+                if (frame.disarmed) return;
+                frame.disarmed = true;
+                // A frame completed on the owning Task turn. Removing it by
+                // identity allows ordinary nested finally to unwind itself
+                // without accidentally removing its parent's frame.
+                if (!activeCleanup.removeLastOccurrence(frame)) {
+                    if (!cancellationUnwinding) {
+                        throw new IllegalStateException("source cleanup frame lost");
+                    }
+                }
+            }
+
+            private void noteCancelledCleanupFailure(Throwable failed) {
+                if (failed == cancellationCause) return;
+                if (fatalCleanupFailure == null && (failed instanceof Error
+                        || failed instanceof java.util.concurrent.RejectedExecutionException)) {
+                    fatalCleanupFailure = failed;
+                }
+                if (cancellationCause != null
+                        && cancellationCause.getSuppressed().length < 64) {
+                    cancellationCause.addSuppressed(failed);
+                }
+            }
+
+            private void unwindCancelledSource() {
+                while (!activeCleanup.isEmpty() && activeCleanup.peekLast().disarmed) {
+                    activeCleanup.removeLast();
+                }
+                SourceCleanupFrame frame = activeCleanup.pollLast();
+                if (frame == null) {
+                    // Cleanup is finished. The scheduler's deferred-cancel
+                    // Future publishes cancellation only AFTER this turn
+                    // physically exits. A fatal cleanup failure cannot be
+                    // converted to a normal cancellation receipt.
+                    if (fatalCleanupFailure instanceof Error fatal) throw fatal;
+                    if (fatalCleanupFailure instanceof RuntimeException fatal) throw fatal;
+                    done(null);
+                    return;
+                }
+                frame.disarmed = true;
+                try {
+                    frame.action.unwind(this, (t, flow) -> {
+                        if (flow.kind() == SourceFlowKind.THROW
+                                && flow.failure() != cancellationCause) {
+                            noteCancelledCleanupFailure(flow.failure());
+                        }
+                        // Every frame completes only once, including when its
+                        // defer/finally awaited another Future before resuming.
+                        t.unwindCancelledSource();
+                    });
+                } catch (RuntimeException | Error failed) {
+                    noteCancelledCleanupFailure(failed);
+                    unwindCancelledSource();
+                }
             }
 
             private void scheduleLoopContinuation(
@@ -1872,9 +1971,16 @@ public final class OresEvalRootNode extends RootNode {
                 SourceFlowCont continuation) {
             Env env = new Env(parent);
             ArrayDeque<Ast.Expr> defers = new ArrayDeque<>();
-            // runStatements owns terminal finalization for this block.
-            // A second finishBlock would release the same environment twice.
-            runStatements(task, statements, env, defers, 0, continuation);
+            SourceCleanupFrame cleanup = task.registerSourceCleanup(
+                    (owner, finished) -> runOneDefer(
+                            owner, env, defers,
+                            SourceFlow.throwing(owner.cancellationCause), finished));
+            // runStatements owns normal terminal finalization. Its wrapper
+            // disarms the heap-owned cancellation frame exactly once.
+            runStatements(task, statements, env, defers, 0, (owner, flow) -> {
+                owner.disarmSourceCleanup(cleanup);
+                continuation.accept(owner, flow);
+            });
         }
 
         /**
@@ -2367,11 +2473,18 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (stmt instanceof Ast.TryStmt attempted) {
+                    SourceCleanupFrame pendingFinally = task.registerSourceCleanup(
+                            (owner, finished) ->
+                                    runBlock(owner, attempted.finallyBody(), env, finished));
                     runBlock(
                             task,
                             attempted.body(),
                             env,
                             (t, flow) -> {
+                                // Normal throw/return path explicitly owns
+                                // finally below. Cancellation of a suspended
+                                // try body owns it via the heap cleanup stack.
+                                t.disarmSourceCleanup(pendingFinally);
                                 if (flow.kind() == SourceFlowKind.THROW
                                         && isGuestCatchableFailure(flow.failure())) {
                                     Env caught = new Env(env);
