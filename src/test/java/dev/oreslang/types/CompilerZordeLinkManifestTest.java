@@ -110,6 +110,20 @@ final class CompilerZordeLinkManifestTest {
         var foreign = other.checkedTypeForLinkedAnalysis("svc.api", "api.Port", 7L);
         assertFalse(Types.isAssignable(checked, foreign));
         assertFalse(Types.isAssignable(foreign, checked));
+
+        // The same underlying staged registry can link to different target
+        // ABIs, roots or build policies. None may reuse a proof identity.
+        var otherLink = link(candidates, pins(candidates),
+                "java-dev-1", "graalvm-linux-x86_64");
+        var linkedAgain = link(candidates, pins(candidates),
+                "java-dev-1", "graalvm-linux-arm64");
+        var crossAbi = otherLink.checkedTypeForLinkedAnalysis("svc.api", "api.Port", 7L);
+        var separateLink = linkedAgain.checkedTypeForLinkedAnalysis(
+                "svc.api", "api.Port", 7L);
+        assertFalse(Types.isAssignable(checked, crossAbi));
+        assertFalse(Types.isAssignable(checked, separateLink));
+        assertEquals(linked.digest(), linkedAgain.digest());
+        assertFalse(linked.sameLinkInstance(linkedAgain));
     }
 
     @Test void mismatchedRootSourceOrGenerationOrCandidateIsDenied() {
