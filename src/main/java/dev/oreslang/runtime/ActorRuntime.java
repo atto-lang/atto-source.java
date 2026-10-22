@@ -1977,16 +1977,18 @@ public final class ActorRuntime implements AutoCloseable {
         // stays charged until the post-carrier callback finishes.
         Runnable actorRetirement = cell.sourceTaskLifetime(() -> { });
         if (cell.kind != ActorKind.UNTRUSTED) {
+            final OresFuture<T> future;
             try {
-                OresFuture<T> future = cell.sourceScheduler().start(task, actorRetirement);
-                ownFuture(cell, future);
-                return future;
+                future = cell.sourceScheduler().start(task, actorRetirement);
             } catch (RuntimeException | Error admissionFailure) {
-                // Same admission-failure convention as the scheduler API:
-                // failed start did not publish an executing task.
+                // The scheduler did not return an admitted task. Do not extend
+                // this catch over later Future ownership registration: errors
+                // there cannot prove the already-running carrier quiescent.
                 actorRetirement.run();
                 throw admissionFailure;
             }
+            ownFuture(cell, future);
+            return future;
         }
         // Do not mint multiple independent root budgets from one physical
         // mailbox turn. While one source-task cohort is live, its nested
