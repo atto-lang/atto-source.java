@@ -3,8 +3,12 @@ EXTENDS Naturals, FiniteSets
 
 \* A deliberately small, independently checkable hierarchical shutdown
 \* model. Every node has ONE lifecycle FSM, not one global Cartesian FSM.
-\* Finite Nodes and MaxEpoch are supplied by the TLC model configuration.
-CONSTANTS Nodes, Root, Parent, MaxEpoch
+\* Finite root + two sibling topology, two epochs. For larger models,
+\* vary these four definitions and rerun TLC; no real actor count is proven.
+Nodes == {"root", "a", "b"}
+Root == "root"
+Parent == [n \in Nodes \ {Root} |-> Root]
+MaxEpoch == 2
 
 ASSUME /\ Nodes # {}
        /\ Root \in Nodes
