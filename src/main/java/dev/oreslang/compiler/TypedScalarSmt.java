@@ -147,6 +147,13 @@ public final class TypedScalarSmt {
                 String no = lower(conditional.elseBody(), result, arguments, depth + 1, budget);
                 require(yes != null && no != null,
                         "non-returning branch or unsupported fallthrough");
+                // Check expansion size *before* concatenating either path.
+                // Repeated fallthrough branches can otherwise double the
+                // continuation at each depth (exponential output / OOM),
+                // even when the statement budget is small.
+                long projected = 9L + cond.length() + yes.length() + no.length();
+                require(projected <= MAX_SMT_CHARS,
+                        "expanded proof expression exceeds size limit");
                 result = "(ite " + cond + " " + yes + " " + no + ")";
             } else {
                 throw new IllegalArgumentException("unsupported typed AST statement: "
