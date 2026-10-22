@@ -21,6 +21,11 @@ import java.util.concurrent.atomic.AtomicReferenceArray;
  * sources; only explicit owners such as TaskScope may revoke work.</p>
  */
 public final class OresFutures {
+    // Bound listener and input allocations for both guest and host adapters.
+    // Keep parity with FutureCombinators; a source TaskScope can impose a
+    // tighter actor/tenant-specific budget before invoking this helper.
+    public static final int MAX_FAN_IN = 65_536;
+
     private OresFutures() { }
 
     public record Settled<T>(T value, Throwable error) {
@@ -221,8 +226,16 @@ public final class OresFutures {
             List<?> awaitables,
             String operation) {
         Objects.requireNonNull(awaitables, "awaitables");
-        ArrayList<OresFuture<T>> children = new ArrayList<>(awaitables.size());
-        for (Object awaitable : awaitables) {
+        if (awaitables.size() > MAX_FAN_IN) {
+            throw new IllegalArgumentException(
+                    operation + " exceeds maximum fan-in " + MAX_FAN_IN);
+        }
+        // Do not iterate a mutable, caller-owned List while installing
+        // runtime waiters. Snapshot all arguments before any normalization
+        // or host completion-stage subscription is created.
+        List<?> snapshot = List.copyOf(awaitables);
+        ArrayList<OresFuture<T>> children = new ArrayList<>(snapshot.size());
+        for (Object awaitable : snapshot) {
             Objects.requireNonNull(awaitable, "future");
             if (awaitable instanceof OresFuture<?> ores) {
                 children.add((OresFuture<T>) ores);
