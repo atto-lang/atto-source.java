@@ -138,6 +138,20 @@ compile-time plan over already parsed Oreslang aliases/newtypes:
   descriptor and returns private-constructor `CheckedScalar` or structured
   `ConstraintError`. It is **not** guest `T.try_from()`.
 
+- Host `CheckedScalar.intoInner()` now **consumes its payload exactly once**,
+  including under concurrent Java calls. A second unwrap or transfer throws
+  `IllegalStateException`; string/long metadata remains diagnostic only.
+- `Plan.revalidateInto(targetType, source)` explicitly checks a source
+  scalar against this plan's trusted-at-call-site target descriptor and moves
+  the immutable scalar on success. Failure preserves the source unchanged;
+  arbitrary source fingerprints and nominal names are NEVER an admission
+  shortcut. A descriptor digest is an equality check, not provenance.
+- This host facility is deliberately **not** the guest `Valid<T,SchemaId>`
+  feature. Analysis plans are constructible from arbitrary source, the host
+  wrapper is allocated/managed by the JVM, and no actor, FFI, arena or code
+  generation trust boundary has been certified. Future AOT/zero-GC profiles
+  must lower ownership directly, not retain this Java reference wrapper.
+
 Stable schema ABI v1 fingerprints SHA-256 over a canonical representation
 of normalized base, property, inclusive interval, sorted effective exclusions
 and compiler-qualified nominal identity. The independently implemented Python
@@ -244,7 +258,7 @@ the same fixtures before those backends admit executable refinements.
 ### Implementation status and remaining release gate
 
 The Java AST planner and static schema DSL exist and are exercised on
-source-exact components with a funded CI carrier. Guest codegen for
+source-level tests, but the latest GitHub Actions jobs failed before runner steps executed; no exact-head Maven/JUnit pass is verified. Guest codegen for
 `Zorde.infer`, `schema<T>()`, `T.try_from()` and `safeParse` is not
 enabled yet. Source-first real `Parser.parse` JUnit testing and native Zorde
 wire-decoding tests are required before claiming complete integration. LLVM
