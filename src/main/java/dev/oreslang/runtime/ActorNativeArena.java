@@ -802,6 +802,34 @@ public final class ActorNativeArena implements AutoCloseable {
         }
 
         /**
+         * Complete a source function that intentionally converts a trapped
+         * guest exception into an ordinary Err/None outcome. The source
+         * evaluator can encounter that exception after committing a suspend
+         * ticket but before yielding the corresponding scheduler Step.
+         *
+         * <p>Only a live, already-entered task can be completed this way.
+         * Suspended tickets are revoked and native spill roots dropped before
+         * publishing DONE. Callers must have independently checked that the
+         * exception is trappable; this is not a generic cancellation path.</p>
+         */
+        public void completeTrappedFailure() {
+            synchronized (ActorNativeArena.this) {
+                checkFrame();
+                TaskPhase current = TaskPhase.fromCode(read(base, 8));
+                if (current != TaskPhase.RUNNING
+                        && current != TaskPhase.AWAITING
+                        && current != TaskPhase.COOPERATING) {
+                    throw new IllegalStateException(
+                            "trapped native actor task completion requires a live entered frame: phase="
+                                    + current);
+                }
+                clearSpills();
+                write(base, 32, 0L);
+                write(base, 8, TaskPhase.DONE.code);
+            }
+        }
+
+        /**
          * Failure is terminal from any live phase. This is deliberately more
          * permissive than normal transitions so an exception raised after a
          * suspension decision cannot mask the original failure with a phase error.
