@@ -81,6 +81,12 @@
 (assert (and step (bvugt next-seen limit)))
 (check-sat)
 (pop 1)
+; The zeroed suite before visiting any case establishes the invariant.
+(push 1)
+(assert (and (= seen z) (= total z) (= passed z) (= failed z)
+  (= skipped z) (= filtered z) (not halted) (not inv)))
+(check-sat)
+(pop 1)
 ; Mutation controls: an uncounted failure and a double-counted skip break
 ; the conservation invariant for an otherwise valid step.
 (push 1)
@@ -91,5 +97,11 @@
 (push 1)
 (assert (and step (= kind #x01)
   (distinct next-seen (bvadd next-total (bvadd filtered one)))))
+(check-sat)
+(pop 1)
+; Mandatory SAT negative base: a spurious initial filtered case is invalid.
+(push 1)
+(assert (and (= seen z) (= total z) (= passed z) (= failed z)
+  (= skipped z) (= filtered one) (not halted) (not inv)))
 (check-sat)
 (pop 1)
