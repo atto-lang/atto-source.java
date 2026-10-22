@@ -269,7 +269,8 @@ legacy source-only staging method continues to reject all imports.
 
 Source staging now enforces an explicit budget of 128 named type imports
 per compilation unit, with at most 32 imported type names from any
-individual target unit, before attempting a closed-world link. Unit
+individual target unit and at most 128 ASCII characters per imported type
+identifier, before attempting a closed-world link. Unit
 identities and imported paths use the same canonical segment grammar:
 empty segments, dot-dot traversal, trailing separators and ambiguous
 normalization are rejected. The strict import dialect uses dotted
