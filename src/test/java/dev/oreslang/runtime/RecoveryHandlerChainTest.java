@@ -106,11 +106,14 @@ final class RecoveryHandlerChainTest {
         assertNotSame(leaked.get(0), leaked.get(1));
     }
 
-    @Test void doubleDecisionIsRejected() {
+    @Test void doubleDecisionIsRejectedWithoutLosingOriginalFailure() {
+        Throwable original = new Exception("original raise");
         var chain = RecoveryHandlerChain.<Integer>builder()
                 .register((e, c) -> { c.next(); c.resolve(9); }).freeze();
-        assertThrows(IllegalStateException.class,
-                () -> chain.dispatch(RecoveryHandlerChain.FailureKind.RAISE, new Exception()));
+        var result = assertInstanceOf(RecoveryHandlerChain.HandlerFailure.class,
+                chain.dispatch(RecoveryHandlerChain.FailureKind.RAISE, original));
+        assertSame(original, result.pendingError());
+        assertInstanceOf(IllegalStateException.class, result.callbackError());
     }
 
     @Test void failureDuringHandlerRevokesContinuation() {
@@ -221,6 +224,29 @@ final class RecoveryHandlerChainTest {
         }
         assertThrows(IllegalStateException.class,
                 () -> builder.register((e, c) -> c.next()));
+    }
+
+    @Test void resolvedThenCallbackThrowsDoesNotConsumeFailure() {
+        RuntimeException callbackError = new RuntimeException("callback failed after resolve");
+        Throwable pendingError = new Exception("raised first");
+        var chain = RecoveryHandlerChain.<Integer>builder()
+                .register((e, c) -> { c.resolve(7); throw callbackError; }).freeze();
+        var result = assertInstanceOf(RecoveryHandlerChain.HandlerFailure.class,
+                chain.dispatch(RecoveryHandlerChain.FailureKind.RAISE, pendingError));
+        assertSame(callbackError, result.callbackError());
+        assertSame(pendingError, result.pendingError());
+    }
+
+    @Test void emptyChainAndNullRegistrationAreSafe() {
+        var empty = RecoveryHandlerChain.<Integer>builder().freeze();
+        assertEquals(0, empty.size());
+        Throwable pendingError = new Exception("empty");
+        var result = assertInstanceOf(RecoveryHandlerChain.Unhandled.class,
+                empty.dispatch(RecoveryHandlerChain.FailureKind.THROW, pendingError));
+        assertSame(pendingError, result.error());
+        var builder = RecoveryHandlerChain.<Integer>builder();
+        assertThrows(NullPointerException.class, () -> builder.register(null));
+        assertThrows(NullPointerException.class, () -> builder.onRaise(null));
     }
 
     @Test void longDelegationChainIsIterative() {
