@@ -21,6 +21,8 @@ import java.util.Objects;
  */
 public final class ActorMessageScratch {
     private static final int DEFAULT_CHUNK_BYTES = 4096;
+    /** Limit retained burst capacity, but keep small-message native chunks hot. */
+    private static final long MAX_IDLE_RETAINED_BYTES = 64 * 1024L;
 
     private final ActorNativeArena arena;
     private final long maximumChunkBytes;
@@ -68,6 +70,32 @@ public final class ActorMessageScratch {
         usedBytes = 0;
         cursorBlock = 0;
         cursorByte = 0;
+        // Do not pin a whole actor's quota forever after one burst-sized
+        // message. Release excess native chunks only after borrows have ended
+        // and the epoch is no longer active. The first/small chunks stay hot.
+        trimIdleTo(MAX_IDLE_RETAINED_BYTES);
+    }
+
+    /**
+     * Return inactive native scratch chunks to this actor's quota, newest
+     * first, without ever touching its persistent state. Does not split an
+     * already allocated chunk; the result can be below the requested cap.
+     * The owner must call this after the message has logically completed.
+     */
+    public synchronized void trimIdleTo(long retainBytes) {
+        arena.assertOwner();
+        if (active || readBorrows != 0) {
+            throw new IllegalStateException("cannot trim active or borrowed message scratch");
+        }
+        if (retainBytes < 0) throw new IllegalArgumentException("negative scratch retention");
+        for (int index = blocks.size() - 1;
+                index >= 0 && reservedBytes > retainBytes; index--) {
+            ActorNativeArena.Region block = blocks.get(index);
+            long capacity = block.capacity();
+            block.close();
+            blocks.remove(index);
+            reservedBytes -= capacity;
+        }
     }
 
     synchronized void assertActive() {
