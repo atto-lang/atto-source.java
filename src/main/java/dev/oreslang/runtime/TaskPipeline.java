@@ -177,6 +177,10 @@ public final class TaskPipeline {
                     Object produced = chain.get(next++).apply(value);
                     if (produced instanceof Owned owned) {
                         OresFuture<?> child = owned.future();
+                        if (child == exposedRef.get()) {
+                            throw new IllegalStateException(
+                                    "pipeline cannot await its own exposed completion Future");
+                        }
                         if (!ownedStage.compareAndSet(null, child)) {
                             throw new IllegalStateException(
                                     "pipeline already retains an owned stage Future");
@@ -190,6 +194,10 @@ public final class TaskPipeline {
                         return OresScheduler.await(child);
                     }
                     if (produced instanceof OresFuture<?> nextFuture) {
+                        if (nextFuture == exposedRef.get()) {
+                            throw new IllegalStateException(
+                                    "pipeline cannot await its own exposed completion Future");
+                        }
                         awaited = nextFuture;
                         return OresScheduler.await(nextFuture);
                     }
