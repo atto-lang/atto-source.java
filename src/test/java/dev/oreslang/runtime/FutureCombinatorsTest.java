@@ -309,4 +309,70 @@ public class FutureCombinatorsTest {
             assertTrue(mapped.isCancelled());
         }
     }
+
+    @Test void cancelledSourceCancelsSchedulerMappedResultButNotOtherObservers()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> source = new OresFuture<>();
+            OresFuture<Integer> first = FutureCombinators.map(
+                    scheduler, source, value -> value + 1);
+            OresFuture<Integer> second = FutureCombinators.map(
+                    scheduler, source, value -> value + 2);
+            assertTrue(source.cancel(false));
+            assertTrue(first.isCancelled());
+            assertTrue(second.isCancelled());
+            assertEquals(0, source.pendingRuntimeWaiterCount());
+        }
+    }
+
+    @Test void preCancelledSourceDoesNotRunMappedTask() {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> cancelled = new OresFuture<>();
+            assertTrue(cancelled.cancel(false));
+            AtomicInteger invocations = new AtomicInteger();
+            OresFuture<Integer> mapped = FutureCombinators.map(
+                    scheduler, cancelled, value -> {
+                        invocations.incrementAndGet();
+                        return value;
+                    });
+            assertTrue(mapped.isCancelled());
+            assertEquals(0, invocations.get());
+            assertEquals(0, cancelled.pendingRuntimeWaiterCount());
+        }
+    }
+
+    @Test void nestedFlatMapCancelledSourcePropagatesWithoutCancellingProducer()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> source = new OresFuture<>();
+            OresFuture<String> nested = new OresFuture<>();
+            CountDownLatch mapped = new CountDownLatch(1);
+            OresFuture<String> result = FutureCombinators.flatMap(
+                    scheduler, source, value -> {
+                        mapped.countDown();
+                        return nested;
+                    });
+            source.completeFromRuntime(1);
+            assertTrue(mapped.await(3, TimeUnit.SECONDS));
+            assertTrue(nested.cancel(false));
+            assertTrue(result.isCancelled());
+            assertEquals(0, nested.pendingRuntimeWaiterCount());
+            assertFalse(source.isCancelled(), "flatMap never revokes shared source");
+        }
+    }
+
+    @Test void guestRaisedCancellationExceptionIsNotAuthenticatedCancellation()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> source = new OresFuture<>();
+            OresFuture<Integer> result = FutureCombinators.map(
+                    scheduler, source, value -> value);
+            CancellationException ordinary = new CancellationException("raised");
+            source.failFromRuntime(ordinary);
+            assertFalse(source.isCancelled());
+            assertFalse(result.isCancelled());
+            assertSame(ordinary, assertThrows(ExecutionException.class,
+                    () -> result.get(3, TimeUnit.SECONDS)).getCause());
+        }
+    }
 }
