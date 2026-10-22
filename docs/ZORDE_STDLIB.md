@@ -256,6 +256,43 @@ the same fixtures before those backends admit executable refinements.
   typed parsing requires immutable scalar payloads and deep freeze/ownership
   transfer for mutable collections.
 
+### Compiler-local schema registry staging (non-executable)
+
+`CompilerZordeSchemaRegistry` is a non-public compiler-package structure that
+parses one Oreslang source unit and stages only the normalized, statically
+derivable Zorde scalar schemas from that unit. It rejects unresolved imports,
+dynamic validators, missing schemas, duplicate schema identities, unsupported
+predicates and invalid compilation-unit/generation metadata. Schema entries
+are immutable and are not user-registrable by calling a public API.
+
+Every staging instance owns a **fresh opaque compilation seal**. The private
+checked type's identity now includes that seal (by object identity), in
+addition to the scalar kind, fully qualified schema name and normalized
+fingerprint. The same text, digest, compilation-unit name and numeric
+generation supplied in a second staging call **cannot** recreate the first
+seal; types from different staging instances cannot be assigned to one
+another without a future explicit, checked compatibility/revalidation step.
+A public descriptor copy with the same SHA-256 digest is not the admitted
+descriptor object.
+The registry also records a deterministic SHA-256 digest of the exact staged
+source text for reproducibility and comparison. This digest, like the numeric
+generation or schema fingerprint, is public metadata and **never** sufficient
+to mint the private per-compilation seal.
+
+`checkedTypeForAnalysis` checks strict int64 or Unicode-string membership
+before returning an internal type marker; it **does not return a validated
+runtime value**. Legacy, unsealed analysis types cannot impersonate
+registry-scoped markers. Source `Valid<T,S>` still fails compilation.
+
+This is a **closed-world analysis staging mechanism**, not trusted executable
+proof minting: it has not yet linked or verified imports against a signed,
+versioned module manifest; it does not attest the compiler binary, immutable
+ownership, actor-domain identity, hot-reload generation, lifetime/arena or
+FFI-safe storage. Numeric generation metadata is diagnostic, not a security
+credential. A future authenticated compiler/linker pass must authorize
+registries and enforce transitive ownership before guest code can construct
+or transfer a `Valid<T,S>` value.
+
 ### Internal checked scalar type identity (non-executable prototype)
 
 The Java type system has a private, sealed \`Types.CheckedScalarType\`
