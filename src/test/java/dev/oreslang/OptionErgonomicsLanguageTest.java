@@ -94,6 +94,28 @@ final class OptionErgonomicsLanguageTest {
     }
 
     @Test
+    void resultOrElseSkipsOkAndInvokesErrFallbackExactlyOnce() throws Exception {
+        String program = """
+                fnc recover(String reason): Result<int, String> {
+                  stdio.stdout.write("R");
+                  return Ok(33);
+                }
+                pub fnc main(): void {
+                  val Result<int, String> good = Ok(7);
+                  val Result<int, String> bad = Err("missing");
+                  val first = good.or_else((String reason) -> recover(reason));
+                  stdio.stdout.write(first.unwrap());
+                  stdio.stdout.write(":");
+                  val second = bad.or_else((String reason) -> recover(reason));
+                  stdio.stdout.write(second.unwrap());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("7:R33", run(program));
+    }
+
+    @Test
     void resultOrElsePreservesAffinePayloadAndChecksItsReceiverOnce() {
         String legal = """
                 define class Box as
