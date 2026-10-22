@@ -489,13 +489,38 @@ public final class OresMutex {
          * single actor from queueing a second acquisition behind itself and
          * deadlocking, even when the actor migrates JVM workers.
          */
+        /**
+         * Reference-identity key, not record equality. ActorExecutionContext
+         * is a record: two distinct concurrent actor dispatches can compare
+         * equal by value even though they own DIFFERENT physical turns.
+         *
+         * This host bridge will eventually become a generated/generation-
+         * checked numeric owner handle in the AoS/SoA/AoSoA metadata store.
+         */
+        private static final class LogicalOwner {
+            private final Object execution;
+
+            private LogicalOwner(Object execution) {
+                this.execution = Objects.requireNonNull(execution);
+            }
+
+            @Override public int hashCode() {
+                return System.identityHashCode(execution);
+            }
+
+            @Override public boolean equals(Object other) {
+                return other instanceof LogicalOwner identity
+                        && execution == identity.execution;
+            }
+        }
+
         private static Object currentLogicalLockOwner() {
-            // An actor is a protection domain, NOT the identity of each
-            // concurrent message handler or scheduler Task within it. A
-            // scheduler task retains its identity across await/carrier hops.
+            // Actor domain != execution owner. Task identity survives await
+            // and carrier migration; an untracked actor uses its physical
+            // dispatch instance, and an ordinary host uses its Thread.
             Object taskDomain = OresScheduler.currentTaskDomain();
-            return taskDomain != null
-                    ? taskDomain : ActorRuntime.currentMutexExecutionSegment();
+            return new LogicalOwner(taskDomain != null
+                    ? taskDomain : ActorRuntime.currentMutexExecutionSegment());
         }
 
         private Object reserveDomain(boolean tryOnly) {
@@ -1119,7 +1144,7 @@ public final class OresMutex {
 
             private void requireOwnerDomain() {
                 if (enforceOwnerDomain
-                        && currentLogicalLockOwner() != ownerDomain) {
+                        && !currentLogicalLockOwner().equals(ownerDomain)) {
                     throw new WrongMutexDomainException(
                             "SharedMutex guard belongs to another logical Task or actor turn");
                 }
