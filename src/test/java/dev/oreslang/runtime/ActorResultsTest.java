@@ -180,4 +180,35 @@ public class ActorResultsTest {
         assertEquals(FutureCombinators.Status.FAILURE, outcome.status());
         assertSame(failedInit, outcome.error());
     }
+
+    @Test void mutableActorInputListCannotChangeAnInFlightCollection()
+            throws Exception {
+        var a = address();
+        var b = address();
+        UUID originalId = UUID.randomUUID();
+        OresFuture<Integer> original = new OresFuture<>();
+        OresFuture<Integer> later = new OresFuture<>();
+        java.util.ArrayList<ActorResults.Pending<Integer>> input =
+                new java.util.ArrayList<>();
+        input.add(reply(a, originalId, original));
+        var gathered = ActorResults.gather(input);
+        input.set(0, reply(b, UUID.randomUUID(), later));
+        original.completeFromRuntime(12);
+        assertEquals(List.of(new ActorResults.Reply<>(a, originalId, 12)),
+                gathered.get(3, TimeUnit.SECONDS));
+        assertEquals(0, later.pendingRuntimeWaiterCount());
+    }
+
+    @Test void actorFanInRejectsOverLimitBeforeSubscribing()
+            throws Exception {
+        var source = new OresFuture<Integer>();
+        var same = reply(address(), UUID.randomUUID(), source);
+        var tooMany = java.util.Collections.nCopies(
+                ActorResults.MAX_FAN_IN + 1, same);
+        assertThrows(IllegalArgumentException.class,
+                () -> ActorResults.gather(tooMany));
+        assertThrows(IllegalArgumentException.class,
+                () -> ActorResults.gatherSettled(tooMany));
+        assertEquals(0, source.pendingRuntimeWaiterCount());
+    }
 }
