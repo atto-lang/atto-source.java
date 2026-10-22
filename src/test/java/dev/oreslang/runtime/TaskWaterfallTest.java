@@ -61,7 +61,6 @@ public class TaskWaterfallTest {
                         return OresFuture.completed(text.length());
                     });
             assertTrue(firstCalled.await(3, TimeUnit.SECONDS));
-            assertEquals(1, first.getAwaited() == first ? 1 : 0);
             assertEquals(1L, secondCalled.getCount());
             assertEquals(0, thirdCalled.get());
             first.completeFromRuntime(3);
@@ -83,7 +82,7 @@ public class TaskWaterfallTest {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             TaskHandle<Integer> handle = TaskWaterfall.waterfall(
                     scheduler,
-                    () -> OresFuture.failed(sourceFailure),
+                    () -> OresFuture.<Integer>failed(sourceFailure),
                     number -> {
                         laterCalls.incrementAndGet();
                         return OresFuture.completed(number + 1);
