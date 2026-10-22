@@ -49,6 +49,21 @@ public final class AggregateConstructionPlanSmoke {
                 "named step");
         check(plan.orderedSteps().get(2) instanceof AggregateConstructionPlan.SpreadFields,
                 "second spread step");
+        List<AggregateConstructionPlan.FieldWrite> schedule = plan.scheduledWrites();
+        check(schedule.size() == 5, "every scalar projection and override is retained");
+        check(List.copyOf(schedule.stream().map(AggregateConstructionPlan.FieldWrite::sourceIndex).toList())
+                        .equals(List.of(0, 0, 1, 2, 2)),
+                "source evaluation index remains monotonic");
+        check(schedule.stream().map(AggregateConstructionPlan.FieldWrite::targetSlot).toList()
+                        .equals(List.of(0, 1, 1, 0, 2)),
+                "rightmost writes reuse existing static result slots");
+        check(schedule.stream().map(AggregateConstructionPlan.FieldWrite::fromSpread).toList()
+                        .equals(List.of(true, true, false, true, true)),
+                "named vs spread field writes stay explicit");
+        check(schedule.get(0).fieldName().equals("bar") &&
+                schedule.get(4).fieldName().equals("baz"), "projection key order");
+        denied(() -> schedule.clear(), "field-write schedule mutation");
+
 
         first.put("tampered", Types.Primitive.INT);
         last.put("tampered", Types.Primitive.FLOAT);
