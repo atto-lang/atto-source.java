@@ -67,6 +67,7 @@ public final class Parser {
         List<Ast.Decl> rootDeclarations = new ArrayList<>();
 
         while (!check(EOF)) {
+            rejectUnsupportedAcceleratorSyntax();
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers modifiers = parseModifiers();
 
@@ -266,7 +267,15 @@ public final class Parser {
         return new Ast.ModuleDecl(name, annotations, contracts, declarations);
     }
 
+    private void rejectUnsupportedAcceleratorSyntax() {
+        if (check(GPU) || check(QUANTUM)) {
+            throw error(peek(), "gpu/quantum execution requires validated effect and ownership checking, "
+                    + "device lowering and explicit backend admission; implicit CPU fallback is forbidden");
+        }
+    }
+
     private Ast.Decl parseModuleMember() {
+        rejectUnsupportedAcceleratorSyntax();
         List<Ast.Annotation> annotations = parseAnnotations();
         Modifiers modifiers = parseModifiers();
 
@@ -350,6 +359,7 @@ public final class Parser {
     }
 
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
+        rejectUnsupportedAcceleratorSyntax();
         if (isLegacyFnSpelling()) {
             throw error(peek(), "functions are declared with 'fnc', not 'fn'");
         }
@@ -1786,6 +1796,7 @@ public final class Parser {
     }
 
     private Ast.Stmt parseStatement() {
+        rejectUnsupportedAcceleratorSyntax();
         // Keep these distinct from ordinary calls/identifiers. Exception
         // effect checking, typed recovery and actor CONTROL delivery have
         // not yet been lowered in the Java/Graal production compiler.
