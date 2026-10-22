@@ -58,6 +58,14 @@ for required in (
 provider = text("src/main/java/dev/oreslang/runtime/LinuxUringFileIoProvider.java")
 if provider.count("() -> cancelNative(id), () -> { }") < 2:
     deny("read/exists Future cancellation must require native revocation admission")
+if "MAX_RESERVED_BYTES = 64L * 1024 * 1024" not in provider:
+    deny("strict filesystem provider lacks aggregate native-buffer reservation bound")
+if "reserveBytes(MAX_READ_BYTES)" not in provider:
+    deny("strict reads do not reserve their full native growth ceiling")
+if "reserveBytes(bytes.length)" not in provider:
+    deny("strict writes do not reserve their actual UTF-8 payload bytes")
+if "releaseBytes(removed.reservedBytes)" not in provider:
+    deny("strict submission/close paths do not release byte reservations")
 if provider.count("new OresFuture<>(() -> false, () -> { })") < 1:
     deny("strict filesystem mutations must explicitly decline guest cancellation")
 for forbidden in (
