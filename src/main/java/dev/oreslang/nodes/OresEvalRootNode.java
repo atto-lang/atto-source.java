@@ -4030,6 +4030,12 @@ public final class OresEvalRootNode extends RootNode {
             if (index >= object.fields().size()) {
                 boolean hasAggregateSpread =
                         object.fields().stream().anyMatch(Ast.ObjectField::spread);
+                // Errors during terminal assembly must enter the same
+                // continuation channel as failures from awaited operands.
+                // Never strand a suspended source task by throwing out of
+                // its completion callback.
+                Object built;
+                try {
                 LinkedHashMap<String, Object> result = new LinkedHashMap<>();
                 if (object.explicitStruct()) {
                     for (Ast.StructFieldSpec field : object.declaredFields()) {
@@ -4042,15 +4048,11 @@ public final class OresEvalRootNode extends RootNode {
                 for (int fieldIndex = 0; fieldIndex < values.size(); fieldIndex++) {
                     Ast.ObjectField field = object.fields().get(fieldIndex);
                     Object value = values.get(fieldIndex);
-                    if (field.spread()) {
-                        putScalarSpreadFields(value, result);
+                    if (hasAggregateSpread) {
+                        applyScalarSpreadElement(field, value, result);
                         continue;
                     }
                     String key = field.name();
-                    if (hasAggregateSpread && !isScalarAggregateValue(value)) {
-                        throw new IllegalArgumentException(
-                                "aggregate spread requires scalar-only initializer field " + key);
-                    }
                     if (object.explicitStruct()) {
                         if (!result.containsKey(key)) {
                             throw new IllegalArgumentException(
@@ -4065,9 +4067,13 @@ public final class OresEvalRootNode extends RootNode {
                         result.put(key, value);
                     }
                 }
-                Object built = object.structuralRecord()
+                built = object.structuralRecord()
                         ? new ReadonlyRecordValue(result)
                         : new MutableStructValue(result);
+                } catch (RuntimeException assemblyFailure) {
+                    continuation.accept(task, null, assemblyFailure);
+                    return;
+                }
                 continuation.accept(task, built, null);
                 return;
             }
@@ -7042,15 +7048,11 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 for (Ast.ObjectField field : object.fields()) {
                     Object value = eval(field.value(), env);
-                    if (field.spread()) {
-                        putScalarSpreadFields(value, result);
+                    if (hasAggregateSpread) {
+                        applyScalarSpreadElement(field, value, result);
                         continue;
                     }
                     String key = field.name();
-                    if (hasAggregateSpread && !isScalarAggregateValue(value)) {
-                        throw new IllegalArgumentException(
-                                "aggregate spread requires scalar-only initializer field " + key);
-                    }
                     if (object.explicitStruct()) {
                         if (!result.containsKey(key)) {
                             throw new IllegalArgumentException(
@@ -9992,6 +9994,21 @@ public final class OresEvalRootNode extends RootNode {
             snapshot.put(item.getKey(), value);
         }
         return new ScalarSpreadSnapshot(snapshot);
+    }
+
+    private static void applyScalarSpreadElement(
+            Ast.ObjectField field, Object value, LinkedHashMap<String, Object> result) {
+        // One lowering rule for synchronous evaluation and suspended frames:
+        // validate Copy-only values before publishing any destination.
+        if (field.spread()) {
+            putScalarSpreadFields(value, result);
+            return;
+        }
+        if (!isScalarAggregateValue(value)) {
+            throw new IllegalArgumentException(
+                    "aggregate spread requires scalar-only initializer field " + field.name());
+        }
+        result.put(field.name(), value);
     }
 
     private static void putScalarSpreadFields(
