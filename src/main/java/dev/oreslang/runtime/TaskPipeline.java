@@ -18,6 +18,34 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class TaskPipeline {
     private TaskPipeline() { }
 
+    /**
+     * Result settlement and verified physical Task retirement are different
+     * observations. getDone() proves this pipeline Task has left all scheduler
+     * turns and its tracked child scope is retired; an independently owned
+     * stage Future may require its own physical retirement receipt.
+     */
+    public static final class PipelineHandle<T> {
+        private final OresFuture<T> result;
+        private final TaskHandle<T> task;
+
+        private PipelineHandle(OresFuture<T> result, TaskHandle<T> task) {
+            this.result = Objects.requireNonNull(result, "result");
+            this.task = Objects.requireNonNull(task, "task");
+        }
+
+        public OresFuture<T> result() {
+            return result;
+        }
+
+        public OresFuture<TaskHandle.TaskOutcome<T>> getDone() {
+            return task.getDone();
+        }
+
+        public boolean cancel() {
+            return result.cancel(false);
+        }
+    }
+
     @FunctionalInterface
     public interface Stage {
         /** Called on the pipeline's scheduler only after upstream success. */
@@ -56,12 +84,46 @@ public final class TaskPipeline {
      * consumers requiring physical retirement must still use the runtime
      * task/actor lifetime barrier.</p>
      */
-    @SuppressWarnings("unchecked")
+    /** Convenience observation API; use startTracked when retirement matters. */
     public static <T> OresFuture<T> start(
             OresScheduler scheduler,
             OresFuture<?> input,
             List<? extends Stage> stages) {
+        return TaskPipeline.<T>startTracked(scheduler, input, stages).result();
+    }
+
+    /** One owned, tracked scheduler Task. The Task's done barrier is separate. */
+    public static <T> PipelineHandle<T> startTracked(
+            OresScheduler scheduler,
+            OresFuture<?> input,
+            List<? extends Stage> stages) {
         Objects.requireNonNull(scheduler, "scheduler");
+        return startInternal(scheduler::startTracked, input, stages);
+    }
+
+    /**
+     * Admit the pipeline as one child of an explicit structured TaskScope.
+     * Closing the scope requests cancellation without blocking a carrier.
+     */
+    public static <T> PipelineHandle<T> startInScope(
+            TaskScope scope,
+            OresFuture<?> input,
+            List<? extends Stage> stages) {
+        Objects.requireNonNull(scope, "scope");
+        return startInternal(scope::startTask, input, stages);
+    }
+
+    @FunctionalInterface
+    private interface TaskStarter<T> {
+        TaskHandle<T> start(OresScheduler.Task<T> task);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T> PipelineHandle<T> startInternal(
+            TaskStarter<T> starter,
+            OresFuture<?> input,
+            List<? extends Stage> stages) {
+        Objects.requireNonNull(starter, "starter");
         Objects.requireNonNull(input, "input");
         List<Stage> chain = List.copyOf(Objects.requireNonNull(stages, "stages"));
         if (chain.size() > 128) {
@@ -71,7 +133,7 @@ public final class TaskPipeline {
         AtomicReference<OresFuture<?>> ownedStage = new AtomicReference<>();
         AtomicReference<OresFuture<T>> exposedRef = new AtomicReference<>();
 
-        OresFuture<T> task = scheduler.start(new OresScheduler.Task<>() {
+        TaskHandle<T> tracked = starter.start(new OresScheduler.Task<>() {
             private boolean started;
             private int next;
             private OresFuture<?> awaited;
@@ -137,8 +199,9 @@ public final class TaskPipeline {
             }
         });
 
+        OresFuture<T> task = tracked.result();
         OresFuture<T> exposed = new OresFuture<>(() -> {
-            task.cancel(false);
+            tracked.cancel("pipeline cancelled");
             OresFuture<?> currentOwned = ownedStage.getAndSet(null);
             if (currentOwned != null) currentOwned.cancel(false);
         });
@@ -172,6 +235,6 @@ public final class TaskPipeline {
             if (raced != null) raced.detach();
             ownedStage.set(null);
         }
-        return exposed;
+        return new PipelineHandle<>(exposed, tracked);
     }
 }
