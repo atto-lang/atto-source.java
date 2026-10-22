@@ -86,4 +86,36 @@ final class OresFutureHostRegistrationFailureTest {
         assertSame(fatal, assertThrows(InternalError.class,
                 () -> OresFuture.from(hostile)));
     }
+
+    @Test
+    void cancellationExceptionRetainsCancellationOutcomeWithInconsistentHostFlag() {
+        CompletableFuture<Integer> host = new CompletableFuture<>() {
+            @Override
+            public boolean isCancelled() {
+                return false;
+            }
+        };
+        host.completeExceptionally(new java.util.concurrent.CancellationException("cancelled"));
+        OresFuture<Integer> future = OresFuture.from(host);
+        assertTrue(future.isDone());
+        assertTrue(future.isCancelled(), "cancelled host outcome must not become failed");
+    }
+
+    @Test
+    void brokenHostCancellationProbeFailsAdapterRatherThanLeavingPending()
+            throws Exception {
+        CompletableFuture<Integer> host = new CompletableFuture<>() {
+            @Override
+            public boolean isCancelled() {
+                throw new IllegalStateException("host cancellation probe failed");
+            }
+        };
+        host.completeExceptionally(new IllegalArgumentException("host failed"));
+        OresFuture<Integer> future = OresFuture.from(host);
+        assertTrue(future.isDone(), "bad host probe cannot strand an adapter in PENDING");
+        ExecutionException error = assertThrows(ExecutionException.class,
+                () -> future.get(0, TimeUnit.MILLISECONDS));
+        assertInstanceOf(IllegalStateException.class, error.getCause());
+        assertEquals("host cancellation probe failed", error.getCause().getMessage());
+    }
 }
