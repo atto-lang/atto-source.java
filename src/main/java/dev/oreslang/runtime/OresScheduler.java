@@ -713,6 +713,7 @@ public final class OresScheduler implements AutoCloseable {
         private static final int RUNNING = 2;
         private static final int WAITING = 3;
         private static final int TERMINAL = 4;
+        private static final int MAX_CLEANUP_DISPATCHES = 4_096;
 
         private final Task<T> task;
         private final ExecutionContext executionContext;
@@ -730,6 +731,7 @@ public final class OresScheduler implements AutoCloseable {
         private final AtomicBoolean checkpointCancellationPending = new AtomicBoolean();
         private final AtomicBoolean cleanupCancellationInjected = new AtomicBoolean();
         private final AtomicBoolean cleanupIncomplete = new AtomicBoolean();
+        private final AtomicInteger cleanupDispatches = new AtomicInteger();
         private final AtomicReference<Resume> pendingResume =
                 new AtomicReference<>(Resume.initialResume());
         private final AtomicReference<TerminalOutcome<T>> terminalOutcome =
@@ -888,10 +890,25 @@ public final class OresScheduler implements AutoCloseable {
                     resume = Resume.completed(null, requested);
                 }
 
+                if (cleanupCancellationInjected.get()
+                        && task instanceof CleanupAwareTask<?>
+                        && cleanupDispatches.incrementAndGet()
+                                > MAX_CLEANUP_DISPATCHES) {
+                    cleanupIncomplete.set(true);
+                    failTerminal(new CleanupIncompleteError(
+                            "source cancellation cleanup exceeded dispatch budget"));
+                    return;
+                }
+
                 final Step<T> step;
                 Boolean priorCleanup = CURRENT_CANCELLATION_CLEANUP.get();
-                if (injectedCleanup) CURRENT_CANCELLATION_CLEANUP.set(true);
-                else CURRENT_CANCELLATION_CLEANUP.remove();
+                // A source defer may itself suspend repeatedly. Every one of
+                // those resumes is still a cleanup-only Task turn.
+                if (cleanupCancellationInjected.get()) {
+                    CURRENT_CANCELLATION_CLEANUP.set(true);
+                } else {
+                    CURRENT_CANCELLATION_CLEANUP.remove();
+                }
                 try {
                     step = Objects.requireNonNull(
                             task.resume(resume),
