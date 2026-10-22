@@ -3258,6 +3258,18 @@ public final class ActorRuntime implements AutoCloseable {
                     if (graceful) worker.gracefulStop();
                     else worker.cancel();
                 } catch (RuntimeException failure) {
+                    // A failed graceful-stop admission must not strand an
+                    // otherwise live actor after the managed-worker registry
+                    // has been cleared. Request structured cancellation using
+                    // this exact close-admission snapshot; this is NOT proof
+                    // that its physical carrier has exited.
+                    if (graceful && worker.isAlive()) {
+                        try {
+                            worker.cancel();
+                        } catch (RuntimeException cancellation) {
+                            failure.addSuppressed(cancellation);
+                        }
+                    }
                     if (worker.isAlive()) {
                         if (cancellationFailure == null) cancellationFailure = failure;
                         else cancellationFailure.addSuppressed(failure);
