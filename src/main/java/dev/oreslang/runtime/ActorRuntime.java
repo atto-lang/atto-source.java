@@ -8230,7 +8230,7 @@ public final class ActorRuntime implements AutoCloseable {
             // activeSourceScopes until each callback removes the scope.
             for (TaskScope scope : scopesToCancel) {
                 try {
-                    scope.cancel("owning actor terminated");
+                    scope.requestCancelNonblocking("owning actor terminated");
                 } catch (RuntimeException | Error failure) {
                     ref.terminationCause.compareAndSet(null, failure);
                 }
