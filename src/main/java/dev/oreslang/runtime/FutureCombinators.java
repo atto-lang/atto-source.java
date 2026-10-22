@@ -163,6 +163,77 @@ public final class FutureCombinators {
         return aggregate;
     }
 
+
+    /**
+     * First SUCCESS wins; unlike race, failures/cancellations are ignored until
+     * all candidates fail. Empty input is an invalid composition.
+     *
+     * <p>When all sources are cancelled, the aggregate is cancelled. A mix
+     * containing at least one genuine failure completes exceptionally with an
+     * input-ordered list of causes. No source is cancelled or restarted by
+     * this non-owning observer.</p>
+     */
+    public static <T> OresFuture<T> any(
+            List<? extends OresFuture<? extends T>> inputs) {
+        List<? extends OresFuture<? extends T>> sources = snapshot(inputs);
+        int n = sources.size();
+        if (n == 0) throw new IllegalArgumentException("any requires at least one Future");
+        AtomicReferenceArray<Throwable> failures = new AtomicReferenceArray<>(n);
+        AtomicInteger remaining = new AtomicInteger(n);
+        AtomicInteger cancellations = new AtomicInteger();
+        AtomicReferenceArray<OresFuture.RuntimeWaiterRegistration<?>> registrations =
+                new AtomicReferenceArray<>(n);
+        OresFuture<T> aggregate = new OresFuture<>(() -> detachAll(registrations));
+
+        for (int i = 0; i < n; i++) {
+            if (aggregate.isDone()) break;
+            final int index = i;
+            OresFuture<? extends T> source = sources.get(index);
+            OresFuture.RuntimeWaiterRegistration<?> subscription =
+                    source.whenCompleteRuntimeCancellable((value, failure) -> {
+                        if (aggregate.isDone()) return;
+                        if (failure == null) {
+                            if (aggregate.completeFromRuntime(value)) {
+                                detachAll(registrations);
+                            }
+                            return;
+                        }
+                        failures.set(index, failure);
+                        if (source.isCancelled()) cancellations.incrementAndGet();
+                        if (remaining.decrementAndGet() != 0) return;
+
+                        if (cancellations.get() == n) {
+                            aggregate.cancel(false);
+                            return;
+                        }
+                        ArrayList<Throwable> ordered = new ArrayList<>(n);
+                        for (int j = 0; j < n; j++) ordered.add(failures.get(j));
+                        AnyFailedException allFailed = new AnyFailedException(ordered);
+                        if (aggregate.failFromRuntime(allFailed)) {
+                            detachAll(registrations);
+                        }
+                    });
+            retainUntilPendingOrDetach(registrations, index, subscription, aggregate);
+        }
+        return aggregate;
+    }
+
+    /** All candidates terminated without a successful value. */
+    public static final class AnyFailedException extends IllegalStateException {
+        private final List<Throwable> failures;
+
+        private AnyFailedException(List<Throwable> failures) {
+            super("no Future in any() completed successfully");
+            this.failures = List.copyOf(failures);
+            for (Throwable failure : this.failures) addSuppressed(failure);
+        }
+
+        /** Input-ordered causes, including source cancellations. */
+        public List<Throwable> failures() {
+            return failures;
+        }
+    }
+
     /**
      * First observed terminal outcome wins. Subscriptions on already-settled
      * inputs are installed in input order, making their tie-break deterministic.
