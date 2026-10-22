@@ -51,6 +51,19 @@ jobs:
         run: |
           set -euo pipefail
           mvn -B -ntp -Dtest=TypedScalarSmtTest -DfailIfNoTests=true test | tee target/formal-typed-scalar/maven-test.log
+      - name: Enforce complete proof transcript
+        run: |
+          set -euo pipefail
+          test -s target/formal-typed-scalar/checked-min_int.smt2
+          test -s target/formal-typed-scalar/checked-max_int.smt2
+          test -s target/formal-typed-scalar/checked-clamp_int.smt2
+          test -s target/formal-typed-scalar/mutated-min_int.smt2
+          test -s target/formal-typed-scalar/mutated-clamp_int.smt2
+          grep -Fx 'unsat' target/formal-typed-scalar/checked-min_int.z3.out
+          grep -Fx 'unsat' target/formal-typed-scalar/checked-max_int.z3.out
+          grep -Fx 'unsat' target/formal-typed-scalar/checked-clamp_int.z3.out
+          grep -Fx 'sat' target/formal-typed-scalar/mutated-min_int.z3.out
+          grep -Fx 'sat' target/formal-typed-scalar/mutated-clamp_int.z3.out
       - name: Upload proof inputs, solver outputs, and provenance
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
