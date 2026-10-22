@@ -179,9 +179,128 @@ final class SupervisorShutdownTreeTest {
                     () -> done.get(5, TimeUnit.SECONDS));
             assertInstanceOf(TimeoutException.class, error.getCause());
             assertFalse(root.terminated().cancel(false));
+            assertFalse(root.terminated().isDone(),
+                    "deadline observer failure cannot settle physical termination");
             // A failed observer is not a successful cleanup receipt. The
             // stalled guest hook must not be silently counted as completed.
             assertFalse(never.isDone());
+        }
+    }
+
+
+    @Test
+    void exclusiveGroupBindingRejectsCompetingSupervisorsAcrossTrees() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             var control = Executors.newSingleThreadExecutor()) {
+            var group = runtime.createActorGroup();
+            var one = new SupervisorShutdownTree(runtime, control);
+            var two = new SupervisorShutdownTree(runtime, control);
+            one.setRoot("one", group, new SupervisorShutdownTree.Hooks() {});
+            assertThrows(IllegalStateException.class, () ->
+                    two.setRoot("two", group, new SupervisorShutdownTree.Hooks() {}));
+            one.shutdown(SupervisorShutdownTree.Reason.NORMAL).get(5, TimeUnit.SECONDS);
+            assertThrows(IllegalStateException.class, () ->
+                    two.setRoot("late", group, new SupervisorShutdownTree.Hooks() {}));
+        }
+    }
+
+    @Test
+    void directExecutorIsRejectedWithoutExecutingGuestShutdownHook() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicInteger invoked = new AtomicInteger();
+            var tree = new SupervisorShutdownTree(runtime, Runnable::run);
+            var group = runtime.createActorGroup();
+            var root = tree.setRoot("root", group, new SupervisorShutdownTree.Hooks() {
+                @Override public OresFuture<Void> onShutdown(
+                        SupervisorShutdownTree.Reason reason) {
+                    invoked.incrementAndGet();
+                    return OresFuture.completed(null);
+                }
+            });
+            ExecutionException error = assertThrows(ExecutionException.class,
+                    () -> tree.shutdown(SupervisorShutdownTree.Reason.REQUESTED)
+                            .get(5, TimeUnit.SECONDS));
+            assertTrue(error.getCause().getMessage().contains("CONTROL unavailable"));
+            assertEquals(0, invoked.get(), "no guest hook may run inline");
+            group.closedDone().get(5, TimeUnit.SECONDS);
+            assertTrue(group.closed());
+            assertFalse(root.terminated().cancel(false));
+        }
+    }
+
+    @Test
+    void rejectedControlExecutorFailsClosedAndClosesGroups() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup();
+            var tree = new SupervisorShutdownTree(runtime, command -> {
+                throw new java.util.concurrent.RejectedExecutionException("CONTROL stopped");
+            });
+            tree.setRoot("root", group, new SupervisorShutdownTree.Hooks() {});
+            ExecutionException error = assertThrows(ExecutionException.class,
+                    () -> tree.shutdown(SupervisorShutdownTree.Reason.RUNTIME_EXIT)
+                            .get(5, TimeUnit.SECONDS));
+            assertTrue(error.getCause().getMessage().contains("CONTROL unavailable"));
+            group.closedDone().get(5, TimeUnit.SECONDS);
+            assertTrue(group.closed());
+        }
+    }
+
+    @Test
+    void distinctBoundedObserversDoNotFalsifyUnderlyingShutdown() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             var control = Executors.newSingleThreadExecutor();
+             var watchdog = Executors.newSingleThreadScheduledExecutor()) {
+            OresFuture<Void> gate = new OresFuture<>();
+            CountDownLatch entered = new CountDownLatch(1);
+            var tree = new SupervisorShutdownTree(runtime, control);
+            var root = tree.setRoot("root", runtime.createActorGroup(),
+                    new SupervisorShutdownTree.Hooks() {
+                        @Override public OresFuture<Void> onShutdown(
+                                SupervisorShutdownTree.Reason reason) {
+                            entered.countDown();
+                            return gate;
+                        }
+                    });
+            OresFuture<Void> bounded = tree.shutdown(
+                    SupervisorShutdownTree.Reason.REQUESTED, Duration.ofMillis(100), watchdog);
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            assertThrows(ExecutionException.class, () -> bounded.get(5, TimeUnit.SECONDS));
+            assertFalse(root.terminated().isDone());
+            gate.completeFromRuntime(null);
+            root.terminated().get(5, TimeUnit.SECONDS);
+            assertTrue(root.terminated().isDone(), "original physical barrier may complete later");
+            assertThrows(ExecutionException.class, () -> bounded.get(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void concurrentShutdownIsSingleFlightWithOneHookInvocation() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             var control = Executors.newSingleThreadExecutor()) {
+            AtomicInteger calls = new AtomicInteger();
+            var tree = new SupervisorShutdownTree(runtime, control);
+            tree.setRoot("root", runtime.createActorGroup(), new SupervisorShutdownTree.Hooks() {
+                @Override public OresFuture<Void> onShutdown(
+                        SupervisorShutdownTree.Reason reason) {
+                    calls.incrementAndGet();
+                    return OresFuture.completed(null);
+                }
+            });
+            var participants = Executors.newFixedThreadPool(8);
+            try {
+                var attempts = new java.util.ArrayList<
+                        java.util.concurrent.Future<OresFuture<Void>>>();
+                for (int i = 0; i < 32; i++) {
+                    attempts.add(participants.submit(() ->
+                            tree.shutdown(SupervisorShutdownTree.Reason.REQUESTED)));
+                }
+                OresFuture<Void> same = attempts.get(0).get(5, TimeUnit.SECONDS);
+                for (var attempt : attempts) assertSame(same, attempt.get(5, TimeUnit.SECONDS));
+                same.get(5, TimeUnit.SECONDS);
+                assertEquals(1, calls.get());
+            } finally {
+                participants.shutdownNow();
+            }
         }
     }
 
