@@ -506,6 +506,19 @@ public final class OresScheduler implements AutoCloseable {
                 deadlineFailure, () -> { });
     }
 
+    /**
+     * Physical reclamation gate for runtime-owned actor schedulers.
+     * True means at least one lexical cleanup continuation was aborted and
+     * its guarded state must remain quarantined. Closing the scheduler does
+     * not turn this into a successful heap retirement receipt.
+     */
+    public boolean hasIncompleteCleanup() {
+        for (TaskRunner<?> runner : tasks) {
+            if (runner.cleanupIncomplete.get()) return true;
+        }
+        return false;
+    }
+
     /** Called only after the winning Future's terminal callbacks have drained. */
     <T> OresFuture<T> startWithWallDeadline(
             Task<T> task, Runnable onQuiescent, long remainingNanos,
@@ -700,6 +713,7 @@ public final class OresScheduler implements AutoCloseable {
         private static final int RUNNING = 2;
         private static final int WAITING = 3;
         private static final int TERMINAL = 4;
+        private static final int MAX_CLEANUP_DISPATCHES = 4_096;
 
         private final Task<T> task;
         private final ExecutionContext executionContext;
@@ -717,6 +731,7 @@ public final class OresScheduler implements AutoCloseable {
         private final AtomicBoolean checkpointCancellationPending = new AtomicBoolean();
         private final AtomicBoolean cleanupCancellationInjected = new AtomicBoolean();
         private final AtomicBoolean cleanupIncomplete = new AtomicBoolean();
+        private final AtomicInteger cleanupDispatches = new AtomicInteger();
         private final AtomicReference<Resume> pendingResume =
                 new AtomicReference<>(Resume.initialResume());
         private final AtomicReference<TerminalOutcome<T>> terminalOutcome =
@@ -875,10 +890,25 @@ public final class OresScheduler implements AutoCloseable {
                     resume = Resume.completed(null, requested);
                 }
 
+                if (cleanupCancellationInjected.get()
+                        && task instanceof CleanupAwareTask<?>
+                        && cleanupDispatches.incrementAndGet()
+                                > MAX_CLEANUP_DISPATCHES) {
+                    cleanupIncomplete.set(true);
+                    failTerminal(new CleanupIncompleteError(
+                            "source cancellation cleanup exceeded dispatch budget"));
+                    return;
+                }
+
                 final Step<T> step;
                 Boolean priorCleanup = CURRENT_CANCELLATION_CLEANUP.get();
-                if (injectedCleanup) CURRENT_CANCELLATION_CLEANUP.set(true);
-                else CURRENT_CANCELLATION_CLEANUP.remove();
+                // A source defer may itself suspend repeatedly. Every one of
+                // those resumes is still a cleanup-only Task turn.
+                if (cleanupCancellationInjected.get()) {
+                    CURRENT_CANCELLATION_CLEANUP.set(true);
+                } else {
+                    CURRENT_CANCELLATION_CLEANUP.remove();
+                }
                 try {
                     step = Objects.requireNonNull(
                             task.resume(resume),
@@ -1193,13 +1223,17 @@ public final class OresScheduler implements AutoCloseable {
         private void failTerminal(Throwable failure) {
             Objects.requireNonNull(failure, "failure");
             if (task instanceof CleanupAwareTask<?>
-                    && completion.deferredCancellationCause() != null
-                    && (failure instanceof RejectedExecutionException
-                            || failure instanceof CleanupIncompleteError)) {
+                    && (failure instanceof CleanupIncompleteError
+                        || failure instanceof ActorRuntime.UntrustedActorQuotaExceededException
+                        || (completion.deferredCancellationCause() != null
+                            && failure instanceof RejectedExecutionException))) {
+                // Quota rejection can occur BEFORE a cancellation resume even
+                // reaches SourceTask. Treat it as incomplete lexical cleanup
+                // and never issue a false heap/guard retirement receipt.
                 cleanupIncomplete.set(true);
                 if (!(failure instanceof CleanupIncompleteError)) {
                     failure = new CleanupIncompleteError(
-                            "scheduler rejected source cleanup; quarantine loans",
+                            "source cleanup denied or quota exhausted; quarantine loans",
                             failure);
                 }
             }

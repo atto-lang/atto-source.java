@@ -169,6 +169,58 @@ final class SourceTaskCleanupHardeningTest {
                 "fatal cleanup panic must reach the supervisor, not be masked: " + error);
     }
 
+    @Test
+    void asyncIteratorBreakClosesProducerExactlyOnceAndRunsLexicalDefer()
+            throws Exception {
+        assertEquals("7DC", run("""
+                async generator fnc values(): int {
+                  try {
+                    yield 7;
+                    yield 8;
+                  } finally {
+                    stdio.stdout.write("C");
+                  }
+                  return;
+                }
+                pub async routine main(): void {
+                  for await const value of values() {
+                    defer stdio.stdout.write("D");
+                    stdio.stdout.write(value);
+                    break;
+                  }
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void completedAsyncGeneratorDoesNotDoubleCloseAcrossNestedFinally()
+            throws Exception {
+        assertEquals("12C|F", run("""
+                async generator fnc values(): int {
+                  try {
+                    yield 1;
+                    yield 2;
+                  } finally {
+                    stdio.stdout.write("C");
+                  }
+                  return;
+                }
+                pub async routine main(): void {
+                  try {
+                    for await const value of values() {
+                      stdio.stdout.write(value);
+                    }
+                  } catch (err) {
+                    stdio.stdout.write("unexpected");
+                  } finally {
+                    stdio.stdout.write("|F");
+                  }
+                  return;
+                }
+                """));
+    }
+
     private static String run(String sourceText) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(

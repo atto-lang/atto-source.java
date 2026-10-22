@@ -184,8 +184,10 @@ final class CleanupAwareSchedulerCancellationTest {
             scheduler.close();
             ExecutionException err = assertThrows(ExecutionException.class,
                     () -> work.get(3, TimeUnit.SECONDS));
-            assertInstanceOf(java.util.concurrent.RejectedExecutionException.class,
+            assertInstanceOf(OresScheduler.CleanupIncompleteError.class,
                     err.getCause(), "closed lane cannot claim completed defers");
+            assertTrue(scheduler.hasIncompleteCleanup(),
+                    "incomplete lexical cleanup must quarantine its arena");
             assertFalse(work.isCancelled());
             assertFalse(source.isCancelled());
             assertEquals(0, blockedCleanup.pendingRuntimeWaiterCount());
