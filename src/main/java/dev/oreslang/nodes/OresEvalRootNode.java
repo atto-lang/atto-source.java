@@ -137,6 +137,26 @@ public final class OresEvalRootNode extends RootNode {
         // identity map only retains call nodes already owned by this program.
         private final Map<Ast.CallExpr, Integer> optionDepthCache =
                 java.util.Collections.synchronizedMap(new IdentityHashMap<>());
+        /**
+         * Code-unit-local identities for source statement suspension sites.
+         * One AST statement receives one stable label across actor invocations.
+         * This metadata belongs to the evaluator, never to an actor carrier
+         * or a heap-owned per-resume continuation.
+         */
+        private final IdentityHashMap<Ast.Stmt, Long> sourceStatementSites =
+                new IdentityHashMap<>();
+        private long nextSourceStatementSite = 1L;
+
+        private long sourceStatementSite(Ast.Stmt statement) {
+            synchronized (sourceStatementSites) {
+                Long existing = sourceStatementSites.get(statement);
+                if (existing != null) return existing;
+                long label = nextSourceStatementSite;
+                nextSourceStatementSite = Math.addExact(label, 1L);
+                sourceStatementSites.put(statement, label);
+                return label;
+            }
+        }
 
         private int checkedOptionDepth(Ast.CallExpr call) {
             synchronized (optionDepthCache) {
@@ -1163,6 +1183,12 @@ public final class OresEvalRootNode extends RootNode {
                 return arena == null ? null : arena.taskFrame();
             }
 
+            private void enterSourceStatement(Ast.Stmt statement) {
+                if (nativeFrame != null) {
+                    nativeFrame.enterSourceSite(sourceStatementSite(statement));
+                }
+            }
+
             @Override
             public OresScheduler.Step<Object> resume(
                     OresScheduler.Resume resume)
@@ -1969,6 +1995,11 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             Ast.Stmt stmt = statements.get(index);
+            // Each AST statement owns one stable code-unit label. The
+            // actor-native frame records the last entered source site;
+            // a suspend captures it and resume authenticates that site
+            // together with its monotonic native suspension ticket.
+            task.enterSourceStatement(stmt);
             // Source tasks must carry returns as SourceFlow, not as a tail-call
             // signal, including when a discarded do-select value is a call.
             if (!(stmt instanceof Ast.ReturnStmt)
