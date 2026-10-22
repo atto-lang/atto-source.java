@@ -21,6 +21,7 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 final class LinuxUringFileIoProvider implements StrictFileIoProvider {
     static final int DEFAULT_ENTRIES = 128;
+    static final int MAX_PENDING = 128;
     static final int MAX_READ_BYTES = 16 * 1024 * 1024;
     static final int ECANCELED = 125;
 
@@ -100,7 +101,7 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
         long id = nextId();
         OresFuture<String> future = new OresFuture<>(() -> cancelNative(id));
         pending.put(id, new Pending<>(Kind.READ, future));
-        if (closed.get() || !bridge.submitRead(handle, id, path, MAX_READ_BYTES)) {
+        if (!submitReadNative(id, path)) {
             Pending<?> removed = pending.remove(id);
             if (removed != null) {
                 future.failFromRuntime(new IllegalStateException(
@@ -118,7 +119,7 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
         long id = nextId();
         OresFuture<Boolean> future = new OresFuture<>(() -> cancelNative(id));
         pending.put(id, new Pending<>(Kind.EXISTS, future));
-        if (closed.get() || !bridge.submitExists(handle, id, path)) {
+        if (!submitExistsNative(id, path)) {
             Pending<?> removed = pending.remove(id);
             if (removed != null) {
                 future.failFromRuntime(new IllegalStateException(
@@ -130,13 +131,23 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
         return future;
     }
 
+    private synchronized boolean submitReadNative(long id, byte[] path) {
+        if (closed.get() || pending.size() > MAX_PENDING) return false;
+        return bridge.submitRead(handle, id, path, MAX_READ_BYTES);
+    }
+
+    private synchronized boolean submitExistsNative(long id, byte[] path) {
+        if (closed.get() || pending.size() > MAX_PENDING) return false;
+        return bridge.submitExists(handle, id, path);
+    }
+
     private long nextId() {
         long id = ids.incrementAndGet();
         if (id <= 0) throw new IllegalStateException("strict filesystem operation id exhausted");
         return id;
     }
 
-    private void cancelNative(long id) {
+    private synchronized void cancelNative(long id) {
         if (!closed.get()) bridge.cancel(handle, id);
     }
 
@@ -197,7 +208,7 @@ final class LinuxUringFileIoProvider implements StrictFileIoProvider {
     int pendingCount() { return pending.size(); }
 
     @Override
-    public void close() {
+    public synchronized void close() {
         if (!closed.compareAndSet(false, true)) return;
         IllegalStateException failure =
                 new IllegalStateException("strict filesystem provider is closed");
