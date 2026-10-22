@@ -1982,6 +1982,43 @@ public final class ActorRuntime implements AutoCloseable {
      * is serialized with ordinary actor messages and uses no second concurrency
      * identity or carrier pool.
      */
+    /**
+     * Host/compiler bridge for a structured actor TaskScope. The actor retains
+     * the scope until its physical child-lifetime barrier settles. This is not
+     * a source-level TaskScope escape permission or cross-actor capability.
+     */
+    public TaskScope newActorTaskScope() {
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null) {
+            throw new IllegalStateException(
+                    "actor TaskScope requires an executing actor turn");
+        }
+        final TaskScope scope;
+        synchronized (cell.lifecycleLock) {
+            if (cell.stopped.get() || cell.finalized || cell.finalizing) {
+                throw new RejectedExecutionException(
+                        "actor " + cell.ref.id() + " cannot admit a TaskScope after stop");
+            }
+            scope = cell.sourceScheduler().newTaskScope();
+            cell.activeSourceScopes.add(scope);
+        }
+        // A racing stop is allowed to cancel the newly published scope before
+        // the callback is installed. Future registration replays terminal
+        // notifications, so the actor cannot lose the retirement receipt.
+        scope.getDone().whenCompleteRuntime((ignored, failure) -> {
+            synchronized (cell.lifecycleLock) {
+                if (failure != null) {
+                    cell.ref.terminationCause.compareAndSet(
+                            null, OresFuture.unwrap(failure));
+                }
+                cell.activeSourceScopes.remove(scope);
+                if (cell.stopped.get()) cell.finalizeStopLocked();
+                cell.lifecycleLock.notifyAll();
+            }
+        });
+        return scope;
+    }
+
     public <T> OresFuture<T> startActorTask(OresScheduler.Task<T> task) {
         Objects.requireNonNull(task, "task");
         ActorCell<?> cell = currentActor.get();
@@ -7114,6 +7151,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorNativeArena nativeArena;
         /** Native page capacity is reused between messages; never actor-persistent state. */
         private final ActorMessageScratch messageScratch;
+        /** Guarded by lifecycleLock; a scope's getDone includes its child Tasks. */
+        private final Set<TaskScope> activeSourceScopes =
+                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
         private long nativeArenaBytes;
         private final Set<ActorShardLease> shardLeases = ConcurrentHashMap.newKeySet();
         private final Set<ActorShardSnapshotLease> shardSnapshotLeases = ConcurrentHashMap.newKeySet();
@@ -7507,7 +7547,8 @@ public final class ActorRuntime implements AutoCloseable {
                     || activeTurns != 0
                     || scheduled.get()
                     || carrierActive
-                    || !children.isEmpty()) return;
+                    || !children.isEmpty()
+                    || !activeSourceScopes.isEmpty()) return;
             // Actor Tasks are not necessarily quiescent when their Futures
             // become terminal. Request nonblocking scheduler cancellation and
             // await the post-carrier, post-retirement-callback barrier BEFORE
@@ -8149,6 +8190,7 @@ public final class ActorRuntime implements AutoCloseable {
         private void terminateTree(Throwable cause, boolean recordCause) {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
+            List<TaskScope> scopesToCancel;
             List<DrainWaiter> failedDrainWaiters;
             synchronized (lifecycleLock) {
                 if (finalized) return;
@@ -8167,6 +8209,7 @@ public final class ActorRuntime implements AutoCloseable {
                 continuationMailbox.close(cause);
                 drainMailboxReservations();
                 descendants = List.copyOf(children);
+                scopesToCancel = List.copyOf(activeSourceScopes);
                 pending = List.copyOf(pendingOperations);
                 pendingOperations.clear();
                 finalizeStopLocked();
@@ -8178,6 +8221,19 @@ public final class ActorRuntime implements AutoCloseable {
             Throwable drainFailure = cause == null ? terminated(ref) : cause;
             for (DrainWaiter waiter : failedDrainWaiters) {
                 waiter.completion().failFromRuntime(drainFailure);
+            }
+
+            // TaskScope cancellation can run host callbacks synchronously and
+            // must never happen while the actor's lifecycleLock is held.
+            // getDone() is the *physical descendant retirement* receipt, not
+            // the cancellation request itself. Finalization remains gated on
+            // activeSourceScopes until each callback removes the scope.
+            for (TaskScope scope : scopesToCancel) {
+                try {
+                    scope.cancel("owning actor terminated");
+                } catch (RuntimeException | Error failure) {
+                    ref.terminationCause.compareAndSet(null, failure);
+                }
             }
 
             // Cancellation removes channel/select waiter registrations before
