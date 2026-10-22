@@ -2,24 +2,29 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-java_compiler="$(command -v javac)"
 os="$(uname -s)"
 
-if command -v realpath >/dev/null 2>&1; then
-  java_compiler="$(realpath "$java_compiler")"
-  java_home="$(cd "$(dirname "$java_compiler")/.." && pwd)"
-elif [[ "$os" == Darwin && -x /usr/libexec/java_home ]]; then
-  java_home="$(/usr/libexec/java_home)"
-elif command -v readlink >/dev/null 2>&1 && readlink -f "$java_compiler" >/dev/null 2>&1; then
-  java_compiler="$(readlink -f "$java_compiler")"
-  java_home="$(cd "$(dirname "$java_compiler")/.." && pwd)"
-else
-  echo "cannot resolve JAVA_HOME from javac; set JAVA_HOME explicitly" >&2
-  exit 2
-fi
-
-if [[ -n "${JAVA_HOME:-}" ]]; then
+if [[ -n "${JAVA_HOME:-}" && -x "$JAVA_HOME/bin/javac" ]]; then
   java_home="$JAVA_HOME"
+  java_compiler="$JAVA_HOME/bin/javac"
+else
+  java_compiler="$(command -v javac || true)"
+  if [[ -z "$java_compiler" ]]; then
+    echo "javac is unavailable; set JAVA_HOME or put javac on PATH" >&2
+    exit 2
+  fi
+  if command -v realpath >/dev/null 2>&1; then
+    java_compiler="$(realpath "$java_compiler")"
+    java_home="$(cd "$(dirname "$java_compiler")/.." && pwd)"
+  elif [[ "$os" == Darwin && -x /usr/libexec/java_home ]]; then
+    java_home="$(/usr/libexec/java_home)"
+  elif command -v readlink >/dev/null 2>&1 && readlink -f "$java_compiler" >/dev/null 2>&1; then
+    java_compiler="$(readlink -f "$java_compiler")"
+    java_home="$(cd "$(dirname "$java_compiler")/.." && pwd)"
+  else
+    echo "cannot resolve JAVA_HOME from javac; set JAVA_HOME explicitly" >&2
+    exit 2
+  fi
 fi
 
 work="$(mktemp -d)"
@@ -43,7 +48,7 @@ case "$os" in
     ;;
 esac
 
-cc -std=c11 -Wall -Wextra -Werror -O2 -fPIC "${shared_flags[@]}" \
+"${CC:-cc}" -std=c11 -Wall -Wextra -Werror -O2 -fPIC "${shared_flags[@]}" \
   -I "$java_home/include" -I "$java_home/include/$jni_os" \
   -o "$probe_lib" "$repo_root/src/main/c/oresarena.c"
 
