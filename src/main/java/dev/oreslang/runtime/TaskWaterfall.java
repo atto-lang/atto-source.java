@@ -65,6 +65,21 @@ public final class TaskWaterfall {
             return new Pipeline<>(new Link(tail, step), size + 1, admitted);
         }
 
+        /**
+         * Await a value through the same Awaitable projection used by
+         * compiler-lowered await. Host adapters can return a Future or
+         * another checked awaitable without exposing guest continuations
+         * to producer notification threads.
+         */
+        public <U> Pipeline<U> thenAwaitable(
+                Function<? super T, ? extends Awaitable<? extends U>> next) {
+            Objects.requireNonNull(next, "next");
+            return then(value -> Objects.requireNonNull(
+                    Objects.requireNonNull(next.apply(value),
+                            "waterfall stage returned null Awaitable").getAwaited(),
+                    "waterfall awaitable projected a null Future"));
+        }
+
         /** Apply a lazy synchronous transform without an additional executor. */
         public <U> Pipeline<U> thenValue(Function<? super T, ? extends U> next) {
             Objects.requireNonNull(next, "next");
