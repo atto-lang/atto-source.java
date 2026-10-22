@@ -12,14 +12,14 @@ ASSUME /\ Nodes # {}
        /\ MaxEpoch \in Nat
        /\ MaxEpoch >= 1
 
+VARIABLES phase, epoch, fenced, workerDone, loans, preDone, postDone,
+          timedOut
+
 Children(n) == {c \in Nodes \ {Root} : Parent[c] = n}
 Done(n) == phase[n] \in {"Stopped", "Reclaimed"}
 AllChildrenDone(n) == \A c \in Children(n) : Done(c)
 AllChildrenReclaimed(n) ==
     \A c \in Children(n) : phase[c] = "Reclaimed"
-
-VARIABLES phase, epoch, fenced, workerDone, loans, preDone, postDone,
-          timedOut
 vars == <<phase, epoch, fenced, workerDone, loans, preDone, postDone,
           timedOut>>
 
