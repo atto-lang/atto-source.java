@@ -193,4 +193,45 @@ final class CleanupAwareTaskTest {
             assertFalse(future.isCancelled());
         }
     }
+
+    @Test void schedulerCloseDuringSuspendedCleanupMustNotIssueQuiescenceReceipt()
+            throws Exception {
+        OresFuture<Integer> source = new OresFuture<>();
+        OresFuture<Void> neverFinishingCleanup = new OresFuture<>();
+        CountDownLatch sourceEntered = new CountDownLatch(1);
+        CountDownLatch cleanupEntered = new CountDownLatch(1);
+        AtomicInteger cleanRetirements = new AtomicInteger();
+        OresScheduler scheduler = new OresScheduler(1);
+        try {
+            OresFuture<Integer> future = scheduler.start(
+                    new OresScheduler.CleanupAwareTask<Integer>() {
+                        private int phase;
+                        @Override public OresScheduler.Step<Integer> resume(
+                                OresScheduler.Resume r) {
+                            if (phase++ == 0) {
+                                sourceEntered.countDown();
+                                return OresScheduler.await(source);
+                            }
+                            assertInstanceOf(CancellationException.class, r.failure());
+                            cleanupEntered.countDown();
+                            return OresScheduler.await(neverFinishingCleanup);
+                        }
+                    }, cleanRetirements::incrementAndGet);
+            assertTrue(sourceEntered.await(3, TimeUnit.SECONDS));
+            assertTrue(future.cancel(false));
+            assertTrue(cleanupEntered.await(3, TimeUnit.SECONDS));
+            assertFalse(future.isDone());
+            scheduler.close();
+            var failed = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> future.get(4, TimeUnit.SECONDS));
+            assertInstanceOf(OresScheduler.CleanupIncompleteError.class, failed.getCause());
+            assertEquals(0, cleanRetirements.get(),
+                    "shutdown cannot equate stopped carrier with completed lexical cleanup");
+            assertFalse(source.isCancelled());
+            assertFalse(neverFinishingCleanup.isCancelled());
+            assertEquals(0, neverFinishingCleanup.pendingRuntimeWaiterCount());
+        } finally {
+            scheduler.close();
+        }
+    }
 }
