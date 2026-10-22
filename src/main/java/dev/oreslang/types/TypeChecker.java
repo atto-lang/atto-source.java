@@ -6527,7 +6527,7 @@ public final class TypeChecker {
         for (Ast.FieldDecl field : klass.fields()) mergeMember(members, field.name(), classFieldType(klass, field), "class " + klass.name());
         for (Ast.MethodDecl method : klass.methods()) {
             if (method.isStatic()) continue;
-            mergeMember(members,
+            mergeOverridingMethod(members,
                     methodContractKey(method.name(), method.arity(), method.genericParameters().size()),
                     callableContractType(method.genericParameters(), method.parameters(), method.returnType(),
                             method.async(), false, generics, self, method.effects()),
@@ -6559,14 +6559,10 @@ public final class TypeChecker {
         }
         for (Ast.MethodDecl method : klass.methods()) {
             if (!method.isStatic() && method.visibility() == Ast.Visibility.PUBLIC) {
-                if (!method.effects().isEmpty()) {
-                    throw new IllegalArgumentException(
-                            "effectful method '" + klass.name() + "." + method.name()
-                                    + "' cannot be erased into an interface or structural Function contract");
-                }
-                mergeMember(members,
+                mergeOverridingMethod(members,
                         methodContractKey(method.name(), method.arity(), method.genericParameters().size()),
-                        callableContractType(method.genericParameters(), method.parameters(), method.returnType(), method.async(), false, generics, self),
+                        callableContractType(method.genericParameters(), method.parameters(), method.returnType(),
+                                method.async(), false, generics, self, method.effects()),
                         "class " + klass.name());
             }
         }
@@ -7101,6 +7097,36 @@ public final class TypeChecker {
         if (parent == null) throw new IllegalArgumentException("unknown parent class '" + parentRef.name() + "' for " + child.name());
         if (parent == child) throw new IllegalArgumentException("class '" + child.name() + "' cannot extend itself");
         return parent;
+    }
+
+    /**
+     * Local overrides replace an inherited virtual slot only if its complete
+     * function shape is unchanged except for a *narrower* checked-effect set.
+     * Parent-vs-parent merging still uses mergeMember's exact collision rule,
+     * so this does not hide ambiguous multiple-inheritance contracts.
+     */
+    private void mergeOverridingMethod(Map<String, Type> members, String name,
+                                       Type replacement, String owner) {
+        Type inherited = members.get(name);
+        if (inherited == null) {
+            mergeMember(members, name, replacement, owner);
+            return;
+        }
+        if (!(inherited instanceof Function parent)
+                || !(replacement instanceof Function child)) {
+            throw new IllegalArgumentException("conflicting override '" + name
+                    + "' in " + owner + ": " + inherited + " vs " + replacement);
+        }
+        Function sameShapeWithInheritedEffects = new Function(
+                child.parameters(), child.mutableParameters(), child.async(),
+                child.result(), parent.effects());
+        if (!sameShapeWithInheritedEffects.equals(parent)
+                || !child.effects().isSubsetOf(parent.effects())) {
+            throw new IllegalArgumentException("override '" + name + "' in " + owner
+                    + " changes callable signature or widens checked effects: "
+                    + parent + " vs " + child);
+        }
+        members.put(name, replacement);
     }
 
     private void mergeMember(Map<String, Type> members, String name, Type type, String owner) {
