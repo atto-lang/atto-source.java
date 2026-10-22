@@ -6967,6 +6967,21 @@ public final class TypeChecker {
                     kind + "." + operation + " callback parameter");
         }
         Type mapped = callback.result();
+        // The intrinsic None constructor has Option<Unknown> until it is
+        // contextually typed. Option.or_else already fixes T from its
+        // receiver, so a direct zero-arg lambda returning literal None can
+        // safely mean Option<T>. Do not widen arbitrary Unknown callbacks:
+        // a dynamic or user-supplied Option<Unknown> is not this intrinsic.
+        if (option && operation.equals("or_else")
+                && callbackExpression instanceof Ast.LambdaExpr literalFallback
+                && literalFallback.expressionBody() instanceof Ast.NameExpr none
+                && none.name().equals("None")
+                && mapped instanceof Named optionNone
+                && optionNone.name().equals("Option")
+                && optionNone.arguments().size() == 1
+                && optionNone.arguments().getFirst() == Unknown.INSTANCE) {
+            mapped = sum;
+        }
         // String and boolean singleton literals are scalar *values*, not
         // invariant generic parameter identities.
         if (mapped instanceof StringLiteral) mapped = Primitive.STRING;
