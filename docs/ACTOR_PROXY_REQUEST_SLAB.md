@@ -20,3 +20,12 @@ Real guest lowering, cross-backend LLVM storage, pinned byte buffers, receipt ow
 `ActorProxyRequestSlabTest` exercises the existing actor runtime across SoA/AoSoA layouts, slot reuse after two late completions, stale request ID, duplicate receipt, pin cap and backpressure, arena revocation, and private actor arena byte refunds. `.github/workflows/actor-proxy-slab-exact-head.yml` checks out the exact GitHub head and invokes focused JDK25/GraalVM Maven JUnit.
 
 A **standalone JDK21 smoke** of the exact new slab Java source against an API-equivalent local actor-lease stub passed (including seeded 12,000-step slot exercise across ten capacities and layouts). That smoke validates JDK syntax and deterministic slot state transitions, **not** the real ActorRuntime owner checks, Maven/JUnit, JDK25, Graal AOT, LLVM, guest language, or actual proxying. No cross-organization private-source mirroring is authorized by this document.
+
+
+## Cross-slab completion hardening
+
+Java `ActorProxyRequestSlab.settle(expectedSlabIdentity, requestTicket, rawClaim)` now requires three scalar fields from a trusted completion envelope. The previous one-argument raw `settle(claim)` entry point was removed: two different slabs can issue identical claim numbers, so raw receipt settlement alone was insufficient. A process-local monotonic slab identity is assigned during construction. Settlement checks the exact current owning actor turn through the existing lease, compares the slab identity, checks the still-current request incarnation and requires the receipt lane to belong to that request's physical row. Only then can the serial be consumed exactly once. Identities are correlation metadata, not external authorization tokens; never deserialize untrusted request values into them.
+
+`ActorProxyRequestSlabTest.sameRawClaimCannotSettleDifferentSlabOrRequest` creates two independently owned slab instances within one actor with deliberately equal raw receipts, and requires cross-slab settlement, stale completion and replay to be rejected. The seeded reuse and private actor arena tests now exercise the three-field settlement API. The no-per-request-object contract is unchanged: callers pass scalar identity, ticket and claim rather than allocating a Java wrapper per I/O completion.
+
+**Verification pending:** these new Java changes need the repository's exact-head JDK25/GraalVM Maven JUnit suite; the old JDK21 stub smoke predates the provenance hardening.
