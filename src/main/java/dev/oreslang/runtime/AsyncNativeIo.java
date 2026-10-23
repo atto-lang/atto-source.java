@@ -330,13 +330,31 @@ public final class AsyncNativeIo implements AutoCloseable {
             }
         }
         if (rejection != null) {
-            // Neither the Future callback nor the actor's receipt notifier
-            // may execute with the AsyncNativeIo admission lock held.
+            // Neither Future notification nor actor receipt settlement may
+            // execute under the AsyncNativeIo monitor. Even an immediately
+            // rejected task has synchronous host listeners that must drain.
+            Throwable failure = null;
             try {
                 CoreLog.record(CoreLog.Level.WARN, CoreLog.ASYNC_IO_REJECTED, 1L);
+            } catch (RuntimeException | Error diagnosticFailure) {
+                failure = diagnosticFailure;
+                recordPhysicalShutdownFailure(diagnosticFailure);
+            }
+            try {
                 result.failFromRuntime(new RejectedExecutionException(rejection));
+            } catch (RuntimeException | Error completionFailure) {
+                if (failure == null) failure = completionFailure;
+                recordPhysicalShutdownFailure(completionFailure);
             } finally {
-                if (actorReceipt != null) actorReceipt.completeAfterPhysicalRelease();
+                Throwable listenerFailure = result.runtimeNotificationFailure();
+                if (listenerFailure != null) {
+                    if (failure == null) failure = listenerFailure;
+                    recordPhysicalShutdownFailure(listenerFailure);
+                }
+                if (actorReceipt != null) {
+                    if (failure == null) actorReceipt.completeAfterPhysicalRelease();
+                    else actorReceipt.failPhysicalRelease(failure);
+                }
             }
             return result;
         }
@@ -344,10 +362,16 @@ public final class AsyncNativeIo implements AutoCloseable {
             workers.execute(operationTask);
         } catch (RuntimeException failure) {
             // A rejected execute() is not proof that a malicious executor did
-            // not concurrently run the task. The phase CAS below decides:
-            // a RUNNING operation remains owned until its actual exit.
-            CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_REJECTED, 1L);
-            operationTask.cancelBeforeStart();
+            // not concurrently run the task. The phase CAS decides whether
+            // the worker is already RUNNING. Diagnostic failures may not
+            // prevent the never-started task's physical retirement path.
+            try {
+                CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_REJECTED, 1L);
+            } catch (RuntimeException | Error diagnosticFailure) {
+                recordPhysicalShutdownFailure(diagnosticFailure);
+            } finally {
+                operationTask.cancelBeforeStart();
+            }
         }
         return result;
     }
