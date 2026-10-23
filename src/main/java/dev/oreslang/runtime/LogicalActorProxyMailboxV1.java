@@ -427,10 +427,16 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
     }
 
     private boolean drainedThroughLocked(long watermark) {
-        for (Long sequence : outstanding.keySet()) {
-            if (sequence <= watermark) return false;
-        }
-        return true;
+        // completionWatermark is the greatest *contiguous* completed
+        // dispatch sequence. Sparse later receipts cannot advance it over
+        // a missing old-route message, so this is equivalent to scanning
+        // every outstanding key <= watermark, but O(1) during a frozen
+        // upgrade even with a large bounded logical mailbox.
+        //
+        // Do not replace this with outstanding.isEmpty(): admissions after
+        // freeze are queued for the successor, and later completed messages
+        // must not certify an unresolved old dispatch.
+        return completionWatermark >= watermark;
     }
 
     private void checkStructuralInvariantsLocked() {
