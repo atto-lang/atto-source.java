@@ -122,8 +122,7 @@ public final class OresContext implements AutoCloseable {
             // Install BEFORE publishing this actor runtime to any guest.
             // The arena-release gate runs before actorExitHook and is notified
             // by the final physical worker/resource-loan receipt.
-            actors.setNativeIoLoanRetirementGate(
-                    actorId -> nativeIo.outstandingActorOperations(actorId) == 0);
+            actors.setNativeIoLoanRetirementGate(nativeIo::actorPhysicallyRetired);
             nativeIo.setActorLoanRetiredListener(actors::onNativeIoLoanRetired);
             actors.setActorExitHook(gc::retireActorDomain);
 
