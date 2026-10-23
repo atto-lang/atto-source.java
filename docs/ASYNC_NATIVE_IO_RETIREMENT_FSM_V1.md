@@ -125,13 +125,18 @@ main's private CI allowlist approves an independently reviewed exact target.
 
 ## Explicit remaining limitations
 
-- **Concrete outstanding adapter:** `NativeIo.connect()` currently
-  registers a raw `java.net.Socket` with `nativeIo.register(socket)`.
-  Its `TcpConnection.close()` directly closes and unregisters that socket.
-  These paths have **not** been converted to a per-connection staged release
-  with independent active-read/write and actor-incarnation loan receipts.
-  Thus the staged protocol is currently an opt-in host capability, not
-  proof that existing TCP/HTTP/native adapters all use it.
+- **Concrete TCP migration (partial):** `NativeIo.connect()` now
+  registers a `SocketStopThenRelease` host resource. STOP requests
+  `shutdownInput()`/`shutdownOutput()` (when connected), while final
+  `Socket.close()` is deferred until the context worker and inline
+  notification barriers retire. A real-loopback JUnit regression asserts
+  that the tracked blocked read and terminal subscriber exit before final
+  descriptor close. This does **not** instrument independent external
+  callbacks/FFI, and `TcpConnection.close()` during normal operation
+  still needs independent per-connection active-read/write lease tracking,
+  including concurrent explicit close versus STOP. Java virtual-thread
+  interruption may itself cause socket closure; cancellation is not a loan
+  receipt. Do not claim universal TCP or actor-memory safety from this patch.
 - **Actor DONE remains a separate gate:** actor-instance ownership of each
   `AsyncNativeIo` submission is not automatically enrolled with
   `ActorPhysicalRetirementRegistry`. Joining context shutdown alone does
