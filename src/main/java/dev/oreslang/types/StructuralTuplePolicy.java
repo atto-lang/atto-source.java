@@ -135,20 +135,39 @@ public final class StructuralTuplePolicy {
      * of -1 is reserved for omitted optional trailing slots, never an alias
      * of an actual source position.
      */
-    public record ProjectedSlot(
-            int visibleIndex, int sourceIndex, Type outputType,
-            Materialization materialization) {
-        public ProjectedSlot {
+    public static final class ProjectedSlot {
+        private final int visibleIndex;
+        private final int sourceIndex;
+        private final Type outputType;
+        private final Materialization materialization;
+
+        // A caller cannot fabricate a verified slot without going through
+        // projection(Shape, Type) and its closed-type/hidden-width checks.
+        private ProjectedSlot(int visibleIndex, int sourceIndex, Type outputType,
+                              Materialization materialization) {
             if (visibleIndex < 0 || sourceIndex < -1) {
                 throw new IllegalArgumentException("invalid tuple projection index");
             }
-            Objects.requireNonNull(outputType, "output type");
-            Objects.requireNonNull(materialization, "materialization");
+            this.outputType = Objects.requireNonNull(outputType, "output type");
+            this.materialization = Objects.requireNonNull(materialization, "materialization");
             if ((materialization == Materialization.SYNTHESIZE_NONE)
                     != (sourceIndex == -1)) {
                 throw new IllegalArgumentException("only an absent optional slot may have no source");
             }
+            if (materialization != Materialization.KEEP_VALUE
+                    && !(outputType instanceof Named option
+                         && option.name().equals("Option")
+                         && option.arguments().size() == 1)) {
+                throw new IllegalArgumentException("optional projection must expose Option<T>");
+            }
+            this.visibleIndex = visibleIndex;
+            this.sourceIndex = sourceIndex;
         }
+
+        public int visibleIndex() { return visibleIndex; }
+        public int sourceIndex() { return sourceIndex; }
+        public Type outputType() { return outputType; }
+        public Materialization materialization() { return materialization; }
     }
 
     /**
