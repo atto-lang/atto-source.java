@@ -316,6 +316,121 @@ final class RecoveryHandlerChainTest {
         assertSame(callback, result.terminalError());
     }
 
+    @Test void directlyReentrantHandlerDoesNotRecursivelyInvokeItself() {
+        @SuppressWarnings("unchecked")
+        RecoveryHandlerChain<Integer>[] holder = (RecoveryHandlerChain<Integer>[])
+                new RecoveryHandlerChain<?>[1];
+        var visited = new java.util.concurrent.atomic.AtomicInteger();
+        var leaked = new ArrayList<RecoveryHandlerChain.Continuation<Integer>>();
+        holder[0] = RecoveryHandlerChain.<Integer>builder()
+                .register((err, c) -> {
+                    visited.incrementAndGet();
+                    leaked.add(c);
+                    holder[0].dispatch(RecoveryHandlerChain.FailureKind.RAISE,
+                            new Exception("nested failure"));
+                    c.resolve(7);
+                }).freeze();
+        Throwable original = new Exception("original");
+        Error abort = assertThrows(Error.class,
+                () -> holder[0].dispatch(RecoveryHandlerChain.FailureKind.RAISE, original));
+        assertTrue(abort.getMessage().contains("reentrant"));
+        assertEquals("nested failure", abort.getCause().getMessage());
+        assertEquals(1, visited.get());
+        assertThrows(IllegalStateException.class, () -> leaked.getFirst().resolve(5));
+        // The guard must be removed on unwind, not retained on a pooled carrier.
+        assertThrows(Error.class,
+                () -> holder[0].dispatch(RecoveryHandlerChain.FailureKind.RAISE, original));
+        assertEquals(2, visited.get());
+    }
+
+    @Test void indirectCycleAcrossRecoveryChainsIsAlsoDenied() {
+        @SuppressWarnings("unchecked")
+        RecoveryHandlerChain<Integer>[] holders = (RecoveryHandlerChain<Integer>[])
+                new RecoveryHandlerChain<?>[2];
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        holders[0] = RecoveryHandlerChain.<Integer>builder()
+                .register((e, c) -> {
+                    calls.incrementAndGet();
+                    holders[1].dispatch(RecoveryHandlerChain.FailureKind.THROW,
+                            new Exception("B pending"));
+                    c.resolve(1);
+                }).freeze();
+        holders[1] = RecoveryHandlerChain.<Integer>builder()
+                .register((e, c) -> {
+                    calls.incrementAndGet();
+                    holders[0].dispatch(RecoveryHandlerChain.FailureKind.THROW,
+                            new Exception("A reentered"));
+                    c.resolve(2);
+                }).freeze();
+        Error abort = assertThrows(Error.class,
+                () -> holders[0].dispatch(RecoveryHandlerChain.FailureKind.THROW,
+                        new Exception("outer")));
+        assertTrue(abort.getMessage().contains("reentrant"));
+        assertEquals("A reentered", abort.getCause().getMessage());
+        assertEquals(2, calls.get());
+    }
+
+    @Test void suppressedReentryAbortCannotBeConvertedToSuccess() {
+        @SuppressWarnings("unchecked")
+        RecoveryHandlerChain<Integer>[] holder = (RecoveryHandlerChain<Integer>[])
+                new RecoveryHandlerChain<?>[1];
+        holder[0] = RecoveryHandlerChain.<Integer>builder()
+                .register((e, c) -> {
+                    try {
+                        holder[0].dispatch(RecoveryHandlerChain.FailureKind.THROW,
+                                new Exception("inner"));
+                    } catch (Error ignored) {
+                        // A foreign host callback may catch Throwable/Error,
+                        // but it cannot reset the dispatch scope's poison bit.
+                    }
+                    c.resolve(8);
+                }).freeze();
+        Error abort = assertThrows(Error.class,
+                () -> holder[0].dispatch(RecoveryHandlerChain.FailureKind.THROW,
+                        new Exception("outer")));
+        assertEquals("inner", abort.getCause().getMessage());
+    }
+
+    @Test void distinctNestedRecoveryChainsArePermitted() {
+        var trace = new ArrayList<String>();
+        var inner = RecoveryHandlerChain.<Integer>builder()
+                .register((e, c) -> { trace.add("inner"); c.resolve(3); }).freeze();
+        var outer = RecoveryHandlerChain.<Integer>builder()
+                .register((e, c) -> {
+                    trace.add("outer");
+                    assertEquals(new RecoveryHandlerChain.Recovered<>(3),
+                            inner.dispatch(RecoveryHandlerChain.FailureKind.RAISE,
+                                    new Exception("inner pending")));
+                    c.resolve(5);
+                }).freeze();
+        assertEquals(new RecoveryHandlerChain.Recovered<>(5),
+                outer.dispatch(RecoveryHandlerChain.FailureKind.RAISE,
+                        new Exception("outer pending")));
+        assertEquals(List.of("outer", "inner"), trace);
+    }
+
+    @Test void tooManyDistinctNestedChainsFailClosed() {
+        @SuppressWarnings("unchecked")
+        RecoveryHandlerChain<Integer>[] chains = (RecoveryHandlerChain<Integer>[])
+                new RecoveryHandlerChain<?>[65];
+        for (int i = chains.length - 1; i >= 0; i--) {
+            final int index = i;
+            chains[index] = RecoveryHandlerChain.<Integer>builder()
+                    .register((e, c) -> {
+                        if (index + 1 < chains.length) {
+                            chains[index + 1].dispatch(RecoveryHandlerChain.FailureKind.RAISE,
+                                    new Exception("depth " + (index + 1)));
+                        }
+                        c.resolve(index);
+                    }).freeze();
+        }
+        Error abort = assertThrows(Error.class,
+                () -> chains[0].dispatch(RecoveryHandlerChain.FailureKind.RAISE,
+                        new Exception("root")));
+        assertTrue(abort.getMessage().contains("nested"));
+        assertEquals("depth 64", abort.getCause().getMessage());
+    }
+
     @Test void unauthenticatedDispatcherStaysPackagePrivate() {
         assertFalse(java.lang.reflect.Modifier.isPublic(RecoveryHandlerChain.class.getModifiers()),
                 "host prototype must not become a public guest or Java API before trusted admission");
