@@ -24,7 +24,7 @@ public final class NativeHttp implements AutoCloseable {
     private final ScheduledThreadPoolExecutor timers = new ScheduledThreadPoolExecutor(1, r -> {
         Thread t = new Thread(r, "ores-http-deadlines"); t.setDaemon(true); return t;
     });
-    private boolean closed;
+    private volatile boolean closed;
     private final Set<Handler> pools = ConcurrentHashMap.newKeySet();
 
     public NativeHttp(OresContext context) {
@@ -139,9 +139,10 @@ public final class NativeHttp implements AutoCloseable {
         boolean readyNow() {
             supervisor();
             synchronized (this) {
-                if (workers == null || poolDiscarded) return false;
+                if (workers == null || poolDiscarded || NativeHttp.this.closed) return false;
                 for (Worker instance : workers) {
-                    if (instance == null || !instance.actor.ready().isDone()
+                    if (instance == null || !instance.requests.isEmpty()
+                            || !instance.actor.ready().isDone()
                             || instance.actor.ready().isCompletedExceptionally()
                             || !actors().isAlive(instance.actor)) return false;
                 }
@@ -237,7 +238,8 @@ public final class NativeHttp implements AutoCloseable {
             pools.remove(this);
         }
         private synchronized Worker worker() {
-            if (poolDiscarded) throw new RejectedExecutionException("unpublished HTTP worker pool discarded");
+            if (poolDiscarded || NativeHttp.this.closed)
+                throw new RejectedExecutionException("HTTP worker pool discarded or transport closed");
             int slot = cursor;
             cursor = (cursor + 1) % workers.length;
             Worker worker = workers[slot];
