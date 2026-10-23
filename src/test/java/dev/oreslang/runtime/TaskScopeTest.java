@@ -26,6 +26,44 @@ public class TaskScopeTest {
         if (interrupted) Thread.currentThread().interrupt();
     }
 
+    @Test void scopeCompletionAwaitsBothChildTerminalCallbackDrains()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskScope scope = scheduler.newTaskScope();
+            CountDownLatch guestEntered = new CountDownLatch(1);
+            CountDownLatch finishGuest = new CountDownLatch(1);
+            CountDownLatch callbackEntered = new CountDownLatch(1);
+            CountDownLatch unblockCallback = new CountDownLatch(1);
+            TaskHandle<Integer> child = scope.startTask(resume -> {
+                guestEntered.countDown();
+                awaitUninterruptibly(finishGuest);
+                return OresScheduler.done(41);
+            });
+            assertTrue(guestEntered.await(3, TimeUnit.SECONDS));
+            child.result().whenCompleteRuntime((value, failure) -> {
+                callbackEntered.countDown();
+                awaitUninterruptibly(unblockCallback);
+            });
+            scope.seal();
+            try {
+                finishGuest.countDown();
+                assertTrue(callbackEntered.await(3, TimeUnit.SECONDS));
+                assertTrue(child.getDone().isDone(),
+                        "test did not reach the child DONE CAS");
+                assertFalse(child.terminalCallbacksDrained().toCompletableFuture().isDone(),
+                        "source-result callbacks still physically live");
+                assertFalse(scope.getDone().isDone(),
+                        "scope DONE published before source-result subscriber drain");
+            } finally {
+                finishGuest.countDown();
+                unblockCallback.countDown();
+            }
+            assertEquals(new TaskHandle.Success<>(41),
+                    child.getDone().get(3, TimeUnit.SECONDS));
+            assertNull(scope.getDone().get(3, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void sealingEmptyScopeCompletesWithoutTask() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             TaskScope scope = scheduler.newTaskScope();
