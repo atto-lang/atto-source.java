@@ -176,7 +176,29 @@ public final class ProxyOutboundLoopback implements AutoCloseable {
             throw new IllegalArgumentException("unsafe loopback test request path");
     }
 
-    private static List<Map.Entry<String, String>> filtered(HttpHeaders headers) {
+    /** Package-private to let exact-source tests inject adversarial header sets. */
+    static List<Map.Entry<String, String>> filtered(HttpHeaders headers) {
+        // Header admission must happen BEFORE stripping hop-by-hop fields.
+        // Otherwise enormous Connection/Proxy-Connection fields can evade the
+        // retained-header budget and consume CPU/memory in the trusted parser.
+        int rawBytes = 0;
+        int rawFields = 0;
+        for (var field : headers.map().entrySet()) {
+            String name = field.getKey();
+            if (!HEADER_NAME.matcher(name).matches())
+                throw new IllegalArgumentException("invalid upstream header name");
+            for (String value : field.getValue()) {
+                rawFields++;
+                if (rawFields > 100 || name.length() + value.length() + 4 > 32768 - rawBytes)
+                    throw new IllegalArgumentException("upstream header budget exceeded");
+                rawBytes += name.length() + value.length() + 4;
+                for (int i = 0; i < value.length(); i++) {
+                    int ch = value.charAt(i);
+                    if (ch < 32 || ch == 127 || ch > 255)
+                        throw new IllegalArgumentException("invalid upstream header value");
+                }
+            }
+        }
         Set<String> excluded = new HashSet<>(HOP);
         for (String value : headers.allValues("connection")) {
             for (String item : value.split(",", -1)) {
@@ -187,23 +209,9 @@ public final class ProxyOutboundLoopback implements AutoCloseable {
             }
         }
         ArrayList<Map.Entry<String, String>> result = new ArrayList<>();
-        int bytes = 0;
         for (var field : headers.map().entrySet()) {
-            String name = field.getKey();
-            if (!HEADER_NAME.matcher(name).matches())
-                throw new IllegalArgumentException("invalid upstream header name");
-            if (excluded.contains(name.toLowerCase(Locale.ROOT))) continue;
-            for (String value : field.getValue()) {
-                for (int i = 0; i < value.length(); i++) {
-                    int ch = value.charAt(i);
-                    if (ch < 32 || ch == 127 || ch > 255)
-                        throw new IllegalArgumentException("invalid upstream header value");
-                }
-                bytes += name.length() + value.length() + 4;
-                if (bytes > 32768 || result.size() >= 100)
-                    throw new IllegalArgumentException("upstream header budget exceeded");
-                result.add(Map.entry(name, value));
-            }
+            if (excluded.contains(field.getKey().toLowerCase(Locale.ROOT))) continue;
+            for (String value : field.getValue()) result.add(Map.entry(field.getKey(), value));
         }
         return List.copyOf(result);
     }
