@@ -2122,6 +2122,46 @@ public final class ActorRuntime implements AutoCloseable {
                         target.enqueue(() -> continuation.accept(value, failure)));
     }
 
+    /**
+     * Minted solely by this actor's runtime-owned SourceTask scheduler.
+     * It is separate from the public Future continuation target: after STOP,
+     * only already-admitted scheduler tasks may cross the cleanup lane.
+     * The cell identity check also fences any previous actor incarnation.
+     */
+    private boolean enqueueSourceTaskContinuation(
+            ActorCell<?> cell, Runnable continuation) {
+        Objects.requireNonNull(continuation, "continuation");
+        if (actors.get(cell.ref.id()) != cell || closed.get()) return false;
+        if (!cell.reserveContinuationSlot()) {
+            cell.fail(new IllegalStateException(
+                    "actor source cleanup continuation capacity exceeded for "
+                            + cell.ref.id()));
+            return false;
+        }
+        boolean admitted = false;
+        try {
+            synchronized (cell.lifecycleLock) {
+                if (cell.finalized || cell.forceKillFenced || closed.get()
+                        || actors.get(cell.ref.id()) != cell
+                        || (cell.stopped.get()
+                                && !cell.sourceStopCleanupPending
+                                && !cell.sourceStopCleanupActive)) return false;
+                if (!cell.sourceTaskMailbox.tryWrite(
+                        MessageEnvelope.continuation(continuation))) {
+                    throw new IllegalStateException(
+                            "actor source continuation mailbox capacity invariant violated for "
+                                    + cell.ref.id());
+                }
+                admitted = true;
+                if (currentActor.get() == cell) cell.sourceHandoffRequested = true;
+            }
+            cell.schedule();
+            return true;
+        } finally {
+            if (!admitted) cell.releaseMailboxSlot(true);
+        }
+    }
+
     private boolean enqueueContinuation(ActorId actorId, Runnable continuation) {
         Objects.requireNonNull(actorId, "actorId");
         Objects.requireNonNull(continuation, "continuation");
@@ -7065,6 +7105,13 @@ public final class ActorRuntime implements AutoCloseable {
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
                 new ChannelRuntime.Channel<>(INTERNAL_CONTINUATION_SLOTS);
+        /**
+         * Runtime-minted SourceTask commands, isolated from ordinary Future
+         * continuations so actor STOP can discard the latter while retaining
+         * the former for authenticated lexical cleanup.
+         */
+        private final ChannelRuntime.Channel<MessageEnvelope> sourceTaskMailbox =
+                new ChannelRuntime.Channel<>(INTERNAL_CONTINUATION_SLOTS);
         /** True while one source receive owns actor state across suspension. */
         private boolean sourceReceiveSuspended;
         private final Object lifecycleLock = new Object();
@@ -7085,6 +7132,12 @@ public final class ActorRuntime implements AutoCloseable {
         // Do not reenter finalization from scheduler close/Task callbacks
         // while cleanup receipts are being checked under lifecycleLock.
         private boolean sourceSchedulerClosing;
+        /** STOP is waiting for the scheduler's cancellation snapshot. */
+        private boolean sourceStopCleanupPending;
+        /** STOP has sealed admission and may execute only existing SourceTasks. */
+        private boolean sourceStopCleanupActive;
+        /** Any failed cleanup submission quarantines actor state. */
+        private boolean sourceStopCleanupAborted;
         /** self.end()/self.endWithCleanup(...) lifecycle state; guarded by lifecycleLock. */
         private boolean endRequested;
         private Runnable finalCleanup;
@@ -7276,7 +7329,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private boolean hasQueuedWorkLocked() {
-            return !continuationMailbox.isEmpty() || (!sourceReceiveSuspended && !mailbox.isEmpty());
+            return !sourceTaskMailbox.isEmpty()
+                    || (!stopped.get() && (!continuationMailbox.isEmpty()
+                            || (!sourceReceiveSuspended && !mailbox.isEmpty())));
         }
 
         private OresScheduler sourceScheduler() {
@@ -7284,7 +7339,7 @@ public final class ActorRuntime implements AutoCloseable {
                 if (sourceScheduler != null) return sourceScheduler;
 
                 java.util.concurrent.Executor mailboxExecutor = command -> {
-                    if (!enqueueContinuation(ref.id(), command)) {
+                    if (!enqueueSourceTaskContinuation(this, command)) {
                         throw new RejectedExecutionException(
                                 "actor " + ref.id()
                                         + " cannot accept a source continuation");
@@ -7302,7 +7357,8 @@ public final class ActorRuntime implements AutoCloseable {
 
         private boolean beginTurn() {
             synchronized (lifecycleLock) {
-                if (stopped.get() || forceKillFenced || finalized) return false;
+                if ((stopped.get() && !sourceStopCleanupActive)
+                        || forceKillFenced || finalized) return false;
                 // The full actor execution domain (including lifecycle and resumed
                 // continuations) must be entered on the single admitted carrier.
                 if (!carrierActive || carrierOwnerThread != Thread.currentThread()
@@ -7382,11 +7438,23 @@ public final class ActorRuntime implements AutoCloseable {
             // Truffle-backed runtimes that boundary owns context enter/leave.
             if (finalized
                     || sourceSchedulerClosing
+                    || sourceStopCleanupPending
                     || activeTurns != 0
                     || scheduled.get()
                     || carrierActive
                     || !children.isEmpty()) return;
             OresScheduler scheduler = sourceScheduler;
+            if (sourceStopCleanupAborted) {
+                ref.terminationCause.compareAndSet(null,
+                        new OresScheduler.CleanupIncompleteError(
+                                "actor source cleanup admission failed; quarantine arena"));
+                return;
+            }
+            if (scheduler != null && !scheduler.actorStopPhysicallyQuiescent()) {
+                // Existing guest scopes still own deferred cleanup or physical
+                // retirement receipts; ActorRef.done and arena stay pending.
+                return;
+            }
             if (scheduler != null) {
                 Throwable closeFailure = null;
                 sourceSchedulerClosing = true;
@@ -7450,6 +7518,14 @@ public final class ActorRuntime implements AutoCloseable {
             else ref.doneFuture.failFromRuntime(terminal);
             finalizedFuture.completeFromRuntime(null);
             lifecycleLock.notifyAll();
+        }
+
+        private void sourceTaskCleanupQuiesced() {
+            synchronized (lifecycleLock) {
+                if (stopped.get() && !sourceStopCleanupPending
+                        && activeTurns == 0) finalizeStopLocked();
+                lifecycleLock.notifyAll();
+            }
         }
 
         private void childFinalized(ActorCell<?> child) {
@@ -7591,7 +7667,8 @@ public final class ActorRuntime implements AutoCloseable {
         private void schedule() {
             final Object dispatchTicket;
             synchronized (lifecycleLock) {
-                if (stopped.get() || forceKillFenced || closed.get() || scheduled.get()) return;
+                if ((stopped.get() && !sourceStopCleanupActive)
+                        || forceKillFenced || closed.get() || scheduled.get()) return;
                 // Atomically claim the actor lane and publish a fresh identity.
                 dispatchTicket = new Object();
                 scheduledDispatchToken = dispatchTicket;
@@ -7643,7 +7720,8 @@ public final class ActorRuntime implements AutoCloseable {
                     // Prevent obsolete queued runnables impersonating the
                     // next actor turn after scheduled was cleared and re-claimed.
                     if (scheduledDispatchToken != dispatchTicket || !scheduled.get()) return;
-                    if (stopped.get() || closed.get() || forceKillFenced) return;
+                    if ((stopped.get() && !sourceStopCleanupActive)
+                            || closed.get() || forceKillFenced) return;
                     if (carrierActive || carrierOwnerThread != null || activeTurns != 0) {
                         throw new IllegalStateException(
                                 "actor physical carrier already occupied for " + ref.id());
@@ -7732,7 +7810,7 @@ public final class ActorRuntime implements AutoCloseable {
                             scheduledDispatchToken = null;
                             scheduled.set(false);
                             if (stopped.get() && activeTurns == 0) finalizeStopLocked();
-                            reschedule = !stopped.get()
+                            reschedule = (!stopped.get() || sourceStopCleanupActive)
                                     && !forceKillFenced
                                     && !closed.get()
                                     && !finalized
@@ -7834,17 +7912,22 @@ public final class ActorRuntime implements AutoCloseable {
                 }
 
                 int processed = 0;
-                while (processed < dispatcherConfig.throughput() && !stopped.get()) {
+                while (processed < dispatcherConfig.throughput()
+                        && (!stopped.get() || sourceStopCleanupActive)) {
                     MessageEnvelope envelope;
                     synchronized (lifecycleLock) {
-                        // Stop closes the user mailbox under this same lock.
-                        if (stopped.get() || finalized) break;
+                        if ((stopped.get() && !sourceStopCleanupActive)
+                                || finalized) break;
 
-                        // Continuations always outrank user mail. While a
-                        // source receive is suspended, user mail is not runnable.
-                        envelope = continuationMailbox.tryRead().orElse(null);
-                        if (envelope == null && !sourceReceiveSuspended) {
-                            envelope = mailbox.tryRead().orElse(null);
+                        // Only scheduler-minted, already-admitted SourceTask
+                        // commands may run after STOP. Never consume ordinary
+                        // guest mail or generic Future continuations here.
+                        envelope = sourceTaskMailbox.tryRead().orElse(null);
+                        if (envelope == null && !stopped.get()) {
+                            envelope = continuationMailbox.tryRead().orElse(null);
+                            if (envelope == null && !sourceReceiveSuspended) {
+                                envelope = mailbox.tryRead().orElse(null);
+                            }
                         }
                     }
                     if (envelope == null) break;
@@ -7863,7 +7946,9 @@ public final class ActorRuntime implements AutoCloseable {
                          * normal scheduler safepoints.
                          */
                         synchronized (lifecycleLock) {
-                            if (stopped.get() || finalized) break;
+                            if (finalized || (stopped.get()
+                                    && (!sourceStopCleanupActive
+                                            || !activeEnvelope.isContinuation()))) break;
                         }
 
                         if (activeEnvelope.isContinuation()) {
@@ -7965,25 +8050,34 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        private void drainMailboxReservations() {
+        private void drainOrdinaryMailboxReservations() {
             synchronized (lifecycleLock) {
                 while (continuationMailbox.drainOne(continuation -> {
                     releaseMailboxSlot(true);
                     continuation.close();
                 })) {
-                    // Reclaim admitted control mail even after termination closes the channel.
+                    // STOP discards ordinary runtime continuations.
                 }
                 sourceHandoffRequested = false;
             }
-
             while (mailbox.drainOne(envelope -> {
                 releaseMailboxSlot(false);
                 envelope.close();
             })) {
-                // Drain all committed user-message envelopes, including after close.
+                // STOP discards user mail but preserves SourceTask unwind.
             }
             sourceReceiveSuspended = false;
             activeMail = null;
+        }
+
+        private void drainMailboxReservations() {
+            drainOrdinaryMailboxReservations();
+            while (sourceTaskMailbox.drainOne(continuation -> {
+                releaseMailboxSlot(true);
+                continuation.close();
+            })) {
+                // Safe only after all source tasks and physical receipts retire.
+            }
         }
 
         private void fail(Throwable failure) {
