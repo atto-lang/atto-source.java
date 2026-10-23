@@ -88,6 +88,50 @@ class AsyncNativeIoTest {
         assertFalse(Files.exists(outside.resolve("secret.txt")));
     }
 
+    @Test void concurrentActorStopAndContextRetirementAreIdempotent()
+            throws Exception {
+        for (int round = 0; round < 16; round++) {
+            var runtime = new ActorRuntime();
+            var io = new AsyncNativeIo(2);
+            var closeFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            var stopFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            var go = new CountDownLatch(1);
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> { });
+            try {
+                actor.ready().get(3, TimeUnit.SECONDS);
+                Thread explicitStop = Thread.ofVirtual().start(() -> {
+                    try {
+                        if (!go.await(3, TimeUnit.SECONDS)) throw new AssertionError("missing start");
+                        actor.cancel();
+                    } catch (Throwable failure) {
+                        stopFailure.compareAndSet(null, failure);
+                    }
+                });
+                Thread contextClose = Thread.ofVirtual().start(() -> {
+                    try {
+                        if (!go.await(3, TimeUnit.SECONDS)) throw new AssertionError("missing start");
+                        OresContext.joinActorsAndNativeIo(runtime, io);
+                    } catch (Throwable failure) {
+                        closeFailure.compareAndSet(null, failure);
+                    }
+                });
+                go.countDown();
+                explicitStop.join(3000);
+                contextClose.join(3000);
+                assertFalse(explicitStop.isAlive(), "host STOP hung in round " + round);
+                assertFalse(contextClose.isAlive(), "context close hung in round " + round);
+                assertNull(stopFailure.get(), () -> String.valueOf(stopFailure.get()));
+                assertNull(closeFailure.get(), () -> String.valueOf(closeFailure.get()));
+                assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+                OresContext.joinActorsAndNativeIo(runtime, io);
+            } finally {
+                go.countDown();
+                runtime.close();
+                io.close();
+            }
+        }
+    }
+
     @Test void sealedRuntimeRetainsUnretiredActorAndCanFinishAfterPhysicalReceipt()
             throws Exception {
         var runtime = new ActorRuntime();
