@@ -5430,7 +5430,10 @@ public final class ActorRuntime implements AutoCloseable {
                     OresFuture<Void> completionCandidate = null;
                     ActorCell.DrainWaiter completionWaiter = null;
                     if (observeCompletion) {
-                        if (cell.pendingDrains.size() >= ActorCell.MAX_PENDING_DRAIN_WAITERS) {
+                        int trackedLimit = cell.policy.maxMailboxMessages() == Integer.MAX_VALUE
+                                ? Integer.MAX_VALUE
+                                : cell.policy.maxMailboxMessages() + 1;
+                        if (cell.pendingTrackedMessageWaiters >= trackedLimit) {
                             throw new ActorResourceExhaustedException(ref.id());
                         }
                         // Allocate and reserve the waiter before physical mailbox
@@ -5439,8 +5442,12 @@ public final class ActorRuntime implements AutoCloseable {
                         completionCandidate =
                                 new OresFuture<>(() -> false, () -> { });
                         completionWaiter =
-                                new ActorCell.DrainWaiter(sequence, completionCandidate);
+                                new ActorCell.DrainWaiter(
+                                        sequence,
+                                        completionCandidate,
+                                        ActorCell.DrainWaiterKind.TRACKED);
                         cell.pendingDrains.add(completionWaiter);
+                        cell.pendingTrackedMessageWaiters++;
                     }
 
                     boolean wroteEnvelope = false;
@@ -5458,7 +5465,12 @@ public final class ActorRuntime implements AutoCloseable {
                         acceptedCompletion = completionCandidate;
                     } catch (RuntimeException | Error admissionFailure) {
                         if (!wroteEnvelope && completionWaiter != null) {
-                            cell.pendingDrains.remove(completionWaiter);
+                            if (!cell.pendingDrains.remove(completionWaiter)) {
+                                throw new IllegalStateException(
+                                        "tracked completion waiter lost before mailbox admission",
+                                        admissionFailure);
+                            }
+                            cell.retireDrainWaiterLocked(completionWaiter);
                         }
                         throw admissionFailure;
                     }
@@ -7092,9 +7104,17 @@ public final class ActorRuntime implements AutoCloseable {
         private int queuedContinuations;
         private long nextUserMessageSequence;
         private long lastProcessedUserMessageSequence = -1L;
-        private record DrainWaiter(long sequence, OresFuture<Void> completion) { }
+        private enum DrainWaiterKind { PUBLIC, SHUTDOWN, TRACKED }
+        private record DrainWaiter(
+                long sequence,
+                OresFuture<Void> completion,
+                DrainWaiterKind kind) { }
         private static final int MAX_PENDING_DRAIN_WAITERS = 1_024;
         private final ArrayList<DrainWaiter> pendingDrains = new ArrayList<>();
+        /** User-visible drain observers and runtime transport receipts have
+         * independent budgets so a caller cannot starve hot-reload receipts. */
+        private int pendingPublicDrainWaiters;
+        private int pendingTrackedMessageWaiters;
         private ActorInboxMail<M> activeMail;
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
@@ -7271,10 +7291,14 @@ public final class ActorRuntime implements AutoCloseable {
                 // a stalled actor must not permit unlimited host-side Futures.
                 // gracefulStop reserves at most one extra waiter and cannot be
                 // starved by callers exhausting the public observer capacity.
-                if (!shutdownBarrier && pendingDrains.size() >= MAX_PENDING_DRAIN_WAITERS)
+                if (!shutdownBarrier
+                        && pendingPublicDrainWaiters >= MAX_PENDING_DRAIN_WAITERS)
                     return OresFuture.failed(new ActorResourceExhaustedException(ref.id()));
                 OresFuture<Void> result = new OresFuture<>(() -> false, () -> { });
-                pendingDrains.add(new DrainWaiter(target, result));
+                DrainWaiterKind kind = shutdownBarrier
+                        ? DrainWaiterKind.SHUTDOWN : DrainWaiterKind.PUBLIC;
+                pendingDrains.add(new DrainWaiter(target, result, kind));
+                if (kind == DrainWaiterKind.PUBLIC) pendingPublicDrainWaiters++;
                 return result;
             }
         }
@@ -7291,6 +7315,7 @@ public final class ActorRuntime implements AutoCloseable {
                     DrainWaiter waiter = pendingDrains.get(i);
                     if (waiter.sequence() <= sequence) {
                         pendingDrains.remove(i);
+                        retireDrainWaiterLocked(waiter);
                         completed.add(waiter.completion());
                     }
                 }
@@ -7298,6 +7323,26 @@ public final class ActorRuntime implements AutoCloseable {
             // Complete outside the lifecycle monitor: Future callbacks may
             // synchronously request actor stop or another lifecycle operation.
             for (OresFuture<Void> waiter : completed) waiter.completeFromRuntime(null);
+        }
+
+        private void retireDrainWaiterLocked(DrainWaiter waiter) {
+            switch (waiter.kind()) {
+                case PUBLIC -> {
+                    if (pendingPublicDrainWaiters <= 0)
+                        throw new IllegalStateException(
+                                "public drain waiter accounting underflow for " + ref.id());
+                    pendingPublicDrainWaiters--;
+                }
+                case TRACKED -> {
+                    if (pendingTrackedMessageWaiters <= 0)
+                        throw new IllegalStateException(
+                                "tracked message waiter accounting underflow for " + ref.id());
+                    pendingTrackedMessageWaiters--;
+                }
+                case SHUTDOWN -> {
+                    // gracefulStop owns one reserved observer outside both quotas.
+                }
+            }
         }
 
         private boolean hasQueuedWork() {
@@ -8029,6 +8074,8 @@ public final class ActorRuntime implements AutoCloseable {
                 // one while holding lifecycleLock.
                 failedDrainWaiters = List.copyOf(pendingDrains);
                 pendingDrains.clear();
+                pendingPublicDrainWaiters = 0;
+                pendingTrackedMessageWaiters = 0;
                 if (cause == null) mailbox.close();
                 else mailbox.close(cause);
                 continuationMailbox.close(cause);
