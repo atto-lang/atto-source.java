@@ -232,6 +232,7 @@ final class RecoveryHandlerChain<T> {
         // Its host-prototype Throwable payload is still mutable and untrusted,
         // so graph admission remains fail-closed defense in depth.
         if (untrustedOrTerminalGraph(failure)) {
+            pendingFailure.leaveRecoveryChain();
             return new Unhandled<>(pendingFailure);
         }
 
@@ -255,6 +256,7 @@ final class RecoveryHandlerChain<T> {
                         return new TerminalCallbackFailure<>(pendingFailure, callbackFailure);
                     }
                     if (untrustedOrTerminalGraph(failure)) {
+                        pendingFailure.leaveRecoveryChain();
                         return new Unhandled<>(pendingFailure);
                     }
                     pendingFailure.markTerminated();
@@ -278,6 +280,7 @@ final class RecoveryHandlerChain<T> {
             // delegating or resolving. Revalidate before either action becomes
             // observable, including before invoking the next handler.
             if (untrustedOrTerminalGraph(failure)) {
+                pendingFailure.leaveRecoveryChain();
                 return new Unhandled<>(pendingFailure);
             }
             if (decision == Cursor.OPEN) {
@@ -292,6 +295,7 @@ final class RecoveryHandlerChain<T> {
                 return new Recovered<>(resolved);
             }
         }
+        pendingFailure.leaveRecoveryChain();
         return new Unhandled<>(pendingFailure);
         } finally {
             scope.active.remove(this);
