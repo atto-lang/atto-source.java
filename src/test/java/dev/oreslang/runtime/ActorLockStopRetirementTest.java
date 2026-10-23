@@ -42,6 +42,37 @@ final class ActorLockStopRetirementTest {
     }
 
     @Test
+    void actorStopCancelsQueuedAsyncAcquisitionBeforeTerminationReceipt()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var mutex = OresMutex.shared(new int[] {1});
+            var hostHolder = mutex.tryLock().orElseThrow();
+            AtomicReference<java.util.concurrent.CompletableFuture<OresMutex.Guard<int[]>>>
+                    queued = new AtomicReference<>();
+            var ref = runtime.<String>spawnShared(() -> (message, context) -> {
+                queued.set(mutex.lockAsync());
+                assertFalse(queued.get().isDone(), "holder still owns the permit");
+                context.self().stop();
+            });
+            try {
+                ref.send("queue");
+                assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS),
+                        "STOP did not retire actor-owned async waiter");
+                assertNotNull(queued.get());
+                assertTrue(queued.get().isCancelled(),
+                        "queued actor-owned waiter survived termination");
+                assertTrue(ref.getDone().isDone());
+                assertFalse(mutex.isPoisoned(),
+                        "an ungranted lock request cannot be a dirty writer");
+            } finally {
+                hostHolder.release();
+            }
+            var later = mutex.tryLock().orElseThrow();
+            later.release();
+        }
+    }
+
+    @Test
     void blockedActorExitHookDoesNotHoldLifecycleMonitorOrPublishDone()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
