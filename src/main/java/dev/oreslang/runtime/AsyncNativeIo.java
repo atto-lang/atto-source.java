@@ -16,6 +16,19 @@ public final class AsyncNativeIo implements AutoCloseable {
     private final ExecutorService workers;
     private final Set<Operation<?>> admittedWork = new HashSet<>();
     private final Set<AutoCloseable> closingResources = new HashSet<>();
+    private final Set<StopThenRelease> deferredResources = new HashSet<>();
+
+    /**
+     * Trusted host resource whose shutdown request cannot certify physical release.
+     * requestStop() may interrupt/close a transport, but MUST NOT reclaim pinned
+     * buffers, FFI state, or callback-owned memory. close() is the final resource
+     * release, invoked only after every context I/O operation and inline
+     * completion notification has retired. External callbacks still require
+     * their own generation-scoped physical receipts.
+     */
+    interface StopThenRelease extends AutoCloseable {
+        void requestStop() throws Exception;
+    }
     private final OresFuture<Void> physicalShutdown = new OresFuture<>(() -> false, () -> { });
     private boolean closeScanPending;
     private int rejectedResourceCloses; // physical close attempts outside context monitor
@@ -148,18 +161,46 @@ public final class AsyncNativeIo implements AutoCloseable {
 
     /** Never publish success while unstarted/running work or close is unresolved. */
     private void maybePublishPhysicalShutdown() {
+        Set<StopThenRelease> ready;
         boolean publish;
         synchronized (this) {
-            publish = closed && !closeScanPending && resourceCloseFinished
+            boolean operationsDrained = closed && !closeScanPending
+                    && resourceCloseFinished && admittedWork.isEmpty();
+            // Claim the final close batch under the same lock as admission.
+            // Counter is reserved BEFORE callbacks execute outside the lock.
+            if (operationsDrained && !deferredResources.isEmpty()) {
+                ready = new HashSet<>(deferredResources);
+                deferredResources.clear();
+                rejectedResourceCloses += ready.size();
+            } else {
+                ready = Set.of();
+            }
+            publish = operationsDrained && ready.isEmpty()
                     && rejectedResourceCloses == 0
-                    && resourceCloseFailure == null && admittedWork.isEmpty()
+                    && resourceCloseFailure == null
                     && !physicalShutdownPublished;
             if (publish) {
                 physicalShutdownPublished = true;
                 closingResources.clear();
             }
         }
+        // No final resource disposer may race a RUNNING Callable or the
+        // synchronous completion listeners that may still hold a host loan.
+        Throwable fatal = null;
+        for (StopThenRelease resource : ready) {
+            try {
+                resource.close();
+            } catch (Throwable failure) {
+                recordPhysicalShutdownFailure(failure);
+                if ((failure instanceof VirtualMachineError || failure instanceof ThreadDeath)
+                        && fatal == null) fatal = failure;
+            } finally {
+                synchronized (this) { rejectedResourceCloses--; }
+            }
+        }
+        if (!ready.isEmpty()) maybePublishPhysicalShutdown();
         if (publish) physicalShutdown.completeFromRuntime(null);
+        if (fatal instanceof Error error) throw error;
     }
 
     public <T> OresFuture<T> submit(OresContext context,
@@ -271,7 +312,15 @@ public final class AsyncNativeIo implements AutoCloseable {
         // prevent attempts for every other resource.
         for (AutoCloseable resource : closing) {
             try {
-                resource.close();
+                if (resource instanceof StopThenRelease staged) {
+                    // Defer physical reclamation until the last host worker
+                    // AND its terminal observer have left. STOP is merely a
+                    // cancellation request and can run while they still own loans.
+                    synchronized (this) { deferredResources.add(staged); }
+                    staged.requestStop();
+                } else {
+                    resource.close();
+                }
             } catch (Throwable failure) {
                 recordPhysicalShutdownFailure(failure);
                 if ((failure instanceof VirtualMachineError || failure instanceof ThreadDeath)
@@ -293,7 +342,7 @@ public final class AsyncNativeIo implements AutoCloseable {
             resourceCloseFinished = true;
             closeScanPending = false;
         }
-                maybePublishPhysicalShutdown();
+        maybePublishPhysicalShutdown();
         if (fatal instanceof Error error) throw error;
     }
 }
