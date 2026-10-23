@@ -74,6 +74,80 @@ public final class TaskOwnedLockLedgerTest {
     }
 
     @Test
+    void staleQueuedFutureSkipsPermitWithoutForgingCallbackDrain()
+            throws Exception {
+        // Fault injection models a terminal Future whose synchronous host
+        // subscriber has not yet allowed the queue's own observer to run.
+        // The releaser must not confuse public isDone with physical cleanup.
+        var mutex = OresMutex.shared(new int[] {13});
+        var hostGuard = mutex.tryLock().orElseThrow();
+        AtomicReference<java.util.concurrent.CompletableFuture<OresMutex.Guard<int[]>>>
+                request = new AtomicReference<>();
+        Thread requester = Thread.ofPlatform().start(
+                () -> request.set(mutex.lockAsync()));
+        requester.join(5000);
+        assertFalse(requester.isAlive());
+        assertNotNull(request.get());
+        assertFalse(request.get().isDone());
+
+        var queueField = OresMutex.Shared.class.getDeclaredField("asyncQueue");
+        var lockField = OresMutex.Shared.class.getDeclaredField("asyncQueueLock");
+        queueField.setAccessible(true);
+        lockField.setAccessible(true);
+        Object waiter;
+        synchronized (lockField.get(mutex)) {
+            waiter = ((java.util.ArrayDeque<?>) queueField.get(mutex)).peekFirst();
+        }
+        assertNotNull(waiter);
+        var receiptField = waiter.getClass().getDeclaredField("physicalSettlement");
+        receiptField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        java.util.concurrent.CompletableFuture<Void> physical =
+                (java.util.concurrent.CompletableFuture<Void>) receiptField.get(waiter);
+
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch unblock = new CountDownLatch(1);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        request.get().whenComplete((ignored, error) -> {
+            entered.countDown();
+            try {
+                if (!unblock.await(5, TimeUnit.SECONDS)) {
+                    throw new AssertionError("blocked subscriber timed out");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(interrupted);
+            }
+        });
+        var injection = OresMutex.GuardFuture.class.getDeclaredMethod(
+                "completeCancellationFromRuntime", boolean.class);
+        injection.setAccessible(true);
+        Thread notifier = Thread.ofPlatform().start(() -> {
+            try {
+                injection.invoke(request.get(), false);
+            } catch (Throwable error) {
+                failure.set(error);
+            }
+        });
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            assertTrue(request.get().isCancelled());
+            hostGuard.release(); // Skip terminal queue entry during callback
+            assertFalse(physical.isDone(),
+                    "stale queue path forged physical Task receipt before notifier drain");
+        } finally {
+            unblock.countDown();
+            notifier.join(5000);
+        }
+        assertFalse(notifier.isAlive());
+        assertNull(failure.get());
+        physical.get(5, TimeUnit.SECONDS);
+        var next = mutex.tryLock().orElseThrow();
+        next.release();
+        assertFalse(mutex.isPoisoned());
+    }
+
+    @Test
     void losingGrantAndFailureHandoffsWaitForCancellationSubscriberDrain()
             throws Exception {
         // Force the owner-death publication claim to win, then leave its
