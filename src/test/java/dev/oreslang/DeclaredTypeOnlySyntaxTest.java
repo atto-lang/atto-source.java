@@ -3,11 +3,18 @@ package dev.oreslang;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.LinkedProgramRunner;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 final class DeclaredTypeOnlySyntaxTest {
+    @TempDir Path temp;
+
     @Test
     void acceptsAllThreeDeclaredTypeFamiliesWithPublicVisibility() {
         Ast.Program program = Parser.parse("""
@@ -108,4 +115,45 @@ final class DeclaredTypeOnlySyntaxTest {
                 }
                 """));
     }
+    @Test
+    void publicTypeOnlyFamiliesLinkThroughTheirImportSelectors() throws Exception {
+        Path exported = temp.resolve("types.ores");
+        Path imported = temp.resolve("main.ores");
+        Files.writeString(exported, """
+                declare pub type Id = int;
+                declare pub trait Tagged as
+                  fnc tag() => int;
+                end
+                declare pub interface Endpoint as
+                  fnc request() => int;
+                end
+                """);
+        Files.writeString(imported, """
+                import type Id from './types';
+                import trait Tagged from './types';
+                import interface Endpoint from './types';
+                pub routine main(): void { return; }
+                """);
+        assertDoesNotThrow(() -> LinkedProgramRunner.validate(imported));
+    }
+
+    @Test
+    void privateTypeOnlyDefinitionsCannotBeImportedAsPublic() throws Exception {
+        Path exported = temp.resolve("types.ores");
+        Files.writeString(exported, """
+                declare type Id = int;
+                declare trait Tagged as end
+                declare interface Endpoint as end
+                """);
+        for (String selection : new String[]{
+                "type Id", "trait Tagged", "interface Endpoint"
+        }) {
+            Path imported = temp.resolve("import-" + selection.replace(' ', '-') + ".ores");
+            Files.writeString(imported, "import " + selection
+                    + " from './types'; pub routine main(): void { return; }");
+            assertThrows(IllegalArgumentException.class,
+                    () -> LinkedProgramRunner.validate(imported), selection);
+        }
+    }
+
 }
