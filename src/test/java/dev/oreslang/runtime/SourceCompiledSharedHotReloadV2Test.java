@@ -206,11 +206,12 @@ final class SourceCompiledSharedHotReloadV2Test {
                                     new ActorRoutePublicationV1.StateSnapshot(
                                             candidateImage.stateSchemaSha256(),
                                             migratedCheckpoint),
-                                    newRoute));
+                                    newRoute,
+                                    oldPhysicalFreeze::commitForRetirement));
 
-                            // Publication is now authoritative. Keep the old
-                            // physical actor fenced until it is fully retired.
-                            oldPhysicalFreeze.commitForRetirement();
+                            // Publication is now authoritative and the old
+                            // physical ingress fence was made irreversible at
+                            // the same linearization point.
                             oldRef.stop();
                             oldRef.getDone().get(8, TimeUnit.SECONDS);
 
