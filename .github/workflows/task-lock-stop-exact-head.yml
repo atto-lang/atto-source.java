@@ -43,7 +43,7 @@ jobs:
           mvn -version
       - name: Compile and run the lock, Task and actor STOP regressions
         run: |
-          mvn -B -ntp -Dores.runtime.carriers=native "-Dtest=TaskOwnedLockLedgerTest,MutexRuntimeTest,SharedMutexPublicationTest,ActorLockStopRetirementTest,ActorCarrierIdentityCleanupTest,ActorStopMailboxRaceTest,TaskHandleTest,TaskScopeTest,TaskCancellationTest" test
+          mvn -B -ntp -Dores.runtime.carriers=native "-Dtest=TaskOwnedLockLedgerTest,MutexRuntimeTest,SharedMutexPublicationTest,ActorLockStopRetirementTest,FormalActorStopRetirementModelCheckTest,FormalStructuredCancellationModelCheckTest,ActorCarrierIdentityCleanupTest,ActorStopMailboxRaceTest,TaskHandleTest,TaskScopeTest,TaskCancellationTest" test
 
   full-regression:
     name: Full source Java regression / exact same push commit
