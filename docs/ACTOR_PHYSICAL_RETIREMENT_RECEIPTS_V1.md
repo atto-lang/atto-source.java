@@ -312,3 +312,52 @@ still require an authorized exact-head JDK25 JUnit and GraalVM native-image
 run, plus race testing with the real transport/FFI drivers.
 A successful source scan is only an audit of intended code paths, not
 an execution proof. Keep #1940 draft until all safety gates pass.
+
+## No empty-fence window during deferred STOP admission (2026-10-23)
+
+A concurrent STOP was still able to observe `pending=0` and
+`inFlightNotifications=0` between the first `stateChanged` callback
+returning and `postDrainExecutor.execute()` being accepted. Such a STOP
+could retire the actor *before* asynchronous dispatch failed and latched
+a quarantine error. This is a deterministic safety counterexample even
+though the first owner notification itself was fenced.
+
+`Receipt.completeAfterPhysicalRelease()` now **keeps the in-flight
+notification reservation** across the entire host-wake submission
+handshake. A successful queued task releases that reservation only when
+its accepted post-drain wake begins. If dispatch rejects, the registry
+latches `firstFailure` before decreasing the reservation; the queued
+but rejected runnable cannot execute its notification. If an accepted
+task is never run, the reservation remains nonzero and no STOP can
+fabricate `Actor.done()`. The legacy direct registry test path consumes
+the reservation immediately before its final synchronous notification.
+
+Deterministic regressions:
+- `rejectedPostDrainWakeCannotRaceConcurrentStopRetirement`: blocks
+  inside `execute` after the first callback and attempts verified
+  retirement from another thread, then rejects; both before and after
+  rejection retirement must be refused.
+- `acceptedButNeverRunPostDrainWakeKeepsRetirementFenced`: a dropped
+  accepted wake cannot permit DONE; executing it subsequently permits
+  retirement.
+- `deferredFinalWakeFailureSticksBeforeVerifiedRetirement`: a
+  failing final notifier leaves a sticky quarantine failure.
+- `actualActorDoneWaitsForQueuedHostPhysicalWake`: blocks every
+  worker in the real ActorRuntime bounded native-close executor,
+  releases its last FFI receipt, and verifies `ActorRef.done()` stays
+  pending until the final host wake runs.
+- Existing queued post-drain tests now explicitly require one
+  outstanding notification reservation until the wake is delivered.
+
+`sourceTaskCleanupQuiesced()` now notifies blocked joiners *before*
+calling `finalizeStopLocked()` as its terminal operation, so the real
+last host callback contains no further fallible Java operations after
+the point at which `ActorRef.done()` is published. This change does
+not claim that arbitrary third-party native driver code has exited merely
+because a registry receipt was settled; driver-specific physical-exit
+evidence is still mandatory.
+
+**Release gate:** All of these tests are source-only until the JDK25
+Java-carrier and native-carrier suites actually execute. Exhaustive
+scheduler interleaving, fatal VM conditions and native callback-exit
+semantics are not established by this limited protocol patch.
