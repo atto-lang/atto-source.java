@@ -31,6 +31,7 @@ final class ActorStopCleanupAdmissionTest {
         final CountDownLatch childrenOwned = new CountDownLatch(2);
         final CountDownLatch revokerArmed = new CountDownLatch(1);
         final CountDownLatch firstRevokerEntered = new CountDownLatch(1);
+        final CountDownLatch bothRevokersEntered = new CountDownLatch(2);
         final CountDownLatch releaseRevokers = new CountDownLatch(1);
         final CountDownLatch spawnerEntered = new CountDownLatch(1);
         final CountDownLatch allowSpawner = new CountDownLatch(1);
@@ -59,6 +60,7 @@ final class ActorStopCleanupAdmissionTest {
             }
             OresFuture<Void> resource = new OresFuture<>(() -> {
                 fixture.firstRevokerEntered.countDown();
+                fixture.bothRevokersEntered.countDown();
                 try {
                     if (!fixture.releaseRevokers.await(5, TimeUnit.SECONDS)) {
                         throw new IllegalStateException("test child revoker not released");
@@ -525,6 +527,82 @@ final class ActorStopCleanupAdmissionTest {
             assertInstanceOf(ActorRuntime.ActorCancelledException.class,
                     assertThrows(ExecutionException.class,
                             () -> parent.done().get(3, TimeUnit.SECONDS)).getCause());
+        }
+    }
+
+    @Test
+    void vmOwnedStopDispatcherFansOutSiblingsWithoutBlockingParentOrSource()
+            throws Exception {
+        String token = java.util.UUID.randomUUID().toString();
+        StopFenceFixture fixture = new StopFenceFixture();
+        STOP_FENCE_FIXTURES.put(token, fixture);
+        try {
+            AtomicReference<java.util.List<ActorRuntime.ActorRef<String>>> children =
+                    new AtomicReference<>();
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            java.util.concurrent.atomic.AtomicInteger accepted =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            ActorRuntime.PhysicalStopDispatcher physical = stopWork -> {
+                accepted.incrementAndGet();
+                // Only this test supplies virtual worker threads. The
+                // production API requires a VM-owned bounded dispatcher and
+                // never executes a blocking revoker on CONTROL.
+                Thread.ofVirtual().start(stopWork);
+            };
+            try (ActorRuntime runtime = new ActorRuntime(
+                    IsolatePolicy.developer(),
+                    ActorRuntime.DispatcherConfig.defaults(),
+                    ActorRuntime.TurnExecutor.direct(),
+                    ActorRuntime.ControlDispatcher.unavailable(),
+                    physical)) {
+                var parent = runtime.<String>spawnShared(() -> (message, context) -> {
+                    var first = context.runtime().spawnShared(
+                            ActorStopCleanupAdmissionTest::stopFenceResourceChild);
+                    var second = context.runtime().spawnShared(
+                            ActorStopCleanupAdmissionTest::stopFenceResourceChild);
+                    children.set(java.util.List.of(first, second));
+                    first.send(token + "#own");
+                    second.send(token + "#own");
+                });
+                parent.send("spawn");
+                assertTrue(fixture.childrenOwned.await(3, TimeUnit.SECONDS));
+                Thread cancelling = Thread.ofVirtual().start(() -> {
+                    try {
+                        parent.cancel();
+                    } catch (Throwable problem) {
+                        failure.set(problem);
+                    }
+                });
+                try {
+                    assertTrue(fixture.bothRevokersEntered.await(3, TimeUnit.SECONDS),
+                            "the second child's STOP must not wait on the first revoker");
+                    cancelling.join(TimeUnit.SECONDS.toMillis(2));
+                    assertFalse(cancelling.isAlive(),
+                            "parent STOP dispatch must return before physical revokers");
+                    assertEquals(2, accepted.get(),
+                            "each direct child needs an independently admitted teardown");
+                    assertFalse(parent.done().isDone(),
+                            "DONE cannot precede both physical child receipts");
+                    assertFalse(parent.awaitTermination(100, TimeUnit.MILLISECONDS));
+                    for (var child : children.get()) {
+                        assertFalse(child.done().isDone(),
+                                "blocked revoker keeps the corresponding child alive");
+                    }
+                } finally {
+                    fixture.releaseRevokers.countDown();
+                }
+                assertTrue(parent.awaitTermination(3, TimeUnit.SECONDS));
+                for (var child : children.get()) {
+                    assertTrue(child.awaitTermination(3, TimeUnit.SECONDS));
+                }
+                assertNull(failure.get(), () -> String.valueOf(failure.get()));
+                assertNull(fixture.guestFailure.get(),
+                        () -> String.valueOf(fixture.guestFailure.get()));
+                assertEquals(0, fixture.forbiddenMessages.get());
+            }
+        } finally {
+            fixture.releaseRevokers.countDown();
+            STOP_FENCE_FIXTURES.remove(token);
         }
     }
 
