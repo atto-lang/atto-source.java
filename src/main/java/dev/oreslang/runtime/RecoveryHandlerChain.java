@@ -83,6 +83,23 @@ public final class RecoveryHandlerChain<T> {
     public static final int MAX_HANDLERS = 1024;
     private static final int MAX_FAILURE_GRAPH_NODES = 64;
 
+    /**
+     * The host Throwable graph is not an authenticated guest exception graph.
+     * getCause() is virtual: an overriding foreign implementation can lie,
+     * alternate between values, or throw. Reject such implementations rather
+     * than trusting a sampled view to authorize recovery. Cache metadata per
+     * class to avoid repeated reflection during dispatch.
+     */
+    private static final ClassValue<Boolean> STANDARD_CAUSE_ACCESSOR = new ClassValue<>() {
+        @Override protected Boolean computeValue(Class<?> type) {
+            try {
+                return type.getMethod("getCause").getDeclaringClass() == Throwable.class;
+            } catch (ReflectiveOperationException | SecurityException inaccessible) {
+                return false;
+            }
+        }
+    };
+
     private final Handler<T>[] handlers;
     private final byte[] effectMasks;
 
@@ -205,7 +222,13 @@ public final class RecoveryHandlerChain<T> {
         // Most guest failures are ordinary leaves. Avoid allocating graph-walk
         // containers on this common exceptional path.
         if (isTerminal(failure)) return true;
-        if (failure.getCause() == null && failure.getSuppressed().length == 0) {
+        // Reject a foreign virtual accessor before calling it even once:
+        // checking two successive reads is not sufficient against a stateful
+        // override, and a later callback could exploit inconsistent reads.
+        if (!STANDARD_CAUSE_ACCESSOR.get(failure.getClass())) return true;
+        Throwable rootCause = failure.getCause();
+        Throwable[] rootSuppressed = failure.getSuppressed();
+        if (rootCause == null && rootSuppressed.length == 0) {
             return false;
         }
         ArrayDeque<Throwable> pending = new ArrayDeque<>();
@@ -215,12 +238,13 @@ public final class RecoveryHandlerChain<T> {
             Throwable current = pending.removeFirst();
             if (!seen.add(current) || seen.size() > MAX_FAILURE_GRAPH_NODES) return true;
             if (isTerminal(current)) return true;
-            Throwable cause = current.getCause();
+            if (!STANDARD_CAUSE_ACCESSOR.get(current.getClass())) return true;
+            Throwable cause = current == failure ? rootCause : current.getCause();
             if (cause != null) {
                 if (pending.size() + seen.size() >= MAX_FAILURE_GRAPH_NODES) return true;
                 pending.addLast(cause);
             }
-            Throwable[] suppressed = current.getSuppressed();
+            Throwable[] suppressed = current == failure ? rootSuppressed : current.getSuppressed();
             // Bound breadth during insertion as well as traversal. A malicious
             // Throwable with thousands of suppressed failures may not allocate
             // an unbounded work queue on the actor recovery path.
