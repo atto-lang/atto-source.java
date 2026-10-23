@@ -378,6 +378,74 @@ final class TaskPipelineTest {
     }
 
     @Test
+    void cancellingExposedParentResultRevokesCurrentTaskPipelineButWaitsForPhysicalRetirement()
+            throws Exception {
+        OresFuture<Integer> borrowed = OresFuture.completed(41);
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicReference<TaskPipeline.PipelineHandle<Integer>> child = new AtomicReference<>();
+
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            TaskHandle<Integer> parent = scheduler.startTracked(resume -> {
+                if (resume.initial()) {
+                    TaskPipeline.PipelineHandle<Integer> pipeline =
+                            TaskPipeline.startInCurrentTaskOrRoot(scheduler, borrowed,
+                                    List.of(value -> {
+                                        entered.countDown();
+                                        if (!release.await(5, TimeUnit.SECONDS)) {
+                                            throw new IllegalStateException("stage gate timed out");
+                                        }
+                                        return ((Integer) value) + 1;
+                                    }));
+                    child.set(pipeline);
+                    return OresScheduler.await(pipeline.result());
+                }
+                if (resume.failure() != null) {
+                    throw new IllegalStateException("unexpected child failure",
+                            resume.failure());
+                }
+                return OresScheduler.done((Integer) resume.value());
+            });
+
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            try {
+                // This is the source-language-facing cancellation path:
+                // cancelling result() must revoke descendants even without
+                // an explicit TaskHandle.cancel() or TaskScope.cancel().
+                assertTrue(parent.result().cancel(false));
+                assertTrue(parent.result().isCancelled());
+                assertFalse(parent.getDone().isDone(),
+                        "parent join cannot claim physical retirement while child runs");
+                assertFalse(child.get().getDone().isDone(),
+                        "child is still physically executing its stage");
+                assertFalse(borrowed.isCancelled(),
+                        "a borrowed upstream Future must not be revoked");
+            } finally {
+                release.countDown();
+            }
+            assertInstanceOf(TaskHandle.Cancelled.class,
+                    parent.getDone().get(5, TimeUnit.SECONDS));
+            assertInstanceOf(TaskHandle.Cancelled.class,
+                    child.get().getDone().get(5, TimeUnit.SECONDS));
+            assertFalse(borrowed.isCancelled());
+        }
+    }
+
+    @Test
+    void aTrackedRootMayStartPipelineWithoutAnExistingParentTask()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            TaskPipeline.PipelineHandle<Integer> root =
+                    TaskPipeline.startInCurrentTaskOrRoot(scheduler,
+                            OresFuture.completed(9),
+                            List.of(value -> ((Integer) value) + 1));
+            assertEquals(10, root.result().get(5, TimeUnit.SECONDS));
+            assertInstanceOf(TaskHandle.Success.class,
+                    root.getDone().get(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void sealedScopeRejectsPipelineWithoutChangingInputFuture() {
         OresFuture<Integer> input = new OresFuture<>();
         try (OresScheduler scheduler = new OresScheduler(1)) {
