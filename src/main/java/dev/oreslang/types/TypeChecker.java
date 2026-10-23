@@ -101,6 +101,38 @@ public final class TypeChecker {
             }
         }
 
+        /**
+         * Atomically publish only after every declaration has passed type
+         * checking. Preflight all shape/identity conflicts first so a bad
+         * compilation cannot leave a partially authorized prefix.
+         */
+        private static synchronized void publish(
+                Map<Ast.CallExpr, Ast.FunctionDecl> staged) {
+            java.util.Objects.requireNonNull(staged, "staged Future proofs");
+            expunge();
+            for (Map.Entry<Ast.CallExpr, Ast.FunctionDecl> entry : staged.entrySet()) {
+                Ast.CallExpr call = entry.getKey();
+                Ast.FunctionDecl target = entry.getValue();
+                if (call == null || target == null
+                        || call.origin() != Ast.CallOrigin.VALUE_PIPE_ARGUMENT
+                        || call.arguments().size() != 1
+                        || !(call.callee() instanceof Ast.NameExpr name)
+                        || !name.name().equals(target.name())
+                        || target.parameters().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "invalid staged Future pipeline proof");
+                }
+                Ast.FunctionDecl prior = CHECKED.get(new IdentityKey(call, null));
+                if (prior != null && prior != target) {
+                    throw new IllegalStateException(
+                            "Future pipeline stage rebound after type checking");
+                }
+            }
+            for (Map.Entry<Ast.CallExpr, Ast.FunctionDecl> entry : staged.entrySet()) {
+                record(entry.getKey(), entry.getValue());
+            }
+        }
+
         /** Missing proofs, including fresh/rebuilt ASTs, fail closed. */
         public static synchronized Ast.FunctionDecl target(Ast.CallExpr call) {
             java.util.Objects.requireNonNull(call, "checked Future call");
@@ -154,6 +186,13 @@ public final class TypeChecker {
     private final Set<String> inferredTypeNames = new HashSet<>();
     /** Short named inference is resolved only for otherwise unbound capitalized row type names. */
     private final IdentityHashMap<Ast.BindingStmt, String> shortInferredTypeNames = new IdentityHashMap<>();
+    /**
+     * A failed type-check must not leave executable proof side-table entries
+     * on AST nodes it partially visited. Stage only per-checker authorization
+     * and publish once all module declarations validate successfully.
+     */
+    private final IdentityHashMap<Ast.CallExpr, Ast.FunctionDecl> pendingPureFutureStages =
+            new IdentityHashMap<>();
 
     private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.InterfaceDecl, String> interfaceOwners = new IdentityHashMap<>();
@@ -230,6 +269,7 @@ public final class TypeChecker {
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
+        CheckedPureFuturePipe.publish(checker.pendingPureFutureStages);
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
     }
 
@@ -325,6 +365,7 @@ public final class TypeChecker {
             throw new IllegalArgumentException("orphaned linked class field alias metadata");
         }
         checker.validate(program);
+        CheckedPureFuturePipe.publish(checker.pendingPureFutureStages);
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
     }
 
@@ -4748,7 +4789,11 @@ public final class TypeChecker {
         // This proof is attached only after the entire stage is checked.
         // Rewrites deliberately lose it, so the evaluator cannot execute a
         // type-checked stage body with a substituted callee or argument.
-        CheckedPureFuturePipe.record(call, stage);
+        Ast.FunctionDecl priorStage = pendingPureFutureStages.putIfAbsent(call, stage);
+        if (priorStage != null && priorStage != stage) {
+            throw new IllegalStateException(
+                    "Future pipeline stage rebound during type checking");
+        }
         return new Named("Future", List.of(output));
     }
 
