@@ -204,8 +204,23 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
                 // The old physical ingress fence is already held and drained.
                 // Make it irreversible only now, after every allocation and
                 // validation above, immediately before the one logical CAS-like
-                // publication below.
-                commitOldPhysicalFence.run();
+                // publication below. Any failure is ambiguous with respect to
+                // physical authority, so logical DATA remains quarantined and
+                // ordinary Stage.close() must never reopen the old route.
+                try {
+                    commitOldPhysicalFence.run();
+                } catch (RuntimeException | Error physicalFenceFailure) {
+                    poisoned = true;
+                    try {
+                        nextGate.close();
+                    } catch (RuntimeException | Error cleanupFailure) {
+                        if (cleanupFailure != physicalFenceFailure)
+                            physicalFenceFailure.addSuppressed(cleanupFailure);
+                    }
+                    throw new IllegalStateException(
+                            "old physical retirement fence commit failed; DATA quarantined",
+                            physicalFenceFailure);
+                }
 
                 // ONE volatile publication, while DATA dispatch is blocked by
                 // this monitor AND both logical/physical mailbox freezes.
