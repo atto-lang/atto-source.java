@@ -127,6 +127,11 @@ public final class SupervisorLifecycleFsmOracle {
         check(!coordinator.admissionsOpen() && !coordinator.restartPermitted(),
                 "supervisor advertised admissions after losing CONTROL");
         mustReject(coordinator, new SupervisorLifecycleFsm.RestartRequested(1));
+        mustReject(coordinator, new SupervisorLifecycleFsm.ShutdownRequested(1, Set.of()));
+        mustReject(coordinator, new SupervisorLifecycleFsm.ShutdownWithChildEpochs(
+                1, Map.of()));
+        // Emergency cleanup is an independent host path; it must not
+        // pretend CONTROL can still initiate guest shutdown hooks.
         var afterCoordinator = apply(coordinator,
                 new SupervisorLifecycleFsm.CoordinatorFailed(1));
         check(afterCoordinator == coordinator, "duplicate coordinator fault mutated state");
