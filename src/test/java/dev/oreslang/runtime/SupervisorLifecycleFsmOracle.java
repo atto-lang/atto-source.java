@@ -91,6 +91,13 @@ public final class SupervisorLifecycleFsmOracle {
         recycled = apply(recycled, new SupervisorLifecycleFsm.RestartCommitted(1));
         check(recycled.epoch() == 2, "fresh restart receipt was ignored");
 
+        var staleLegacy = SupervisorLifecycleFsm.State.initial();
+        staleLegacy = apply(staleLegacy, new SupervisorLifecycleFsm.ActorsFinished(1, false));
+        staleLegacy = apply(staleLegacy, new SupervisorLifecycleFsm.PhysicalRelease(1));
+        staleLegacy = apply(staleLegacy, new SupervisorLifecycleFsm.ShutdownRequested(1, Set.of()));
+        check(!staleLegacy.actorsDone() && !staleLegacy.physicalReleased(),
+                "legacy shutdown inherited an unfenced physical release");
+
         var staleShutdown = SupervisorLifecycleFsm.State.initial();
         staleShutdown = apply(staleShutdown, new SupervisorLifecycleFsm.ActorsFinished(1, false));
         staleShutdown = apply(staleShutdown, new SupervisorLifecycleFsm.PhysicalRelease(1));
