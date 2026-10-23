@@ -118,6 +118,8 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     private boolean notificationDrainComplete;
     private final AtomicReference<Runnable> cancelHook;
     private final AtomicBoolean cancelHookRun = new AtomicBoolean();
+    /** Runtime-owned physical resource revocation failures are never a clean release receipt. */
+    private final AtomicReference<Throwable> cancelHookFailure = new AtomicReference<>();
     /**
      * A subscriber registering after the cancellation CAS must not run its
      * callback before the internal revoker. Deferring such a subscriber to
@@ -689,12 +691,18 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         if (hook != null && cancelHookRun.compareAndSet(false, true)) {
             try {
                 hook.run();
-            } catch (RuntimeException | Error ignored) {
-                // Cancellation is already authoritative. Neither a
-                // misbehaving host hook nor arbitrary Future subscribers
-                // may restore the operation or prevent waiter delivery.
+            } catch (RuntimeException | Error failure) {
+                // The terminal cancellation remains authoritative and other
+                // subscribers must still be notified. Preserve the physical
+                // revoker failure for actor arena-retirement/quarantine checks.
+                cancelHookFailure.compareAndSet(null, failure);
             }
         }
+    }
+
+    /** Host-only inspection after a terminal notification-drain receipt. */
+    Throwable cancellationHookFailureFromRuntime() {
+        return cancelHookFailure.get();
     }
 
     private boolean settle(Object terminal) {
