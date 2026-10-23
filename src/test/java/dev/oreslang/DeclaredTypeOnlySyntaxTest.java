@@ -208,7 +208,9 @@ final class DeclaredTypeOnlySyntaxTest {
                 "declare type Code; define class Code as end",
                 "TYPE_FORWARD_KIND_MISMATCH",
                 "declare type Code; define type Code = int; define type Code = bool;",
-                "TYPE_DECL_NAME_COLLISION");
+                "TYPE_DECL_NAME_COLLISION",
+                "define type Code = int; declare type Code;",
+                "TYPE_FORWARD_AFTER_DEFINITION");
         for (var entry : rejected.entrySet()) {
             IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                     () -> OresCompiler.parseAndTypeCheck(entry.getKey()), entry.getKey());
