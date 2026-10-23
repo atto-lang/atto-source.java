@@ -73,7 +73,8 @@ WorkerRetired(n, e) ==
     /\ n \in Nodes
     /\ e = epoch[n]
     /\ ~workerDone[n]
-    /\ phase[n] \notin {"Stopped", "Reclaimed"}
+    \* A pre-fence RUNNING receipt must not certify a later shutdown.
+    /\ phase[n] \notin {"Running", "Stopped", "Reclaimed"}
     /\ workerDone' = [workerDone EXCEPT ![n] = TRUE]
     /\ UNCHANGED <<phase, epoch, fenced, loans, preDone, postDone, timedOut>>
 
@@ -83,6 +84,7 @@ ReturnLoan(n, e) ==
     /\ n \in Nodes
     /\ e = epoch[n]
     /\ workerDone[n]
+    /\ phase[n] # "Running"
     /\ loans[n] > 0
     /\ loans' = [loans EXCEPT ![n] = 0]
     /\ UNCHANGED <<phase, epoch, fenced, workerDone, preDone, postDone,
@@ -189,8 +191,13 @@ NoRestartAfterFence ==
     \A n \in Nodes :
         fenced[n] => phase[n] \notin {"Running", "Restarting"}
 
+NoPreFenceRetirementReceipt ==
+    \A n \in Nodes :
+        phase[n] = "Running" => (~workerDone[n] /\ loans[n] = 1)
+
 Safety ==
     TypeOK /\ FenceSafety /\ ShutdownSafety /\
-    NoPrematureReclaim /\ NoPostBeforeChildren /\ NoRestartAfterFence
+    NoPrematureReclaim /\ NoPostBeforeChildren /\ NoRestartAfterFence /\
+    NoPreFenceRetirementReceipt
 
 =============================================================================
