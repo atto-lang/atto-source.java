@@ -162,6 +162,7 @@ final class ImportGraph {
                             && alias.visibility() == Ast.Visibility.PUBLIC
                             && alias.name().equals(name);
                     case TYPES -> (decl instanceof Ast.InterfaceDecl iface
+                                    && !iface.moduleContract()
                                     && iface.visibility() == Ast.Visibility.PUBLIC
                                     && iface.name().equals(name))
                             || (decl instanceof Ast.TypeAliasDecl alias
