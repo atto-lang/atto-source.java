@@ -147,6 +147,14 @@ public final class OresVM implements AutoCloseable {
         return controlExecutor.getPoolSize();
     }
 
+    NioReadinessGroup nioReadiness() {
+        if (!started()) {
+            throw new IllegalStateException(
+                    "Oreslang VM NIO readiness was requested before startup");
+        }
+        return nioReadiness;
+    }
+
     public OresScheduler rootScheduler() {
         if (!started()) {
             throw new IllegalStateException(
@@ -187,6 +195,7 @@ public final class OresVM implements AutoCloseable {
         // An ordinary actor/Mailman must likewise delegate blocking VM teardown
         // to its supervising host after its turn finishes.
         if (OresScheduler.current() != null
+                || onNioWorker()
                 || ActorRuntime.inActorExecution()
                 || ActorRuntime.inActorGroupMailmanExecution()) {
             throw new IllegalStateException(
@@ -195,6 +204,18 @@ public final class OresVM implements AutoCloseable {
         synchronized (this) {
             if (!closed.compareAndSet(false, true)) return;
             startupState = StartupState.CLOSED;
+            nioReadiness.close();
+            try {
+                if (!nioReadiness.awaitStopped(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException(
+                            "Oreslang NIO readiness domain did not terminate");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(
+                        "interrupted while closing Oreslang NIO readiness domain",
+                        interrupted);
+            }
             try {
                 rootScheduler.close();
             } finally {
