@@ -123,7 +123,7 @@ public final class NativeHttp implements AutoCloseable {
          * A failed startup cannot certify a candidate for routing publication.
          * The returned Future is host-owned; no carrier thread is parked.
          */
-        OresFuture<Void> warmup() {
+        public OresFuture<Void> warmup() {
             supervisor();
             if (workers == null) throw new IllegalStateException("rolling handler must be pooled");
             final java.util.List<Worker> prepared = new java.util.ArrayList<>();
@@ -308,7 +308,7 @@ public final class NativeHttp implements AutoCloseable {
         synchronized void claimRollingDispatcher(NativeHttpRollingDispatcher owner) {
             supervisor();
             Objects.requireNonNull(owner);
-            if (stopped || rollingOwner != null || waiter != null || !pending.isEmpty())
+            if (stopped || rollingOwner != null || waiter != null || !pending.isEmpty() || !active.isEmpty())
                 throw new IllegalStateException("HTTP accept lane already owned or closed");
             rollingOwner = owner;
         }
