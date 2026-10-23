@@ -192,6 +192,9 @@ final class NativeHttpRollingDispatcherIntegrationTest {
             var ref = new AtomicReference<>(http);
             var g1 = http.handler(new VersionCode(image, ref, "stable", false, false),
                     "RollingWorker", ActorRuntime.ActorKind.SHARED).pooled(1);
+            assertThrows(SecurityException.class,
+                    () -> http.listen("0.0.0.0", 0, 8, 1024, 8_000),
+                    "package-private test fixture must not bypass non-loopback permissions");
             var server = http.listen("127.0.0.1", 0, 8, 1024, 8_000);
             assertThrows(IllegalArgumentException.class,
                     () -> new NativeHttpRollingDispatcher(server, 77L, g1, 3));
@@ -205,6 +208,14 @@ final class NativeHttpRollingDispatcherIntegrationTest {
                 assertFalse(rolling.promoteAfterWarmup(0L, stale).get(8, TimeUnit.SECONDS),
                         "stale expected epochs must not replace G1");
                 assertEquals(1L, rolling.snapshot().activeEpoch());
+                try (NativeHttp foreign = new NativeHttp(actors)) {
+                    var foreignPool = foreign.handler(
+                            new VersionCode(image, ref, "foreign", false, false),
+                            "RollingWorker", ActorRuntime.ActorKind.SHARED).pooled(1);
+                    assertThrows(SecurityException.class,
+                            () -> rolling.promoteAfterWarmup(1L, foreignPool),
+                            "same actor runtime does not grant another HTTP context authority");
+                }
                 assertEquals("stable", client.send(request(server.port()),
                         HttpResponse.BodyHandlers.ofString()).body());
             }
