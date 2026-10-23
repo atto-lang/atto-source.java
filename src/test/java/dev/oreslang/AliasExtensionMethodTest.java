@@ -28,6 +28,16 @@ final class AliasExtensionMethodTest {
     }
 
     @Test
+    void declareAndDefineTypeProvideExactlyTheSameExtensionSurface() {
+        for (String introducer : new String[]{"declare", "define"}) {
+            assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(
+                    introducer + " type Code = int;\n"
+                    + "define mtd to_string on Code(): string { return \"code\"; }\n"
+                    + "fnc stringify(Code code): string { return code.to_string(); }\n"));
+        }
+    }
+
+    @Test
     void typeChecksAndExecutesAliasExtensionWithoutBoxing() throws Exception {
         assertEquals("14", run("""
                 declare type Code = int;
