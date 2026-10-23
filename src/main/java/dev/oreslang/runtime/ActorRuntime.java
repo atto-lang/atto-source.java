@@ -8314,6 +8314,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void terminateTree(Throwable cause, boolean recordCause) {
             List<ActorCell<?>> descendants;
+            List<ActorPhysicalChannelLease> physicalChannels;
             List<OresFuture<?>> pending;
             List<DrainWaiter> failedDrainWaiters;
             OresScheduler cleanupScheduler;
@@ -8351,10 +8352,21 @@ public final class ActorRuntime implements AutoCloseable {
                 // Leave sourceTaskMailbox open: the stopped actor's scheduler
                 // still owns authenticated lexical unwind continuations.
                 descendants = List.copyOf(children);
+                // Registration/STOP are serialized by lifecycleLock. Every
+                // channel admitted before this seal is included exactly once.
+                physicalChannels = List.copyOf(physicalChannelLeases);
                 pending = List.copyOf(pendingOperations);
                 pendingOperations.clear();
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
+            }
+
+            // Native Channel.close may park, reenter a driver, or throw.
+            // Submit close requests AFTER releasing the actor lifecycle lock;
+            // the bounded host executor owns the physical close transition.
+            // Rejection is recorded by the ticket as incomplete cleanup.
+            for (ActorPhysicalChannelLease lease : physicalChannels) {
+                lease.requestCloseOnActorStop(physicalCloseDispatcher);
             }
 
             // Runtime Future callbacks can take other actor/lifecycle locks.
