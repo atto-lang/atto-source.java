@@ -542,19 +542,18 @@ final class ActorStopCleanupAdmissionTest {
             AtomicReference<Throwable> failure = new AtomicReference<>();
             java.util.concurrent.atomic.AtomicInteger accepted =
                     new java.util.concurrent.atomic.AtomicInteger();
-            ActorRuntime.PhysicalStopDispatcher physical = stopWork -> {
-                accepted.incrementAndGet();
-                // Only this test supplies virtual worker threads. The
-                // production API requires a VM-owned bounded dispatcher and
-                // never executes a blocking revoker on CONTROL.
-                Thread.ofVirtual().start(stopWork);
-            };
-            try (ActorRuntime runtime = new ActorRuntime(
-                    IsolatePolicy.developer(),
-                    ActorRuntime.DispatcherConfig.defaults(),
-                    ActorRuntime.TurnExecutor.direct(),
-                    ActorRuntime.ControlDispatcher.unavailable(),
-                    physical)) {
+            // Exercise the real OresVM bounded teardown lane rather than
+            // creating a worker thread per test child.
+            try (OresVM vm = OresVM.create(Runnable::run);
+                 ActorRuntime runtime = new ActorRuntime(
+                         IsolatePolicy.developer(),
+                         ActorRuntime.DispatcherConfig.defaults(),
+                         ActorRuntime.TurnExecutor.direct(),
+                         vm::executeControl,
+                         stopWork -> {
+                             accepted.incrementAndGet();
+                             vm.executePhysicalStop(stopWork);
+                         })) {
                 var parent = runtime.<String>spawnShared(() -> (message, context) -> {
                     var first = context.runtime().spawnShared(
                             ActorStopCleanupAdmissionTest::stopFenceResourceChild);
