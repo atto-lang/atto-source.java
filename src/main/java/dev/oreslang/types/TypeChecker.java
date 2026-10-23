@@ -385,6 +385,11 @@ public final class TypeChecker {
         Map<String, Ast.Visibility> completed = new LinkedHashMap<>();
         for (Ast.Decl declaration : module.declarations()) {
             if (declaration instanceof Ast.TypeForwardDecl forward) {
+                if (completed.containsKey(forward.name())) {
+                    throw new IllegalArgumentException(
+                            "TYPE_FORWARD_AFTER_DEFINITION: '" + module.name() + "."
+                                    + forward.name() + "' cannot be promised after completion");
+                }
                 if (forwards.putIfAbsent(forward.name(), forward.visibility()) != null) {
                     throw new IllegalArgumentException(
                             "TYPE_FORWARD_DUPLICATE: '" + module.name() + "." + forward.name()
