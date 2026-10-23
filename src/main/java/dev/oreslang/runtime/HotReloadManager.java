@@ -247,6 +247,7 @@ public final class HotReloadManager implements AutoCloseable {
         private final long id;
         private final String codeUnitId;
         private final String sha256;
+        private final CodeImageIdentity codeImageIdentity;
         private final Context context;
         private final Source source;
         private final ExecutionProfile executionProfile;
@@ -258,6 +259,7 @@ public final class HotReloadManager implements AutoCloseable {
             this.id = id;
             this.codeUnitId = codeUnitId;
             this.sha256 = sha256;
+            this.codeImageIdentity = CodeImageIdentity.issue(codeUnitId, id);
             this.context = context;
             this.source = source;
             this.executionProfile = executionProfile;
@@ -266,6 +268,7 @@ public final class HotReloadManager implements AutoCloseable {
         public long id() { return id; }
         public String codeUnitId() { return codeUnitId; }
         public String sha256() { return sha256; }
+        CodeImageIdentity codeImageIdentity() { return codeImageIdentity; }
         public Context context() { return context; }
         public Source source() { return source; }
         public ExecutionProfile executionProfile() { return executionProfile; }
@@ -287,6 +290,11 @@ public final class HotReloadManager implements AutoCloseable {
         @Override
         public void close() {
             if (closed.compareAndSet(false, true)) {
+                // Revoke new recovery admission before tearing down executable
+                // context state. Already-entered synchronous host recovery may
+                // finish its callback; production retirement must still wait
+                // for generation/task quiescence before invoking close().
+                codeImageIdentity.revoke();
                 try {
                     context.close(true);
                 } finally {
