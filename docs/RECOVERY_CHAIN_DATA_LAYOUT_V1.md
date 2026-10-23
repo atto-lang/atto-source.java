@@ -292,6 +292,35 @@ or proof of GraalVM JIT/AOT/hybrid, LLVM, guest syntax, static capture
 ownership, task unwind/defer or actor/supervisor parity. Keep this PR
 DRAFT until those independent acceptance gates execute.
 
+## Compiler-owned guest failure envelope (2026-10-23)
+
+The recovery dispatcher no longer accepts a raw `(FailureKind, Throwable)`
+pair. Its only admission method now accepts a package-private `GuestFailure`
+whose constructor is private and whose compiler/runtime issuer is package-private.
+The envelope can be minted only for `THROW` or `RAISE`; attempts to mint
+`PANIC`, cancellation or host-fatal as a locally recoverable effect fail before
+the handler chain is entered.
+
+Each envelope snapshots the stable logical `ExecutionContext.ExecutionId`,
+generation-fenced allocation domain, parent execution, continuation handle, and
+an opaque positive compiler source-provenance token. Outcomes retain the exact
+same envelope, so propagation cannot silently reconstruct a differently labeled
+failure or lose its logical provenance. The dispatch surface has a regression
+that asserts there is no raw kind/Throwable overload.
+
+This is a meaningful provenance boundary but not yet the final guest error ABI:
+the prototype envelope still carries a Java `Throwable` as its payload identity.
+That host graph is mutable, so cause/suppressed inspection remains fail-closed
+defense in depth before and after callbacks. Source lowering should ultimately
+place immutable typed guest error data in the envelope rather than expose an
+arbitrary host exception object. Likewise, the current package boundary protects
+ordinary guest/FFI surfaces; it is not a claim that hostile reflective Java code
+inside the trusted VM process is sandboxed.
+
+Guest `throw`, `raise` and `recover` parsing/lowering remain disabled. The
+next compiler gate is to mint this envelope only from checked exceptional-effect
+lowering and then give `c.next()` terminal `Never` control-flow semantics.
+
 ## Host-cause accessor admission and public API containment (2026-10-23)
 
 A foreign Java `Throwable` may override `getCause()` with an accessor that
