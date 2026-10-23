@@ -28,7 +28,7 @@ import java.util.concurrent.TimeoutException;
 public final class RecoveryHandlerChain<T> {
     public enum FailureKind { THROW, RAISE, PANIC, CANCELLATION, HOST_FATAL }
 
-    public sealed interface Outcome<T> permits Recovered, Unhandled, HandlerFailure { }
+    public sealed interface Outcome<T> permits Recovered, Unhandled, HandlerFailure, TerminalCallbackFailure { }
 
     public record Recovered<T>(T value) implements Outcome<T> { }
 
@@ -46,6 +46,21 @@ public final class RecoveryHandlerChain<T> {
             Objects.requireNonNull(pendingKind);
             Objects.requireNonNull(pendingError);
             Objects.requireNonNull(callbackError);
+        }
+    }
+
+    /**
+     * A terminal host signal observed while running a handler is never a
+     * recoverable handler error. Keep the in-flight guest failure available
+     * for supervisor diagnostics while the host cancellation/fatal signal
+     * takes precedence. Runtime Error subclasses still escape directly.
+     */
+    public record TerminalCallbackFailure<T>(FailureKind pendingKind, Throwable pendingError,
+                                             RuntimeException terminalError) implements Outcome<T> {
+        public TerminalCallbackFailure {
+            Objects.requireNonNull(pendingKind);
+            Objects.requireNonNull(pendingError);
+            Objects.requireNonNull(terminalError);
         }
     }
 
@@ -112,18 +127,9 @@ public final class RecoveryHandlerChain<T> {
         if (firstEligible < 0) {
             return new Unhandled<>(kind, failure);
         }
-        // Throwable.getCause() may be overridden by foreign/host code. If its
-        // causal graph cannot be inspected reliably, do not invoke a recovery
-        // callback or replace the original pending guest failure with the
-        // accessor's unchecked exception. A future sealed GuestEffect is still
-        // required: this defensive scan is not provenance authentication.
-        final boolean terminal;
-        try {
-            terminal = containsTerminalControl(failure);
-        } catch (RuntimeException malformedHostGraph) {
-            return new Unhandled<>(kind, failure);
-        }
-        if (terminal) {
+        // Host Throwable graphs are mutable and accessors may throw. A future
+        // sealed guest-effect carrier is still required for trusted admission.
+        if (untrustedOrTerminalGraph(failure)) {
             return new Unhandled<>(kind, failure);
         }
 
@@ -138,15 +144,27 @@ public final class RecoveryHandlerChain<T> {
                 try {
                     handlers[i].handle(failure, cursor);
                 } catch (RuntimeException callbackFailure) {
-                    // Do not downgrade or discard the pending signal. A higher
-                    // layer must classify the callback error as a separate
-                    // runtime/control failure and preserve both identities.
+                    // Callback-supplied cancellation, security denial and
+                    // shutdown signals must not masquerade as ordinary
+                    // handler errors. Retain both error identities.
+                    if (untrustedOrTerminalGraph(callbackFailure)) {
+                        return new TerminalCallbackFailure<>(kind, failure, callbackFailure);
+                    }
+                    if (untrustedOrTerminalGraph(failure)) {
+                        return new Unhandled<>(kind, failure);
+                    }
                     return new HandlerFailure<>(kind, failure, callbackFailure);
                 }
                 decision = cursor.state;
                 resolved = cursor.value;
             } finally {
                 cursor.invalidate();
+            }
+            // A callback can mutate an arbitrary host Throwable while
+            // delegating or resolving. Revalidate before either action becomes
+            // observable, including before invoking the next handler.
+            if (untrustedOrTerminalGraph(failure)) {
+                return new Unhandled<>(kind, failure);
             }
             if (decision == Cursor.OPEN) {
                 // Fail closed while preserving the pending original error.
@@ -165,6 +183,15 @@ public final class RecoveryHandlerChain<T> {
      * Bounds also prevent hostile cyclic or huge cause graphs from becoming
      * an unbounded preflight denial-of-service.
      */
+    private static boolean untrustedOrTerminalGraph(Throwable failure) {
+        try {
+            return containsTerminalControl(failure);
+        } catch (RuntimeException malformedHostGraph) {
+            // A foreign Throwable accessor is not an authenticated guest signal.
+            return true;
+        }
+    }
+
     private static boolean isTerminal(Throwable failure) {
         return failure instanceof Error
                 || failure instanceof CancellationException
