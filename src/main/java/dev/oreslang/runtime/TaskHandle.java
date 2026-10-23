@@ -115,6 +115,11 @@ public final class TaskHandle<T> {
     // with package access must not cancel/complete it to forge quiescence.
     private final java.util.concurrent.CompletionStage<Void> doneCallbacksReceipt =
             doneCallbacksDrained.minimalCompletionStage();
+    private final java.util.concurrent.CompletableFuture<Void> sourceCallbacksDrained =
+            new java.util.concurrent.CompletableFuture<>();
+    private final java.util.concurrent.CompletionStage<Void> terminalCallbacksReceipt =
+            java.util.concurrent.CompletableFuture.allOf(
+                    doneCallbacksDrained, sourceCallbacksDrained).minimalCompletionStage();
     // Observation only: cancelling getDone() must never forge a quiescence
     // witness or suppress the scheduler's eventual terminal outcome.
     private final OresFuture<TaskOutcome<T>> done =
@@ -181,6 +186,12 @@ public final class TaskHandle<T> {
      */
     java.util.concurrent.CompletionStage<Void> doneCallbacksDrained() {
         return doneCallbacksReceipt;
+    }
+
+    /** Both public Task-DONE and the scheduler's source-result callback
+     * streams have fully drained; neither terminal CAS is sufficient alone. */
+    java.util.concurrent.CompletionStage<Void> terminalCallbacksDrained() {
+        return terminalCallbacksReceipt;
     }
 
     /**
@@ -371,7 +382,8 @@ public final class TaskHandle<T> {
         try {
             source = scheduler.start(
                     resume -> handle.resumeAtCancellationBoundary(resume, task),
-                    handle::onQuiescent);
+                    handle::onQuiescent,
+                    () -> handle.sourceCallbacksDrained.complete(null));
         } catch (RuntimeException | Error failure) {
             handle.revoker.close();
             handle.cancellation.cancel("admission rejected");
