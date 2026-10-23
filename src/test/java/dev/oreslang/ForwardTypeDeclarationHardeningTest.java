@@ -24,18 +24,42 @@ final class ForwardTypeDeclarationHardeningTest {
     void acceptsExactForwardAliasesAtFileRootWithCanonicalAndLegacyPub() {
         String source = """
                 declare type Port;
+                fnc echo(Port n): Port { return n; }
                 define type Port = int;
                 declare pub type Id;
                 define pub type Id = int;
                 declare pub type ExternalId;
                 pub define type ExternalId = int;
-                fnc echo(Port n): Port { return n; }
                 """;
         Ast.Program parsed = assertDoesNotThrow(() -> Parser.parse(source));
         assertEquals(1, parsed.modules().size());
         assertEquals(4, parsed.modules().getFirst().declarations().size(),
                 "forward signatures must not become runtime AST nodes");
         assertDoesNotThrow(() -> TypeChecker.checkTypes(parsed));
+    }
+
+    @Test
+    void declarationIsNotAValueAndDoesNotChangeGuestExecution() throws Exception {
+        String source = """
+                declare pub type ResultCode;
+                pub fnc main(): void {
+                  stdio.println(7);
+                  return;
+                }
+                define pub type ResultCode = int;
+                """;
+        Ast.Program program = Parser.parse(source);
+        assertEquals(2, program.modules().getFirst().declarations().size());
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(program));
+        java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream();
+        org.graalvm.polyglot.Source guest = org.graalvm.polyglot.Source
+                .newBuilder(OresLanguage.ID, source, "forward-type-runtime.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (org.graalvm.polyglot.Context context = org.graalvm.polyglot.Context
+                .newBuilder(OresLanguage.ID).allowAllAccess(false).out(output).build()) {
+            context.eval(guest);
+        }
+        assertEquals("7", output.toString(java.nio.charset.StandardCharsets.UTF_8).trim());
     }
 
     @Test
