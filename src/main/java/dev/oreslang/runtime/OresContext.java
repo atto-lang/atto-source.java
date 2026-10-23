@@ -426,28 +426,50 @@ public final class OresContext implements AutoCloseable {
         return Map.copyOf(descriptor);
     }
 
+    /**
+     * A context that cannot prove physical retirement MUST remain strongly held;
+     * a failed dispose hook is not permission for VM/arena reclamation.
+     */
+    private static final java.util.Set<OresContext> PHYSICAL_QUARANTINE =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private final java.util.concurrent.atomic.AtomicBoolean closeInProgress =
+            new java.util.concurrent.atomic.AtomicBoolean();
+    private volatile boolean fullyClosed;
+
+    static int quarantinedPhysicalContextCount() {
+        return PHYSICAL_QUARANTINE.size();
+    }
+
     @Override
     public void close() {
-        nativeIo.close();
-        http.close();
-        RuntimeException failure = null;
+        if (fullyClosed) return;
+        if (!closeInProgress.compareAndSet(false, true)) {
+            throw new IllegalStateException("context close already in progress");
+        }
+        // Retain the entire context and its actor-owned arenas until the
+        // native host worker/terminal callbacks and resource releases retire.
+        PHYSICAL_QUARANTINE.add(this);
         try {
+            nativeIo.close();
+            http.close();
+            Throwable physicalFailure = nativeIo.physicalShutdownFailure();
+            if (physicalFailure != null) {
+                throw new IllegalStateException(
+                        "native I/O physical retirement failed; context quarantined",
+                        physicalFailure);
+            }
+            if (!nativeIo.physicalShutdown().isDone()) {
+                // Do NOT block an actor carrier waiting for an uninterruptible
+                // native worker. A trusted owner may retry close after the
+                // physicalShutdown() receipt arrives.
+                throw new IllegalStateException(
+                        "native I/O still owns physical loans; context quarantined");
+            }
+            // Preserve fail-closed ordering for the remaining actor/VM
+            // retirements as well: any failure skips later arena reclamation.
             asyncRuntime.close();
-        } catch (RuntimeException asyncFailure) {
-            failure = asyncFailure;
-        }
-        try {
             actors.close();
-        } catch (RuntimeException actorFailure) {
-            if (failure == null) failure = actorFailure;
-            else failure.addSuppressed(actorFailure);
-        }
-        try {
             vm.close();
-        } catch (RuntimeException vmFailure) {
-            if (failure == null) failure = vmFailure;
-            else failure.addSuppressed(vmFailure);
-        } finally {
             synchronized (this) {
                 linkedCodeUnits.clear();
                 linkedImportResolutions.clear();
@@ -455,7 +477,10 @@ public final class OresContext implements AutoCloseable {
             }
             garbageCollector.close();
             output.flush();
+            fullyClosed = true;
+            PHYSICAL_QUARANTINE.remove(this);
+        } finally {
+            closeInProgress.set(false);
         }
-        if (failure != null) throw failure;
     }
 }
