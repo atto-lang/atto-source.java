@@ -43,6 +43,12 @@ final class ActorProxyRequestSlabTest {
                                     long second = slab.pin(a);
                                     long other = slab.pin(b);
                                     assertNotEquals(first, second);
+                                    assertFalse(slab.settle(slab.identity(), b, first),
+                                            "a completion for request a cannot settle request b");
+                                    assertFalse(slab.settle(slab.identity(), a, other),
+                                            "a completion for request b cannot settle request a");
+                                    assertEquals(2, slab.pending(a));
+                                    assertEquals(1, slab.pending(b));
                                     assertTrue(slab.retire(a));
                                     assertTrue(slab.retire(a));
                                     assertEquals(2, slab.pending(a));
