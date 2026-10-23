@@ -42,6 +42,65 @@ final class ActorLockStopRetirementTest {
     }
 
     @Test
+    void actorStopJoinsTrackedSourceTaskDoneSubscriberDrain() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            OresFuture<Integer> suspended = new OresFuture<>();
+            CountDownLatch taskEntered = new CountDownLatch(1);
+            CountDownLatch doneCallbackEntered = new CountDownLatch(1);
+            CountDownLatch releaseDoneCallback = new CountDownLatch(1);
+            var ref = runtime.<String>spawnShared(() -> (message, context) -> {
+                context.runtime().startActorTask(resume -> {
+                    taskEntered.countDown();
+                    return OresScheduler.await(suspended);
+                });
+            });
+            ref.send("start");
+            assertTrue(taskEntered.await(5, TimeUnit.SECONDS));
+            Field actorsField = ActorRuntime.class.getDeclaredField("actors");
+            actorsField.setAccessible(true);
+            Object cell = ((Map<?, ?>) actorsField.get(runtime)).get(ref.id());
+            assertNotNull(cell);
+            Field trackedField = cell.getClass().getDeclaredField("sourceTaskHandles");
+            trackedField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            java.util.Set<TaskHandle<?>> tracked =
+                    (java.util.Set<TaskHandle<?>>) trackedField.get(cell);
+            assertEquals(1, tracked.size(), "source Task not retained by actor");
+            TaskHandle<?> sourceTask = tracked.iterator().next();
+            sourceTask.getDone().whenCompleteRuntime((outcome, failure) -> {
+                doneCallbackEntered.countDown();
+                try {
+                    if (!releaseDoneCallback.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("Task DONE callback timeout");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                }
+            });
+            try {
+                ref.stop();
+                assertTrue(doneCallbackEntered.await(5, TimeUnit.SECONDS));
+                assertTrue(sourceTask.getDone().isDone(),
+                        "Task never reached its terminal CAS");
+                assertFalse(sourceTask.doneCallbacksDrained()
+                                .toCompletableFuture().isDone(),
+                        "physical Task callback drain claimed before subscriber returned");
+                assertTrue(tracked.contains(sourceTask),
+                        "actor forgot its Task before terminal subscribers drained");
+                assertFalse(ref.getDone().isDone(),
+                        "actor DONE overtook Task's blocked terminal callback");
+                assertFalse(ref.awaitTermination(20, TimeUnit.MILLISECONDS),
+                        "actor terminal latch overtook Task callback");
+            } finally {
+                releaseDoneCallback.countDown();
+            }
+            assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS));
+            assertFalse(tracked.contains(sourceTask));
+        }
+    }
+
+    @Test
     void actorStopWaitsForSuspendedSourceTaskGuardRetirement() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var mutex = OresMutex.shared(new int[] {11});
