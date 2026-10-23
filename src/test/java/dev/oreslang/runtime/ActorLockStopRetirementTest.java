@@ -160,6 +160,112 @@ final class ActorLockStopRetirementTest {
     }
 
     @Test
+    void channelCloseCallbacksRunOutsideActorLifecycleMonitor() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<String>spawnShared(() -> (message, context) -> {});
+            Field actorsField = ActorRuntime.class.getDeclaredField("actors");
+            actorsField.setAccessible(true);
+            Object cell = ((Map<?, ?>) actorsField.get(runtime)).get(ref.id());
+            assertNotNull(cell);
+            Field lifecycleField = cell.getClass().getDeclaredField("lifecycleLock");
+            lifecycleField.setAccessible(true);
+            Object lifecycle = lifecycleField.get(cell);
+            Field mailboxField = cell.getClass().getDeclaredField("mailbox");
+            mailboxField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            ChannelRuntime.Channel<Object> queue =
+                    (ChannelRuntime.Channel<Object>) mailboxField.get(cell);
+            var pending = queue.readAsync();
+            CountDownLatch callbackEntered = new CountDownLatch(1);
+            CountDownLatch releaseCallback = new CountDownLatch(1);
+            AtomicBoolean ranInsideMonitor = new AtomicBoolean(true);
+            pending.whenCompleteRuntime((ignored, error) -> {
+                ranInsideMonitor.set(Thread.holdsLock(lifecycle));
+                callbackEntered.countDown();
+                try {
+                    if (!releaseCallback.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("close callback timeout");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                }
+            });
+            Thread stopper = Thread.ofPlatform().start(ref::stop);
+            try {
+                assertTrue(callbackEntered.await(5, TimeUnit.SECONDS));
+                assertFalse(ranInsideMonitor.get(),
+                        "ChannelRuntime.close notified Futures while lifecycleLock held");
+                assertFalse(ref.getDone().isDone(),
+                        "actor DONE while STOP channel close callbacks were live");
+            } finally {
+                releaseCallback.countDown();
+                stopper.join(5000);
+            }
+            assertFalse(stopper.isAlive());
+            assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void messageReleaseCallbacksRunOutsideMonitorAndGateActorDone()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<String>spawnShared(() -> (message, context) -> {});
+            Field actorsField = ActorRuntime.class.getDeclaredField("actors");
+            actorsField.setAccessible(true);
+            Object cell = ((Map<?, ?>) actorsField.get(runtime)).get(ref.id());
+            assertNotNull(cell);
+            Field lifecycleField = cell.getClass().getDeclaredField("lifecycleLock");
+            lifecycleField.setAccessible(true);
+            Object lifecycle = lifecycleField.get(cell);
+            var reserve = cell.getClass().getDeclaredMethod("reserveMailboxSlot");
+            reserve.setAccessible(true);
+            assertEquals(Boolean.TRUE, reserve.invoke(cell));
+            Class<?> envelopeClass = Class.forName(
+                    "dev.oreslang.runtime.ActorRuntime$MessageEnvelope");
+            var constructor = envelopeClass.getDeclaredMethod(
+                    "message", Object.class, Runnable.class,
+                    ActorRuntime.ActorId.class, long.class);
+            constructor.setAccessible(true);
+            CountDownLatch callbackEntered = new CountDownLatch(1);
+            CountDownLatch releaseCallback = new CountDownLatch(1);
+            AtomicBoolean ranInsideMonitor = new AtomicBoolean(true);
+            Object envelope = constructor.invoke(null, "pending", (Runnable) () -> {
+                ranInsideMonitor.set(Thread.holdsLock(lifecycle));
+                callbackEntered.countDown();
+                try {
+                    if (!releaseCallback.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("mailbox release timeout");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                }
+            }, null, 0L);
+            Field mailboxField = cell.getClass().getDeclaredField("mailbox");
+            mailboxField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            ChannelRuntime.Channel<Object> queue =
+                    (ChannelRuntime.Channel<Object>) mailboxField.get(cell);
+            assertTrue(queue.tryWrite(envelope));
+            Thread stopper = Thread.ofPlatform().start(ref::stop);
+            try {
+                assertTrue(callbackEntered.await(5, TimeUnit.SECONDS));
+                assertFalse(ranInsideMonitor.get(),
+                        "message release callback ran under actor lifecycleLock");
+                assertFalse(ref.getDone().isDone(),
+                        "actor DONE published while envelope release was incomplete");
+            } finally {
+                releaseCallback.countDown();
+                stopper.join(5000);
+            }
+            assertFalse(stopper.isAlive());
+            assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void registryRemovalCannotForgeTerminationWhileDoneSubscribersStillDrain()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
