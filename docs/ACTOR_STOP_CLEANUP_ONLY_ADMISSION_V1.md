@@ -266,3 +266,54 @@ coordinator. No extra threads or worker pools were added by this patch.
 These tests are staged but cannot be called passing without an executed
 JDK25 exact-head workflow. The protected source-repo private carrier allowlist
 remains empty; private source has not been exported to any candidate test org.
+
+## Two-phase sibling STOP with VM-owned physical workers
+
+The previous sibling pre-fence now has an **opt-in asynchronous physical STOP
+dispatch stage**, wired into real Oreslang execution through `OresContext` and
+`OresVM`:
+
+1. Parent STOP first marks itself stopped, captures its actor/scheduler/Future
+   snapshots, and atomically reserves `pendingChildStopDispatches` for every
+   direct child. All immediate children are admission-sealed before the first
+   full child cancellation call.
+2. If `ActorRuntime.PhysicalStopDispatcher` is injected, every child receives
+   an independent physical teardown submission. The host dispatcher must be
+   bounded, must reject overflow, and must **not** execute teardown inline or
+   on a CONTROL carrier. The runtime rejects inline execution on the caller
+   thread as a fail-closed implementation check.
+3. The child stop task runs `child.cancel` on an independent physical worker.
+   Its exactly-once `completeChildStopDispatch` receipt decrements the parent
+   reservation after synchronous cancellation hooks return. The parent also
+   awaits child `finalized`, source Task cleanup, owned-Future notification
+   drains, and drain-observer receipts before DONE or arena release.
+4. Each rejected submission, thrown child revoker, or duplicate/missing
+   dispatch receipt marks incomplete cleanup/quarantine. One bad child cannot
+   suppress submissions of later children.
+5. Standalone `ActorRuntime` instances with no injected physical dispatcher
+   retain the legacy synchronous stop fallback and still pre-seal all children.
+6. Production `OresContext` injects `OresVM.executePhysicalStop`, whose
+   **single VM-wide bounded virtual-worker ThreadPoolExecutor** is separate
+   from the prestarted CONTROL scheduler. Its parallelism and queue size are
+   configurable via `ores.runtime.physical-stop.parallelism` (1–128) and
+   `ores.runtime.physical-stop.queue-capacity` (1–65536), with bounded
+   defaults. No executor is allocated per actor.
+
+Focused proof targets now include `OresVMTest` (a blocked physical STOP
+worker must not starve a root CONTROL turn), an actor test requiring both
+sibling revokers to enter before either finishes, and
+`FormalActorStopFanoutModelCheckTest`, a two-child exhaustive state model
+covering accepted/rejected dispatches, callback failures, and finalization
+gates. An independent model enumerator visited 34 states and upheld the
+same safety conditions; that is **model-level evidence, not JUnit execution**.
+
+Open safety gaps: the physical STOP executor can saturate if many native
+revokers hang; queue overflow must quarantine, not silently skip a child.
+Cancellation of deeper descendants is still recursively initiated by each
+worker, so a finite worker pool is not a proof of arbitrary-depth liveness.
+I/O/FFI/native completion is not proven by a revoker returning unless the
+device/loan integration emits a separate trusted physical receipt. Add
+dedicated cancellation-generation fencing and adversarial stress before
+releasing actors from quarantine. Source-level Java/LLVM cancellation parity,
+exact-head JDK25/GraalVM execution, and approved private CI mirroring remain
+blocking merge gates.
