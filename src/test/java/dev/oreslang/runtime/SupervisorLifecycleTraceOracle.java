@@ -128,6 +128,56 @@ public final class SupervisorLifecycleTraceOracle {
         reject(() -> SupervisorLifecycleTrace.verifyComplete(cycle.snapshot()),
                 "cyclic supervisor tree cannot verify");
 
+        // Exercise the actual generation-tagged reducer and trace schema.
+        var generations = new SupervisorLifecycleTrace.Journal(32);
+        var oldChild = SupervisorLifecycleFsm.State.initial();
+        oldChild = record(generations, 6, oldChild,
+                new SupervisorLifecycleFsm.ActorsFinished(1, false));
+        oldChild = record(generations, 6, oldChild,
+                new SupervisorLifecycleFsm.PhysicalRelease(1));
+        oldChild = record(generations, 6, oldChild,
+                new SupervisorLifecycleFsm.RestartRequested(1));
+        oldChild = record(generations, 6, oldChild,
+                new SupervisorLifecycleFsm.RestartCommitted(1));
+        check(oldChild.epoch() == 2, "child restart generation did not advance");
+
+        var protectedParent = SupervisorLifecycleFsm.State.initial();
+        protectedParent = record(generations, 5, protectedParent,
+                new SupervisorLifecycleFsm.ShutdownWithChildEpochs(
+                        1, Map.of(6L, 2L)));
+        final var capturedParent = protectedParent;
+        reject(() -> SupervisorLifecycleFsm.reduce(capturedParent,
+                new SupervisorLifecycleFsm.ChildFinished(1, 6L, false)),
+                "legacy child receipt must not bypass frozen generation");
+        reject(() -> SupervisorLifecycleFsm.reduce(capturedParent,
+                new SupervisorLifecycleFsm.ShutdownRequested(1, Set.of(6L))),
+                "legacy re-freeze must not strip child epoch");
+        reject(() -> SupervisorLifecycleFsm.reduce(capturedParent,
+                new SupervisorLifecycleFsm.ShutdownWithChildEpochs(1, Map.of(6L, 1L))),
+                "re-freeze cannot change pinned epoch");
+        protectedParent = record(generations, 5, protectedParent,
+                new SupervisorLifecycleFsm.BeforeHookFinished(1, false));
+        final var awaitingChild = protectedParent;
+        reject(() -> SupervisorLifecycleFsm.reduce(awaitingChild,
+                new SupervisorLifecycleFsm.ChildFinishedWithEpoch(1, 6L, 1L, false)),
+                "stale epoch receipt accepted");
+        oldChild = record(generations, 6, oldChild,
+                new SupervisorLifecycleFsm.ShutdownWithChildEpochs(2, Map.of()));
+        oldChild = record(generations, 6, oldChild,
+                new SupervisorLifecycleFsm.BeforeHookFinished(2, false));
+        oldChild = record(generations, 6, oldChild,
+                new SupervisorLifecycleFsm.ActorsFinished(2, false));
+        oldChild = record(generations, 6, oldChild,
+                new SupervisorLifecycleFsm.AfterHookFinished(2, false));
+        protectedParent = record(generations, 5, protectedParent,
+                new SupervisorLifecycleFsm.ChildFinishedWithEpoch(1, 6L, 2L, false));
+        protectedParent = record(generations, 5, protectedParent,
+                new SupervisorLifecycleFsm.ActorsFinished(1, false));
+        protectedParent = record(generations, 5, protectedParent,
+                new SupervisorLifecycleFsm.AfterHookFinished(1, false));
+        check(protectedParent.logicallyStopped(), "generation-tagged parent did not drain");
+        SupervisorLifecycleTrace.verifyComplete(generations.snapshot());
+
         var fence = new SupervisorChildGenerationFence(Map.of(2L, 4L));
         fence.requireReceipt(2L, 4L, 4L);
         reject(() -> fence.requireReceipt(2L, 3L, 4L),
@@ -149,7 +199,7 @@ public final class SupervisorLifecycleTraceOracle {
                 new SupervisorLifecycleFsm.ShutdownRequested(1, Set.of())),
                 "conflicting frozen topology");
 
-        System.out.println("PASS: 9 real reducer trace steps, tamper/gap/overflow, "
+        System.out.println("PASS: legacy and epoch-tagged real reducer traces, tamper/gap/overflow, "
                 + "cross-node ordering and stale child-generation denial");
     }
 
