@@ -66,6 +66,47 @@ final class OresVMTest {
     }
 
     @Test
+    void concurrentWorkerStartAndShutdownClaimOneExclusiveReceipt()
+            throws Exception {
+        // CAS winner must own the terminal witness. Shutdown may either
+        // discard the queued task BEFORE worker entry or let the worker start;
+        // it cannot report both, repeat either, or lose the task entirely.
+        for (int round = 0; round < 32; round++) {
+            var holdingEntered = new java.util.concurrent.CountDownLatch(1);
+            var releaseHolding = new java.util.concurrent.CountDownLatch(1);
+            var started = new java.util.concurrent.atomic.AtomicInteger();
+            var discarded = new java.util.concurrent.atomic.AtomicInteger();
+            var unexpected = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            OresVM vm = OresVM.createWithPhysicalStopLimits(1, 1);
+            try {
+                vm.executePhysicalStop(() -> {
+                    holdingEntered.countDown();
+                    try {
+                        releaseHolding.await(5, TimeUnit.SECONDS);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                }, failure -> unexpected.compareAndSet(null,
+                        new AssertionError("first RUNNING job was discarded", failure)));
+                assertTrue(holdingEntered.await(3, TimeUnit.SECONDS));
+                vm.executePhysicalStop(started::incrementAndGet,
+                        failure -> discarded.incrementAndGet());
+                Thread closer = Thread.ofVirtual().start(vm::close);
+                releaseHolding.countDown();
+                closer.join(TimeUnit.SECONDS.toMillis(3));
+                assertTrue(!closer.isAlive(), "VM close hung in round " + round);
+                assertEquals(1, started.get() + discarded.get(),
+                        "physical STOP start and cancel-before-start are exclusive in round " + round);
+                org.junit.jupiter.api.Assertions.assertNull(unexpected.get(),
+                        () -> String.valueOf(unexpected.get()));
+            } finally {
+                releaseHolding.countDown();
+                vm.close();
+            }
+        }
+    }
+
+    @Test
     void saturatedPhysicalStopQueueRejectsNewSubmissionWithoutFabricatingReceipt()
             throws Exception {
         var runningEntered = new java.util.concurrent.CountDownLatch(1);
