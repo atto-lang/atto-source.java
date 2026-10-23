@@ -20,7 +20,12 @@ joins its active tracked parent Task's cancellation/physical-retirement tree.
 Non-actor source Future composition helpers also use tracked parent-aware
 admission; a composed Future no longer silently escapes through an untracked
 scheduler Task. Canceling an exposed tracked Task result now requests
-revocation of its owned descendants as well. A synchronous/root host entry with no tracked
+revocation of its owned descendants as well. A parent whose result has
+already settled but still owns physically active children may also revoke
+those children while preserving the parent's settled value; its `getDone()`
+still waits for physical retirement. Implicitly parent-owned work may not
+cross schedulers without an explicit ownership/admission contract.
+A synchronous/root host entry with no tracked
 parent still creates a **root** pipeline: this is not an actor/lifetime
 ownership proof and must not be generalized to escaping borrows or FFI.
 
@@ -36,7 +41,10 @@ ownership. Adjacent checked stages lower to one TaskPipeline task, preserving
 borrowed input-Future ownership. Proofs bind exact checked declarations and
 rewritten ASTs lose authorization. Proof issuance is private to TypeChecker:
 host code may inspect the checked declaration but cannot call a public
-`record` method to authorize an unchecked AST. Detection of Future-producing calls is
+`record` method to authorize an unchecked AST. Chained value pipes are
+checked from the inner stage outward, and proofs are staged per compiler
+instance and published atomically only after the entire type-check pass
+succeeds; later invalid declarations cannot publish an earlier prefix. Detection of Future-producing calls is
 restricted to known async/Future declarations rather than speculatively
 rechecking arbitrary scalar functions. `CallExpr.rewrite` retains that origin but drops identity-bound checked
 proofs; replacements require rechecking. Explicit checked-metadata transfers
