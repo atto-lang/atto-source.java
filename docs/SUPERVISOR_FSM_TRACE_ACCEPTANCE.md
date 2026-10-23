@@ -25,8 +25,10 @@ does not produce the recorded after-state. It also checks
 **cross-node ordering**: every parent `ChildFinished` must refer to a child
 whose earlier trace events have actually reached logical STOPPED with a
 matching failed outcome; `ChildReclaimed` requires an earlier child
-RECLAIMED phase. It detects intra-node ordering, premature parent
-acknowledgment, and callback-generation mismatches that reach the FSM. It
+RECLAIMED phase. It also rejects child identities claimed by two
+different parents or a cyclic supervisor hierarchy. It detects intra-node
+ordering, premature parent acknowledgment, and callback-generation mismatches
+that reach the FSM. It
 is **not** an independent formal specification: the replay uses the same Java
 reducer. Separately run TLA+ TLC with sibling and three-level topologies,
 and eventually prove a refinement mapping from recorded traces to independent
