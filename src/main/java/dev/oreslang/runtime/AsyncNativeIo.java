@@ -177,17 +177,28 @@ public final class AsyncNativeIo implements AutoCloseable {
         private void cancelledBeforeStart(Throwable failure) {
             if (!state.compareAndSet(OperationState.ADMITTED,
                     OperationState.CANCELLED_BEFORE_START)) return;
+            // A Future terminal subscriber may block indefinitely. Deliver
+            // never-started cancellation from a detached host notification
+            // carrier, never on the close() caller or CONTROL thread. At most
+            // capacity + CONTROL_CAPACITY such notifications can be admitted.
             try {
-                completion.failFromRuntime(failure);
-            } catch (RuntimeException | Error notificationFailure) {
-                recordIncomplete(notificationFailure);
-                throw notificationFailure;
-            } finally {
-                synchronized (AsyncNativeIo.this) {
-                    owner.remove(this);
-                    retireDeferredUnregisterLocked();
-                    AsyncNativeIo.this.notifyAll();
-                }
+                Thread.ofVirtual().name("ores-native-io-discard-").start(() -> {
+                    try {
+                        completion.failFromRuntime(failure);
+                    } catch (RuntimeException | Error notificationFailure) {
+                        recordIncomplete(notificationFailure);
+                    } finally {
+                        synchronized (AsyncNativeIo.this) {
+                            owner.remove(this);
+                            retireDeferredUnregisterLocked();
+                            AsyncNativeIo.this.notifyAll();
+                        }
+                    }
+                });
+            } catch (RuntimeException | Error startFailure) {
+                // No notification occurred. Preserve this operation in owner
+                // and quarantine the context rather than forging retirement.
+                recordIncomplete(startFailure);
             }
         }
     }
@@ -263,9 +274,21 @@ public final class AsyncNativeIo implements AutoCloseable {
                 boolean dataDone = workers.awaitTermination(wait, TimeUnit.NANOSECONDS);
                 wait = Math.max(0L, deadline - System.nanoTime());
                 boolean controlDone = controlWorkers.awaitTermination(wait, TimeUnit.NANOSECONDS);
-                synchronized (this) {
-                    joined = dataDone && controlDone && pending.isEmpty()
-                            && controls.isEmpty() && incompleteReceipt == null;
+                if (dataDone && controlDone) {
+                    synchronized (this) {
+                        // shutdownNow() may have produced bounded independent
+                        // never-started notification tasks. Those also own
+                        // physical callback receipts until their last terminal
+                        // subscriber has returned. Wait only to the deadline.
+                        while ((!pending.isEmpty() || !controls.isEmpty())
+                                && incompleteReceipt == null) {
+                            wait = deadline - System.nanoTime();
+                            if (wait <= 0) break;
+                            TimeUnit.NANOSECONDS.timedWait(this, wait);
+                        }
+                        joined = pending.isEmpty() && controls.isEmpty()
+                                && incompleteReceipt == null;
+                    }
                 }
             } catch (InterruptedException failure) {
                 interrupted = true;
