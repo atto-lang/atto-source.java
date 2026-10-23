@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -29,7 +30,8 @@ public final class SupervisorLifecycleFsm {
 
     public sealed interface Event permits
             RestartRequested, RestartCommitted, ShutdownRequested,
-            BeforeHookFinished, ChildFinished, ChildReclaimed, ActorsFinished,
+            ShutdownWithChildEpochs, BeforeHookFinished, ChildFinished,
+            ChildFinishedWithEpoch, ChildReclaimed, ChildReclaimedWithEpoch, ActorsFinished,
             AfterHookFinished, PhysicalRelease, DeadlineExpired, CoordinatorFailed {
         long epoch();
     }
@@ -44,9 +46,25 @@ public final class SupervisorLifecycleFsm {
             }
         }
     }
+    /** New, generation-authenticated shutdown snapshot; legacy ShutdownRequested
+     * is retained for existing models but cannot be mixed with a fenced epoch. */
+    public record ShutdownWithChildEpochs(long epoch, Map<Long, Long> children) implements Event {
+        public ShutdownWithChildEpochs {
+            children = Map.copyOf(Objects.requireNonNull(children, "children"));
+            for (var child : children.entrySet()) {
+                if (child.getKey() < 1 || child.getValue() < 1) {
+                    throw new IllegalArgumentException("invalid child incarnation");
+                }
+            }
+        }
+    }
     public record BeforeHookFinished(long epoch, boolean failed) implements Event {}
     public record ChildFinished(long epoch, long childId, boolean failed) implements Event {}
+    public record ChildFinishedWithEpoch(
+            long epoch, long childId, long childEpoch, boolean failed) implements Event {}
     public record ChildReclaimed(long epoch, long childId) implements Event {}
+    public record ChildReclaimedWithEpoch(
+            long epoch, long childId, long childEpoch) implements Event {}
     public record ActorsFinished(long epoch, boolean failed) implements Event {}
     public record AfterHookFinished(long epoch, boolean failed) implements Event {}
     public record PhysicalRelease(long epoch) implements Event {}
@@ -59,6 +77,7 @@ public final class SupervisorLifecycleFsm {
             long epoch,
             long revision,
             Set<Long> expectedChildren,
+            Map<Long, Long> expectedChildEpochs,
             Set<Long> completedChildren,
             Set<Long> reclaimedChildren,
             Set<Long> failedChildren,
@@ -74,10 +93,15 @@ public final class SupervisorLifecycleFsm {
         public State {
             Objects.requireNonNull(phase, "phase");
             expectedChildren = Set.copyOf(expectedChildren);
+            expectedChildEpochs = Map.copyOf(expectedChildEpochs);
             completedChildren = Set.copyOf(completedChildren);
             reclaimedChildren = Set.copyOf(reclaimedChildren);
             failedChildren = Set.copyOf(failedChildren);
             if (epoch < 1 || revision < 0) throw new IllegalArgumentException("negative identity");
+            if (!expectedChildEpochs.isEmpty()
+                    && !expectedChildEpochs.keySet().equals(expectedChildren)) {
+                throw new IllegalArgumentException("frozen child IDs and epochs mismatch");
+            }
             if (!expectedChildren.containsAll(completedChildren)) {
                 throw new IllegalArgumentException("completion not in frozen child set");
             }
@@ -110,7 +134,7 @@ public final class SupervisorLifecycleFsm {
             }
         }
         public static State initial() {
-            return new State(Phase.RUNNING, 1L, 0L, Set.of(), Set.of(), Set.of(),
+            return new State(Phase.RUNNING, 1L, 0L, Set.of(), Map.of(), Set.of(), Set.of(),
                     Set.of(), false, false, false, false, false, false,
                     false, false, false);
         }
@@ -140,6 +164,7 @@ public final class SupervisorLifecycleFsm {
         Phase p = s.phase();
         Phase next = p;
         Set<Long> expected = s.expectedChildren();
+        Map<Long, Long> generations = s.expectedChildEpochs();
         Set<Long> done = s.completedChildren();
         Set<Long> reclaimed = s.reclaimedChildren();
         Set<Long> failedChildren = s.failedChildren();
@@ -165,21 +190,36 @@ public final class SupervisorLifecycleFsm {
             epoch++;
             next = Phase.RUNNING;
             expected = Set.of();
+            generations = Map.of();
             done = Set.of();
             reclaimed = Set.of();
             failedChildren = Set.of();
             pre = actors = post = released = failed = timedOut = false;
             preFailed = actorFailed = postFailed = false;
+        } else if (e instanceof ShutdownWithChildEpochs request) {
+            if (p != Phase.RUNNING && p != Phase.RESTARTING) {
+                require(expected.equals(request.children().keySet())
+                                && generations.equals(request.children()),
+                        "conflicting or downgraded shutdown child generations");
+                return s;
+            }
+            expected = request.children().keySet();
+            generations = request.children();
+            done = Set.of();
+            reclaimed = Set.of();
+            failedChildren = Set.of();
+            next = Phase.BEFORE_HOOK;
         } else if (e instanceof ShutdownRequested request) {
             if (p != Phase.RUNNING && p != Phase.RESTARTING) {
                 // Idempotence requires the SAME frozen child identities.
                 // A conflicting request would otherwise hide an orphaned
                 // child after a concurrent topology modification.
-                require(expected.equals(request.children()),
-                        "conflicting shutdown child set for frozen epoch");
+                require(expected.equals(request.children()) && generations.isEmpty(),
+                        "conflicting or unauthenticated shutdown child set for frozen epoch");
                 return s;
             }
             expected = request.children();
+            generations = Map.of();
             done = Set.of();
             reclaimed = Set.of();
             failedChildren = Set.of();
@@ -194,7 +234,28 @@ public final class SupervisorLifecycleFsm {
             preFailed = result.failed();
             failed |= result.failed();
             next = expected.isEmpty() ? Phase.WAIT_ACTORS : Phase.WAIT_CHILDREN;
+        } else if (e instanceof ChildFinishedWithEpoch child) {
+            require(generations.containsKey(child.childId())
+                            && generations.get(child.childId()) == child.childEpoch(),
+                    "stale, unknown or incorrectly generated child completion");
+            if (done.contains(child.childId())) {
+                require(failedChildren.contains(child.childId()) == child.failed(),
+                        "conflicting generation-bound child completion");
+                return s;
+            }
+            require(p == Phase.WAIT_CHILDREN, "generation child completed out of order");
+            HashSet<Long> updated = new HashSet<>(done);
+            updated.add(child.childId());
+            done = Set.copyOf(updated);
+            if (child.failed()) {
+                HashSet<Long> failures = new HashSet<>(failedChildren);
+                failures.add(child.childId());
+                failedChildren = Set.copyOf(failures);
+            }
+            failed |= child.failed();
+            if (done.size() == expected.size()) next = Phase.WAIT_ACTORS;
         } else if (e instanceof ChildFinished child) {
+            require(generations.isEmpty(), "legacy child completion cannot bypass epoch fence");
             require(expected.contains(child.childId()), "unknown or unowned child receipt");
             if (done.contains(child.childId())) {
                 require(failedChildren.contains(child.childId()) == child.failed(),
@@ -212,7 +273,20 @@ public final class SupervisorLifecycleFsm {
             }
             failed |= child.failed();
             if (done.size() == expected.size()) next = Phase.WAIT_ACTORS;
+        } else if (e instanceof ChildReclaimedWithEpoch child) {
+            require(generations.containsKey(child.childId())
+                            && generations.get(child.childId()) == child.childEpoch(),
+                    "stale, unknown or incorrectly generated physical release");
+            if (reclaimed.contains(child.childId())) return s;
+            require(done.contains(child.childId()), "child release before logical completion");
+            HashSet<Long> updated = new HashSet<>(reclaimed);
+            updated.add(child.childId());
+            reclaimed = Set.copyOf(updated);
+            if (p == Phase.STOPPED && released && reclaimed.equals(expected)) {
+                next = Phase.RECLAIMED;
+            }
         } else if (e instanceof ChildReclaimed child) {
+            require(generations.isEmpty(), "legacy child release cannot bypass epoch fence");
             require(expected.contains(child.childId()), "unknown or unowned child release");
             if (reclaimed.contains(child.childId())) return s;
             require(done.contains(child.childId()), "child release before child retirement");
@@ -266,6 +340,7 @@ public final class SupervisorLifecycleFsm {
         if (next == Phase.WAIT_ACTORS && actors) next = Phase.AFTER_HOOK;
 
         if (s.epoch() == epoch && next == p && expected.equals(s.expectedChildren())
+                && generations.equals(s.expectedChildEpochs())
                 && done.equals(s.completedChildren())
                 && reclaimed.equals(s.reclaimedChildren())
                 && failedChildren.equals(s.failedChildren())
@@ -281,7 +356,7 @@ public final class SupervisorLifecycleFsm {
             throw new IllegalStateException("supervisor transition revision overflow");
         }
         return new State(next, epoch, s.revision() + 1,
-                expected, done, reclaimed, failedChildren,
+                expected, generations, done, reclaimed, failedChildren,
                 pre, actors, post, preFailed, actorFailed, postFailed,
                 released, failed, timedOut);
     }
