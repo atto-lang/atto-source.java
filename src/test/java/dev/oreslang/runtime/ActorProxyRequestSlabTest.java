@@ -27,6 +27,11 @@ final class ActorProxyRequestSlabTest {
                                             new ActorProxyRequestSlab(layout, 3, lanes);
                                     retained.set(slab);
                                     assertEquals(0, slab.live());
+                                    assertThrows(IllegalArgumentException.class,
+                                            () -> slab.admit(-1, 3, 10));
+                                    assertThrows(IllegalArgumentException.class,
+                                            () -> slab.admit(7, -1, 10));
+                                    assertEquals(0, slab.live());
                                     long a = slab.admit(7, 3, 10);
                                     long b = slab.admit(7, 4, 11);
                                     long c = slab.admit(8, 5, 12);
@@ -73,6 +78,7 @@ final class ActorProxyRequestSlabTest {
                                     assertTrue(slab.retire(reused));
                                     assertEquals(0, slab.live());
                                     slab.close();
+                                    slab.close(); // repeated cleanup is harmless
                                 } catch (Throwable problem) {
                                     failure.set(problem);
                                 } finally {
