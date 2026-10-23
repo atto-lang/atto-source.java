@@ -262,10 +262,12 @@ be treated as ordinary recoverable callback failures by a future bridge.
 Host `Error` still escapes immediately, but the current invocation invalidates
 its one-shot cursor in `finally`.
 
-This is an **incomplete** security boundary: mutable host `Throwable` graphs
-can race with the final read, and the host prototype still accepts a raw
-`FailureKind`. Production admission must replace this with an immutable,
-unforgeable compiler/runtime-originated effect envelope. No trusted
+This remains an **incomplete** security boundary: mutable host `Throwable`
+graphs can race with the final read. Raw kind/Throwable dispatch has been
+removed and replaced by the compiler/runtime-originated `GuestFailure`
+envelope, but its host payload is still mutable and its code epoch is only
+locally scoped until compiler/hot-reload integration supplies a canonical
+code-image identity. No trusted
 authentication, actor-lane dispatch, suspend-frame safety or supervisor
 notification is provided by this host prototype.
 
@@ -354,7 +356,19 @@ number of recovery-chain objects. The bound is a host-prototype safety limit;
 source lowering should statically bound lexical unwind metadata where practical.
 
 These checks use logical execution identity, not carrier-thread identity, and
-therefore remain valid across carrier migration. They do not yet add a hot-reload
+therefore remain valid across carrier migration. Recovery registrations and
+failure envelopes also carry a positive code epoch; an envelope minted under an
+older epoch is returned unhandled by a chain registered under a newer epoch, so
+hot reload cannot accidentally run stale failures through replacement handlers.
+
+The code epoch is intentionally only a **local generation fence** at this stage.
+`HotReloadManager.Generation.id()` is manager-local, while
+`SharedCodeImageStore.CodeImage` is a separate opaque process-local code-image
+capability. Until compiler/runtime integration unifies those into one canonical
+code-image identity, callers must scope the epoch to the same trusted code-unit
+domain and must not treat a bare numeric generation as globally unique. The
+recovery prototype does not claim cross-manager or cross-process code-image
+authentication yet. They do not yet add a hot-reload
 **code generation/epoch** to the recovery provenance. The existing
 `HotReloadManager.Generation.id()` is the natural source of that fence once
 recovery is integrated with live code replacement; until then, recovery remains
