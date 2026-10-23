@@ -615,6 +615,60 @@ final class ActorStopCleanupAdmissionTest {
     }
 
     @Test
+    void vmShutdownDiscardsQueuedSiblingStopAndQuarantinesParent()
+            throws Exception {
+        String token = java.util.UUID.randomUUID().toString();
+        StopFenceFixture fixture = new StopFenceFixture();
+        STOP_FENCE_FIXTURES.put(token, fixture);
+        OresVM vm = OresVM.createWithPhysicalStopLimits(1, 1);
+        ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(2, 4, 16, 64),
+                ActorRuntime.TurnExecutor.direct(),
+                vm::executeControl,
+                vm::executePhysicalStop);
+        try {
+            var parent = runtime.<String>spawnShared(() -> (message, context) -> {
+                var first = context.runtime().spawnShared(
+                        ActorStopCleanupAdmissionTest::stopFenceResourceChild);
+                var second = context.runtime().spawnShared(
+                        ActorStopCleanupAdmissionTest::stopFenceResourceChild);
+                first.send(token + "#own");
+                second.send(token + "#own");
+            });
+            parent.send("spawn");
+            assertTrue(fixture.childrenOwned.await(3, TimeUnit.SECONDS));
+            assertTrue(parent.cancel());
+            assertTrue(fixture.firstRevokerEntered.await(3, TimeUnit.SECONDS),
+                    "one worker should be in a physical child revoker");
+            assertEquals(1L, fixture.bothRevokersEntered.getCount(),
+                    "second child STOP must be admitted to the single queue slot");
+            assertFalse(parent.done().isDone());
+
+            // VM close interrupts the RUNNING child while dropping the
+            // ADMITTED sibling. Neither event is proof of safe reclamation.
+            vm.close();
+            assertEquals(1L, fixture.bothRevokersEntered.getCount(),
+                    "discarded child STOP must never invoke its guest revoker");
+            assertFalse(parent.done().isDone(),
+                    "discarded child STOP must quarantine parent physical ownership");
+            assertFalse(parent.awaitTermination(150, TimeUnit.MILLISECONDS));
+            assertThrows(IllegalStateException.class, runtime::close,
+                    "a quarantined actor must not be reported as a clean shutdown");
+            assertEquals(0, fixture.forbiddenMessages.get());
+        } finally {
+            fixture.releaseRevokers.countDown();
+            try {
+                runtime.close();
+            } catch (IllegalStateException expectedQuarantine) {
+                // This test intentionally leaves quarantined actor ownership.
+            }
+            vm.close();
+            STOP_FENCE_FIXTURES.remove(token);
+        }
+    }
+
+    @Test
     void vmOwnedStopDispatcherFansOutSiblingsWithoutBlockingParentOrSource()
             throws Exception {
         String token = java.util.UUID.randomUUID().toString();
