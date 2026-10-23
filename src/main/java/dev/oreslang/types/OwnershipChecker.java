@@ -1451,6 +1451,23 @@ public final class OwnershipChecker {
                 }
             }
         }
+        if (Ast.CheckedPureFuturePipe.lookup(call)) {
+            // Compiler-proven pure scalar stages observe, but never take,
+            // the upstream Future. Its task owns only its continuation and
+            // must not cancel the borrowed producer on pipeline cancellation.
+            if (call.arguments().size() != 1
+                    || !(call.callee() instanceof Ast.NameExpr)) {
+                throw error("checked Future stage was rewritten after type checking");
+            }
+            ValueInfo upstream = checkExpr(call.arguments().getFirst(), scope, false);
+            Ast.TypeRef type = upstream.type;
+            if (type == null || !type.name().equals("Future")
+                    || type.arguments().size() != 1
+                    || !type.arguments().getFirst().name().equals("int")) {
+                throw error("checked Future stage requires a borrowed Future<int> input");
+            }
+            return new ValueInfo(type, kindOfType(type), null);
+        }
         if (isBooleanIntrinsicCall(call, scope)) {
             for (Ast.Expr argument : call.arguments()) {
                 checkExpr(argument, scope, false);
