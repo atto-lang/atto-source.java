@@ -42,7 +42,7 @@ public final class ProxyBodyCopyCheck {
                 var resume = new CountDownLatch(1);
                 var response = new Response(writing, resume);
                 var sink = new ByteArrayOutputStream();
-                var copied = ProxyBodyCopy.start(CompletableFuture.completedFuture(response), sink, executor);
+                var copied = ProxyBodyCopy.start(() -> CompletableFuture.completedFuture(response), sink, executor);
                 if (!writing.await(5, TimeUnit.SECONDS)) throw new AssertionError("worker not started");
                 if (!copied.cancel(true)) throw new AssertionError("cancel failed");
                 if (response.closes.get()!=0) throw new AssertionError("early close during physical copy");
@@ -54,7 +54,7 @@ public final class ProxyBodyCopyCheck {
             }
             var response = new Response(new CountDownLatch(1), new CountDownLatch(0));
             var bytes = new ByteArrayOutputStream();
-            var copied = ProxyBodyCopy.start(CompletableFuture.completedFuture(response), bytes, executor);
+            var copied = ProxyBodyCopy.start(() -> CompletableFuture.completedFuture(response), bytes, executor);
             var receipt = copied.get(5, TimeUnit.SECONDS);
             if(receipt.status()!=206 || receipt.bytesTransferred()!=3 || bytes.size()!=3 || response.closes.get()!=1)
                 throw new AssertionError("successful copy lost body/status/lease");
@@ -73,7 +73,7 @@ public final class ProxyBodyCopyCheck {
                     super.close();
                 }
             };
-            var beforeClose = ProxyBodyCopy.start(CompletableFuture.completedFuture(closeGate),
+            var beforeClose = ProxyBodyCopy.start(() -> CompletableFuture.completedFuture(closeGate),
                     new ByteArrayOutputStream(), executor);
             if (!closing.await(5, TimeUnit.SECONDS)) throw new AssertionError("response never closed");
             if (beforeClose.isDone()) throw new AssertionError("future completed before close retired lease");
@@ -81,17 +81,35 @@ public final class ProxyBodyCopyCheck {
             if (beforeClose.get(5, TimeUnit.SECONDS).bytesTransferred()!=3 || closeGate.closes.get()!=1)
                 throw new AssertionError("close-before-success violated");
             var pending = new CompletableFuture<ProxyBodyCopy.Source>();
-            var cancelled = ProxyBodyCopy.start(pending, new ByteArrayOutputStream(), executor);
+            var cancelled = ProxyBodyCopy.start(() -> pending, new ByteArrayOutputStream(), executor);
             if (!cancelled.cancel(true) || !pending.isCancelled())
                 throw new AssertionError("pending acquisition not canceled");
-            var rejectedResponse = new Response(new CountDownLatch(1), new CountDownLatch(0));
-            var rejected = ProxyBodyCopy.start(CompletableFuture.completedFuture(rejectedResponse),
-                    new ByteArrayOutputStream(), command -> { throw new RejectedExecutionException("closed"); });
+            // Rejection is before HTTP start: the acquisition supplier must
+            // never run, and no emergency cleanup thread should be created.
+            var acquired = new AtomicInteger();
+            var rejected = ProxyBodyCopy.start(() -> {
+                        acquired.incrementAndGet();
+                        return CompletableFuture.completedFuture(
+                                new Response(new CountDownLatch(1), new CountDownLatch(0)));
+                    }, new ByteArrayOutputStream(),
+                    command -> { throw new RejectedExecutionException("closed"); });
             try { rejected.get(5, TimeUnit.SECONDS); }
-            catch (java.util.concurrent.ExecutionException expected) { /* rejected */ }
-            if (!rejected.isCompletedExceptionally() || rejectedResponse.closes.get()!=1)
-                throw new AssertionError("worker rejection leaked response");
-            System.out.println("PASS 150 copy-cancellation races, success, preacquire cancellation and worker rejection");
+            catch (java.util.concurrent.ExecutionException expected) {
+                if (!(expected.getCause() instanceof RejectedExecutionException)) throw expected;
+            }
+            if (!rejected.isCompletedExceptionally() || acquired.get()!=0)
+                throw new AssertionError("worker rejection started an outbound HTTP request");
+            // Cancellation before worker execution must also do no network I/O.
+            var staged = new java.util.concurrent.atomic.AtomicReference<Runnable>();
+            var suppressed = ProxyBodyCopy.start(() -> {
+                acquired.incrementAndGet();
+                return CompletableFuture.completedFuture(
+                        new Response(new CountDownLatch(1), new CountDownLatch(0)));
+            }, new ByteArrayOutputStream(), staged::set);
+            if (!suppressed.cancel(true)) throw new AssertionError("pre-dispatch cancel failed");
+            staged.get().run();
+            if (acquired.get()!=0) throw new AssertionError("cancelled dispatch started HTTP");
+            System.out.println("PASS 150 copy-cancellation races, close-before-success and pre-admission rejection/cancel");
         }
     }
 }
