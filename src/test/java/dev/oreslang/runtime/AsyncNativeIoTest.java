@@ -388,6 +388,72 @@ class AsyncNativeIoTest {
                 "uncertain resource close is not a physical-retirement proof");
     }
 
+    @Test void physicalTcpLoanFencesExplicitCloseUntilReaderReleasesIt()
+            throws Exception {
+        try (var server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+             var socket = new Socket(InetAddress.getLoopbackAddress(),
+                     server.getLocalPort());
+             var peer = server.accept()) {
+            var owner = new NativeIo.SocketStopThenRelease(socket);
+            var borrowed = owner.borrowOperation();
+            assertEquals(1, owner.activeOperationCount());
+            owner.requestStop();
+            assertTrue(socket.isInputShutdown());
+            assertFalse(socket.isClosed());
+            assertThrows(IOException.class, owner::close,
+                    "an active read/write loan must prevent premature descriptor closure");
+            assertEquals(1, owner.activeOperationCount());
+            assertFalse(socket.isClosed());
+            assertThrows(IllegalStateException.class, owner::borrowOperation,
+                    "logical STOP seals new socket I/O admission");
+            borrowed.close();
+            assertEquals(0, owner.activeOperationCount());
+            owner.close();
+            assertTrue(socket.isClosed());
+            owner.close();
+            assertThrows(IllegalStateException.class, owner::borrowOperation);
+        }
+    }
+
+    @Test void racingTcpFinalClosesDoNotReleaseActivePhysicalBorrow()
+            throws Exception {
+        try (var server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+             var socket = new Socket(InetAddress.getLoopbackAddress(),
+                     server.getLocalPort());
+             var peer = server.accept()) {
+            var owner = new NativeIo.SocketStopThenRelease(socket);
+            var borrowed = owner.borrowOperation();
+            var start = new CountDownLatch(1);
+            var finished = new CountDownLatch(2);
+            var rejected = new java.util.concurrent.atomic.AtomicInteger();
+            Runnable concurrentClose = () -> {
+                try {
+                    if (!start.await(3, TimeUnit.SECONDS)) {
+                        throw new AssertionError("close race failed to start");
+                    }
+                    owner.close();
+                } catch (IOException expectedWhileBorrowed) {
+                    rejected.incrementAndGet();
+                } catch (InterruptedException interruption) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interruption);
+                } finally {
+                    finished.countDown();
+                }
+            };
+            Thread left = Thread.ofVirtual().start(concurrentClose);
+            Thread right = Thread.ofVirtual().start(concurrentClose);
+            start.countDown();
+            assertTrue(finished.await(3, TimeUnit.SECONDS));
+            left.join(3_000); right.join(3_000);
+            assertEquals(2, rejected.get());
+            assertFalse(socket.isClosed());
+            borrowed.close();
+            owner.close();
+            assertTrue(socket.isClosed());
+        }
+    }
+
     @Test void actualTcpSocketStopDefersFinalCloseUntilReadObserverExit()
             throws Exception {
         var executor = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
