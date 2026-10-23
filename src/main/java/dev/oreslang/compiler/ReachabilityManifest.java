@@ -20,6 +20,7 @@ public final class ReachabilityManifest {
 
     private static final Comparator<String> CODE_POINT_ORDER =
             ReachabilityManifest::compareCodePointOrder;
+    private static final int MAX_ITEMS = 1_000_000;
 
     private final String buildKind;
     private final List<String> roots;
@@ -48,12 +49,28 @@ public final class ReachabilityManifest {
                     "reachability result cannot be null");
         }
 
+        requireCardinality("retained symbols", result.retainedSymbols().size());
+        requireCardinality("removed symbols", result.removedSymbols().size());
+        requireCardinality("root symbols", result.rootSymbols().size());
+        requireCardinality(
+                "compile-time constants",
+                result.compileTimeConstants().size());
+        requireCardinality("semantic symbols", result.semanticSymbols().size());
+
         List<String> retained = sorted(
                 "retained symbol", result.retainedSymbols());
         List<String> removed = sorted(
                 "removed symbol", result.removedSymbols());
         List<String> roots = sorted(
                 "root symbol", result.rootSymbols());
+
+        java.util.LinkedHashSet<String> classified =
+                new java.util.LinkedHashSet<>(result.retainedSymbols());
+        classified.addAll(result.removedSymbols());
+        if (!classified.equals(result.semanticSymbols())) {
+            throw new IllegalArgumentException(
+                    "reachability result does not completely classify semantic symbols");
+        }
 
         for (String root : roots) {
             if (!result.retainedSymbols().contains(root)) {
@@ -163,6 +180,15 @@ public final class ReachabilityManifest {
         } catch (NoSuchAlgorithmException impossible) {
             throw new IllegalStateException(
                     "SHA-256 unavailable", impossible);
+        }
+    }
+
+    private static void requireCardinality(
+            String label,
+            int size) {
+        if (size > MAX_ITEMS) {
+            throw new IllegalArgumentException(
+                    label + " exceeds ores-reachability/1 schema limit");
         }
     }
 
