@@ -2123,15 +2123,25 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         final boolean cleanupReceipt = cleanupOwned;
-        future.whenCompleteRuntime((ignored, failure) -> {
+        // Do NOT retire actor ownership from this Future's first terminal
+        // waiter. Another synchronous subscriber may still hold a reference
+        // into this actor's arena, even after isDone() is already visible.
+        // The Future's physical notification-drain receipt includes the
+        // internal revoker and ALL terminal waiters of the winning settlement.
+        future.whenNotificationsDrainedRuntime(() -> {
             boolean notify = false;
             synchronized (cell.lifecycleLock) {
-                if (cell.pendingOperations.remove(future) && cleanupReceipt) {
-                    if (cell.pendingCleanupFutures <= 0) {
-                        throw new IllegalStateException(
-                                "actor cleanup Future admission underflow");
+                if (cell.pendingOperations.remove(future)) {
+                    if (cleanupReceipt) {
+                        if (cell.pendingCleanupFutures <= 0) {
+                            cell.sourceStopCleanupAborted = true;
+                            cell.ref.terminationCause.compareAndSet(null,
+                                    new OresScheduler.CleanupIncompleteError(
+                                            "actor cleanup Future receipt underflow"));
+                        } else {
+                            cell.pendingCleanupFutures--;
+                        }
                     }
-                    cell.pendingCleanupFutures--;
                     notify = cell.stopped.get();
                 }
             }
