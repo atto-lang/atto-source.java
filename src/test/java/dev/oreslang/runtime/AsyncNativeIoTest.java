@@ -143,6 +143,50 @@ class AsyncNativeIoTest {
         }
     }
 
+    @Test void lateResourceRegistrationAfterShutdownRemainsRetainedUntilWorkerExit()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        var entered = new CountDownLatch(1);
+        var permitRegistration = new CountDownLatch(1);
+        var attemptedRegistration = new CountDownLatch(1);
+        var closedResource = new java.util.concurrent.atomic.AtomicInteger();
+        var deniedRegistration = new java.util.concurrent.atomic.AtomicInteger();
+        try {
+            var future = io.submit("late-connect", () -> {
+                entered.countDown();
+                while (permitRegistration.getCount() != 0) {
+                    try { permitRegistration.await(50, TimeUnit.MILLISECONDS); }
+                    catch (InterruptedException ignored) { }
+                }
+                try {
+                    io.register(closedResource::incrementAndGet);
+                } catch (IllegalStateException contextClosed) {
+                    deniedRegistration.incrementAndGet();
+                } finally {
+                    attemptedRegistration.countDown();
+                }
+                return 7;
+            });
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            assertThrows(IllegalStateException.class, io::close);
+            assertEquals(0, closedResource.get());
+            permitRegistration.countDown();
+            assertTrue(attemptedRegistration.await(2, TimeUnit.SECONDS));
+            assertEquals(1, deniedRegistration.get());
+            assertEquals(0, closedResource.get(),
+                    "registration on a closing context must not close an active native handle");
+            assertInstanceOf(IllegalStateException.class,
+                    assertThrows(ExecutionException.class,
+                            () -> future.get(2, TimeUnit.SECONDS)).getCause());
+            io.close();
+            assertEquals(1, closedResource.get(),
+                    "the post-join resource sweep must close the late resource exactly once");
+        } finally {
+            permitRegistration.countDown();
+            io.close();
+        }
+    }
+
     @Test void blockedTerminalSubscriberPreventsNativeResourceReclamation()
             throws Exception {
         var io = new AsyncNativeIo(1);
