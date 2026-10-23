@@ -1285,6 +1285,12 @@ public final class Parser {
             }
             Ast.Decl definition = null;
             for (Ast.Decl candidate : definitions) {
+                // Value-side functions and bindings occupy a distinct namespace.
+                // They cannot satisfy a forward type, but also must not make an
+                // otherwise valid type signature spuriously ambiguous.
+                if (!(candidate instanceof Ast.TypeAliasDecl
+                        || candidate instanceof Ast.InterfaceDecl
+                        || candidate instanceof Ast.ClassDecl)) continue;
                 if (!forward.name().equals(definedName(candidate))) continue;
                 if (definition != null) {
                     throw new IllegalArgumentException("ambiguous forward type '" + forward.name()
