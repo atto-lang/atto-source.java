@@ -727,4 +727,86 @@ final class ActorPhysicalRetirementRegistryTest {
         assertEquals(1, registry.snapshot().pending());
         assertThrows(IllegalStateException.class, registry::retireVerified);
     }
+
+    @Test void nativeCallbackExceptionMustRemainPrimaryWhenRetirementObserverThrows() {
+        for (boolean failedPath : new boolean[] { false, true }) {
+            var callbackFailure = new IllegalStateException("native delegate failed");
+            var observerFailure = new IllegalStateException("retirement observer failed");
+            var registry = new ActorPhysicalRetirementRegistry(
+                    ActorRuntime.ActorId.create(), 77L,
+                    () -> { throw observerFailure; });
+            var receipt = registry.register(
+                    ActorPhysicalRetirementRegistry.Kind.FFI_LOAN, false);
+            java.nio.channels.CompletionHandler<Integer, Void> broken =
+                    new java.nio.channels.CompletionHandler<>() {
+                        @Override public void completed(Integer count, Void ignored) {
+                            throw callbackFailure;
+                        }
+                        @Override public void failed(Throwable error, Void ignored) {
+                            throw callbackFailure;
+                        }
+                    };
+            var callback = new ActorPhysicalIoCallbackLease<>(receipt, broken);
+            registry.seal();
+            assertSame(callbackFailure, assertThrows(IllegalStateException.class,
+                    () -> {
+                        if (failedPath) callback.failed(new java.io.IOException("kernel"), null);
+                        else callback.completed(1, null);
+                    }));
+            assertSame(callbackFailure, registry.snapshot().failure());
+            assertArrayEquals(new Throwable[] { observerFailure },
+                    callbackFailure.getSuppressed());
+            assertEquals(1, registry.snapshot().pending());
+            assertThrows(IllegalStateException.class, registry::retireVerified);
+        }
+    }
+
+    @Test void malformedNullNativeFailureMustQuarantineAndNeverReachDelegate() {
+        var invoked = new AtomicInteger();
+        var registry = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 78L, () -> { });
+        var receipt = registry.register(
+                ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE, false);
+        java.nio.channels.CompletionHandler<Integer, Void> delegate =
+                new java.nio.channels.CompletionHandler<>() {
+                    @Override public void completed(Integer result, Void ignored) {
+                        invoked.incrementAndGet();
+                    }
+                    @Override public void failed(Throwable error, Void ignored) {
+                        invoked.incrementAndGet();
+                    }
+                };
+        var callback = new ActorPhysicalIoCallbackLease<>(receipt, delegate);
+        registry.seal();
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> callback.failed(null, null));
+        assertSame(failure, registry.snapshot().failure());
+        assertEquals(0, invoked.get());
+        assertEquals(1, registry.snapshot().pending());
+        assertThrows(IllegalStateException.class, registry::retireVerified);
+    }
+
+    @Test void uncertainSubmissionFailureMustNotBeMaskedByBrokenOwnerObserver() {
+        var observerFailure = new IllegalStateException("retirement observer failed");
+        var registry = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 79L,
+                () -> { throw observerFailure; });
+        var receipt = registry.register(
+                ActorPhysicalRetirementRegistry.Kind.OTHER, false);
+        var callback = new ActorPhysicalIoCallbackLease<Integer, Void>(
+                receipt, new java.nio.channels.CompletionHandler<>() {
+                    @Override public void completed(Integer result, Void ignored) { }
+                    @Override public void failed(Throwable error, Void ignored) { }
+                });
+        registry.seal();
+        var submissionFailure = new java.util.concurrent.RejectedExecutionException(
+                "native submission ownership uncertain");
+        assertDoesNotThrow(() ->
+                callback.admissionFailedWithoutPhysicalProof(submissionFailure));
+        assertSame(submissionFailure, registry.snapshot().failure());
+        assertArrayEquals(new Throwable[] { observerFailure },
+                submissionFailure.getSuppressed());
+        assertEquals(1, registry.snapshot().pending());
+        assertThrows(IllegalStateException.class, registry::retireVerified);
+    }
 }
