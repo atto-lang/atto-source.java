@@ -36,7 +36,10 @@ final class ReachabilityManifestCurrentTest {
     @Test
     void manifestUsesTreeShakerRootsWithoutRecomputation() {
         TreeShaker.Result base = OresCompiler.compileForBuild("""
-                fnc helper(): int { return 41; }
+                fnc helper(): int {
+                  const value: int = 41;
+                  return value;
+                }
                 pub fnc answer(): int { return helper() + 1; }
                 fnc dead(): int { return 0; }
                 """, BuildOptions.library(Map.of()));
