@@ -388,6 +388,47 @@ class AsyncNativeIoTest {
                 "uncertain resource close is not a physical-retirement proof");
     }
 
+    @Test void contextReclamationGateRequiresActualWorkerAndReceiptExit()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        var started = new CountDownLatch(1);
+        var allowExit = new CountDownLatch(1);
+        var pending = io.submit("pinned-context-worker", () -> {
+            started.countDown();
+            while (allowExit.getCount() != 0) {
+                try { allowExit.await(20, TimeUnit.MILLISECONDS); }
+                catch (InterruptedException ignored) { /* uninterruptible I/O */ }
+            }
+            return 21;
+        });
+        try {
+            assertTrue(started.await(3, TimeUnit.SECONDS));
+            io.close();
+            assertFalse(pending.isDone());
+            assertThrows(IllegalStateException.class,
+                    () -> OresContext.requireNativeIoPhysicalRetirement(io),
+                    "context must not release actor arenas while the native worker runs");
+        } finally {
+            allowExit.countDown();
+        }
+        assertThrows(ExecutionException.class, () -> pending.get(3, TimeUnit.SECONDS));
+        assertNull(io.physicalShutdown().get(3, TimeUnit.SECONDS));
+        assertDoesNotThrow(() -> OresContext.requireNativeIoPhysicalRetirement(io),
+                "the verified host retirement receipt permits the next cleanup stage");
+    }
+
+    @Test void contextReclamationGateDeniesFailedResourceReceipt()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        var failed = new IOException("native buffer ownership unresolved");
+        io.register(() -> { throw failed; });
+        io.close();
+        var rejection = assertThrows(IllegalStateException.class,
+                () -> OresContext.requireNativeIoPhysicalRetirement(io));
+        assertSame(failed, rejection.getCause());
+        assertFalse(io.physicalShutdown().isDone());
+    }
+
     @Test void stagedNativeReleaseWaitsForPhysicalWorkerAndCloseCallback()
             throws Exception {
         var executor = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
