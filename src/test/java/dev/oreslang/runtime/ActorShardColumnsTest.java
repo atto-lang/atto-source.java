@@ -52,7 +52,14 @@ final class ActorShardColumnsTest {
                                         first.countDown();
                                     } else {
                                         store[0].integrate(0, 1, 1);
-                                        result.set(store[0].snapshotColumn(0));
+                                        try (ActorShardColumns.ColumnSnapshot snapshot =
+                                                     store[0].snapshotColumnLeased(0)) {
+                                            double[] copy = new double[snapshot.length()];
+                                            snapshot.copyInto(copy, 0);
+                                            result.set(copy);
+                                        }
+                                        assertThrows(UnsupportedOperationException.class,
+                                                () -> store[0].snapshotColumn(0));
                                         second.countDown();
                                     }
                                 } catch (Throwable error) {
@@ -151,9 +158,15 @@ final class ActorShardColumnsTest {
                             assertThrows(IllegalArgumentException.class,
                                     () -> shard.integrate(0, 1, Double.NaN));
                             shard.write(2, 1, 7);
-                            double[] copy = shard.snapshotColumn(1);
-                            copy[2] = 1000;
-                            assertEquals(7, shard.read(2, 1));
+                            try (ActorShardColumns.ColumnSnapshot snapshot =
+                                         shard.snapshotColumnLeased(1)) {
+                                double[] copy = new double[3];
+                                snapshot.copyInto(copy, 0);
+                                copy[2] = 1000;
+                                assertEquals(7, shard.read(2, 1));
+                            }
+                            assertThrows(UnsupportedOperationException.class,
+                                    () -> shard.snapshotColumn(1));
                             shard.close();
                             shard.close(); // no duplicate memory-budget release
                             assertThrows(IllegalStateException.class, () -> shard.read(2, 1));
