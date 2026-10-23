@@ -88,3 +88,52 @@ in the focused exact-head matrix, for Java and GraalVM-native carrier options.
 - Do not use cross-organization private source Git-tree mirroring without
   independent security approval and a protected destination allowlist.
 - Keep the PR draft/unmerged until those gates have passing evidence.
+
+## Adversarial audit follow-up (2026-10-22)
+
+This stacked draft also closes additional premature-finalization windows
+detected by reviewing the exact actor STOP and TaskRunner code:
+
+- **Existing actor-owned Future revocation:** STOP sets
+  `pendingOperationRevocationPending` while holding lifecycleLock, snapshots
+  existing pending operations and revokes them OUTSIDE the lock. No arena
+  release or actor DONE can win before every revocation attempt returns.
+  Revoker failures quarantine and do not prevent later revocation attempts.
+  **This is not an I/O/FFI physical loan receipt**: an asynchronous revoker
+  may return before a driver closes a native handle.
+- **Terminal subscriber drain:** an admitted SourceTask increments a
+  `pendingTerminalNotifications` receipt; terminal completion is not
+  sufficient until `OresFuture.onNotificationDrained` returns. This closes
+  a gap where the Task left its scheduler live set but synchronous terminal
+  subscribers were still executing, potentially outside the actor carrier.
+- **Physical retirement callback:** a separate bounded in-flight callback
+  counter prevents arena release after live-set removal but before
+  `onQuiescent` returns. Callback exceptions mark incomplete cleanup.
+- **Quarantine latch:** an asynchronous cleanup Future quota failure can set
+  `sourceStopCleanupAborted` before STOP publishes the cancellation snapshot.
+  STOP now ORs snapshot failure into that state, rather than erasing it.
+- **Atomic scheduler-creation check:** an already-running guest actor turn
+  cannot construct a new unsealed source scheduler after STOP.
+
+New deterministic regression coverage was committed for blocked old-Future
+revocation, blocked Task terminal subscriber, blocked physical retirement
+callback, and failed physical callback. These are source tests **not yet
+executed** by an authorized JDK25 runner.
+
+A read-only structural audit against the branch source checked 13 critical
+presence/order invariants; all 13 matched. Static checks do not establish
+compilation, scheduler fairness, race freedom, or runtime correctness.
+
+**Private CI policy gate:** `.github/private-ci-approved-repositories.txt` on
+protected `main` contains no approved external repository IDs. Policy PR
+#1538 remains open and unmerged. Therefore no source Git objects were copied
+to another organization, regardless of remote Actions minute availability.
+The latest source-org workflow jobs fail at runner admission with zero steps.
+The mirror publisher must remain disabled until an independently reviewed
+exact destination is approved on the protected branch.
+
+Additional mandatory regression: fault-inject a pending-operation revoker that
+returns before its asynchronous driver teardown. Supervisor/arena release
+must await a separate physical loan receipt (not merely `Future.cancel`),
+including success/failure, duplicate cancellation and incarnation rollover.
+The existing code **does not yet provide** that universal receipt aggregation.
