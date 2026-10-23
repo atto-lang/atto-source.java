@@ -13,6 +13,7 @@ on:
       - "src/main/java/dev/oreslang/runtime/ActorRuntime.java"
       - "src/main/java/dev/oreslang/runtime/ActorPhysicalRetirementRegistry.java"
       - "src/main/java/dev/oreslang/runtime/ActorPhysicalChannelLease.java"
+      - "src/main/java/dev/oreslang/runtime/ActorPhysicalIoCallbackLease.java"
       - "src/test/java/dev/oreslang/runtime/ActorPhysicalRetirementRegistryTest.java"
       - "src/test/java/dev/oreslang/runtime/ActorStopCleanupAdmissionTest.java"
       - "src/test/java/dev/oreslang/runtime/TaskOwnedMutex*Test.java"
