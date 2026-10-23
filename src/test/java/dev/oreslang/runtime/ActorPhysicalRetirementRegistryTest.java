@@ -1026,6 +1026,72 @@ final class ActorPhysicalRetirementRegistryTest {
                 "the failed last host wake cannot be a successful arena release");
     }
 
+    @Test void actorPostDrainWakeIsDeferredAfterNativeNotifierExit() {
+        var queued = new java.util.ArrayDeque<Runnable>();
+        var notifications = new AtomicInteger();
+        var callbackInFlight = new AtomicInteger();
+        var registry = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 51, () -> {
+                    callbackInFlight.incrementAndGet();
+                    try { notifications.incrementAndGet(); }
+                    finally { callbackInFlight.decrementAndGet(); }
+                }, queued::add);
+        var receipt = registry.register(
+                ActorPhysicalRetirementRegistry.Kind.NATIVE_IO_OPERATION, false);
+        registry.seal();
+        assertTrue(receipt.completeAfterPhysicalRelease());
+        assertEquals(1, notifications.get(), "native retirement notifier only runs once");
+        assertEquals(0, callbackInFlight.get());
+        assertEquals(1, queued.size(), "post-drain actor STOP is a separate host wake");
+        assertEquals(0, registry.snapshot().inFlightNotifications());
+        queued.removeFirst().run();
+        assertEquals(2, notifications.get());
+        registry.retireVerified();
+        assertTrue(registry.snapshot().retired());
+    }
+
+    @Test void enqueueThenThrowCannotAuthorizeNativePostDrainWake() {
+        var queued = new java.util.ArrayDeque<Runnable>();
+        var notifications = new AtomicInteger();
+        var rejection = new java.util.concurrent.RejectedExecutionException(
+                "bounded host close lane rejected wake");
+        var registry = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 52, notifications::incrementAndGet,
+                wake -> {
+                    queued.add(wake);  // simulate an executor accepting then throwing
+                    throw rejection;
+                });
+        var receipt = registry.register(
+                ActorPhysicalRetirementRegistry.Kind.FFI_LOAN, false);
+        registry.seal();
+        assertSame(rejection, assertThrows(
+                java.util.concurrent.RejectedExecutionException.class,
+                receipt::completeAfterPhysicalRelease));
+        assertEquals(1, notifications.get());
+        assertSame(rejection, registry.snapshot().failure());
+        assertEquals(1, queued.size());
+        queued.removeFirst().run();
+        assertEquals(1, notifications.get(),
+                "a queued-but-unapproved post-drain callback cannot finalize");
+        assertThrows(IllegalStateException.class, registry::retireVerified);
+    }
+
+    @Test void callerRunsPhysicalPostDrainIsRejectedWithoutDeadlock() {
+        var notifications = new AtomicInteger();
+        var registry = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 53, notifications::incrementAndGet,
+                Runnable::run);
+        var receipt = registry.register(
+                ActorPhysicalRetirementRegistry.Kind.NATIVE_IO_OPERATION, false);
+        registry.seal();
+        var rejection = assertThrows(IllegalStateException.class,
+                receipt::completeAfterPhysicalRelease);
+        assertTrue(rejection.getMessage().contains("asynchronous host dispatch"));
+        assertEquals(1, notifications.get(), "no inline final owner notification");
+        assertSame(rejection, registry.snapshot().failure());
+        assertThrows(IllegalStateException.class, registry::retireVerified);
+    }
+
     @Test void concurrentlySettledPhysicalTicketCannotUnderflow() throws Exception {
         var registry = new ActorPhysicalRetirementRegistry(
                 ActorRuntime.ActorId.create(), 1, () -> { });
