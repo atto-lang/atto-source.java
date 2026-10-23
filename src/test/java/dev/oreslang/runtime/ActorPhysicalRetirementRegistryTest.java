@@ -64,6 +64,37 @@ final class ActorPhysicalRetirementRegistryTest {
         }
     }
 
+    @Test void hostDriverCanPreRegisterButCannotRegisterAfterStop() throws Exception {
+        try (var runtime = new ActorRuntime();
+             var foreignRuntime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() ->
+                    (message, context) -> { });
+            assertThrows(IllegalArgumentException.class,
+                    () -> foreignRuntime.registerActorPhysicalReceiptFromDriver(
+                            actor, ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE));
+
+            // A transport acceptor may run on its own host driver thread
+            // before delivering this connection's first actor message.
+            var ticket = runtime.registerActorPhysicalReceiptFromDriver(
+                    actor, ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE);
+            assertEquals(actor.id(), ticket.actorId());
+            assertEquals(Integer.valueOf(1), actor.pendingPhysicalRetirementsByKind()
+                    .get("TCP_HTTP_HANDLE"));
+
+            assertTrue(actor.cancel());
+            assertThrows(ActorRuntime.ActorTerminatedException.class,
+                    () -> runtime.registerActorPhysicalReceiptFromDriver(
+                            actor, ActorPhysicalRetirementRegistry.Kind.OTHER));
+            assertFalse(actor.done().isDone(),
+                    "STOP cannot discard a resource accepted by the host transport");
+            assertTrue(ticket.completeAfterPhysicalRelease());
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertThrows(ActorRuntime.ActorTerminatedException.class,
+                    () -> runtime.registerActorPhysicalReceiptFromDriver(
+                            actor, ActorPhysicalRetirementRegistry.Kind.OTHER));
+        }
+    }
+
     @Test void supervisorCannotJoinUntilChildPhysicalLoanRetires() throws Exception {
         try (var runtime = new ActorRuntime()) {
             AtomicReference<ActorRuntime.ActorRef<String>> childRef =
