@@ -132,6 +132,13 @@ public final class ActorRollingGenerationRoute<T> implements AutoCloseable {
         return false;
     }
 
+    /** Trusted retirement owner may inspect only a DRAINING target. */
+    synchronized T drainingTarget(long epoch) {
+        Generation generation = generations.get(epoch);
+        return generation != null && generation.phase == Phase.DRAINING
+                ? generation.target : null;
+    }
+
     /** Traffic-level drain only; NOT proof that all physical loans retired. */
     public synchronized boolean admissionsDrained(long epoch) {
         Generation g = generations.get(epoch);
