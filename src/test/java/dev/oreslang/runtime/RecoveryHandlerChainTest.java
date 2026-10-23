@@ -9,10 +9,12 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class RecoveryHandlerChainTest {
     private static final ExecutionContext TEST_EXECUTION = ExecutionContext.task(7, 11);
+    private static final long TEST_CODE_EPOCH = 17;
 
     private static GuestFailure signal(
             RecoveryHandlerChain.FailureKind kind, Throwable error) {
-        return GuestFailure.issueFromCompiler(kind, error, TEST_EXECUTION, 1);
+        return GuestFailure.issueFromCompiler(
+                kind, error, TEST_EXECUTION, TEST_CODE_EPOCH, 1);
     }
 
 
@@ -68,7 +70,7 @@ final class RecoveryHandlerChainTest {
                 RecoveryHandlerChain.FailureKind.CANCELLATION,
                 RecoveryHandlerChain.FailureKind.HOST_FATAL)) {
             assertThrows(IllegalArgumentException.class,
-                    () -> GuestFailure.issueFromCompiler(kind, error, TEST_EXECUTION, 2));
+                    () -> GuestFailure.issueFromCompiler(kind, error, TEST_EXECUTION, TEST_CODE_EPOCH, 2));
         }
         assertEquals(1, chain.size());
         assertTrue(trace.isEmpty());
@@ -549,7 +551,7 @@ final class RecoveryHandlerChainTest {
                 101, 202, 303, 404, 5, 606, 707);
         Throwable original = new IllegalArgumentException("typed guest error");
         GuestFailure failure = GuestFailure.issueFromCompiler(
-                RecoveryHandlerChain.FailureKind.RAISE, original, context, 808);
+                RecoveryHandlerChain.FailureKind.RAISE, original, context, 909, 808);
 
         assertEquals(RecoveryHandlerChain.FailureKind.RAISE, failure.kind());
         assertSame(original, failure.error());
@@ -559,6 +561,44 @@ final class RecoveryHandlerChainTest {
         assertEquals(606, failure.provenance().parentExecution());
         assertEquals(707, failure.provenance().continuation());
         assertEquals(808, failure.provenance().sourceToken());
+    }
+
+    @Test void staleCodeEpochCannotEnterReloadedRecoveryChain() {
+        Throwable pending = new Exception("old generation");
+        GuestFailure stale = GuestFailure.issueFromCompiler(
+                RecoveryHandlerChain.FailureKind.RAISE,
+                pending,
+                TEST_EXECUTION,
+                TEST_CODE_EPOCH,
+                1001);
+        var invoked = new java.util.concurrent.atomic.AtomicInteger();
+        var reloaded = RecoveryHandlerChain.<Integer>builder(
+                        TEST_EXECUTION, TEST_CODE_EPOCH + 1)
+                .onRaise((e, next) -> {
+                    invoked.incrementAndGet();
+                    next.resolve(55);
+                })
+                .freeze();
+
+        var outcome = assertInstanceOf(
+                RecoveryHandlerChain.Unhandled.class, reloaded.dispatch(stale));
+        assertSame(stale, outcome.pendingFailure());
+        assertSame(pending, outcome.error());
+        assertEquals(TEST_CODE_EPOCH, outcome.provenance().codeEpoch());
+        assertEquals(0, invoked.get(),
+                "stale-generation failure must never enter a reloaded handler");
+    }
+
+    @Test void codeEpochMustBePositiveAtBothMintAndRegistration() {
+        assertThrows(IllegalArgumentException.class,
+                () -> GuestFailure.issueFromCompiler(
+                        RecoveryHandlerChain.FailureKind.THROW,
+                        new Exception("invalid epoch"),
+                        TEST_EXECUTION,
+                        0,
+                        1));
+        assertThrows(IllegalArgumentException.class,
+                () -> RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION, 0));
     }
 
     @Test void recoveryOutcomeRetainsExactAuthenticatedEnvelope() {
@@ -594,6 +634,7 @@ final class RecoveryHandlerChainTest {
                         RecoveryHandlerChain.FailureKind.class,
                         Throwable.class,
                         ExecutionContext.class,
+                        long.class,
                         long.class));
         assertFalse(java.lang.reflect.Modifier.isPublic(issuer.getModifiers()));
     }
@@ -605,6 +646,7 @@ final class RecoveryHandlerChainTest {
                 RecoveryHandlerChain.FailureKind.RAISE,
                 pending,
                 otherExecution,
+                TEST_CODE_EPOCH,
                 99);
         var invoked = new java.util.concurrent.atomic.AtomicInteger();
         var chain = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
@@ -629,6 +671,7 @@ final class RecoveryHandlerChainTest {
                 RecoveryHandlerChain.FailureKind.THROW,
                 new Exception("actor generation"),
                 actorExecution,
+                TEST_CODE_EPOCH,
                 100);
         var invoked = new java.util.concurrent.atomic.AtomicInteger();
         var taskChain = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
