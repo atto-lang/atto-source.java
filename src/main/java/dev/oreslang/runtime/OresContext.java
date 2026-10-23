@@ -437,40 +437,63 @@ public final class OresContext implements AutoCloseable {
         return Map.copyOf(descriptor);
     }
 
-    @Override
-    public void close() {
-        // Context-close can race native callbacks. Preserve this entire actor,
-        // scheduler and heap ownership graph until physical native I/O and
-        // structured actor retirement can BOTH be joined. On failure, a host
-        // may explicitly retry close after the blocking native worker exits.
-        QUARANTINED_CONTEXTS.add(this);
+    /**
+     * Two-phase physical context retirement. Separate sealing/revocation from
+     * the physical joins, so an actor holding a socket loan cannot make the
+     * context wait for a worker before any cancellation has been requested.
+     *
+     * Each phase is independently attempted on failure; neither actor nor
+     * native ownership may be reclaimed without BOTH joins succeeding.
+     * Package access permits exercising this exact production sequence in
+     * deterministic unit tests without constructing a Truffle environment.
+     */
+    static void joinActorsAndNativeIo(ActorRuntime actors, AsyncNativeIo nativeIo) {
+        java.util.Objects.requireNonNull(actors);
+        java.util.Objects.requireNonNull(nativeIo);
         RuntimeException failure = null;
-        boolean nativeRetired = false;
-        boolean actorsRetired = false;
         try {
-            nativeIo.close();
-            nativeRetired = true;
-        } catch (RuntimeException incompleteNative) {
-            failure = incompleteNative;
+            actors.sealShutdownAdmission();
+        } catch (RuntimeException sealFailure) {
+            failure = sealFailure;
+        }
+        try {
+            nativeIo.requestShutdown();
+        } catch (RuntimeException revokeFailure) {
+            if (failure == null) failure = revokeFailure;
+            else if (failure != revokeFailure) failure.addSuppressed(revokeFailure);
         }
         try {
             actors.close();
-            actorsRetired = true;
-        } catch (RuntimeException incompleteActors) {
-            if (failure == null) failure = incompleteActors;
-            else if (failure != incompleteActors) failure.addSuppressed(incompleteActors);
+        } catch (RuntimeException actorFailure) {
+            if (failure == null) failure = actorFailure;
+            else if (failure != actorFailure) failure.addSuppressed(actorFailure);
         }
+        try {
+            nativeIo.close();
+        } catch (RuntimeException ioFailure) {
+            if (failure == null) failure = ioFailure;
+            else if (failure != ioFailure) failure.addSuppressed(ioFailure);
+        }
+        if (failure != null) {
+            throw new IllegalStateException(
+                    "Oreslang actor and native I/O retirement incomplete", failure);
+        }
+    }
 
-        // Do not close remaining services, shared code images or the GC while
-        // native workers or actor carriers might still touch those resources.
-        // This also keeps the VM alive for subsequent cleanup receipt delivery.
-        if (!nativeRetired || !actorsRetired) {
+    @Override
+    public void close() {
+        // Hold the entire actor, scheduler, Truffle code image and GC graph
+        // strongly reachable until BOTH physical joins succeed.
+        QUARANTINED_CONTEXTS.add(this);
+        try {
+            joinActorsAndNativeIo(actors, nativeIo);
+        } catch (RuntimeException incomplete) {
             output.flush();
             throw new IllegalStateException(
                     "Oreslang context cleanup incomplete; physical state quarantined",
-                    failure);
+                    incomplete);
         }
-
+        RuntimeException failure = null;
         try {
             http.close();
         } catch (RuntimeException httpFailure) {
