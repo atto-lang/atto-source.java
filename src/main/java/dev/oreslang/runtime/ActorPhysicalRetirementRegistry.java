@@ -90,19 +90,37 @@ final class ActorPhysicalRetirementRegistry {
             return true;
         }
 
-        /** A failed/uncertain physical release is not a successful receipt. */
+        /**
+         * A failed/uncertain physical release is not a successful receipt.
+         * A duplicate driver callback may arrive AFTER the first release
+         * witness but BEFORE the actor's final post-drain wake. Such a late
+         * protocol violation must revoke the still-unretired release proof
+         * and quarantine; it cannot silently return false. A driver that can
+         * deliver duplicates AFTER actor retirement needs its own separate
+         * external callback-drain fence before settling the receipt.
+         */
         boolean failPhysicalRelease(Throwable failure) {
             Objects.requireNonNull(failure, "failure");
             synchronized (lock) {
-                if (state != 0) return false;
-                if (!pending.contains(this)) {
+                if (state == 2) return false;
+                if (state == 0 && !pending.contains(this)) {
                     throw new IllegalStateException("foreign physical receipt");
+                }
+                if (state == 1) {
+                    if (retired) {
+                        // The driver violated its physical-exit contract after
+                        // final retirement. Do not pretend it was quarantined:
+                        // this requires out-of-band supervisor escalation.
+                        throw new IllegalStateException(
+                                "native callback after retired actor generation", failure);
+                    }
+                    // A previously released ticket becomes uncertain. Retain
+                    // strong actor ownership until the failure is inspected.
+                    pending.add(this);
                 }
                 state = 2;
                 if (firstFailure == null) firstFailure = failure;
                 else if (firstFailure != failure) firstFailure.addSuppressed(failure);
-                // Retain the ticket and the actor: there is no proof the
-                // underlying native/IO resource was actually reclaimed.
             }
             notifyOwner(); // supervisor may observe quarantine
             return true;
