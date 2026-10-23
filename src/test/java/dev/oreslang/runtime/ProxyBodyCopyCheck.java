@@ -15,7 +15,7 @@ import java.util.function.BooleanSupplier;
 
 /** JDK-only adversarial worker/cancellation handoff test. */
 public final class ProxyBodyCopyCheck {
-    private static final class Response implements ProxyBodyCopy.Source {
+    private static class Response implements ProxyBodyCopy.Source {
         final AtomicInteger closes = new AtomicInteger();
         final CountDownLatch writing;
         final CountDownLatch resume;
@@ -58,6 +58,28 @@ public final class ProxyBodyCopyCheck {
             var receipt = copied.get(5, TimeUnit.SECONDS);
             if(receipt.status()!=206 || receipt.bytesTransferred()!=3 || bytes.size()!=3 || response.closes.get()!=1)
                 throw new AssertionError("successful copy lost body/status/lease");
+            // Success must not become observable until the physical body
+            // close has completed and its transport lease is retired.
+            var closing = new CountDownLatch(1);
+            var finishClose = new CountDownLatch(1);
+            var closeGate = new Response(new CountDownLatch(1), new CountDownLatch(0)) {
+                @Override public void close() {
+                    closing.countDown();
+                    try { if (!finishClose.await(5, TimeUnit.SECONDS)) throw new AssertionError("close gate timeout"); }
+                    catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError(interrupted);
+                    }
+                    super.close();
+                }
+            };
+            var beforeClose = ProxyBodyCopy.start(CompletableFuture.completedFuture(closeGate),
+                    new ByteArrayOutputStream(), executor);
+            if (!closing.await(5, TimeUnit.SECONDS)) throw new AssertionError("response never closed");
+            if (beforeClose.isDone()) throw new AssertionError("future completed before close retired lease");
+            finishClose.countDown();
+            if (beforeClose.get(5, TimeUnit.SECONDS).bytesTransferred()!=3 || closeGate.closes.get()!=1)
+                throw new AssertionError("close-before-success violated");
             var pending = new CompletableFuture<ProxyBodyCopy.Source>();
             var cancelled = ProxyBodyCopy.start(pending, new ByteArrayOutputStream(), executor);
             if (!cancelled.cancel(true) || !pending.isCancelled())
