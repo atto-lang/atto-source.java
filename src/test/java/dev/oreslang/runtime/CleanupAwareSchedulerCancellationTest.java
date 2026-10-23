@@ -126,6 +126,9 @@ final class CleanupAwareSchedulerCancellationTest {
             while (!scheduler.hasIncompleteCleanup()
                     && System.nanoTime() < deadline) Thread.onSpinWait();
             assertTrue(scheduler.hasIncompleteCleanup());
+            long physicalDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (!scheduler.actorStopPhysicallyQuiescent()
+                    && System.nanoTime() < physicalDeadline) Thread.onSpinWait();
             assertTrue(scheduler.actorStopPhysicallyQuiescent(),
                     "quiescence alone does not imply successful cleanup");
         }
