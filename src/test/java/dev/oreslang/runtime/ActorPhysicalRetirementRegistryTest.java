@@ -1026,6 +1026,41 @@ final class ActorPhysicalRetirementRegistryTest {
                 "the failed last host wake cannot be a successful arena release");
     }
 
+    @Test void failedRuntimeCloseRetainsNativeLoansAndAllowsVerifiedRetry()
+            throws Exception {
+        // A STOP timeout must not dismantle the physical notifier lane:
+        // the late FFI completion needs it to finalize its actor safely.
+        var runtime = new ActorRuntime();
+        var receipt = new AtomicReference<ActorPhysicalRetirementRegistry.Receipt>();
+        var admitted = new CountDownLatch(1);
+        var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+            receipt.set(context.runtime().registerCurrentActorPhysicalReceipt(
+                    ActorPhysicalRetirementRegistry.Kind.FFI_LOAN));
+            admitted.countDown();
+        });
+        try {
+            actor.send("register");
+            assertTrue(admitted.await(3, TimeUnit.SECONDS));
+            assertTrue(actor.cancel());
+            var timeout = assertThrows(IllegalStateException.class, runtime::close);
+            assertTrue(timeout.getMessage().contains("quarantined"));
+            assertFalse(actor.done().isDone(), "failed global close cannot fabricate DONE");
+            assertEquals(Integer.valueOf(1),
+                    actor.pendingPhysicalRetirementsByKind().get("FFI_LOAN"));
+            assertTrue(receipt.get().completeAfterPhysicalRelease(),
+                    "the late physical receipt must still have a live host wake lane");
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS),
+                    "native notifier must complete STOP after the first failed close");
+            assertDoesNotThrow(runtime::close,
+                    "retry should reclaim only after actor and notifier retirement");
+        } finally {
+            // If the assertions fail, settle the trusted test-only loan to
+            // allow eventual cleanup instead of pinning the JUnit process.
+            if (receipt.get() != null) receipt.get().completeAfterPhysicalRelease();
+            try { runtime.close(); } catch (IllegalStateException ignored) { }
+        }
+    }
+
     @Test void actorPostDrainWakeIsDeferredAfterNativeNotifierExit() {
         var queued = new java.util.ArrayDeque<Runnable>();
         var notifications = new AtomicInteger();
