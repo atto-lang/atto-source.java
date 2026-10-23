@@ -42,6 +42,41 @@ final class ActorLockStopRetirementTest {
     }
 
     @Test
+    void actorStopWaitsForSuspendedSourceTaskGuardRetirement() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var mutex = OresMutex.shared(new int[] {11});
+            OresFuture<Integer> neverCompletes = new OresFuture<>();
+            CountDownLatch taskSuspended = new CountDownLatch(1);
+            AtomicReference<OresMutex.Guard<int[]>> held = new AtomicReference<>();
+            var ref = runtime.<String>spawnShared(() -> (message, context) -> {
+                context.runtime().startActorTask(resume -> {
+                    if (!resume.initial()) {
+                        throw new IllegalStateException(
+                                "suspended task resumed after STOP");
+                    }
+                    var guard = mutex.tryLock().orElseThrow();
+                    guard.value()[0] = 31;
+                    held.set(guard);
+                    taskSuspended.countDown();
+                    return OresScheduler.await(neverCompletes);
+                });
+            });
+            ref.send("start");
+            assertTrue(taskSuspended.await(5, TimeUnit.SECONDS));
+            assertNotNull(held.get());
+            assertFalse(held.get().released());
+            assertTrue(mutex.tryLock().isEmpty(), "suspended Task lost its permit");
+            ref.stop();
+            assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS),
+                    "actor STOP missed suspended Task lock receipt");
+            assertTrue(held.get().released(), "retirement left Task guard active");
+            assertTrue(mutex.isPoisoned(),
+                    "suspended writer must be poisoned on forced unwind");
+            assertTrue(ref.getDone().isDone());
+        }
+    }
+
+    @Test
     void sourceTaskLeakedGuardRetiresBeforeActorLifetimeEnds() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var mutex = OresMutex.shared(new int[] {3});
