@@ -101,16 +101,21 @@ public final class AsyncNativeIo implements AutoCloseable {
                         "native I/O worker not started before context close"), null, true);
                 return;
             }
-            CorePerf.end(CorePerf.ASYNC_IO_QUEUE, queued);
-            long workPerf = CorePerf.start();
             T value = null;
             Throwable failure = null;
             try {
-                value = work.call();
+                // Diagnostic counters are host-owned finalizers too. A
+                // throw during queue/work accounting must not strand an
+                // admitted operation without a terminal retirement path.
+                CorePerf.end(CorePerf.ASYNC_IO_QUEUE, queued);
+                long workPerf = CorePerf.start();
+                try {
+                    value = work.call();
+                } finally {
+                    CorePerf.end(CorePerf.ASYNC_IO_WORK, workPerf);
+                }
             } catch (Throwable thrown) {
                 failure = thrown;
-            } finally {
-                CorePerf.end(CorePerf.ASYNC_IO_WORK, workPerf);
             }
             synchronized (AsyncNativeIo.this) { phase = Phase.RETIRING; }
             settle(failure, value, false);
