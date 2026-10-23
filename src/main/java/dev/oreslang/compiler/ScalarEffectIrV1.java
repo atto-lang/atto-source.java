@@ -30,14 +30,21 @@ public final class ScalarEffectIrV1 {
                 source.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 1024 * 1024) {
             throw new IllegalArgumentException("scalar effect IR source exceeds byte budget");
         }
-        // The same full compiler type and ownership admission used for builds.
-        return fromValidated(OresCompiler.parseAndTypeCheck(source));
+        Ast.Program parsed = Parser.parse(source);
+        // Reject the bounded subset's depth before recursive compiler passes.
+        // The shape preflight grants no type or ownership admission.
+        collectEntries(parsed);
+        return fromValidated(OresCompiler.analyze(parsed));
     }
 
     private record Node(Ast.Expr expr, int depth) { }
     private record Entry(String name, int units) { }
 
     private static String fromValidated(Ast.Program checked) {
+        return encode(collectEntries(checked));
+    }
+
+    private static List<Entry> collectEntries(Ast.Program checked) {
         if (checked.namespace() != null || !checked.imports().isEmpty() ||
                 checked.modules().size() != 1) {
             throw new IllegalArgumentException("scalar effect IR requires one import-free module");
@@ -102,6 +109,10 @@ public final class ScalarEffectIrV1 {
             entries.add(new Entry(name, units));
         }
         entries.sort(Comparator.comparing(Entry::name));
+        return entries;
+    }
+
+    private static String encode(List<Entry> entries) {
         StringBuilder json = new StringBuilder("{\"schema_version\":1,\"functions\":[");
         for (int i = 0; i < entries.size(); i++) {
             Entry entry = entries.get(i);
