@@ -75,3 +75,15 @@ The constructor rejects unpooled/unready initial handlers and foreign-context ha
 `ActorRollingHttpSocketTest` is the first real loopback HTTP socket + `ActorRuntime` SHARED-actor acceptance fixture: a G1 request is deliberately held, a G2 request completes over the **same** listener/port/PID, and G1 later finishes. It tests the routing hypothesis, not the full `NativeHttpRollingDispatcher` guest path; that integration fixture remains a release blocker.
 
 The existing source `NativeHttpTest` uses Oreslang-compiled `http.listen` and `http.handler` separately; those source-level tests must be extended to exercise the rolling coordinator after safe host exposure and security review. Keep the PR draft until a real repository Maven/Graal build and tests execute.
+
+## Draining a completed old HTTP generation
+
+1. Let the promoted route stop admitting **new** G1 exchanges.
+2. Wait for `dispatch.admissionsDrained(oldEpoch)` (all G1 HTTP exchanges have reached their transport terminal marker).
+3. Call `dispatch.requestDrainAfterAdmissions(oldEpoch)`. This sends nonparking `gracefulStop()` to G1 pooled actors; repeated calls retry incomplete stop signaling. This *does not* close the permanent listener or G2.
+4. Wait until **each** G1 actor `get_done()` is successful, and independently verify physical Tasks, native I/O, FFI, arena, code-image leases and callbacks have retired. Failed actor exits are **not** certified as clean.
+5. Only the trusted supervisor may call `dispatch.acknowledgePhysicallyRetired(oldEpoch)`. It validates zero route pins and successful actor terminal futures, removes the pool's strong registry reference and the old route entry. The API does not yet require an unforgeable physical proof token, so production callers must not rely on it as a self-sufficient safety certificate.
+
+A failed/unpublished candidate has its pool fenced and cancelled; its registry reference is removed without altering the serving route. This is cancellation, **not** proof of immediate memory reclamation. Future production integration must consume authenticated retirement receipts and replace the caller-attested bookkeeping API.
+
+At present, an HTTP request is assigned a route at **rolling dispatch admission**, not when the kernel accepts the TCP connection. Requests queued at the transport boundary during a cutover can be assigned to G2; in-flight G1 exchanges with an acquired routing lease remain G1. This ordering is intentionally documented for the initial config-only path. A future source-level interface can make ingress-before-dispatch affinity stricter if required.
