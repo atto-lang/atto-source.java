@@ -428,6 +428,64 @@ final class ActorStopCleanupAdmissionTest {
     }
 
     @Test
+    void actorStopJoinsCancellationAlreadyWinningOnAnotherThread()
+            throws Exception {
+        CountDownLatch admitted = new CountDownLatch(1);
+        CountDownLatch foreignRevokerEntered = new CountDownLatch(1);
+        CountDownLatch releaseForeignRevoker = new CountDownLatch(1);
+        AtomicReference<OresFuture<Void>> ownedOperation = new AtomicReference<>();
+        AtomicReference<Throwable> foreignFailure = new AtomicReference<>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                OresFuture<Void> owned = new OresFuture<>(() -> {
+                    foreignRevokerEntered.countDown();
+                    try {
+                        if (!releaseForeignRevoker.await(5, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("foreign revoker held too long");
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(interrupted);
+                    }
+                });
+                context.runtime().ownCurrentActorFuture(owned);
+                ownedOperation.set(owned);
+                admitted.countDown();
+            });
+            actor.send("own");
+            assertTrue(admitted.await(3, TimeUnit.SECONDS));
+            Thread foreignCancel = Thread.ofVirtual().start(() -> {
+                try {
+                    ownedOperation.get().cancel(false);
+                } catch (Throwable failure) {
+                    foreignFailure.set(failure);
+                }
+            });
+            try {
+                assertTrue(foreignRevokerEntered.await(3, TimeUnit.SECONDS));
+                assertTrue(ownedOperation.get().isCancelled(),
+                        "Future cancellation state precedes physical revoker completion");
+                assertTrue(actor.cancel(),
+                        "actor STOP can begin while another cancellation wins");
+                assertFalse(actor.done().isDone(),
+                        "losing a cancellation CAS does not join the winning revoker");
+                assertFalse(actor.awaitTermination(100, TimeUnit.MILLISECONDS),
+                        "arena must remain owned while foreign cancellation hook runs");
+            } finally {
+                releaseForeignRevoker.countDown();
+            }
+            foreignCancel.join(TimeUnit.SECONDS.toMillis(3));
+            assertFalse(foreignCancel.isAlive());
+            assertNull(foreignFailure.get(), () -> String.valueOf(foreignFailure.get()));
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS),
+                    "notification-drain receipt must allow final STOP retirement");
+            assertInstanceOf(ActorRuntime.ActorCancelledException.class,
+                    assertThrows(ExecutionException.class,
+                            () -> actor.done().get(3, TimeUnit.SECONDS)).getCause());
+        }
+    }
+
+    @Test
     void actorStopJoinsExistingFutureRevokerBeforePublishingDone()
             throws Exception {
         CountDownLatch admitted = new CountDownLatch(1);
