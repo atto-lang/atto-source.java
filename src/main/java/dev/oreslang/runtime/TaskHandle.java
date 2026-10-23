@@ -361,13 +361,58 @@ public final class TaskHandle<T> {
             throw failure;
         }
 
+        return bindSource(handle, source);
+    }
+
+    /**
+     * UNTRUSTED actor source-Task admission with the same hidden Task-owned
+     * lock ledger as ordinary tracked Tasks. The independent wall-clock
+     * deadline, quota callbacks and host notification-drain admission remain
+     * owned by OresScheduler, not by any guest-created cancellation token.
+     */
+    static <T> TaskHandle<T> startWithWallDeadline(
+            OresScheduler scheduler,
+            OresScheduler.Task<T> task,
+            Runnable extraOnQuiescent,
+            long remainingNanos,
+            Throwable deadlineFailure,
+            Runnable onNotificationDrained) {
+        Objects.requireNonNull(scheduler, "scheduler");
+        Objects.requireNonNull(task, "task");
+        Objects.requireNonNull(extraOnQuiescent, "extraOnQuiescent");
+        Objects.requireNonNull(deadlineFailure, "deadlineFailure");
+        Objects.requireNonNull(onNotificationDrained, "onNotificationDrained");
+        TaskHandle<T> handle = new TaskHandle<>(null);
+        OresFuture<T> source;
+        try {
+            source = scheduler.startWithWallDeadline(
+                    resume -> handle.resumeAtCancellationBoundary(resume, task),
+                    () -> {
+                        try {
+                            handle.onQuiescent();
+                        } finally {
+                            // Quota release cannot be skipped even if trusted
+                            // lock retirement raises an invariant failure.
+                            extraOnQuiescent.run();
+                        }
+                    },
+                    remainingNanos, deadlineFailure, onNotificationDrained);
+        } catch (RuntimeException | Error failure) {
+            handle.revoker.close();
+            handle.cancellation.cancel("admission rejected");
+            handle.cancellation.retire();
+            throw failure;
+        }
+        return bindSource(handle, source);
+    }
+
+    private static <T> TaskHandle<T> bindSource(
+            TaskHandle<T> handle, OresFuture<T> source) {
         if (!handle.result.compareAndSet(null, source)) {
             throw new IllegalStateException("TaskHandle result bound more than once");
         }
         source.whenCompleteRuntime((value, failure) ->
                 handle.onSettled(source, value, failure));
-        // Cancellation can win before bind, after bind, or during subscriber
-        // registration. The second check makes the early request observable.
         if (handle.cancellation.isCancelled()) handle.cancelResultIfBound();
         return handle;
     }
