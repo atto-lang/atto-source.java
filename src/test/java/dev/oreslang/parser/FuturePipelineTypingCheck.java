@@ -9,7 +9,7 @@ public final class FuturePipelineTypingCheck {
 
     public static void main(String[] args) {
         check();
-        System.out.println("5 pipeline typing boundary checks passed (frontend only).");
+        System.out.println("restricted pipeline typing boundary checks passed (frontend only).");
     }
 
     static void check() {
