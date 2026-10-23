@@ -189,6 +189,7 @@ final class ActorProxyRequestSlabTest {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch ready = new CountDownLatch(1);
             CountDownLatch checked = new CountDownLatch(1);
+            CountDownLatch afterClose = new CountDownLatch(1);
             AtomicReference<ActorProxyRequestSlab> shared = new AtomicReference<>();
             AtomicReference<Throwable> failure = new AtomicReference<>();
             java.util.concurrent.atomic.AtomicLong receipt =
@@ -220,17 +221,27 @@ final class ActorProxyRequestSlabTest {
                     (message, turn) -> {
                         try {
                             ActorProxyRequestSlab slab = shared.get();
-                            assertThrows(SecurityException.class, () -> slab.pin(request.get()));
+                            if (message == 2) {
+                                assertThrows(SecurityException.class, slab::close);
+                            } else {
+                                assertThrows(SecurityException.class, () -> slab.pin(request.get()));
                             assertThrows(SecurityException.class,
                                     () -> slab.settle(1L, request.get(), receipt.get()));
+                            }
                         } catch (Throwable t) { failure.set(t); }
-                        finally { checked.countDown(); }
+                        finally {
+                            if (message == 2) afterClose.countDown();
+                            else checked.countDown();
+                        }
                     });
             b.send(1);
             assertTrue(checked.await(5, TimeUnit.SECONDS));
             assertNull(failure.get());
             a.send(2);
             a.drain().get(5, TimeUnit.SECONDS);
+            assertNull(failure.get());
+            b.send(2);
+            assertTrue(afterClose.await(5, TimeUnit.SECONDS));
             assertNull(failure.get());
             a.stop();
             b.stop();
