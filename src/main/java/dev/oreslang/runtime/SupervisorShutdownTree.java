@@ -285,7 +285,12 @@ public final class SupervisorShutdownTree {
             // guest callbacks against a partially-fenced tree.
             shuttingDown = true;
             try {
-                sealSubtree(target);
+                // Never publish any FSM shutdown transition until EVERY
+                // descendant's admission fence has successfully committed.
+                // A partial seal failure remains a coordinator fault, not
+                // an apparently complete frozen parent snapshot.
+                sealAdmissionSubtree(target);
+                publishSealedSubtree(target);
             } catch (Throwable failure) {
                 fenceFailure = failure;
             }
@@ -396,9 +401,13 @@ public final class SupervisorShutdownTree {
         }
     }
 
-    private void sealSubtree(Supervisor node) {
+    private void sealAdmissionSubtree(Supervisor node) {
         node.group.fenceWorkerAdmissions();
         node.shutdownWorkers = node.group.workers();
+        for (Supervisor child : node.children) sealAdmissionSubtree(child);
+    }
+
+    private void publishSealedSubtree(Supervisor node) {
         Map<Long, Long> epochs = new java.util.HashMap<>();
         for (Supervisor child : node.children) {
             epochs.put(child.supervisorId, child.lifecycle.get().epoch());
@@ -406,7 +415,7 @@ public final class SupervisorShutdownTree {
         node.frozenChildEpochs = new SupervisorChildGenerationFence(epochs);
         node.transition(new SupervisorLifecycleFsm.ShutdownWithChildEpochs(
                 node.lifecycle.get().epoch(), epochs));
-        for (Supervisor child : node.children) sealSubtree(child);
+        for (Supervisor child : node.children) publishSealedSubtree(child);
     }
 
     private static void collect(Supervisor node, List<Supervisor> out) {
