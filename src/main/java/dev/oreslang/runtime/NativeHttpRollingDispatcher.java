@@ -123,6 +123,20 @@ public final class NativeHttpRollingDispatcher implements AutoCloseable {
     }
 
     /**
+     * Close admission already happened at route promotion. Only once the
+     * old exchange count is zero may the supervisor ask old actors to stop;
+     * Task/FFI/I/O and code lifetimes still require independent proof.
+     */
+    public boolean requestDrainAfterAdmissions(long epoch) {
+        requireSupervisor();
+        if (!routes.admissionsDrained(epoch)) return false;
+        NativeHttp.Handler old = routes.drainingTarget(epoch);
+        if (old == null) return false;
+        old.requestGracefulPoolStop();
+        return true;
+    }
+
+    /**
      * Trusted retirement bookkeeping only. The caller must independently
      * verify every physical worker/Task/I/O/arena/code loan has retired.
      * This intentionally does not automatically stop the old worker pool.
