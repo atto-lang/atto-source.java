@@ -615,6 +615,47 @@ final class ActorStopCleanupAdmissionTest {
     }
 
     @Test
+    void missingOrDuplicatedPhysicalStopDiscardReceiptCannotAuthorizeReclamation()
+            throws Exception {
+        CountDownLatch childSpawned = new CountDownLatch(1);
+        AtomicInteger injectedDiscards = new AtomicInteger();
+        ActorRuntime.PhysicalStopDispatcher defectiveHost = (work, discard) -> {
+            // No STOP work was started. Even a broken dispatcher that reports
+            // null (or reports twice) must never fabricate successful cleanup.
+            injectedDiscards.incrementAndGet();
+            discard.accept(null);
+            discard.accept(new IllegalStateException("duplicate discard"));
+        };
+        ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(2, 2, 8, 32),
+                ActorRuntime.TurnExecutor.direct(),
+                ActorRuntime.ControlDispatcher.unavailable(),
+                defectiveHost);
+        try {
+            var parent = runtime.<String>spawnShared(() -> (message, context) -> {
+                context.runtime().<String>spawnShared(() ->
+                        (ignored, childContext) -> { });
+                childSpawned.countDown();
+            });
+            parent.send("spawn");
+            assertTrue(childSpawned.await(3, TimeUnit.SECONDS));
+            assertTrue(parent.cancel());
+            assertEquals(1, injectedDiscards.get());
+            assertFalse(parent.done().isDone());
+            assertFalse(parent.awaitTermination(100, TimeUnit.MILLISECONDS));
+            assertThrows(IllegalStateException.class, runtime::close,
+                    "malformed and duplicate discard receipts must quarantine actor STOP");
+        } finally {
+            try {
+                runtime.close();
+            } catch (IllegalStateException expectedQuarantine) {
+                // A quarantined arena deliberately prevents clean VM teardown.
+            }
+        }
+    }
+
+    @Test
     void vmShutdownDiscardsQueuedSiblingStopAndQuarantinesParent()
             throws Exception {
         String token = java.util.UUID.randomUUID().toString();
