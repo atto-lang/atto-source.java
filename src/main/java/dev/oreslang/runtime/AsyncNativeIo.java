@@ -105,6 +105,7 @@ public final class AsyncNativeIo implements AutoCloseable {
             if (!released.compareAndSet(false, true)) {
                 throw new IllegalStateException("duplicate physical I/O loan receipt");
             }
+            ActorRuntime.ActorId retireActor;
             synchronized (AsyncNativeIo.this) {
                 if (resourceLoans.get(lease.resource) != lease
                         || lease.generation != identity.resourceGeneration()
@@ -119,8 +120,10 @@ public final class AsyncNativeIo implements AutoCloseable {
                     resourceLoans.remove(lease.resource);
                     deferredUnregister.remove(lease.resource);
                 }
+                retireActor = decrementActorOperationLocked(identity.actorId());
                 AsyncNativeIo.this.notifyAll();
             }
+            notifyActorRetirement(retireActor);
         }
     }
 
@@ -135,9 +138,10 @@ public final class AsyncNativeIo implements AutoCloseable {
             throw new RejectedExecutionException(
                     "native resource is closed, unregistered or shutdown-sealed");
         }
-        state.active++;
         ActorRuntime.ActorId actorId = currentOperationActor.get();
         if (actorId == null) actorId = ActorRuntime.currentActorId().orElse(null);
+        state.active++;
+        incrementActorOperationLocked(actorId);
         return new IoLoan(state, new IoLoanIdentity(
                 state.generation, nextLoanGeneration.incrementAndGet(), actorId));
     }
