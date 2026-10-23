@@ -80,6 +80,26 @@ final class UsingRequestBorrowScopeParserTest {
     }
 
     @Test
+    void scopedAsDelimiterDoesNotConsumeOrdinaryCastExpressions() {
+        Ast.FunctionDecl scoped = onlyFunction(method(
+                "using request.borrow() as view { const path = view.path(); }"));
+        Ast.UsingBorrowStmt borrow = assertInstanceOf(
+                Ast.UsingBorrowStmt.class, scoped.body().getFirst());
+        assertInstanceOf(Ast.CallExpr.class, borrow.resource());
+        Ast.FunctionDecl cast = onlyFunction(method(
+                "const copy = source as String;"));
+        Ast.BindingStmt binding = assertInstanceOf(
+                Ast.BindingStmt.class, cast.body().getFirst());
+        assertInstanceOf(Ast.CastExpr.class, binding.initializer());
+    }
+
+    @Test
+    void contextualUsingDoesNotStealOrdinaryIdentifierExpressions() {
+        Ast.FunctionDecl normal = onlyFunction(method("using + 1;"));
+        assertInstanceOf(Ast.ExprStmt.class, normal.body().getFirst());
+    }
+
+    @Test
     void evenApparentlySafeBorrowCannotRunBeforeRuntimeProvenanceGate() {
         String source = method("""
                 using request.borrow() as view {
