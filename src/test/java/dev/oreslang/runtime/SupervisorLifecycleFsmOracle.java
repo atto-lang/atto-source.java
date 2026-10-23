@@ -51,7 +51,7 @@ public final class SupervisorLifecycleFsmOracle {
         mustReject(s, new SupervisorLifecycleFsm.ChildFinished(1, 11, false));
         s = apply(s, new SupervisorLifecycleFsm.ActorsFinished(1, false));
         mustReject(s, new SupervisorLifecycleFsm.ActorsFinished(1, true));
-        s = apply(s, new SupervisorLifecycleFsm.PhysicalRelease(1));
+        mustReject(s, new SupervisorLifecycleFsm.PhysicalRelease(1));
         s = apply(s, new SupervisorLifecycleFsm.BeforeHookFinished(1, false));
         mustReject(s, new SupervisorLifecycleFsm.BeforeHookFinished(1, true));
         check(s.phase() == SupervisorLifecycleFsm.Phase.WAIT_CHILDREN,
@@ -66,6 +66,7 @@ public final class SupervisorLifecycleFsmOracle {
                 "workers already retired but no transition to post-hook");
         s = apply(s, new SupervisorLifecycleFsm.AfterHookFinished(1, false));
         mustReject(s, new SupervisorLifecycleFsm.AfterHookFinished(1, true));
+        s = apply(s, new SupervisorLifecycleFsm.PhysicalRelease(1));
         check(s.phase() == SupervisorLifecycleFsm.Phase.STOPPED,
                 "parent reclaimed before children physically released");
         s = apply(s, new SupervisorLifecycleFsm.ChildReclaimed(1, 11));
@@ -81,7 +82,7 @@ public final class SupervisorLifecycleFsmOracle {
         // workload has quiesced: the RUNNING phase can admit new workers.
         var recycled = SupervisorLifecycleFsm.State.initial();
         recycled = apply(recycled, new SupervisorLifecycleFsm.ActorsFinished(1, false));
-        recycled = apply(recycled, new SupervisorLifecycleFsm.PhysicalRelease(1));
+        mustReject(recycled, new SupervisorLifecycleFsm.PhysicalRelease(1));
         recycled = apply(recycled, new SupervisorLifecycleFsm.RestartRequested(1));
         check(!recycled.actorsDone() && !recycled.physicalReleased(),
                 "restart retained stale pre-fence actor/loan receipts");
@@ -93,14 +94,14 @@ public final class SupervisorLifecycleFsmOracle {
 
         var staleLegacy = SupervisorLifecycleFsm.State.initial();
         staleLegacy = apply(staleLegacy, new SupervisorLifecycleFsm.ActorsFinished(1, false));
-        staleLegacy = apply(staleLegacy, new SupervisorLifecycleFsm.PhysicalRelease(1));
+        mustReject(staleLegacy, new SupervisorLifecycleFsm.PhysicalRelease(1));
         staleLegacy = apply(staleLegacy, new SupervisorLifecycleFsm.ShutdownRequested(1, Set.of()));
         check(!staleLegacy.actorsDone() && !staleLegacy.physicalReleased(),
                 "legacy shutdown inherited an unfenced physical release");
 
         var staleShutdown = SupervisorLifecycleFsm.State.initial();
         staleShutdown = apply(staleShutdown, new SupervisorLifecycleFsm.ActorsFinished(1, false));
-        staleShutdown = apply(staleShutdown, new SupervisorLifecycleFsm.PhysicalRelease(1));
+        mustReject(staleShutdown, new SupervisorLifecycleFsm.PhysicalRelease(1));
         staleShutdown = apply(staleShutdown,
                 new SupervisorLifecycleFsm.ShutdownWithChildEpochs(1, Map.of()));
         check(!staleShutdown.actorsDone() && !staleShutdown.physicalReleased(),
@@ -109,6 +110,7 @@ public final class SupervisorLifecycleFsmOracle {
                 new SupervisorLifecycleFsm.BeforeHookFinished(1, false));
         staleShutdown = apply(staleShutdown,
                 new SupervisorLifecycleFsm.ActorsFinished(1, false));
+        mustReject(staleShutdown, new SupervisorLifecycleFsm.PhysicalRelease(1));
         staleShutdown = apply(staleShutdown,
                 new SupervisorLifecycleFsm.AfterHookFinished(1, false));
         check(staleShutdown.phase() == SupervisorLifecycleFsm.Phase.STOPPED,
