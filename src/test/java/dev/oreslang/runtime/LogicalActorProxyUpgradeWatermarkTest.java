@@ -74,7 +74,7 @@ final class LogicalActorProxyUpgradeWatermarkTest {
                 assertThrows(IllegalStateException.class, freeze::commit);
                 if (round % 2 == 0) {
                     freeze.rollback();
-                    assertEquals(1 + round / 2, proxy.snapshot().routeEpoch());
+                    assertEquals(round + 1L, proxy.snapshot().routeEpoch());
                     // Re-freeze the same physical dispatch before acknowledging.
                     freeze = proxy.freezeDispatchForUpgrade();
                 }
