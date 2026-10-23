@@ -463,7 +463,13 @@ public final class OresScheduler implements AutoCloseable {
      * Never use Future settlement alone to reclaim guest-owned resources.
      */
     <T> OresFuture<T> start(Task<T> task, Runnable onQuiescent) {
-        return startAdmitted(task, onQuiescent, null, 0L, () -> { });
+        return start(task, onQuiescent, () -> { });
+    }
+
+    <T> OresFuture<T> start(Task<T> task, Runnable onQuiescent,
+            Runnable onNotificationDrained) {
+        return startAdmitted(task, onQuiescent, null, 0L,
+                Objects.requireNonNull(onNotificationDrained));
     }
 
     /**
