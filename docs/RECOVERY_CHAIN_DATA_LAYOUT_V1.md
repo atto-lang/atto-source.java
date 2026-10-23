@@ -243,3 +243,51 @@ validated current-branch measurements.
    metadata walk as a proof of actor scheduler suitability.
 7. Obtain real exact-head Maven/JDK25/JUnit, GraalVM AOT/hybrid and LLVM
    source-level conformance evidence, with security-approved CI placement.
+
+## Adversarial callback and mutable-failure follow-up (2026-10-22)
+
+The host-side dispatcher now checks whether a pending failure graph became
+terminal **after** each callback makes a decision, before it can yield
+`Recovered<T>` or delegate to an earlier handler. This closes a demonstrable
+prototype gap: a recovery callback can attach a `SecurityException` or
+cancellation marker to its mutable `Throwable` and otherwise resolve or
+delegate past it. Inspection failure remains fail-closed and preserves the
+original pending failure identity.
+
+Terminal host `RuntimeException` values thrown by the recovery callback
+(including nested cancellation, rejected execution, authority denial and
+timeouts) have a distinct `TerminalCallbackFailure<T>` outcome carrying both
+the original pending failure and the terminal callback fault. They must not
+be treated as ordinary recoverable callback failures by a future bridge.
+Host `Error` still escapes immediately, but the current invocation invalidates
+its one-shot cursor in `finally`.
+
+This is an **incomplete** security boundary: mutable host `Throwable` graphs
+can race with the final read, and the host prototype still accepts a raw
+`FailureKind`. Production admission must replace this with an immutable,
+unforgeable compiler/runtime-originated effect envelope. No trusted
+authentication, actor-lane dispatch, suspend-frame safety or supervisor
+notification is provided by this host prototype.
+
+### Executed exact-blob focused evidence
+
+Java source revision: `ca6c26e644eadedbc180c62a63bbae56e7b18f5a`.
+Private isolated CI runner:
+https://github.com/agent-pontifex-test/agent-pontifex-e2e-tests/actions/runs/39886905556
+
+The private CI run's verified source and committed-test blob hashes:
+- `RecoveryHandlerChain.java`: `a84a158feac3d7287d41103fa62334ed1873f3e2`
+- `RecoveryHandlerChainTest.java`: `20661067ecfdbd97fc5947edeca0d6182e96eab7`
+
+The run used OpenJDK 25.0.4.1, compiled the isolated two-file
+Maven/JUnit harness at Java release 21, and reported **24 tests,
+0 failures, 0 errors, 0 skipped, BUILD SUCCESS**. The temporary target
+branch contains precisely mirrored source and test files, a small Maven
+harness and its existing test workflow. Source-org CI runs with zero
+executed job steps are not presented as source test failures.
+
+This evidence validates only the committed dispatcher and JUnit fixtures.
+It is **not** an exact-full-tree build of the Oreslang source repository
+or proof of GraalVM JIT/AOT/hybrid, LLVM, guest syntax, static capture
+ownership, task unwind/defer or actor/supervisor parity. Keep this PR
+DRAFT until those independent acceptance gates execute.
