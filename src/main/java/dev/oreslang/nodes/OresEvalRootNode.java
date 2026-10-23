@@ -52,6 +52,7 @@ public final class OresEvalRootNode extends RootNode {
 
     private final Ast.Program program;
     private final String codeUnitId;
+    private final String sourceSha256;
     private volatile Evaluator evaluator;
 
     public OresEvalRootNode(OresLanguage language, Ast.Program program) {
@@ -59,9 +60,32 @@ public final class OresEvalRootNode extends RootNode {
     }
 
     public OresEvalRootNode(OresLanguage language, Ast.Program program, String codeUnitId) {
+        this(language, program, codeUnitId, digestSource(program.toString()));
+    }
+
+    public OresEvalRootNode(
+            OresLanguage language,
+            Ast.Program program,
+            String codeUnitId,
+            String sourceSha256) {
         super(language);
-        this.program = program;
-        this.codeUnitId = codeUnitId;
+        this.program = Objects.requireNonNull(program, "program");
+        this.codeUnitId = Objects.requireNonNull(codeUnitId, "code unit id");
+        if (sourceSha256 == null || !sourceSha256.matches("[0-9a-f]{64}"))
+            throw new IllegalArgumentException(
+                    "canonical lowercase source SHA-256 required");
+        this.sourceSha256 = sourceSha256;
+    }
+
+    private static String digestSource(String source) {
+        Objects.requireNonNull(source, "source");
+        try {
+            return java.util.HexFormat.of().formatHex(
+                    java.security.MessageDigest.getInstance("SHA-256")
+                            .digest(source.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new AssertionError(impossible);
+        }
     }
 
     @Override public String getName() { return "ores-eval"; }
@@ -610,11 +634,8 @@ public final class OresEvalRootNode extends RootNode {
 
         @Override
         public String actorCodeSha256(String actorTypeName) {
-            Ast.ClassDecl klass = requireLocalActorClass(actorTypeName);
-            return SourceActorCheckpointCodecV1.digest(
-                    "ores-source-actor-code-v1\n"
-                            + klass.name() + "\n"
-                            + program.toString());
+            requireLocalActorClass(actorTypeName);
+            return sourceSha256;
         }
 
         @Override
