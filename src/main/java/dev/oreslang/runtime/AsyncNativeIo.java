@@ -48,6 +48,8 @@ public final class AsyncNativeIo implements AutoCloseable {
     private final int capacity;
     private volatile boolean closed;
     private boolean resourcesRetired;
+    /** Guarded by shutdownLock; resource.close() may itself call this.close(). */
+    private boolean resourceCloseActive;
     private Throwable incompleteReceipt;
 
     public AsyncNativeIo() { this(128); }
@@ -261,6 +263,16 @@ public final class AsyncNativeIo implements AutoCloseable {
                     "native I/O worker cannot join its own physical retirement");
         }
         synchronized (shutdownLock) {
+            // Java monitors are reentrant: an AutoCloseable callback can
+            // recursively enter close() on this SAME thread while it is still
+            // in the post-join resource sweep. Without this guard the same
+            // resource is closed again (possibly until stack overflow).
+            // Fail closed before changing resource ownership; outer close()
+            // keeps an uncaught failure quarantined and retryable.
+            if (resourceCloseActive) {
+                throw new IllegalStateException(
+                        "native I/O resource close cannot recursively close its context");
+            }
             QUARANTINED_IO.add(this);
             final boolean first;
             synchronized (this) {
@@ -317,14 +329,22 @@ public final class AsyncNativeIo implements AutoCloseable {
                 closing = new ArrayList<>(resources);
             }
             Throwable closeFailure = null;
-            for (AutoCloseable resource : closing) {
-                try {
-                    resource.close();
-                    synchronized (this) { resources.remove(resource); }
-                } catch (Exception failure) {
-                    if (closeFailure == null) closeFailure = failure;
-                    else if (closeFailure != failure) closeFailure.addSuppressed(failure);
+            resourceCloseActive = true;
+            try {
+                for (AutoCloseable resource : closing) {
+                    try {
+                        resource.close();
+                        synchronized (this) { resources.remove(resource); }
+                    } catch (Exception failure) {
+                        if (closeFailure == null) closeFailure = failure;
+                        else if (closeFailure != failure) closeFailure.addSuppressed(failure);
+                    }
                 }
+            } finally {
+                // Even a faulty or throwing resource callback cannot leave
+                // the reentrancy fence permanently armed. Failed resources
+                // remain owned and may be closed on a later explicit retry.
+                resourceCloseActive = false;
             }
             synchronized (this) {
                 if (closeFailure == null && resources.isEmpty()) resourcesRetired = true;
