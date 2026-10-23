@@ -13,19 +13,28 @@ source-visible Task or TaskScope, although the trusted Java runtime now exposes
 `TaskPipeline.startInScope` (a TaskScope child), with `PipelineHandle.getDone()`
 as the underlying Task's physical quiescence witness. This does **not**
 establish physical retirement of any independently scheduled FFI/child work
-which lacks a separate owned lifetime receipt.
+which lacks a separate owned lifetime receipt. For Java/GraalVM, non-actor
+SourceTask admission now uses tracked child handles; the restricted source
+pipeline is admitted through `TaskPipeline.startInCurrentTaskOrRoot` and
+joins its active tracked parent Task's cancellation/physical-retirement tree.
+Canceling an exposed tracked Task result now requests revocation of its
+owned descendants as well. A synchronous/root host entry with no tracked
+parent still creates a **root** pipeline: this is not an actor/lifetime
+ownership proof and must not be generalized to escaping borrows or FFI.
 
 The parser retains `Ast.CallExpr.origin` for value-pipe argument injection
 and Option/Result receiver combinators, distinct from ordinary calls and actor
 `pipe`. Syntax provenance alone is not authorization. The type checker now
-attaches `Ast.CheckedPureFuturePipe` identity-bound proofs to a **restricted**
+issues `TypeChecker.CheckedPureFuturePipe` identity-bound proofs to a **restricted**
 `Future<int> |> pureUnaryIntFunction()` subset: synchronous, non-generic,
 no captures, no effectful bodies, no additional stage arguments and no actor
 execution. Stages must also be declared in the current lexical module:
 imported/cross-module execution has not yet proven evaluator/environment
 ownership. Adjacent checked stages lower to one TaskPipeline task, preserving
 borrowed input-Future ownership. Proofs bind exact checked declarations and
-rewritten ASTs lose authorization. Detection of Future-producing calls is
+rewritten ASTs lose authorization. Proof issuance is private to TypeChecker:
+host code may inspect the checked declaration but cannot call a public
+`record` method to authorize an unchecked AST. Detection of Future-producing calls is
 restricted to known async/Future declarations rather than speculatively
 rechecking arbitrary scalar functions. `CallExpr.rewrite` retains that origin but drops identity-bound checked
 proofs; replacements require rechecking. Explicit checked-metadata transfers
