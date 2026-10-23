@@ -278,6 +278,11 @@ public final class Parser {
 
         List<Ast.ModelOp> operations = new ArrayList<>();
         while (!check(END) && !check(EOF)) {
+            // Mirror the v1 compiler admission ceiling before building an
+            // unbounded sequence of source AST nodes.
+            if (operations.size() >= 4096) {
+                throw error(peek(), "MODEL_NODE_BUDGET: model exceeds 4096 operations");
+            }
             if (!check(IDENT)) {
                 throw error(peek(),
                         "MODEL_EFFECTFUL_BODY: model bodies admit only statically named operation calls");
@@ -303,6 +308,9 @@ public final class Parser {
         java.util.Set<String> names = new java.util.LinkedHashSet<>();
         boolean seenDefault = false;
         do {
+            if (parameters.size() >= 64) {
+                throw error(peek(), "MODEL_CONFIG_BUDGET: model exceeds 64 parameters");
+            }
             String name;
             Ast.TypeRef type;
             if (check(IDENT) && checkNext(COLON)) {
@@ -3942,8 +3950,12 @@ public final class Parser {
     private List<Ast.Expr> parseModelArgumentsUntil(Token.Type terminator) {
         if (check(terminator)) return List.of();
         List<Ast.Expr> args = new ArrayList<>();
-        do args.add(parseModelExpression("model operation static argument"));
-        while (match(COMMA));
+        do {
+            if (args.size() >= 32) {
+                throw error(peek(), "MODEL_STATIC_ARG_BUDGET: operation exceeds 32 arguments");
+            }
+            args.add(parseModelExpression("model operation static argument"));
+        } while (match(COMMA));
         return args;
     }
 
