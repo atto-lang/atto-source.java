@@ -31,6 +31,7 @@ final class GuestFailure {
             ExecutionContext.AllocationDomain allocationDomain,
             long parentExecution,
             long continuation,
+            long codeEpoch,
             long sourceToken) {
         Provenance {
             Objects.requireNonNull(executionId, "executionId");
@@ -38,6 +39,10 @@ final class GuestFailure {
             if (parentExecution < 0 || continuation < 0) {
                 throw new IllegalArgumentException(
                         "logical ancestry handles cannot be negative");
+            }
+            if (codeEpoch <= 0) {
+                throw new IllegalArgumentException(
+                        "compiler code epoch must be positive");
             }
             if (sourceToken <= 0) {
                 throw new IllegalArgumentException(
@@ -90,6 +95,7 @@ final class GuestFailure {
             RecoveryHandlerChain.FailureKind kind,
             Throwable error,
             ExecutionContext executionContext,
+            long codeEpoch,
             long sourceToken) {
         Objects.requireNonNull(kind, "kind");
         Objects.requireNonNull(error, "error");
@@ -107,6 +113,7 @@ final class GuestFailure {
                         executionContext.allocationDomain(),
                         executionContext.parentExecution(),
                         executionContext.continuation(),
+                        codeEpoch,
                         sourceToken),
                 COMPILER_ISSUER);
     }
@@ -131,13 +138,15 @@ final class GuestFailure {
             ExecutionContext.ExecutionId executionId,
             ExecutionContext.AllocationDomain allocationDomain,
             long parentExecution,
-            long continuation) {
+            long continuation,
+            long codeEpoch) {
         Objects.requireNonNull(executionId, "executionId");
         Objects.requireNonNull(allocationDomain, "allocationDomain");
         return provenance.executionId().equals(executionId)
                 && provenance.allocationDomain().equals(allocationDomain)
                 && provenance.parentExecution() == parentExecution
-                && provenance.continuation() == continuation;
+                && provenance.continuation() == continuation
+                && provenance.codeEpoch() == codeEpoch;
     }
 
     synchronized boolean enterRecoveryChain(RecoveryHandlerChain<?> chain) {
