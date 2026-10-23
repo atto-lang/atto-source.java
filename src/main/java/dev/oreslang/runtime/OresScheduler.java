@@ -535,28 +535,32 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     /**
-     * Host CONTROL-only: close admission, request cancellation of all
-     * already-admitted tasks, but keep the mailbox-backed scheduler runnable
-     * for their lexical defer/finally/guard unwind. The actor must fence user
-     * messages and admit only this scheduler's existing commands.
+     * Host CONTROL-only, phase one: linearize STOP against Task creation.
+     * This seal/snapshot contains NO cancellation callbacks and is safe to
+     * acquire while holding the enclosing actor lifecycle monitor. All Task
+     * submissions race through taskAdmissionLock; none can start after seal.
      *
-     * The callback can run on a producer or scheduler carrier: it must not
-     * execute guest code or reclaim actor memory without its physical gate.
+     * Phase two is the returned one-shot cancellation request. Run it ONLY
+     * after releasing actor lifecycleLock, since Future subscribers may be
+     * synchronous, reentrant or arbitrarily slow. Existing task dispatches
+     * remain accepted for lexical defer/finally/guard cleanup.
      */
-    void beginActorStopCleanup(Runnable onPhysicallyQuiescent) {
+    Runnable sealActorStopAdmission(Runnable onPhysicallyQuiescent) {
         Objects.requireNonNull(onPhysicallyQuiescent, "onPhysicallyQuiescent");
-        Set<TaskRunner<?>> snapshot;
+        final Set<TaskRunner<?>> snapshot;
         synchronized (taskAdmissionLock) {
-            if (!actorStopSealed.compareAndSet(false, true)) return;
+            if (!actorStopSealed.compareAndSet(false, true)) return () -> { };
             actorStopQuiescenceListener = onPhysicallyQuiescent;
             snapshot = Set.copyOf(tasks);
         }
-        // Calling Future cancellation may run foreign subscriber code:
-        // never hold taskAdmissionLock or the actor lifecycle monitor.
-        for (TaskRunner<?> runner : snapshot) {
-            runner.completion.cancel(false);
-        }
-        notifyActorStopQuiescent();
+        AtomicBoolean cancellationPublished = new AtomicBoolean();
+        return () -> {
+            if (!cancellationPublished.compareAndSet(false, true)) return;
+            for (TaskRunner<?> runner : snapshot) {
+                runner.completion.cancel(false);
+            }
+            notifyActorStopQuiescent();
+        };
     }
 
     private void notifyActorStopQuiescent() {
