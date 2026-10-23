@@ -94,6 +94,41 @@ final class ActorLockStopRetirementTest {
     }
 
     @Test
+    void failedActorOwnedPermitRevocationQuarantinesBeforeExitHook()
+            throws Exception {
+        ActorRuntime runtime = new ActorRuntime();
+        try {
+            CountDownLatch attempted = new CountDownLatch(1);
+            AtomicBoolean exitHookRan = new AtomicBoolean();
+            runtime.setActorExitHook(ignored -> exitHookRan.set(true));
+            var ref = runtime.<String>spawnPrivate(() -> (message, context) -> {
+                TaskOwnedLockLedger ledger = ActorRuntime.currentActorLockLedger();
+                assertNotNull(ledger);
+                ledger.register(() -> {
+                    attempted.countDown();
+                    throw new IllegalStateException("injected native lock revocation failure");
+                });
+                context.self().stop();
+            });
+            ref.send("stop");
+            assertTrue(attempted.await(5, TimeUnit.SECONDS),
+                    "actor lock ledger never attempted cleanup");
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (ref.failure().isEmpty() && System.nanoTime() < deadline) {
+                Thread.sleep(2);
+            }
+            assertTrue(ref.failure().isPresent(), "failed lock receipt lost");
+            assertFalse(exitHookRan.get(),
+                    "actor exited and released its arena after failed lock cleanup");
+            assertFalse(ref.getDone().isDone(),
+                    "DONE cannot be manufactured after failed permit retirement");
+            assertFalse(ref.awaitTermination(20, TimeUnit.MILLISECONDS));
+        } finally {
+            assertThrows(IllegalStateException.class, runtime::close);
+        }
+    }
+
+    @Test
     void exitHookFailureQuarantinesActorAndWithholdsSuccessfulDone() throws Exception {
         ActorRuntime runtime = new ActorRuntime();
         try {
