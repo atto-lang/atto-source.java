@@ -125,6 +125,11 @@ public final class AsyncNativeIo implements AutoCloseable {
                 if (failure instanceof VirtualMachineError fatal) throw fatal;
                 if (failure instanceof ThreadDeath fatal) throw fatal;
                 if (failure instanceof LinkageError fatal) throw fatal;
+            } catch (RuntimeException | Error notificationFailure) {
+                // Future terminal notifications run synchronous host listeners.
+                // A failed listener is not a completed physical drain receipt.
+                recordPhysicalShutdownFailure(notificationFailure);
+                throw notificationFailure;
             } finally {
                 synchronized (AsyncNativeIo.this) {
                     phase = neverStarted ? Phase.CANCELLED_BEFORE_START : Phase.RETIRED;
@@ -134,6 +139,11 @@ public final class AsyncNativeIo implements AutoCloseable {
                 maybePublishPhysicalShutdown();
             }
         }
+    }
+
+    private synchronized void recordPhysicalShutdownFailure(Throwable failure) {
+        if (resourceCloseFailure == null) resourceCloseFailure = failure;
+        else if (resourceCloseFailure != failure) resourceCloseFailure.addSuppressed(failure);
     }
 
     /** Never publish success while unstarted/running work or close is unresolved. */
@@ -219,34 +229,43 @@ public final class AsyncNativeIo implements AutoCloseable {
             closing = new HashSet<>(resources);
             resources.clear();
         }
+        Throwable fatal = null;
         try {
             discarded = workers.shutdownNow();
         } catch (RuntimeException | Error failure) {
-            synchronized (this) { resourceCloseFailure = failure; }
+            recordPhysicalShutdownFailure(failure);
+            if (failure instanceof VirtualMachineError || failure instanceof ThreadDeath) {
+                fatal = failure;
+            }
         }
         // Initiate close BEFORE notifying pre-start Futures: a synchronous
-        // guest/runtime Future observer can reenter the host and stall. Close
-        // must still be requested promptly to unblock in-flight socket I/O.
+        // host listener can reenter/park. Even one broken close must not
+        // prevent attempts for every other resource.
         for (AutoCloseable resource : closing) {
             try {
                 resource.close();
-            } catch (Exception | LinkageError failure) {
-                synchronized (this) {
-                    if (resourceCloseFailure == null) resourceCloseFailure = failure;
-                    else if (resourceCloseFailure != failure)
-                        resourceCloseFailure.addSuppressed(failure);
-                }
+            } catch (Throwable failure) {
+                recordPhysicalShutdownFailure(failure);
+                if ((failure instanceof VirtualMachineError || failure instanceof ThreadDeath)
+                        && fatal == null) fatal = failure;
             }
         }
         for (Runnable task : discarded) {
             if (task instanceof AsyncNativeIo.Operation<?> admitted) {
-                admitted.cancelBeforeStart();
+                try {
+                    admitted.cancelBeforeStart();
+                } catch (RuntimeException | Error failure) {
+                    recordPhysicalShutdownFailure(failure);
+                    if ((failure instanceof VirtualMachineError || failure instanceof ThreadDeath)
+                            && fatal == null) fatal = failure;
+                }
             }
         }
         synchronized (this) {
             resourceCloseFinished = true;
             closeScanPending = false;
         }
-        maybePublishPhysicalShutdown();
+                maybePublishPhysicalShutdown();
+        if (fatal instanceof Error error) throw error;
     }
 }
