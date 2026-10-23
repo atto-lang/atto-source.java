@@ -156,6 +156,9 @@ final class NativeHttpRollingDispatcherIntegrationTest {
                 while (!rolling.admissionsDrained(1L) && System.nanoTime() < deadline)
                     Thread.sleep(2);
                 assertTrue(rolling.admissionsDrained(1L));
+                assertThrows(IllegalStateException.class,
+                        () -> rolling.acknowledgePhysicallyRetired(1L),
+                        "traffic drained is not worker termination, still less Task/FFI proof");
                 assertTrue(rolling.requestDrainAfterAdmissions(1L),
                         "only completed G1 transport exchanges may start actor drain");
                 g1Code.actor.get().getDone().get(8, TimeUnit.SECONDS);
