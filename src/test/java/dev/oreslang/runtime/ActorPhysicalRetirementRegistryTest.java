@@ -64,6 +64,113 @@ final class ActorPhysicalRetirementRegistryTest {
         }
     }
 
+    @Test void realNioPipeChannelMustActuallyCloseBeforeActorDone()
+            throws Exception {
+        var pipe = java.nio.channels.Pipe.open();
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(
+                    () -> (message, context) -> { });
+            var lease = runtime.registerActorPhysicalChannelFromDriver(
+                    actor, pipe.source(),
+                    ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE);
+            assertTrue(pipe.source().isOpen());
+            assertTrue(actor.cancel());
+            assertFalse(actor.done().isDone(),
+                    "a valid Channel.close request is not a physical receipt");
+            assertEquals(Integer.valueOf(1), actor.pendingPhysicalRetirementsByKind()
+                    .get("TCP_HTTP_HANDLE"));
+            lease.close();
+            assertFalse(pipe.source().isOpen(), "real NIO descriptor must now be closed");
+            lease.close(); // idempotent
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(actor.pendingPhysicalRetirementsByKind().isEmpty());
+            assertThrows(ActorRuntime.ActorTerminatedException.class,
+                    () -> runtime.registerActorPhysicalChannelFromDriver(
+                            actor, pipe.sink(),
+                            ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE));
+        } finally {
+            pipe.source().close();
+            pipe.sink().close();
+        }
+    }
+
+    @Test void blockedHostNioCloseCannotReleaseActorArenaEarly()
+            throws Exception {
+        var enteredClose = new CountDownLatch(1);
+        var allowPhysicalRelease = new CountDownLatch(1);
+        var open = new java.util.concurrent.atomic.AtomicBoolean(true);
+        java.nio.channels.Channel blockingNativeChannel = new java.nio.channels.Channel() {
+            @Override public boolean isOpen() { return open.get(); }
+            @Override public void close() throws java.io.IOException {
+                enteredClose.countDown();
+                try {
+                    if (!allowPhysicalRelease.await(5, TimeUnit.SECONDS)) {
+                        throw new java.io.IOException("test close callback deadline");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new java.io.IOException(interrupted);
+                }
+                open.set(false);
+            }
+        };
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(
+                    () -> (message, context) -> { });
+            var lease = runtime.registerActorPhysicalChannelFromDriver(
+                    actor, blockingNativeChannel,
+                    ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE);
+            assertTrue(actor.cancel());
+            var failure = new AtomicReference<Throwable>();
+            Thread closer = Thread.ofVirtual().start(() -> {
+                try {
+                    lease.close();
+                } catch (Throwable t) {
+                    failure.set(t);
+                }
+            });
+            try {
+                assertTrue(enteredClose.await(3, TimeUnit.SECONDS));
+                assertFalse(actor.done().isDone(),
+                        "native close is running but no real physical release has occurred");
+                assertFalse(actor.awaitTermination(100, TimeUnit.MILLISECONDS));
+                assertEquals(Integer.valueOf(1), actor.pendingPhysicalRetirementsByKind()
+                        .get("TCP_HTTP_HANDLE"));
+            } finally {
+                allowPhysicalRelease.countDown();
+            }
+            closer.join(3_000);
+            assertFalse(closer.isAlive());
+            assertNull(failure.get());
+            assertFalse(blockingNativeChannel.isOpen());
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test void nioPhysicalCloseFailureQuarantinesActor() throws Exception {
+        var closeFailure = new java.io.IOException("mock kernel failed channel close");
+        java.nio.channels.Channel brokenChannel = new java.nio.channels.Channel() {
+            @Override public boolean isOpen() { return true; }
+            @Override public void close() throws java.io.IOException {
+                throw closeFailure;
+            }
+        };
+        var runtime = new ActorRuntime();
+        var actor = runtime.<String>spawnShared(
+                () -> (message, context) -> { });
+        var lease = runtime.registerActorPhysicalChannelFromDriver(
+                actor, brokenChannel,
+                ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE);
+        assertTrue(actor.cancel());
+        assertSame(closeFailure, assertThrows(java.io.IOException.class, lease::close));
+        assertSame(closeFailure, actor.physicalRetirementFailure().orElseThrow());
+        assertFalse(actor.done().isDone());
+        assertEquals(Integer.valueOf(1), actor.pendingPhysicalRetirementsByKind()
+                .get("TCP_HTTP_HANDLE"));
+        assertThrows(IllegalStateException.class, runtime::close,
+                "failed real descriptor close may not be silently reported as retirement");
+    }
+
     @Test void hostDriverCanPreRegisterButCannotRegisterAfterStop() throws Exception {
         try (var runtime = new ActorRuntime();
              var foreignRuntime = new ActorRuntime()) {
