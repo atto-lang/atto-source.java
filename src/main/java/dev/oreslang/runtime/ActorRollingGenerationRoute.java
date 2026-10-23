@@ -125,6 +125,13 @@ public final class ActorRollingGenerationRoute<T> implements AutoCloseable {
         return true;
     }
 
+    /** Used by trusted staging to avoid publishing an active or retained pool again. */
+    synchronized boolean containsTarget(T target) {
+        for (Generation generation : generations.values())
+            if (generation.target == target) return true;
+        return false;
+    }
+
     /** Traffic-level drain only; NOT proof that all physical loans retired. */
     public synchronized boolean admissionsDrained(long epoch) {
         Generation g = generations.get(epoch);
