@@ -1277,6 +1277,16 @@ public final class OresScheduler implements AutoCloseable {
 
         private void publishTerminalIfReady() {
             if (phase.get() != TERMINAL || completion.isDone()) return;
+            // Scheduler.close() can invoke publication from an external thread
+            // while a cleanup Task still executes on its owning carrier. The
+            // TERMINAL phase is merely logical arbitration, never proof that
+            // the physical guest turn has left the actor/Truffle boundary.
+            if (executing.get()) return;
+            // Even after carrier exit, onQuiescent may still be releasing an
+            // actor/task lease. External close must not overtake that callback.
+            // Incomplete cleanup is intentionally quarantined and never
+            // invokes onQuiescent; publish its terminal failure once quiescent.
+            if (!cleanupIncomplete.get() && !deadlineQuiescenceRetired.get()) return;
             TerminalOutcome<T> outcome = terminalOutcome.get();
             // Terminal phase CAS can precede the outcome write. Never
             // synthesize a clean cancellation receipt without an outcome.
