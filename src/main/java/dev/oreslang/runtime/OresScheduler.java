@@ -1300,6 +1300,25 @@ public final class OresScheduler implements AutoCloseable {
             if (outcome == null) return;
             java.util.concurrent.CancellationException pendingCancellation =
                     completion.deferredCancellationCause();
+            if (cleanupIncomplete.get() && task instanceof CleanupAwareTask<?>) {
+                // A terminal outcome can race denied cleanup dispatch or a
+                // fatal defer. Neither a winning Done nor logical Cancelled
+                // proves physical release after quarantine has been latched.
+                Throwable incomplete = outcome instanceof TerminalFailure<?> failed
+                        ? failed.failure() : new CleanupIncompleteError(
+                                "physical source cleanup incomplete; quarantine actor loans");
+                if (!(incomplete instanceof Error)) {
+                    incomplete = new CleanupIncompleteError(
+                            "physical source cleanup incomplete; quarantine actor loans",
+                            incomplete);
+                }
+                if (pendingCancellation != null) {
+                    completion.failDeferredCleanupFromRuntime(incomplete);
+                } else {
+                    completion.failFromRuntime(incomplete);
+                }
+                return;
+            }
             if (pendingCancellation != null
                     && task instanceof CleanupAwareTask<?>
                     && !(outcome instanceof TerminalFailure<?> failure
