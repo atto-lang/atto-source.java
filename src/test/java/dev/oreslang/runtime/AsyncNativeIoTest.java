@@ -88,6 +88,116 @@ class AsyncNativeIoTest {
         assertFalse(Files.exists(outside.resolve("secret.txt")));
     }
 
+    @Test void queuedOperationDiscardIsDistinctFromRunningPhysicalRetirement()
+            throws Exception {
+        var io = new AsyncNativeIo(3, 1, 2);
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var firstExited = new CountDownLatch(1);
+        var closedResources = new java.util.concurrent.atomic.AtomicInteger();
+        var neverStarted = new java.util.concurrent.atomic.AtomicInteger();
+        try {
+            io.register(closedResources::incrementAndGet);
+            var running = io.submit("blocking", () -> {
+                entered.countDown();
+                try {
+                    while (!release.await(50, TimeUnit.MILLISECONDS)) { }
+                } catch (InterruptedException interrupted) {
+                    // This fake native driver ignores interruption and keeps
+                    // its physical loan until the host releases the gate.
+                    while (release.getCount() != 0) {
+                        try { release.await(50, TimeUnit.MILLISECONDS); }
+                        catch (InterruptedException ignored) { }
+                    }
+                } finally {
+                    firstExited.countDown();
+                }
+                return 1;
+            });
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            var queued = io.submit("never-started", () -> {
+                neverStarted.incrementAndGet();
+                return 2;
+            });
+            assertThrows(IllegalStateException.class, io::close,
+                    "physical shutdown cannot claim a live worker retired");
+            assertEquals(0, closedResources.get(),
+                    "registered resources must remain quarantined while any loan is running");
+            assertFalse(running.isDone(),
+                    "even after shutdownNow, a running Future is not a physical receipt");
+            assertInstanceOf(RejectedExecutionException.class,
+                    assertThrows(ExecutionException.class,
+                            () -> queued.get(2, TimeUnit.SECONDS)).getCause());
+            assertEquals(0, neverStarted.get());
+            release.countDown();
+            assertTrue(firstExited.await(2, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class,
+                    assertThrows(ExecutionException.class,
+                            () -> running.get(2, TimeUnit.SECONDS)).getCause());
+            io.close(); // retry after actual physical retirement
+            assertEquals(1, closedResources.get(),
+                    "registered resources close exactly once after all physical loans");
+        } finally {
+            release.countDown();
+            io.close();
+        }
+    }
+
+    @Test void blockedTerminalSubscriberPreventsNativeResourceReclamation()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        var started = new CountDownLatch(1);
+        var finishWork = new CountDownLatch(1);
+        var subscriberEntered = new CountDownLatch(1);
+        var releaseSubscriber = new CountDownLatch(1);
+        var resourcesClosed = new java.util.concurrent.atomic.AtomicInteger();
+        try {
+            io.register(resourcesClosed::incrementAndGet);
+            var future = io.submit("terminal", () -> {
+                started.countDown();
+                finishWork.await();
+                return 17;
+            });
+            assertTrue(started.await(2, TimeUnit.SECONDS));
+            future.whenCompleteRuntime((value, failure) -> {
+                subscriberEntered.countDown();
+                try {
+                    while (!releaseSubscriber.await(50, TimeUnit.MILLISECONDS)) { }
+                } catch (InterruptedException interrupted) {
+                    while (releaseSubscriber.getCount() != 0) {
+                        try { releaseSubscriber.await(50, TimeUnit.MILLISECONDS); }
+                        catch (InterruptedException ignored) { }
+                    }
+                }
+            });
+            finishWork.countDown();
+            assertTrue(subscriberEntered.await(2, TimeUnit.SECONDS));
+            assertThrows(IllegalStateException.class, io::close,
+                    "terminal state alone is not a drained notification receipt");
+            assertEquals(0, resourcesClosed.get());
+            releaseSubscriber.countDown();
+            io.close();
+            assertEquals(1, resourcesClosed.get());
+        } finally {
+            finishWork.countDown();
+            releaseSubscriber.countDown();
+            io.close();
+        }
+    }
+
+    @Test void nativeCloseRejectsReentrantJoinFromItsOwnWorker()
+            throws Exception {
+        try (var io = new AsyncNativeIo(1)) {
+            var blocked = io.submit("self-close", () -> {
+                IllegalStateException rejected =
+                        assertThrows(IllegalStateException.class, io::close);
+                assertTrue(rejected.getMessage().contains("cannot join its own"));
+                return 11;
+            });
+            assertEquals(11, blocked.get(2, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void boundedAdmissionNeverRunsOnCallerAndCloseSettlesPendingWork() throws Exception {
         try (var io = new AsyncNativeIo(1)) {
             CountDownLatch entered = new CountDownLatch(1);
