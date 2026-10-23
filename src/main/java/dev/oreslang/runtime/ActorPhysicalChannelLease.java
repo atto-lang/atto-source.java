@@ -90,7 +90,9 @@ final class ActorPhysicalChannelLease implements AutoCloseable {
         try {
             receipt.failPhysicalRelease(original);
         } catch (RuntimeException | Error notifierFailure) {
-            if (notifierFailure != original) original.addSuppressed(notifierFailure);
+            // Registry.notifyOwner already latched this exception (including
+            // its suppressed diagnostic) onto the sticky physical failure.
+            // Do not attach it twice or let a non-fatal observer stop teardown.
             rethrowFatal(notifierFailure);
         }
     }
