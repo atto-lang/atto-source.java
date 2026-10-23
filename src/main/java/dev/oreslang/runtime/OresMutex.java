@@ -77,6 +77,9 @@ public final class OresMutex {
         // its Future becomes visible. The slot remains live while arbitrary
         // synchronous host subscribers are executing on a notifier worker.
         private volatile Runnable releaseNotificationAdmission;
+        /** Signals only after public Future completion subscribers drain.
+         * The queue-unlink receipt alone is not Task quiescence evidence. */
+        private volatile Runnable afterNotificationDrained;
         private final AtomicBoolean notificationReleased = new AtomicBoolean();
         // One scheduled terminal publication per Future, even when timeout,
         // client cancellation, owner death and claimed handoff race.
@@ -90,6 +93,9 @@ public final class OresMutex {
                 releaseNotificationAdmission = null;
                 release.run();
             }
+            Runnable after = afterNotificationDrained;
+            afterNotificationDrained = null;
+            if (after != null) after.run();
         }
 
         @Override
@@ -126,20 +132,11 @@ public final class OresMutex {
         /** Scheduler-only, after physical Task quiescence. A queued request
          * must be unlinked first; a claimed, unpublished handoff is allowed
          * to lose to owner death and must discard its eventual guard. */
-        private void cancelAfterOwnerQuiescence(Runnable afterPublication) {
-            if (super.isDone() || !publicationClaimed.compareAndSet(false, true)) {
-                afterPublication.run();
-                return;
-            }
-            // Task retirement may execute on a scheduler carrier. Never run
-            // Java CompletableFuture dependents on that carrier.
-            Shared.executeNotification(() -> {
-                try {
-                    completeCancellationFromRuntime(false);
-                } finally {
-                    afterPublication.run();
-                }
-            });
+        private void cancelAfterOwnerQuiescence() {
+            if (super.isDone() || !publicationClaimed.compareAndSet(false, true)) return;
+            // The private queued receipt is settled by notificationComplete()
+            // after CF subscriber drain, not when the queue entry is unlinked.
+            Shared.executeNotification(() -> completeCancellationFromRuntime(false));
         }
 
         private void completeHandoffOnNotifier(
@@ -740,6 +737,7 @@ public final class OresMutex {
             private final GuardFuture<T> future;
             private final TaskOwnedLockLedger taskLocks;
             private final AtomicBoolean quotaSettled = new AtomicBoolean();
+            private final AtomicBoolean queueRevoked = new AtomicBoolean();
             // A dequeued handoff still owns a physical permit until its
             // guard has been published or discarded, including synchronous
             // Java Future subscribers. Do not use Future.isDone() as proof.
@@ -762,13 +760,11 @@ public final class OresMutex {
                 // Task quiescence fences the Future even if a releasing carrier
                 // claimed the queue entry. The waiter remains in the ledger
                 // until the physical handoff receipt settles.
-                boolean removed = revokeQueuedWaiter(this);
-                future.cancelAfterOwnerQuiescence(() -> {
-                    // A queued request has no physical carrier left; wait for
-                    // its Future cancellation to publish before declaring its
-                    // Task ledger retirement. Claimed grants settle elsewhere.
-                    if (removed) physicalSettlement.complete(null);
-                });
+                revokeQueuedWaiter(this);
+                // The queue is unlinked now, but subscribers may still be
+                // running. A Future that already won publication will complete
+                // its own queued receipt from notificationComplete().
+                future.cancelAfterOwnerQuiescence();
             }
 
             @Override
@@ -782,15 +778,13 @@ public final class OresMutex {
         private boolean revokeQueuedWaiter(AsyncWaiter waiter) {
             synchronized (asyncQueueLock) {
                 if (!asyncQueue.remove(waiter)) return false;
+                waiter.queueRevoked.set(true);
                 endWait(waiter.ownerDomain);
                 releaseDomain(waiter.ownerDomain);
                 settleAsyncWaiterQuota(waiter);
             }
-            // Queue revocation itself is the physical settlement witness;
-            // its eventual public Future notification is separate. Publish
-            // this receipt outside asyncQueueLock and never leak a cancelled
-            // waiter into a Task retirement barrier.
-            waiter.physicalSettlement.complete(null);
+            // Do not complete physicalSettlement here: a queued request's
+            // Future may still have synchronous host callbacks executing.
             return true;
         }
 
@@ -1022,6 +1016,9 @@ public final class OresMutex {
             AsyncWaiter waiter = new AsyncWaiter(
                     ownerDomain, enforceOwnerDomain, future, ledger);
             future.revokeQueuedWaiter = () -> revokeQueuedWaiter(waiter);
+            future.afterNotificationDrained = () -> {
+                if (waiter.queueRevoked.get()) waiter.physicalSettlement.complete(null);
+            };
             if (ledger != null) {
                 try {
                     ledger.register(waiter);
@@ -1040,10 +1037,12 @@ public final class OresMutex {
                     removed = asyncQueue.remove(waiter);
                 }
                 if (removed) {
+                    waiter.queueRevoked.set(true);
                     endWait(ownerDomain);
                     releaseDomain(ownerDomain);
-                    waiter.physicalSettlement.complete(null);
                 }
+                // Physical receipt is published by GuardFuture after the
+                // entire synchronous completion callback drain finishes.
                 settleAsyncWaiterQuota(waiter);
             });
             // Public Future settlement is not a carrier/handoff completion
