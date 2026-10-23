@@ -368,6 +368,66 @@ final class ActorStopCleanupAdmissionTest {
     }
 
     @Test
+    void parentStopRequestsChildCancellationBeforeBlockedParentRevoker()
+            throws Exception {
+        CountDownLatch childCreated = new CountDownLatch(1);
+        CountDownLatch revokerEntered = new CountDownLatch(1);
+        CountDownLatch releaseParentRevoker = new CountDownLatch(1);
+        AtomicReference<ActorRuntime.ActorRef<String>> childRef = new AtomicReference<>();
+        AtomicReference<Throwable> cancellationFailure = new AtomicReference<>();
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var parent = runtime.<String>spawnShared(() -> (message, context) -> {
+                var child = context.runtime().<String>spawnShared(() ->
+                        (childMessage, childContext) -> { });
+                childRef.set(child);
+                context.runtime().ownCurrentActorFuture(new OresFuture<Void>(() -> {
+                    revokerEntered.countDown();
+                    try {
+                        if (!releaseParentRevoker.await(5, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("test parent revoker timeout");
+                        }
+                    } catch (InterruptedException interruption) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(interruption);
+                    }
+                }));
+                childCreated.countDown();
+            });
+            parent.send("start");
+            assertTrue(childCreated.await(3, TimeUnit.SECONDS));
+            Thread cancelling = Thread.ofVirtual().start(() -> {
+                try {
+                    parent.cancel();
+                } catch (Throwable failure) {
+                    cancellationFailure.set(failure);
+                }
+            });
+            try {
+                assertTrue(revokerEntered.await(3, TimeUnit.SECONDS));
+                assertFalse(parent.done().isDone(),
+                        "parent's own physical cleanup cannot be advertised complete");
+                assertTrue(childRef.get().awaitTermination(3, TimeUnit.SECONDS),
+                        "parent STOP must propagate to children before a blocking parent revoker");
+                assertInstanceOf(ActorRuntime.ActorCancelledException.class,
+                        childRef.get().failure().orElseThrow());
+                assertFalse(parent.done().isDone(),
+                        "child termination cannot release the parent's outstanding resource");
+            } finally {
+                releaseParentRevoker.countDown();
+            }
+            cancelling.join(TimeUnit.SECONDS.toMillis(3));
+            assertFalse(cancelling.isAlive(), "STOP must finish after revoker release");
+            assertNull(cancellationFailure.get(),
+                    () -> String.valueOf(cancellationFailure.get()));
+            assertTrue(parent.awaitTermination(3, TimeUnit.SECONDS));
+            assertInstanceOf(ActorRuntime.ActorCancelledException.class,
+                    assertThrows(ExecutionException.class,
+                            () -> parent.done().get(3, TimeUnit.SECONDS)).getCause());
+        }
+    }
+
+    @Test
     void actorStopJoinsExistingFutureRevokerBeforePublishingDone()
             throws Exception {
         CountDownLatch admitted = new CountDownLatch(1);
