@@ -44,7 +44,8 @@ final class TaskOwnedLockLedger {
     private Entry latest;
     private boolean admissionFenced;
     private boolean quiescent;
-    /** Reused by concurrent STOP paths; no permit may be revoked twice. */
+    /** Single one-way retirement barrier; repeated STOP/cancel calls must
+     * never run a native permit revoker or handoff cleanup a second time. */
     private CompletableFuture<Void> retirementReceipt;
 
     synchronized void register(Lease permit) {
@@ -116,7 +117,8 @@ final class TaskOwnedLockLedger {
             admissionFenced = true;
             if (retirementReceipt != null) return retirementReceipt;
             quiescent = true;
-            // Publish before any revoker executes, even for re-entrant STOP.
+            // Publish before callbacks: even a re-entrant revoker sees exactly
+            // the same pending receipt instead of recursively revoking itself.
             receipt = retirementReceipt = new CompletableFuture<>();
             snapshot = new ArrayList<>(held.size());
             // A Task that nests multiple acquisitions releases in LIFO order.
