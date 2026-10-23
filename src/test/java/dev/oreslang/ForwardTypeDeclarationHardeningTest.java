@@ -101,6 +101,29 @@ final class ForwardTypeDeclarationHardeningTest {
     }
 
     @Test
+    void sharedNativeScalarForwardFixtureExecutesOnJavaGuest() throws Exception {
+        // The exact same UTF-8 source is included as
+        // oreslang-source.llvm/tests/fixtures/forward-scalar-alias-parity.ores.
+        // Guest execution (not just TypeChecker) must produce exit value 7.
+        String source;
+        try (java.io.InputStream input = getClass().getResourceAsStream(
+                "/parity/forward-scalar-alias-parity.ores")) {
+            assertNotNull(input, "missing shared JVM/LLVM Oreslang fixture");
+            source = new String(input.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        }
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        org.graalvm.polyglot.Source guest = org.graalvm.polyglot.Source
+                .newBuilder(OresLanguage.ID, source, "forward-scalar-alias-parity.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (org.graalvm.polyglot.Context context = org.graalvm.polyglot.Context
+                .newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+            org.graalvm.polyglot.Value result = context.eval(guest);
+            assertTrue(result.fitsInInt(), "guest main must return an int");
+            assertEquals(7, result.asInt());
+        }
+    }
+
+    @Test
     void nativeScalarIntersectionAlsoTypeChecksOnJava() {
         // Identical Oreslang source form exercised by the native executable
         // source matrix. Java and LLVM must still be run separately before
