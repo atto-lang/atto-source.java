@@ -88,6 +88,32 @@ class AsyncNativeIoTest {
         assertFalse(Files.exists(outside.resolve("secret.txt")));
     }
 
+    @Test void sealedRuntimeRetainsUnretiredActorAndCanFinishAfterPhysicalReceipt()
+            throws Exception {
+        var runtime = new ActorRuntime();
+        var physicalLoanRetired = new java.util.concurrent.atomic.AtomicBoolean();
+        runtime.setNativeIoLoanRetirementGate(id -> physicalLoanRetired.get());
+        var actor = runtime.<String>spawnShared(() -> (message, context) -> { });
+        try {
+            actor.ready().get(3, TimeUnit.SECONDS);
+            runtime.sealShutdownAdmission();
+            assertThrows(RuntimeException.class, () -> actor.send("sealed"));
+            assertThrows(IllegalStateException.class, runtime::close,
+                    "a missing physical receipt must quarantine the unretired ActorCell");
+            assertFalse(actor.done().isDone(),
+                    "arena and DONE cannot be released by dispatcher shutdown");
+            physicalLoanRetired.set(true);
+            runtime.onNativeIoLoanRetired(actor.id());
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS),
+                    "the last physical receipt must unblock retirement on a retry");
+            runtime.close();
+        } finally {
+            physicalLoanRetired.set(true);
+            runtime.onNativeIoLoanRetired(actor.id());
+            runtime.close();
+        }
+    }
+
     @Test void contextShutdownSealsActorMailBeforeWakingNativeSocket()
             throws Exception {
         var runtime = new ActorRuntime();
