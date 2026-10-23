@@ -94,6 +94,46 @@ Other-GitHub-organization private Git-tree mirroring remains
 blocked by the checked-in source security policy until PR #1538
 has an independently approved exact destination.
 
+## October 23 independent safety audit and hardening
+
+- `publishTerminalIfReady` now checks actual carrier quiescence and
+  completion of physical `onQuiescent` retirement callbacks before it
+  settles the Task Future. An unrelated scheduler-close thread must not
+  complete a Future while an actor loan callback still executes.
+- `retireWhenQuiescent` now uses a single-claim `quiescenceState`.
+  Tasks remain in the scheduler's live set until their retirement callback
+  returns successfully. A throwing retirement callback keeps the Task
+  registered and sets `cleanupIncomplete`; a normal `Done` can no longer
+  override failed physical retirement. Its original exception remains the
+  direct failure for an ordinary Task or the cause of a cleanup-incomplete
+  error for a cleanup-aware Task.
+- `hasIncompleteCleanup()` is intentionally conservative: **any Task still
+  in the scheduler's live set** vetoes actor arena reclamation, even when
+  its logical `Future` has already reached TERMINAL. This now covers both
+  a cancelled source defer and an ordinary Task's still-executing physical
+  retirement callback.
+- Fatal `Error` during authenticated cancellation unwind marks lexical
+  cleanup incomplete and pins outstanding actor/FFI loans rather than
+  allowing an ordinary successful physical retirement. The original
+  fatal error identity remains observable.
+- New unexecuted JUnit regressions in
+  `CleanupAwareSchedulerCancellationTest` exercise concurrent close,
+  the in-progress quiescence callback, ordinary and cleanup-aware
+  callback failures, and panic-dominant resource quarantine.
+
+**No exact-head JDK25/Maven/JUnit/GraalVM execution:** source-org workflows
+still fail at runner admission (`runner_id=0`, `steps=[]`). These changes
+are committed source-level hardening and require an executing test receipt.
+
+**Important unresolved concurrency audit:** `ActorRuntime.finalizeStopLocked`
+still calls `OresScheduler.close()` while the actor's `lifecycleLock` is
+held. Before enabling a post-STOP cleanup-only scheduler lane, restructure
+this as a two-phase close outside that monitor, then re-enter and revalidate
+actor generation, remaining Tasks and physical carrier/loan retirement.
+Otherwise arbitrary completion callbacks may form a re-entrant locking
+cycle with a foreign carrier. Do not treat bounded quarantine as successful
+or live actor shutdown.
+
 ## Unresolved release gates
 
 1. **Post-stop actor cleanup lane**. ActorRuntime currently closes
