@@ -8321,9 +8321,17 @@ public final class ActorRuntime implements AutoCloseable {
                     // dispatcher schedules a task and then throws.
                     java.util.concurrent.atomic.AtomicBoolean received =
                             new java.util.concurrent.atomic.AtomicBoolean();
+                    Thread submittingThread = Thread.currentThread();
                     Runnable teardown = () -> {
                         Throwable failure = null;
                         try {
+                            // Reject a host dispatcher that runs physical
+                            // revokers inline. It could otherwise block the
+                            // actor or the VM's CONTROL scheduler indefinitely.
+                            if (Thread.currentThread() == submittingThread) {
+                                throw new IllegalStateException(
+                                        "physical STOP dispatcher executed teardown on submitting thread");
+                            }
                             child.cancel(new ActorCancelledException(
                                     child.ref.id(),
                                     "parent actor " + ref.id() + " terminated"));
