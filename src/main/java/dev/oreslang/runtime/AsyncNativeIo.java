@@ -224,11 +224,9 @@ public final class AsyncNativeIo implements AutoCloseable {
         } catch (RuntimeException | Error failure) {
             synchronized (this) { resourceCloseFailure = failure; }
         }
-        for (Runnable task : discarded) {
-            if (task instanceof AsyncNativeIo.Operation<?> admitted) {
-                admitted.cancelBeforeStart();
-            }
-        }
+        // Initiate close BEFORE notifying pre-start Futures: a synchronous
+        // guest/runtime Future observer can reenter the host and stall. Close
+        // must still be requested promptly to unblock in-flight socket I/O.
         for (AutoCloseable resource : closing) {
             try {
                 resource.close();
@@ -238,6 +236,11 @@ public final class AsyncNativeIo implements AutoCloseable {
                     else if (resourceCloseFailure != failure)
                         resourceCloseFailure.addSuppressed(failure);
                 }
+            }
+        }
+        for (Runnable task : discarded) {
+            if (task instanceof AsyncNativeIo.Operation<?> admitted) {
+                admitted.cancelBeforeStart();
             }
         }
         synchronized (this) {
