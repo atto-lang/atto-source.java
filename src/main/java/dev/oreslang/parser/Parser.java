@@ -1824,7 +1824,8 @@ public final class Parser {
         // A contextual statement keyword: calls to a function named using(...)
         // retain their existing expression behavior. Scoped borrow syntax is
         // parsed distinctly so compiler admission cannot silently desugar it.
-        if (check(IDENT) && peek().lexeme().equals("using") && !checkNext(LPAREN)) {
+        if (check(IDENT) && peek().lexeme().equals("using")
+                && (checkNext(IDENT) || checkNext(SELF))) {
             advance();
             // 'as' delimits the scoped alias here, rather than Oreslang's
             // ordinary checked-cast expression. Restore prior refinement
