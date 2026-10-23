@@ -594,12 +594,15 @@ public final class SupervisorShutdownTree {
                                 if (hookFailure != null) failures.add(hookFailure);
                                 node.transition(new SupervisorLifecycleFsm.AfterHookFinished(
                                         epoch, hookFailure != null));
-                                if (failures.isEmpty()) {
+                                if (failures.isEmpty() && !node.lifecycle.get().failed()) {
                                     node.terminated.completeFromRuntime(null);
                                 } else {
                                     IllegalStateException aggregate = new IllegalStateException(
                                             "supervisor " + node.name + " shutdown failed");
                                     for (Throwable problem : failures) aggregate.addSuppressed(problem);
+                                    if (failures.isEmpty()) aggregate.addSuppressed(
+                                            new IllegalStateException(
+                                                    "supervisor lifecycle recorded an infrastructure failure"));
                                     node.terminated.failFromRuntime(aggregate);
                                 }
                             }));
