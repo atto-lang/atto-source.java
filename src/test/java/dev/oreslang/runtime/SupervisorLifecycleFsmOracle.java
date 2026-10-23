@@ -80,6 +80,29 @@ public final class SupervisorLifecycleFsmOracle {
 
         // A pre-fence retirement cannot prove the currently admitted
         // workload has quiesced: the RUNNING phase can admit new workers.
+        // A supervisor in AFTER_HOOK is not physically quiescent:
+        // guest onStopped may still retain or allocate external resources.
+        var stoppedHookPending = SupervisorLifecycleFsm.State.initial();
+        stoppedHookPending = apply(stoppedHookPending,
+                new SupervisorLifecycleFsm.ShutdownWithChildEpochs(1, Map.of()));
+        stoppedHookPending = apply(stoppedHookPending,
+                new SupervisorLifecycleFsm.BeforeHookFinished(1, false));
+        stoppedHookPending = apply(stoppedHookPending,
+                new SupervisorLifecycleFsm.ActorsFinished(1, false));
+        check(stoppedHookPending.phase() == SupervisorLifecycleFsm.Phase.AFTER_HOOK,
+                "test did not reach pending onStopped hook");
+        mustReject(stoppedHookPending, new SupervisorLifecycleFsm.PhysicalRelease(1));
+        check(!stoppedHookPending.physicalReleased(),
+                "rejected early physical receipt modified lifecycle");
+        stoppedHookPending = apply(stoppedHookPending,
+                new SupervisorLifecycleFsm.AfterHookFinished(1, false));
+        check(stoppedHookPending.phase() == SupervisorLifecycleFsm.Phase.STOPPED,
+                "onStopped hook completion did not produce STOPPED");
+        stoppedHookPending = apply(stoppedHookPending,
+                new SupervisorLifecycleFsm.PhysicalRelease(1));
+        check(stoppedHookPending.cleanlyReclaimed(),
+                "physical release after onStopped did not permit RECLAIMED");
+
         var recycled = SupervisorLifecycleFsm.State.initial();
         recycled = apply(recycled, new SupervisorLifecycleFsm.ActorsFinished(1, false));
         mustReject(recycled, new SupervisorLifecycleFsm.PhysicalRelease(1));
