@@ -274,6 +274,11 @@ public final class SupervisorShutdownTree {
                 escalate(deadline);
             }, nanos, TimeUnit.NANOSECONDS);
         } catch (RuntimeException rejected) {
+            // A failed watchdog submission is itself a loss of bounded
+            // shutdown observability. Publish failure before notifying the
+            // bounded observer, whose callback may inspect tree status inline.
+            // Do not forge a timer expiration or physical-release receipt.
+            markCoordinatorFailed();
             bounded.failFromRuntime(rejected);
             escalate(rejected);
             return bounded;
