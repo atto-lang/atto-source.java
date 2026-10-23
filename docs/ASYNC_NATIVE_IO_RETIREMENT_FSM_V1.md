@@ -123,6 +123,57 @@ GitHub Actions runners**. Source-org Actions job scheduling fails with zero
 steps. No Git-tree mirror to other organizations is permitted until protected
 main's private CI allowlist approves an independently reviewed exact target.
 
+## Actor-incarnation operation admission (2026-10-23 continuation)
+
+Java source lowering in `OresEvalRootNode` routes `fs.*_async`,
+`network.connect_async`, `socket.read_line_async`,
+`socket.write_text_async`, `socket.close_async`, and
+`http.{get,post}_text_async` through context-aware
+`AsyncNativeIo.submit(context,...)` / `submitClose(context,...)`.
+
+- On an actor execution turn, the trusted host adapter authenticates the
+  exact owning `ActorRuntime` and mints a generation-scoped
+  `NATIVE_IO_OPERATION` physical receipt **before** executor admission.
+  `ActorPhysicalRetirementRegistry` rejects ownership registration without
+  the actual actor single-writer lease. A foreign runtime is denied.
+- A worker-running receipt retires only after the actual Callable, perf
+  accounting and synchronous terminal Future subscriptions return. A
+  `shutdownNow()`-returned never-started runnable retires through
+  `CANCELLED_BEFORE_START` instead; an executor that fails to prove
+  nonexecution must leave the actor quarantined rather than forging a release.
+- A capacity rejection performs no host work; its receipt retires only after
+  the rejection Future's synchronous host callbacks have drained, outside
+  the I/O admission monitor. The actor's `ActorRef.done()` independently
+  joins those generation-scoped tickets.
+- Root-context operations have no actor incarnation; they remain context
+  owned and must be joined through `physicalShutdown()`. This does not
+  authorize externally launched callbacks or foreign runtime resources.
+- New adversarial Java tests exercise a stopped actor with uninterruptible
+  I/O, blocked terminal subscriber, never-started queued work, foreign
+  runtime/root forged registration, and independent replacement actor whose
+  DONE cannot release an old incarnation's outstanding loan.
+
+**Independent native callbacks are still separate.** A Java host Callable
+return is NOT proof that a JNI/native driver has stopped accessing pinned
+memory it retained after return. Such drivers must acquire a separate
+`ActorPhysicalRetirementRegistry` ticket before handing out the loan.
+
+## TCP per-connection read/write fencing
+
+`NativeIo.SocketStopThenRelease` now owns a synchronized active-operation
+counter. A read/write acquires a loan before accessing the socket stream and
+returns it only after the host call and stream buffering/flush have exited.
+STOP seals new admission and requests `shutdownInput`/`shutdownOutput`.
+Explicit socket close that races an outstanding loan fails closed, retains
+the registered owner, and cannot claim final descriptor closure. Another
+close after loan exit, or context-STOP final release after all context workers
+retire, may physically close the descriptor. A simultaneous second closer
+cannot report success while the first is still inside native `close()`.
+
+This is a per-connection host loan fence; it is not yet a full independent
+actor-incarnation receipt for sockets escaped across actor lifetimes, and
+must not be treated as zero-copy pointer/DMA lifetime certification.
+
 ## Explicit remaining limitations
 
 - **Concrete TCP migration (partial):** `NativeIo.connect()` now
