@@ -10,6 +10,102 @@ import org.junit.jupiter.api.Test;
 final class OresVMTest {
 
     @Test
+    void shutdownNowReportsQueuedPhysicalStopNeverStartedExactlyOnce()
+            throws Exception {
+        var runningEntered = new java.util.concurrent.CountDownLatch(1);
+        var runningFinished = new java.util.concurrent.CountDownLatch(1);
+        var releaseRunning = new java.util.concurrent.CountDownLatch(1);
+        var discarded = new java.util.concurrent.CountDownLatch(1);
+        var queuedRan = new java.util.concurrent.atomic.AtomicInteger();
+        var onDiscard = new java.util.concurrent.atomic.AtomicInteger();
+        var runningStarted = new java.util.concurrent.atomic.AtomicInteger();
+        var unexpected = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+
+        // One worker, one queue slot. Deterministic without changing process
+        // properties or depending on availableProcessors().
+        OresVM vm = OresVM.createWithPhysicalStopLimits(1, 1);
+        try {
+            vm.executePhysicalStop(() -> {
+                runningStarted.incrementAndGet();
+                runningEntered.countDown();
+                try {
+                    releaseRunning.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    // shutdownNow() interrupts an ACTUAL running worker;
+                    // the worker's own finally, not the discard callback,
+                    // accounts for physical exit.
+                    Thread.currentThread().interrupt();
+                } finally {
+                    runningFinished.countDown();
+                }
+            }, cause -> unexpected.compareAndSet(null,
+                    new AssertionError("RUNNING worker treated as discarded", cause)));
+            assertTrue(runningEntered.await(3, TimeUnit.SECONDS));
+            vm.executePhysicalStop(queuedRan::incrementAndGet, failure -> {
+                onDiscard.incrementAndGet();
+                if (!(failure instanceof java.util.concurrent.RejectedExecutionException)) {
+                    unexpected.compareAndSet(null, failure);
+                }
+                discarded.countDown();
+            });
+            assertEquals(0, queuedRan.get(), "second job must be queued");
+            assertEquals(0, onDiscard.get(), "queued job is not failed before shutdown");
+            vm.close();
+            assertTrue(discarded.await(3, TimeUnit.SECONDS));
+            assertTrue(runningFinished.await(3, TimeUnit.SECONDS));
+            assertEquals(1, runningStarted.get());
+            assertEquals(0, queuedRan.get(), "cancelled-before-start job must never run");
+            assertEquals(1, onDiscard.get(), "shutdown must deliver exactly one failure receipt");
+            assertEquals(0, onDiscard.get() - 1);
+            org.junit.jupiter.api.Assertions.assertNull(unexpected.get(),
+                    () -> String.valueOf(unexpected.get()));
+        } finally {
+            releaseRunning.countDown();
+            vm.close();
+        }
+    }
+
+    @Test
+    void saturatedPhysicalStopQueueRejectsNewSubmissionWithoutFabricatingReceipt()
+            throws Exception {
+        var runningEntered = new java.util.concurrent.CountDownLatch(1);
+        var releaseRunning = new java.util.concurrent.CountDownLatch(1);
+        var rejected = new java.util.concurrent.atomic.AtomicInteger();
+        var thirdRan = new java.util.concurrent.atomic.AtomicInteger();
+        var queuedDiscarded = new java.util.concurrent.atomic.AtomicInteger();
+        OresVM vm = OresVM.createWithPhysicalStopLimits(1, 1);
+        try {
+            vm.executePhysicalStop(() -> {
+                runningEntered.countDown();
+                try {
+                    releaseRunning.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }, cause -> org.junit.jupiter.api.Assertions.fail(
+                    "active worker must not receive neverStarted"));
+            assertTrue(runningEntered.await(3, TimeUnit.SECONDS));
+            vm.executePhysicalStop(() -> { }, failure -> queuedDiscarded.incrementAndGet());
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    java.util.concurrent.RejectedExecutionException.class,
+                    () -> vm.executePhysicalStop(thirdRan::incrementAndGet,
+                            failure -> rejected.incrementAndGet()));
+            assertEquals(0, rejected.get(),
+                    "failed admission is a synchronous exception, not an accepted-discard callback");
+            assertEquals(0, thirdRan.get());
+            vm.close();
+            assertEquals(1, queuedDiscarded.get(),
+                    "shutdown must report the one accepted queued job");
+            assertEquals(0, rejected.get());
+            assertEquals(0, thirdRan.get());
+        } finally {
+            releaseRunning.countDown();
+            vm.close();
+        }
+    }
+
+
+    @Test
     void blockedPhysicalStopDoesNotStarveVmControlAndShutdownRevokesAdmission()
             throws Exception {
         var entered = new java.util.concurrent.CountDownLatch(1);
