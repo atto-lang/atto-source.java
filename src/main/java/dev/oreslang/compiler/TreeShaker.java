@@ -5,6 +5,7 @@ import dev.oreslang.parser.Parser;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -39,12 +40,32 @@ public final class TreeShaker {
             Set<String> removedSymbols,
             Map<String, Object> compileTimeConstants,
             Set<String> rootSymbols,
-            boolean libraryBuild) {
+            boolean libraryBuild,
+            Set<String> semanticSymbols) {
         public Result {
             retainedSymbols = Set.copyOf(retainedSymbols);
             removedSymbols = Set.copyOf(removedSymbols);
-            compileTimeConstants = Map.copyOf(compileTimeConstants);
+            compileTimeConstants = Collections.unmodifiableMap(
+                    new LinkedHashMap<>(compileTimeConstants));
             rootSymbols = Set.copyOf(rootSymbols);
+            semanticSymbols = Set.copyOf(semanticSymbols);
+        }
+
+        public Result(
+                Ast.Program program,
+                Set<String> retainedSymbols,
+                Set<String> removedSymbols,
+                Map<String, Object> compileTimeConstants,
+                Set<String> rootSymbols,
+                boolean libraryBuild) {
+            this(
+                    program,
+                    retainedSymbols,
+                    removedSymbols,
+                    compileTimeConstants,
+                    rootSymbols,
+                    libraryBuild,
+                    union(retainedSymbols, removedSymbols));
         }
 
         public Result(
@@ -59,7 +80,16 @@ public final class TreeShaker {
                     removedSymbols,
                     compileTimeConstants,
                     rootSymbols,
-                    false);
+                    false,
+                    union(retainedSymbols, removedSymbols));
+        }
+
+        private static Set<String> union(
+                Set<String> retained,
+                Set<String> removed) {
+            LinkedHashSet<String> all = new LinkedHashSet<>(retained);
+            all.addAll(removed);
+            return Set.copyOf(all);
         }
 
         public boolean retained(String symbol) {
@@ -132,7 +162,8 @@ public final class TreeShaker {
                     removed,
                     constantValues,
                     roots,
-                    options.preservePublicApi());
+                    options.preservePublicApi(),
+                    Set.copyOf(symbols.keySet()));
         }
 
         private void collectConstants() {
