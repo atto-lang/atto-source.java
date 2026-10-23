@@ -45,10 +45,13 @@ Comma-separated and parenthesized named selections are equivalent, so
 `import types (X, Y, Z) from "../foo";` produce the same import selection.
 The existing brace form remains accepted for compatibility. `types` is the
 union selector for type-like declarations: `trait`, `struct`, `interface`,
-and `type`. The current `trait` selector links the same interface-like,
-type-only AST currently used by `declare trait`; it does not import executable
-values, supply typeclass instance resolution, or establish a distinct trait
-nominal kind. Named `struct` imports remain reserved and fail closed until
+and `type`. The `trait` selector requires a public declaration with source kind
+`trait`; `interface` requires source kind `interface`. Both occupy the
+type-only namespace and cannot be confused with runtime values. The AST retains
+their distinct nominal declaration kinds, and public ABI digests distinguish
+them. Traits currently share the interface-like *member-contract checking*
+machinery; neither trait import nor declaration provides Haskell-style
+typeclass instance resolution or implicit evidence passing. Named `struct` imports remain reserved and fail closed until
 their declaration and layout contract is implemented.
 
 Wildcard imports always require a namespace alias. A single named import may use
@@ -468,9 +471,12 @@ end
 `model`, functions, or runtime bindings. Public declarations use
 `declare pub ...` and are exposed subject to the ordinary module/import
 visibility checks. `define type`, `define interface`, and `define trait`
-are accepted for compatibility. The current trait spelling maps to the
-interface-like type declaration; coherent typeclass instances/dictionary
-resolution remain future work, not implied by this syntax.
+are accepted for compatibility. Trait declarations retain a distinct nominal source kind and only extend
+other traits; interfaces only extend interfaces. Both currently share member
+contract checking rather than coherent typeclass instances/dictionary
+resolution, which remain future work. The linker must reject an `import
+trait` selector applied to an interface and vice versa. Duplicate
+trait/interface/type-alias names in one module are rejected.
 
 `define model` is different: it introduces a **nominal type and a separately
 owned executable model instance**. In the first executable Java/GraalVM
