@@ -112,10 +112,11 @@ public final class HotReloadManager implements AutoCloseable {
         if (!unit.dependencies().isEmpty()) {
             throw new SecurityException("compiled hot-load requires a verified import closure");
         }
-        var checked = OresCompiler.validateForIsolate(unit.sourceText(), guestPolicy);
-        if (!checked.imports().isEmpty()) {
+        var parsed = dev.oreslang.parser.Parser.parse(unit.sourceText());
+        if (!parsed.imports().isEmpty()) {
             throw new SecurityException("compiled hot-load with imports requires a verified import closure");
         }
+        OresCompiler.validateForIsolate(unit.sourceText(), guestPolicy);
         return stage(unit.unitId(), verifiedDigest, unit.sourceText());
     }
 
