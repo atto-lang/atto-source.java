@@ -298,6 +298,31 @@ final class ActorPhysicalRetirementRegistryTest {
         assertThrows(IllegalStateException.class, runtime::close);
     }
 
+    @Test void exhaustedHostCloseQueueQuarantinesInsteadOfFreeingNativeLease() {
+        var registry = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 8L, () -> { });
+        var ticket = registry.register(
+                ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE, false);
+        java.nio.channels.Channel channel = new java.nio.channels.Channel() {
+            @Override public boolean isOpen() { return true; }
+            @Override public void close() {
+                throw new AssertionError("rejected close must never run");
+            }
+        };
+        var lease = new ActorPhysicalChannelLease(channel, ticket, ignored -> { });
+        var saturation = new java.util.concurrent.RejectedExecutionException(
+                "bounded close lane saturated");
+        registry.seal();
+        lease.requestCloseOnActorStop(command -> { throw saturation; });
+        assertSame(saturation, registry.snapshot().failure());
+        assertEquals(1, registry.snapshot().pending());
+        assertEquals(0, registry.snapshot().inFlightNotifications());
+        assertThrows(IllegalStateException.class, registry::retireVerified,
+                "rejected host cleanup cannot retire a still-open channel");
+        lease.requestCloseOnActorStop(Runnable::run); // exactly-once request
+        assertEquals(1, registry.snapshot().pending());
+    }
+
     @Test void hostDriverCanPreRegisterButCannotRegisterAfterStop() throws Exception {
         try (var runtime = new ActorRuntime();
              var foreignRuntime = new ActorRuntime()) {
