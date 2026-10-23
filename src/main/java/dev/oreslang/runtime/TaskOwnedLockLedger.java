@@ -111,7 +111,7 @@ final class TaskOwnedLockLedger {
         final List<Lease> snapshot;
         synchronized (this) {
             admissionFenced = true;
-            if (quiescent && held.isEmpty()) return;
+            if (quiescent && held.isEmpty()) return CompletableFuture.completedFuture(null);
             quiescent = true;
             snapshot = new ArrayList<>(held.size());
             // A Task that nests multiple acquisitions releases in LIFO order.
