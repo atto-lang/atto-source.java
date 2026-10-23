@@ -207,3 +207,7 @@ authorized JDK25 CI.
 - The bounded cleanup lane does not force-release a stuck native operation.
   A stalled close may delay shutdown and quarantine instead of reclaiming
   memory, as required for safety.
+
+## Reentrant close audit (2026-10-23)
+
+The synchronous NIO physical-close winner sets its `closed` flag immediately after `Channel.close()` returns and `!channel.isOpen()` is verified, BEFORE invoking the owner-detach or retirement callbacks. These trusted callbacks can reenter `ActorPhysicalChannelLease.close()` via host-only lifecycle notification or an `ActorRef.done()` waiter. Such reentrance now observes the physically-closed state rather than throwing a false recursive-close error. A failed owner-detach still records a sticky failed receipt, retains quarantine and does not report successful actor retirement. Deterministic JUnit cases exercise both paths. This is committed source coverage, not executed test evidence.
