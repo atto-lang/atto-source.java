@@ -124,6 +124,8 @@ public final class SupervisorLifecycleFsmOracle {
                 new SupervisorLifecycleFsm.CoordinatorFailed(1));
         check(coordinator.failed() && coordinator.coordinatorFailed(),
                 "lost initial coordinator infrastructure fault");
+        check(!coordinator.admissionsOpen() && !coordinator.restartPermitted(),
+                "supervisor advertised admissions after losing CONTROL");
         mustReject(coordinator, new SupervisorLifecycleFsm.RestartRequested(1));
         var afterCoordinator = apply(coordinator,
                 new SupervisorLifecycleFsm.CoordinatorFailed(1));
@@ -206,6 +208,10 @@ public final class SupervisorLifecycleFsmOracle {
         check(!s.postHookFailed() || s.postHookDone(), "post-hook failure without receipt");
         check(!s.coordinatorFailed() || s.failed(),
                 "CONTROL infrastructure fault not reflected in failure aggregate");
+        check(!s.coordinatorFailed() || !s.restartPermitted(),
+                "restart advertised despite CONTROL infrastructure fault");
+        check(!s.coordinatorFailed() || !s.admissionsOpen(),
+                "admission advertised despite CONTROL infrastructure fault");
         check(s.failed() || (!s.preHookFailed() && !s.actorsFailed()
                 && !s.postHookFailed() && s.failedChildren().isEmpty()),
                 "failure aggregate dropped completed failure receipt");
