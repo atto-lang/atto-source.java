@@ -21,6 +21,11 @@ public final class TaskScope implements AutoCloseable {
     private final OresFuture<Void> done = new OresFuture<>(() -> false, () -> { });
     private boolean sealed;
     private int active;
+    private volatile Throwable retirementFailure;
+
+    Throwable retirementFailure() {
+        return retirementFailure;
+    }
 
     TaskScope(OresScheduler scheduler) {
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
@@ -62,7 +67,14 @@ public final class TaskScope implements AutoCloseable {
         // arbitrary scope completion observers while holding admissionLock.
         // Any seal/cancel racing this interval sees active > 0 and waits for
         // childDone() after its actual scheduler quiescence.
-        child.getDone().whenCompleteRuntime((outcome, failure) -> childDone());
+        child.terminalCallbacksDrained().whenComplete((ignored, failure) -> {
+            if (failure == null) childDone();
+            else {
+                // Retain the child reservation. A failed physical callback
+                // drain is not safe TaskScope quiescence; do not publish DONE.
+                retirementFailure = failure;
+            }
+        });
         return child;
     }
 
