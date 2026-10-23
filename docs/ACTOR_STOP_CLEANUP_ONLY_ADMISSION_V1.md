@@ -26,12 +26,18 @@ the actor STOP implementation here.
    Deferred cleanup can itself await an asynchronous future and execute actor
    scheduler safepoints only while carrying the authenticated cleanup-turn
    marker. The actor done barrier remains pending across that suspension.
-5. The scheduler reports physical quiescence only after its live Task set and
+5. An authenticated cancellation cleanup Task may register a bounded
+   `ownCurrentActorFuture` for an asynchronous resource/iterator close even
+   after STOP. Other callers cannot: generic Future completion callbacks do
+   not receive cleanup authority. These cleanup-owned Future registrations
+   keep actor DONE pending even after the SourceTask itself has exited.
+6. The scheduler reports physical quiescence only after its live Task set and
    all in-flight task-retirement callbacks have settled. The actor additionally
    joins the UNTRUSTED task count and timed terminal-subscriber admissions.
    Pending work defers actor registry removal, memory-slice close, and done.
-6. Any rejected source cleanup admission, scheduler incomplete cleanup, or
-   failed physical retirement callback must quarantine rather than publish
+7. Any rejected source cleanup admission, cleanup-owned Future quota overflow,
+   scheduler incomplete cleanup, or failed physical retirement callback must
+   quarantine rather than publish
    a clean actor-done or reclaim its arena.
 
 The source continuation lane does not introduce a new worker pool, OS thread,
@@ -48,6 +54,8 @@ lease/handoff receipts remain independent of AoS/SoA/AoSoA/SoAoS/ECS layout.
   ordinary Future continuation admission and fresh Task admission are denied.
 - Settle the async cleanup, require exactly-one guard release, no spurious
   poison, correct cancellation cause, and a successor actor with a new ID.
+  Keep a separately registered async-close Future pending after Task unwind:
+  actor done must remain blocked until that receipt is settled.
 - Cancel a queued SourceTask before first dispatch while the enclosing actor
   turn is blocked: no guest start, no lost queued command, actor eventual DONE.
 - Crash a running actor after a SourceTask suspends with a mutex guard. Require
