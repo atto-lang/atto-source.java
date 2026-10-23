@@ -513,6 +513,36 @@ final class ActorNativeArenaTest {
     }
 
     @Test
+    void revokedNativeOffsetDoesNotPreventReferenceRetirement() {
+        AtomicLong charged = new AtomicLong();
+        Object marker = new Object();
+        try (ActorNativeArena arena = arena(8192, charged)) {
+            Map<String, Object> holder = arena.fields(List.of("reference"), marker);
+            Map<String, Object> backing = arena.fields(List.of("payload"), marker);
+            ActorNativeArena.NativeValue backingNative = (ActorNativeArena.NativeValue) backing;
+            AtomicBoolean revoked = new AtomicBoolean();
+            ActorNativeArena.NativeValue facade = new ActorNativeArena.NativeValue() {
+                @Override public ActorNativeArena nativeArena() { return arena; }
+                @Override public long nativeOffset() {
+                    if (revoked.get()) throw new IllegalStateException("native reference revoked");
+                    return backingNative.nativeOffset();
+                }
+            };
+            arena.registerNativeFacade(facade, backingNative);
+            holder.put("reference", facade);
+            revoked.set(true);
+
+            assertThrows(IllegalStateException.class, () -> holder.get("reference"));
+            assertSame(facade, holder.put("reference", null));
+            assertNull(holder.get("reference"));
+            assertEquals(0, arena.nativeReferenceCount());
+            assertThrows(IllegalStateException.class, () -> holder.put("reference", facade));
+            assertNull(holder.get("reference"));
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
     void primitiveRegionsHaveExplicitReleaseBoundsAndBudget() {
         AtomicLong charged = new AtomicLong();
         try (ActorNativeArena arena = arena(128, charged)) {
