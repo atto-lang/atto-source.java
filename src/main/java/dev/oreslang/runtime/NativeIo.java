@@ -273,14 +273,50 @@ public final class NativeIo {
         String endpoint = host.toLowerCase(java.util.Locale.ROOT) + ":" + port;
         context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.connect");
         Socket socket = new Socket();
+        SocketStopThenRelease ownership = new SocketStopThenRelease(socket);
         try {
-            context.nativeIo().register(socket);
+            context.nativeIo().register(ownership);
             socket.connect(new InetSocketAddress(host, port), 15_000);
-            return new TcpConnection(context, endpoint, socket);
+            return new TcpConnection(context, endpoint, socket, ownership);
         } catch (Exception failure) {
-            context.nativeIo().unregister(socket);
-            try { socket.close(); } catch (IOException cleanup) { failure.addSuppressed(cleanup); }
+            context.nativeIo().unregister(ownership);
+            try { ownership.close(); } catch (IOException cleanup) { failure.addSuppressed(cleanup); }
             throw new IllegalStateException("network connection failed for " + endpoint + ": " + failure.getMessage(), failure);
+        }
+    }
+
+    /**
+     * A TCP STOP is a half-close/cancellation request, not socket descriptor
+     * reclamation. The final close is deferred by AsyncNativeIo until its
+     * tracked native read/write and terminal callback workers are retired.
+     * Non-context external callback loans require separate actor receipts.
+     */
+    static final class SocketStopThenRelease implements AsyncNativeIo.StopThenRelease {
+        private final Socket socket;
+
+        SocketStopThenRelease(Socket socket) {
+            this.socket = java.util.Objects.requireNonNull(socket, "socket");
+        }
+
+        @Override public void requestStop() throws IOException {
+            if (!socket.isConnected() || socket.isClosed()) return;
+            IOException failed = null;
+            try {
+                if (!socket.isInputShutdown()) socket.shutdownInput();
+            } catch (IOException failure) {
+                failed = failure;
+            }
+            try {
+                if (!socket.isOutputShutdown()) socket.shutdownOutput();
+            } catch (IOException failure) {
+                if (failed == null) failed = failure;
+                else failed.addSuppressed(failure);
+            }
+            if (failed != null) throw failed;
+        }
+
+        @Override public void close() throws IOException {
+            socket.close();
         }
     }
 
@@ -288,13 +324,16 @@ public final class NativeIo {
         private final OresContext context;
         private final String endpoint;
         private final Socket socket;
+        private final SocketStopThenRelease ownership;
         private final BufferedReader reader;
         private final BufferedWriter writer;
 
-        private TcpConnection(OresContext context, String endpoint, Socket socket) throws IOException {
+        private TcpConnection(OresContext context, String endpoint, Socket socket,
+                SocketStopThenRelease ownership) throws IOException {
             this.context = context;
             this.endpoint = endpoint;
             this.socket = socket;
+            this.ownership = ownership;
             this.reader = new BufferedReader(
                     new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
             this.writer = new BufferedWriter(
@@ -323,9 +362,11 @@ public final class NativeIo {
         @Override
         public void close() {
             try {
-                socket.close();
-                context.nativeIo().unregister(socket);
+                ownership.close();
+                context.nativeIo().unregister(ownership);
             } catch (IOException failure) {
+                // Keep the registered owner for STOP retry/quarantine if
+                // physical close fails, rather than losing the native handle.
                 throw new IllegalStateException("network close failed for " + endpoint + ": " + failure.getMessage(), failure);
             }
         }
