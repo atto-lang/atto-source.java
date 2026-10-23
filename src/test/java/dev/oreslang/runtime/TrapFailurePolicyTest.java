@@ -205,7 +205,7 @@ final class TrapFailurePolicyTest {
         RuntimeException wrapper = new RuntimeException("wrapper");
         var raise = new GuestControlSignal.Raise("raised");
         wrapper.initCause(raise);
-        raise.initCause(wrapper);
+        raise.addSuppressed(wrapper);
         assertFalse(TrapFailurePolicy.isRecoverableRaise(wrapper, GuestPanic.class));
     }
 
