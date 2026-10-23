@@ -5300,8 +5300,23 @@ public final class ActorRuntime implements AutoCloseable {
         return ref.done();
     }
 
-    @SuppressWarnings("unchecked")
     public <M> void send(ActorRef<M> ref, M message) {
+        sendInternal(ref, message, false);
+    }
+
+    /**
+     * Trusted runtime transport hook: admit one message and return an
+     * exact-sequence processed receipt. Unlike drain(), this Future covers
+     * only this accepted user message. It is package-private so guest ActorRef
+     * code cannot mint completion authority.
+     */
+    <M> OresFuture<Void> sendWithCompletion(ActorRef<M> ref, M message) {
+        return sendInternal(ref, message, true);
+    }
+
+    @SuppressWarnings("unchecked")
+    private <M> OresFuture<Void> sendInternal(
+            ActorRef<M> ref, M message, boolean observeCompletion) {
         requireCallerRuntimeAffinity("send messages");
         if (currentActorKind() == ActorKind.UNTRUSTED) {
             throw new SecurityException("untrusted actors cannot send actor messages");
@@ -5322,6 +5337,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
         boolean mailboxSlotTransferred = false;
+        OresFuture<Void> acceptedCompletion = null;
         try {
         validateMessageGraph(message);
         if (cell.kind == ActorKind.UNTRUSTED) {
@@ -5411,15 +5427,41 @@ public final class ActorRuntime implements AutoCloseable {
                                 "actor mailbox sequence exhausted for " + ref.id(),
                                 exhausted);
                     }
-                    envelope = MessageEnvelope.message(
-                            prepared, release, sender, sequence);
-                    if (!cell.mailbox.tryWrite(envelope)) {
-                        throw new ActorMailboxFullException(ref.id());
+                    OresFuture<Void> completionCandidate = null;
+                    ActorCell.DrainWaiter completionWaiter = null;
+                    if (observeCompletion) {
+                        if (cell.pendingDrains.size() >= ActorCell.MAX_PENDING_DRAIN_WAITERS) {
+                            throw new ActorResourceExhaustedException(ref.id());
+                        }
+                        // Allocate and reserve the waiter before physical mailbox
+                        // admission. Allocation failure therefore cannot create an
+                        // accepted message with no returnable completion receipt.
+                        completionCandidate =
+                                new OresFuture<>(() -> false, () -> { });
+                        completionWaiter =
+                                new ActorCell.DrainWaiter(sequence, completionCandidate);
+                        cell.pendingDrains.add(completionWaiter);
                     }
-                    cell.nextUserMessageSequence = nextSequence;
-                    mailboxSlotTransferred = true;
-                    admitted = true;
-                    commitSharedMutexBindings(sharedMutexReservations);
+
+                    boolean wroteEnvelope = false;
+                    try {
+                        envelope = MessageEnvelope.message(
+                                prepared, release, sender, sequence);
+                        if (!cell.mailbox.tryWrite(envelope)) {
+                            throw new ActorMailboxFullException(ref.id());
+                        }
+                        wroteEnvelope = true;
+                        cell.nextUserMessageSequence = nextSequence;
+                        mailboxSlotTransferred = true;
+                        admitted = true;
+                        commitSharedMutexBindings(sharedMutexReservations);
+                        acceptedCompletion = completionCandidate;
+                    } catch (RuntimeException | Error admissionFailure) {
+                        if (!wroteEnvelope && completionWaiter != null) {
+                            cell.pendingDrains.remove(completionWaiter);
+                        }
+                        throw admissionFailure;
+                    }
                 }
             }
         } finally {
@@ -5433,6 +5475,7 @@ public final class ActorRuntime implements AutoCloseable {
         } finally {
             if (!mailboxSlotTransferred) cell.releaseMailboxSlot(false);
         }
+        return acceptedCompletion;
     }
 
     /**
