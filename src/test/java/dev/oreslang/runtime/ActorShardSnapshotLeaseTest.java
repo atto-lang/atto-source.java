@@ -161,7 +161,9 @@ final class ActorShardSnapshotLeaseTest {
         long mib = 1024L * 1024L;
         IsolatePolicy ceiling = new IsolatePolicy(
                 IsolatePolicy.developer().capabilities(),
-                16L * mib,
+                // Leave room for both shards, two snapshots and mailbox metadata;
+                // the third snapshot must be the operation that exceeds the cap.
+                20L * mib,
                 8192,
                 java.time.Duration.ofMinutes(1));
         try (ActorRuntime runtime = new ActorRuntime(ceiling)) {
