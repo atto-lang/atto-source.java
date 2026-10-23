@@ -61,6 +61,14 @@ public final class Ast {
     public enum CallableKind { FNC, ROUTINE }
     public enum ActorKind { NONE, PRIVATE, SHARED, UNTRUSTED }
 
+    /** Compiler policy, distinct from actor-group aggregate parallelism. */
+    public enum MaxActorThreads {
+        LOW(1), MEDIUM(2), HIGH(3);
+        private final int value;
+        MaxActorThreads(int value) { this.value = value; }
+        public int value() { return value; }
+    }
+
     public record Annotation(String name, List<TypeRef> arguments) {
         public Annotation { arguments = List.copyOf(arguments); }
     }
@@ -393,16 +401,57 @@ public final class Ast {
             List<FieldDecl> fields,
             ConstructorDecl constructor,
             List<MethodDecl> methods,
-            ActorConcurrency actorConcurrency) implements Decl {
+            ActorConcurrency actorConcurrency,
+            MaxActorThreads maxActorThreads,
+            boolean supervisor) implements Decl {
         public ClassDecl {
             actorConcurrency = java.util.Objects.requireNonNull(actorConcurrency);
+            maxActorThreads = java.util.Objects.requireNonNull(maxActorThreads, "maxActorThreads");
             if (actorKind == ActorKind.NONE && actorConcurrency.transport() != ActorTransport.GENERIC)
                 throw new IllegalArgumentException("ordinary classes cannot carry actor transport policy");
+            if (actorKind == ActorKind.NONE && maxActorThreads != MaxActorThreads.LOW)
+                throw new IllegalArgumentException("non-actor classes cannot have parallel actor turns");
+            if (supervisor && actorKind == ActorKind.NONE)
+                throw new IllegalArgumentException("only actors can be supervisors");
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+        }
+
+        /** Preserve current actor transport/concurrency constructor ABI. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods, ActorConcurrency actorConcurrency) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods,
+                    actorConcurrency, MaxActorThreads.LOW, false);
+        }
+
+        /** Preserve #1396 actor-thread/supervisor constructor ABI. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods, MaxActorThreads maxActorThreads,
+                         boolean supervisor) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods,
+                    ActorConcurrency.serial(ActorTransport.GENERIC), maxActorThreads, supervisor);
+        }
+
+        /** Preserve pre-supervisor #1396 constructor ABI. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods, MaxActorThreads maxActorThreads) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods,
+                    ActorConcurrency.serial(ActorTransport.GENERIC), maxActorThreads, false);
         }
 
         /** Compatibility constructor for all existing AST/JIT compiler clients. */
@@ -413,7 +462,7 @@ public final class Ast {
                          List<MethodDecl> methods) {
             this(name, visibility, isAbstract, actorKind, genericParameters,
                     parents, interfaces, fields, constructor, methods,
-                    ActorConcurrency.serial(ActorTransport.GENERIC));
+                    ActorConcurrency.serial(ActorTransport.GENERIC), MaxActorThreads.LOW, false);
         }
 
         /** Compatibility constructor for pre-constructor AST producers. */
@@ -610,8 +659,17 @@ public final class Ast {
     public enum BindingKind { CONST, VAL, LET }
 
     public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
-            BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
+            TerminalEffectStmt, BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
             ForOfStmt, ForOfDestructureStmt, ForStmt, DoWhileStmt, LoopStmt, SelectStmt { }
+
+    public enum TerminalEffectKind { THROW, RAISE, PANIC }
+
+    public record TerminalEffectStmt(TerminalEffectKind kind, Expr value) implements Stmt {
+        public TerminalEffectStmt {
+            java.util.Objects.requireNonNull(kind, "kind");
+            java.util.Objects.requireNonNull(value, "value");
+        }
+    }
 
     /**
      * Binding rebinding and mutable access to the referent are independent capabilities.
