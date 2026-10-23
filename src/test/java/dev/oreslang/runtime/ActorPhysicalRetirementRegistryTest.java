@@ -95,6 +95,81 @@ final class ActorPhysicalRetirementRegistryTest {
         }
     }
 
+    @Test void stoppedSourceTaskCanMintOnlyCleanupPhysicalLoan() throws Exception {
+        var awaiting = new OresFuture<Integer>();
+        var cleanupStage = new OresFuture<Integer>();
+        var entered = new CountDownLatch(1);
+        var cleanupEntered = new CountDownLatch(1);
+        var priorTicket = new AtomicReference<ActorPhysicalRetirementRegistry.Receipt>();
+        var cleanupTicket = new AtomicReference<ActorPhysicalRetirementRegistry.Receipt>();
+        var sourceResult = new AtomicReference<OresFuture<Void>>();
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                sourceResult.set(context.runtime().startActorTask(
+                        new OresScheduler.CleanupAwareTask<Void>() {
+                            int state;
+                            @Override public OresScheduler.Step<Void> resume(
+                                    OresScheduler.Resume resume) {
+                                if (state++ == 0) {
+                                    priorTicket.set(context.runtime()
+                                            .registerCurrentActorPhysicalReceipt(
+                                                    ActorPhysicalRetirementRegistry.Kind.FFI_LOAN));
+                                    entered.countDown();
+                                    return OresScheduler.await(awaiting);
+                                }
+                                if (state == 2) {
+                                    assertTrue(OresScheduler.cancellationCleanupTurn());
+                                    cleanupTicket.set(context.runtime()
+                                            .registerCurrentActorPhysicalReceipt(
+                                                    ActorPhysicalRetirementRegistry.Kind.ASYNC_ITERATOR));
+                                    cleanupEntered.countDown();
+                                    return OresScheduler.await(cleanupStage);
+                                }
+                                return OresScheduler.done(null);
+                            }
+                        }));
+            });
+            actor.send("begin");
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            assertTrue(actor.cancel());
+            assertTrue(cleanupEntered.await(3, TimeUnit.SECONDS),
+                    "authentic scheduler cleanup must retain registration authority");
+            assertEquals(actor.id(), cleanupTicket.get().actorId());
+            assertEquals(actor.generation(), cleanupTicket.get().generation());
+            assertFalse(actor.done().isDone());
+            cleanupStage.completeFromRuntime(17);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (!sourceResult.get().isDone() && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertTrue(sourceResult.get().isDone());
+            assertFalse(actor.done().isDone(), "finished defer is not native loan release");
+            assertTrue(priorTicket.get().completeAfterPhysicalRelease());
+            assertFalse(actor.done().isDone(), "cleanup-created iterator loan still outstanding");
+            assertTrue(cleanupTicket.get().completeAfterPhysicalRelease());
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test void finalCleanupMayRegisterPhysicalCloseWithoutPrematureDone() throws Exception {
+        var cleanupRegistered = new CountDownLatch(1);
+        var ticket = new AtomicReference<ActorPhysicalRetirementRegistry.Receipt>();
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) ->
+                    context.runtime().endCurrentActorWithCleanup(() -> {
+                        ticket.set(context.runtime().registerCurrentActorPhysicalReceipt(
+                                ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE));
+                        cleanupRegistered.countDown();
+                    }));
+            actor.send("end");
+            assertTrue(cleanupRegistered.await(3, TimeUnit.SECONDS));
+            assertFalse(actor.done().isDone());
+            assertTrue(ticket.get().completeAfterPhysicalRelease());
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            actor.done().get(3, TimeUnit.SECONDS);
+        }
+    }
+
     @Test void failedPhysicalReleaseIsStickyAndCannotBeReclassifiedAsClean() {
         var signals = new AtomicInteger();
         var owner = ActorRuntime.ActorId.create();
