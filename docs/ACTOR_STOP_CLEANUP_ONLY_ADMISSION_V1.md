@@ -137,3 +137,57 @@ returns before its asynchronous driver teardown. Supervisor/arena release
 must await a separate physical loan receipt (not merely `Future.cancel`),
 including success/failure, duplicate cancellation and incarnation rollover.
 The existing code **does not yet provide** that universal receipt aggregation.
+
+## Owner Future STOP receipts and child cancellation ordering (2026-10-22)
+
+Further adversarial review of this draft found two distinct early-retirement
+windows and one structured-cancellation delay:
+
+1. A second STOP-side `Future.cancel(false)` may lose to an already-winning
+   cancellation on a different producer thread. That cancellation's terminal
+   state CAS can precede a blocked physical cancellation hook or synchronous
+   terminal subscriber. STOP now reserves a separate
+   `pendingStopFutureNotifications` count while holding `lifecycleLock`,
+   registers `whenNotificationsDrainedRuntime` on **every** owned Future in the
+   snapshot, and joins those receipts before arena/actor DONE. The receipt
+   registration precedes STOP's revocation loop. A failed registration or
+   receipt accounting underflow quarantines instead of manufacturing success.
+2. An actor-owned Future previously left `pendingOperations` when its own
+   first ordinary waiter ran, **before** other terminal waiters completed. It
+   now leaves only on the Future's host notification-drain receipt. This keeps
+   cleanup-owned Future counts charged across blocked terminal subscribers and
+   lets STOP snapshot Futures that are already terminal but not physically
+   notification-quiescent.
+3. Internal `OresFuture` cancellation hooks remain nonthrowing to consumers,
+   but a thrown `RuntimeException`/`Error` is now saved as a runtime-only
+   `cancellationHookFailureFromRuntime` receipt. Actor ownership and STOP
+   receipt paths mark `sourceStopCleanupAborted` on such a failure. A
+   cancelled Future is **not** proof that its physical revoker succeeded.
+4. Parent STOP requests structured child cancellation **before** parent-owned
+   revokers and SourceTask cancellation callbacks may block. Each child is
+   attempted even if an earlier child throws. Failed child cancellation
+   quarantines the parent; parent DONE still joins child finalization.
+
+Focused tests added/extended:
+
+- A foreign thread wins cancellation and stalls its physical revoker while
+  actor STOP attempts another cancellation: DONE stays pending until drain.
+- A later synchronous terminal subscriber blocks after the actor's own
+  observer: the Future remains actor-owned until all ordinary waiters drain.
+- Child STOP progresses ahead of one blocked parent revoker.
+- A revocation hook throws: the Future stays cancelled, independent listeners
+  are notified, and the physical failure remains inspectable by the runtime.
+- Repeated STOP and a late producer during two successive asynchronous
+  cleanup awaits cannot replay the Task, resurrect ordinary mail, or retire
+  the actor early.
+
+These are staged regression tests, **not passing JUnit evidence**. The focused
+JDK25 workflow now selects `OresFutureCallbackTest` as well as the actor and
+scheduler suites; exact-head runner execution is required.
+
+**Not solved by these changes:** one child cancellation can itself block on a
+synchronous child revoker, delaying cancellation requests to later siblings.
+Likewise, notification-drain receipts alone do not prove asynchronous native
+I/O, FFI, DMA or kernel handle closure. Full supervisor loan joins, independent
+nonblocking CONTROL cancellation fan-out, bounded stalled-cleanup diagnostics,
+and Java/LLVM source-level conformance remain mandatory release gates.
