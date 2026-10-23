@@ -4637,7 +4637,7 @@ public final class TypeChecker {
         // This proof is attached only after the entire stage is checked.
         // Rewrites deliberately lose it, so the evaluator cannot execute a
         // type-checked stage body with a substituted callee or argument.
-        Ast.CheckedPureFuturePipe.record(call);
+        Ast.CheckedPureFuturePipe.record(call, stage);
         return new Named("Future", List.of(output));
     }
 
