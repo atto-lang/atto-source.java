@@ -64,6 +64,12 @@ public final class TrapFailurePolicy {
             Throwable current = pending.removeFirst();
             if (!seen.add(current)) return false;
             if (seen.size() > MAX_FAILURE_NODES) return false;
+            // A foreign Java caller may instantiate the public diagnostic
+            // carrier classes. Their type names alone never convey the right
+            // to turn a host exception into a guest trap/catch result.
+            if (current instanceof GuestControlSignal signal && !signal.compilerIssued()) {
+                return false;
+            }
             if ((panicType != null && panicType.isInstance(current))
                     || current instanceof GuestControlSignal.Raise
                     || current instanceof GuestControlSignal.Panic
@@ -100,9 +106,10 @@ public final class TrapFailurePolicy {
      * if they are suppressed on an otherwise valid RAISE. A suppressed RAISE
      * cannot grant authority to recover an unrelated host failure.
      *
-     * This is fail-closed signal *classification*, not source provenance:
-     * GuestControlSignal constructors must be sealed at the compiler/VM bridge
-     * before this method can authorize untrusted guest or foreign callbacks.
+     * The direct-issuer marker rejects foreign-host-manufactured RAISE values.
+     * This is not yet a task/actor incarnation capability, nor proof that a
+     * host wrapper originated in the same execution domain as the signal.
+     * That stronger admission bridge is still required before FFI exposure.
      */
     public static boolean isRecoverableRaise(
             Throwable failure, Class<? extends Throwable> panicType) {
@@ -128,8 +135,8 @@ public final class TrapFailurePolicy {
                         || current instanceof SecurityException) {
                     return false;
                 }
-                if (current instanceof GuestControlSignal.Raise) {
-                    if (!node.primary()) return false;
+                if (current instanceof GuestControlSignal.Raise raised) {
+                    if (!node.primary() || !raised.compilerIssued()) return false;
                     sawRaiseOnPrimaryCause = true;
                 }
                 if (!STANDARD_CAUSE.get(current.getClass())) return false;
