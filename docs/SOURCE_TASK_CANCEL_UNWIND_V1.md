@@ -96,13 +96,14 @@ has an independently approved exact destination.
 
 ## Unresolved release gates
 
-1. **Post-stop actor cleanup lane**. ActorRuntime currently closes
-   continuation admission on actor termination. A normal actor
-   stop/cancel can therefore deny pending source defers. This patch
-   quarantines instead of reclaiming; it does NOT yet offer graceful
-   complete actor shutdown after all cleanup. A bounded dedicated
-   post-stop CONTROL cleanup lane and handoff token/actor generation
-   check are required.
+1. **Post-stop actor cleanup lane**. This base PR (#1887) closes
+   continuation admission at STOP and quarantines unfinished defers.
+   The stacked actor STOP draft adds a bounded SourceTask-only
+   continuation mailbox, a sealed scheduler cancellation snapshot,
+   and physical Task quiescence joins; see
+   `docs/ACTOR_STOP_CLEANUP_ONLY_ADMISSION_V1.md`.
+   Exact-head tests and complete native/FFI receipt integration remain
+   required before this gate can be considered proven.
 2. **Per-cleanup wall clock/fuel/heap deadline.** The 4096 turn limit
    bounds cooperative dispatches but does not bound a single stuck
    FFI/native call or a defer that waits forever on one Future. An
