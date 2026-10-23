@@ -288,7 +288,9 @@ final class TrapOptionSemanticsTest {
                 }
                 """;
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
-        assertThrows(RuntimeException.class, () -> run(source));
+        RuntimeException failure = assertThrows(RuntimeException.class, () -> run(source));
+        assertTrue(failure.toString().toLowerCase(java.util.Locale.ROOT).contains("panic")
+                || failure.toString().contains("invariant"));
     }
 
     @Test
@@ -394,7 +396,9 @@ final class TrapOptionSemanticsTest {
                 }
                 """;
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(panicSource));
-        assertThrows(RuntimeException.class, () -> run(panicSource));
+        RuntimeException failure = assertThrows(RuntimeException.class,
+                () -> run(panicSource));
+        assertTrue(failure.toString().toLowerCase(java.util.Locale.ROOT).contains("panic"));
     }
 
     @Test
@@ -443,7 +447,9 @@ final class TrapOptionSemanticsTest {
                 }
                 """;
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
-        assertThrows(RuntimeException.class, () -> run(source));
+        RuntimeException failure = assertThrows(RuntimeException.class, () -> run(source));
+        assertTrue(failure.toString().toLowerCase(java.util.Locale.ROOT).contains("panic")
+                || failure.toString().contains("unwrap"));
     }
 
     @Test
