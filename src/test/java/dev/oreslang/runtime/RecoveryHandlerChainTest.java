@@ -316,6 +316,51 @@ final class RecoveryHandlerChainTest {
         assertSame(callback, result.terminalError());
     }
 
+    @Test void alternatingForeignCauseCannotHideCancellationOnFirstRead() {
+        var causeReads = new java.util.concurrent.atomic.AtomicInteger();
+        Throwable hiddenCancellation = new java.util.concurrent.CancellationException("hidden");
+        Exception foreign = new Exception("stateful cause") {
+            @Override public synchronized Throwable getCause() {
+                return causeReads.incrementAndGet() % 2 == 1 ? null : hiddenCancellation;
+            }
+        };
+        var invoked = new java.util.concurrent.atomic.AtomicInteger();
+        var chain = RecoveryHandlerChain.<Integer>builder()
+                .register((e, c) -> { invoked.incrementAndGet(); c.resolve(1); }).freeze();
+        var result = assertInstanceOf(RecoveryHandlerChain.Unhandled.class,
+                chain.dispatch(RecoveryHandlerChain.FailureKind.RAISE, foreign));
+        assertSame(foreign, result.error());
+        assertEquals(0, invoked.get());
+        assertEquals(0, causeReads.get(), "untrusted virtual accessor must not run");
+    }
+
+    @Test void nestedForeignCauseCannotConcealSecurityDenial() {
+        var causeReads = new java.util.concurrent.atomic.AtomicInteger();
+        Exception wrappedForeign = new Exception("foreign child") {
+            @Override public synchronized Throwable getCause() {
+                causeReads.incrementAndGet();
+                return new SecurityException("revoked");
+            }
+        };
+        Throwable pending = new RuntimeException("ordinary wrapper", wrappedForeign);
+        var invoked = new java.util.concurrent.atomic.AtomicInteger();
+        var chain = RecoveryHandlerChain.<Integer>builder()
+                .register((e, c) -> { invoked.incrementAndGet(); c.resolve(3); }).freeze();
+        var outcome = assertInstanceOf(RecoveryHandlerChain.Unhandled.class,
+                chain.dispatch(RecoveryHandlerChain.FailureKind.THROW, pending));
+        assertSame(pending, outcome.error());
+        assertEquals(0, invoked.get());
+        assertEquals(0, causeReads.get());
+    }
+
+    @Test void regularThrowableCauseTraversalStillAdmitsOrdinaryErrors() {
+        Throwable pending = new RuntimeException("outer", new IllegalArgumentException("guest ordinary"));
+        var chain = RecoveryHandlerChain.<Integer>builder()
+                .onRaise((e, c) -> c.resolve(17)).freeze();
+        assertEquals(new RecoveryHandlerChain.Recovered<>(17),
+                chain.dispatch(RecoveryHandlerChain.FailureKind.RAISE, pending));
+    }
+
     @Test void inaccessibleCauseFailsClosed() {
         Throwable pending = new Exception("pending") {
             @Override public synchronized Throwable getCause() {
