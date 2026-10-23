@@ -93,7 +93,11 @@ printf 'PROVENANCE_OK frontend=%s runtime=%s integration=%s files=%s\n' \
 # branch. The TaskScope merged blob is reviewed independently.
 runtime_previous='0f276633ae896b316d99274a3894d0f3496c52f4'
 scope_path='src/main/java/dev/oreslang/runtime/OresTaskScope.java'
-scope_reviewed='6220209e55dc43311e7d2ead98225e916ee9540e'
+future_path='src/main/java/dev/oreslang/runtime/OresFuture.java'
+future_reviewed='73aba3bd10e5de8a03dd0243f1f19f8f2f3b7428'
+batch_test_path='src/test/java/dev/oreslang/runtime/OresTaskScopeCancellationBatchTest.java'
+batch_test_reviewed='860d7f8ca04a8db42236f538a1dd0e699a9f3356'
+scope_reviewed='76eaf46e20c42123b7a063c55ee5f59860aab86a'
 context_path='src/main/java/dev/oreslang/runtime/OresContext.java'
 context_reviewed='8151b20ac98cd86512a712d4cc60a3f034a314e1'
 frame_test_path='src/test/java/dev/oreslang/runtime/OresTaskScopeFrameTest.java'
@@ -113,6 +117,8 @@ fi
 for path in "${runtime_paths[@]}"; do
   if [[ "$path" == "$scope_path" ]]; then
     expected="$scope_reviewed"
+  elif [[ "$path" == "$future_path" ]]; then
+    expected="$future_reviewed"
   else
     expected="$(git rev-parse "$runtime:$path")"
   fi
@@ -122,7 +128,7 @@ for path in "${runtime_paths[@]}"; do
     exit 1
   fi
 done
-for entry in "$context_path:$context_reviewed" "$frame_test_path:$frame_test_reviewed" "$teardown_helper_path:$teardown_helper_reviewed" "$teardown_test_path:$teardown_test_reviewed" "$teardown_matrix_path:$teardown_matrix_reviewed"; do
+for entry in "$batch_test_path:$batch_test_reviewed" "$context_path:$context_reviewed" "$frame_test_path:$frame_test_reviewed" "$teardown_helper_path:$teardown_helper_reviewed" "$teardown_test_path:$teardown_test_reviewed" "$teardown_matrix_path:$teardown_matrix_reviewed"; do
   path="${entry%%:*}"
   expected="${entry#*:}"
   actual="$(git rev-parse "HEAD:$path")"
@@ -152,6 +158,6 @@ mvn -version
 # Maven Surefire: fail if no selected JUnit tests match. Never confuse
 # a pre-step Actions startup failure with this test's executable result.
 mvn -B -ntp -DfailIfNoTests=true \
-  -Dtest=SuspendsCallbackIsolationTest,SuspendsTaskEffectContractTest,SuspendsContractLanguageTest,TaskOwnershipBoundaryTest,TaskBlockSyntaxTest,TaskLambdaIifeSyntaxTest,TaskReturnScopeAuditTest,TaskSpellingSyntaxTest,MutexLanguageTest,OresTaskTest,OresCancellationSourceTest,OresTaskScopeTest,OresTaskScopeFrameTest,OresTaskCooperativeSchedulerTest,OresContextTeardownTest,OresContextTeardownMatrixTest \
+  -Dtest=SuspendsCallbackIsolationTest,SuspendsTaskEffectContractTest,SuspendsContractLanguageTest,TaskOwnershipBoundaryTest,TaskBlockSyntaxTest,TaskLambdaIifeSyntaxTest,TaskReturnScopeAuditTest,TaskSpellingSyntaxTest,MutexLanguageTest,OresTaskTest,OresCancellationSourceTest,OresTaskScopeTest,OresTaskScopeCancellationOrderingTest,OresTaskScopeCancellationBatchTest,OresTaskScopeFrameTest,OresTaskCooperativeSchedulerTest,OresContextTeardownTest,OresContextTeardownMatrixTest \
   test
 printf 'TASK_INTEGRATION_JUNIT_OK sha=%s\n' "$(git rev-parse HEAD)"
