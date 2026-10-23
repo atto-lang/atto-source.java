@@ -153,6 +153,21 @@ has stopped. Treat its `TaskOutcome` as the **internal** task's outcome and
 cancellation as cancelled even though the internal task unwound with a
 failure. Do not substitute the internal outcome for the public result.
 
+For inline scheduler implementations, the exposed bridge identity must be
+published **before** TaskHandle admission. Otherwise the first already-running
+await can be omitted from cycle detection, and cancellation can race handle
+binding. The runtime now publishes that bridge first, reconciles cancellation
+after TaskHandle admission, and includes focused inline-complete/inline-pending
+regressions. These tests are committed, but require an executing JDK 25 runner.
+
+**Remaining P0 source-lifetime gap:** source lowering currently uses the
+convenience `TaskPipeline.start(scheduler, input, stages)` rather than a
+parent-owned `TaskScope`. Scheduler shutdown can still cancel outstanding
+work, but no complete parent-to-child physical retirement proof is established
+for an independently cancelled `SourceTask`. Do not equate the exposed result
+Future with its `getDone()` retirement receipt, or claim actor/arena cleanup is
+safe before that integration and executable cancellation tests.
+
 The runtime also tracks active pipeline bridge-await edges by Future identity,
 rejecting both direct self-await and multi-pipeline cycles, and removes edges
 after completion/cancellation/resume. Stage implementations must not wrap the
