@@ -99,7 +99,7 @@ final class HotReloadCompiledUnitAdmissionTest {
     @Test
     void rejectsActualImportsEvenWhenCallerSuppliesAnEmptyDependencySet() {
         var base = fixture();
-        String source = "import fnc {b_value} from \"./b.ores\";\\n"
+        String source = "import fnc {b_value} from \"./b.ores\";\n"
                 + "pub routine main(): void { return; }";
         var forged = counterfeit(base, source, digest(source), Set.of());
 
