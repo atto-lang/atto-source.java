@@ -1193,6 +1193,49 @@ final class ActorPhysicalRetirementRegistryTest {
                 "dispatch rejection permanently quarantines this incarnation");
     }
 
+    @Test void duplicateNativeCallbackAfterReleaseBeforeDoneRevokesReceipt() {
+        var queued = new java.util.ArrayDeque<Runnable>();
+        var notices = new AtomicInteger();
+        var registry = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 59,
+                notices::incrementAndGet, queued::add);
+        var receipt = registry.register(
+                ActorPhysicalRetirementRegistry.Kind.NATIVE_IO_OPERATION, false);
+        registry.seal();
+        assertTrue(receipt.completeAfterPhysicalRelease());
+        assertEquals(0, registry.snapshot().pending());
+        assertEquals(1, registry.snapshot().inFlightNotifications());
+        var duplicate = new IllegalStateException("second completion from native driver");
+        assertTrue(receipt.failPhysicalRelease(duplicate),
+                "late duplicate invalidates unretired physical-exit proof");
+        assertFalse(receipt.failPhysicalRelease(duplicate),
+                "failure must remain sticky without double accounting");
+        assertEquals(1, registry.snapshot().pending());
+        assertSame(duplicate, registry.snapshot().failure());
+        queued.removeFirst().run();
+        assertEquals(0, registry.snapshot().inFlightNotifications());
+        assertThrows(IllegalStateException.class, registry::retireVerified,
+                "post-drain notifier cannot override an intervening duplicate callback");
+        assertTrue(notices.get() >= 2);
+    }
+
+    @Test void driverCallbackAfterVerifiedRetirementIsNotSilentlyAccepted() {
+        var registry = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 60, () -> { });
+        var receipt = registry.register(
+                ActorPhysicalRetirementRegistry.Kind.NATIVE_IO_OPERATION, false);
+        registry.seal();
+        assertTrue(receipt.completeAfterPhysicalRelease());
+        registry.retireVerified();
+        var late = new IllegalStateException("driver illegally called after retirement");
+        var failure = assertThrows(IllegalStateException.class,
+                () -> receipt.failPhysicalRelease(late));
+        assertSame(late, failure.getCause());
+        assertTrue(registry.snapshot().retired());
+        // Native drivers capable of such a callback MUST register a distinct
+        // callback-drain ticket before they can authorize actor reclamation.
+    }
+
     @Test void deferredFinalWakeFailureSticksBeforeVerifiedRetirement() {
         var queued = new java.util.ArrayDeque<Runnable>();
         var calls = new AtomicInteger();
