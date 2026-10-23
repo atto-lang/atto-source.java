@@ -155,6 +155,43 @@ final class ActorTransportConcurrencyContractTest {
                 denied::getMessage);
     }
 
+    @Test void annotationExpansionPreservesCompositeSupervisorTransportPolicy() {
+        String source = """
+                @ActorMaxThreads(MaxActorThreads.LOW)
+                define supervisor serial http actor Manager as
+                  on_throw(ChildFailure failure): void {
+                    failure.retain();
+                    return;
+                  }
+                  on_raise(ChildFailure failure): void {
+                    failure.retain();
+                    return;
+                  }
+                  on_panic(ChildFailure failure): void {
+                    failure.retain();
+                    return;
+                  }
+                  receive(ActorMail<String> mail): void { return; }
+                end
+                """;
+        Ast.Program parsed = Parser.parse(source);
+        Ast.Program expanded = AnnotationExpander.expand(parsed);
+        Ast.ClassDecl before =
+                (Ast.ClassDecl) parsed.modules().getFirst().declarations().getFirst();
+        Ast.ClassDecl after =
+                (Ast.ClassDecl) expanded.modules().getFirst().declarations().getFirst();
+
+        assertEquals(before.actorConcurrency(), after.actorConcurrency());
+        assertEquals(Ast.ActorConcurrency.serial(Ast.ActorTransport.HTTP),
+                after.actorConcurrency());
+        assertEquals(before.maxActorThreads(), after.maxActorThreads());
+        assertEquals(Ast.MaxActorThreads.LOW, after.maxActorThreads());
+        assertEquals(before.supervisor(), after.supervisor());
+        assertTrue(after.supervisor(),
+                "annotation expansion must not erase the supervisor CONTROL role");
+        assertDoesNotThrow(() -> TypeChecker.check(expanded));
+    }
+
     @Test void actorMetadataIsAvailableWithinModules() {
         Ast.Program parsed = Parser.parse("""
                 define module sample as
