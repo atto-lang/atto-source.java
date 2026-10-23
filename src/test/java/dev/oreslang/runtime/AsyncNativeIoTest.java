@@ -415,6 +415,37 @@ class AsyncNativeIoTest {
         }
     }
 
+    @Test void duplicateOrForeignTcpLoanReleaseCannotConsumeSiblingBorrow()
+            throws Exception {
+        try (var server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+             var socket = new Socket(InetAddress.getLoopbackAddress(),
+                     server.getLocalPort());
+             var peer = server.accept()) {
+            var owner = new NativeIo.SocketStopThenRelease(socket);
+            var first = owner.borrowOperation();
+            var second = owner.borrowOperation();
+            assertEquals(2, owner.activeOperationCount());
+            var foreignFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            Thread foreign = Thread.ofVirtual().start(() -> {
+                try { first.close(); }
+                catch (Throwable failure) { foreignFailure.set(failure); }
+            });
+            foreign.join(3_000);
+            assertFalse(foreign.isAlive());
+            assertInstanceOf(SecurityException.class, foreignFailure.get());
+            assertEquals(2, owner.activeOperationCount());
+            first.close();
+            first.close();
+            assertEquals(1, owner.activeOperationCount(),
+                    "duplicate cleanup must not release another worker's loan");
+            assertThrows(IOException.class, owner::close);
+            second.close();
+            assertEquals(0, owner.activeOperationCount());
+            owner.close();
+            assertTrue(socket.isClosed());
+        }
+    }
+
     @Test void racingTcpFinalClosesDoNotReleaseActivePhysicalBorrow()
             throws Exception {
         try (var server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
