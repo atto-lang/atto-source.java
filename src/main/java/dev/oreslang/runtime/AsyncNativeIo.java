@@ -155,7 +155,6 @@ public final class AsyncNativeIo implements AutoCloseable {
                 throw failedNotification;
             } finally {
                 synchronized (AsyncNativeIo.this) {
-                    phase = neverStarted ? Phase.CANCELLED_BEFORE_START : Phase.RETIRED;
                     admissionSet.remove(result);
                 }
                 // The actor ticket was minted on its OWN execution lease
@@ -175,6 +174,7 @@ public final class AsyncNativeIo implements AutoCloseable {
                     throw receiptFailure;
                 } finally {
                     synchronized (AsyncNativeIo.this) {
+                        phase = neverStarted ? Phase.CANCELLED_BEFORE_START : Phase.RETIRED;
                         admittedWork.remove(this);
                     }
                     maybePublishPhysicalShutdown();
@@ -234,12 +234,18 @@ public final class AsyncNativeIo implements AutoCloseable {
 
     public <T> OresFuture<T> submit(OresContext context,
             RuntimePermissions.Permission permission, String operation, Callable<T> work) {
-        // Actor-local authority must be checked on the owning execution turn.
+        // Check context affinity before evaluating actor-local authority.
+        if (context.nativeIo() != this) {
+            throw new SecurityException("native I/O context affinity mismatch");
+        }
         context.requireCapability(permission.capability(), operation);
         return submitActorAware(context, operation, work, pending, capacity);
     }
 
     public <T> OresFuture<T> submitClose(OresContext context, Callable<T> work) {
+        if (context.nativeIo() != this) {
+            throw new SecurityException("native I/O context affinity mismatch");
+        }
         context.requireCapability(IsolatePolicy.Capability.NETWORK, "socket.close_async");
         return submitActorAware(context, "socket.close_async", work, controls, 16);
     }
