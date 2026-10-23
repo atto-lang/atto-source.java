@@ -1068,6 +1068,57 @@ public final class Ast {
     }
 
     /**
+     * Identity-bound proof for the intentionally narrow first Future pipeline
+     * lowering slice. Only the checker may admit pure, unary, synchronous
+     * int -> int top-level stages. Syntax origin alone is never authorization.
+     * A rebuilt CallExpr must be checked again before execution.
+     */
+    public static final class CheckedPureFuturePipe {
+        private CheckedPureFuturePipe() { }
+
+        private static final java.lang.ref.ReferenceQueue<CallExpr> CLEARED =
+                new java.lang.ref.ReferenceQueue<>();
+        private static final java.util.Map<IdentityKey, Boolean> CHECKED =
+                new java.util.HashMap<>();
+
+        private static final class IdentityKey extends java.lang.ref.WeakReference<CallExpr> {
+            private final int hash;
+            private IdentityKey(CallExpr call, java.lang.ref.ReferenceQueue<CallExpr> queue) {
+                super(call, queue);
+                hash = System.identityHashCode(call);
+            }
+            @Override public int hashCode() { return hash; }
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof IdentityKey key)) return false;
+                CallExpr value = get();
+                return value != null && value == key.get();
+            }
+        }
+
+        private static void expunge() {
+            java.lang.ref.Reference<? extends CallExpr> collected;
+            while ((collected = CLEARED.poll()) != null) CHECKED.remove(collected);
+        }
+
+        /** Called only after the narrow stage has passed static type and purity checks. */
+        public static synchronized void record(CallExpr call) {
+            if (call == null || call.origin() != CallOrigin.VALUE_PIPE_ARGUMENT
+                    || call.arguments().size() != 1 || !(call.callee() instanceof NameExpr)) {
+                throw new IllegalArgumentException("checked Future stage requires a unary value-pipe call");
+            }
+            expunge();
+            CHECKED.put(new IdentityKey(call, CLEARED), Boolean.TRUE);
+        }
+
+        public static synchronized boolean lookup(CallExpr call) {
+            java.util.Objects.requireNonNull(call, "checked Future call");
+            expunge();
+            return CHECKED.containsKey(new IdentityKey(call, null));
+        }
+    }
+
+    /**
      * Compiler-verified static Option depth attached to an AST call by
      * identity, never by structurally-equal source text. Weak keys prevent
      * cached type metadata from retaining abandoned compilation units.
