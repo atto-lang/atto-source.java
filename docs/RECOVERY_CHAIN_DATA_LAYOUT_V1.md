@@ -297,6 +297,8 @@ DRAFT until those independent acceptance gates execute.
 The recovery dispatcher no longer accepts a raw `(FailureKind, Throwable)`
 pair. Its only admission method now accepts a package-private `GuestFailure`
 whose constructor is private and whose compiler/runtime issuer is package-private.
+The envelope's provenance is immutable; a private lifecycle ledger records
+one-unwind chain visitation and terminal consumption.
 The envelope can be minted only for `THROW` or `RAISE`; attempts to mint
 `PANIC`, cancellation or host-fatal as a locally recoverable effect fail before
 the handler chain is entered.
@@ -320,6 +322,35 @@ inside the trusted VM process is sandboxed.
 Guest `throw`, `raise` and `recover` parsing/lowering remain disabled. The
 next compiler gate is to mint this envelope only from checked exceptional-effect
 lowering and then give `c.next()` terminal `Never` control-flow semantics.
+
+## Recovery envelope replay and logical-owner hardening (2026-10-23)
+
+A valid compiler-issued failure capability must not be reusable merely because it
+cannot be forged. Recovery chains are now bound at construction to the complete
+logical execution identity they were registered for: `ExecutionId`,
+generation-fenced `AllocationDomain`, parent execution and continuation handle.
+A failure from another Task, actor invocation, actor generation or logical
+continuation is returned unhandled without running a callback.
+
+`GuestFailure` keeps its effect kind, host payload identity and provenance
+immutable, but now owns a private runtime lifecycle ledger. Distinct lexical
+chains may see an active unhandled failure while it propagates outward; the same
+chain cannot execute twice for the same unwind. Successful recovery,
+`HandlerFailure`, terminal callback failure and reentrancy abort seal the
+failure capability so it cannot be dispatched again. This prevents a retained
+host reference from replaying a completed exceptional effect.
+
+The identity-based visited-chain ledger is bounded to 1024 entries. Exceeding the
+quota seals the failure and fails loudly rather than retaining an unbounded
+number of recovery-chain objects. The bound is a host-prototype safety limit;
+source lowering should statically bound lexical unwind metadata where practical.
+
+These checks use logical execution identity, not carrier-thread identity, and
+therefore remain valid across carrier migration. They do not yet add a hot-reload
+**code generation/epoch** to the recovery provenance. The existing
+`HotReloadManager.Generation.id()` is the natural source of that fence once
+recovery is integrated with live code replacement; until then, recovery remains
+disabled in guest source and no cross-generation compatibility is claimed.
 
 ## Host-cause accessor admission and public API containment (2026-10-23)
 
