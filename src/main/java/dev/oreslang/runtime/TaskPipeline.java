@@ -293,7 +293,8 @@ public final class TaskPipeline {
                         }
                     } finally {
                         retirePipelineAwait(exposedRef.get(), null);
-                        ownedStage.set(null);
+                        OresFuture<?> retiredOwned = ownedStage.getAndSet(null);
+                        if (retiredOwned != null && exposed.isCancelled()) retiredOwned.cancel(false);
                         OresFuture.RuntimeWaiterRegistration<T> current =
                                 subscription.getAndSet(null);
                         if (current != null) current.detach();
@@ -304,7 +305,8 @@ public final class TaskPipeline {
             OresFuture.RuntimeWaiterRegistration<T> raced =
                     subscription.getAndSet(null);
             if (raced != null) raced.detach();
-            ownedStage.set(null);
+            OresFuture<?> retiredOwned = ownedStage.getAndSet(null);
+            if (retiredOwned != null && exposed.isCancelled()) retiredOwned.cancel(false);
         }
         return new PipelineHandle<>(exposed, tracked);
     }
