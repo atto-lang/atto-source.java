@@ -7336,8 +7336,14 @@ public final class ActorRuntime implements AutoCloseable {
             // The enclosing actor turn cannot finalize until this method
             // returns; enrollment wins over concurrent STOP.
             sourceTaskHandles.add(handle);
-            handle.getDone().whenCompleteRuntime((ignored, failure) ->
-                    sourceTaskHandles.remove(handle));
+            // getDone's terminal state is published before all synchronous
+            // terminal subscribers have returned. Removing the handle from
+            // our reverse index at the start of such a subscriber permits
+            // actor STOP to overlook a still-running callback.
+            handle.doneCallbacksDrained().whenComplete((ignored, failure) -> {
+                if (failure == null) sourceTaskHandles.remove(handle);
+                else quarantineStopRetirement(failure);
+            });
             return handle.result();
         }
 
@@ -7353,7 +7359,7 @@ public final class ActorRuntime implements AutoCloseable {
             AtomicInteger remaining = new AtomicInteger(pending.size());
             AtomicReference<Throwable> error = new AtomicReference<>();
             for (TaskHandle<?> handle : pending) {
-                handle.getDone().whenCompleteRuntime((ignored, failure) -> {
+                handle.doneCallbacksDrained().whenComplete((ignored, failure) -> {
                     if (failure != null) error.compareAndSet(null, failure);
                     if (remaining.decrementAndGet() == 0) {
                         Throwable unsafe = error.get();
