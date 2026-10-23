@@ -239,3 +239,41 @@ This branch now changes context-close behavior:
 **Limits:** This fixes premature `OresFuture` terminal publication and context bookkeeping. The context's existing resource-close traversal can still run while a worker is active; each resource driver must independently fence native access and physical release. Context close itself is not proof that every uncooperative worker has returned, and it is not a substitute for the incarnation-bound `ActorPhysicalRetirementRegistry`.
 
 **CI evidence at head:** push-triggered [focused run #39993103400](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/39993103400) failed before any job step in both `java` and `native` configurations; runner_name was empty. This is NO source-level JUnit/AOT test evidence. The project cannot export its private Git tree to another organization without the exact reviewed destination allowlist becoming active on protected main.
+
+## Deferred physical notifier handoff (2026-10-23 follow-up)
+
+The final physical-ticket notifier previously invoked `sourceTaskCleanupQuiesced`
+a second time inline *after* decreasing `inFlightNotifications`. That could
+authorize `ActorRef.done()` while the final host notifier remained on the native
+completion stack; a reentrant or throwing callback could then report failure
+after actor memory reclamation.
+
+The actual ActorCell now passes a **bounded, host-only asynchronous executor**
+(`physicalCloseDispatcher::execute`) into its physical registry. The first
+state-change notification runs while `inFlightNotifications > 0`, so it cannot
+finalize the actor; after that notification exits and its in-flight fence
+decrements, the registry **queues** the final actor STOP recheck off the native
+completion stack. The queue is not a guest carrier and cannot run guest code.
+
+The deferred wake uses a one-shot dispatch-approval gate: a fast worker waits
+until the submitter proves the queue accepted the task without throwing.
+Executor rejection and an executor that enqueues then throws both fail closed;
+the queued but unapproved task is inert. Caller-runs/inline execution is
+forbidden, and even a caller-runs executor that **swallows** its inline error
+is detected and quarantined. Old direct registry-only test instances retain
+their synchronous behavior for isolated callback fault tests; real ActorCells
+always use the deferred dispatcher.
+
+Committed deterministic Java JUnit regressions cover deferred first/final
+notifications, enqueue-then-throw with a stale queued callback, inline
+caller-runs, swallowed inline failure, and a worker that starts before dispatch
+acceptance returns. This is source coverage until JDK25 actually runs it.
+
+**Limits/release gates:** The bounded close lane can be saturated or stopped,
+in which case a release is quarantined rather than forged. Driver callbacks
+outside the registered scope still require physical tickets. Host-actor
+notification code that throws after emitting DONE, fatal VM errors, late
+callbacks after device/driver shutdown, and concurrent actor STOP plus host
+close require executed integration verification before #1944 can be closed.
+Do not treat the queued wake alone as universal proof of native driver exit.
+No approval to cross-org mirror private source is implied.
