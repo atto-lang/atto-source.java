@@ -25,7 +25,11 @@ final class ForwardTypeDeclarationHardeningTest {
         for (String declaration : new String[]{
                 "define type Code = int with min 0 and max 5;",
                 "define type Code = int with value gte 0 and value lte 5;",
-                "define type Code = int as positive integer;"
+                "define type Code = int as positive integer;",
+                "define type Code = string with min_length 2 and max_length 4 and chars ascii_letters;",
+                "define type Code = string with chars ascii_uppercase;",
+                "define type Code = string with chars lowercase;",
+                "define type Code = string with chars han;"
         }) {
             String source = """
                     declare type Code;
