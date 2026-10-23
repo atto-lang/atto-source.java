@@ -200,8 +200,8 @@ public final class NativeHttpRollingDispatcher implements AutoCloseable {
     }
 
     private void abort(NativeHttp.Exchange exchange) {
-        try { exchange.abort(); }
-        catch (RuntimeException ignored) { /* ownership transferred or terminal */ }
+        try { exchange.abortFromRollingDispatcher(this); }
+        catch (RuntimeException ignored) { /* listener already shutting down */ }
     }
 
     private void submit(Runnable command) {
