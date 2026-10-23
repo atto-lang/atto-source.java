@@ -18,6 +18,7 @@ public final class AsyncNativeIo implements AutoCloseable {
     private final Set<AutoCloseable> closingResources = new HashSet<>();
     private final OresFuture<Void> physicalShutdown = new OresFuture<>(() -> false, () -> { });
     private boolean closeScanPending;
+    private int rejectedResourceCloses; // physical close attempts outside context monitor
     private boolean resourceCloseFinished;
     private boolean physicalShutdownPublished;
     private Throwable resourceCloseFailure;
@@ -150,6 +151,7 @@ public final class AsyncNativeIo implements AutoCloseable {
         boolean publish;
         synchronized (this) {
             publish = closed && !closeScanPending && resourceCloseFinished
+                    && rejectedResourceCloses == 0
                     && resourceCloseFailure == null && admittedWork.isEmpty()
                     && !physicalShutdownPublished;
             if (publish) {
@@ -204,12 +206,39 @@ public final class AsyncNativeIo implements AutoCloseable {
         return result;
     }
 
-    synchronized void register(AutoCloseable resource) throws Exception {
-        if (closed) {
-            resource.close();
-            throw new IllegalStateException("I/O context closed");
+    void register(AutoCloseable resource) throws Exception {
+        java.util.Objects.requireNonNull(resource, "resource");
+        synchronized (this) {
+            if (!closed) {
+                resources.add(resource);
+                return;
+            }
+            if (physicalShutdownPublished) {
+                // The context has already published a permanent host-only
+                // quiescence receipt. No new untracked close callback may
+                // begin under that old authority; the caller remains the
+                // owner of its never-admitted resource and must close it.
+                throw new IllegalStateException(
+                        "I/O context retired; caller must close unadmitted resource");
+            }
+            // The resource never obtained an admission lease. A caller that
+            // raced STOP must close its rejected native handle without
+            // holding the context monitor (close may block or reenter).
+            rejectedResourceCloses++;
         }
-        resources.add(resource);
+        try {
+            resource.close();
+        } catch (Exception | Error failure) {
+            // A failed rejected-resource close cannot become a clean native
+            // retirement receipt. Retain the failed handle and quarantine.
+            synchronized (this) { closingResources.add(resource); }
+            recordPhysicalShutdownFailure(failure);
+            throw failure;
+        } finally {
+            synchronized (this) { rejectedResourceCloses--; }
+            maybePublishPhysicalShutdown();
+        }
+        throw new IllegalStateException("I/O context closed");
     }
 
     synchronized void unregister(AutoCloseable resource) { resources.remove(resource); }
