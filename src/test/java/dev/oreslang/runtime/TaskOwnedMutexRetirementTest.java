@@ -161,6 +161,88 @@ public class TaskOwnedMutexRetirementTest {
     }
 
     @Test
+    void dequeuedGrantCancellationJoinsPhysicalReclamationBeforeTaskDone() throws Exception {
+        var shared = OresMutex.shared(new int[] { 19 });
+        var originalHolder = shared.lock();
+        var requestQueued = new CountDownLatch(1);
+        var grantDequeued = new CountDownLatch(1);
+        var finishGrant = new CountDownLatch(1);
+        var pending = new AtomicReference<CompletableFuture<OresMutex.Guard<int[]>>>();
+        var grantingFailure = new AtomicReference<Throwable>();
+        var never = new OresFuture<Integer>();
+
+        // This hook runs after the queue's dequeue/claim linearization
+        // but before markOwner, bindGuard and Future publication.
+        shared.setAfterAsyncDequeueForTesting(() -> {
+            grantDequeued.countDown();
+            try {
+                if (!finishGrant.await(10, TimeUnit.SECONDS)) {
+                    throw new AssertionError("dequeued grant did not resume");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(interrupted);
+            }
+        });
+        try (var scheduler = new OresScheduler(1)) {
+            TaskHandle<Integer> task = scheduler.startTracked(resume -> {
+                pending.set(shared.lockAsync());
+                requestQueued.countDown();
+                return OresScheduler.await(never);
+            });
+            assertTrue(requestQueued.await(3, TimeUnit.SECONDS));
+            assertFalse(pending.get().isDone());
+
+            var granting = Thread.ofPlatform().start(() -> {
+                try {
+                    originalHolder.release();
+                } catch (Throwable failure) {
+                    grantingFailure.set(failure);
+                }
+            });
+            try {
+                assertTrue(grantDequeued.await(3, TimeUnit.SECONDS),
+                        "the waiter must be removed and its handoff claimed");
+                var requestTerminal = new CompletableFuture<Void>();
+                pending.get().whenComplete((value, failure) ->
+                        requestTerminal.complete(null));
+                assertTrue(task.cancel("cancel after dequeue before delivery"));
+                requestTerminal.get(3, TimeUnit.SECONDS);
+                assertTrue(pending.get().isCancelled(),
+                        "retirement must cancel before the paused grant publishes");
+                assertFalse(task.getDone().isDone(),
+                        "getDone must JOIN a claimed grant even after Future cancellation");
+                assertFalse(task.cleanupFailures().isDone(),
+                        "cleanup receipt must not precede physical permit reclamation");
+            } finally {
+                finishGrant.countDown();
+                granting.join(4000);
+                shared.setAfterAsyncDequeueForTesting(null);
+            }
+
+            assertFalse(granting.isAlive(), "grant carrier must finish its handoff");
+            assertNull(grantingFailure.get(), "grant carrier must not throw");
+            assertInstanceOf(TaskHandle.Cancelled.class,
+                    task.getDone().get(4, TimeUnit.SECONDS));
+            assertTrue(task.cleanupFailures().get(3, TimeUnit.SECONDS).isEmpty());
+            assertFalse(shared.isPoisoned(),
+                    "a cancelled never-published guard must not poison the shared state");
+
+            var newOwner = shared.tryLock().orElseThrow();
+            assertEquals(19, newOwner.value()[0]);
+            newOwner.release();
+            // Second admission proves the original permit was neither leaked
+            // nor double-issued while the cancelled request was reclaimed.
+            var followingOwner = shared.tryLock().orElseThrow();
+            followingOwner.release();
+        } finally {
+            finishGrant.countDown();
+            shared.setAfterAsyncDequeueForTesting(null);
+            if (!originalHolder.released()) originalHolder.release();
+        }
+    }
+
+    @Test
     void concurrentAsyncHandoffAndTaskRetirementNeverPoisonsAnUnpublishedGrant()
             throws Exception {
         // Two carrier threads race Future publication against Task shutdown.
