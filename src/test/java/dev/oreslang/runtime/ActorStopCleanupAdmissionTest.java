@@ -25,8 +25,10 @@ final class ActorStopCleanupAdmissionTest {
         var mutex = OresMutex.shared(new int[] { 5 });
         var never = new OresFuture<Integer>();
         var asyncClose = new OresFuture<Integer>();
+        var independentCloseReceipt = new OresFuture<Integer>();
         var waiting = new CountDownLatch(1);
         var cleanupEntered = new CountDownLatch(1);
+        var cleanupExited = new CountDownLatch(1);
         var cleanupFinished = new AtomicInteger();
         var ordinaryExecuted = new AtomicInteger();
         var genericContinuationExecuted = new AtomicInteger();
@@ -70,6 +72,13 @@ final class ActorStopCleanupAdmissionTest {
                                     } catch (Throwable failure) {
                                         unexpectedFailure.set(failure);
                                     }
+                                    // An async iterator/resource close may
+                                    // mint its own bounded runtime-owned Future
+                                    // during cleanup; it cannot become orphaned
+                                    // just because STOP has already happened.
+                                    assertSame(independentCloseReceipt,
+                                            context.runtime().ownCurrentActorFuture(
+                                                    independentCloseReceipt));
                                     cleanupEntered.countDown();
                                     return OresScheduler.await(asyncClose);
                                 }
@@ -81,6 +90,7 @@ final class ActorStopCleanupAdmissionTest {
                                 } finally {
                                     guard.release();
                                     cleanupFinished.incrementAndGet();
+                                    cleanupExited.countDown();
                                 }
                                 return OresScheduler.done(null);
                             }
@@ -103,6 +113,10 @@ final class ActorStopCleanupAdmissionTest {
             assertFalse(never.isCancelled(), "external awaited producer remains borrowed");
 
             asyncClose.completeFromRuntime(8);
+            assertTrue(cleanupExited.await(3, TimeUnit.SECONDS));
+            assertFalse(actor.done().isDone(),
+                    "actor DONE must also join cleanup-owned async-close receipts");
+            independentCloseReceipt.completeFromRuntime(1);
             assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
             assertEquals(1, cleanupFinished.get(), "defer executes exactly once");
             assertNull(unexpectedFailure.get(), () -> String.valueOf(unexpectedFailure.get()));
