@@ -116,7 +116,7 @@ class AsyncNativeIoTest {
         var entered = new CountDownLatch(1);
         var release = new CountDownLatch(1);
         var actualExit = new CountDownLatch(1);
-        var interruptSeen = new java.util.concurrent.atomic.AtomicBoolean();
+        var interruptSeen = new CountDownLatch(1);
         var operation = io.submit("physical-loan", () -> {
             entered.countDown();
             try {
@@ -126,7 +126,7 @@ class AsyncNativeIoTest {
                     try {
                         release.await(30, TimeUnit.MILLISECONDS);
                     } catch (InterruptedException ignored) {
-                        interruptSeen.set(true);
+                        interruptSeen.countDown();
                     }
                 }
                 return 23;
@@ -141,7 +141,7 @@ class AsyncNativeIoTest {
                     "logical context close cannot fake worker-exit receipt");
             assertEquals(1L, actualExit.getCount(),
                     "native host callback is still physically executing");
-            assertTrue(interruptSeen.get(),
+            assertTrue(interruptSeen.await(3, TimeUnit.SECONDS),
                     "shutdown should request cooperative host interruption");
         } finally {
             release.countDown();
