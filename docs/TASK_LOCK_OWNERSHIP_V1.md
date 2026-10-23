@@ -41,3 +41,13 @@ Cross-repo reference: platform-conformance PR #158; native substrate LLVM PR #86
 - **Immediate async acquisition hardening:** `SharedMutex.lockAsync()` now submits the immediately acquired guard (and immediate failure/poison notifications) through the same bounded host notifier as queued grants. It checks that a guard is still live before Future publication and rejects a capability released by a terminated Task. If notifier submission itself fails after the physical grant, the private handoff receipt fails exceptionally and the permit is quarantined; Task `getDone` must not report success.
 - **Losing handoff / stale terminal waiters:** If Task-death cancellation already claimed a Future, a dequeued grant or failure cannot settle its physical handoff until the winning cancellation's non-Async completion subscribers finish. Likewise, a lock releaser skipping a terminal Future still found in the queue waits for that Future's private notification-drain receipt; it does not infer safe cleanup from `isDone()`. The skip path schedules receipt completion off `asyncQueueLock`. Deterministic reflective JUnit fault-injection regressions cover both cases. Two independent source-free Java 21 concurrency models completed 4,000 losing-handoff and 1,000 terminal-queue iterations, respectively. **These are not project JUnit passes.**
 - **Residual host API caveat:** Java `CompletableFuture` invokes a non-Async dependent inline on the *registering* thread when registration happens after the Future is already completed. Off-carrier completion does **not** make arbitrary late `whenComplete` calls safe on a guest actor carrier. Guest-language await/continuation lowering must schedule onto an authenticated Task domain, or use a Future facade with strictly asynchronous guest callbacks. This remains a release gate.
+
+
+- **Task terminal callback receipts:** `TaskHandle.getDone()` commits its
+  public terminal state before runtime subscribers return. A separate
+  `doneCallbacksDrained()` receipt completes only from the Future's final
+  notification hook. It is exposed as a read-only minimal CompletionStage,
+  so a cancelled observer copy cannot forge Task physical quiescence.
+  Actor STOP must join this drain receipt before releasing Task tracking or
+  retiring actor backing storage. This is distinct from the lock permit's
+  own physical-settlement receipt.
