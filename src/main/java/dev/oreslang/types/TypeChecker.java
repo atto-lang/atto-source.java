@@ -378,6 +378,12 @@ public final class TypeChecker {
             } else if (declaration instanceof Ast.TypeAliasDecl alias) {
                 name = alias.name();
                 kind = "type alias";
+            } else if (declaration instanceof Ast.ClassDecl klass) {
+                // Concrete classes also introduce nominal types. Their
+                // value-side constructor does not permit a conflicting alias
+                // or trait with the same source name.
+                name = klass.name();
+                kind = klass.actorKind() == Ast.ActorKind.NONE ? "class" : "actor";
             } else {
                 continue;
             }
