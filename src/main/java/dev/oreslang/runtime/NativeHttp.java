@@ -16,6 +16,8 @@ import java.util.concurrent.atomic.AtomicLong;
 /** HTTP/1.1 transport. Guest code sees revocable exchange capabilities, never sockets. */
 public final class NativeHttp implements AutoCloseable {
     private final OresContext context;
+    private final ActorRuntime actorRuntime;
+    private final Object hostOwner;
     private final Set<Server> servers = ConcurrentHashMap.newKeySet();
     private final Map<String, Exchange> transfers = new ConcurrentHashMap<>();
     private final ExecutorService io = Executors.newVirtualThreadPerTaskExecutor();
@@ -26,7 +28,21 @@ public final class NativeHttp implements AutoCloseable {
     private final Set<Handler> pools = ConcurrentHashMap.newKeySet();
 
     public NativeHttp(OresContext context) {
-        this.context = Objects.requireNonNull(context);
+        this(Objects.requireNonNull(context), actorRuntime);
+    }
+
+    /**
+     * Trusted package-private loopback-only fixture. Never expose this entry
+     * to Oreslang guest code or general network binding.
+     */
+    NativeHttp(ActorRuntime testRuntime) {
+        this(null, Objects.requireNonNull(testRuntime));
+    }
+
+    private NativeHttp(OresContext context, ActorRuntime actorRuntime) {
+        this.context = context;
+        this.actorRuntime = Objects.requireNonNull(actorRuntime);
+        this.hostOwner = context == null ? new Object() : context;
         timers.setRemoveOnCancelPolicy(true);
         timers.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
     }
@@ -38,7 +54,13 @@ public final class NativeHttp implements AutoCloseable {
         if (host == null || host.isBlank() || port < 0 || port > 65535
                 || capacity < 1 || capacity > 65536 || bodyLimit < 1 || bodyLimit > 64 * 1024 * 1024
                 || deadlineMillis < 1) throw new IllegalArgumentException("invalid HTTP listener limits");
-        context.requirePermission(RuntimePermissions.Permission.NET, host.toLowerCase(Locale.ROOT) + ":" + port, "http.listen");
+        if (context == null) {
+            if (!host.equals("127.0.0.1") && !host.equals("::1"))
+                throw new SecurityException("test-only NativeHttp must bind loopback literal");
+        } else {
+            context.requirePermission(RuntimePermissions.Permission.NET,
+                    host.toLowerCase(Locale.ROOT) + ":" + port, "http.listen");
+        }
         configureTransportDefaults();
         try {
             Server server = new Server(HttpServer.create(new InetSocketAddress(host, port), capacity),
@@ -113,7 +135,7 @@ public final class NativeHttp implements AutoCloseable {
                 for (Worker instance : workers) {
                     if (instance == null || !instance.actor.ready().isDone()
                             || instance.actor.ready().isCompletedExceptionally()
-                            || !context.actors().isAlive(instance.actor)) return false;
+                            || !actorRuntime.isAlive(instance.actor)) return false;
                 }
                 return true;
             }
@@ -139,7 +161,7 @@ public final class NativeHttp implements AutoCloseable {
                     new java.util.concurrent.atomic.AtomicInteger(prepared.size());
             for (Worker instance : prepared) {
                 instance.actor.ready().whenCompleteRuntime((ignored, failure) -> {
-                    if (failure != null || !context.actors().isAlive(instance.actor)) {
+                    if (failure != null || !actorRuntime.isAlive(instance.actor)) {
                         receipt.failFromRuntime(failure == null
                                 ? new IllegalStateException("warmed worker exited")
                                 : OresFuture.unwrap(failure));
@@ -212,11 +234,11 @@ public final class NativeHttp implements AutoCloseable {
             cursor = (cursor + 1) % workers.length;
             Worker worker = workers[slot];
             if (worker != null && !worker.actor.done().isDone()) {
-                if (!context.actors().isAlive(worker.actor)) throw new RejectedExecutionException("HTTP worker is stopping");
+                if (!actorRuntime.isAlive(worker.actor)) throw new RejectedExecutionException("HTTP worker is stopping");
                 reused++;
                 return worker;
             }
-            worker = new Worker(context.actors().spawnCodeActor(kind, code, type));
+            worker = new Worker(actorRuntime.spawnCodeActor(kind, code, type));
             workers[slot] = worker;
             created++;
             Worker attached = worker;
@@ -262,7 +284,7 @@ public final class NativeHttp implements AutoCloseable {
             ActorRuntime.ActorRef<Object> actor = null;
             try {
                 long spawnPerf = CorePerf.start();
-                actor = context.actors().spawnCodeActor(kind, code, type);
+                actor = actorRuntime.spawnCodeActor(kind, code, type);
                 CorePerf.end(CorePerf.ACTOR_SPAWN, spawnPerf);
                 actor.ready().whenCompleteRuntime((ignored, failure) -> {
                     long spawn;
@@ -299,10 +321,10 @@ public final class NativeHttp implements AutoCloseable {
 
     private Object owner() {
         if (ActorRuntime.inActorExecution()) {
-            if (ActorRuntime.currentActorRuntime() != context.actors()) throw new SecurityException("foreign actor runtime");
+            if (ActorRuntime.currentActorRuntime() != actorRuntime) throw new SecurityException("foreign actor runtime");
             return ActorRuntime.currentActorId().orElseThrow();
         }
-        return context;
+        return hostOwner;
     }
 
     public final class Server implements AutoCloseable {
@@ -399,7 +421,7 @@ public final class NativeHttp implements AutoCloseable {
                     long schedulePerf = CorePerf.start();
                     state.deadline = timers.schedule(() -> timed.abort(504), deadlineMillis, TimeUnit.MILLISECONDS);
                     CorePerf.end(CorePerf.HTTP_TIMER_SCHEDULE, schedulePerf);
-                    Exchange exchange = new Exchange(state, context, 0);
+                    Exchange exchange = new Exchange(state, hostOwner, 0);
                     if (waiter == null) pending.add(exchange);
                     else { OresFuture<Object> next = waiter; waiter = null; next.completeFromRuntime(exchange); }
                 }
@@ -490,7 +512,7 @@ public final class NativeHttp implements AutoCloseable {
         ActorRuntime.ActorRef<?> actor;
         Handler.Worker poolWorker;
         State(Server server, HttpExchange raw) {
-            this.server = server; this.raw = raw; this.path = segments(raw.getRequestURI().getRawPath()); this.owner = context;
+            this.server = server; this.raw = raw; this.path = segments(raw.getRequestURI().getRawPath()); this.owner = hostOwner;
         }
         // Linearize cancellation against success header emission. Never
         // hold this monitor while performing blocking socket I/O.
@@ -585,7 +607,7 @@ public final class NativeHttp implements AutoCloseable {
                 checkOwner();
                 if (ActorRuntime.inActorExecution()) throw new SecurityException("only the supervisor may dispatch an HTTP exchange");
                 if (state.busy || state.committed) throw new IllegalStateException("cannot move an active HTTP exchange");
-                if (!context.actors().isAlive(destination)) throw new IllegalStateException("destination actor is not alive");
+                if (!actorRuntime.isAlive(destination)) throw new IllegalStateException("destination actor is not alive");
                 if (destination.kind() == ActorRuntime.ActorKind.UNTRUSTED) throw new SecurityException("HTTP exchange transfer to untrusted actors is not supported");
                 state.movedNanos = System.nanoTime();
                 state.generation++; state.owner = destination.id(); state.actor = destination;
