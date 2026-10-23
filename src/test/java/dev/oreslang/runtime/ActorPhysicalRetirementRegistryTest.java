@@ -963,6 +963,26 @@ final class ActorPhysicalRetirementRegistryTest {
                 "notifier failure must quarantine even when a handle physically closed");
     }
 
+    @Test void throwingLastHostWakeupMustLatchFailureAndDenyRegistryRetirement()
+            throws Exception {
+        var notifications = new AtomicInteger();
+        var failure = new IllegalStateException("last host retirement wake failed");
+        var registry = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 29, () -> {
+                    if (notifications.incrementAndGet() == 2) throw failure;
+                });
+        var receipt = registry.register(
+                ActorPhysicalRetirementRegistry.Kind.NATIVE_IO_OPERATION, false);
+        registry.seal();
+        assertSame(failure, assertThrows(IllegalStateException.class,
+                receipt::completeAfterPhysicalRelease));
+        assertEquals(2, notifications.get());
+        assertSame(failure, registry.snapshot().failure());
+        assertFalse(registry.snapshot().retired());
+        assertThrows(IllegalStateException.class, registry::retireVerified,
+                "the failed last host wake cannot be a successful arena release");
+    }
+
     @Test void concurrentlySettledPhysicalTicketCannotUnderflow() throws Exception {
         var registry = new ActorPhysicalRetirementRegistry(
                 ActorRuntime.ActorId.create(), 1, () -> { });
