@@ -1423,7 +1423,8 @@ public final class OresEvalRootNode extends RootNode {
                 OresScheduler current = OresScheduler.current();
                 future = (current != null
                         ? current
-                        : context.vm().rootScheduler()).start(task);
+                        : context.vm().rootScheduler())
+                        .startTrackedInCurrentTaskOrRoot(task).result();
             }
             return future;
         }
@@ -1455,7 +1456,8 @@ public final class OresEvalRootNode extends RootNode {
                 OresScheduler current = OresScheduler.current();
                 future = (current != null
                         ? current
-                        : context.vm().rootScheduler()).start(task);
+                        : context.vm().rootScheduler())
+                        .startTrackedInCurrentTaskOrRoot(task).result();
             }
             return future;
         }
@@ -4554,7 +4556,8 @@ public final class OresEvalRootNode extends RootNode {
             }
             OresScheduler scheduler = OresScheduler.current();
             if (scheduler == null) scheduler = context.vm().rootScheduler();
-            return TaskPipeline.<Object>start(scheduler, input, stages);
+            return TaskPipeline.<Object>startInCurrentTaskOrRoot(
+                    scheduler, input, stages).result();
         }
 
         private void evalSuspendableCall(
