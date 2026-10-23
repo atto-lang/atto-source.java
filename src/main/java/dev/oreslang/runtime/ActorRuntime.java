@@ -4662,6 +4662,7 @@ public final class ActorRuntime implements AutoCloseable {
                 if (parent != null) {
                     synchronized (parent.lifecycleLock) {
                         if (parent.stopped.get()
+                                || parent.sealing
                                 || parent.finalized
                                 || parent.forceKillFenced) {
                             throw new CancellationException(
@@ -8233,6 +8234,18 @@ public final class ActorRuntime implements AutoCloseable {
                 pendingOperations.clear();
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
+            }
+
+            // Seal admission for EVERY direct child first. Invoking the
+            // full child cancellation path can synchronously call arbitrary
+            // resource revokers, one of which may block indefinitely. Until
+            // an independent CONTROL fan-out exists, siblings must at least
+            // reject new mail and child spawns at this pre-cancellation fence.
+            // Never hold the parent's lock while acquiring a child's lock.
+            for (ActorCell<?> child : descendants) {
+                synchronized (child.lifecycleLock) {
+                    if (!child.finalized) child.sealing = true;
+                }
             }
 
             // Propagate structured STOP to children before parent-owned
