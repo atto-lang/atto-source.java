@@ -167,9 +167,10 @@ final class ImportGraph {
                             || (decl instanceof Ast.TypeAliasDecl alias
                                     && alias.visibility() == Ast.Visibility.PUBLIC
                                     && alias.name().equals(name));
-                    // Until traits have distinct nominal metadata, a trait is
-                    // exactly the existing interface-like type declaration.
-                    // This selector never imports an executable value.
+                    // Traits retain a distinct source declaration kind and
+                    // public ABI identity, even while their method contracts
+                    // are currently checked by the interface-like machinery.
+                    // No runtime value is imported by a trait selector.
                     case TRAIT -> decl instanceof Ast.InterfaceDecl iface
                             && iface.traitDeclaration()
                             && iface.visibility() == Ast.Visibility.PUBLIC
