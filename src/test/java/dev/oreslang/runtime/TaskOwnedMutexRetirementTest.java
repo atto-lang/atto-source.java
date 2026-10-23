@@ -230,6 +230,12 @@ public class TaskOwnedMutexRetirementTest {
 
             var newOwner = shared.tryLock().orElseThrow();
             assertEquals(19, newOwner.value()[0]);
+            // A second logical owner on another host carrier must NOT also
+            // receive the single permit while the first guard is live.
+            var competing = CompletableFuture.supplyAsync(shared::tryLock)
+                    .get(3, TimeUnit.SECONDS);
+            if (competing.isPresent()) competing.get().release();
+            assertTrue(competing.isEmpty(), "physical permit must have exactly one owner");
             newOwner.release();
             // Second admission proves the original permit was neither leaked
             // nor double-issued while the cancelled request was reclaimed.
