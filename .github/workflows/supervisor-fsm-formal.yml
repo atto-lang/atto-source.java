@@ -4,8 +4,11 @@ on:
     paths:
       - 'formal/supervision/**'
       - 'src/main/java/dev/oreslang/runtime/SupervisorLifecycleFsm.java'
+      - 'src/main/java/dev/oreslang/runtime/SupervisorLifecycleTrace.java'
+      - 'src/main/java/dev/oreslang/runtime/SupervisorChildGenerationFence.java'
       - 'src/main/java/dev/oreslang/runtime/SupervisorShutdownTree.java'
       - 'src/test/java/dev/oreslang/runtime/SupervisorLifecycleFsmOracle.java'
+      - 'src/test/java/dev/oreslang/runtime/SupervisorLifecycleTraceOracle.java'
       - 'src/test/java/dev/oreslang/runtime/SupervisorLifecycleFsmIntegrationTest.java'
       - 'src/test/java/dev/oreslang/runtime/ActorDefaultChildScopeTest.java'
       - 'src/test/java/dev/oreslang/runtime/SupervisorShutdownDeadlineFenceTest.java'
@@ -50,6 +53,17 @@ jobs:
             src/test/java/dev/oreslang/runtime/SupervisorLifecycleFsmOracle.java
           java -ea -Xmx512m -cp target/supervisor-formal \
             dev.oreslang.runtime.SupervisorLifecycleFsmOracle
+      - name: Supervisor CONTROL trace replay and child-generation fencing
+        shell: bash
+        run: |
+          set -euo pipefail
+          javac --release 21 -Xlint:all -d target/supervisor-formal \
+            src/main/java/dev/oreslang/runtime/SupervisorLifecycleFsm.java \
+            src/main/java/dev/oreslang/runtime/SupervisorLifecycleTrace.java \
+            src/main/java/dev/oreslang/runtime/SupervisorChildGenerationFence.java \
+            src/test/java/dev/oreslang/runtime/SupervisorLifecycleTraceOracle.java
+          java -ea -Xmx512m -cp target/supervisor-formal \
+            dev.oreslang.runtime.SupervisorLifecycleTraceOracle
       - name: TLA+ safety invariant model check
         shell: bash
         run: |
