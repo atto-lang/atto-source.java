@@ -18,6 +18,7 @@ on:
       - "src/test/java/dev/oreslang/runtime/OresFutureCallbackTest.java"
       - "src/test/java/dev/oreslang/runtime/OresVMTest.java"
       - "src/test/java/dev/oreslang/runtime/FormalActorStopFanoutModelCheckTest.java"
+      - "src/test/java/dev/oreslang/runtime/FormalPhysicalStopJobModelCheckTest.java"
       - "src/test/java/dev/oreslang/runtime/TaskOwnedMutex*Test.java"
       - "src/test/java/dev/oreslang/runtime/TaskOwnedLeasesTest.java"
       - "src/test/java/dev/oreslang/MutexRuntimeTest.java"
@@ -72,13 +73,13 @@ jobs:
           CARRIER: ${{ matrix.carrier }}
         run: >-
           mvn -B -ntp -Dores.runtime.carriers="$CARRIER"
-          -Dtest=TaskOwnedLeasesTest,TaskOwnedMutexRetirementTest,SourceTaskCleanupHardeningTest,TaskHandleTest,MutexRuntimeTest,ActorStopCleanupAdmissionTest,ActorStructuredCancellationTest,CleanupAwareSchedulerCancellationTest,OresFutureCallbackTest,OresVMTest,FormalActorStopFanoutModelCheckTest
+          -Dtest=TaskOwnedLeasesTest,TaskOwnedMutexRetirementTest,SourceTaskCleanupHardeningTest,TaskHandleTest,MutexRuntimeTest,ActorStopCleanupAdmissionTest,ActorStructuredCancellationTest,CleanupAwareSchedulerCancellationTest,OresFutureCallbackTest,OresVMTest,FormalActorStopFanoutModelCheckTest,FormalPhysicalStopJobModelCheckTest
           -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test
       - name: Require every selected suite report
         shell: bash
         run: |
           set -euo pipefail
-          for suite in TaskOwnedLeasesTest TaskOwnedMutexRetirementTest SourceTaskCleanupHardeningTest TaskHandleTest MutexRuntimeTest ActorStopCleanupAdmissionTest ActorStructuredCancellationTest CleanupAwareSchedulerCancellationTest OresFutureCallbackTest OresVMTest FormalActorStopFanoutModelCheckTest; do
+          for suite in TaskOwnedLeasesTest TaskOwnedMutexRetirementTest SourceTaskCleanupHardeningTest TaskHandleTest MutexRuntimeTest ActorStopCleanupAdmissionTest ActorStructuredCancellationTest CleanupAwareSchedulerCancellationTest OresFutureCallbackTest OresVMTest FormalActorStopFanoutModelCheckTest FormalPhysicalStopJobModelCheckTest; do
             reports=(target/surefire-reports/TEST-*."$suite".xml)
             test "${#reports[@]}" -eq 1
             test -s "${reports[0]}"
