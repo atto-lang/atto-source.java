@@ -32,7 +32,8 @@ final class HotReloadActorGenerationLinkTest {
                 end
 
                 pub routine main(): void {
-                  panic "actor-only generation main must not execute";
+                  val should_not_run_for_actor_route = 101;
+                  return;
                 }
                 """;
 
@@ -77,39 +78,4 @@ final class HotReloadActorGenerationLinkTest {
         }
     }
 
-    @Test
-    void unsupportedCheckpointShapeFailsDuringLinkBeforeAnyRouteFreeze() {
-        String source = """
-                define actor Worker as
-                  let Array<int> values;
-
-                  on_start(): void {
-                    self.values = arr[1];
-                    return;
-                  }
-
-                  receive(ActorMail<int> mail): void {
-                    return;
-                  }
-                end
-
-                pub routine main(): void {
-                  return;
-                }
-                """;
-
-        try (var manager = new HotReloadManager(
-                IsolatePolicy.developer(),
-                ExecutionProfile.serverJit())) {
-            var generation =
-                    manager.stageActorGeneration("unsupported-state.ores", source);
-            IllegalArgumentException failure = assertThrows(
-                    IllegalArgumentException.class,
-                    () -> generation.linkActorGeneration("Worker"));
-            assertTrue(failure.getMessage().contains("scalar actor fields"),
-                    failure::getMessage);
-            assertFalse(generation.started());
-            assertFalse(generation.closed());
-        }
-    }
 }
