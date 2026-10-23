@@ -670,6 +670,36 @@ public final class TaskOwnedLockLedgerTest {
     }
 
     @Test
+    void reentrantActorTaskCleanupDoesNotDuplicatePermitRevocation() {
+        TaskOwnedLockLedger ledger = new TaskOwnedLockLedger();
+        java.util.concurrent.CompletableFuture<Void> physical =
+                new java.util.concurrent.CompletableFuture<>();
+        java.util.concurrent.atomic.AtomicInteger attempts =
+                new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicReference<java.util.concurrent.CompletableFuture<Void>>
+                nested = new java.util.concurrent.atomic.AtomicReference<>();
+        ledger.register(new TaskOwnedLockLedger.Lease() {
+            @Override public void revokeAfterQuiescence() {
+                throw new AssertionError("unexpected synchronous revocation");
+            }
+            @Override public java.util.concurrent.CompletionStage<Void>
+                    settleAfterQuiescence() {
+                attempts.incrementAndGet();
+                nested.set(ledger.retireAfterQuiescence());
+                return physical;
+            }
+        });
+        var first = ledger.retireAfterQuiescence();
+        assertSame(first, nested.get());
+        assertSame(first, ledger.retireAfterQuiescence());
+        assertEquals(1, attempts.get());
+        assertFalse(first.isDone());
+        physical.complete(null);
+        first.join();
+        assertEquals(0, ledger.outstanding());
+    }
+
+    @Test
     void ledgerRevocationRunsOutsideMonitorAndRetainsFailedPermit() {
         TaskOwnedLockLedger ledger = new TaskOwnedLockLedger();
         AtomicBoolean outsideMonitor = new AtomicBoolean();
