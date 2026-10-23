@@ -160,6 +160,42 @@ final class ActorLockStopRetirementTest {
     }
 
     @Test
+    void registryRemovalCannotForgeTerminationWhileDoneSubscribersStillDrain()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch doneSubscriberEntered = new CountDownLatch(1);
+            CountDownLatch releaseSubscriber = new CountDownLatch(1);
+            var ref = runtime.<String>spawnShared(() -> (message, context) ->
+                    context.self().stop());
+            ref.getDone().whenCompleteRuntime((value, error) -> {
+                doneSubscriberEntered.countDown();
+                try {
+                    if (!releaseSubscriber.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("terminal callback barrier timed out");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                }
+            });
+            try {
+                ref.send("stop");
+                assertTrue(doneSubscriberEntered.await(5, TimeUnit.SECONDS));
+                assertTrue(ref.getDone().isDone(),
+                        "test did not reach terminal CAS");
+                // By this point the finalizer has already unregistered the
+                // actor, but its terminal callback is still physically live.
+                assertFalse(ref.awaitTermination(20, TimeUnit.MILLISECONDS),
+                        "missing actor map entry forged termination receipt");
+            } finally {
+                releaseSubscriber.countDown();
+            }
+            assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(ref.failure().isEmpty());
+        }
+    }
+
+    @Test
     void exitHookFailureQuarantinesActorAndWithholdsSuccessfulDone() throws Exception {
         ActorRuntime runtime = new ActorRuntime();
         try {
