@@ -1860,8 +1860,24 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException(
                     "physical Channel must still be open before actor handoff");
         }
-        var receipt = registerActorPhysicalReceiptFromDriver(owner, kind);
-        return new ActorPhysicalChannelLease(channel, receipt);
+        Objects.requireNonNull(owner, "owner");
+        requireSupervisorContext("register actor NIO channel");
+        if (!owner.ownedBy(this)) {
+            throw new IllegalArgumentException("channel owner is from another runtime");
+        }
+        ActorCell<?> cell = actors.get(owner.id());
+        if (cell == null || cell.ref != owner) throw terminated(owner);
+        synchronized (cell.lifecycleLock) {
+            if (closed.get() || cell.stopped.get() || cell.finalized
+                    || actors.get(owner.id()) != cell) throw terminated(owner);
+            // Admission, creation and addition are one lifecycle transaction:
+            // STOP cannot snapshot an incomplete handoff.
+            var receipt = cell.physicalRetirement.register(kind, false);
+            var lease = new ActorPhysicalChannelLease(channel, receipt,
+                    cell.physicalChannelLeases::remove);
+            cell.physicalChannelLeases.add(lease);
+            return lease;
+        }
     }
 
     /**
