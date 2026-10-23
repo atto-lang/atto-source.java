@@ -38,6 +38,17 @@ public final class ProxyOutboundLoopbackCheck {
             } catch (IOException closedEarly) { /* client can cancel the stream */ }
             finally { exchange.close(); }
         });
+        origin.createContext("/notfound", exchange -> {
+            try {
+                byte[] body = "not found".getBytes(StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(404, body.length);
+                exchange.getResponseBody().write(body);
+            } finally { exchange.close(); }
+        });
+        origin.createContext("/no-content", exchange -> {
+            try { exchange.sendResponseHeaders(204, -1); }
+            finally { exchange.close(); }
+        });
         origin.createContext("/redirect", exchange -> {
             try {
                 exchange.getResponseHeaders().add("Location", "http://example.com/");
@@ -79,6 +90,15 @@ public final class ProxyOutboundLoopbackCheck {
             ByteArrayOutputStream big = new ByteArrayOutputStream();
             if (streamed.streamBody(big, () -> false) != 8192L*256 || big.size()!=8192*256)
                 throw new AssertionError("large body was truncated");
+            var missing = client.request(URI.create(base + "/notfound"), "GET").join();
+            if (missing.status()!=404) throw new AssertionError("lost 404 status");
+            ByteArrayOutputStream absent = new ByteArrayOutputStream();
+            if (missing.streamBody(absent, () -> false)!=9 || !absent.toString(StandardCharsets.UTF_8).equals("not found"))
+                throw new AssertionError("missing 404 payload");
+            var empty = client.request(URI.create(base + "/no-content"), "GET").join();
+            if (empty.status()!=204) throw new AssertionError("lost 204 status");
+            if (empty.streamBody(new ByteArrayOutputStream(), () -> false)!=0)
+                throw new AssertionError("unexpected body on 204");
             var redirect = client.request(URI.create(base + "/redirect"), "GET").join();
             if (redirect.status()!=302) throw new AssertionError("unsafe redirect followed");
             redirect.close();
