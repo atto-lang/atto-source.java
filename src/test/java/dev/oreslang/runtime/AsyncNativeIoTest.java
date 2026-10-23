@@ -237,9 +237,9 @@ class AsyncNativeIoTest {
         };
         var io = new AsyncNativeIo(1, running);
         var exited = new CountDownLatch(1);
-        OresFuture<Integer> result = null;
+        var resultRef = new java.util.concurrent.atomic.AtomicReference<OresFuture<Integer>>();
         try {
-            result = io.submit("ambiguous-running-loan", () -> {
+            resultRef.set(io.submit("ambiguous-running-loan", () -> {
                 entered.countDown();
                 try {
                     while (release.getCount() != 0) {
@@ -250,11 +250,11 @@ class AsyncNativeIoTest {
                 } finally {
                     exited.countDown();
                 }
-            });
-            assertFalse(result.isDone(),
+            }));
+            assertFalse(resultRef.get().isDone(),
                     "an invalid execute() rejection cannot forge a worker-exit receipt");
             io.close();
-            assertFalse(result.isDone(), "STOP is not native loan retirement");
+            assertFalse(resultRef.get().isDone(), "STOP is not native loan retirement");
             assertFalse(io.physicalShutdown().isDone());
         } finally {
             release.countDown();
@@ -262,7 +262,7 @@ class AsyncNativeIoTest {
         assertTrue(exited.await(3, TimeUnit.SECONDS));
         assertInstanceOf(IllegalStateException.class,
                 assertThrows(ExecutionException.class,
-                        () -> result.get(3, TimeUnit.SECONDS)).getCause());
+                        () -> resultRef.get().get(3, TimeUnit.SECONDS)).getCause());
         assertNull(io.physicalShutdown().get(3, TimeUnit.SECONDS));
     }
 
