@@ -162,4 +162,61 @@ final class ActorProxyRequestSlabTest {
         assertThrows(SecurityException.class, () ->
                 new ActorProxyRequestSlab(ActorProxyRequestSlab.Layout.SOA, 4, 1));
     }
+    @Test
+    void seededRecycleStressKeepsReceiptsUniqueAcrossReuse() throws Exception {
+        for (ActorProxyRequestSlab.Layout layout : ActorProxyRequestSlab.Layout.values()) {
+            try (ActorRuntime runtime = new ActorRuntime()) {
+                CountDownLatch finished = new CountDownLatch(1);
+                AtomicReference<Throwable> failure = new AtomicReference<>();
+                ActorRuntime.ActorRef<Integer> actor = runtime.spawnSharedTrusted(
+                        factory -> (message, turn) -> {
+                            try {
+                                for (int capacity : new int[] {1, 3, 31, 32, 33, 65}) {
+                                    ActorProxyRequestSlab slab = new ActorProxyRequestSlab(
+                                            layout, capacity,
+                                            layout == ActorProxyRequestSlab.Layout.SOA ? 1 : 32);
+                                    java.util.Random random = new java.util.Random(112358L + capacity);
+                                    long[] handles = new long[capacity];
+                                    long[] pins = new long[capacity];
+                                    for (int operation = 0; operation < 10_000; operation++) {
+                                        int slot = random.nextInt(capacity);
+                                        if (handles[slot] == 0L) {
+                                            handles[slot] = slab.admit(3, slot, slot);
+                                            assertNotEquals(0L, handles[slot]);
+                                        }
+                                        if (pins[slot] == 0L && random.nextInt(3) == 0) {
+                                            pins[slot] = slab.pin(handles[slot]);
+                                        }
+                                        if (pins[slot] != 0L && random.nextInt(3) == 0) {
+                                            assertTrue(slab.settle(pins[slot]));
+                                            assertFalse(slab.settle(pins[slot]));
+                                            pins[slot] = 0L;
+                                        }
+                                        if (pins[slot] == 0L && random.nextInt(4) == 0) {
+                                            assertTrue(slab.retire(handles[slot]));
+                                            handles[slot] = 0L;
+                                        }
+                                    }
+                                    for (int slot = 0; slot < capacity; slot++) {
+                                        if (pins[slot] != 0L) assertTrue(slab.settle(pins[slot]));
+                                        if (handles[slot] != 0L) assertTrue(slab.retire(handles[slot]));
+                                    }
+                                    assertEquals(0, slab.live(), "no slot leaks after stress");
+                                    slab.close();
+                                }
+                            } catch (Throwable problem) {
+                                failure.set(problem);
+                            } finally {
+                                finished.countDown();
+                            }
+                        });
+                actor.send(1);
+                assertTrue(finished.await(10, TimeUnit.SECONDS));
+                assertNull(failure.get());
+                actor.stop();
+                assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            }
+        }
+    }
+
 }
