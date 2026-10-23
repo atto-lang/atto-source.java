@@ -21,8 +21,13 @@ and Option/Result receiver combinators, distinct from ordinary calls and actor
 attaches `Ast.CheckedPureFuturePipe` identity-bound proofs to a **restricted**
 `Future<int> |> pureUnaryIntFunction()` subset: synchronous, non-generic,
 no captures, no effectful bodies, no additional stage arguments and no actor
-execution. Adjacent checked stages lower to one TaskPipeline task, preserving
-borrowed input-Future ownership. Rewritten ASTs lose this proof. `CallExpr.rewrite` retains that origin but drops identity-bound checked
+execution. Stages must also be declared in the current lexical module:
+imported/cross-module execution has not yet proven evaluator/environment
+ownership. Adjacent checked stages lower to one TaskPipeline task, preserving
+borrowed input-Future ownership. Proofs bind exact checked declarations and
+rewritten ASTs lose authorization. Detection of Future-producing calls is
+restricted to known async/Future declarations rather than speculatively
+rechecking arbitrary scalar functions. `CallExpr.rewrite` retains that origin but drops identity-bound checked
 proofs; replacements require rechecking. Explicit checked-metadata transfers
 reject changed call origins before copying any proof.
 
