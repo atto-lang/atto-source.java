@@ -672,8 +672,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             Ast.MethodDecl teardown = findMethod(
                     state.object().klass,
-                    CallableSelector.instance("tear_down", 0),
-                    new LinkedHashSet<>());
+                    CallableSelector.instance("tear_down", 0));
             if (teardown == null) return;
             if (teardown.async() || teardown.suspends()
                     || methodContainsPotentialSuspension(teardown)) {
@@ -9464,6 +9463,9 @@ public final class OresEvalRootNode extends RootNode {
             boolean integral = isIntegral(a) && isIntegral(b) && op != '/';
             if (integral) {
                 long x = a.longValue(), y = b.longValue();
+                // An implicit VM fast-throw exception may have suppression disabled,
+                // which would discard source-boundary diagnostics after warm-up.
+                if (op == '%' && y == 0) throw new ArithmeticException("/ by zero");
                 return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
             }
             double x = a.doubleValue(), y = b.doubleValue();
