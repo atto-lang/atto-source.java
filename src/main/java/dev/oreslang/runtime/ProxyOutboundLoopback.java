@@ -153,6 +153,9 @@ public final class ProxyOutboundLoopback implements AutoCloseable {
         }
         // No synchronized monitor held while closing a blocking body stream.
         for (Call call : retiring) call.abort();
+        // Prevent idle pool/socket resources from outliving the owning context.
+        // shutdownNow is nonblocking; the context does not join I/O on a carrier.
+        client.shutdownNow();
     }
 
     private static void validateTarget(URI target, String method) {
