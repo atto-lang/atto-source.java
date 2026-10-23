@@ -31,7 +31,7 @@ import java.util.regex.Pattern;
  * proxy, CONNECT, DNS names, redirects, or actor-carrier blocking is allowed.
  * Network authority and worker ownership must be added before production use.
  */
-public final class ProxyOutboundLoopback {
+public final class ProxyOutboundLoopback implements AutoCloseable {
     private static final Pattern HEADER_NAME = Pattern.compile("[!#$%&'*+.^_`|~0-9A-Za-z-]+");
     private static final Set<String> HOP = Set.of("connection", "keep-alive",
             "proxy-connection", "transfer-encoding", "te", "trailer", "upgrade",
@@ -39,6 +39,33 @@ public final class ProxyOutboundLoopback {
             "host", "http2-settings");
     private final Semaphore capacity;
     private final HttpClient client;
+    // The trusted runtime/context owns this transport. Never publish a response
+    // after scope closure; close all delivered but unretired body handles.
+    private final Set<Call> live = new HashSet<>();
+    private boolean closed;
+
+    private final class Call {
+        final CompletableFuture<Response> answer = new CompletableFuture<>();
+        final AtomicBoolean released = new AtomicBoolean();
+        volatile CompletableFuture<HttpResponse<InputStream>> upstream;
+        volatile Response response;
+
+        void retire() {
+            if (!released.compareAndSet(false, true)) return;
+            synchronized (ProxyOutboundLoopback.this) { live.remove(this); }
+            capacity.release();
+        }
+
+        void abort() {
+            answer.cancel(true);
+            var remote = upstream;
+            if (remote != null) remote.cancel(true);
+            var delivered = response;
+            if (delivered != null) {
+                try { delivered.close(); } catch (IOException ignored) { /* shutdown */ }
+            }
+        }
+    }
 
     public ProxyOutboundLoopback(int maxInflight) {
         if (maxInflight < 1 || maxInflight > 1024)
@@ -60,41 +87,72 @@ public final class ProxyOutboundLoopback {
     public CompletableFuture<Response> request(URI target, String method) {
         try { validateTarget(target, method); }
         catch (RuntimeException badTarget) { return CompletableFuture.failedFuture(badTarget); }
-        if (!capacity.tryAcquire())
-            return CompletableFuture.failedFuture(new RejectedExecutionException("outbound capacity exhausted"));
-        AtomicBoolean released = new AtomicBoolean();
-        Runnable release = () -> { if (released.compareAndSet(false, true)) capacity.release(); };
-        CompletableFuture<Response> answer = new CompletableFuture<>();
+        Call call;
+        synchronized (this) {
+            if (closed) return CompletableFuture.failedFuture(
+                    new RejectedExecutionException("outbound scope closed"));
+            if (!capacity.tryAcquire()) return CompletableFuture.failedFuture(
+                    new RejectedExecutionException("outbound capacity exhausted"));
+            call = new Call();
+            live.add(call);
+        }
         CompletableFuture<HttpResponse<InputStream>> upstream;
         try {
+            // The scope may close between admission and launch; cancellation
+            // must still join any in-flight response and close the body.
             HttpRequest request = HttpRequest.newBuilder(target)
                     .timeout(Duration.ofSeconds(15))
                     .method(method, HttpRequest.BodyPublishers.noBody()).build();
+            if (isClosed()) {
+                call.abort();
+                call.retire();
+                return call.answer;
+            }
             upstream = client.sendAsync(request, HttpResponse.BodyHandlers.ofInputStream());
+            call.upstream = upstream;
         } catch (RuntimeException failure) {
-            release.run();
-            return CompletableFuture.failedFuture(failure);
+            call.retire();
+            call.answer.completeExceptionally(failure);
+            return call.answer;
         }
         upstream.whenComplete((result, failure) -> {
             if (failure != null) {
-                release.run();
-                answer.completeExceptionally(failure);
+                call.retire();
+                call.answer.completeExceptionally(failure);
                 return;
             }
             try {
                 Response wrapped = new Response(result.statusCode(), filtered(result.headers()),
-                        result.body(), release);
-                if (!answer.complete(wrapped)) wrapped.close();
+                        result.body(), call::retire);
+                call.response = wrapped;
+                if (isClosed() || !call.answer.complete(wrapped)) wrapped.close();
             } catch (Throwable error) {
                 try { result.body().close(); } catch (IOException suppressed) { error.addSuppressed(suppressed); }
-                release.run();
-                answer.completeExceptionally(error);
+                call.retire();
+                call.answer.completeExceptionally(error);
             }
         });
-        answer.whenComplete((value, error) -> {
-            if (answer.isCancelled()) upstream.cancel(true);
+        call.answer.whenComplete((value, failure) -> {
+            if (call.answer.isCancelled()) upstream.cancel(true);
         });
-        return answer;
+        if (isClosed()) call.abort();
+        return call.answer;
+    }
+
+    private synchronized boolean isClosed() { return closed; }
+
+    /** Package-private lifecycle inspection for deterministic host tests. */
+    synchronized int inFlight() { return live.size(); }
+
+    @Override public void close() {
+        List<Call> retiring;
+        synchronized (this) {
+            if (closed) return;
+            closed = true;
+            retiring = List.copyOf(live);
+        }
+        // No synchronized monitor held while closing a blocking body stream.
+        for (Call call : retiring) call.abort();
     }
 
     private static void validateTarget(URI target, String method) {
@@ -174,10 +232,12 @@ public final class ProxyOutboundLoopback {
                 byte[] chunk = new byte[8192];
                 long total = 0;
                 while (true) {
-                    if (cancelled.getAsBoolean()) throw new IOException("response streaming cancelled");
+                    if (closed.get() || cancelled.getAsBoolean())
+                        throw new IOException("response streaming cancelled or owner closed");
                     int n = body.read(chunk);
                     if (n < 0) return total;
-                    if (cancelled.getAsBoolean()) throw new IOException("response streaming cancelled");
+                    if (closed.get() || cancelled.getAsBoolean())
+                        throw new IOException("response streaming cancelled or owner closed");
                     target.write(chunk, 0, n);
                     total += n;
                 }
