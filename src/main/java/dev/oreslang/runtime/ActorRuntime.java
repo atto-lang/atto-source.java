@@ -7531,7 +7531,10 @@ public final class ActorRuntime implements AutoCloseable {
                 if (memorySlice != null) memorySlice.close();
                 codeActorState = null;
                 unregisterActor(this);
-                if (parent != null) parent.childFinalized(this);
+                // Parent child-ownership must remain live until this child's
+                // own DONE subscribers and terminal receipt have drained.
+                // Otherwise parent shutdown can reclaim its arena while a
+                // child's terminal callback still holds native loans.
                 Throwable terminal = ref.terminationCause.get();
                 if (!ref.readyFuture.isDone()) {
                     ref.readyFuture.failFromRuntime(
@@ -7549,6 +7552,7 @@ public final class ActorRuntime implements AutoCloseable {
                     lifecycleLock.notifyAll();
                 }
                 ref.terminated.countDown();
+                if (parent != null) parent.childFinalized(this);
             } catch (Throwable failure) {
                 quarantineStopRetirement(failure);
             }
