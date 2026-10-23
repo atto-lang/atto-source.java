@@ -169,8 +169,10 @@ public final class ProxyOutboundLoopback implements AutoCloseable {
                 || !target.getRawAuthority().equals("127.0.0.1:" + target.getPort()))
             throw new IllegalArgumentException("only canonical literal IPv4 loopback HTTP authorities allowed");
         String path = target.getRawPath();
-        if (path == null || !path.startsWith("/") || path.startsWith("//")
-                || path.contains("\\") || path.contains("%"))
+        if (path == null || !path.startsWith("/") || path.contains("//")
+                || path.contains("/./") || path.contains("/../")
+                || path.endsWith("/.") || path.endsWith("/..")
+                || path.contains("\\") || path.contains("%") || target.getRawQuery() != null)
             throw new IllegalArgumentException("unsafe loopback test request path");
     }
 
