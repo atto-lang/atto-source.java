@@ -3696,6 +3696,8 @@ public final class TypeChecker {
                             "unknown Channel member '" + member.member() + "'");
                 };
             }
+            if (sumReceiver instanceof Named named && named.name().equals("NioTcpListener")
+                    && member.member().equals("port")) return Primitive.INT;
             Type ioMember = builtinIoMember(sumReceiver, member.member());
             if (ioMember != null) return ioMember;
             Type httpMember = builtinHttpMember(sumReceiver, member.member());
