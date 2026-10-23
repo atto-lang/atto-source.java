@@ -7948,9 +7948,14 @@ public final class ActorRuntime implements AutoCloseable {
                          * normal scheduler safepoints.
                          */
                         synchronized (lifecycleLock) {
+                            // A source command dequeued before STOP has
+                            // already crossed the actor-turn admission gate.
+                            // Never discard it: its scheduler may already
+                            // consider the Task QUEUED and cannot replay it.
+                            // STOP observes cancellation at the next source
+                            // checkpoint; user/ordinary callbacks never pass.
                             if (finalized || (stopped.get()
-                                    && (!sourceStopCleanupActive
-                                            || !sourceTaskCommand))) break;
+                                    && !sourceTaskCommand)) break;
                         }
 
                         if (activeEnvelope.isContinuation()) {
