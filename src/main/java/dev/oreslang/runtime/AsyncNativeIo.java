@@ -347,7 +347,20 @@ public final class AsyncNativeIo implements AutoCloseable {
                 resourceCloseActive = false;
             }
             synchronized (this) {
-                if (closeFailure == null && resources.isEmpty()) resourcesRetired = true;
+                if (!resources.isEmpty()) {
+                    // A resource-close callback (or a concurrent late
+                    // connector) can register another handle AFTER the
+                    // closing snapshot. register() retains this late handle
+                    // and rejects publication, but its caller can catch the
+                    // rejection. Never remove the context from quarantine or
+                    // report clean close while that new resource remains.
+                    IllegalStateException retained = new IllegalStateException(
+                            "native I/O resources remain after post-join close sweep");
+                    if (closeFailure == null) closeFailure = retained;
+                    else closeFailure.addSuppressed(retained);
+                } else if (closeFailure == null) {
+                    resourcesRetired = true;
+                }
             }
             if (closeFailure != null) {
                 throw new IllegalStateException(
