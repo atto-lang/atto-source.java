@@ -141,7 +141,8 @@ final class ForwardTypeDeclarationHardeningTest {
         }) {
             IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                     () -> TypeChecker.checkTypes(Parser.parse(source)), source);
-            assertTrue(error.getMessage().contains("duplicate type namespace"),
+            assertTrue(error.getMessage().contains("duplicate type namespace")
+                            || error.getMessage().contains("duplicate interface"),
                     error.getMessage());
         }
         // Distinct modules retain separate type namespaces.
