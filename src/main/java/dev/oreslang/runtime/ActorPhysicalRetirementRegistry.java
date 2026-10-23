@@ -6,6 +6,8 @@ import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 
 /**
  * Trusted host runtime physical-resource retirement authority for one actor
@@ -75,15 +77,17 @@ final class ActorPhysicalRetirementRegistry {
                 synchronized (lock) {
                     inFlightNotifications--;
                 }
-                // Wake a STOP that observed the in-flight notification fence.
-                // This recheck runs only AFTER the physical driver has crossed
-                // back out of the first owner callback. Do not hold lock here.
-                try {
-                    notifyOwner();
-                } catch (RuntimeException | Error callbackFailure) {
-                    if (failure == null) failure = callbackFailure;
-                    else if (failure != callbackFailure) {
-                        failure.addSuppressed(callbackFailure);
+                // Reevaluate STOP only AFTER the original callback has exited.
+                // In real actor runtimes this dispatch is host-only and deferred,
+                // never an inline finalizer on the native completion thread.
+                if (failure == null) {
+                    try {
+                        requestPostDrainWake();
+                    } catch (RuntimeException | Error callbackFailure) {
+                        if (failure == null) failure = callbackFailure;
+                        else if (failure != callbackFailure) {
+                            failure.addSuppressed(callbackFailure);
+                        }
                     }
                 }
             }
@@ -114,6 +118,8 @@ final class ActorPhysicalRetirementRegistry {
     private final ActorRuntime.ActorId ownerActorId;
     private final long ownerGeneration;
     private final Runnable stateChanged;
+    /** Optional dedicated bounded host-only dispatch, never a guest carrier. */
+    private final Executor postDrainExecutor;
     private final Object lock = new Object();
     private final Set<Receipt> pending =
             Collections.newSetFromMap(new IdentityHashMap<>());
@@ -125,12 +131,55 @@ final class ActorPhysicalRetirementRegistry {
     ActorPhysicalRetirementRegistry(
             ActorRuntime.ActorId ownerActorId, long ownerGeneration,
             Runnable stateChanged) {
+        this(ownerActorId, ownerGeneration, stateChanged, null);
+    }
+
+    ActorPhysicalRetirementRegistry(
+            ActorRuntime.ActorId ownerActorId, long ownerGeneration,
+            Runnable stateChanged, Executor postDrainExecutor) {
         this.ownerActorId = Objects.requireNonNull(ownerActorId, "ownerActorId");
         if (ownerGeneration <= 0) {
             throw new IllegalArgumentException("actor generation must be positive");
         }
         this.ownerGeneration = ownerGeneration;
         this.stateChanged = Objects.requireNonNull(stateChanged, "stateChanged");
+        this.postDrainExecutor = postDrainExecutor;
+    }
+
+    /**
+     * Physical retirement notifications must never execute the final actor
+     * reclamation on the native/FFI callback stack. The wake's admission is
+     * decided before a deferred worker may invoke the owner. A rejected
+     * dispatch permanently quarantines this incarnation.
+     *
+     * The legacy direct form is retained for isolated registry-only tests.
+     * Actual ActorCells MUST supply an asynchronous host-only dispatcher.
+     */
+    private void requestPostDrainWake() {
+        if (postDrainExecutor == null) {
+            notifyOwner();
+            return;
+        }
+        CompletableFuture<Boolean> allowed = new CompletableFuture<>();
+        try {
+            postDrainExecutor.execute(() -> {
+                // A fast executor must not observe approval until its
+                // submission has returned without throwing. This also
+                // prevents a callback which enqueues then throws from
+                // authorizing Actor.done() before quarantine is latched.
+                if (allowed.join()) {
+                    notifyOwner();
+                }
+            });
+            allowed.complete(true);
+        } catch (RuntimeException | Error failure) {
+            synchronized (lock) {
+                if (firstFailure == null) firstFailure = failure;
+                else if (firstFailure != failure) firstFailure.addSuppressed(failure);
+            }
+            allowed.complete(false);
+            throw failure;
+        }
     }
 
     /**
