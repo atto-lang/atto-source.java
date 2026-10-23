@@ -1225,13 +1225,20 @@ public final class OresScheduler implements AutoCloseable {
             if (task instanceof CleanupAwareTask<?>
                     && (failure instanceof CleanupIncompleteError
                         || failure instanceof ActorRuntime.UntrustedActorQuotaExceededException
+                        // An untrappable panic while unwinding may leave a
+                        // later defer/guard/FFI loan unexecuted. Preserve the
+                        // original panic identity, but quarantine its owner.
+                        || (cleanupCancellationInjected.get()
+                            && failure instanceof Error)
                         || (completion.deferredCancellationCause() != null
                             && failure instanceof RejectedExecutionException))) {
                 // Quota rejection can occur BEFORE a cancellation resume even
                 // reaches SourceTask. Treat it as incomplete lexical cleanup
                 // and never issue a false heap/guard retirement receipt.
                 cleanupIncomplete.set(true);
-                if (!(failure instanceof CleanupIncompleteError)) {
+                if (!(failure instanceof CleanupIncompleteError)
+                        && !(cleanupCancellationInjected.get()
+                            && failure instanceof Error)) {
                     failure = new CleanupIncompleteError(
                             "source cleanup denied or quota exhausted; quarantine loans",
                             failure);
