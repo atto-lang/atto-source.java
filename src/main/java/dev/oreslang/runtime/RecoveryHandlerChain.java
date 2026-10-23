@@ -25,7 +25,7 @@ import java.util.concurrent.TimeoutException;
  * indicators in bounded host cause/suppressed graphs bypass handlers even
  * when a caller accidentally supplies THROW or RAISE.
  */
-public final class RecoveryHandlerChain<T> {
+final class RecoveryHandlerChain<T> {
     public enum FailureKind { THROW, RAISE, PANIC, CANCELLATION, HOST_FATAL }
 
     public sealed interface Outcome<T> permits Recovered, Unhandled, HandlerFailure, TerminalCallbackFailure { }
