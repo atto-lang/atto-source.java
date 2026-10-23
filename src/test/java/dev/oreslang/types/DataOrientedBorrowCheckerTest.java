@@ -109,4 +109,23 @@ final class DataOrientedBorrowCheckerTest {
                 new DataOrientedBorrowChecker.Place(
                         SOA, "world", "moving", "Position", " ", null, 7));
     }
+    @Test
+    void malformedSingletonIsRejectedEvenWhenOtherSetIsEmpty() {
+        var malformed = java.util.Arrays.asList((DataOrientedBorrowChecker.Loan) null);
+        assertThrows(NullPointerException.class, () ->
+                DataOrientedBorrowChecker.canRunConcurrently(malformed, List.of()));
+        assertThrows(NullPointerException.class, () ->
+                DataOrientedBorrowChecker.canRunConcurrently(List.of(), malformed));
+        assertThrows(NullPointerException.class, () ->
+                DataOrientedBorrowChecker.requireInternallyValid(malformed));
+    }
+
+    @Test
+    void unicodeBlankStoreIsRejectedButNonBreakingSpaceIsAnIdentity() {
+        assertThrows(IllegalArgumentException.class, () ->
+                new DataOrientedBorrowChecker.Place(SOA, "\u3000", null, null, null, null, 0));
+        assertDoesNotThrow(() ->
+                new DataOrientedBorrowChecker.Place(SOA, "\u00a0", null, null, null, null, 0));
+    }
 }
+
