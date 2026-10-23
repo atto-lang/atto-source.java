@@ -309,7 +309,12 @@ public final class AsyncNativeIo implements AutoCloseable {
     private void retireDeferredUnregisterLocked() {
         // Existing socket close/unregister may race another active read.
         // Keep the resource strongly reachable until every context loan ends.
-        if (pending.isEmpty() && controls.isEmpty()) deferredUnregister.clear();
+        if (pending.isEmpty() && controls.isEmpty()) {
+            deferredUnregister.removeIf(resource -> {
+                ResourceLeaseState state = resourceLoans.get(resource);
+                return state == null || state.active == 0;
+            });
+        }
     }
 
     synchronized void register(AutoCloseable resource) throws Exception {
@@ -373,6 +378,44 @@ public final class AsyncNativeIo implements AutoCloseable {
         if (callbackFailure != null) recordIncomplete(callbackFailure);
     }
 
+    /**
+     * Phase one: seal admissions and revoke transport handles to unblock
+     * outstanding reads. A Socket.close() here is ONLY a wakeup request; no
+     * resource lease, callback receipt or actor arena may be reclaimed here.
+     *
+     * The phase can be requested separately from close()/retire() and is
+     * idempotent. Generic AutoCloseables are NOT forcibly closed while active
+     * because arbitrary close callbacks may free memory prematurely.
+     */
+    void requestShutdown() {
+        synchronized (shutdownLock) {
+            final boolean first;
+            final List<java.net.Socket> sockets = new ArrayList<>();
+            synchronized (this) {
+                first = !closed;
+                closed = true;
+                if (first) {
+                    for (AutoCloseable resource : resources) {
+                        if (resource instanceof java.net.Socket socket) sockets.add(socket);
+                    }
+                    for (AutoCloseable resource : deferredUnregister) {
+                        if (resource instanceof java.net.Socket socket) sockets.add(socket);
+                    }
+                }
+            }
+            if (!first) return;
+            reportDiscarded(workers.shutdownNow());
+            reportDiscarded(controlWorkers.shutdownNow());
+            for (java.net.Socket socket : sockets) {
+                try {
+                    socket.close(); // unblock only; physical loans still own state
+                } catch (java.io.IOException wakeFailure) {
+                    recordIncomplete(wakeFailure);
+                }
+            }
+        }
+    }
+
     @Override public void close() {
         if (Boolean.TRUE.equals(executingWorker.get())) {
             throw new IllegalStateException(
@@ -390,15 +433,7 @@ public final class AsyncNativeIo implements AutoCloseable {
                         "native I/O resource close cannot recursively close its context");
             }
             QUARANTINED_IO.add(this);
-            final boolean first;
-            synchronized (this) {
-                first = !closed;
-                closed = true; // Seal both admission lanes before any interruption.
-            }
-            if (first) {
-                reportDiscarded(workers.shutdownNow());
-                reportDiscarded(controlWorkers.shutdownNow());
-            }
+            requestShutdown();
 
             long deadline = System.nanoTime() + CLOSE_WAIT_NANOS;
             boolean interrupted = false;
@@ -414,13 +449,15 @@ public final class AsyncNativeIo implements AutoCloseable {
                         // never-started notification tasks. Those also own
                         // physical callback receipts until their last terminal
                         // subscriber has returned. Wait only to the deadline.
-                        while ((!pending.isEmpty() || !controls.isEmpty())
+                        while ((!pending.isEmpty() || !controls.isEmpty()
+                                || resourceLoans.values().stream().anyMatch(x -> x.active != 0))
                                 && incompleteReceipt == null) {
                             wait = deadline - System.nanoTime();
                             if (wait <= 0) break;
                             TimeUnit.NANOSECONDS.timedWait(this, wait);
                         }
                         joined = pending.isEmpty() && controls.isEmpty()
+                                && resourceLoans.values().stream().noneMatch(x -> x.active != 0)
                                 && incompleteReceipt == null;
                     }
                 }
