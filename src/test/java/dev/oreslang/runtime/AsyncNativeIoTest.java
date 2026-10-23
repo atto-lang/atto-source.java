@@ -271,6 +271,21 @@ class AsyncNativeIoTest {
         assertNull(io.physicalShutdown().get(3, TimeUnit.SECONDS));
     }
 
+    @Test void failedHostCloseDoesNotSkipSiblingOrPublishCleanShutdown()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        var siblingClosed = new CountDownLatch(1);
+        var fatalClose = new AssertionError("untrusted host close callback failed");
+        io.register(() -> { throw fatalClose; });
+        io.register(siblingClosed::countDown);
+        io.close();
+        assertTrue(siblingClosed.await(3, TimeUnit.SECONDS),
+                "each resource close request must be attempted independently");
+        assertSame(fatalClose, io.physicalShutdownFailure());
+        assertFalse(io.physicalShutdown().isDone(),
+                "a host close that threw has no trustworthy release receipt");
+    }
+
     @Test void failedResourceCloseQuarantinesPhysicalContextRetirement()
             throws Exception {
         var io = new AsyncNativeIo(1);
