@@ -8109,6 +8109,7 @@ public final class ActorRuntime implements AutoCloseable {
             List<OresFuture<?>> pending;
             List<DrainWaiter> failedDrainWaiters;
             OresScheduler cleanupScheduler;
+            Runnable cancellationSnapshot;
             synchronized (lifecycleLock) {
                 if (finalized) return;
                 if (recordCause && cause != null) {
@@ -8120,6 +8121,12 @@ public final class ActorRuntime implements AutoCloseable {
                 sealing = true;
                 cleanupScheduler = sourceScheduler;
                 sourceStopCleanupPending = cleanupScheduler != null;
+                // No guest Task can enter after STOP: seal the scheduler's
+                // own admission monitor while our lifecycle monitor is held.
+                // This phase does not cancel Futures or invoke subscribers.
+                cancellationSnapshot = cleanupScheduler == null ? null
+                        : cleanupScheduler.sealActorStopAdmission(
+                                this::sourceTaskCleanupQuiesced);
                 // Detach pending observers under the actor monitor. Settling an
                 // OresFuture invokes runtime callbacks inline, so never settle
                 // one while holding lifecycleLock.
@@ -8149,14 +8156,13 @@ public final class ActorRuntime implements AutoCloseable {
             // any future channel activity can revive work for this dead actor.
             for (OresFuture<?> future : pending) future.cancel(false);
 
-            // The scheduler snapshot must happen outside lifecycleLock:
-            // cancellation may invoke synchronous Future subscribers, and
-            // a running SourceTask may be at its own actor STOP safepoint.
+            // The snapshot and admission seal happened AT STOP under its
+            // monitor. Publish cancellation only now, outside lifecycleLock:
+            // synchronous Future subscribers must never re-enter a held lock.
             if (cleanupScheduler != null) {
                 Throwable admissionFailure = null;
                 try {
-                    cleanupScheduler.beginActorStopCleanup(
-                            this::sourceTaskCleanupQuiesced);
+                    cancellationSnapshot.run();
                 } catch (RuntimeException | Error failure) {
                     admissionFailure = failure;
                 } finally {
