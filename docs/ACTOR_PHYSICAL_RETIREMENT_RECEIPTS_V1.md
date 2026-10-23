@@ -110,6 +110,23 @@ owner/repo and immutable repo ID via independent review (#1538).
    artifact proves successful source compilation, lifecycle conformance
    and physical resource reclamation.
 
+## Last-receipt callback retirement fence
+
+Removing a ticket from the pending set does not immediately prove physical
+callback quiescence. The registry also tracks `inFlightNotifications`:
+the ticket removal winner increments this count BEFORE exposing its empty
+pending set, notifies the actor, releases the in-flight count, and notifies
+the actor again to retry finalization. ActorCell must see BOTH zero pending
+tickets AND zero in-flight host notification callbacks. Errors from either
+notification stage latch as physical retirement failures and quarantine the
+actor. These callbacks execute without holding the registry's internal lock.
+
+Deterministic tests block the first host notification after the last ticket
+has been removed, then require `retireVerified()` to reject until notification
+exit; they also inject a throwing notification and require sticky quarantine.
+This is distinct from the SourceTask Future-subscriber drain fence and must
+be preserved in the native/LLVM port.
+
 ## Concrete JDK NIO channel boundary (new follow-up)
 
 `ActorPhysicalChannelLease` is a host-only (not guest-language) bridge
