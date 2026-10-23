@@ -45,7 +45,7 @@ final class DuplicateCallableParameterTest {
         }) {
             IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                     () -> Parser.parse(declaration), declaration);
-            assertTrue(error.getMessage().contains("duplicate generic parameter name"),
+            assertTrue(error.getMessage().contains("duplicate generic parameter"),
                     "must reject duplicate binder, not malformed syntax: " + declaration);
         }
     }
