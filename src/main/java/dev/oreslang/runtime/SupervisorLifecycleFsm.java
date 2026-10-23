@@ -139,8 +139,12 @@ public final class SupervisorLifecycleFsm {
                     Set.of(), false, false, false, false, false, false,
                     false, false, false, false);
         }
-        public boolean admissionsOpen() { return phase == Phase.RUNNING; }
-        public boolean restartPermitted() { return phase == Phase.RUNNING; }
+        public boolean admissionsOpen() {
+            return phase == Phase.RUNNING && !coordinatorFailed;
+        }
+        public boolean restartPermitted() {
+            return phase == Phase.RUNNING && !coordinatorFailed;
+        }
         public boolean logicallyStopped() {
             return phase == Phase.STOPPED || phase == Phase.RECLAIMED;
         }
