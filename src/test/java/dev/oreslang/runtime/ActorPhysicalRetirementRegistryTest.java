@@ -1076,6 +1076,45 @@ final class ActorPhysicalRetirementRegistryTest {
         assertThrows(IllegalStateException.class, registry::retireVerified);
     }
 
+    @Test void fastAsyncFinalWakeWaitsForAcceptedDispatch() throws Exception {
+        var enteredBeforeReturn = new CountDownLatch(1);
+        var wakeCompleted = new CountDownLatch(1);
+        var callbackCount = new AtomicInteger();
+        var dispatchThread = new AtomicReference<Thread>();
+        var registry = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 55, () -> {
+                    if (callbackCount.incrementAndGet() == 2) wakeCompleted.countDown();
+                }, wake -> {
+                    Thread worker = Thread.ofVirtual().start(() -> {
+                        enteredBeforeReturn.countDown();
+                        wake.run();
+                    });
+                    dispatchThread.set(worker);
+                    try {
+                        assertTrue(enteredBeforeReturn.await(3, TimeUnit.SECONDS));
+                    } catch (InterruptedException interruption) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError(interruption);
+                    }
+                    // Worker has started while execute() is still on stack,
+                    // but must wait for explicit post-dispatch approval.
+                    assertEquals(1, callbackCount.get());
+                });
+        var receipt = registry.register(
+                ActorPhysicalRetirementRegistry.Kind.NATIVE_IO_OPERATION, false);
+        registry.seal();
+        assertTrue(receipt.completeAfterPhysicalRelease());
+        try {
+            assertTrue(wakeCompleted.await(3, TimeUnit.SECONDS));
+        } finally {
+            Thread worker = dispatchThread.get();
+            if (worker != null) worker.join(3_000);
+        }
+        assertEquals(2, callbackCount.get());
+        assertNull(registry.snapshot().failure());
+        registry.retireVerified();
+    }
+
     @Test void swallowedCallerRunsErrorStillQuarantinesFinalWake() {
         var notifications = new AtomicInteger();
         var registry = new ActorPhysicalRetirementRegistry(
