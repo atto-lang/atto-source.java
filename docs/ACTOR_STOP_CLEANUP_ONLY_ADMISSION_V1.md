@@ -543,3 +543,52 @@ and direct resource borrows; arbitrary unrelated host code with captured
 guest/native pointers remains outside the authority of this ledger. Real
 JDK25 and LLVM source-level conformance, stress testing and independent
 private CI carrier approval are required before merge.
+
+## Context close: two-phase admission seal, I/O revoke, physical joins (2026-10-23)
+
+`OresContext.joinActorsAndNativeIo(actors, nativeIo)` is now the actual
+production orchestration boundary:
+
+1. `ActorRuntime.sealShutdownAdmission()` seals runtime creation/send
+   admission and pre-seals all existing actor cells **without executing
+   guest cancellation callbacks**.
+2. `AsyncNativeIo.requestShutdown()` seals native I/O data/control
+   admission, fails never-started queued work, requests worker interruption,
+   and closes registered Java sockets **to wake blocking reads only**.
+3. `ActorRuntime.close()` requests structured actor STOP and joins actor
+   execution/physical loan barriers and dispatcher exit. A separate
+   `dispatchersShutdown` CAS means earlier phase-one sealing does not
+   prevent the first physical dispatcher stop on this call.
+4. `AsyncNativeIo.close()` joins actual native workers, pending terminal
+   notification drains, and outstanding registered resource loans before
+   the resource-close sweep.
+5. The context releases shared code images, VM, collector and runtime state
+   **only after both joins succeed**; errors preserve strongly reachable
+   quarantined ownership for explicit retry. Both joins are attempted even
+   if the other returns an incomplete-physical-retirement error.
+
+`ActorRuntime.close()` no longer clears ActorGroup/mailbox/shared cell
+registries or zeros shared-memory bookkeeping **before** verifying all actor
+cells are finalized and all carriers physically terminated. This prevents
+failed close/retry from erasing ownership of an unretired actor.
+
+`AsyncNativeIoTest` now exercises the **same package-visible production
+sequence**: actor mail must already be sealed when a registered socket's
+wakeup callback executes; a worker ignoring interruption must keep resources
+quarantined and permit a later successful explicit retry. A separate test
+retains a stopped actor across an unretired synthetic native gate, then
+publishes DONE on the last receipt and retries close.
+
+`FormalContextShutdownOrderModelCheckTest` explores both physical join
+orders, failed close/retry, and the no-reclaim-before-both-joins invariant.
+The independently executed abstract enumerator explored **20 states**;
+this is only a state-space model, not Java/GraalVM/LLVM execution.
+
+Remaining risk: `ActorCell.stop()` may itself block in a misbehaving native
+revocation hook on the closing host thread. Bounded physical cancellation
+dispatch of **root** actors (not only descendants) and explicit terminal
+receipt joins are still needed for guaranteed host-close liveness. IO worker
+exit cannot certify external JNI/io_uring/FFI callbacks; those require
+independent native generation-fenced physical completion acknowledgments.
+The existing source CI remains blocked before runner assignment; no
+compilation or JUnit passing claim is made.
