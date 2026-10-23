@@ -361,3 +361,36 @@ evidence is still mandatory.
 Java-carrier and native-carrier suites actually execute. Exhaustive
 scheduler interleaving, fatal VM conditions and native callback-exit
 semantics are not established by this limited protocol patch.
+
+## Duplicate native completion after initial release (2026-10-23)
+
+A second failure window existed when the first NIO callback had called
+`Receipt.completeAfterPhysicalRelease()` and removed the pending ticket,
+but the accepted deferred host wake had not yet retired the actor. A
+duplicate callback caused `Receipt.failPhysicalRelease()` to return
+`false` on its already-successful state, discarding the duplicate's
+quarantine signal. This was a concrete race even with the post-drain
+notification fence.
+
+`failPhysicalRelease()` now handles an already-physically-released
+ticket **while its owning actor is not retired**: restore the ticket
+to the strong pending set, mark it failed, latch the original failure
+and notify the owner. That failure cannot subsequently be reclassified
+as successful, and the queued host STOP wake still cannot finalize
+the actor. A duplicate after a verified `retired` state instead raises
+an explicit protocol-violation exception; such a driver MUST have a
+separate callback-drain guarantee before its release receipt is
+admissible. No implementation can retract a previously published
+`ActorRef.done()`.
+
+JUnit regressions cover both the registry-level late duplicate and
+the actual `ActorPhysicalIoCallbackLease` wrapper that dispatches a
+duplicate `CompletionHandler.completed()` after its first callback
+returned but before the queued final STOP wake ran. Another test
+asserts that a callback after verified retirement is reported as a
+violation rather than silently accepted.
+
+**Unresolved:** These are unexecuted JDK25 source tests. The
+JDK CompletionHandler once-only contract is not a universal guarantee
+for arbitrary FFI/native drivers. Their own driver-specific
+physical callback-exit and no-late-notification evidence remain P0.
