@@ -150,6 +150,24 @@ public final class TaskPipeline {
     }
 
     /**
+     * Admit a compiler-lowered pipeline as a child of the current tracked
+     * SourceTask when available; host/root entry points create their own
+     * tracked root. Capturing the owner before dispatch is essential when
+     * schedulers execute a child inline with a different task domain.
+     *
+     * Parent cancellation revokes this pipeline, and parent getDone() waits
+     * for its physical retirement. Its input Future remains borrowed.
+     */
+    public static <T> PipelineHandle<T> startInCurrentTaskOrRoot(
+            OresScheduler scheduler,
+            OresFuture<?> input,
+            List<? extends Stage> stages) {
+        Objects.requireNonNull(scheduler, "scheduler");
+        TaskCancellation parent = TaskHandle.currentParentForChild();
+        return startInternal(task -> TaskHandle.start(scheduler, task, parent), input, stages);
+    }
+
+    /**
      * Admit the pipeline as one child of an explicit structured TaskScope.
      * Closing the scope requests cancellation without blocking a carrier.
      */
