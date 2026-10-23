@@ -66,7 +66,8 @@ public final class ProxyOutboundLoopbackCheck {
             var client = new ProxyOutboundLoopback(1);
             for (String bad : new String[] {"http://localhost:8080/x", "http://127.0.0.2:8080/x",
                     "http://user@127.0.0.1:8080/x", "https://127.0.0.1:8080/x",
-                    base + "/a%2Fb", base + "/x#fragment"}) {
+                    base + "/a%2Fb", base + "/x#fragment", base + "/a/../created",
+                    base + "/a/./created", base + "/a//created", base + "/created?redirect=true"}) {
                 try {
                     client.request(URI.create(bad), "GET").join();
                     throw new AssertionError("unsafe origin accepted: " + bad);
