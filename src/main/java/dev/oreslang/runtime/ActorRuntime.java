@@ -8220,7 +8220,11 @@ public final class ActorRuntime implements AutoCloseable {
                 } finally {
                     synchronized (lifecycleLock) {
                         sourceStopCleanupPending = false;
-                        sourceStopCleanupAborted = admissionFailure != null;
+                        // Cleanup-origin registration failures may race the
+                        // STOP cancellation snapshot. Never erase an earlier
+                        // fail-closed quarantine marker when the snapshot
+                        // itself succeeds.
+                        sourceStopCleanupAborted |= admissionFailure != null;
                         sourceStopCleanupActive = admissionFailure == null
                                 && !forceKillFenced && !closed.get();
                         if (admissionFailure != null) {
