@@ -2135,6 +2135,10 @@ public final class OresEvalRootNode extends RootNode {
                 ArrayDeque<Ast.Expr> defers,
                 SourceFlowCont continuation) {
             try {
+                if (stmt instanceof Ast.UsingBorrowStmt) {
+                    throw new IllegalStateException(
+                            "using request.borrow() as view is not executable without checked loan cleanup");
+                }
                 if (stmt instanceof Ast.BindingStmt binding) {
                     evalSuspendableExpr(
                             task,
@@ -5637,6 +5641,13 @@ public final class OresEvalRootNode extends RootNode {
                 Env env,
                 ArrayDeque<Ast.Expr> deferred,
                 boolean inheritedTailBarrier) {
+            // Defense in depth: source can reach this evaluator through host
+            // adapters that do not run the normal TypeChecker on every call.
+            // Never silently ignore an unlowered scoped resource statement.
+            if (stmt instanceof Ast.UsingBorrowStmt) {
+                throw new IllegalStateException(
+                        "using request.borrow() as view is not executable without checked loan cleanup");
+            }
             if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
                 context.schedulerSafepoint();
             }
