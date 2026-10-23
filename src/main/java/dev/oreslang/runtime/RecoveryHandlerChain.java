@@ -194,8 +194,9 @@ final class RecoveryHandlerChain<T> {
         }
         scope.active.put(this, Boolean.TRUE);
         try {
-        // Host Throwable graphs are mutable and accessors may throw. A future
-        // sealed guest-effect carrier is still required for trusted admission.
+        // GuestFailure authenticates effect kind and logical provenance.
+        // Its host-prototype Throwable payload is still mutable and untrusted,
+        // so graph admission remains fail-closed defense in depth.
         if (untrustedOrTerminalGraph(failure)) {
             return new Unhandled<>(pendingFailure);
         }
