@@ -164,6 +164,10 @@ public final class TaskPipeline {
             List<? extends Stage> stages) {
         Objects.requireNonNull(scheduler, "scheduler");
         TaskCancellation parent = TaskHandle.currentParentForChild();
+        if (parent != null && OresScheduler.current() != scheduler) {
+            throw new IllegalStateException(
+                    "implicit pipeline child admission cannot cross scheduler domains");
+        }
         return startInternal(task -> TaskHandle.start(scheduler, task, parent), input, stages);
     }
 
