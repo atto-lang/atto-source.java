@@ -507,16 +507,16 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     /**
-     * Physical reclamation gate for runtime-owned actor schedulers.
-     * True means at least one lexical cleanup continuation was aborted and
-     * its guarded state must remain quarantined. Closing the scheduler does
-     * not turn this into a successful heap retirement receipt.
+     * Conservative physical reclamation gate for runtime-owned actor schedulers.
+     * A Task stays in this live set until its physical onQuiescent callback
+     * has returned successfully. This also covers the interval when a Task
+     * has already reached TERMINAL but a host/FFI retirement callback is
+     * still running, and covers an ordinary Task's live carrier. A failed
+     * cleanup/retirement callback remains retained indefinitely for quarantine.
+     * The actor must never interpret Future.isDone() as a heap release proof.
      */
     public boolean hasIncompleteCleanup() {
-        for (TaskRunner<?> runner : tasks) {
-            if (runner.cleanupIncomplete.get()) return true;
-        }
-        return false;
+        return !tasks.isEmpty();
     }
 
     /** Called only after the winning Future's terminal callbacks have drained. */
