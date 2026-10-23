@@ -31,6 +31,8 @@ jobs:
         run: |
           java --version
           native-image --version
+      - name: Verify native-image smoke gate with mocked binaries
+        run: sh tests/test-build-and-verify-native-image.sh
       - name: Verify JIT/JVM profile
         run: mvn -B -ntp -Dores.runtime.carriers=native verify
       - name: Run showcase
@@ -43,6 +45,7 @@ jobs:
         run: mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/together.ores"
       - name: Run native Oreslang test framework
         run: |
+          set -euo pipefail
           mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing.ores" | tee /tmp/ores-testing-jit.out
           grep -F "ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0" /tmp/ores-testing-jit.out
           mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-semantics.ores" | tee /tmp/ores-testing-semantics-jit.out
@@ -89,10 +92,12 @@ jobs:
         run: ./target/ores-aot --mode=aot --platform=linux examples/native-core-library.ores
       - name: Run AOT proper tail-call stress
         run: |
+          set -euo pipefail
           ./target/ores-aot --mode=aot --platform=linux examples/proper-tail-call.ores | tee /tmp/ores-aot-tail.out
           grep -F "0|0|0" /tmp/ores-aot-tail.out
       - name: Run native Oreslang tests under AOT
         run: |
+          set -euo pipefail
           ./target/ores-aot --mode=aot --platform=linux examples/native-testing.ores | tee /tmp/ores-testing-aot.out
           grep -F "ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0" /tmp/ores-testing-aot.out
           ./target/ores-aot --mode=aot --platform=linux examples/native-testing-semantics.ores | tee /tmp/ores-testing-semantics-aot.out
@@ -168,10 +173,12 @@ jobs:
         run: ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-core-library.ores
       - name: Run hybrid proper tail-call stress
         run: |
+          set -euo pipefail
           ./target/ores-hybrid --mode=hybrid --platform=linux examples/proper-tail-call.ores | tee /tmp/ores-hybrid-tail.out
           grep -F "0|0|0" /tmp/ores-hybrid-tail.out
       - name: Run native Oreslang tests under hybrid host
         run: |
+          set -euo pipefail
           ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing.ores | tee /tmp/ores-testing-hybrid.out
           grep -F "ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0" /tmp/ores-testing-hybrid.out
           ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing-semantics.ores | tee /tmp/ores-testing-semantics-hybrid.out
@@ -221,5 +228,6 @@ jobs:
         run: timeout 180s mvn -B -ntp -Dpolyglot.engine.IsolateLibrary="${{ steps.isolate.outputs.path }}" -DskipTests exec:java -Dexec.args="--strict-isolate --mode=hybrid --platform=linux examples/native-core-library.ores"
       - name: Resume root await inside strict isolate JNI scope
         run: |
+          set -euo pipefail
           timeout 180s mvn -B -ntp -Dpolyglot.engine.IsolateLibrary="${{ steps.isolate.outputs.path }}" -DskipTests exec:java -Dexec.args="--strict-isolate --mode=hybrid --platform=linux examples/strict-root-await.ores" | tee /tmp/ores-strict-root-await.out
           grep -x "42" /tmp/ores-strict-root-await.out
