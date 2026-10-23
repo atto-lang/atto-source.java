@@ -719,6 +719,33 @@ final class RecoveryHandlerChainTest {
         assertThrows(IllegalStateException.class, () -> fallback.dispatch(failure));
     }
 
+    @Test void recoveryChainVisitRetentionIsBounded() {
+        GuestFailure failure = signal(
+                RecoveryHandlerChain.FailureKind.RAISE,
+                new Exception("bounded unwind"));
+        for (int i = 0; i < GuestFailure.MAX_RECOVERY_CHAIN_VISITS; i++) {
+            var chain = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
+                    .onRaise((e, next) -> next.next())
+                    .freeze();
+            assertInstanceOf(
+                    RecoveryHandlerChain.Unhandled.class,
+                    chain.dispatch(failure),
+                    "chain=" + i);
+        }
+
+        var overflow = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
+                .onRaise((e, next) -> next.next())
+                .freeze();
+        IllegalStateException quota = assertThrows(
+                IllegalStateException.class, () -> overflow.dispatch(failure));
+        assertTrue(quota.getMessage().contains("visit quota exceeded"));
+
+        var afterQuota = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
+                .onRaise((e, next) -> next.resolve(1))
+                .freeze();
+        assertThrows(IllegalStateException.class, () -> afterQuota.dispatch(failure));
+    }
+
     @Test void emptyChainAndNullRegistrationAreSafe() {
         var empty = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION).freeze();
         assertEquals(0, empty.size());
