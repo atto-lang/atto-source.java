@@ -119,6 +119,64 @@ final class ActorStopCleanupAdmissionTest {
     }
 
     @Test
+    void actorCrashRetainsOriginalFailureUntilSuspendedCleanupReleasesGuard()
+            throws Exception {
+        var mutex = OresMutex.shared(new int[] { 0 });
+        var awaited = new OresFuture<Integer>();
+        var closeReceipt = new OresFuture<Integer>();
+        var waiting = new CountDownLatch(1);
+        var cleanupEntered = new CountDownLatch(1);
+        var released = new AtomicInteger();
+        var crash = new IllegalStateException("original actor failure");
+
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                if ("crash".equals(message)) throw crash;
+                context.runtime().startActorTask(
+                        new OresScheduler.CleanupAwareTask<Void>() {
+                            int pc;
+                            OresMutex.Guard<int[]> guard;
+                            @Override public OresScheduler.Step<Void> resume(
+                                    OresScheduler.Resume resume) {
+                                if (pc++ == 0) {
+                                    guard = mutex.lock();
+                                    waiting.countDown();
+                                    return OresScheduler.await(awaited);
+                                }
+                                if (pc == 2) {
+                                    assertTrue(OresScheduler.cancellationCleanupTurn());
+                                    context.runtime().schedulerSafepoint();
+                                    cleanupEntered.countDown();
+                                    return OresScheduler.await(closeReceipt);
+                                }
+                                guard.release();
+                                released.incrementAndGet();
+                                return OresScheduler.done(null);
+                            }
+                        });
+            });
+            actor.send("start");
+            assertTrue(waiting.await(3, TimeUnit.SECONDS));
+            actor.send("crash");
+            assertTrue(cleanupEntered.await(3, TimeUnit.SECONDS));
+            assertFalse(actor.done().isDone(),
+                    "failed actor retains its cleanup-owned resources");
+            assertTrue(mutex.tryLock().isEmpty());
+
+            closeReceipt.completeFromRuntime(4);
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(1, released.get());
+            assertSame(crash, actor.failure().orElseThrow(),
+                    "cleanup must not overwrite the original actor failure");
+            ExecutionException failure = assertThrows(ExecutionException.class,
+                    () -> actor.done().get(3, TimeUnit.SECONDS));
+            assertSame(crash, failure.getCause());
+            var verifier = mutex.tryLock().orElseThrow();
+            verifier.release();
+        }
+    }
+
+    @Test
     void stopBeforeQueuedSourceStartDoesNotRunDiscardedInitialTask()
             throws Exception {
         var admitted = new CountDownLatch(1);
