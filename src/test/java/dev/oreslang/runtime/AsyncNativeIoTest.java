@@ -185,6 +185,54 @@ class AsyncNativeIoTest {
         }
     }
 
+    @Test void blockedNeverStartedNotificationQuarantinesResourcesWithoutBlockingClose()
+            throws Exception {
+        var io = new AsyncNativeIo(2, 1, 1);
+        var entered = new CountDownLatch(1);
+        var subscriberEntered = new CountDownLatch(1);
+        var releaseSubscriber = new CountDownLatch(1);
+        var released = new java.util.concurrent.atomic.AtomicInteger();
+        try {
+            io.register(released::incrementAndGet);
+            var running = io.submit("running", () -> {
+                entered.countDown();
+                new CountDownLatch(1).await();
+                return 1;
+            });
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            var queued = io.submit("discard", () -> 2);
+            queued.whenCompleteRuntime((value, failure) -> {
+                subscriberEntered.countDown();
+                while (releaseSubscriber.getCount() != 0) {
+                    try { releaseSubscriber.await(50, TimeUnit.MILLISECONDS); }
+                    catch (InterruptedException ignored) { }
+                }
+            });
+
+            Thread closer = Thread.ofVirtual().start(() ->
+                    assertThrows(IllegalStateException.class, io::close));
+            try {
+                assertTrue(subscriberEntered.await(2, TimeUnit.SECONDS),
+                        "never-started notification must run independently of close");
+                closer.join(2000);
+                assertFalse(closer.isAlive(),
+                        "blocked terminal subscriber may quarantine but cannot hang the close caller");
+                assertEquals(0, released.get(),
+                        "resources remain held until every callback physically drains");
+                assertInstanceOf(IllegalStateException.class,
+                        assertThrows(ExecutionException.class,
+                                () -> running.get(2, TimeUnit.SECONDS)).getCause());
+            } finally {
+                releaseSubscriber.countDown();
+            }
+            io.close();
+            assertEquals(1, released.get());
+        } finally {
+            releaseSubscriber.countDown();
+            io.close();
+        }
+    }
+
     @Test void nativeCloseRejectsReentrantJoinFromItsOwnWorker()
             throws Exception {
         try (var io = new AsyncNativeIo(1)) {
