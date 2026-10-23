@@ -125,6 +125,11 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     private final AtomicReference<CancellationException> requestedCancellation =
             new AtomicReference<>();
     private final AtomicReference<Object> state = new AtomicReference<>(PENDING);
+    // Host-only fail-closed observation for native-I/O physical release.
+    // A runtime subscriber failure is still swallowed for guest scheduling,
+    // but the producer must not treat its physical callback drain as clean.
+    private final AtomicReference<Throwable> runtimeNotificationFailure =
+            new AtomicReference<>();
     private final ConcurrentLinkedQueue<RuntimeWaiterRegistration<T>> waiters = new ConcurrentLinkedQueue<>();
 
     public OresFuture() {
@@ -468,6 +473,11 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         return waiters.size();
     }
 
+    /** Internal diagnostic, not a guest-visible exception or settlement API. */
+    Throwable runtimeNotificationFailure() {
+        return runtimeNotificationFailure.get();
+    }
+
     @Override
     public boolean cancel(boolean mayInterruptIfRunning) {
         if (state.get() != PENDING) return false;
@@ -742,10 +752,11 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
             } else {
                 throw new IllegalStateException("attempted to notify waiter from pending Future");
             }
-        } catch (RuntimeException | Error ignored) {
-            // Runtime waiter failures must not stop delivery to other waiters or
-            // mutate the settled Future. Scheduler plumbing owns its own
-            // failure path.
+        } catch (RuntimeException | Error subscriberFailure) {
+            // Preserve the first failed trusted notifier as a physical
+            // release diagnostic without changing guest-visible Future
+            // semantics or suppressing delivery to healthy sibling waiters.
+            runtimeNotificationFailure.compareAndSet(null, subscriberFailure);
         }
     }
 
