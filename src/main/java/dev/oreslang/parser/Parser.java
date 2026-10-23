@@ -454,17 +454,9 @@ public final class Parser {
         validateOnlyVisibilityModifiers(modifiers, "type-only declarations");
         rejectCallableStructuralAnnotation(annotations, "type-only declarations");
         rejectDiscardedDeclarationAnnotations(annotations, "type-only declarations");
-        if (match(TYPE)) {
-            // Unlike define type, declare type may promise a later completed
-            // definition. Do not create a null-target alias for this promise.
-            String name = consume(IDENT, "expected type name after declare type").lexeme();
-            if (match(SEMICOLON)) return new Ast.TypeForwardDecl(name, modifiers.visibility);
-            List<String> generics = parseGenericParameters();
-            consume(EQUAL, "expected '=' or ';' after declared type name");
-            Ast.TypeRef target = parseTypeRef();
-            consumeStatementTerminator("type alias should end with ';'");
-            return new Ast.TypeAliasDecl(name, modifiers.visibility, generics, target);
-        }
+        // declare and define create the same completed type alias. A bare
+        // 'declare type Name;' is invalid; no opaque promise is introduced.
+        if (match(TYPE)) return parseTypeAlias(modifiers.visibility);
         if (match(TRAIT)) return parseInterface(modifiers.visibility, false, true);
         if (match(INTERFACE)) return parseInterface(modifiers.visibility);
         throw error(peek(),
