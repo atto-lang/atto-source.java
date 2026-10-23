@@ -2131,6 +2131,18 @@ public final class ActorRuntime implements AutoCloseable {
         future.whenNotificationsDrainedRuntime(() -> {
             boolean notify = false;
             synchronized (cell.lifecycleLock) {
+                Throwable physicalFailure = future.cancellationHookFailureFromRuntime();
+                if (physicalFailure != null) {
+                    // A thrown native/I/O revoker cannot become a successful
+                    // physical loan receipt merely because cancel() completed.
+                    cell.sourceStopCleanupAborted = true;
+                    if (cell.stopped.get()) {
+                        cell.ref.terminationCause.compareAndSet(null,
+                                new OresScheduler.CleanupIncompleteError(
+                                        "actor owned Future cancellation hook failed",
+                                        physicalFailure));
+                    }
+                }
                 if (cell.pendingOperations.remove(future)) {
                     if (cleanupReceipt) {
                         if (cell.pendingCleanupFutures <= 0) {
@@ -8276,6 +8288,14 @@ public final class ActorRuntime implements AutoCloseable {
                                 return;
                             }
                             pendingStopFutureNotifications--;
+                            Throwable physicalFailure = future.cancellationHookFailureFromRuntime();
+                            if (physicalFailure != null) {
+                                sourceStopCleanupAborted = true;
+                                ref.terminationCause.compareAndSet(null,
+                                        new OresScheduler.CleanupIncompleteError(
+                                                "actor STOP owned Future revocation failed",
+                                                physicalFailure));
+                            }
                             if (stopped.get() && !pendingOperationRevocationPending) {
                                 finalizeStopLocked();
                             }
