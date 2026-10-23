@@ -21,6 +21,7 @@ import java.util.Set;
  * immutable typed guest error data.</p>
  */
 final class GuestFailure {
+    static final int MAX_RECOVERY_CHAIN_VISITS = 1024;
     /**
      * Immutable logical provenance captured when the compiler/runtime mints the
      * failure. It is independent of the current carrier thread.
@@ -144,7 +145,14 @@ final class GuestFailure {
             throw new IllegalStateException(
                     "completed guest failure cannot be dispatched again: " + lifecycle);
         }
-        return visitedChains.add(chain);
+        if (!visitedChains.add(chain)) return false;
+        if (visitedChains.size() > MAX_RECOVERY_CHAIN_VISITS) {
+            lifecycle = Lifecycle.TERMINATED;
+            visitedChains.clear();
+            throw new IllegalStateException(
+                    "recovery chain visit quota exceeded");
+        }
+        return true;
     }
 
     synchronized void markRecovered() {
