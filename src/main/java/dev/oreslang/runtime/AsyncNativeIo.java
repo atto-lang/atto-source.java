@@ -25,6 +25,11 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class AsyncNativeIo implements AutoCloseable {
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(500);
     private static final int CONTROL_CAPACITY = 16;
+    // Failed close must not permit the model or GC to reclaim live resource
+    // owners after a host releases its last direct reference to this object.
+    // The only release path is a subsequent verified, successful close().
+    private static final Set<AsyncNativeIo> QUARANTINED_IO =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     private enum OperationState {
         ADMITTED, RUNNING, RETIRING, RETIRED, CANCELLED_BEFORE_START
@@ -256,6 +261,7 @@ public final class AsyncNativeIo implements AutoCloseable {
                     "native I/O worker cannot join its own physical retirement");
         }
         synchronized (shutdownLock) {
+            QUARANTINED_IO.add(this);
             final boolean first;
             synchronized (this) {
                 first = !closed;
@@ -304,7 +310,10 @@ public final class AsyncNativeIo implements AutoCloseable {
 
             List<AutoCloseable> closing;
             synchronized (this) {
-                if (resourcesRetired) return;
+                if (resourcesRetired) {
+                    QUARANTINED_IO.remove(this);
+                    return;
+                }
                 closing = new ArrayList<>(resources);
             }
             Throwable closeFailure = null;
@@ -325,6 +334,7 @@ public final class AsyncNativeIo implements AutoCloseable {
                         "native I/O resource close failed; context quarantined",
                         closeFailure);
             }
+            QUARANTINED_IO.remove(this);
         }
     }
 }
