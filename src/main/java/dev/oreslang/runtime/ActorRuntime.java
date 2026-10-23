@@ -2024,9 +2024,10 @@ public final class ActorRuntime implements AutoCloseable {
             terminalSubscribersDrained.set(true);
             releaseTimedWhenSafe.run();
         };
-        OresFuture<T> future;
+        TaskHandle<T> handle;
         try {
-            future = cell.sourceScheduler().startWithWallDeadline(resume -> {
+            handle = TaskHandle.startWithWallDeadline(
+                    cell.sourceScheduler(), resume -> {
                 UntrustedLogicalQuota previous = CURRENT_UNTRUSTED_QUOTA.get();
                 CURRENT_UNTRUSTED_QUOTA.set(quota);
                 boolean entered = false;
@@ -2061,10 +2062,10 @@ public final class ActorRuntime implements AutoCloseable {
             }
             throw failure;
         }
-        // A caller may cancel the Future while the source turn is still
-        // executing. The scheduler invokes retireOnce ONLY after guest
-        // carrier quiescence, not merely when the Future settles.
-        return future;
+        // Caller-visible result can settle before physical carrier exit.
+        // Track this logical Task's independent lock/child retirement
+        // receipt; actor STOP must join it before reclaiming actor storage.
+        return cell.trackSourceTask(handle);
     }
 
     private void releaseUntrustedSourceTask(
@@ -7321,9 +7322,12 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private <T> OresFuture<T> startTrackedSourceTask(OresScheduler.Task<T> task) {
-            // The enclosing actor turn cannot finalize until this method has
-            // returned, so source Task enrollment wins over concurrent STOP.
-            TaskHandle<T> handle = sourceScheduler().startTracked(task);
+            return trackSourceTask(sourceScheduler().startTracked(task));
+        }
+
+        private <T> OresFuture<T> trackSourceTask(TaskHandle<T> handle) {
+            // The enclosing actor turn cannot finalize until this method
+            // returns; enrollment wins over concurrent STOP.
             sourceTaskHandles.add(handle);
             handle.getDone().whenCompleteRuntime((ignored, failure) ->
                     sourceTaskHandles.remove(handle));
