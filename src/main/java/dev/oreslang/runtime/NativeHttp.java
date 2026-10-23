@@ -812,6 +812,22 @@ public final class NativeHttp implements AutoCloseable {
         }
         public OresFuture<Object> finish() { return operation(() -> { if (!state.committed) throw new IllegalStateException("response not started"); state.finish(); return null; }); }
         public void abort() { synchronized (state) { checkOwner(); } state.abort(500); }
+
+        /**
+         * Host CONTROL cancellation of a request whose capability may already
+         * have moved into an actor. Not a guest-visible exchange operation.
+         * Owner validation uses the listener's exclusive rolling lane instead
+         * of mutable exchange ownership, and actual abort is outside its lock.
+         */
+        void abortFromRollingDispatcher(NativeHttpRollingDispatcher dispatcher) {
+            if (ActorRuntime.inActorExecution())
+                throw new SecurityException("rolling cancellation belongs to CONTROL");
+            synchronized (state.server) {
+                if (dispatcher == null || state.server.rollingOwner != dispatcher)
+                    throw new SecurityException("foreign HTTP rolling cancellation");
+            }
+            state.abort(500);
+        }
         private boolean noBody(int status) { return state.raw.getRequestMethod().equals("HEAD") || status == 204 || status == 205 || status == 304; }
         private OresFuture<Object> operation(Callable<Object> operation) {
             synchronized (state) {
