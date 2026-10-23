@@ -169,6 +169,43 @@ class AsyncNativeIoTest {
         }
     }
 
+    @Test void equalButDistinctNativeResourcesRetireIndependently()
+            throws Exception {
+        var io = new AsyncNativeIo(2);
+        var firstClosed = new java.util.concurrent.atomic.AtomicInteger();
+        var secondClosed = new java.util.concurrent.atomic.AtomicInteger();
+        final class EqualResource implements AutoCloseable {
+            final java.util.concurrent.atomic.AtomicInteger counter;
+            EqualResource(java.util.concurrent.atomic.AtomicInteger counter) {
+                this.counter = counter;
+            }
+            @Override public boolean equals(Object other) {
+                return other instanceof EqualResource;
+            }
+            @Override public int hashCode() { return 17; }
+            @Override public void close() { counter.incrementAndGet(); }
+        }
+        AutoCloseable first = new EqualResource(firstClosed);
+        AutoCloseable second = new EqualResource(secondClosed);
+        try {
+            io.register(first);
+            io.register(second);
+            var firstLoan = io.borrow(first);
+            var secondLoan = io.borrow(second);
+            assertNotEquals(firstLoan.identity().resourceGeneration(),
+                    secondLoan.identity().resourceGeneration());
+            firstLoan.close();
+            secondLoan.close();
+            io.close();
+            assertEquals(1, firstClosed.get(),
+                    "the first handle must retain its own identity and cleanup");
+            assertEquals(1, secondClosed.get(),
+                    "a distinct equals()-equivalent handle cannot disappear");
+        } finally {
+            io.close();
+        }
+    }
+
     @Test void nativeLoanGenerationAndDuplicateReceiptAreFailClosed()
             throws Exception {
         var io = new AsyncNativeIo(2);
