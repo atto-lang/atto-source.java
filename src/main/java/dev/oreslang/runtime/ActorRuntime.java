@@ -1793,6 +1793,39 @@ public final class ActorRuntime implements AutoCloseable {
 
 
     /**
+     * Trusted runtime-driver hook, NOT a guest/source API. The receipt must
+     * be minted before a physical mutex/handle/FFI loan is published. Its
+     * driver settles it after reclaim, independently of logical Future
+     * cancellation and Task completion. Receipt ownership is this ActorCell,
+     * never a carrier thread or reusable actor address.
+     */
+    ActorPhysicalResourceReceipts.Receipt registerCurrentActorPhysicalReceipt(
+            ActorPhysicalResourceReceipts.Kind kind) {
+        Objects.requireNonNull(kind, "kind");
+        requireCallerRuntimeAffinity("register actor physical resource receipt");
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null) {
+            throw new IllegalStateException(
+                    "physical resource receipts require an owning actor turn");
+        }
+        synchronized (cell.lifecycleLock) {
+            if (!cell.carrierActive || cell.carrierOwnerThread != Thread.currentThread()
+                    || cell.activeTurns != 1 || cell.finalized || closed.get()
+                    || cell.forceKillFenced) {
+                throw new IllegalStateException(
+                        "physical resource receipt requires owning actor execution lease");
+            }
+            boolean cleanupTurn = cell.stopped.get()
+                    && cell.sourceStopCleanupActive
+                    && OresScheduler.cancellationCleanupTurn();
+            if (cell.stopped.get() && !cleanupTurn) {
+                throw terminated(cell.ref);
+            }
+            return cell.physicalReceipts.register(kind, cleanupTurn);
+        }
+    }
+
+    /**
      * Gracefully terminate the actor whose source turn is currently executing.
      * This is the lowering target for actor-local `self.end()`; it carries no
      * authority to stop siblings or unrelated actors.
@@ -7104,6 +7137,13 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorCell<?> parent;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
+        /**
+         * Separate from Future cancellation and scheduler quiescence: all
+         * native loans/handles/physical grants must have their own receipts.
+         * Stable identity is this cell, not an OS worker or ActorRef generation.
+         */
+        private final ActorPhysicalResourceReceipts physicalReceipts =
+                new ActorPhysicalResourceReceipts(this::sourceTaskCleanupQuiesced);
         /** Bounded async-close Future receipts admitted only by cleanup Tasks. */
         private int pendingCleanupFutures;
         /**
@@ -7495,11 +7535,21 @@ public final class ActorRuntime implements AutoCloseable {
                     || sourceStopCleanupPending
                     || pendingOperationRevocationPending
                     || pendingCleanupFutures != 0
+                    || physicalReceipts.pending() != 0
                     || activeTurns != 0
                     || scheduled.get()
                     || carrierActive
                     || !children.isEmpty()) return;
             OresScheduler scheduler = sourceScheduler;
+            Throwable physicalFailure = physicalReceipts.quarantineCause();
+            if (physicalFailure != null) {
+                ref.terminationCause.compareAndSet(null,
+                        new OresScheduler.CleanupIncompleteError(
+                                "actor physical resource retirement failed; quarantine arena",
+                                physicalFailure));
+                lifecycleLock.notifyAll();
+                return;
+            }
             if (sourceStopCleanupAborted) {
                 ref.terminationCause.compareAndSet(null,
                         new OresScheduler.CleanupIncompleteError(
@@ -7536,6 +7586,10 @@ public final class ActorRuntime implements AutoCloseable {
                     return;
                 }
             }
+            // STOP + this monitor seal all new physical registrations.
+            // Closing this registry is a checked proof, never an implicit
+            // release or cancellation of outstanding physical resources.
+            physicalReceipts.finishAfterProof();
             finalized = true;
             sourceScheduler = null;
             // Cleanup admission never outlives this actor incarnation.
@@ -8174,6 +8228,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // not re-close a channel or reset the cleanup admission fence.
                 if (!stopped.compareAndSet(false, true)) return;
                 sealing = true;
+                physicalReceipts.sealOnStop();
                 cleanupScheduler = sourceScheduler;
                 sourceStopCleanupPending = cleanupScheduler != null;
                 pendingOperationRevocationPending = true;
