@@ -81,3 +81,36 @@ run must not be represented as proof of a Windows or macOS artifact. Native
 Image compilation of the Oreslang *host* is also not proof that every Oreslang
 source feature has application-specific AOT codegen or that isolate/shared
 library deployment has passed its separate runtime contract.
+
+## Historical, executed GraalVM build evidence
+
+A real Linux GraalVM 25.3.4.1 build was completed on **2026-10-13** for
+Oreslang Java source commit `6db445698ae41b80d0d54b265741b0e37681bf05`:
+
+- [GitHub Actions run 38420363849](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/38420363849)
+  was successful with **executed** build and program steps, not empty jobs.
+- `native-aot` job **115375768694** generated `target/ores-aot` (Linux
+  executable, **62.56 MiB**) in **10m 18s** and passed source execution,
+  packaged native stdlib, proper tail-call stress, and native test examples.
+  Core test summary: `total=4|passed=3|failed=0|skipped=1`.
+- `native-hybrid` job **115375768157** generated `target/ores-hybrid`
+  (Linux executable, **89.25 MiB**) in **12m 25s** and ran native source,
+  packaged stdlib, tail-call and native test examples successfully.
+- `polyglot-isolate` job **115375768437** generated `target/oresvm.so`
+  (native shared library, **73.69 MiB**) in **10m 57s** and successfully
+  executed the strict isolate source/stdlib/root-await smoke.
+
+**Scope:** The above proves the GraalVM Native Image pipeline worked for that
+**historical exact commit** and **Linux** target. It does *not* prove the
+current main/PR head, AOT native64, Windows or macOS, arbitrary Oreslang source,
+no-external-library deployment, or all actor runtime features. The current
+release gate is the exact-head native-image smoke added in PR #1976; mark
+that gate passing only after a non-skipped Actions build with executable job
+steps. Job failures occurring before setup steps are runner/admission failures
+rather than compiler diagnosis.
+
+**Private source rule:** Do not mirror repository contents to a different
+GitHub organization merely because it has runner capacity. Private source
+transfer remains governed by `docs/PRIVATE_CI_MIRRORS.md` and the explicitly
+approved destination allowlist. Source-free runner/toolchain probes are not
+substitutes for building Oreslang at the exact source commit.
