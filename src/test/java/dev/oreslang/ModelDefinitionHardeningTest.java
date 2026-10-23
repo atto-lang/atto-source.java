@@ -122,4 +122,30 @@ final class ModelDefinitionHardeningTest {
                 + "Pass() ".repeat(4097) + "end";
         reject("MODEL_NODE_BUDGET", () -> Parser.parse(source));
     }
+ 
+    @Test
+    void rejectExcessiveModelDefaultNestingBeforeGeneralExpressionParsing() {
+        String nested = "(".repeat(64) + "1" + ")".repeat(64);
+        String source = "define model DeepDefault(config: int = " + nested
+                + ") as Pass() end";
+        reject("MODEL_EXPRESSION_BUDGET", () -> Parser.parse(source));
+    }
+
+    @Test
+    void rejectExcessiveModelStaticArgumentTokensBeforeGeneralExpressionParsing() {
+        StringBuilder expression = new StringBuilder("1");
+        for (int i = 0; i < 300; i++) expression.append(" + 1");
+        String source = "define model HugeExpression as Pass("
+                + expression + ") end";
+        reject("MODEL_EXPRESSION_BUDGET", () -> Parser.parse(source));
+    }
+
+    @Test
+    void acceptOrdinaryParenthesizedModelStaticConstantsAtParserBoundary() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                define model SmallDefault(offset: int = ((1))) as
+                  Offset(((2)))
+                end
+                """));
+    }
 }
