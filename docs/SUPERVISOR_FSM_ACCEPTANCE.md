@@ -83,3 +83,16 @@ Actual source actor CONTROL hooks, authenticated terminal receipts,
 independent supervisor reassignment and arena/loan reclamation remain gated.
 Fresh JDK25 executing jobs are needed: source Actions currently fail without
 recorded execution steps.
+
+
+### Partial supervisor-tree admission deadline
+
+A supervisor may be in RUNNING/RESTARTING if recursive group admission fencing
+fails before its shutdown event publishes. The shared watchdog must not send
+an invalid DeadlineExpired event to that unadmitted node and then throw before
+settling the deadline observer. `SupervisorShutdownTree.deadlineEventFor`
+maps an unadmitted node to CoordinatorFailed (never synthetic STOPPED), and
+admitted nodes to DeadlineExpired. Focused
+`SupervisorShutdownDeadlineFenceTest` validates the mapping in RUNNING,
+RESTARTING and BEFORE_HOOK. This is authored/test-registered code; exact
+JDK25 execution remains blocked by zero-step GitHub Actions failures.
