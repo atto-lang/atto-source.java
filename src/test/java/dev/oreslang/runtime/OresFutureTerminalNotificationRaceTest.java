@@ -104,7 +104,7 @@ final class OresFutureTerminalNotificationRaceTest {
         var delivered = new AtomicInteger();
         var drained = new AtomicInteger();
         var producer = new OresFuture<Integer>(
-                () -> { throw new IllegalStateException("revoker failed"); },
+                (Runnable) () -> { throw new IllegalStateException("revoker failed"); },
                 drained::incrementAndGet);
         producer.whenCompleteRuntime((value, failure) -> {
             if (failure instanceof java.util.concurrent.CancellationException) {
