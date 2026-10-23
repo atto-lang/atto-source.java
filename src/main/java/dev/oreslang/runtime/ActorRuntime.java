@@ -127,6 +127,20 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Host-injected VM-owned executor for potentially blocking physical child
+     * STOP work. Submission must be bounded, prompt, and must not run the task
+     * inline or on the zero-thread CONTROL coordinator. Rejection throws.
+     *
+     * A successfully submitted task must eventually execute once; runtime
+     * admission and physical retirement remain separately accounted for.
+     * Standalone runtimes without this capability retain synchronous STOP.
+     */
+    @FunctionalInterface
+    public interface PhysicalStopDispatcher {
+        void execute(Runnable stopTask);
+    }
+
     public static boolean isActorCarrierThread() {
         return Boolean.TRUE.equals(ACTOR_CARRIER.get());
     }
@@ -473,6 +487,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final DispatcherConfig dispatcherConfig;
     private final TurnExecutor turnExecutor;
     private final ControlDispatcher controlDispatcher;
+    private final PhysicalStopDispatcher physicalStopDispatcher;
     private volatile Consumer<Object> actorExitHook = ignored -> { };
 
     /**
@@ -535,6 +550,15 @@ public final class ActorRuntime implements AutoCloseable {
             DispatcherConfig dispatcherConfig,
             TurnExecutor turnExecutor,
             ControlDispatcher controlDispatcher) {
+        this(policyCeiling, dispatcherConfig, turnExecutor, controlDispatcher, null);
+    }
+
+    public ActorRuntime(
+            IsolatePolicy policyCeiling,
+            DispatcherConfig dispatcherConfig,
+            TurnExecutor turnExecutor,
+            ControlDispatcher controlDispatcher,
+            PhysicalStopDispatcher physicalStopDispatcher) {
         // Standalone ActorRuntime callers must not bypass OresVM's strict-GC
         // admission gate: the underlying JVM and direct-buffer cleaner still GC.
         ActorHeapAdmission.requireSupportedJvmMode(
@@ -544,6 +568,7 @@ public final class ActorRuntime implements AutoCloseable {
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
         this.turnExecutor = Objects.requireNonNull(turnExecutor);
         this.controlDispatcher = Objects.requireNonNull(controlDispatcher);
+        this.physicalStopDispatcher = physicalStopDispatcher;
         int physicalLimit = Integer.getInteger("ores.runtime.actor.max-active-turns", 0);
         if (physicalLimit < 0) {
             throw new IllegalArgumentException("ores.runtime.actor.max-active-turns must be >= 0");
@@ -7209,6 +7234,8 @@ public final class ActorRuntime implements AutoCloseable {
         private int pendingStopFutureNotifications;
         /** Terminal notification drains for public mailbox observers detached at STOP. */
         private int pendingStopDrainNotifications;
+        /** Independently dispatched sibling STOP hooks must physically return. */
+        private int pendingChildStopDispatches;
         /** STOP has sealed admission and may execute only existing SourceTasks. */
         private boolean sourceStopCleanupActive;
         /** Any failed cleanup submission quarantines actor state. */
@@ -7523,6 +7550,7 @@ public final class ActorRuntime implements AutoCloseable {
                     || pendingOperationRevocationPending
                     || pendingStopFutureNotifications != 0
                     || pendingStopDrainNotifications != 0
+                    || pendingChildStopDispatches != 0
                     || pendingCleanupFutures != 0
                     || activeTurns != 0
                     || scheduled.get()
@@ -8188,6 +8216,39 @@ public final class ActorRuntime implements AutoCloseable {
             terminateTree(cancellation, true);
         }
 
+        private void quarantineChildStopFailure(Throwable failure) {
+            synchronized (lifecycleLock) {
+                sourceStopCleanupAborted = true;
+                ref.terminationCause.compareAndSet(null,
+                        new OresScheduler.CleanupIncompleteError(
+                                "child STOP request failed; quarantine actor state",
+                                failure));
+                lifecycleLock.notifyAll();
+            }
+        }
+
+        private void completeChildStopDispatch(Throwable failure) {
+            synchronized (lifecycleLock) {
+                if (failure != null) {
+                    sourceStopCleanupAborted = true;
+                    ref.terminationCause.compareAndSet(null,
+                            new OresScheduler.CleanupIncompleteError(
+                                    "asynchronous child STOP failed; quarantine actor state",
+                                    failure));
+                }
+                if (pendingChildStopDispatches <= 0) {
+                    sourceStopCleanupAborted = true;
+                    ref.terminationCause.compareAndSet(null,
+                            new OresScheduler.CleanupIncompleteError(
+                                    "asynchronous child STOP dispatch receipt underflow"));
+                } else {
+                    pendingChildStopDispatches--;
+                }
+                if (stopped.get()) finalizeStopLocked();
+                lifecycleLock.notifyAll();
+            }
+        }
+
         private void terminateTree(Throwable cause, boolean recordCause) {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
@@ -8225,6 +8286,8 @@ public final class ActorRuntime implements AutoCloseable {
                 // Leave sourceTaskMailbox open: the stopped actor's scheduler
                 // still owns authenticated lexical unwind continuations.
                 descendants = List.copyOf(children);
+                pendingChildStopDispatches =
+                        physicalStopDispatcher == null ? 0 : descendants.size();
                 pending = List.copyOf(pendingOperations);
                 // Cancellation may already have won the terminal CAS on a
                 // different thread, whose revoker or subscriber is still
@@ -8248,33 +8311,54 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             }
 
-            // Propagate structured STOP to children before parent-owned
-            // cancellation hooks or source terminal subscribers can block.
-            // Otherwise one stalled parent I/O revoker can keep a child
-            // executing indefinitely even though the parent's STOP was sealed.
-            // No parent lifecycle lock is held while cancelling descendants.
-            // Continue revoking every child even if one fails synchronously.
-            Throwable childCancellationFailure = null;
-            for (ActorCell<?> child : descendants) {
-                try {
-                    child.cancel(new ActorCancelledException(
-                            child.ref.id(),
-                            "parent actor " + ref.id() + " terminated"));
-                } catch (RuntimeException | Error failure) {
-                    if (childCancellationFailure == null) childCancellationFailure = failure;
-                    else if (childCancellationFailure != failure) {
-                        childCancellationFailure.addSuppressed(failure);
+            // Propagate every sibling STOP without coupling it to another
+            // sibling's blocking revoker when a VM-owned physical STOP
+            // dispatcher exists. All siblings are already admission-sealed.
+            // Parent DONE joins each dispatch receipt AND child finalization.
+            if (physicalStopDispatcher != null) {
+                for (ActorCell<?> child : descendants) {
+                    // Exactly one accounting release even if a broken host
+                    // dispatcher schedules a task and then throws.
+                    java.util.concurrent.atomic.AtomicBoolean received =
+                            new java.util.concurrent.atomic.AtomicBoolean();
+                    Runnable teardown = () -> {
+                        Throwable failure = null;
+                        try {
+                            child.cancel(new ActorCancelledException(
+                                    child.ref.id(),
+                                    "parent actor " + ref.id() + " terminated"));
+                        } catch (RuntimeException | Error stoppedFailure) {
+                            failure = stoppedFailure;
+                        } finally {
+                            if (received.compareAndSet(false, true)) {
+                                completeChildStopDispatch(failure);
+                            }
+                        }
+                    };
+                    try {
+                        physicalStopDispatcher.execute(teardown);
+                    } catch (RuntimeException | Error admissionFailure) {
+                        // Rejecting after enqueue is a host-contract breach:
+                        // quarantine even if the queued callback later runs.
+                        if (received.compareAndSet(false, true)) {
+                            completeChildStopDispatch(admissionFailure);
+                        } else {
+                            quarantineChildStopFailure(admissionFailure);
+                        }
                     }
                 }
-            }
-            if (childCancellationFailure != null) {
-                synchronized (lifecycleLock) {
-                    sourceStopCleanupAborted = true;
-                    ref.terminationCause.compareAndSet(null,
-                            new OresScheduler.CleanupIncompleteError(
-                                    "child STOP request failed; quarantine actor state",
-                                    childCancellationFailure));
-                    lifecycleLock.notifyAll();
+            } else {
+                // Standalone host runtime compatibility: no implicit new
+                // pool/thread per actor and no CONTROL carrier may block here.
+                // The universal sibling admission pre-fence still applies.
+                for (ActorCell<?> child : descendants) {
+                    try {
+                        child.cancel(new ActorCancelledException(
+                                child.ref.id(),
+                                "parent actor " + ref.id() + " terminated"));
+                    } catch (RuntimeException | Error failure) {
+                        quarantineChildStopFailure(failure);
+                    }
                 }
             }
 
