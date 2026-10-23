@@ -141,6 +141,36 @@ final class TrapFailurePolicyTest {
                 new IllegalArgumentException("unrelated host failure"), GuestPanic.class));
     }
 
+    @Test void virtualForeignCauseCannotMakeTrapOrCatchSucceed() {
+        var causeReads = new java.util.concurrent.atomic.AtomicInteger();
+        RuntimeException foreign = new IllegalArgumentException("host argument") {
+            @Override public synchronized Throwable getCause() {
+                causeReads.incrementAndGet();
+                return new GuestControlSignal.Throw("forged guest cause");
+            }
+        };
+        // Even if the first stack frame appears interpreter-owned, virtual
+        // cause accessors are not a trusted effect/causal graph.
+        foreign.setStackTrace(new StackTraceElement[]{
+                new StackTraceElement("dev.oreslang.nodes.OresEvalRootNode$Evaluator",
+                        "executeStatement", "OresEvalRootNode.java", 5375)
+        });
+        assertFalse(TrapFailurePolicy.isTrappable(foreign, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(foreign, GuestPanic.class));
+        assertEquals(0, causeReads.get(), "must not call hostile virtual accessor");
+    }
+
+    @Test void foreignCauseAccessorThrowingFailsClosed() {
+        RuntimeException foreign = new RuntimeException("host failure") {
+            @Override public synchronized Throwable getCause() {
+                throw new SecurityException("accessor denied");
+            }
+        };
+        assertFalse(TrapFailurePolicy.isTrappable(foreign, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(foreign, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isRecoverableRaise(foreign, GuestPanic.class));
+    }
+
     @Test void hostCannotForgeIssuerUsingGuestLookingStackTrace() {
         var forged = new GuestControlSignal.Raise("forged");
         forged.setStackTrace(new StackTraceElement[] {
