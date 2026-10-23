@@ -1338,6 +1338,14 @@ public final class Parser {
         List<String> generics = parseGenericParameters();
         consume(EQUAL, "expected '=' in type alias");
         Ast.TypeRef target = parseTypeRef();
+        // A refinement is not an ordinary transparent alias: never erase
+        // its predicate at this parser boundary. Enable this syntax only
+        // together with typed proof-preserving rules + Zorde lowering.
+        if (isContextualIdentifier("with") || check(AS)) {
+            throw error(peek(), "refined type alias requires checked constraint HIR, "
+                    + "Zorde exact-value validation and proof-preserving runtime lowering; "
+                    + "with/as constraints are not yet executable");
+        }
         consumeStatementTerminator("type alias should end with ';'");
         return new Ast.TypeAliasDecl(name, visibility, generics, target);
     }
