@@ -588,6 +588,28 @@ final class RecoveryHandlerChainTest {
         assertEquals(0, invoked.get());
     }
 
+    @Test void collidingExecutionIdCannotCrossAllocationGenerationBoundary() {
+        ExecutionContext actorExecution = ExecutionContext.actor(
+                7, 11, 21, 22, 3, 0, 0);
+        GuestFailure failure = GuestFailure.issueFromCompiler(
+                RecoveryHandlerChain.FailureKind.THROW,
+                new Exception("actor generation"),
+                actorExecution,
+                100);
+        var invoked = new java.util.concurrent.atomic.AtomicInteger();
+        var taskChain = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
+                .onThrow((e, next) -> {
+                    invoked.incrementAndGet();
+                    next.resolve(9);
+                })
+                .freeze();
+
+        var outcome = assertInstanceOf(
+                RecoveryHandlerChain.Unhandled.class, taskChain.dispatch(failure));
+        assertSame(failure, outcome.pendingFailure());
+        assertEquals(0, invoked.get());
+    }
+
     @Test void exhaustedChainCannotBeReplayedForSecondHandlerPass() {
         Throwable pending = new Exception("same unwind");
         GuestFailure failure = signal(RecoveryHandlerChain.FailureKind.RAISE, pending);
@@ -619,7 +641,54 @@ final class RecoveryHandlerChainTest {
         assertEquals(new RecoveryHandlerChain.Recovered<>(42), chain.dispatch(failure));
         IllegalStateException replay = assertThrows(
                 IllegalStateException.class, () -> chain.dispatch(failure));
-        assertTrue(replay.getMessage().contains("cannot be dispatched again"));
+        assertTrue(replay.getMessage().contains("completed guest failure"));
+    }
+
+    @Test void handlerFailureSealsOriginalEnvelopeAgainstReuse() {
+        GuestFailure failure = signal(
+                RecoveryHandlerChain.FailureKind.RAISE,
+                new Exception("pending"));
+        var failing = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
+                .onRaise((e, next) -> { throw new IllegalArgumentException("handler"); })
+                .freeze();
+        var fallback = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
+                .onRaise((e, next) -> next.resolve(99))
+                .freeze();
+
+        assertInstanceOf(
+                RecoveryHandlerChain.HandlerFailure.class, failing.dispatch(failure));
+        assertThrows(IllegalStateException.class, () -> fallback.dispatch(failure));
+    }
+
+    @Test void terminalCallbackFailureSealsOriginalEnvelopeAgainstReuse() {
+        GuestFailure failure = signal(
+                RecoveryHandlerChain.FailureKind.RAISE,
+                new Exception("pending"));
+        var failing = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
+                .onRaise((e, next) -> { throw new SecurityException("denied"); })
+                .freeze();
+        var fallback = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
+                .onRaise((e, next) -> next.resolve(99))
+                .freeze();
+
+        assertInstanceOf(
+                RecoveryHandlerChain.TerminalCallbackFailure.class, failing.dispatch(failure));
+        assertThrows(IllegalStateException.class, () -> fallback.dispatch(failure));
+    }
+
+    @Test void hostFatalCallbackSealsOriginalEnvelopeAgainstReuse() {
+        GuestFailure failure = signal(
+                RecoveryHandlerChain.FailureKind.RAISE,
+                new Exception("pending"));
+        var fatal = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
+                .onRaise((e, next) -> { throw new AssertionError("fatal"); })
+                .freeze();
+        var fallback = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
+                .onRaise((e, next) -> next.resolve(99))
+                .freeze();
+
+        assertThrows(AssertionError.class, () -> fatal.dispatch(failure));
+        assertThrows(IllegalStateException.class, () -> fallback.dispatch(failure));
     }
 
     @Test void emptyChainAndNullRegistrationAreSafe() {
