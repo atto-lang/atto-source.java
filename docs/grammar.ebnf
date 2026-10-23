@@ -21,6 +21,7 @@ top_level_item  = annotated_module_decl
                 | callable_decl
                 | class_decl
                 | model_decl
+                | extension_method_decl
                 | declared_type_only
                 | interface_decl
                 | type_decl
@@ -35,6 +36,7 @@ module_member   = contract_decl
                 | callable_decl
                 | class_decl
                 | model_decl
+                | extension_method_decl
                 | declared_type_only
                 | interface_decl
                 | type_decl
@@ -48,6 +50,11 @@ callable_decl   = { annotation } visibility { callable_modifier } callable_kind 
                   ( "(" [ param_list ] ")" return_spec block
                   | "=" "|" [ param_list ] "|" "->" [ type_ref ] block ) ;
 callable_kind   = "fnc" | "routine" ;
+
+(* 'mtd' and 'on' are contextual in extension declarations. The receiver
+   must be a simple, locally declared named type alias in v1. *)
+extension_method_decl = visibility "define" [ visibility ] "mtd" IDENT "on"
+                        type_ref "(" [ param_list ] ")" return_spec block ;
 
 actor_callable_decl
                 = { annotation } visibility { "async" | "nlex" | "structural" | "shared" } "actor" "fnc" callable_name [ generic_params ]
