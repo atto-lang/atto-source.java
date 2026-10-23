@@ -127,7 +127,14 @@ public final class TaskOwnedLockLedgerTest {
                 var mutex = OresMutex.shared(new int[] {i});
                 mutexes.add(mutex);
                 originals.add(mutex.tryLock().orElseThrow());
-                var pending = mutex.lockAsync();
+                AtomicReference<java.util.concurrent.CompletableFuture<OresMutex.Guard<int[]>>>
+                        requested = new AtomicReference<>();
+                Thread requester = Thread.ofPlatform().start(
+                        () -> requested.set(mutex.lockAsync()));
+                requester.join(3000);
+                assertFalse(requester.isAlive(), "async request did not return");
+                var pending = requested.get();
+                assertNotNull(pending);
                 pending.whenComplete((guard, error) -> {
                     allBlocked.countDown();
                     try {
@@ -146,7 +153,14 @@ public final class TaskOwnedLockLedgerTest {
 
             var separate = OresMutex.shared(new int[] {99});
             var first = separate.tryLock().orElseThrow();
-            var future = separate.lockAsync();
+            AtomicReference<java.util.concurrent.CompletableFuture<OresMutex.Guard<int[]>>>
+                    extra = new AtomicReference<>();
+            Thread additional = Thread.ofPlatform().start(
+                    () -> extra.set(separate.lockAsync()));
+            additional.join(3000);
+            assertFalse(additional.isAlive(), "additional async request blocked");
+            var future = extra.get();
+            assertNotNull(future);
             first.release();
             // A fixed four-worker pool would strand this fifth handoff while
             // all workers are running blocked non-Async host callbacks.
