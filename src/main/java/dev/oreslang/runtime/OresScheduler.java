@@ -1290,18 +1290,16 @@ public final class OresScheduler implements AutoCloseable {
                         || executing.get()
                         || !quiescenceNotified.compareAndSet(false, true)) return;
             }
-            {
-                // Keep the task observable in the scheduler's live set while a
-                // cancelled/failed guest turn is still physically executing.
-                // A terminal Future is not a carrier-exit witness.
-                tasks.remove(this);
-                cancelWallDeadline();
-                try {
-                    onQuiescent.run();
-                } finally {
-                    deadlineQuiescenceRetired.set(true);
-                    releaseDeadlineSlotIfRetired();
-                }
+            // Keep the task observable in the scheduler's live set while a
+            // cancelled/failed guest turn is still physically executing.
+            // A terminal Future is not a carrier-exit witness.
+            tasks.remove(this);
+            cancelWallDeadline();
+            try {
+                onQuiescent.run();
+            } finally {
+                deadlineQuiescenceRetired.set(true);
+                releaseDeadlineSlotIfRetired();
             }
         }
 
