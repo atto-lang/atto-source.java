@@ -7,7 +7,7 @@ Status: draft, stacked on Java Task-owned mutex ledger PR #1923 (2026-10-22).
 - Mutex *construction* and mutex *permit acquisition* are separate lifetimes. A mutex can be explicitly shared or actor-owned; each acquisition belongs to the acquiring logical Task or actor incarnation.
 - A tracked Task's private `TaskOwnedLockLedger` always wins. Ordinary trusted actor source Tasks started through `ActorRuntime.startActorTask` now use `sourceScheduler.startTracked`, and the actor retains each TaskHandle until its non-cancellable Task-level `getDone` retirement receipt. A direct, untracked actor mailbox turn attaches permits to its actor's ledger. Both registries are trusted metadata, not guest-executable `defer` hooks.
 - Actor STOP fences the actor ledger immediately; it cannot forcibly unlock a thread-affine host mutex. Native/FFI execution and admitted continuations must be quiescent before revocation.
-- An actor-owned lock permit can survive a Task completing **only** with explicit checked actor-scope transfer. Wall-deadline UNTRUSTED source Tasks still use the older untracked `startWithWallDeadline` path: per-Task ledger/quiescence integration is a P0 parity gap, not the final typed Task semantics.
+- An actor-owned lock permit can survive a Task completing **only** with explicit checked actor-scope transfer. Both ordinary trusted and UNTRUSTED wall-deadline source Tasks now use `TaskHandle` and private logical Task lock ledgers; the wall-time quota, physical quiescence callback and terminal-notification quota callbacks remain in the untrusted scheduler admission path. Typed guest lowering and callback failure tests are still open.
 
 ## Lifecycle order (linearization)
 
@@ -27,6 +27,7 @@ No user `defer` / `recover` / `tear_down` execution is required to revoke permit
 Tests added in `ActorLockStopRetirementTest`:
 - Direct actor leaks writer guard; STOP revokes it, poisons shared state, and DONE comes after cleanup.
 - A compiler-started trusted source Task leaks a guard; its own Task ledger revokes and poisons **before** actor STOP (the actor stays alive).
+- A wall-deadline Task's own ledger revokes an unreleased mutable guard, while its physical and notification quota callbacks execute exactly once; a suspended deadline Task stopped by scheduler closure is revoked after physical quiescence.
 - Pending async actor waiter is cancelled on STOP, without poisoning a never-granted permit.
 - Channel close Future subscriber and mailbox envelope release callbacks block deliberately; both must run outside lifecycleLock, with STOP and DONE gated correctly.
 - Exit hook deliberately blocks; it must execute without guest authority and outside lifecycleLock; getDone and awaitTermination stay pending.
