@@ -126,6 +126,11 @@ final class NativeHttpRollingDispatcherIntegrationTest {
                         () -> rolling.promoteAfterWarmup(1L, bad).get(8, TimeUnit.SECONDS));
                 assertEquals(1L, rolling.snapshot().activeEpoch(),
                         "failed candidate must leave G1 serving");
+                HttpResponse<String> survivingG1 = client.send(request(port),
+                        HttpResponse.BodyHandlers.ofString());
+                assertEquals(200, survivingG1.statusCode());
+                assertEquals("G1", survivingG1.body(),
+                        "G1 must keep serving while an unrelated exchange is deferred");
 
                 var g2 = http.handler(g2Code, "RollingWorker",
                         ActorRuntime.ActorKind.SHARED).pooled(1);
@@ -153,6 +158,9 @@ final class NativeHttpRollingDispatcherIntegrationTest {
                 assertTrue(rolling.admissionsDrained(1L));
                 assertTrue(rolling.requestDrainAfterAdmissions(1L),
                         "only completed G1 transport exchanges may start actor drain");
+                g1Code.actor.get().getDone().get(8, TimeUnit.SECONDS);
+                assertEquals(2, rolling.snapshot().liveGenerations(),
+                        "terminal G1 actors must not automatically imply physical reclamation");
                 assertThrows(IllegalStateException.class,
                         () -> rolling.acknowledgePhysicallyRetired(2L),
                         "current serving generation must never be retired");
@@ -189,6 +197,10 @@ final class NativeHttpRollingDispatcherIntegrationTest {
                 rolling.start();
                 assertThrows(IllegalArgumentException.class,
                         () -> rolling.promoteAfterWarmup(1L, g1));
+                var stale = http.handler(new VersionCode(image, ref, "never", false, false),
+                        "RollingWorker", ActorRuntime.ActorKind.SHARED).pooled(1);
+                assertFalse(rolling.promoteAfterWarmup(0L, stale).get(8, TimeUnit.SECONDS),
+                        "stale expected epochs must not replace G1");
                 assertEquals(1L, rolling.snapshot().activeEpoch());
                 assertEquals("stable", client.send(request(server.port()),
                         HttpResponse.BodyHandlers.ofString()).body());
