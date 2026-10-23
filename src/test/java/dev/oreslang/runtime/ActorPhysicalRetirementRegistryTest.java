@@ -1193,6 +1193,40 @@ final class ActorPhysicalRetirementRegistryTest {
                 "dispatch rejection permanently quarantines this incarnation");
     }
 
+    @Test void actualNioCompletionWrapperQuarantinesDuplicateAfterRelease()
+            throws Exception {
+        var queued = new java.util.ArrayDeque<Runnable>();
+        var callbackCalls = new AtomicInteger();
+        var registry = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 61, () -> { }, queued::add);
+        var receipt = registry.register(
+                ActorPhysicalRetirementRegistry.Kind.NATIVE_IO_OPERATION, false);
+        java.nio.channels.CompletionHandler<Integer, Void> delegate =
+                new java.nio.channels.CompletionHandler<>() {
+                    @Override public void completed(Integer value, Void ignored) {
+                        callbackCalls.incrementAndGet();
+                    }
+                    @Override public void failed(Throwable failure, Void ignored) {
+                        throw new AssertionError(failure);
+                    }
+                };
+        var wrapper = new ActorPhysicalIoCallbackLease<Integer, Void>(receipt, delegate);
+        registry.seal();
+        wrapper.completed(1, null);
+        assertEquals(1, callbackCalls.get());
+        assertEquals(0, registry.snapshot().pending());
+        assertEquals(1, registry.snapshot().inFlightNotifications());
+        var duplicated = assertThrows(IllegalStateException.class,
+                () -> wrapper.completed(2, null));
+        assertTrue(duplicated.getMessage().contains("duplicate native I/O callback"));
+        assertEquals(1, registry.snapshot().pending(),
+                "the real completion wrapper must restore the quarantine ticket");
+        assertSame(duplicated, registry.snapshot().failure());
+        queued.remove().run();
+        assertEquals(1, callbackCalls.get(), "duplicate callback never enters delegate");
+        assertThrows(IllegalStateException.class, registry::retireVerified);
+    }
+
     @Test void duplicateNativeCallbackAfterReleaseBeforeDoneRevokesReceipt() {
         var queued = new java.util.ArrayDeque<Runnable>();
         var notices = new AtomicInteger();
