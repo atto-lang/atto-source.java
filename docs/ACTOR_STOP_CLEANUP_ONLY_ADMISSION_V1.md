@@ -390,3 +390,58 @@ long-running native callback may outlive VM `close()` and must not be treated
 as released by interruption or timeout. Formal modeling should extend to
 actor generations, native loans and supervisor restart. Real CI is blocked by
 the private-source mirror authorization gate.
+
+## AsyncNativeIo context-wide physical loan barrier (2026-10-23)
+
+The former `AsyncNativeIo.close()` used `shutdownNow()`, immediately
+cleared its pending Futures/resources, failed all Futures and closed registered
+sockets even while a virtual host I/O worker was still executing. The
+replacement has bounded data and independently reserved close/control workers
+and tracks each admitted job through:
+
+- `ADMITTED → RUNNING → RETIRING → RETIRED`. The worker is the sole
+  publisher of the operation Future and must complete physical `work.call()`
+  *and the terminal Future callback drain* before releasing the context's
+  physical-operation reservation. A terminal Future alone is not a receipt.
+- `ADMITTED → CANCELLED_BEFORE_START`. A queued entry returned by the
+  executor's `shutdownNow()` never executes `work.call()`; a bounded-count
+  independent host notifier fails its Future. The context retains its receipt
+  until **all** terminal subscribers return. This avoids executing arbitrary
+  host callbacks synchronously on the shutdown/control caller.
+- Admission rejection reserves no operation, returns a failed Future and
+  never runs rejected work. Actor/supervisor callers cannot cancel a
+  filesystem mutation as if rollback had been guaranteed.
+
+On shutdown, the context seals data/control admissions, requests interruption,
+reports every discarded queued job, waits for both executors' actual worker
+termination, and joins outstanding never-started notification receipts within
+a finite deadline. Only then may it close registered resources. On deadline,
+notification exception, or resource-close failure it throws an incomplete
+cleanup error and keeps strong ownership in `QUARANTINED_IO`. Another explicit
+`close()` can join and release once the physical receipts exist.
+
+An `unregister(resource)` racing active operations retains the resource
+strongly until context loans have quiesced. A resource registered by an
+already-running worker *after* shutdown admission is sealed is also retained
+for the post-join close sweep, not prematurely closed on the worker stack.
+
+The enclosing `OresContext.close()` now independently joins `nativeIo`
+and actor runtime shutdown before tearing down the VM, mutable actor heaps,
+shared code images, HTTP/async services and runtime collector. An incomplete
+physical lifetime quarantines the context in `QUARANTINED_CONTEXTS` for a
+later explicit retry instead of clearing those shared heaps and code images.
+
+Added `AsyncNativeIoTest` coverage for discarded queued work, a native
+worker deliberately ignoring interruption, terminal callbacks blocking
+physical retirement, a never-started notification subscriber blocking,
+and self-close deadlock prevention. `FormalNativeIoLoanModelCheckTest`
+models two physical loans and their queued callback branches. A separate
+bounded enumeration explored **83 states** without allowing resource
+reclamation ahead of physical worker plus notification receipts. **These
+regressions still need actual exact-head Java/GraalVM execution.**
+
+The new receipt is conservatively **context-wide**, not per-socket or
+per-actor-incarnation. Per-resource reference accounting, native callback
+exit receipts beyond Java worker return, generation/fencing proofs for
+actor restarts, more exhaustive exhaustion testing, and LLVM parity are
+still required before this can certify arbitrary FFI or native memory safety.
