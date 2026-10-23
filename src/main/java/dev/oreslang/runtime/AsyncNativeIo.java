@@ -139,8 +139,7 @@ public final class AsyncNativeIo implements AutoCloseable {
             throw new RejectedExecutionException(
                     "native resource is closed, unregistered or shutdown-sealed");
         }
-        ActorRuntime.ActorId actorId = currentOperationActor.get();
-        if (actorId == null) actorId = ActorRuntime.currentActorId().orElse(null);
+        ActorRuntime.ActorId actorId = currentOwnerActor();
         state.active++;
         incrementActorOperationLocked(actorId);
         return new IoLoan(state, new IoLoanIdentity(
@@ -380,6 +379,11 @@ public final class AsyncNativeIo implements AutoCloseable {
         }
     }
 
+    private ActorRuntime.ActorId currentOwnerActor() {
+        ActorRuntime.ActorId id = currentOperationActor.get();
+        return id != null ? id : ActorRuntime.currentActorId().orElse(null);
+    }
+
     synchronized void register(AutoCloseable resource) throws Exception {
         Objects.requireNonNull(resource);
         if (resourceLoans.containsKey(resource)) {
@@ -403,13 +407,13 @@ public final class AsyncNativeIo implements AutoCloseable {
             resources.add(resource);
             resourceLoans.put(resource, new ResourceLeaseState(
                     nextResourceGeneration.incrementAndGet(), resource,
-                    ActorRuntime.currentActorId().orElse(null)));
+                    currentOwnerActor()));
             throw new IllegalStateException("I/O context closed");
         }
         resources.add(resource);
         resourceLoans.put(resource, new ResourceLeaseState(
                 nextResourceGeneration.incrementAndGet(), resource,
-                ActorRuntime.currentActorId().orElse(null)));
+                currentOwnerActor()));
     }
 
     synchronized void unregister(AutoCloseable resource) {
