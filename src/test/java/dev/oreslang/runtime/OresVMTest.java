@@ -91,7 +91,13 @@ final class OresVMTest {
                 assertTrue(holdingEntered.await(3, TimeUnit.SECONDS));
                 vm.executePhysicalStop(started::incrementAndGet,
                         failure -> discarded.incrementAndGet());
-                Thread closer = Thread.ofVirtual().start(vm::close);
+                Thread closer = Thread.ofVirtual().start(() -> {
+                    try {
+                        vm.close();
+                    } catch (Throwable failure) {
+                        unexpected.compareAndSet(null, failure);
+                    }
+                });
                 releaseHolding.countDown();
                 closer.join(TimeUnit.SECONDS.toMillis(3));
                 assertTrue(!closer.isAlive(), "VM close hung in round " + round);
