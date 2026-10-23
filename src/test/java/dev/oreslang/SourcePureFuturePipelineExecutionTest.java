@@ -85,6 +85,20 @@ final class SourcePureFuturePipelineExecutionTest {
     }
 
     @Test
+    void compilerAdmissionIncludesOwnershipPassForPureFuturePipeline() {
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(
+                () -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheck("""
+                        async fnc source(): int { return 21; }
+                        fnc increment(int value): int { return value + 1; }
+                        pub fnc main(): void {
+                          val Future<int> pending = source() |> increment();
+                          val Option<int> result = trap await (pending);
+                          return;
+                        }
+                        """));
+    }
+
+    @Test
     void checkedPlanDoesNotTransferToReconstructedCall() {
         Ast.Program typed = TypeChecker.check(Parser.parse("""
                 async fnc source(): int { return 1; }
