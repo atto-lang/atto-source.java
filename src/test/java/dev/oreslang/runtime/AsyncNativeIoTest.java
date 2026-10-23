@@ -88,6 +88,86 @@ class AsyncNativeIoTest {
         assertFalse(Files.exists(outside.resolve("secret.txt")));
     }
 
+    @Test void contextShutdownSealsActorMailBeforeWakingNativeSocket()
+            throws Exception {
+        var runtime = new ActorRuntime();
+        var io = new AsyncNativeIo(2);
+        var actor = runtime.<String>spawnShared(() -> (message, context) -> { });
+        var socketWake = new CountDownLatch(1);
+        var observedSealed = new java.util.concurrent.atomic.AtomicBoolean();
+        try {
+            actor.ready().get(3, TimeUnit.SECONDS);
+            // The socket's close callback happens in requestShutdown(), BEFORE
+            // ActorRuntime.close() enters any user cleanup hooks.
+            Socket socket = new Socket() {
+                @Override public synchronized void close() throws IOException {
+                    assertThrows(RuntimeException.class,
+                            () -> actor.send("forbidden-after-context-seal"));
+                    observedSealed.set(true);
+                    socketWake.countDown();
+                    super.close();
+                }
+            };
+            io.register(socket);
+            OresContext.joinActorsAndNativeIo(runtime, io);
+            assertTrue(socketWake.await(2, TimeUnit.SECONDS));
+            assertTrue(observedSealed.get(),
+                    "actor mail must already be fenced when transport revocation runs");
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(socket.isClosed());
+            assertTrue(io.submit("closed", () -> 1).isDone());
+        } finally {
+            runtime.close();
+            io.close();
+        }
+    }
+
+    @Test void contextShutdownJoinsAfterPhysicalLoanAndSupportsQuarantinedRetry()
+            throws Exception {
+        var runtime = new ActorRuntime();
+        var io = new AsyncNativeIo(2, 1, 2);
+        var closeCount = new java.util.concurrent.atomic.AtomicInteger();
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var exited = new CountDownLatch(1);
+        try {
+            io.register(closeCount::incrementAndGet);
+            var pending = io.submit("uncooperative-native-work", () -> {
+                entered.countDown();
+                try {
+                    while (!release.await(25, TimeUnit.MILLISECONDS)) { }
+                } catch (InterruptedException interrupted) {
+                    while (release.getCount() != 0) {
+                        try { release.await(25, TimeUnit.MILLISECONDS); }
+                        catch (InterruptedException ignored) { }
+                    }
+                } finally {
+                    exited.countDown();
+                }
+                return 1;
+            });
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            assertThrows(IllegalStateException.class,
+                    () -> OresContext.joinActorsAndNativeIo(runtime, io),
+                    "a running physical I/O worker must force quarantine");
+            assertEquals(0, closeCount.get(),
+                    "incomplete native worker cannot release registered resources");
+            assertFalse(pending.isDone());
+            release.countDown();
+            assertTrue(exited.await(2, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class,
+                    assertThrows(ExecutionException.class,
+                            () -> pending.get(2, TimeUnit.SECONDS)).getCause());
+            OresContext.joinActorsAndNativeIo(runtime, io);
+            assertEquals(1, closeCount.get(),
+                    "verified retry must release resource exactly once");
+        } finally {
+            release.countDown();
+            runtime.close();
+            io.close();
+        }
+    }
+
     @Test void differentActorIncarnationsCannotReleaseEachOthersNativeLoans()
             throws Exception {
         try (var io = new AsyncNativeIo(4);
