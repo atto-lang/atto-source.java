@@ -81,6 +81,40 @@ final class ActorDefaultChildScopeTest {
     }
 
     @Test
+    void failedOrdinaryChildReportsDoneFailureWithoutImplicitRestart() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicReference<ActorRuntime.ActorRef<String>> childRef = new AtomicReference<>();
+            CountDownLatch published = new CountDownLatch(1);
+            ActorRuntime.ActorRef<String> parent = runtime.spawnShared(
+                    () -> (message, context) -> {
+                        if (!"spawn".equals(message)) return;
+                        ActorRuntime.ActorRef<String> child = context.runtime().spawnPrivate(
+                                ignored -> (childMessage, childContext) -> {
+                                    throw new IllegalStateException("child failure marker");
+                                });
+                        childRef.set(child);
+                        published.countDown();
+                        child.send("fail");
+                    });
+            parent.send("spawn");
+            assertTrue(published.await(5, TimeUnit.SECONDS));
+            ActorRuntime.ActorRef<String> child = childRef.get();
+            assertNotNull(child);
+            ExecutionException failure = assertThrows(ExecutionException.class,
+                    () -> child.done().get(5, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, failure.getCause());
+            assertEquals(child.failure().orElseThrow(), failure.getCause());
+            assertTrue(parent.isAlive(), "default child failure must not kill parent");
+            assertTrue(parent.childIds().isEmpty(),
+                    "failed child must retire its lifetime edge without re-spawn");
+            assertEquals(0, runtime.actorGroupCount());
+            parent.stop();
+            assertTrue(parent.awaitTermination(5, TimeUnit.SECONDS));
+            parent.done().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void stopWinsAgainstInFlightSpawnWithoutCreatingOrphan() throws Exception {
         Gate gate = Gate.create();
         try (ActorRuntime runtime = new ActorRuntime()) {
