@@ -443,6 +443,58 @@ end
 ```
 
 
+## Type-only declarations and first-class computational models
+
+The canonical forms for declarations that introduce a type without an
+instantiable runtime value are:
+
+```ores
+declare type UserId = int;
+declare pub type AccountId = int;
+
+declare trait Named as
+  fnc name() => string;
+end
+
+declare pub interface Serializable as
+  fnc serialize() => string;
+end
+```
+
+`declare` is a **contextual** declaration introducer, and only admits
+`type`, `trait`, or `interface`; it does not admit `class`, `actor`,
+`model`, functions, or runtime bindings. Public declarations use
+`declare pub ...` and are exposed subject to the ordinary module/import
+visibility checks. `define type`, `define interface`, and `define trait`
+are accepted for compatibility. The current trait spelling maps to the
+interface-like type declaration; coherent typeclass instances/dictionary
+resolution remain future work, not implied by this syntax.
+
+`define model` is different: it introduces a **nominal type and a separately
+owned executable model instance**. In the first executable Java/GraalVM
+profile, a model statically composes verified, synchronous, pure scalar
+operations:
+
+```ores
+fnc Add(int offset, int input): int { return input + offset; }
+
+define pub model Offset(offset: int = 2) as
+  Add(offset)
+end
+```
+
+`Offset(3)` constructs a model value; its immutable configured graph identity
+is distinct from the declaration's blueprint digest. Model operations cannot
+gain ambient capability, implicit cross-module lookup, dynamic graph structure,
+guest-supplied purity declarations, or actor transport. Model instance
+configuration is type-checked and canonicalized **at construction** (finite
+floating point numbers, bounded valid UTF-8, and owned scalar types only).
+Verified operation expression trees are bounded by both node count and depth
+before canonical digest traversal. This interpreter profile still allocates
+model instances and does **not** imply general DAG execution, autograd,
+GPU placement, freestanding execution or hard-real-time behavior. Backend
+execution and parity require real source-level tests.
+
 ## Classes, receivers, multiple inheritance, and interfaces
 
 > **Planned, not yet implemented:** `sealed`, `non-sealed`, `final` class headers
