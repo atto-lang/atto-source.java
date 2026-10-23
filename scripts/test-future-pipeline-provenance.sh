@@ -3,7 +3,11 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd -P)"
 work="$(mktemp -d)"
 trap 'rm -rf -- "$work"' EXIT
-javac --release 21 -sourcepath "$root/src/main/java" -d "$work/classes" \
+# All standalone inputs are listed below. Do not discover module-info.java,
+# which would turn this dependency-free gate into a GraalVM module build.
+mkdir -p "$work/sourcepath"
+ln -s "$root/src/main/java/dev" "$work/sourcepath/dev"
+javac --release 21 -sourcepath "$work/sourcepath" -d "$work/classes" \
   "$root/src/main/java/dev/oreslang/ast/Ast.java" \
   "$root/src/main/java/dev/oreslang/parser/Token.java" \
   "$root/src/main/java/dev/oreslang/parser/Lexer.java" \
