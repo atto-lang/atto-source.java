@@ -21,6 +21,7 @@ public final class Parser {
     private final List<Token> tokens;
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
+    private boolean maxActorThreadsEnumDeclared;
     private boolean suppressRefinementOperators;
     // A match guard's outer '->' delimits an arm, not a lambda that happens
     // to follow a parenthesized guard expression.
@@ -112,6 +113,13 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                if (match(ENUM)) {
+                    if (!annotations.isEmpty())
+                        throw error(previous(), "built-in MaxActorThreads enum cannot have annotations");
+                    validateOnlyVisibilityModifiers(modifiers, "built-in MaxActorThreads enum");
+                    parseBuiltInMaxActorThreadsEnum();
+                    continue;
+                }
                 ActorPrefix actorPrefix = parseActorPrefix();
                 if (match(ACTOR, ISOACTOR)) {
                     rootDeclarations.add(parseDefinedActorClass(previous(), modifiers, annotations, actorPrefix));
@@ -262,7 +270,15 @@ public final class Parser {
         // Keep the pre-"as" spelling accepted while existing source migrates.
         match(AS);
         List<Ast.Decl> declarations = new ArrayList<>();
-        while (!check(END) && !check(EOF)) declarations.add(parseModuleMember());
+        while (!check(END) && !check(EOF)) {
+            if (check(DEFINE) && checkNext(ENUM)) {
+                advance();
+                advance();
+                parseBuiltInMaxActorThreadsEnum();
+                continue;
+            }
+            declarations.add(parseModuleMember());
+        }
         consume(END, "expected 'end' to close module " + name);
         return new Ast.ModuleDecl(name, annotations, contracts, declarations);
     }
@@ -388,8 +404,8 @@ public final class Parser {
                 throw error(actorToken, "actor class declarations accept only visibility and actor-kind modifiers");
             }
             rejectCallableStructuralAnnotation(annotations, "actor class declarations");
-            rejectDiscardedDeclarationAnnotations(annotations, "actor class declarations");
-            return parseActorClass(actorKind, modifiers.visibility);
+            Ast.MaxActorThreads maxThreads = actorMaxThreads(annotations);
+            return parseActorClass(actorKind, modifiers.visibility, ActorPrefix.DEFAULT, maxThreads);
         }
         if (match(FNC)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
@@ -758,8 +774,8 @@ public final class Parser {
                     "actor class declarations accept only visibility and actor-kind modifiers");
         }
         rejectCallableStructuralAnnotation(annotations, "actor class declarations");
-        rejectDiscardedDeclarationAnnotations(annotations, "actor class declarations");
-        return parseActorClass(kind, modifiers.visibility, prefix);
+        Ast.MaxActorThreads maxThreads = actorMaxThreads(annotations);
+        return parseActorClass(kind, modifiers.visibility, prefix, maxThreads);
     }
 
     private boolean matchContextualIdentifier(String lexeme) {
@@ -785,11 +801,17 @@ public final class Parser {
     }
 
     private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility) {
-        return parseActorClass(actorKind, visibility, ActorPrefix.DEFAULT);
+        return parseActorClass(actorKind, visibility, ActorPrefix.DEFAULT, Ast.MaxActorThreads.LOW);
     }
 
     private Ast.ClassDecl parseActorClass(
             Ast.ActorKind actorKind, Ast.Visibility visibility, ActorPrefix prefix) {
+        return parseActorClass(actorKind, visibility, prefix, Ast.MaxActorThreads.LOW);
+    }
+
+    private Ast.ClassDecl parseActorClass(
+            Ast.ActorKind actorKind, Ast.Visibility visibility, ActorPrefix prefix,
+            Ast.MaxActorThreads maxThreads) {
         String name = consume(IDENT, "expected actor name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
@@ -903,7 +925,7 @@ public final class Parser {
         }
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods,
-                new Ast.ActorConcurrency(prefix.transport(), requestConcurrency, messageConcurrency));
+                new Ast.ActorConcurrency(prefix.transport(), requestConcurrency, messageConcurrency), maxThreads);
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {
