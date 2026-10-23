@@ -36,7 +36,7 @@ final class ActorPhysicalIoCallbackLease<V, A> implements CompletionHandler<V, A
         try {
             delegate.completed(result, attachment);
         } catch (RuntimeException | Error failure) {
-            receipt.failPhysicalRelease(failure);
+            recordFailurePreservingCause(failure);
             throw failure;
         }
         // Native completion and the user's trusted host callback have both
@@ -46,14 +46,20 @@ final class ActorPhysicalIoCallbackLease<V, A> implements CompletionHandler<V, A
 
     @Override
     public void failed(Throwable error, A attachment) {
-        Objects.requireNonNull(error, "error");
         if (!claimed.compareAndSet(false, true)) {
             throw new IllegalStateException("duplicate native I/O callback");
+        }
+        // A malformed driver callback cannot leave an unclassified ticket.
+        if (error == null) {
+            var malformed = new IllegalArgumentException(
+                    "native I/O failure callback requires a cause");
+            recordFailurePreservingCause(malformed);
+            throw malformed;
         }
         try {
             delegate.failed(error, attachment);
         } catch (RuntimeException | Error failure) {
-            receipt.failPhysicalRelease(failure);
+            recordFailurePreservingCause(failure);
             throw failure;
         }
         // I/O failure is a normal physical completion outcome. It does not
@@ -69,6 +75,26 @@ final class ActorPhysicalIoCallbackLease<V, A> implements CompletionHandler<V, A
     void admissionFailedWithoutPhysicalProof(Throwable failure) {
         Objects.requireNonNull(failure, "failure");
         if (!claimed.compareAndSet(false, true)) return;
-        receipt.failPhysicalRelease(failure);
+        recordFailurePreservingCause(failure);
+    }
+
+    /**
+     * The registry latches failure before invoking the owner observer. If
+     * that observer throws, preserve the real delegate/submission exception;
+     * the extra diagnostic is already suppressed on the registry failure.
+     */
+    private void recordFailurePreservingCause(Throwable original) {
+        try {
+            receipt.failPhysicalRelease(original);
+        } catch (RuntimeException | Error observerFailure) {
+            rethrowFatal(observerFailure);
+        }
+    }
+
+    @SuppressWarnings("removal") // ThreadDeath is deprecated but still fatal.
+    private static void rethrowFatal(Throwable failure) {
+        if (failure instanceof VirtualMachineError fatal) throw fatal;
+        if (failure instanceof ThreadDeath fatal) throw fatal;
+        if (failure instanceof LinkageError fatal) throw fatal;
     }
 }
