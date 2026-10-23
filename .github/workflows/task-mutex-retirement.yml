@@ -59,6 +59,9 @@ jobs:
           set -euo pipefail
           java -version 2>&1 | tee ci-evidence/java-version.txt
           mvn -version | tee ci-evidence/maven-version.txt
+      - name: Self-test fail-closed receipt validation
+        shell: bash
+        run: bash scripts/ci/test-surefire-receipt-guard.sh
       - name: Execute focused JUnit suites
         env:
           CARRIER: ${{ matrix.carrier }}
@@ -66,15 +69,17 @@ jobs:
           mvn -B -ntp -Dores.runtime.carriers="$CARRIER"
           -Dtest=TaskOwnedLeasesTest,TaskOwnedMutexRetirementTest,TaskOwnedMutexOwnerIsolationTest,TaskHandleTest,MutexRuntimeTest
           -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test
-      - name: Require every selected suite report
+      - name: Require executed suites and hash XML evidence
+        env:
+          CARRIER: ${{ matrix.carrier }}
         shell: bash
         run: |
           set -euo pipefail
-          for suite in TaskOwnedLeasesTest TaskOwnedMutexRetirementTest TaskOwnedMutexOwnerIsolationTest TaskHandleTest MutexRuntimeTest; do
-            reports=(target/surefire-reports/TEST-*."$suite".xml)
-            test "${#reports[@]}" -eq 1
-            test -s "${reports[0]}"
-          done
+          java scripts/ci/SurefireReceiptGuard.java \
+            target/surefire-reports "ci-evidence/surefire-${CARRIER}.tsv" \
+            TaskOwnedLeasesTest TaskOwnedMutexRetirementTest \
+            TaskOwnedMutexOwnerIsolationTest TaskHandleTest MutexRuntimeTest
+          test -s "ci-evidence/surefire-${CARRIER}.tsv"
       - name: Retain execution evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
