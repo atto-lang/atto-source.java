@@ -97,4 +97,29 @@ final class ModelDefinitionHardeningTest {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, operation);
         assertTrue(error.getMessage().contains(code), error.getMessage());
     }
+
+    @Test
+    void parseTimeConfigurationBudgetRejectsBeforeModelGraphCompilation() {
+        StringBuilder params = new StringBuilder();
+        for (int i = 0; i < 65; i++) {
+            if (i != 0) params.append(", ");
+            params.append("p").append(i).append(": int");
+        }
+        String source = "define model TooMany(" + params + ") as Pass() end";
+        reject("MODEL_CONFIG_BUDGET", () -> Parser.parse(source));
+    }
+
+    @Test
+    void parseTimeStaticArgumentBudgetRejectsBeforeModelGraphCompilation() {
+        String source = "define model TooMany as Pass("
+                + "1,".repeat(32) + "1) end";
+        reject("MODEL_STATIC_ARG_BUDGET", () -> Parser.parse(source));
+    }
+
+    @Test
+    void parseTimeNodeBudgetRejectsBeforeModelGraphCompilation() {
+        String source = "define model TooMany as "
+                + "Pass() ".repeat(4097) + "end";
+        reject("MODEL_NODE_BUDGET", () -> Parser.parse(source));
+    }
 }
