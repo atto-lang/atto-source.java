@@ -14,17 +14,18 @@
 
 ## Exact-source JDK21 validation
 
-`bash scripts/test-proxy-outbound-loopback.sh` compiles the four actual Java files (transport plus three test programs) with `javac --release 21` and executes five successive runs of the client/authority, end-to-end forwarding, and lifecycle/stream-shutdown checks. The regression checks 201/404/204/302 status fidelity, repeated `Set-Cookie`, hop-by-hop header stripping, bounded admission under an unreleased response, 2 MiB streamed body, forbidden authorities/credentials/encoded path/HTTPS and redirect refusal, response cancellation/permit reclamation, HEAD semantics and real end-to-end host-only proxy forwarding (201/404/302, preserved Set-Cookie, hop-by-hop stripping, 2 MiB stream).
+`bash scripts/test-proxy-outbound-loopback.sh` compiles the five actual Java files (transport plus four test programs) with `javac --release 21` and executes five successive runs of the client/authority, end-to-end forwarding, and lifecycle/stream-shutdown checks. The regression checks 201/404/204/302 status fidelity, repeated `Set-Cookie`, hop-by-hop header stripping, bounded admission under an unreleased response, 2 MiB streamed body, forbidden authorities/credentials/encoded path/HTTPS and redirect refusal, response cancellation/permit reclamation, HEAD semantics and real end-to-end host-only proxy forwarding (201/404/302, preserved Set-Cookie, hop-by-hop stripping, 2 MiB stream).
 
-Five consecutive local JDK21 runs of all three programs passed. The lifecycle program also passed 30 additional single-program real-socket runs. All committed file blobs below were independently matched to the tested bytes:
+Five consecutive local JDK21 runs of all four programs passed. The lifecycle program also passed 30 additional single-program real-socket runs. All committed file blobs below were independently matched to the tested bytes:
 
-- `src/main/java/dev/oreslang/runtime/ProxyOutboundLoopback.java`: `a7736a5488fab6230c031729d9f3a94ad4907516`.
-- `src/test/java/dev/oreslang/runtime/ProxyOutboundLoopbackCheck.java`: `2b4580dd591a2aa959df6b535841c4f0570fb271`.
+- `src/main/java/dev/oreslang/runtime/ProxyOutboundLoopback.java`: `a8ab9830c655b3e4d84c58b5aab18a4d17964e70`.
+- `src/test/java/dev/oreslang/runtime/ProxyOutboundLoopbackCheck.java`: `83b382f17bb422b8e9f6f88616caf9532c72fdf8`.
 - `src/test/java/dev/oreslang/runtime/ProxyLoopbackForwardingWireCheck.java`: `03d2e5722696c1ed0b58aa60e351bbe1ea8b80cb`.
 - `src/test/java/dev/oreslang/runtime/ProxyOutboundLifecycleCheck.java`: `80c4820f574e818087f5d9cb7cbb70e4217c8ca5`.
-- `scripts/test-proxy-outbound-loopback.sh`: `36da58be7160bb32256c6d22b93b794682367059`.
+- `src/test/java/dev/oreslang/runtime/ProxyOutboundHandoffRaceCheck.java`: `f88cc40c2750cff9c336ffd72da74c3f2f82d5f1`.
+- `scripts/test-proxy-outbound-loopback.sh`: `4a3647841073591f641a3ce251cad5377921324e`.
 
-The workflow `.github/workflows/proxy-outbound-loopback.yml` runs the same three real-wire tests in the **source repository** on GitHub-hosted Java 21. In the observed PR run the workflow failed before any job steps executed, so it does not supply compiler evidence. A queued or unexecuted job is **not** proof of CI success. No cross-organization private-source mirror is authorized by this work.
+The workflow `.github/workflows/proxy-outbound-loopback.yml` runs all four real-wire tests in the **source repository** on GitHub-hosted Java 21. In the observed PR run the workflow failed before any job steps executed, so it does not supply compiler evidence. A queued or unexecuted job is **not** proof of CI success. No cross-organization private-source mirror is authorized by this work.
 
 ## Next runtime gates
 
@@ -48,3 +49,9 @@ A `ProxyOutboundLoopback` instance now implements `AutoCloseable` with an explic
 The new real-socket `ProxyOutboundLifecycleCheck` uses latches to exercise close after delivery, close during an uncommitted upstream response, cancellation of an in-flight request without closing the owner, reuse of the reclaimed capacity, and scope shutdown while a streaming worker is blocked on a slow downstream sink. The transport checks scope closure between response-body chunks. Passing this test is not proof of all memory-order, close/suspend, TLS, starvation or actor death races. In particular, `HttpClient` cancellation is asynchronous and retirement is joined to its terminal completion; capacity remains occupied until that completion instead of being unsafely reused early.
 
 **Not implemented:** `OresContext` or `AsyncNativeIo` construction/registration and resource scoped `NET` permissions, actor ownership transfer, actual guest `Future<...>` exposure, and a non-loopback proxy client. Those remain the next gates. The direct host-only loopback helper must not be exposed as a general-purpose guest network API.
+
+## Late-closure admission race fix
+
+A deterministic real-socket regression reproduced a permit being reclaimed while the downstream body writer was still blocked. The old code failed the assertion that the writer remained accounted. The fix retains admission until both the body close and the physical copy worker finish. Five runs of each of four socket test programs passed locally with Java 21, and an additional 50 bounded handoff tests passed. No JDK25/guest conformance is claimed.
+
+Private-source cross-organization mirroring remains unauthorized: the source-main approved-destination allowlist is empty, per CI security issue #1501. No private source was transferred.
