@@ -237,6 +237,24 @@ final class RecoveryHandlerChainTest {
         assertSame(pendingError, result.pendingError());
     }
 
+    @Test void inaccessibleCauseFailsClosed() {
+        Throwable pending = new Exception("pending") {
+            @Override public synchronized Throwable getCause() {
+                throw new IllegalStateException("cause unavailable");
+            }
+        };
+        var chain = RecoveryHandlerChain.<Integer>builder()
+                .register((e, c) -> c.resolve(7)).freeze();
+        for (var kind : new RecoveryHandlerChain.FailureKind[] {
+                RecoveryHandlerChain.FailureKind.THROW,
+                RecoveryHandlerChain.FailureKind.RAISE }) {
+            var result = assertInstanceOf(RecoveryHandlerChain.Unhandled.class,
+                    chain.dispatch(kind, pending));
+            assertSame(pending, result.error());
+            assertEquals(kind, result.kind());
+        }
+    }
+
     @Test void emptyChainAndNullRegistrationAreSafe() {
         var empty = RecoveryHandlerChain.<Integer>builder().freeze();
         assertEquals(0, empty.size());
