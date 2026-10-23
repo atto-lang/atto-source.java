@@ -126,7 +126,9 @@ interface_member= { annotation } [ "structural" ] "fnc" IDENT [ generic_params ]
                 | [ binding_kind ] type_ref IDENT member_terminator ;
 
 (* 'declare' is contextual. Unlike model/class/actor, these definitions do
-   not bind instantiable runtime values. 'define' forms remain compatibility. *)
+   not bind instantiable runtime values. 'declare type T = U;' and
+   'define type T = U;' produce identical complete aliases; no opaque
+   'declare type T;' form exists. *)
 declared_type_only
                 = "declare" visibility
                   ( "type" IDENT [ generic_params ] "=" type_ref stmt_terminator
