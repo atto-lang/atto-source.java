@@ -23,17 +23,20 @@ final class FormalPhysicalStopJobModelCheckTest {
     private record State(
             Phase left,
             Phase right,
+            Phase third,
             boolean vmClosed,
             boolean parentDone) {
         State {
-            if (left == null || right == null) throw new NullPointerException();
+            if (left == null || right == null || third == null) {
+                throw new NullPointerException();
+            }
         }
     }
 
     @Test
     void shutdownAndWorkerStartupNeverForgeSuccessfulPhysicalRetirement() {
         State initial = new State(Phase.NOT_SUBMITTED, Phase.NOT_SUBMITTED,
-                false, false);
+                Phase.NOT_SUBMITTED, false, false);
         ArrayDeque<State> pending = new ArrayDeque<>();
         Set<State> visited = new HashSet<>();
         add(visited, pending, initial);
@@ -44,9 +47,11 @@ final class FormalPhysicalStopJobModelCheckTest {
         while (!pending.isEmpty()) {
             State current = pending.removeFirst();
             int running = (current.left == Phase.RUNNING ? 1 : 0)
-                    + (current.right == Phase.RUNNING ? 1 : 0);
+                    + (current.right == Phase.RUNNING ? 1 : 0)
+                    + (current.third == Phase.RUNNING ? 1 : 0);
             int waiting = (current.left == Phase.ADMITTED ? 1 : 0)
-                    + (current.right == Phase.ADMITTED ? 1 : 0);
+                    + (current.right == Phase.ADMITTED ? 1 : 0)
+                    + (current.third == Phase.ADMITTED ? 1 : 0);
             assertTrue(running <= 1 && waiting <= 1,
                     "bounded one-worker one-queue capacity must hold");
             if (current.vmClosed) {
@@ -56,28 +61,33 @@ final class FormalPhysicalStopJobModelCheckTest {
             if (current.parentDone) {
                 assertEquals(Phase.RETIRED, current.left);
                 assertEquals(Phase.RETIRED, current.right);
+                assertEquals(Phase.RETIRED, current.third);
                 sawCleanParentDone = true;
                 continue;
             }
             if (current.left == Phase.CANCELLED_BEFORE_START
-                    || current.right == Phase.CANCELLED_BEFORE_START) sawDiscard = true;
+                    || current.right == Phase.CANCELLED_BEFORE_START
+                    || current.third == Phase.CANCELLED_BEFORE_START) sawDiscard = true;
             if (current.left == Phase.REJECTED
-                    || current.right == Phase.REJECTED) sawFailedAdmission = true;
+                    || current.right == Phase.REJECTED
+                    || current.third == Phase.REJECTED) sawFailedAdmission = true;
             if (current.vmClosed && running != 0) sawRunningDuringShutdown = true;
 
             if (!current.vmClosed) {
                 // The single worker may be occupied while exactly one other
                 // job is queued. Admission is not a resource release.
-                for (int i = 0; i < 2; i++) {
-                    Phase existing = i == 0 ? current.left : current.right;
+                for (int i = 0; i < 3; i++) {
+                    Phase existing = i == 0 ? current.left
+                            : i == 1 ? current.right : current.third;
                     if (existing != Phase.NOT_SUBMITTED) continue;
                     Phase nextPhase = waiting == 1 && running == 1
                             ? Phase.REJECTED : Phase.ADMITTED;
                     transition(visited, pending, current, i, nextPhase);
                 }
             }
-            for (int i = 0; i < 2; i++) {
-                Phase existing = i == 0 ? current.left : current.right;
+            for (int i = 0; i < 3; i++) {
+                Phase existing = i == 0 ? current.left
+                        : i == 1 ? current.right : current.third;
                 if (existing == Phase.ADMITTED && running == 0 && !current.vmClosed) {
                     transition(visited, pending, current, i, Phase.RUNNING);
                 }
@@ -93,11 +103,14 @@ final class FormalPhysicalStopJobModelCheckTest {
                                 ? Phase.CANCELLED_BEFORE_START : current.left,
                         current.right == Phase.ADMITTED
                                 ? Phase.CANCELLED_BEFORE_START : current.right,
+                        current.third == Phase.ADMITTED
+                                ? Phase.CANCELLED_BEFORE_START : current.third,
                         true, false));
             }
-            if (current.left == Phase.RETIRED && current.right == Phase.RETIRED) {
+            if (current.left == Phase.RETIRED && current.right == Phase.RETIRED
+                    && current.third == Phase.RETIRED) {
                 add(visited, pending, new State(current.left, current.right,
-                        current.vmClosed, true));
+                        current.third, current.vmClosed, true));
             }
         }
         assertTrue(visited.size() >= 15, "model must explore shutdown/start races");
@@ -112,8 +125,10 @@ final class FormalPhysicalStopJobModelCheckTest {
     private static void transition(Set<State> visited, ArrayDeque<State> pending,
             State current, int child, Phase phase) {
         add(visited, pending, child == 0
-                ? new State(phase, current.right, current.vmClosed, false)
-                : new State(current.left, phase, current.vmClosed, false));
+                ? new State(phase, current.right, current.third, current.vmClosed, false)
+                : child == 1
+                        ? new State(current.left, phase, current.third, current.vmClosed, false)
+                        : new State(current.left, current.right, phase, current.vmClosed, false));
     }
 
     private static void add(Set<State> visited, ArrayDeque<State> pending, State next) {
