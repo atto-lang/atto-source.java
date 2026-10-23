@@ -1835,7 +1835,8 @@ public final class TypeChecker {
         // cancellation and unwind behavior have all been implemented. This
         // prevents the evaluator's generic statement fallback from silently
         // treating a borrow as a no-op or a normal heap-backed local.
-        if (stmt instanceof Ast.UsingBorrowStmt) {
+        if (stmt instanceof Ast.UsingBorrowStmt loan) {
+            ScopedRequestBorrowPreflight.verify(loan);
             throw new IllegalArgumentException(
                     "using request.borrow() as view requires verified transport-loan "
                             + "lifetime checking and evaluator lowering; feature is not enabled");
