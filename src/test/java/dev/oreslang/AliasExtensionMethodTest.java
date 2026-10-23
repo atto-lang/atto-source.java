@@ -41,6 +41,21 @@ final class AliasExtensionMethodTest {
     }
 
     @Test
+    void buildTreeShakingRetainsCheckedAliasMethodTarget() {
+        var result = OresCompiler.compileForBuild("""
+                declare type Code = int;
+                define mtd double on Code(): int { return self + self; }
+                pub fnc main(): void {
+                  val code: Code = 6;
+                  stdio.stdout.write(code.double());
+                  return;
+                }
+                """, dev.oreslang.compiler.BuildOptions.executable(java.util.Map.of()));
+        assertTrue(result.retained(Parser.ROOT_MODULE + ".$mtd$Code$double"),
+                "checked member call must keep its synthetic extension function");
+    }
+
+    @Test
     void extensionDispatchMetadataRequiresExactCheckedCallIdentity() {
         Ast.CallExpr first = new Ast.CallExpr(
                 new Ast.MemberExpr(new Ast.NameExpr("code"), "double"), java.util.List.of());
