@@ -111,6 +111,10 @@ public final class TaskHandle<T> {
     // not merely observe done.isDone() or one callback starting.
     private final java.util.concurrent.CompletableFuture<Void> doneCallbacksDrained =
             new java.util.concurrent.CompletableFuture<>();
+    // Do not return the mutable source receipt to observers: even a caller
+    // with package access must not cancel/complete it to forge quiescence.
+    private final java.util.concurrent.CompletionStage<Void> doneCallbacksReceipt =
+            doneCallbacksDrained.minimalCompletionStage();
     // Observation only: cancelling getDone() must never forge a quiescence
     // witness or suppress the scheduler's eventual terminal outcome.
     private final OresFuture<TaskOutcome<T>> done =
@@ -176,7 +180,7 @@ public final class TaskHandle<T> {
      * subscribers physically return, so it cannot serve as this receipt.
      */
     java.util.concurrent.CompletionStage<Void> doneCallbacksDrained() {
-        return doneCallbacksDrained;
+        return doneCallbacksReceipt;
     }
 
     /**
