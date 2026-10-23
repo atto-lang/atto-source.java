@@ -270,7 +270,10 @@ final class RecoveryHandlerChain<T> {
             }
             // Even a handler that catches DispatchAbort and attempts to
             // resolve/delegate must not turn a nested failure into success.
-            if (scope.aborted != null) throw scope.aborted;
+            if (scope.aborted != null) {
+                pendingFailure.markTerminated();
+                throw scope.aborted;
+            }
             // A callback can mutate an arbitrary host Throwable while
             // delegating or resolving. Revalidate before either action becomes
             // observable, including before invoking the next handler.
