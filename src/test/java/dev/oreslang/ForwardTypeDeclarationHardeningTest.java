@@ -291,7 +291,7 @@ final class ForwardTypeDeclarationHardeningTest {
         rejects("declare type Token = int;", "cannot supply a body");
         rejects("declare interface Named as end", "cannot supply a body");
         rejects("declare pub pub type Token;", "duplicate");
-        rejects("pub declare type Token;", "expected");
+        rejects("pub declare type Token;", "forward declarations must start");
         rejects("@Ret<int> declare type Token;", "forward declarations must start");
         rejects("declare async type Token;", "forward declarations accept only");
     }
