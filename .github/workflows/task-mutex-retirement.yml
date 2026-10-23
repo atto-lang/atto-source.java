@@ -21,6 +21,7 @@ on:
       - "src/test/java/dev/oreslang/runtime/OresVMTest.java"
       - "src/test/java/dev/oreslang/runtime/AsyncNativeIoTest.java"
       - "src/test/java/dev/oreslang/runtime/FormalNativeIoLoanModelCheckTest.java"
+      - "src/test/java/dev/oreslang/runtime/FormalNativeResourceGenerationModelCheckTest.java"
       - "src/test/java/dev/oreslang/runtime/FormalActorStopFanoutModelCheckTest.java"
       - "src/test/java/dev/oreslang/runtime/FormalPhysicalStopJobModelCheckTest.java"
       - "src/test/java/dev/oreslang/runtime/TaskOwnedMutex*Test.java"
@@ -77,13 +78,13 @@ jobs:
           CARRIER: ${{ matrix.carrier }}
         run: >-
           mvn -B -ntp -Dores.runtime.carriers="$CARRIER"
-          -Dtest=TaskOwnedLeasesTest,TaskOwnedMutexRetirementTest,SourceTaskCleanupHardeningTest,TaskHandleTest,MutexRuntimeTest,ActorStopCleanupAdmissionTest,ActorStructuredCancellationTest,CleanupAwareSchedulerCancellationTest,OresFutureCallbackTest,OresVMTest,AsyncNativeIoTest,FormalNativeIoLoanModelCheckTest,FormalActorStopFanoutModelCheckTest,FormalPhysicalStopJobModelCheckTest
+          -Dtest=TaskOwnedLeasesTest,TaskOwnedMutexRetirementTest,SourceTaskCleanupHardeningTest,TaskHandleTest,MutexRuntimeTest,ActorStopCleanupAdmissionTest,ActorStructuredCancellationTest,CleanupAwareSchedulerCancellationTest,OresFutureCallbackTest,OresVMTest,AsyncNativeIoTest,FormalNativeIoLoanModelCheckTest,FormalNativeResourceGenerationModelCheckTest,FormalActorStopFanoutModelCheckTest,FormalPhysicalStopJobModelCheckTest
           -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test
       - name: Require every selected suite report
         shell: bash
         run: |
           set -euo pipefail
-          for suite in TaskOwnedLeasesTest TaskOwnedMutexRetirementTest SourceTaskCleanupHardeningTest TaskHandleTest MutexRuntimeTest ActorStopCleanupAdmissionTest ActorStructuredCancellationTest CleanupAwareSchedulerCancellationTest OresFutureCallbackTest OresVMTest AsyncNativeIoTest FormalNativeIoLoanModelCheckTest FormalActorStopFanoutModelCheckTest FormalPhysicalStopJobModelCheckTest; do
+          for suite in TaskOwnedLeasesTest TaskOwnedMutexRetirementTest SourceTaskCleanupHardeningTest TaskHandleTest MutexRuntimeTest ActorStopCleanupAdmissionTest ActorStructuredCancellationTest CleanupAwareSchedulerCancellationTest OresFutureCallbackTest OresVMTest AsyncNativeIoTest FormalNativeIoLoanModelCheckTest FormalNativeResourceGenerationModelCheckTest FormalActorStopFanoutModelCheckTest FormalPhysicalStopJobModelCheckTest; do
             reports=(target/surefire-reports/TEST-*."$suite".xml)
             test "${#reports[@]}" -eq 1
             test -s "${reports[0]}"
