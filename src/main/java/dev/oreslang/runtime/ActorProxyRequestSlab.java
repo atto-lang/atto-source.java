@@ -103,9 +103,9 @@ public final class ActorProxyRequestSlab extends ActorShardBacking implements Au
 
     /** Process-local identity for a trusted I/O completion envelope. */
     public long identity() { owner(); return slabIdentity; }
-    public int capacity() { return capacity; }
-    public Layout layout() { return layout; }
-    public int lanes() { return lanes; }
+    public int capacity() { owner(); return capacity; }
+    public Layout layout() { owner(); return layout; }
+    public int lanes() { owner(); return lanes; }
     public int live() { owner(); return live; }
     public boolean full() { owner(); return freeHead == -1; }
 

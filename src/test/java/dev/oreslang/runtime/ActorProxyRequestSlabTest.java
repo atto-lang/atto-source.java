@@ -224,6 +224,9 @@ final class ActorProxyRequestSlabTest {
                             if (message == 2) {
                                 assertThrows(SecurityException.class, slab::close);
                             } else {
+                                assertThrows(SecurityException.class, slab::capacity);
+                                assertThrows(SecurityException.class, slab::layout);
+                                assertThrows(SecurityException.class, slab::lanes);
                                 assertThrows(SecurityException.class,
                                         () -> slab.pin(request.get()));
                                 assertThrows(SecurityException.class,
