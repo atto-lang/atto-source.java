@@ -160,90 +160,89 @@ final class DeclaredTypeOnlySyntaxTest {
 
 
     @Test
-    void forwardTypeResolvesInFunctionsBeforeItsCompletedDefinition() {
-        Ast.Program program = OresCompiler.parseAndTypeCheck("""
-                declare type Code;
-
-                fnc identity(Code value): Code {
-                  return value;
-                }
-
-                define type Code = int;
+    void declareAndDefineTypeAreExactlyEquivalentCompleteAliases() {
+        Ast.Program declared = OresCompiler.parseAndTypeCheck("""
+                declare type Code = int;
+                fnc identity(Code value): Code { return value; }
                 """);
-        var declarations = program.modules().getFirst().declarations();
-        assertInstanceOf(Ast.TypeForwardDecl.class, declarations.get(0));
-        assertInstanceOf(Ast.FunctionDecl.class, declarations.get(1));
-        assertInstanceOf(Ast.TypeAliasDecl.class, declarations.get(2));
+        Ast.Program defined = OresCompiler.parseAndTypeCheck("""
+                define type Code = int;
+                fnc identity(Code value): Code { return value; }
+                """);
+        Ast.TypeAliasDecl declaredAlias =
+                assertInstanceOf(Ast.TypeAliasDecl.class, declared.modules().getFirst().declarations().getFirst());
+        Ast.TypeAliasDecl definedAlias =
+                assertInstanceOf(Ast.TypeAliasDecl.class, defined.modules().getFirst().declarations().getFirst());
+        assertEquals(definedAlias, declaredAlias,
+                "declare and define are only interchangeable source introducers");
+        assertEquals(Ast.TypeRef.simple("int"), declaredAlias.target());
     }
 
     @Test
-    void forwardTypeAcceptsMatchingPublicModuleDefinition() {
-        Ast.Program program = OresCompiler.parseAndTypeCheck("""
+    void publicAndGenericTypeAliasesShareIdenticalSemantics() {
+        Ast.Program declared = OresCompiler.parseAndTypeCheck("""
                 define module api as
-                  declare pub type Code;
-                  pub fnc identity(Code value): Code { return value; }
-                  define pub type Code = int;
+                  declare pub type Id = int;
+                  fnc identity(Id value): Id { return value; }
                 end
                 """);
-        var members = program.modules().getFirst().declarations();
-        assertEquals(3, members.size());
-        assertEquals(Ast.Visibility.PUBLIC,
-                ((Ast.TypeForwardDecl) members.get(0)).visibility());
+        Ast.Program defined = OresCompiler.parseAndTypeCheck("""
+                define module api as
+                  define pub type Id = int;
+                  fnc identity(Id value): Id { return value; }
+                end
+                """);
+        assertEquals(
+                declared.modules().getFirst().declarations().getFirst(),
+                defined.modules().getFirst().declarations().getFirst());
+
+        Ast.Program generic = Parser.parse("""
+                declare type Box<T> = T;
+                define type OtherBox<T> = T;
+                """);
+        var defs = generic.modules().getFirst().declarations();
+        Ast.TypeAliasDecl first = assertInstanceOf(Ast.TypeAliasDecl.class, defs.get(0));
+        Ast.TypeAliasDecl second = assertInstanceOf(Ast.TypeAliasDecl.class, defs.get(1));
+        assertEquals(first.target(), second.target());
+        assertEquals(first.genericParameters(), second.genericParameters());
     }
 
     @Test
-    void forwardTypeNeverPublishesUnresolvedOrIncompatibleIdentity() {
-        Map<String, String> rejected = Map.of(
-                "declare type Missing;", "TYPE_FORWARD_UNRESOLVED",
-                "declare type Code; declare type Code; define type Code = int;",
-                "TYPE_FORWARD_DUPLICATE",
-                "declare type Code; define pub type Code = int;",
-                "TYPE_FORWARD_VISIBILITY_MISMATCH",
-                "declare pub type Code; define type Code = int;",
-                "TYPE_FORWARD_VISIBILITY_MISMATCH",
-                "declare type Code; define interface Code as end",
-                "TYPE_FORWARD_KIND_MISMATCH",
-                "declare type Code; define trait Code as end",
-                "TYPE_FORWARD_KIND_MISMATCH",
-                "declare type Code; define class Code as end",
-                "TYPE_FORWARD_KIND_MISMATCH",
-                "declare type Code; define type Code = int; define type Code = bool;",
-                "TYPE_DECL_NAME_COLLISION",
-                "define type Code = int; declare type Code;",
-                "TYPE_FORWARD_AFTER_DEFINITION");
-        for (var entry : rejected.entrySet()) {
+    void incompleteTypesAreAlwaysRejectedAndNeitherIntroducerCanRedefine() {
+        for (String source : new String[] {
+                "declare type Code;",
+                "define type Code;",
+                "declare pub type Code;",
+                "define pub type Code;"
+        }) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
+        }
+        for (String source : new String[] {
+                "declare type Code = int; define type Code = bool;",
+                "define type Code = int; declare type Code = bool;",
+                "declare type Code = int; declare type Code = int;",
+                "define type Code = int; define type Code = int;"
+        }) {
             IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                    () -> OresCompiler.parseAndTypeCheck(entry.getKey()), entry.getKey());
-            assertTrue(error.getMessage().contains(entry.getValue()),
-                    entry.getKey() + ": " + error.getMessage());
+                    () -> OresCompiler.parseAndTypeCheck(source), source);
+            assertTrue(error.getMessage().contains("TYPE_DECL_NAME_COLLISION"),
+                    source + ": " + error.getMessage());
         }
     }
 
     @Test
-    void forwardTypeMayNotResolveFromAnUnrelatedModule() {
-        var error = assertThrows(IllegalArgumentException.class,
-                () -> OresCompiler.parseAndTypeCheck("""
-                        define module first as
-                          declare type Code;
-                        end
-                        define module second as
-                          define type Code = int;
-                        end
-                        """));
-        assertTrue(error.getMessage().contains("TYPE_FORWARD_UNRESOLVED"), error.getMessage());
-    }
-
-    @Test
-    void opaqueForwardTypesDoNotWeakenAliasCycleDetection() {
-        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                () -> OresCompiler.parseAndTypeCheck("""
-                        declare type A;
-                        declare type B;
-                        define type A = B;
-                        define type B = A;
-                        fnc identity(A value): A { return value; }
-                        """));
-        assertTrue(error.getMessage().contains("type alias cycle"), error.getMessage());
+    void aliasesRemainTransparentAndCyclicAliasesStillReject() {
+        for (String introducer : new String[] {"declare", "define"}) {
+            assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(
+                    introducer + " type Code = int; "
+                    + "fnc identity(Code value): Code { return value; }"));
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(
+                            introducer + " type A = B; "
+                            + introducer + " type B = A; "
+                            + "fnc identity(A value): A { return value; }"));
+            assertTrue(error.getMessage().contains("type alias cycle"), error.getMessage());
+        }
     }
 
     @Test
