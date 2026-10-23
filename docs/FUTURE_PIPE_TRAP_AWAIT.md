@@ -14,6 +14,18 @@ as the underlying Task's physical quiescence witness. This does **not**
 establish physical retirement of any independently scheduled FFI/child work
 which lacks a separate owned lifetime receipt.
 
+The parser retains `Ast.CallExpr.origin` for value-pipe argument injection
+and Option/Result receiver combinators, distinct from ordinary calls and actor
+`pipe`. This is syntax provenance only, not a typed/effect-checked pipeline
+plan. `CallExpr.rewrite` retains that origin but drops identity-bound checked
+proofs; replacements require rechecking. Explicit checked-metadata transfers
+reject changed call origins before copying any proof.
+
+The standalone `bash scripts/test-future-pipeline-provenance.sh` check requires
+JDK 21 and verifies parser/AST and frontend typing boundaries. The JUnit
+`FuturePipelineProvenanceTest` wraps the same checks. Neither proves guest
+runtime execution, Future lifting, cancellation, or actor scheduling.
+
 The existing Java source-language `|>` operator still eagerly injects the
 left value as the first argument of the stage call. The proposed *source-level*
 statically checked lifting rule remains unimplemented: there is no
@@ -163,3 +175,4 @@ lambdas to untrusted Oreslang source.
    or isolated model proofs.
 
 Related Java Future host hardening: PR #1915; source callbacks: issue #1916.
+

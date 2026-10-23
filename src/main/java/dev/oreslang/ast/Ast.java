@@ -1004,23 +1004,56 @@ public final class Ast {
     /** Argument-list spread. The parser only constructs this inside call argument lists. */
     public record SpreadExpr(Expr expression) implements Expr { }
 
+    /** Syntax provenance, not proof that asynchronous pipeline lowering exists. */
+    public enum CallOrigin {
+        DIRECT,
+        /** The upstream value occupies argument zero: value |> stage(args). */
+        VALUE_PIPE_ARGUMENT,
+        /** Option/Result namespace combinators use the upstream as receiver. */
+        VALUE_PIPE_RECEIVER
+    }
+
     public record CallExpr(
             Expr callee,
             List<TypeRef> typeArguments,
             boolean typeArgumentsPresent,
-            List<Expr> arguments) implements Expr {
+            List<Expr> arguments,
+            CallOrigin origin) implements Expr {
         public CallExpr {
+            java.util.Objects.requireNonNull(callee, "call callee");
             typeArguments = List.copyOf(typeArguments);
             arguments = List.copyOf(arguments);
+            java.util.Objects.requireNonNull(origin, "call origin");
+            if (origin == CallOrigin.VALUE_PIPE_ARGUMENT && arguments.isEmpty()) {
+                throw new IllegalArgumentException("value pipeline requires an upstream argument");
+            }
+            if (origin == CallOrigin.VALUE_PIPE_RECEIVER && !(callee instanceof MemberExpr)) {
+                throw new IllegalArgumentException("receiver pipeline requires a member callee");
+            }
             if (!typeArgumentsPresent && !typeArguments.isEmpty()) {
                 throw new IllegalArgumentException("call type arguments require an explicit <...> marker");
             }
+        }
+        public CallExpr(Expr callee, List<TypeRef> typeArguments,
+                        boolean typeArgumentsPresent, List<Expr> arguments) {
+            this(callee, typeArguments, typeArgumentsPresent, arguments, CallOrigin.DIRECT);
         }
         public CallExpr(Expr callee, List<Expr> arguments) {
             this(callee, List.of(), false, arguments);
         }
         public CallExpr(Expr callee, List<TypeRef> typeArguments, List<Expr> arguments) {
             this(callee, typeArguments, true, arguments);
+        }
+
+        /**
+         * Rebuild a call without erasing syntax origin. The replacement must
+         * be checked again: identity-bound type/ownership proofs do not follow
+         * arbitrary changes to its callee or arguments.
+         */
+        public CallExpr rewrite(Expr newCallee, List<TypeRef> newTypeArguments,
+                                boolean newTypeArgumentsPresent, List<Expr> newArguments) {
+            return new CallExpr(newCallee, newTypeArguments,
+                    newTypeArgumentsPresent, newArguments, origin);
         }
     }
 
@@ -1289,6 +1322,11 @@ public final class Ast {
     public static void copyCheckedMetadata(Expr source, Expr target) {
         java.util.Objects.requireNonNull(source, "source expression");
         java.util.Objects.requireNonNull(target, "target expression");
+        if (source instanceof CallExpr sourceCall && target instanceof CallExpr targetCall
+                && sourceCall.origin() != targetCall.origin()) {
+            throw new IllegalArgumentException(
+                    "call rewrites must preserve syntax origin; use CallExpr.rewrite");
+        }
         for (CheckedMetadataTransfer transfer : CheckedMetadataTransfer.values()) {
             transfer.copy(source, target);
         }
@@ -1498,3 +1536,4 @@ public final class Ast {
         }
     }
 }
+
