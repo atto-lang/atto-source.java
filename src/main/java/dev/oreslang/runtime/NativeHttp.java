@@ -170,7 +170,8 @@ public final class NativeHttp implements AutoCloseable {
             final java.util.List<Worker> existing;
             synchronized (this) {
                 if (workers == null) throw new IllegalStateException("handler is not pooled");
-                if (poolDrainRequested) return;
+                // Graceful stop is idempotent in ActorRuntime. Retry every
+                // actor on subsequent calls if one earlier stop signal failed.
                 poolDrainRequested = true;
                 poolDiscarded = true;
                 existing = java.util.Arrays.stream(workers)
