@@ -423,8 +423,72 @@ final class ActorPhysicalRetirementRegistryTest {
         assertEquals(1, registry.snapshot().pending());
         assertThrows(IllegalStateException.class, registry::retireVerified,
                 "the failed native loan must keep the arena quarantined");
-        assertEquals(2, signals.get(),
-                "failure and successful retirement each notify lifecycle once");
+        assertEquals(3, signals.get(),
+                "failed release notifies once; successful receipt also wakes after callback retirement");
+    }
+
+    @Test void removedTicketCannotRetireWhileHostNotificationIsBlocked()
+            throws Exception {
+        var callbackEntered = new CountDownLatch(1);
+        var releaseCallback = new CountDownLatch(1);
+        var notifications = new AtomicInteger();
+        var registry = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 44, () -> {
+                    if (notifications.incrementAndGet() != 1) return;
+                    callbackEntered.countDown();
+                    try {
+                        if (!releaseCallback.await(5, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException(
+                                    "test stalled physical notification");
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(interrupted);
+                    }
+                });
+        var ticket = registry.register(
+                ActorPhysicalRetirementRegistry.Kind.FFI_LOAN, false);
+        registry.seal();
+        var failure = new AtomicReference<Throwable>();
+        Thread settler = Thread.ofVirtual().start(() -> {
+            try {
+                ticket.completeAfterPhysicalRelease();
+            } catch (Throwable t) {
+                failure.set(t);
+            }
+        });
+        try {
+            assertTrue(callbackEntered.await(3, TimeUnit.SECONDS));
+            assertEquals(0, registry.snapshot().pending());
+            assertEquals(1, registry.snapshot().inFlightNotifications());
+            assertThrows(IllegalStateException.class, registry::retireVerified,
+                    "last ticket's removal is not a host callback retirement");
+        } finally {
+            releaseCallback.countDown();
+        }
+        settler.join(3_000);
+        assertFalse(settler.isAlive());
+        assertNull(failure.get());
+        assertEquals(0, registry.snapshot().inFlightNotifications());
+        assertEquals(2, notifications.get(), "last receipt must recheck after callback exit");
+        registry.retireVerified();
+        assertTrue(registry.snapshot().retired());
+    }
+
+    @Test void throwingHostNotificationFailsClosedInsteadOfHidingAReleaseFailure() {
+        var failure = new IllegalStateException("native retirement notifier failed");
+        var registry = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 1, () -> { throw failure; });
+        var ticket = registry.register(
+                ActorPhysicalRetirementRegistry.Kind.OTHER, false);
+        registry.seal();
+        assertSame(failure, assertThrows(IllegalStateException.class,
+                ticket::completeAfterPhysicalRelease));
+        assertEquals(0, registry.snapshot().pending());
+        assertEquals(0, registry.snapshot().inFlightNotifications());
+        assertSame(failure, registry.snapshot().failure());
+        assertThrows(IllegalStateException.class, registry::retireVerified,
+                "notifier failure must quarantine even when a handle physically closed");
     }
 
     @Test void concurrentlySettledPhysicalTicketCannotUnderflow() throws Exception {
