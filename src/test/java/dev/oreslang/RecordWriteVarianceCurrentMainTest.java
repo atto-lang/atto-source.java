@@ -138,7 +138,6 @@ final class RecordWriteVarianceCurrentMainTest {
                     on structural { bar: string } narrowed -> {
                       return narrowed.bar;
                     }
-                    on _ -> { return "missing"; }
                   end
                 }
                 """)));
