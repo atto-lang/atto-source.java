@@ -35,8 +35,8 @@ public final class OresMutex {
         ExecutionContext task = OresScheduler.currentExecutionContext();
         return task == null ? ActorRuntime.currentExecutionDomain() : task;
     }
-    /** A tracked Task owns its guards first; untracked direct actor turns
-     * fall back to the runtime-owned actor-incarnation ledger. */
+
+    /** Tracked Task permits outrank actor-incarnation ownership. */
     private static TaskOwnedLockLedger currentPermitLedger() {
         TaskOwnedLockLedger task = TaskHandle.currentLockLedger();
         return task != null ? task : ActorRuntime.currentActorLockLedger();
@@ -916,7 +916,7 @@ public final class OresMutex {
             }
             try {
                 return new SharedGuard(ownerDomain, enforceOwnerDomain,
-                        TaskHandle.currentLockLedger());
+                        currentPermitLedger());
             } catch (RuntimeException | Error failure) {
                 clearOwner(ownerDomain);
                 releaseDomain(ownerDomain);
