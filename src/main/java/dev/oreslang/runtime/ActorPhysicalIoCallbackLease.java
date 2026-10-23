@@ -31,7 +31,13 @@ final class ActorPhysicalIoCallbackLease<V, A> implements CompletionHandler<V, A
     @Override
     public void completed(V result, A attachment) {
         if (!claimed.compareAndSet(false, true)) {
-            throw new IllegalStateException("duplicate native I/O callback");
+            var duplicate = new IllegalStateException("duplicate native I/O callback");
+            // A duplicate arriving while the original physical callback is
+            // still executing invalidates at-most-once ownership. Quarantine
+            // its receipt rather than merely throwing and allowing the first
+            // callback to claim successful physical retirement.
+            receipt.failPhysicalRelease(duplicate);
+            throw duplicate;
         }
         try {
             delegate.completed(result, attachment);
@@ -48,7 +54,13 @@ final class ActorPhysicalIoCallbackLease<V, A> implements CompletionHandler<V, A
     public void failed(Throwable error, A attachment) {
         Objects.requireNonNull(error, "error");
         if (!claimed.compareAndSet(false, true)) {
-            throw new IllegalStateException("duplicate native I/O callback");
+            var duplicate = new IllegalStateException("duplicate native I/O callback");
+            // A duplicate arriving while the original physical callback is
+            // still executing invalidates at-most-once ownership. Quarantine
+            // its receipt rather than merely throwing and allowing the first
+            // callback to claim successful physical retirement.
+            receipt.failPhysicalRelease(duplicate);
+            throw duplicate;
         }
         try {
             delegate.failed(error, attachment);
