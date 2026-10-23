@@ -193,6 +193,14 @@ final class SupervisorLifecycleFsmIntegrationTest {
             assertEquals(0, initial.entries().size());
             tree.shutdown(SupervisorShutdownTree.Reason.NORMAL).get(5, TimeUnit.SECONDS);
             var recorded = tree.trace();
+            // The entire tree admission fence must precede every hook
+            // transition. These first snapshots are an observable witness
+            // of the two-phase fence-then-publication protocol.
+            assertTrue(recorded.entries().size() >= 2);
+            assertTrue(recorded.entries().subList(0, 2).stream()
+                    .allMatch(e -> e.event()
+                            instanceof SupervisorLifecycleFsm.ShutdownWithChildEpochs),
+                    "no pre-hook or worker callback may precede descendant freeze");
             SupervisorLifecycleTrace.verifyComplete(recorded);
             assertTrue(recorded.issued() >= 7, "hooks and actor barriers must be journaled");
             assertEquals(0, recorded.dropped());
