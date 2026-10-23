@@ -2054,9 +2054,14 @@ public final class OwnershipChecker {
         // The first ergonomic API slice deliberately admits only Copy values.
         // Affine payloads and error values require branch-sensitive closure
         // ownership/drop proofs before lazy callbacks may carry them.
-        if (Set.of("unwrap_or_else", "or_else", "ok_or").contains(member.member())
-                && (!isCopyType(okType)
-                    || (result && !isCopyType(receiverType.arguments().get(1))))) {
+        // Result.or_else predates Option.or_else and is an affine-consuming
+        // Result combinator, not a Copy-only Option fallback. In particular
+        // Result<Box,E>.or_else must not be silently rejected or checked twice.
+        boolean newCopyOnlyFallback = member.member().equals("unwrap_or_else")
+                || member.member().equals("ok_or")
+                || (option && member.member().equals("or_else"));
+        if (newCopyOnlyFallback && (!isCopyType(okType)
+                || (result && !isCopyType(receiverType.arguments().get(1))))) {
             throw error(member.member()
                     + " requires Copy Option/Result payloads until affine fallback ownership is proven");
         }
@@ -2107,7 +2112,9 @@ public final class OwnershipChecker {
             return new ValueInfo(resultType, kindOfType(resultType), null);
         }
         if (member.member().equals("or_else")) {
-            if (!option) return null;
+            // Both Option.or_else and Result.or_else keep the sum carrier.
+            // Never return null after checking/consuming the receiver: the
+            // ordinary member-call path would evaluate and consume it again.
             return new ValueInfo(receiverType, kindOfType(receiverType), null);
         }
 

@@ -125,7 +125,7 @@ final class TrapOptionSemanticsTest {
                           return 1;
                         }
                         """));
-        assertTrue(async.getMessage().contains("async trap"));
+        assertTrue(async.getMessage().contains("suspending trap"));
 
         IllegalArgumentException generator = assertThrows(
                 IllegalArgumentException.class,
