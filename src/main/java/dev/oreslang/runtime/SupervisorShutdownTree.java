@@ -106,8 +106,8 @@ public final class SupervisorShutdownTree {
                     throw new IllegalStateException(
                             "parent received child outcome without matching logical retirement");
                 }
-                transition(new SupervisorLifecycleFsm.ChildFinished(
-                        parentEpoch, childId, failed));
+                transition(new SupervisorLifecycleFsm.ChildFinishedWithEpoch(
+                        parentEpoch, childId, childEpoch, failed));
             }
         }
 
@@ -404,8 +404,8 @@ public final class SupervisorShutdownTree {
             epochs.put(child.supervisorId, child.lifecycle.get().epoch());
         }
         node.frozenChildEpochs = new SupervisorChildGenerationFence(epochs);
-        node.transition(new SupervisorLifecycleFsm.ShutdownRequested(
-                node.lifecycle.get().epoch(), epochs.keySet()));
+        node.transition(new SupervisorLifecycleFsm.ShutdownWithChildEpochs(
+                node.lifecycle.get().epoch(), epochs));
         for (Supervisor child : node.children) sealSubtree(child);
     }
 
