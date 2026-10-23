@@ -11,10 +11,11 @@ the actor STOP implementation here.
 1. STOP/cancel/failure seals the ordinary actor mailbox and generic Future
    continuation channel. Already-admitted source scheduler commands are held
    in an independent, bounded, runtime-only control mailbox.
-2. Under the actor lifecycle monitor STOP marks a cancellation-snapshot barrier
-   so physical actor finalization cannot win ahead of source-task cancellation.
-   The scheduler then seals further task admission and requests cancellation of
-   all previously admitted tasks outside the actor monitor.
+2. Under the actor lifecycle monitor STOP atomically seals SourceTask
+   admission using the scheduler admission lock and captures the currently
+   admitted Task snapshot; this phase invokes NO Future callbacks.
+   A cancellation-snapshot barrier blocks actor finalization. STOP then
+   requests cancellation of the snapshot only AFTER the actor lock is released.
 3. Only after cancellation requests are issued may the actor dispatch saved
    scheduler SourceTask commands in STOP cleanup mode. Ordinary messages and
    generic Future completion callbacks remain denied. The preserved source
@@ -22,8 +23,9 @@ the actor STOP implementation here.
    to a replacement incarnation. A source turn dequeued BEFORE STOP is
    already admitted and must not be discarded as a stale queued command.
 4. CleanupAwareTask cancellation returns to its saved lexical continuation.
-   Deferred cleanup can itself await an asynchronous future, and the actor
-   done barrier remains pending across that suspension.
+   Deferred cleanup can itself await an asynchronous future and execute actor
+   scheduler safepoints only while carrying the authenticated cleanup-turn
+   marker. The actor done barrier remains pending across that suspension.
 5. The scheduler reports physical quiescence only after its live Task set and
    all in-flight task-retirement callbacks have settled. The actor additionally
    joins the UNTRUSTED task count and timed terminal-subscriber admissions.
@@ -48,6 +50,9 @@ lease/handoff receipts remain independent of AoS/SoA/AoSoA/SoAoS/ECS layout.
   poison, correct cancellation cause, and a successor actor with a new ID.
 - Cancel a queued SourceTask before first dispatch while the enclosing actor
   turn is blocked: no guest start, no lost queued command, actor eventual DONE.
+- Crash a running actor after a SourceTask suspends with a mutex guard. Require
+  original failure preservation, post-crash asynchronous cleanup, physical
+  release before done, and no unintended guard poison.
 
 The existing task/mutex and actor structured-cancellation suites are included
 in the focused exact-head matrix, for Java and GraalVM-native carrier options.
