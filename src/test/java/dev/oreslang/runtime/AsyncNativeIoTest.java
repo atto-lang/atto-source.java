@@ -271,6 +271,56 @@ class AsyncNativeIoTest {
         assertNull(io.physicalShutdown().get(3, TimeUnit.SECONDS));
     }
 
+    @Test void racedLateResourceCloseCannotBlockContextMonitorOrForgeRetirement()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        var workerEntered = new CountDownLatch(1);
+        var letWorkerExit = new CountDownLatch(1);
+        var closeEntered = new CountDownLatch(1);
+        var letCloseExit = new CountDownLatch(1);
+        var operation = io.submit("ongoing", () -> {
+            workerEntered.countDown();
+            while (letWorkerExit.getCount() != 0) {
+                try { letWorkerExit.await(20, TimeUnit.MILLISECONDS); }
+                catch (InterruptedException ignored) { /* native I/O is uncooperative */ }
+            }
+            return 99;
+        });
+        assertTrue(workerEntered.await(3, TimeUnit.SECONDS));
+        io.close(); // seals further resource admission without a worker receipt
+        var closeFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        Thread rejected = Thread.ofVirtual().start(() -> {
+            try {
+                io.register(() -> {
+                    closeEntered.countDown();
+                    if (!letCloseExit.await(3, TimeUnit.SECONDS)) {
+                        throw new IOException("test native close deadline");
+                    }
+                });
+            } catch (Throwable failure) {
+                closeFailure.set(failure);
+            }
+        });
+        try {
+            assertTrue(closeEntered.await(3, TimeUnit.SECONDS));
+            letWorkerExit.countDown();
+            assertInstanceOf(IllegalStateException.class,
+                    assertThrows(ExecutionException.class,
+                            () -> operation.get(3, TimeUnit.SECONDS)).getCause());
+            assertFalse(io.physicalShutdown().isDone(),
+                    "late rejected resource close still owns a physical host callback");
+            assertNull(io.physicalShutdownFailure());
+        } finally {
+            letWorkerExit.countDown();
+            letCloseExit.countDown();
+        }
+        rejected.join(3_000);
+        assertFalse(rejected.isAlive());
+        assertInstanceOf(IllegalStateException.class, closeFailure.get(),
+                "registration must reject after successfully closing late handle");
+        assertNull(io.physicalShutdown().get(3, TimeUnit.SECONDS));
+    }
+
     @Test void failedHostCloseDoesNotSkipSiblingOrPublishCleanShutdown()
             throws Exception {
         var io = new AsyncNativeIo(1);
