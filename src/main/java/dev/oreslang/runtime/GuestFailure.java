@@ -63,9 +63,11 @@ final class GuestFailure {
      * being replayed through the same lexical recovery chain or reused after a
      * successful recovery.
      */
+    private enum Lifecycle { ACTIVE, RECOVERED, TERMINATED }
+
     private final Set<RecoveryHandlerChain<?>> visitedChains =
             Collections.newSetFromMap(new IdentityHashMap<>());
-    private boolean recovered;
+    private Lifecycle lifecycle = Lifecycle.ACTIVE;
 
     private GuestFailure(
             RecoveryHandlerChain.FailureKind kind,
@@ -130,19 +132,27 @@ final class GuestFailure {
 
     synchronized boolean enterRecoveryChain(RecoveryHandlerChain<?> chain) {
         Objects.requireNonNull(chain, "chain");
-        if (recovered) {
+        if (lifecycle != Lifecycle.ACTIVE) {
             throw new IllegalStateException(
-                    "recovered guest failure cannot be dispatched again");
+                    "completed guest failure cannot be dispatched again: " + lifecycle);
         }
         return visitedChains.add(chain);
     }
 
     synchronized void markRecovered() {
-        if (recovered) {
+        complete(Lifecycle.RECOVERED);
+    }
+
+    synchronized void markTerminated() {
+        complete(Lifecycle.TERMINATED);
+    }
+
+    private void complete(Lifecycle terminal) {
+        if (lifecycle != Lifecycle.ACTIVE) {
             throw new IllegalStateException(
-                    "guest failure was already recovered");
+                    "guest failure already completed: " + lifecycle);
         }
-        recovered = true;
+        lifecycle = terminal;
         visitedChains.clear();
     }
 }
