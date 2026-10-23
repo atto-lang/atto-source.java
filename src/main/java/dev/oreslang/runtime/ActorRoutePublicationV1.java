@@ -149,6 +149,25 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
          * outstanding old Task/message pins; the stage remains active.
          */
         boolean publish(StateSnapshot validatedState, R readyPhysicalRoute) {
+            return publish(validatedState, readyPhysicalRoute, () -> { });
+        }
+
+        /**
+         * Source-actor cutover variant. The old physical ingress fence becomes
+         * irreversible after every allocation/validation has succeeded and
+         * immediately before the one authoritative logical publication.
+         *
+         * <p>The callback MUST be a trusted no-allocation/no-I/O commit of an
+         * already-held physical freeze. If it throws, logical publication does
+         * not occur. A callback that mutates and then throws violates the host
+         * contract and must leave the old physical route fail-closed.</p>
+         */
+        boolean publish(
+                StateSnapshot validatedState,
+                R readyPhysicalRoute,
+                Runnable commitOldPhysicalFence) {
+            Objects.requireNonNull(commitOldPhysicalFence,
+                    "old physical retirement fence");
             synchronized (lock) {
                 requireStage(this);
                 Objects.requireNonNull(validatedState, "validated checkpoint");
@@ -182,8 +201,14 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
                     throw failure;
                 }
 
+                // The old physical ingress fence is already held and drained.
+                // Make it irreversible only now, after every allocation and
+                // validation above, immediately before the one logical CAS-like
+                // publication below.
+                commitOldPhysicalFence.run();
+
                 // ONE volatile publication, while DATA dispatch is blocked by
-                // this monitor AND the physical mailbox freeze.
+                // this monitor AND both logical/physical mailbox freezes.
                 active = next;
                 pending = null;
                 finished = true;
