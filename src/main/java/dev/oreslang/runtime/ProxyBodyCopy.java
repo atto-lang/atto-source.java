@@ -6,10 +6,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
 import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 
-/** Trusted host-only response-to-worker handoff; never invoke guest callbacks. */
+/** Trusted response handoff; worker admission always precedes network acquisition. */
 final class ProxyBodyCopy {
     interface Source extends AutoCloseable {
         int status();
@@ -28,59 +30,57 @@ final class ProxyBodyCopy {
     private ProxyBodyCopy() { }
 
     /**
-     * The provided worker must be a context-owned host I/O executor. The sink
-     * must be a trusted host OutputStream, never a guest callback. A cancelled
-     * completion does not free a stream lease until the worker exits/close runs.
+     * The supplier is trusted host code that starts an already-authorized
+     * request. Crucially it is NEVER invoked unless the bounded I/O executor
+     * accepts a worker. Rejection therefore creates no response to clean up.
+     *
+     * The worker is a virtual I/O thread, not an actor scheduler carrier.
+     * Future cancellation cancels pending HTTP acquisition; a response
+     * already acquired is always closed on the worker before retirement.
      */
     static CompletableFuture<Receipt> start(
-            CompletableFuture<? extends Source> opened, OutputStream sink, Executor worker) {
-        Objects.requireNonNull(opened, "opened");
+            Supplier<? extends CompletableFuture<? extends Source>> acquire,
+            OutputStream sink, Executor worker) {
+        Objects.requireNonNull(acquire, "acquire");
         Objects.requireNonNull(sink, "sink");
         Objects.requireNonNull(worker, "worker");
         CompletableFuture<Receipt> result = new CompletableFuture<>();
-        result.whenComplete((value, failure) -> {
-            if (result.isCancelled()) opened.cancel(true);
-        });
-        opened.whenComplete((source, failure) -> {
-            if (failure != null) {
-                result.completeExceptionally(failure);
-                return;
-            }
-            if (source == null) {
-                result.completeExceptionally(new IllegalStateException("null outbound response"));
-                return;
-            }
-            try {
-                // Cancellation never runs user-supplied OutputStream methods on
-                // the future-completion/actor carrier thread.
-                worker.execute(() -> {
-                    try {
-                        Receipt receipt;
-                        try (source) {
-                            if (result.isDone()) return;
-                            long count = source.streamBody(sink, result::isCancelled);
-                            receipt = new Receipt(source.status(), source.headers(), count);
-                        }
-                        // Do not settle success until close has retired the
-                        // body lease, including any blocked physical writer.
-                        result.complete(receipt);
-                    } catch (Throwable error) {
-                        result.completeExceptionally(error);
-                        if (error instanceof VirtualMachineError fatal) throw fatal;
-                        if (error instanceof ThreadDeath fatal) throw fatal;
-                        if (error instanceof LinkageError fatal) throw fatal;
+        try {
+            worker.execute(() -> {
+                CompletableFuture<? extends Source> opening = null;
+                try {
+                    if (result.isDone()) return;
+                    opening = Objects.requireNonNull(acquire.get(), "null request future");
+                    CompletableFuture<? extends Source> current = opening;
+                    result.whenComplete((ignored, failure) -> {
+                        if (result.isCancelled()) current.cancel(true);
+                    });
+                    // Waiting for upstream headers is allowed only on this
+                    // virtual I/O worker. Never block an actor carrier here.
+                    Source source = current.join();
+                    if (source == null) throw new IllegalStateException("null outbound response");
+                    Receipt receipt;
+                    try (source) {
+                        if (result.isDone()) return;
+                        long count = source.streamBody(sink, result::isCancelled);
+                        receipt = new Receipt(source.status(), source.headers(), count);
                     }
-                });
-            } catch (RuntimeException rejected) {
-                // Worker rejection is a host-side admission failure. Do not
-                // expose an unread response or retain its transport lease.
-                Thread.ofVirtual().name("ores-proxy-rejected-close").start(() -> {
-                    try { source.close(); }
-                    catch (IOException cleanup) { rejected.addSuppressed(cleanup); }
-                    result.completeExceptionally(rejected);
-                });
-            }
-        });
+                    // Completing after source.close() preserves lease ordering.
+                    result.complete(receipt);
+                } catch (Throwable failure) {
+                    Throwable cause = failure instanceof CompletionException wrapped
+                            && wrapped.getCause() != null ? wrapped.getCause() : failure;
+                    result.completeExceptionally(cause);
+                    if (failure instanceof VirtualMachineError fatal) throw fatal;
+                    if (failure instanceof ThreadDeath fatal) throw fatal;
+                    if (failure instanceof LinkageError fatal) throw fatal;
+                }
+            });
+        } catch (RuntimeException rejected) {
+            // No request has started: rejecting the worker cannot strand an
+            // acquired body or require an unbounded emergency cleanup thread.
+            result.completeExceptionally(rejected);
+        }
         return result;
     }
 }
