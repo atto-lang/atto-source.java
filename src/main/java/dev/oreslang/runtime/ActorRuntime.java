@@ -7182,6 +7182,8 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean sourceStopCleanupPending;
         /** STOP must revoke preexisting Future operations before arena release. */
         private boolean pendingOperationRevocationPending;
+        /** Physical terminal-notification receipts for Futures owned before STOP. */
+        private int pendingStopFutureNotifications;
         /** STOP has sealed admission and may execute only existing SourceTasks. */
         private boolean sourceStopCleanupActive;
         /** Any failed cleanup submission quarantines actor state. */
@@ -7494,6 +7496,7 @@ public final class ActorRuntime implements AutoCloseable {
                     || sourceSchedulerClosing
                     || sourceStopCleanupPending
                     || pendingOperationRevocationPending
+                    || pendingStopFutureNotifications != 0
                     || pendingCleanupFutures != 0
                     || activeTurns != 0
                     || scheduled.get()
@@ -8196,6 +8199,11 @@ public final class ActorRuntime implements AutoCloseable {
                 // still owns authenticated lexical unwind continuations.
                 descendants = List.copyOf(children);
                 pending = List.copyOf(pendingOperations);
+                // Cancellation may already have won the terminal CAS on a
+                // different thread, whose revoker or subscriber is still
+                // physically running. A second cancel() cannot join it.
+                // Reserve exactly one notification-drain receipt per owner.
+                pendingStopFutureNotifications = pending.size();
                 pendingOperations.clear();
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
@@ -8234,6 +8242,53 @@ public final class ActorRuntime implements AutoCloseable {
                             new OresScheduler.CleanupIncompleteError(
                                     "child STOP request failed; quarantine actor state",
                                     childCancellationFailure));
+                    lifecycleLock.notifyAll();
+                }
+            }
+
+            // Establish receipts before requesting cancellation. A concurrent
+            // cancellation may already have published isCancelled() while its
+            // revocation hook or terminal subscribers are still executing;
+            // only the winning settlement's notification-drain receipt joins
+            // that physical work. Registration can itself immediately call
+            // back when a Future has already fully settled.
+            Throwable notificationRegistrationFailure = null;
+            for (OresFuture<?> future : pending) {
+                try {
+                    future.whenNotificationsDrainedRuntime(() -> {
+                        synchronized (lifecycleLock) {
+                            if (pendingStopFutureNotifications <= 0) {
+                                sourceStopCleanupAborted = true;
+                                ref.terminationCause.compareAndSet(null,
+                                        new OresScheduler.CleanupIncompleteError(
+                                                "actor owned Future notification receipt underflow"));
+                                lifecycleLock.notifyAll();
+                                return;
+                            }
+                            pendingStopFutureNotifications--;
+                            if (stopped.get() && !pendingOperationRevocationPending) {
+                                finalizeStopLocked();
+                            }
+                            lifecycleLock.notifyAll();
+                        }
+                    });
+                } catch (RuntimeException | Error failure) {
+                    // A registration failure cannot be mistaken for a drain
+                    // receipt. The outstanding count deliberately quarantines.
+                    if (notificationRegistrationFailure == null) {
+                        notificationRegistrationFailure = failure;
+                    } else if (notificationRegistrationFailure != failure) {
+                        notificationRegistrationFailure.addSuppressed(failure);
+                    }
+                }
+            }
+            if (notificationRegistrationFailure != null) {
+                synchronized (lifecycleLock) {
+                    sourceStopCleanupAborted = true;
+                    ref.terminationCause.compareAndSet(null,
+                            new OresScheduler.CleanupIncompleteError(
+                                    "actor owned Future notification registration failed",
+                                    notificationRegistrationFailure));
                     lifecycleLock.notifyAll();
                 }
             }
