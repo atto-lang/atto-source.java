@@ -601,6 +601,7 @@ final class ActorStopCleanupAdmissionTest {
                         "queued physical child STOP receipts still own parent lifetime");
                 assertEquals(0, fixture.forbiddenMessages.get());
                 releasePhysical.countDown();
+                fixture.releaseRevokers.countDown();
                 assertTrue(parent.awaitTermination(3, TimeUnit.SECONDS));
                 assertTrue(grandchild.awaitTermination(3, TimeUnit.SECONDS));
                 assertNull(workerFailure.get(),
