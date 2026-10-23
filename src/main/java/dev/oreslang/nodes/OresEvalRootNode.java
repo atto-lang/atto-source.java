@@ -6,6 +6,7 @@ import com.oracle.truffle.api.interop.InteropLibrary;
 import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.types.TypeChecker;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
@@ -4502,7 +4503,7 @@ public final class OresEvalRootNode extends RootNode {
             Ast.Expr upstream = pipe;
             int depth = 0;
             while (upstream instanceof Ast.CallExpr stage
-                    && Ast.CheckedPureFuturePipe.lookup(stage)) {
+                    && TypeChecker.CheckedPureFuturePipe.lookup(stage)) {
                 if (++depth > 128) throw new IllegalStateException("checked pipeline exceeds 128 stages");
                 upstream = stage.arguments().getFirst();
             }
@@ -4527,7 +4528,7 @@ public final class OresEvalRootNode extends RootNode {
             List<Ast.CallExpr> backwards = new ArrayList<>();
             Ast.Expr current = pipe;
             while (current instanceof Ast.CallExpr stage
-                    && Ast.CheckedPureFuturePipe.lookup(stage)) {
+                    && TypeChecker.CheckedPureFuturePipe.lookup(stage)) {
                 if (backwards.size() >= 128) {
                     throw new IllegalStateException("checked pipeline exceeds 128 stages");
                 }
@@ -4541,7 +4542,7 @@ public final class OresEvalRootNode extends RootNode {
                         || call.arguments().size() != 1) {
                     throw new IllegalStateException("checked Future stage shape changed");
                 }
-                Ast.FunctionDecl target = Ast.CheckedPureFuturePipe.target(call);
+                Ast.FunctionDecl target = TypeChecker.CheckedPureFuturePipe.target(call);
                 if (target == null || !target.name().equals(name.name())
                         || target.parameters().size() != 1) {
                     throw new IllegalStateException(
@@ -4561,7 +4562,7 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.CallExpr call,
                 Env env,
                 SourceValueCont continuation) {
-            if (Ast.CheckedPureFuturePipe.lookup(call)) {
+            if (TypeChecker.CheckedPureFuturePipe.lookup(call)) {
                 if (ActorRuntime.inActorExecution()) {
                     continuation.accept(task, null, new IllegalStateException(
                             "source Future pipeline actor affinity has not been proven"));
@@ -7044,7 +7045,7 @@ public final class OresEvalRootNode extends RootNode {
                 return applyRuntimeOwnership(runtime.operation(), value);
             }
             if (expr instanceof Ast.CallExpr call) {
-                if (Ast.CheckedPureFuturePipe.lookup(call)) {
+                if (TypeChecker.CheckedPureFuturePipe.lookup(call)) {
                     if (ActorRuntime.inActorExecution()) {
                         throw new IllegalStateException(
                                 "source Future pipeline actor affinity has not been proven");
