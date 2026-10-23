@@ -93,7 +93,9 @@ final class ReachabilityManifestCurrentTest {
                 base.retainedSymbols(),
                 base.removedSymbols(),
                 base.compileTimeConstants(),
-                Set.of("__root__.missing"));
+                Set.of("__root__.missing"),
+                base.libraryBuild(),
+                base.semanticSymbols());
 
         assertThrows(
                 IllegalArgumentException.class,
@@ -112,7 +114,9 @@ final class ReachabilityManifestCurrentTest {
                 Set.of("__root__.main"),
                 Set.of("__root__.main"),
                 base.compileTimeConstants(),
-                Set.of("__root__.main"));
+                Set.of("__root__.main"),
+                base.libraryBuild(),
+                base.semanticSymbols());
 
         assertThrows(
                 IllegalArgumentException.class,
@@ -201,7 +205,9 @@ final class ReachabilityManifestCurrentTest {
                 base.retainedSymbols(),
                 base.removedSymbols(),
                 Map.of("__root__.label", "\uD800"),
-                base.rootSymbols());
+                base.rootSymbols(),
+                base.libraryBuild(),
+                base.semanticSymbols());
 
         assertThrows(
                 IllegalArgumentException.class,
