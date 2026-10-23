@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.compiler.IncrementalCompiler;
+import dev.oreslang.nodes.OresEvalRootNode;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
@@ -126,6 +127,14 @@ public final class HotReloadManager implements AutoCloseable {
     }
 
     private Generation stage(String codeUnitId, String sourceDigest, String sourceText) {
+        return stage(codeUnitId, sourceDigest, sourceText, true);
+    }
+
+    private Generation stage(
+            String codeUnitId,
+            String sourceDigest,
+            String sourceText,
+            boolean publishGenericRoute) {
         requireOpen();
         if (guestPolicy.adversarial()
                 && generations.size() >= MAX_ADVERSARIAL_LIVE_GENERATIONS) {
@@ -140,15 +149,35 @@ public final class HotReloadManager implements AutoCloseable {
             Source source = Source.newBuilder(OresLanguage.ID, sourceText, codeUnitId)
                     .mimeType(OresLanguage.MIME_TYPE)
                     .buildLiteral();
-            Generation generation = new Generation(this, id, codeUnitId, sourceDigest, context, source, executionProfile);
+            Generation generation = new Generation(
+                    this, id, codeUnitId, sourceDigest, context, source, executionProfile);
             generations.put(id, generation);
-            activeByCodeUnit.put(codeUnitId, generation);
-            active.set(generation);
+            if (publishGenericRoute) {
+                activeByCodeUnit.put(codeUnitId, generation);
+                active.set(generation);
+            }
             return generation;
-        } catch (RuntimeException failure) {
-            context.close(true);
+        } catch (RuntimeException | Error failure) {
+            try {
+                context.close(true);
+            } catch (RuntimeException | Error cleanupFailure) {
+                if (cleanupFailure != failure) failure.addSuppressed(cleanupFailure);
+            }
             throw failure;
         }
+    }
+
+    /**
+     * Validate and stage an actor-only generation without executing module
+     * initialization/main and without publishing it as the generic source
+     * route. Declarations are linked lazily by linkActorGeneration().
+     */
+    public synchronized Generation stageActorGeneration(
+            String name,
+            String sourceText) {
+        validateAdmissionInputs(name, sourceText);
+        OresCompiler.validateForIsolate(sourceText, guestPolicy);
+        return stage(name, digest(sourceText), sourceText, false);
     }
 
     public synchronized Generation loadAndStart(String name, String sourceText) {
@@ -177,13 +206,24 @@ public final class HotReloadManager implements AutoCloseable {
     }
 
     /** Explicit retirement permits old actors/requests to drain before teardown. */
-    public synchronized void retire(long generationId) {
-        Generation generation = generations.remove(generationId);
-        if (generation != null) {
-            active.compareAndSet(generation, null);
-            activeByCodeUnit.remove(generation.codeUnitId(), generation);
-            generation.close();
+    public void retire(long generationId) {
+        final Generation generation;
+        synchronized (this) {
+            generation = generations.get(generationId);
+            if (generation != null && generation.actorRoutePins() != 0) {
+                throw new IllegalStateException(
+                        "cannot retire hot-reload generation " + generationId
+                                + " while a logical actor route pins it");
+            }
+            if (generation != null) {
+                generations.remove(generationId, generation);
+                active.compareAndSet(generation, null);
+                activeByCodeUnit.remove(generation.codeUnitId(), generation);
+            }
         }
+        // Guest context teardown can execute callbacks; never hold the manager
+        // routing monitor while closing it.
+        if (generation != null) generation.close();
     }
 
     public synchronized int liveGenerations() { return generations.size(); }
@@ -202,34 +242,36 @@ public final class HotReloadManager implements AutoCloseable {
     }
 
     @Override
-    public synchronized void close() {
-        if (closed) {
-            return;
+    public void close() {
+        final java.util.List<Generation> toClose;
+        synchronized (this) {
+            if (closed) return;
+            for (Generation generation : generations.values()) {
+                if (generation.actorRoutePins() != 0) {
+                    throw new IllegalStateException(
+                            "cannot close HotReloadManager while generation "
+                                    + generation.id()
+                                    + " is pinned by a logical actor route");
+                }
+            }
+            closed = true;
+            toClose = java.util.List.copyOf(generations.values());
+            generations.clear();
+            activeByCodeUnit.clear();
+            active.set(null);
         }
-        closed = true;
-        // Snapshot first: each Generation.close() re-enters onGenerationClosed.
-        java.util.List<Generation> toClose = java.util.List.copyOf(generations.values());
-        generations.clear();
-        activeByCodeUnit.clear();
-        active.set(null);
+
         Throwable failure = null;
         for (Generation generation : toClose) {
             try {
-                generation.close();
+                generation.forceCloseFromManager();
             } catch (RuntimeException | Error closingFailure) {
-                if (failure == null) {
-                    failure = closingFailure;
-                } else {
-                    failure.addSuppressed(closingFailure);
-                }
+                if (failure == null) failure = closingFailure;
+                else failure.addSuppressed(closingFailure);
             }
         }
-        if (failure instanceof Error error) {
-            throw error;
-        }
-        if (failure instanceof RuntimeException runtimeFailure) {
-            throw runtimeFailure;
-        }
+        if (failure instanceof Error error) throw error;
+        if (failure instanceof RuntimeException runtimeFailure) throw runtimeFailure;
     }
 
     private static String digest(String text) {
@@ -238,6 +280,29 @@ public final class HotReloadManager implements AutoCloseable {
             return HexFormat.of().formatHex(hash);
         } catch (Exception impossible) {
             throw new IllegalStateException(impossible);
+        }
+    }
+
+    /**
+     * Trusted host view over one linked actor-only generation. It exposes
+     * compiler/runtime objects only to host integration code; it is not a
+     * guest capability and does not authorize route publication by itself.
+     */
+    public record ActorGenerationView(
+            Generation generation,
+            OresContext context,
+            ActorRuntime runtime,
+            ActorRuntime.ActorCodeExecutor executor,
+            IsolatePolicy policy,
+            String actorTypeName) {
+        public ActorGenerationView {
+            java.util.Objects.requireNonNull(generation);
+            java.util.Objects.requireNonNull(context);
+            java.util.Objects.requireNonNull(runtime);
+            java.util.Objects.requireNonNull(executor);
+            java.util.Objects.requireNonNull(policy);
+            if (actorTypeName == null || actorTypeName.isBlank())
+                throw new IllegalArgumentException("actor type name cannot be blank");
         }
     }
 
@@ -252,6 +317,9 @@ public final class HotReloadManager implements AutoCloseable {
         private final ExecutionProfile executionProfile;
         private final AtomicBoolean started = new AtomicBoolean();
         private final AtomicBoolean closed = new AtomicBoolean();
+        private int actorRoutePins;
+        private boolean actorLinked;
+        private OresContext linkedActorContext;
 
         private Generation(HotReloadManager owner, long id, String codeUnitId, String sha256, Context context, Source source, ExecutionProfile executionProfile) {
             this.owner = new java.lang.ref.WeakReference<>(owner);
@@ -263,6 +331,63 @@ public final class HotReloadManager implements AutoCloseable {
             this.executionProfile = executionProfile;
         }
 
+        /**
+         * Generation lifetime pin owned by a stable logical actor route.
+         * Retirement and manager shutdown cannot invalidate a pinned context.
+         */
+        public final class ActorRouteLease implements AutoCloseable {
+            private final AtomicBoolean released = new AtomicBoolean();
+
+            private ActorRouteLease() { }
+
+            public Generation generation() { return Generation.this; }
+
+            @Override
+            public void close() {
+                synchronized (Generation.this) {
+                    if (!released.compareAndSet(false, true)) return;
+                    if (actorRoutePins <= 0)
+                        throw new IllegalStateException(
+                                "hot-reload generation route-pin underflow");
+                    actorRoutePins--;
+                }
+            }
+        }
+
+        public ActorRouteLease pinActorRoute() {
+            HotReloadManager manager = owner.get();
+            if (manager == null)
+                throw new IllegalStateException(
+                        "generation owner is no longer available");
+            synchronized (manager) {
+                if (manager.closed || manager.generations.get(id) != this) {
+                    throw new IllegalStateException(
+                            "generation is no longer registered for actor routing");
+                }
+                synchronized (this) {
+                    if (closed.get())
+                        throw new IllegalStateException("generation is closed");
+                    if (actorRoutePins == Integer.MAX_VALUE)
+                        throw new IllegalStateException(
+                                "generation route-pin budget exhausted");
+                    actorRoutePins++;
+                    return new ActorRouteLease();
+                }
+            }
+        }
+
+        private synchronized int actorRoutePins() {
+            return actorRoutePins;
+        }
+
+        HotReloadManager ownerForActorRouting() {
+            HotReloadManager manager = owner.get();
+            if (manager == null)
+                throw new IllegalStateException(
+                        "generation owner is no longer available");
+            return manager;
+        }
+
         public long id() { return id; }
         public String codeUnitId() { return codeUnitId; }
         public String sha256() { return sha256; }
@@ -272,10 +397,68 @@ public final class HotReloadManager implements AutoCloseable {
         public boolean started() { return started.get(); }
         public boolean closed() { return closed.get(); }
 
+        /**
+         * Link declarations without running module initialization/main and
+         * resolve the compiler-private source actor executor.
+         */
+        public synchronized ActorGenerationView linkActorGeneration(
+                String actorTypeName) {
+            if (actorTypeName == null || actorTypeName.isBlank())
+                throw new IllegalArgumentException("actor type name cannot be blank");
+            if (closed.get()) throw new IllegalStateException("generation is closed");
+            if (started.get()) {
+                throw new IllegalStateException(
+                        "actor-only linking requires a generation whose init/main has not executed");
+            }
+
+            if (!actorLinked) {
+                Value parsed = context.parse(source);
+                parsed.execute(OresEvalRootNode.LINK_ONLY_COMMAND);
+                context.enter();
+                try {
+                    linkedActorContext = OresLanguage.currentEnteredContextForHost();
+                } finally {
+                    context.leave();
+                }
+                actorLinked = true;
+            }
+
+            OresContext ores = java.util.Objects.requireNonNull(
+                    linkedActorContext, "linked actor context");
+            Object linked = ores.linkedCodeUnit(codeUnitId);
+            if (!(linked instanceof ActorRuntime.ActorCodeExecutor executor)) {
+                throw new IllegalStateException(
+                        "linked code unit does not expose an actor executor: "
+                                + codeUnitId);
+            }
+            // Resolve and validate all migration receipts before a live route
+            // is frozen.
+            executor.actorStateSchemaSha256(actorTypeName);
+            executor.actorMessageAbiSha256(actorTypeName);
+            executor.actorCodeSha256(actorTypeName);
+            return new ActorGenerationView(
+                    this,
+                    ores,
+                    ores.actors(),
+                    executor,
+                    ores.isolatePolicy(),
+                    actorTypeName);
+        }
+
         /** Starts the staged generation exactly once. */
         public Value start() {
-            if (closed.get()) throw new IllegalStateException("generation is closed");
-            if (!started.compareAndSet(false, true)) throw new IllegalStateException("generation already started");
+            synchronized (this) {
+                if (closed.get())
+                    throw new IllegalStateException("generation is closed");
+                if (actorRoutePins != 0) {
+                    throw new IllegalStateException(
+                            "cannot execute generation init/main while "
+                                    + actorRoutePins
+                                    + " logical actor route(s) pin it");
+                }
+                if (!started.compareAndSet(false, true))
+                    throw new IllegalStateException("generation already started");
+            }
             try {
                 return context.eval(source);
             } catch (RuntimeException | Error failure) {
@@ -286,15 +469,29 @@ public final class HotReloadManager implements AutoCloseable {
 
         @Override
         public void close() {
-            if (closed.compareAndSet(false, true)) {
-                try {
-                    context.close(true);
-                } finally {
-                    HotReloadManager manager = owner.get();
-                    if (manager != null) {
-                        manager.onGenerationClosed(this);
-                    }
+            closeInternal(false);
+        }
+
+        private void forceCloseFromManager() {
+            closeInternal(true);
+        }
+
+        private void closeInternal(boolean force) {
+            synchronized (this) {
+                if (closed.get()) return;
+                if (!force && actorRoutePins != 0) {
+                    throw new IllegalStateException(
+                            "cannot close generation while "
+                                    + actorRoutePins
+                                    + " logical actor route(s) pin it");
                 }
+                closed.set(true);
+            }
+            try {
+                context.close(true);
+            } finally {
+                HotReloadManager manager = owner.get();
+                if (manager != null) manager.onGenerationClosed(this);
             }
         }
     }
