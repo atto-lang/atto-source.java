@@ -45,6 +45,18 @@ cat > "$tmp/reports/TEST-a.BCheck.xml" <<'XML'
 <!DOCTYPE testsuite [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><testsuite name="a.BCheck" tests="1" skipped="0" errors="0" failures="0"><testcase name="&xxe;"/></testsuite>
 XML
 reject 'DOCTYPE / external entity'
+cat > "$tmp/reports/TEST-a.BCheck.xml" <<'XML'
+<testsuite name="a.BCheck" tests="1" skipped="0" errors="0" failures="0"><testcase name="one"><failure message="hidden"/></testcase></testsuite>
+XML
+reject 'hidden failure node under green suite'
+cat > "$tmp/reports/TEST-a.BCheck.xml" <<'XML'
+<testsuite name="a.BCheck" tests="1" skipped="0" errors="0" failures="0"><testcase name="one"><error message="hidden"/></testcase></testsuite>
+XML
+reject 'hidden error node under green suite'
+cat > "$tmp/reports/TEST-a.BCheck.xml" <<'XML'
+<testsuite name="a.BCheck" tests="2" skipped="0" errors="0" failures="0"><testcase classname="a.BCheck" name="same"/><testcase classname="a.BCheck" name="same"/></testsuite>
+XML
+reject 'duplicated testcase identity despite green counts'
 cp "$tmp/valid.xml" "$tmp/reports/TEST-a.BCheck.xml"
 cp "$tmp/valid.xml" "$tmp/reports/TEST-b.BCheck.xml"
 reject 'duplicate suite reports'
@@ -54,4 +66,4 @@ ln -s "$tmp/target.xml" "$tmp/reports/TEST-a.BCheck.xml"
 reject 'symlinked report'
 rm "$tmp/reports/TEST-a.BCheck.xml"
 reject 'missing required suite'
-echo 'PASS: eight fail-closed negative cases'
+echo 'PASS: eleven fail-closed negative cases'
