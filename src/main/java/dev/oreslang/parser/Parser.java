@@ -161,11 +161,12 @@ public final class Parser {
                     continue;
                 }
                 if (match(INTERFACE, TRAIT)) {
+                    boolean isTrait = previous().type() == TRAIT;
                     modifiers = mergeModifiers(modifiers, parseModifiers());
                     validateOnlyVisibilityModifiers(modifiers, "interfaces/traits");
                     rejectCallableStructuralAnnotation(annotations, "interface declarations");
                     rejectDiscardedDeclarationAnnotations(annotations, "interface declarations");
-                    rootDeclarations.add(parseInterface(modifiers.visibility));
+                    rootDeclarations.add(parseInterface(modifiers.visibility, false, isTrait));
                     continue;
                 }
                 if (match(TYPE)) {
@@ -413,11 +414,12 @@ public final class Parser {
                         modifiers.isAbstract, false);
             }
             if (match(INTERFACE, TRAIT)) {
+                boolean isTrait = previous().type() == TRAIT;
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 validateOnlyVisibilityModifiers(modifiers, "interfaces/traits");
                 rejectCallableStructuralAnnotation(annotations, "interface declarations");
                 rejectDiscardedDeclarationAnnotations(annotations, "interface declarations");
-                return parseInterface(modifiers.visibility);
+                return parseInterface(modifiers.visibility, false, isTrait);
             }
             if (match(TYPE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
@@ -445,7 +447,8 @@ public final class Parser {
         rejectCallableStructuralAnnotation(annotations, "type-only declarations");
         rejectDiscardedDeclarationAnnotations(annotations, "type-only declarations");
         if (match(TYPE)) return parseTypeAlias(modifiers.visibility);
-        if (match(TRAIT, INTERFACE)) return parseInterface(modifiers.visibility);
+        if (match(TRAIT)) return parseInterface(modifiers.visibility, false, true);
+        if (match(INTERFACE)) return parseInterface(modifiers.visibility);
         throw error(peek(),
                 "declare admits only type, trait, or interface; concrete values use define");
     }
@@ -517,10 +520,11 @@ public final class Parser {
             return parseContract(modifiers.visibility);
         }
         if (match(INTERFACE, TRAIT)) {
+            boolean isTrait = previous().type() == TRAIT;
             validateOnlyVisibilityModifiers(modifiers, "interfaces/traits");
             rejectCallableStructuralAnnotation(annotations, "interface/trait declarations");
             rejectDiscardedDeclarationAnnotations(annotations, "interface/trait declarations");
-            return parseInterface(modifiers.visibility);
+            return parseInterface(modifiers.visibility, false, isTrait);
         }
         if (match(TYPE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
@@ -931,9 +935,16 @@ public final class Parser {
         return new Ast.InterfaceDecl(iface.name(), iface.visibility(), iface.genericParameters(), iface.parents(), iface.members(), true);
     }
 
-    private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility) { return parseInterface(visibility, false); }
+    private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility) {
+        return parseInterface(visibility, false, false);
+    }
 
     private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility, boolean moduleContract) {
+        return parseInterface(visibility, moduleContract, false);
+    }
+
+    private Ast.InterfaceDecl parseInterface(
+            Ast.Visibility visibility, boolean moduleContract, boolean traitDeclaration) {
         String name = consume(IDENT, "expected interface name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
@@ -1000,7 +1011,8 @@ public final class Parser {
         }
 
         consume(terminator, braceStyle ? "expected '}' to close interface " + name : "expected 'end' to close interface " + name);
-        return new Ast.InterfaceDecl(name, visibility, generics, parents, members, moduleContract);
+        return new Ast.InterfaceDecl(name, visibility, generics, parents, members,
+                moduleContract, traitDeclaration);
     }
 
     private List<Ast.TypeRef> parseTypeRefList() {
