@@ -16,7 +16,7 @@ final class GeneratorAdmissionStickyAsyncTest {
             try (AsyncRuntime runtime = new AsyncRuntime(turn -> {
                      throw new SecurityException("guest turn denied");
                  });
-                 var generator = GeneratorRuntime.asyncGenerator(runtime, emit -> {
+                 var generator = GeneratorRuntime.<Integer>asyncGenerator(runtime, emit -> {
                      effects.incrementAndGet();
                      emit.emit(99);
                  })) {

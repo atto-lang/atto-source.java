@@ -94,7 +94,7 @@ final class GeneratorRuntimeTest {
     @Test
     void asyncPullOnClosedSchedulerReturnsFailedOresFuture() throws Exception {
         AsyncRuntime runtime = new AsyncRuntime();
-        var generator = GeneratorRuntime.asyncGenerator(runtime, emitter -> emitter.emit(1));
+        var generator = GeneratorRuntime.<Integer>asyncGenerator(runtime, emitter -> emitter.emit(1));
         runtime.close();
         try (generator) {
             OresFuture<GeneratorRuntime.Step<Integer>> pull = generator.nextStep();
@@ -110,7 +110,7 @@ final class GeneratorRuntimeTest {
     @Test
     void terminalPullRemainsCompletedAfterSchedulerShutdown() throws Exception {
         AsyncRuntime runtime = new AsyncRuntime();
-        try (var generator = GeneratorRuntime.asyncGenerator(runtime, emitter -> emitter.emit(42))) {
+        try (var generator = GeneratorRuntime.<Integer>asyncGenerator(runtime, emitter -> emitter.emit(42))) {
             assertEquals(42, generator.nextStep().get(2, TimeUnit.SECONDS).value());
             assertTrue(generator.nextStep().get(2, TimeUnit.SECONDS).done());
             runtime.close();
@@ -128,19 +128,28 @@ final class GeneratorRuntimeTest {
     void asyncPullDuringPendingProducerExitReturnsPromptly() throws Exception {
         CountDownLatch leaving = new CountDownLatch(1);
         CountDownLatch allowExit = new CountDownLatch(1);
-        try (AsyncRuntime runtime = new AsyncRuntime(turn -> {
-                 try { turn.run(); }
-                 finally {
-                     leaving.countDown();
-                     boolean interrupted = false;
-                     for (;;) {
-                         try { allowExit.await(); break; }
-                         catch (InterruptedException expected) { interrupted = true; }
-                     }
-                     if (interrupted) Thread.currentThread().interrupt();
-                 }
-             });
-             var generator = GeneratorRuntime.asyncGenerator(runtime, emitter -> emitter.emit(7))) {
+        var producerThread = new java.util.concurrent.atomic.AtomicReference<Thread>();
+        AsyncRuntime runtime = new AsyncRuntime(turn -> {
+            try { turn.run(); }
+            finally {
+                // Pull tasks use the same context adapter. Only hold the
+                // producer's physical exit, never the first pull's completion.
+                if (Thread.currentThread() == producerThread.get()) {
+                    leaving.countDown();
+                    boolean interrupted = false;
+                    for (;;) {
+                        try { allowExit.await(); break; }
+                        catch (InterruptedException expected) { interrupted = true; }
+                    }
+                    if (interrupted) Thread.currentThread().interrupt();
+                }
+            }
+        });
+        var generator = GeneratorRuntime.<Integer>asyncGenerator(runtime, emitter -> {
+            producerThread.set(Thread.currentThread());
+            emitter.emit(7);
+        });
+        try {
             assertEquals(7, generator.nextStep().get(2, TimeUnit.SECONDS).value());
             java.util.concurrent.FutureTask<Void> closing = new java.util.concurrent.FutureTask<>(
                     () -> { generator.close(); return null; });
@@ -159,7 +168,10 @@ final class GeneratorRuntimeTest {
             closer.join();
             assertTrue(generator.nextStep().get(2, TimeUnit.SECONDS).done());
         } finally {
+            // Release before closing even if the first pull/assertion fails.
             allowExit.countDown();
+            generator.close();
+            runtime.close();
         }
     }
 
