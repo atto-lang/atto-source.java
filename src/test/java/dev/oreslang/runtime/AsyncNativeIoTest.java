@@ -110,6 +110,50 @@ class AsyncNativeIoTest {
         }
     }
 
+    @Test void closingContextCannotPublishFutureBeforeUncooperativeWorkerExits()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var actualExit = new CountDownLatch(1);
+        var interruptSeen = new java.util.concurrent.atomic.AtomicBoolean();
+        var operation = io.submit("physical-loan", () -> {
+            entered.countDown();
+            try {
+                // Simulate an in-flight native operation that ignores host
+                // interruption while still holding physical memory/handles.
+                while (release.getCount() != 0) {
+                    try {
+                        release.await(30, TimeUnit.MILLISECONDS);
+                    } catch (InterruptedException ignored) {
+                        interruptSeen.set(true);
+                    }
+                }
+                return 23;
+            } finally {
+                actualExit.countDown();
+            }
+        });
+        try {
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            io.close(); // requests interruption, not physical loan retirement
+            assertFalse(operation.isDone(),
+                    "logical context close cannot fake worker-exit receipt");
+            assertEquals(1L, actualExit.getCount(),
+                    "native host callback is still physically executing");
+            assertTrue(interruptSeen.get(),
+                    "shutdown should request cooperative host interruption");
+        } finally {
+            release.countDown();
+        }
+        assertTrue(actualExit.await(3, TimeUnit.SECONDS));
+        assertInstanceOf(IllegalStateException.class,
+                assertThrows(ExecutionException.class,
+                        () -> operation.get(3, TimeUnit.SECONDS)).getCause(),
+                "context closed while worker ran: result retires only afterward");
+        io.close();
+    }
+
     @Test void coreNumericLoggingDoesNotChangeIoFailuresOrLeakGuestExceptionText() throws Exception {
         CoreLog.configure(CoreLog.Level.OFF);
         CoreLog.configure(CoreLog.Level.WARN);
