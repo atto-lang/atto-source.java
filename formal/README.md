@@ -55,6 +55,28 @@ The checked invariants are:
 
 `FormalActorStorageLifetimeModelCheckTest` explores actor retirement versus promoted-root lifetime. `FormalProxySynchronizationModelCheckTest` explores two proxies, lock modes, suspension and disposal. These are bounded abstract contracts; they do not substitute for concrete runtime refinement tests.
 
+### Actor STOP, physical receipts, and successor restart
+
+`FormalActorStopRetirementModelCheckTest` exhaustively explores a bounded
+single-incarnation lifecycle with six phases: RUNNING, STOPPING, QUIESCING,
+RETIRING, TERMINATED, and QUARANTINED. Independent pending bits represent
+physical carrier exit, stop-effect drain, descendant termination, source-Task
+retirement, lock handoff, and Future callback drain. Injected cleanup failures
+and callback exceptions move to irreversible quarantine. Duplicate STOP and
+stale-generation notifications carry no replacement authority.
+
+Its safety properties forbid new admission after STOP, retirement while
+carriers/children/stop effects are live, actor arena reclamation before all
+physical receipts have drained, successful DONE after quarantine, and supervisor
+successor activation except after fully successful old-incarnation termination.
+
+**Refinement required:** this is an abstract bounded model, not executable
+proof of `ActorRuntime`, supervisor restart admission, native callback fencing,
+or LLVM parity. The corresponding runtime regression in
+`ActorLockStopRetirementTest` injects a failed asynchronous lock receipt and
+requires actor quarantine. JDK25 integration and real supervisor restart traces
+must be separately verified.
+
 ## Relationship to runtime tests
 
 This model is deliberately smaller than `ActorRuntime`. Its purpose is to make the semantic contract reviewable and exhaustive. Integration tests must separately prove that concrete runtime traces refine these transitions.
