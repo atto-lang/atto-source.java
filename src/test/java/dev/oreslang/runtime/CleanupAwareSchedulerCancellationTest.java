@@ -211,6 +211,14 @@ final class CleanupAwareSchedulerCancellationTest {
                 assertTrue(work.cancel(false));
                 assertFalse(work.cancel(false), "cancellation request is single-shot");
                 assertTrue(cleanupAwaiting.await(3, TimeUnit.SECONDS));
+                // The stale producer must be released only after the cleanup
+                // Future actually owns the CURRENT await registration.
+                long cleanupDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                while (cleanup.pendingRuntimeWaiterCount() == 0
+                        && System.nanoTime() < cleanupDeadline) {
+                    Thread.sleep(1);
+                }
+                assertEquals(1, cleanup.pendingRuntimeWaiterCount());
                 assertFalse(work.isDone(), "cleanup Future still owns lexical retirement");
                 assertEquals(0, quiescent.get());
             } finally {
