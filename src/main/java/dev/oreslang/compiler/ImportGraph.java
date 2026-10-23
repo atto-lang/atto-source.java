@@ -151,6 +151,7 @@ final class ImportGraph {
                             && klass.name().equals(name);
                     case INTERFACE -> decl instanceof Ast.InterfaceDecl iface
                             && !iface.moduleContract()
+                            && !iface.traitDeclaration()
                             && iface.visibility() == Ast.Visibility.PUBLIC
                             && iface.name().equals(name);
                     case CONTRACT -> decl instanceof Ast.InterfaceDecl iface
@@ -170,7 +171,7 @@ final class ImportGraph {
                     // exactly the existing interface-like type declaration.
                     // This selector never imports an executable value.
                     case TRAIT -> decl instanceof Ast.InterfaceDecl iface
-                            && !iface.moduleContract()
+                            && iface.traitDeclaration()
                             && iface.visibility() == Ast.Visibility.PUBLIC
                             && iface.name().equals(name);
                     case STRUCT -> false;
