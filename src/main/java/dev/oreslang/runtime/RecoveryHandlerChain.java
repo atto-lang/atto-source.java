@@ -297,6 +297,12 @@ final class RecoveryHandlerChain<T> {
         }
         pendingFailure.leaveRecoveryChain();
         return new Unhandled<>(pendingFailure);
+        } catch (Error hostFatal) {
+            // Any host-fatal escape after admission permanently revokes the
+            // pending recovery capability. This also clears an in-flight lease
+            // if a hostile accessor throws Error during graph inspection.
+            pendingFailure.terminateIfActive();
+            throw hostFatal;
         } finally {
             scope.active.remove(this);
             if (scope.active.isEmpty()) {
