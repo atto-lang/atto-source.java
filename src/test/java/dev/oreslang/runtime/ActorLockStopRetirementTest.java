@@ -42,6 +42,58 @@ final class ActorLockStopRetirementTest {
     }
 
     @Test
+    void actorStopWaitsForSourceResultSubscribersAfterTaskDone() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch admitted = new CountDownLatch(1);
+            CountDownLatch releaseGuest = new CountDownLatch(1);
+            CountDownLatch resultCallbackEntered = new CountDownLatch(1);
+            CountDownLatch releaseResultCallback = new CountDownLatch(1);
+            AtomicReference<OresFuture<Integer>> source = new AtomicReference<>();
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                OresFuture<Integer> task = context.runtime().startActorTask(resume -> {
+                    try {
+                        if (!releaseGuest.await(5, TimeUnit.SECONDS))
+                            throw new IllegalStateException("guest gate timed out");
+                    } catch (InterruptedException error) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(error);
+                    }
+                    return OresScheduler.done(31);
+                });
+                source.set(task);
+                admitted.countDown();
+            });
+            actor.send("start");
+            assertTrue(admitted.await(5, TimeUnit.SECONDS));
+            assertNotNull(source.get());
+            source.get().whenCompleteRuntime((value, failure) -> {
+                resultCallbackEntered.countDown();
+                try {
+                    if (!releaseResultCallback.await(5, TimeUnit.SECONDS))
+                        throw new IllegalStateException("result subscriber timeout");
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(error);
+                }
+            });
+            try {
+                releaseGuest.countDown();
+                assertTrue(resultCallbackEntered.await(5, TimeUnit.SECONDS));
+                assertTrue(source.get().isDone());
+                actor.stop();
+                assertFalse(actor.getDone().isDone(),
+                        "actor DONE raced ahead of the source-result callback");
+                assertFalse(actor.awaitTermination(20, TimeUnit.MILLISECONDS),
+                        "actor registry/arena retired while result callback was live");
+            } finally {
+                releaseGuest.countDown();
+                releaseResultCallback.countDown();
+            }
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void actorStopJoinsTrackedSourceTaskDoneSubscriberDrain() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             OresFuture<Integer> suspended = new OresFuture<>();
