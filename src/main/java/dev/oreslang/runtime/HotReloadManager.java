@@ -136,17 +136,27 @@ public final class HotReloadManager implements AutoCloseable {
         long id = sequence.incrementAndGet();
         Context context =
                 guestPolicy.restrictedContextBuilder(executionProfile).build();
+        Generation generation = null;
         try {
             Source source = Source.newBuilder(OresLanguage.ID, sourceText, codeUnitId)
                     .mimeType(OresLanguage.MIME_TYPE)
                     .buildLiteral();
-            Generation generation = new Generation(this, id, codeUnitId, sourceDigest, context, source, executionProfile);
+            generation = new Generation(
+                    this, id, codeUnitId, sourceDigest, context, source, executionProfile);
             generations.put(id, generation);
             activeByCodeUnit.put(codeUnitId, generation);
             active.set(generation);
             return generation;
-        } catch (RuntimeException failure) {
-            context.close(true);
+        } catch (RuntimeException | Error failure) {
+            if (generation != null) {
+                // Roll back every publication surface and revoke the freshly
+                // issued code-image capability before propagating admission
+                // failure. close() is idempotent and manager cleanup is
+                // identity-conditional, so partial map publication is safe.
+                generation.close();
+            } else {
+                context.close(true);
+            }
             throw failure;
         }
     }
