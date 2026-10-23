@@ -145,8 +145,58 @@ public final class TypeChecker {
         return checkTypesWithDiagnostics(program).program();
     }
 
+    /**
+     * Parsing effect annotations does not prove effect propagation or handler
+     * discharge. Until the nominal Error hierarchy and all call paths carry
+     * these rows, reject *before* annotation expansion or linked-type shape
+     * projection could silently discard the metadata.
+     */
+    private static void rejectUnloweredCheckedEffects(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.FunctionDecl fn && !fn.effects().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "checked exceptional effect on function '" + fn.name()
+                                    + "' is parsed but not yet enabled for type checking");
+                }
+                if (declaration instanceof Ast.ClassDecl klass) {
+                    rejectUnloweredCheckedClassEffects(klass);
+                }
+                if (declaration instanceof Ast.InterfaceDecl iface) {
+                    rejectUnloweredCheckedInterfaceEffects(iface);
+                }
+            }
+        }
+    }
+
+    private static void rejectUnloweredCheckedClassEffects(Ast.ClassDecl klass) {
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (!method.effects().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "checked exceptional effect on method '" + klass.name() + "."
+                                + method.name()
+                                + "' is parsed but not yet enabled for type checking");
+            }
+        }
+    }
+
+    private static void rejectUnloweredCheckedInterfaceEffects(Ast.InterfaceDecl iface) {
+        for (Ast.InterfaceMember member : iface.members()) {
+            if (member instanceof Ast.InterfaceFunctionDecl fn && !fn.effects().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "checked exceptional effect on interface method '" + iface.name()
+                                + "." + fn.name()
+                                + "' is parsed but not yet enabled for type checking");
+            }
+        }
+    }
+
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
+        rejectUnloweredCheckedEffects(program);
         program = AnnotationExpander.expand(program);
+        // Expansion can synthesize declarations; recheck before type or
+        // structural projection can discard newly introduced effect rows.
+        rejectUnloweredCheckedEffects(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
@@ -187,7 +237,17 @@ public final class TypeChecker {
         if (linkedClasses == null || linkedAliases == null) {
             throw new IllegalArgumentException("linked public classes/aliases cannot be null");
         }
+        rejectUnloweredCheckedEffects(program);
+        for (Ast.ClassDecl linked : linkedClasses.values()) {
+            rejectUnloweredCheckedClassEffects(linked);
+        }
+        for (Ast.InterfaceDecl linked : linkedContracts.values()) {
+            rejectUnloweredCheckedInterfaceEffects(linked);
+        }
         program = AnnotationExpander.expand(program);
+        // Expansion can synthesize declarations; recheck before type or
+        // structural projection can discard newly introduced effect rows.
+        rejectUnloweredCheckedEffects(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
