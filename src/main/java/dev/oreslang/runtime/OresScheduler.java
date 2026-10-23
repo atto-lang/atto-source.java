@@ -207,6 +207,8 @@ public final class OresScheduler implements AutoCloseable {
     /** Actor STOP seals task admission without closing the cleanup executor. */
     private final AtomicBoolean actorStopSealed = new AtomicBoolean();
     private final AtomicInteger retiringPhysicalCallbacks = new AtomicInteger();
+    /** Tracks terminal subscriber drains even after a Task leaves the live set. */
+    private final AtomicInteger pendingTerminalNotifications = new AtomicInteger();
     private final AtomicReference<Throwable> physicalRetirementFailure = new AtomicReference<>();
     private volatile Runnable actorStopQuiescenceListener;
     private final AtomicLong watchdogOverruns = new AtomicLong();
@@ -531,7 +533,8 @@ public final class OresScheduler implements AutoCloseable {
      * This method is for runtime retirement only, not guest code.
      */
     boolean actorStopPhysicallyQuiescent() {
-        return tasks.isEmpty() && retiringPhysicalCallbacks.get() == 0;
+        return tasks.isEmpty() && retiringPhysicalCallbacks.get() == 0
+                && pendingTerminalNotifications.get() == 0;
     }
 
     /**
@@ -617,6 +620,7 @@ public final class OresScheduler implements AutoCloseable {
             }
             try {
                 tasks.add(runner);
+                pendingTerminalNotifications.incrementAndGet();
             } catch (RuntimeException | Error failure) {
                 runner.releaseUnusedDeadlineSlot();
                 throw failure;
@@ -817,6 +821,7 @@ public final class OresScheduler implements AutoCloseable {
         private final AtomicBoolean deadlineSlotReserved = new AtomicBoolean();
         private final AtomicBoolean deadlineSlotReleased = new AtomicBoolean();
         private final AtomicBoolean deadlineNotificationDrained = new AtomicBoolean();
+        private final AtomicBoolean terminalNotificationRetired = new AtomicBoolean();
         private final AtomicBoolean deadlineQuiescenceRetired = new AtomicBoolean();
         private final AtomicReference<ScheduledFuture<?>> wallDeadline =
                 new AtomicReference<>();
@@ -843,13 +848,28 @@ public final class OresScheduler implements AutoCloseable {
 
         private void notificationDrained() {
             try {
-                // Logical actor-level admission remains reserved through the
-                // Future's synchronous subscriber drain, independently of the
-                // physical task quota's earlier quiescence callback.
+                // Terminal is visible before synchronous callbacks finish.
+                // An actor's memory must never be reclaimed while one such
+                // subscriber still owns host/FFI retirement references.
                 onNotificationDrained.run();
+            } catch (RuntimeException | Error failure) {
+                physicalRetirementFailure.compareAndSet(null, failure);
+                throw failure;
             } finally {
                 deadlineNotificationDrained.set(true);
-                releaseDeadlineSlotIfRetired();
+                try {
+                    releaseDeadlineSlotIfRetired();
+                } finally {
+                    if (terminalNotificationRetired.compareAndSet(false, true)) {
+                        int remaining = pendingTerminalNotifications.decrementAndGet();
+                        if (remaining < 0) {
+                            physicalRetirementFailure.compareAndSet(null,
+                                    new IllegalStateException(
+                                            "scheduler terminal notification receipt underflow"));
+                        }
+                        notifyActorStopQuiescent();
+                    }
+                }
             }
         }
 
