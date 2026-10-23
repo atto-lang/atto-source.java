@@ -44,6 +44,9 @@ final class TaskOwnedLockLedger {
     private Entry latest;
     private boolean admissionFenced;
     private boolean quiescent;
+    /** Single one-way retirement barrier; repeated STOP/cancel calls must
+     * never run a native permit revoker or handoff cleanup a second time. */
+    private CompletableFuture<Void> retirementReceipt;
 
     synchronized void register(Lease permit) {
         Objects.requireNonNull(permit, "permit");
@@ -109,10 +112,14 @@ final class TaskOwnedLockLedger {
      */
     CompletableFuture<Void> retireAfterQuiescence() {
         final List<Lease> snapshot;
+        final CompletableFuture<Void> receipt;
         synchronized (this) {
             admissionFenced = true;
-            if (quiescent && held.isEmpty()) return CompletableFuture.completedFuture(null);
+            if (retirementReceipt != null) return retirementReceipt;
             quiescent = true;
+            // Publish before callbacks: even a re-entrant revoker sees exactly
+            // the same pending receipt instead of recursively revoking itself.
+            receipt = retirementReceipt = new CompletableFuture<>();
             snapshot = new ArrayList<>(held.size());
             // A Task that nests multiple acquisitions releases in LIFO order.
             for (Entry entry = latest; entry != null; entry = entry.previous) {
@@ -135,6 +142,11 @@ final class TaskOwnedLockLedger {
                 settle.add(failed);
             }
         }
-        return CompletableFuture.allOf(settle.toArray(new CompletableFuture<?>[0]));
+        CompletableFuture.allOf(settle.toArray(new CompletableFuture<?>[0]))
+                .whenComplete((ignored, failure) -> {
+                    if (failure == null) receipt.complete(null);
+                    else receipt.completeExceptionally(failure);
+                });
+        return receipt;
     }
 }
