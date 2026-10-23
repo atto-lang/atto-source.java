@@ -118,6 +118,12 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                if (matchContextualKeyword("mtd")) {
+                    validateOnlyVisibilityModifiers(modifiers, "extension methods");
+                    rejectDiscardedDeclarationAnnotations(annotations, "extension methods");
+                    rootDeclarations.add(parseExtensionMethod(modifiers.visibility));
+                    continue;
+                }
                 if (match(ACTOR, ISOACTOR)) {
                     rootDeclarations.add(parseDefinedActorClass(previous(), modifiers, annotations));
                     continue;
@@ -394,6 +400,11 @@ public final class Parser {
 
         if (match(DEFINE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
+            if (matchContextualKeyword("mtd")) {
+                validateOnlyVisibilityModifiers(modifiers, "extension methods");
+                rejectDiscardedDeclarationAnnotations(annotations, "extension methods");
+                return parseExtensionMethod(modifiers.visibility);
+            }
             if (match(ACTOR, ISOACTOR)) {
                 return parseDefinedActorClass(previous(), modifiers, annotations);
             }
@@ -1212,6 +1223,47 @@ public final class Parser {
             return namespace + "." + symbol;
         }
         return consumeCallableName("expected method name (methods omit 'fnc')");
+    }
+
+    /**
+     * A named-type extension is a zero-layout compile-time callable. Lower it
+     * to a private module function with an explicit first receiver parameter;
+     * type checking still verifies the receiver is a *declared alias*, not
+     * every value of its underlying int/bool representation. Call-site
+     * dispatch is separately statically authorized by the type checker.
+     *
+     * Canonical spelling: define mtd name on Alias(params): Result { ... }
+     */
+    private Ast.FunctionDecl parseExtensionMethod(Ast.Visibility visibility) {
+        String method = consume(IDENT, "expected extension method name after mtd").lexeme();
+        if (!matchContextualKeyword("on")) {
+            throw error(peek(), "extension method requires 'on Type'");
+        }
+        Ast.TypeRef receiver = parseTypeRef();
+        if (!receiver.arguments().isEmpty() || receiver.inferArguments()) {
+            throw error(previous(), "extension receiver must be a simple named type alias");
+        }
+        if (method.equals("init") || method.equals("main") || method.contains("$")) {
+            throw error(previous(), "extension method cannot use a reserved lifecycle or entrypoint name");
+        }
+        consume(LPAREN, "expected '(' after extension receiver");
+        List<Ast.Param> explicitParams = parseParametersUntil(RPAREN);
+        consume(RPAREN, "expected ')' after extension arguments");
+        for (Ast.Param parameter : explicitParams) {
+            if (parameter.name().equals("self")) {
+                throw error(previous(), "extension method reserves 'self' for its receiver");
+            }
+        }
+        Ast.TypeRef result = parseReturnType(List.of());
+        List<Ast.Stmt> body = parseBlock();
+        List<Ast.Param> params = new ArrayList<>(explicitParams.size() + 1);
+        params.add(new Ast.Param(receiver, "self", false, false));
+        params.addAll(explicitParams);
+        return new Ast.FunctionDecl(
+                "$mtd$" + receiver.name() + "$" + method,
+                Ast.CallableKind.FNC, visibility,
+                false, false, false, false, false, false, Ast.ActorKind.NONE,
+                List.of(), params, result, List.of(), body);
     }
 
     private Ast.TypeAliasDecl parseTypeAlias(Ast.Visibility visibility) {
