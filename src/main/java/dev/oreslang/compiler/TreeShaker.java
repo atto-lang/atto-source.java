@@ -617,6 +617,7 @@ public final class TreeShaker {
                             method.isStatic(),
                             method.isAbstract(),
                             method.async(),
+                            method.suspends(),
                             method.structural(),
                             method.explicitReceiverType(),
                             method.genericParameters(),
@@ -635,7 +636,10 @@ public final class TreeShaker {
                         klass.interfaces(),
                         fields,
                         constructor,
-                        methods);
+                        methods,
+                        klass.actorConcurrency(),
+                        klass.maxActorThreads(),
+                        klass.supervisor());
             }
             return declaration;
         }
