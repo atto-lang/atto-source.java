@@ -106,10 +106,15 @@ public final class TaskHandle<T> {
 
     private final TaskCancellation cancellation;
     private final TaskOwnedLockLedger locks = new TaskOwnedLockLedger();
+    // The terminal CAS is visible before synchronous runtime subscribers
+    // drain. Actor STOP must join this private physical callback receipt,
+    // not merely observe done.isDone() or one callback starting.
+    private final java.util.concurrent.CompletableFuture<Void> doneCallbacksDrained =
+            new java.util.concurrent.CompletableFuture<>();
     // Observation only: cancelling getDone() must never forge a quiescence
     // witness or suppress the scheduler's eventual terminal outcome.
     private final OresFuture<TaskOutcome<T>> done =
-            new OresFuture<>(() -> false, () -> { });
+            new OresFuture<>(() -> false, () -> doneCallbacksDrained.complete(null));
     private final AtomicReference<OresFuture<T>> result = new AtomicReference<>();
     private final AtomicReference<TaskOutcome<T>> settledOutcome = new AtomicReference<>();
     private final AtomicBoolean quiescent = new AtomicBoolean();
@@ -163,6 +168,15 @@ public final class TaskHandle<T> {
      */
     public OresFuture<TaskOutcome<T>> getDone() {
         return done;
+    }
+
+    /**
+     * Trusted, non-cancellable terminal notification-drain witness.
+     * The public getDone Future is terminal BEFORE its existing host
+     * subscribers physically return, so it cannot serve as this receipt.
+     */
+    java.util.concurrent.CompletionStage<Void> doneCallbacksDrained() {
+        return doneCallbacksDrained;
     }
 
     /**
