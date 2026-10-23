@@ -231,4 +231,47 @@ final class DeclaredTypeOnlySyntaxTest {
         assertFalse(((Ast.InterfaceDecl) declarations.get(2)).traitDeclaration());
     }
 
+
+    @Test
+    void traitAndInterfaceNamesNeverBecomeRuntimeValues() {
+        for (String declaration : new String[] {
+                "declare trait Tagged as end",
+                "declare interface Tagged as end"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(declaration + """
+                            fnc invalid(): void {
+                              val captured = Tagged;
+                              return;
+                            }
+                            """), declaration);
+        }
+    }
+
+    @Test
+    void pluralTypeImportsAllowTraitsAndInterfacesButNotModuleContracts() throws Exception {
+        Path exported = temp.resolve("public-types.ores");
+        Files.writeString(exported, """
+                declare pub type Id = int;
+                declare pub trait Tagged as end
+                declare pub interface Endpoint as end
+                define pub contract ModulePolicy as end
+                """);
+        for (String selection : new String[] {
+                "Id", "Tagged", "Endpoint"
+        }) {
+            Path consumer = temp.resolve("consumer-" + selection + ".ores");
+            Files.writeString(consumer, "import types " + selection
+                    + " from './public-types'; pub routine main(): void { return; }");
+            assertDoesNotThrow(() -> LinkedProgramRunner.validate(consumer), selection);
+        }
+        Path illegal = temp.resolve("contract-consumer.ores");
+        Files.writeString(illegal,
+                "import types ModulePolicy from './public-types';"
+                + " pub routine main(): void { return; }");
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(illegal));
+        assertTrue(error.getMessage().contains("does not match an exported declaration"),
+                error.getMessage());
+    }
 }
