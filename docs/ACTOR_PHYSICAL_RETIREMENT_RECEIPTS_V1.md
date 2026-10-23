@@ -394,3 +394,17 @@ violation rather than silently accepted.
 JDK CompletionHandler once-only contract is not a universal guarantee
 for arbitrary FFI/native drivers. Their own driver-specific
 physical callback-exit and no-late-notification evidence remain P0.
+
+## Synchronous notifier failure accounting (2026-10-23)
+
+The first reservation-fence patch exposed a compatibility trap for the
+legacy isolated-registry test constructor with no asynchronous executor:
+`requestPostDrainWake()` itself calls the last notifier directly, and
+`postDrainWake()` already decrements the in-flight count. If this final
+notifier threw, the surrounding asynchronous-dispatch rejection handler
+would decrement **again**, potentially making
+`inFlightNotifications < 0`. The synchronous branch now exits separately
+before the asynchronous rejection handler. Its throwing-notifier JUnit
+regression explicitly verifies that the final count is zero and that
+the registry retains the original sticky failure. A negative count
+must never be interpreted as clean physical retirement.
