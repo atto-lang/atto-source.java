@@ -292,8 +292,20 @@ public final class SupervisorShutdownTree {
             List<Supervisor> nodes = new ArrayList<>();
             collect(root, nodes);
             for (Supervisor node : nodes) {
-                node.transition(new SupervisorLifecycleFsm.DeadlineExpired(
-                        node.lifecycle.get().epoch()));
+                SupervisorLifecycleFsm.State current = node.lifecycle.get();
+                if (current.phase() == SupervisorLifecycleFsm.Phase.RUNNING
+                        || current.phase() == SupervisorLifecycleFsm.Phase.RESTARTING) {
+                    // A partial admission-fence failure may leave some nodes
+                    // outside the shutdown FSM. DeadlineExpired is invalid
+                    // for these phases. Record CONTROL/coordinator failure
+                    // instead of throwing on the watchdog thread and
+                    // losing the timed shutdown observer's completion.
+                    node.transition(new SupervisorLifecycleFsm.CoordinatorFailed(
+                            current.epoch()));
+                } else {
+                    node.transition(new SupervisorLifecycleFsm.DeadlineExpired(
+                            current.epoch()));
+                }
             }
         }
     }
