@@ -952,4 +952,78 @@ final class ActorPhysicalRetirementRegistryTest {
             good.sink().close();
         }
     }
+
+    @Test void duplicateNativeCallbackDuringFirstDelegateMustQuarantineBothPaths()
+            throws Exception {
+        for (boolean useFailedPath : new boolean[] { false, true }) {
+            var firstEntered = new CountDownLatch(1);
+            var allowFirstExit = new CountDownLatch(1);
+            var delegateCalls = new AtomicInteger();
+            var threadFailure = new AtomicReference<Throwable>();
+            var registry = new ActorPhysicalRetirementRegistry(
+                    ActorRuntime.ActorId.create(), useFailedPath ? 81L : 80L, () -> { });
+            var receipt = registry.register(
+                    ActorPhysicalRetirementRegistry.Kind.OTHER, false);
+            java.nio.channels.CompletionHandler<Integer, Void> delegate =
+                    new java.nio.channels.CompletionHandler<>() {
+                        private void entered() {
+                            delegateCalls.incrementAndGet();
+                            firstEntered.countDown();
+                            try {
+                                if (!allowFirstExit.await(5, TimeUnit.SECONDS)) {
+                                    throw new IllegalStateException(
+                                            "native callback did not receive exit signal");
+                                }
+                            } catch (InterruptedException interruption) {
+                                Thread.currentThread().interrupt();
+                                throw new IllegalStateException(interruption);
+                            }
+                        }
+                        @Override public void completed(Integer result, Void ignored) {
+                            entered();
+                        }
+                        @Override public void failed(Throwable error, Void ignored) {
+                            entered();
+                        }
+                    };
+            var callback = new ActorPhysicalIoCallbackLease<>(receipt, delegate);
+            registry.seal();
+            Thread winner = Thread.ofVirtual().start(() -> {
+                try {
+                    if (useFailedPath) {
+                        callback.failed(new java.io.IOException("real completion failed"), null);
+                    } else {
+                        callback.completed(1, null);
+                    }
+                } catch (Throwable error) {
+                    threadFailure.set(error);
+                }
+            });
+            try {
+                assertTrue(firstEntered.await(3, TimeUnit.SECONDS));
+                var duplicate = assertThrows(IllegalStateException.class,
+                        () -> {
+                            if (useFailedPath) {
+                                callback.failed(new java.io.IOException("duplicate"), null);
+                            } else {
+                                callback.completed(2, null);
+                            }
+                        });
+                assertEquals("duplicate native I/O callback", duplicate.getMessage());
+                assertSame(duplicate, registry.snapshot().failure(),
+                        "duplicate before physical callback exit must quarantine receipt");
+                assertEquals(1, registry.snapshot().pending());
+                assertThrows(IllegalStateException.class, registry::retireVerified);
+            } finally {
+                allowFirstExit.countDown();
+            }
+            winner.join(3_000);
+            assertFalse(winner.isAlive());
+            assertNull(threadFailure.get(), "original callback may finish bookkeeping");
+            assertEquals(1, delegateCalls.get(), "second native callback must not dispatch");
+            assertEquals(1, registry.snapshot().pending(),
+                    "an earlier successful delegate cannot undo duplicate quarantine");
+            assertThrows(IllegalStateException.class, registry::retireVerified);
+        }
+    }
 }
