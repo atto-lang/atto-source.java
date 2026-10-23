@@ -111,10 +111,10 @@ final class SourcePureFuturePipelineExecutionTest {
         Ast.FunctionDecl main = (Ast.FunctionDecl) typed.modules().getFirst()
                 .declarations().get(2);
         Ast.CallExpr pipe = (Ast.CallExpr) ((Ast.BindingStmt) main.body().getFirst()).initializer();
-        assertTrue(Ast.CheckedPureFuturePipe.lookup(pipe));
+        assertTrue(TypeChecker.CheckedPureFuturePipe.lookup(pipe));
         Ast.CallExpr rebuilt = pipe.rewrite(pipe.callee(), pipe.typeArguments(),
                 pipe.typeArgumentsPresent(), pipe.arguments());
-        assertFalse(Ast.CheckedPureFuturePipe.lookup(rebuilt));
+        assertFalse(TypeChecker.CheckedPureFuturePipe.lookup(rebuilt));
     }
 
     private static String run(String program, String name) throws Exception {
