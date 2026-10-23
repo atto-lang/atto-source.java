@@ -125,6 +125,20 @@ main's private CI allowlist approves an independently reviewed exact target.
 
 ## Explicit remaining limitations
 
+- **Concrete outstanding adapter:** `NativeIo.connect()` currently
+  registers a raw `java.net.Socket` with `nativeIo.register(socket)`.
+  Its `TcpConnection.close()` directly closes and unregisters that socket.
+  These paths have **not** been converted to a per-connection staged release
+  with independent active-read/write and actor-incarnation loan receipts.
+  Thus the staged protocol is currently an opt-in host capability, not
+  proof that existing TCP/HTTP/native adapters all use it.
+- **Actor DONE remains a separate gate:** actor-instance ownership of each
+  `AsyncNativeIo` submission is not automatically enrolled with
+  `ActorPhysicalRetirementRegistry`. Joining context shutdown alone does
+  not certify `ActorRef.done()` when an actor is stopped without closing its
+  entire context. Issue #1944's final-notifier reentrancy/exception proof
+  also remains open. Do not merge until actor scope and callback exit are
+  proved on the real adapters and JDK25/AOT source tests execute.
 - This is the **AsyncNativeIo host executor and context ownership receipt**,
   not a universal FFI/GPU/pinned memory physical-release proof. Drivers with
   async callbacks or native ownership after `close()` must register separate
