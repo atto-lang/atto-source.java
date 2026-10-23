@@ -247,6 +247,52 @@ final class ActorProxyRequestSlabTest {
     }
 
     @Test
+    void claimSerialExhaustionTombstonesThePhysicalSlot() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch finished = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            ActorRuntime.ActorRef<Integer> actor = runtime.spawnSharedTrusted(
+                    factory -> (message, turn) -> {
+                        try {
+                            for (ActorProxyRequestSlab.Layout layout
+                                    : ActorProxyRequestSlab.Layout.values()) {
+                                int lanes = layout == ActorProxyRequestSlab.Layout.SOA ? 1 : 32;
+                                ActorProxyRequestSlab slab =
+                                        new ActorProxyRequestSlab(layout, 1, lanes);
+                                long request = slab.admit(3, 7, 8);
+                                assertNotEquals(0, request);
+                                Field storage = ActorProxyRequestSlab.class
+                                        .getDeclaredField("storage");
+                                storage.setAccessible(true);
+                                int[] words = (int[]) storage.get(slab);
+                                int serialOffset = layout == ActorProxyRequestSlab.Layout.SOA
+                                        ? 7 : 7 * lanes;
+                                words[serialOffset] = Integer.MAX_VALUE;
+                                assertThrows(IllegalStateException.class,
+                                        () -> slab.pin(request));
+                                assertEquals(1, slab.live());
+                                assertTrue(slab.retire(request));
+                                assertEquals(0, slab.live());
+                                assertTrue(slab.full(),
+                                        "a permanently exhausted slot is not reusable");
+                                assertEquals(0, slab.admit(4, 7, 8));
+                                slab.close();
+                            }
+                        } catch (Throwable error) {
+                            failure.set(error);
+                        } finally {
+                            finished.countDown();
+                        }
+                    });
+            actor.send(1);
+            assertTrue(finished.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get(), "serial exhaustion must preserve quota/slot safety");
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void sameRawClaimCannotSettleDifferentSlabOrRequest() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch finished = new CountDownLatch(1);
