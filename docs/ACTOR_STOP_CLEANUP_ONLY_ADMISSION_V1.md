@@ -509,9 +509,12 @@ context-wide fail-closed shutdown barrier:
 - `OresContext` installs a lock-free actor loan count gate into
   `ActorRuntime.finalizeStopLocked()`, **before** `memorySlice.close()`.
   The final per-actor I/O receipt notifies the stopped ActorCell to retry
-  physical finalization. This is not the best-effort `actorExitHook`, which
-  runs after memory reclamation and therefore cannot implement this safety
-  invariant.
+  physical finalization. The predicate also requires the context's recorded
+  physical receipt failure to be absent, not merely an empty numeric count.
+  It is read without taking the I/O admission monitor while ActorCell holds
+  its lifecycle lock, avoiding callback-induced lock-order inversion.
+  This is not the best-effort `actorExitHook`, which runs after memory
+  reclamation and therefore cannot implement this safety invariant.
 - `NativeIo.connect`, `TcpConnection.readLine`, and
   `TcpConnection.writeText` acquire/release registered socket loans
   around their actual host operations. `requestShutdown()` first seals new
