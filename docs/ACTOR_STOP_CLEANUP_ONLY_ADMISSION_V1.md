@@ -445,3 +445,42 @@ per-actor-incarnation. Per-resource reference accounting, native callback
 exit receipts beyond Java worker return, generation/fencing proofs for
 actor restarts, more exhaustive exhaustion testing, and LLVM parity are
 still required before this can certify arbitrary FFI or native memory safety.
+
+## Native I/O post-join resource-close callback audit
+
+The physical worker join and terminal Future drain are **necessary but not
+sufficient** to prove a native I/O context's resource sweep completed.
+Registered `AutoCloseable.close()` callbacks are arbitrary host operations,
+and a Java `synchronized` monitor does not reject recursive calls on the
+same thread.
+
+The latest draft therefore adds three fail-closed resource ownership rules:
+
+1. **Reentrance fence:** while `AsyncNativeIo.close()` invokes registered
+   resources' `close()`, a recursive call to close the same context is
+   rejected, before modifying ownership. If the resource callback propagates
+   the error, the resource remains in the set and in `QUARANTINED_IO` for an
+   explicit retry; a callback that safely catches the rejection may finish
+   normally. This prevents recursive repeated closes or stack exhaustion.
+2. **No incomplete-sweep success:** a registered resource can spawn or expose
+   a second native handle during its own close callback, and catch the
+   expected `register()` rejection after shutdown was sealed. The newly
+   retained handle was not in the sweep's initial snapshot. The post-sweep
+   `resources` set must be **empty** before publishing `resourcesRetired`
+   or removing static quarantine; otherwise close throws and retains the
+   context for a subsequent sweep.
+3. **No ownership after final retirement:** once `resourcesRetired` is true,
+   `register()` rejects new handles *without adding them* to the retired
+   context. The rejected handle remains caller-owned; its creator must close
+   it. During a *nonretired* closing context, the prior rule still retains a
+   late worker-created handle until the physical join and resource sweep.
+
+New deterministic `AsyncNativeIoTest` cases cover caught/uncaught resource
+close recursion, late resource registration during a close callback, the
+explicit retry sweep, and rejected post-retirement handoff. These are
+committed source tests, **not yet executed JUnit proof**.
+
+The protected GitHub private-carrier allowlist currently contains no approved
+destination repository IDs. External capacity-only canaries do not authorize
+copying private source; testing still needs source-org runner admission or
+independent approval of a pinned external carrier.
