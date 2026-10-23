@@ -3,6 +3,8 @@ package dev.oreslang.runtime;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
+import java.util.HashMap;
+import java.util.function.Consumer;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -47,6 +49,9 @@ public final class AsyncNativeIo implements AutoCloseable {
     /** Identity, not equals/hashCode: each registered native handle is unique. */
     private final Map<AutoCloseable, ResourceLeaseState> resourceLoans =
             new IdentityHashMap<>();
+    /** Counts entire I/O operations from admission through callback drain. */
+    private final Map<ActorRuntime.ActorId, Integer> actorOperations = new HashMap<>();
+    private volatile Consumer<ActorRuntime.ActorId> actorLoanRetired = ignored -> { };
     private final AtomicLong nextResourceGeneration = new AtomicLong();
     private final AtomicLong nextLoanGeneration = new AtomicLong();
     private final ThreadLocal<ActorRuntime.ActorId> currentOperationActor = new ThreadLocal<>();
@@ -137,6 +142,44 @@ public final class AsyncNativeIo implements AutoCloseable {
                 state.generation, nextLoanGeneration.incrementAndGet(), actorId));
     }
 
+    synchronized int outstandingActorOperations(ActorRuntime.ActorId id) {
+        return actorOperations.getOrDefault(Objects.requireNonNull(id), 0);
+    }
+
+    void setActorLoanRetiredListener(Consumer<ActorRuntime.ActorId> callback) {
+        actorLoanRetired = Objects.requireNonNull(callback);
+    }
+
+    private void incrementActorOperationLocked(ActorRuntime.ActorId id) {
+        if (id != null) actorOperations.merge(id, 1, Integer::sum);
+    }
+
+    private ActorRuntime.ActorId decrementActorOperationLocked(ActorRuntime.ActorId id) {
+        if (id == null) return null;
+        Integer count = actorOperations.get(id);
+        if (count == null || count <= 0) {
+            recordIncomplete(new IllegalStateException(
+                    "actor native I/O operation receipt underflow"));
+            return null;
+        }
+        if (count == 1) {
+            actorOperations.remove(id);
+            return id;
+        }
+        actorOperations.put(id, count - 1);
+        return null;
+    }
+
+    private void notifyActorRetirement(ActorRuntime.ActorId id) {
+        if (id != null) {
+            try {
+                actorLoanRetired.accept(id);
+            } catch (RuntimeException | Error notifyFailure) {
+                recordIncomplete(notifyFailure);
+            }
+        }
+    }
+
     public AsyncNativeIo() { this(128); }
 
     AsyncNativeIo(int capacity) {
@@ -195,6 +238,7 @@ public final class AsyncNativeIo implements AutoCloseable {
                 operation, work, result, admitted,
                 ActorRuntime.currentActorId().orElse(null));
         admitted.add(op); // Reserve before publishing work to any executor.
+        incrementActorOperationLocked(op.admittedActor);
         long queuedAt = CorePerf.start();
         op.queuedAt = queuedAt;
         try {
@@ -202,6 +246,7 @@ public final class AsyncNativeIo implements AutoCloseable {
         } catch (RuntimeException failure) {
             // Rejected admission never owns a worker or physical resource.
             admitted.remove(op);
+            decrementActorOperationLocked(op.admittedActor);
             CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_REJECTED, 1L);
             result.failFromRuntime(failure);
         }
@@ -260,12 +305,15 @@ public final class AsyncNativeIo implements AutoCloseable {
                 throw notificationFailure;
             } finally {
                 state.set(OperationState.RETIRED);
+                ActorRuntime.ActorId retireActor;
                 synchronized (AsyncNativeIo.this) {
                     owner.remove(this);
+                    retireActor = decrementActorOperationLocked(admittedActor);
                     retireDeferredUnregisterLocked();
                     AsyncNativeIo.this.notifyAll();
                 }
                 executingWorker.remove();
+                notifyActorRetirement(retireActor);
             }
             if (failure instanceof VirtualMachineError fatal) throw fatal;
             if (failure instanceof ThreadDeath fatal) throw fatal;
@@ -286,11 +334,14 @@ public final class AsyncNativeIo implements AutoCloseable {
                     } catch (RuntimeException | Error notificationFailure) {
                         recordIncomplete(notificationFailure);
                     } finally {
+                        ActorRuntime.ActorId retireActor;
                         synchronized (AsyncNativeIo.this) {
                             owner.remove(this);
+                            retireActor = decrementActorOperationLocked(admittedActor);
                             retireDeferredUnregisterLocked();
                             AsyncNativeIo.this.notifyAll();
                         }
+                        notifyActorRetirement(retireActor);
                     }
                 });
             } catch (RuntimeException | Error startFailure) {
