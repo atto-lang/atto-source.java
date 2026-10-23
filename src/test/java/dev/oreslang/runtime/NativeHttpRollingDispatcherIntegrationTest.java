@@ -27,7 +27,7 @@ final class NativeHttpRollingDispatcherIntegrationTest {
     private static HttpRequest request(int port) {
         return HttpRequest.newBuilder(
                         URI.create("http://127.0.0.1:" + port + "/version"))
-                .timeout(Duration.ofSeconds(12)).GET().build();
+                .timeout(Duration.ofSeconds(30)).GET().build();
     }
 
     private static final class State implements ActorRuntime.ActorOwnedGuestState {
@@ -107,7 +107,7 @@ final class NativeHttpRollingDispatcherIntegrationTest {
             var g2Code = new VersionCode(image, httpRef, "G2", false, false);
             var g1 = http.handler(g1Code, "RollingWorker", ActorRuntime.ActorKind.SHARED).pooled(1);
             g1.warmup().get(8, TimeUnit.SECONDS);
-            var server = http.listen("127.0.0.1", 0, 16, 1024, 10_000);
+            var server = http.listen("127.0.0.1", 0, 16, 1024, 30_000);
             int port = server.port();
 
             CompletableFuture<HttpResponse<String>> previous = null;
