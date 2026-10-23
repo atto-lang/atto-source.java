@@ -484,3 +484,59 @@ The protected GitHub private-carrier allowlist currently contains no approved
 destination repository IDs. External capacity-only canaries do not authorize
 copying private source; testing still needs source-org runner admission or
 independent approval of a pinned external carrier.
+
+## Resource-generation and actor-incarnation I/O loan gating (2026-10-23)
+
+A separate per-resource loan ledger has been added on top of the existing
+context-wide fail-closed shutdown barrier:
+
+- `AsyncNativeIo.register(resource)` mints a monotonic **resource generation**.
+  Registered handles are keyed by JVM object identity (not overridable
+  `equals`/`hashCode`). Re-registering a handle while its old-generation
+  loans are active is rejected. `unregister` retains a loaned handle until
+  its final receipt, rather than removing its ownership prematurely.
+- `AsyncNativeIo.borrow(resource)` reserves an `IoLoan` identified by
+  resource generation, unique loan generation and the **admitting actor's
+  ActorId** (or null for host/root work). Duplicate or stale receipts fail
+  closed; a released loan cannot affect a later resource generation.
+- All accepted I/O operations now also reserve an actor-incarnation count
+  *at admission*, even before a queued worker starts. This prevents an actor
+  from publishing DONE while its native work is still queued. Accepted
+  operations release ownership after work completion and terminal Future
+  notification delivery; never-started operations release only after their
+  failure subscribers drain. Direct native resource borrows reserve the same
+  actor-incarnation counter.
+- `OresContext` installs a lock-free actor loan count gate into
+  `ActorRuntime.finalizeStopLocked()`, **before** `memorySlice.close()`.
+  The final per-actor I/O receipt notifies the stopped ActorCell to retry
+  physical finalization. This is not the best-effort `actorExitHook`, which
+  runs after memory reclamation and therefore cannot implement this safety
+  invariant.
+- `NativeIo.connect`, `TcpConnection.readLine`, and
+  `TcpConnection.writeText` acquire/release registered socket loans
+  around their actual host operations. `requestShutdown()` first seals new
+  admission, interrupts queued/running workers and closes registered Java
+  sockets as a **wakeup/revocation action only**. `close()` separately
+  joins workers, callback drains, and resource-loan counters before
+  releasing bookkeeping and context-owned handles. Generic
+  `AutoCloseable` resources are not forcibly closed before loans retire.
+
+Added `AsyncNativeIoTest` coverage: identity-stamped unique receipts,
+double release, re-register/ABA rejection, two actor-incarnations sharing a
+resource while stopping independently, admitted but unfinished actor work
+blocking DONE, and transport wakeup for a blocked real TCP read.
+`FormalNativeResourceGenerationModelCheckTest` explores old actor loans,
+generation replacement and stale replay. An independent abstract enumerator
+explored **208 states** without allowing a completed actor to retain an
+active modeled loan. These are *model/static* checks only, not compiled JUnit
+evidence.
+
+Scope limits: A Java `Socket.close()` or virtual-worker exit does not prove
+a separate JNI library, kernel callback, io_uring, GPU, or FFI operation has
+retired. Those require externally attested per-operation physical receipts,
+including real resource/actor-generation fencing at the native boundary.
+The actor gate covers I/O operations admitted from Oreslang actor execution
+and direct resource borrows; arbitrary unrelated host code with captured
+guest/native pointers remains outside the authority of this ledger. Real
+JDK25 and LLVM source-level conformance, stress testing and independent
+private CI carrier approval are required before merge.
