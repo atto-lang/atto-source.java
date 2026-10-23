@@ -33,6 +33,13 @@ public final class OresTaskScope implements AutoCloseable {
     // All members of one owned tree share a strict admission/plan monitor.
     // Lock order: treeAdmissionGate -> individual scope.gate.
     private final Object treeAdmissionGate;
+    // Serializes only producer revocation for overlapping parent/child
+    // cancellation walks. Completion subscribers run AFTER this monitor is
+    // released, so a blocked subscriber cannot stall another subtree.
+    // Without this separate gate, child.cancel() and root.cancel() can seal
+    // overlapping trees, then deliver root waiters while a child hook is
+    // still revoking its producer.
+    private final Object treeRevocationGate;
 
     /**
      * Reserve ownership before executable admission. The slot itself is
@@ -121,6 +128,8 @@ public final class OresTaskScope implements AutoCloseable {
         this.parent = parent;
         this.treeAdmissionGate = parent == null
                 ? new Object() : parent.treeAdmissionGate;
+        this.treeRevocationGate = parent == null
+                ? new Object() : parent.treeRevocationGate;
     }
 
     public <T> OresTask<T> submit(AsyncRuntime.Task<T> work) {
@@ -466,8 +475,14 @@ public final class OresTaskScope implements AutoCloseable {
         // hook must never admit a fresh Task into an as-yet-unvisited child.
         boolean won = false;
         Throwable firstFailure = null;
+        // Keep overlapping revocation phases ordered across a whole owned
+        // tree, including independent child.cancel() racing root.cancel().
+        // Never invoke a Future completion subscriber under this monitor:
+        // notification delivery below is intentionally outside the gate.
         try {
-            won = cancelTreeIterative(notifications);
+            synchronized (treeRevocationGate) {
+                won = cancelTreeIterative(notifications);
+            }
         } catch (RuntimeException | Error failure) {
             firstFailure = failure;
         }
@@ -501,6 +516,13 @@ public final class OresTaskScope implements AutoCloseable {
                 new ArrayList<>();
         final boolean wonRoot;
         synchronized (treeAdmissionGate) {
+            // Another cancellation may have sealed this whole subtree and
+            // may still be revoking its producers. The shared revocation gate
+            // makes that owner finish first. A duplicate must not claim or
+            // deliver any of the first walk's pending notifications.
+            synchronized (gate) {
+                if (cancelled) return false;
+            }
             pending.add(this);
             while (!pending.isEmpty()) {
                 OresTaskScope scope = pending.removeLast();
