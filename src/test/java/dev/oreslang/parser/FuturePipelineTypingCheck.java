@@ -49,6 +49,12 @@ public final class FuturePipelineTypingCheck {
                 || !Ast.CheckedPureFuturePipe.lookup(second)) {
             throw new AssertionError("checked Future chain lost a stage proof");
         }
+        if (Ast.CheckedPureFuturePipe.target(first)
+                != lifted.modules().get(0).declarations().get(1)
+                || Ast.CheckedPureFuturePipe.target(second)
+                != lifted.modules().get(0).declarations().get(2)) {
+            throw new AssertionError("checked Future stage bound to the wrong declaration identity");
+        }
         if (Ast.CheckedPureFuturePipe.lookup(
                 second.rewrite(second.callee(), second.typeArguments(),
                         second.typeArgumentsPresent(), second.arguments()))) {
