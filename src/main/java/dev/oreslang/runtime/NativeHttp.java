@@ -80,6 +80,8 @@ public final class NativeHttp implements AutoCloseable {
             this.code = code; this.type = type; this.kind = kind;
         }
         private Worker[] workers;
+        private boolean poolDiscarded;
+        NativeHttp ownerHttp() { return NativeHttp.this; }
         private int cursor;
         private long created, reused;
         public boolean isolated() { return kind == ActorRuntime.ActorKind.PRIVATE; }
@@ -138,9 +140,11 @@ public final class NativeHttp implements AutoCloseable {
         void stopUnpublishedPool() {
             supervisor();
             if (workers == null) return;
+            synchronized (this) { poolDiscarded = true; }
             stopPool();
         }
         private synchronized Worker worker() {
+            if (poolDiscarded) throw new RejectedExecutionException("unpublished HTTP worker pool discarded");
             int slot = cursor;
             cursor = (cursor + 1) % workers.length;
             Worker worker = workers[slot];
@@ -169,6 +173,8 @@ public final class NativeHttp implements AutoCloseable {
             Worker(ActorRuntime.ActorRef<Object> actor) { this.actor = actor; }
         }
         public void dispatch(Exchange exchange) {
+            if (poolDiscarded)
+                throw new RejectedExecutionException("discarded HTTP worker pool");
             long perf = CorePerf.start();
             if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP dispatch belongs to supervisor");
             synchronized (exchange.state) { exchange.checkOwner(); exchange.state.spawnNanos = System.nanoTime(); }
@@ -237,6 +243,7 @@ public final class NativeHttp implements AutoCloseable {
     }
 
     public final class Server implements AutoCloseable {
+        NativeHttp ownerHttp() { return NativeHttp.this; }
         private final HttpServer transport;
         private final Semaphore admission;
         private final HttpResponseBodyOpenGate bodyOpenGate;
