@@ -45,7 +45,8 @@ public final class AsyncNativeIo implements AutoCloseable {
     private final ThreadPoolExecutor controlWorkers;
     private final Set<Operation<?>> pending = new HashSet<>();
     private final Set<Operation<?>> controls = new HashSet<>();
-    private final Set<AutoCloseable> resources = new HashSet<>();
+    private final Set<AutoCloseable> resources =
+            java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     /** Identity, not equals/hashCode: each registered native handle is unique. */
     private final Map<AutoCloseable, ResourceLeaseState> resourceLoans =
             new IdentityHashMap<>();
@@ -57,7 +58,8 @@ public final class AsyncNativeIo implements AutoCloseable {
     private final AtomicLong nextLoanGeneration = new AtomicLong();
     private final ThreadLocal<ActorRuntime.ActorId> currentOperationActor = new ThreadLocal<>();
     /** A resource unregistered while workers have loans stays reachable. */
-    private final Set<AutoCloseable> deferredUnregister = new HashSet<>();
+    private final Set<AutoCloseable> deferredUnregister =
+            java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private final Object shutdownLock = new Object();
     private final ThreadLocal<Boolean> executingWorker =
             ThreadLocal.withInitial(() -> false);
