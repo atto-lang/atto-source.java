@@ -556,10 +556,23 @@ public final class OresScheduler implements AutoCloseable {
         AtomicBoolean cancellationPublished = new AtomicBoolean();
         return () -> {
             if (!cancellationPublished.compareAndSet(false, true)) return;
-            for (TaskRunner<?> runner : snapshot) {
-                runner.completion.cancel(false);
+            Throwable firstFailure = null;
+            try {
+                for (TaskRunner<?> runner : snapshot) {
+                    try {
+                        runner.completion.cancel(false);
+                    } catch (RuntimeException | Error failure) {
+                        // One broken terminal subscriber cannot prevent the
+                        // remaining admitted tasks from receiving STOP.
+                        if (firstFailure == null) firstFailure = failure;
+                        else if (firstFailure != failure) firstFailure.addSuppressed(failure);
+                    }
+                }
+            } finally {
+                notifyActorStopQuiescent();
             }
-            notifyActorStopQuiescent();
+            if (firstFailure instanceof RuntimeException runtime) throw runtime;
+            if (firstFailure instanceof Error fatal) throw fatal;
         };
     }
 
