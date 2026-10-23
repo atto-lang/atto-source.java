@@ -120,8 +120,9 @@ RequestRestart(n) ==
     /\ ~fenced[n]
     /\ epoch[n] < MaxEpoch
     /\ phase' = [phase EXCEPT ![n] = "Restarting"]
-    /\ UNCHANGED <<epoch, fenced, workerDone, loans, preDone, postDone,
-                    timedOut>>
+    /\ workerDone' = [workerDone EXCEPT ![n] = FALSE]
+    /\ loans' = [loans EXCEPT ![n] = 1]
+    /\ UNCHANGED <<epoch, fenced, preDone, postDone, timedOut>>
 
 CommitRestart(n) ==
     /\ phase[n] = "Restarting"
