@@ -100,6 +100,28 @@ public final class SupervisorLifecycleTrace {
                 throw new IllegalStateException("supervisor trace before-state mismatch at "
                         + entry.sequence());
             }
+            // Cross-node refinement: a parent cannot accept logical child
+            // retirement before that child's OWN lifecycle reached STOPPED.
+            // The local reducer alone cannot check this ordering because it
+            // only knows the parent's expected child identities.
+            if (entry.event() instanceof SupervisorLifecycleFsm.ChildFinished child) {
+                var childState = current.get(child.childId());
+                if (childState == null || !childState.logicallyStopped()
+                        || childState.failed() != child.failed()) {
+                    throw new IllegalStateException(
+                            "child retirement preceded recorded child settlement at "
+                                    + entry.sequence());
+                }
+            }
+            if (entry.event() instanceof SupervisorLifecycleFsm.ChildReclaimed child) {
+                var childState = current.get(child.childId());
+                if (childState == null
+                        || childState.phase() != SupervisorLifecycleFsm.Phase.RECLAIMED) {
+                    throw new IllegalStateException(
+                            "child physical receipt without recorded reclamation at "
+                                    + entry.sequence());
+                }
+            }
             var computed = SupervisorLifecycleFsm.reduce(old, entry.event());
             if (computed == old || !computed.equals(entry.after())) {
                 throw new IllegalStateException("supervisor trace FSM mismatch at "
