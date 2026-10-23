@@ -192,6 +192,7 @@ class AsyncNativeIoTest {
         var subscriberEntered = new CountDownLatch(1);
         var releaseSubscriber = new CountDownLatch(1);
         var released = new java.util.concurrent.atomic.AtomicInteger();
+        var closeFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
         try {
             io.register(released::incrementAndGet);
             var running = io.submit("running", () -> {
@@ -209,14 +210,20 @@ class AsyncNativeIoTest {
                 }
             });
 
-            Thread closer = Thread.ofVirtual().start(() ->
-                    assertThrows(IllegalStateException.class, io::close));
+            Thread closer = Thread.ofVirtual().start(() -> {
+                try {
+                    assertThrows(IllegalStateException.class, io::close);
+                } catch (Throwable problem) {
+                    closeFailure.compareAndSet(null, problem);
+                }
+            });
             try {
                 assertTrue(subscriberEntered.await(2, TimeUnit.SECONDS),
                         "never-started notification must run independently of close");
                 closer.join(2000);
                 assertFalse(closer.isAlive(),
                         "blocked terminal subscriber may quarantine but cannot hang the close caller");
+                assertNull(closeFailure.get(), () -> String.valueOf(closeFailure.get()));
                 assertEquals(0, released.get(),
                         "resources remain held until every callback physically drains");
                 assertInstanceOf(IllegalStateException.class,
