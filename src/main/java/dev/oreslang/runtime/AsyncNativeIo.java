@@ -1,6 +1,8 @@
 package dev.oreslang.runtime;
 
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
@@ -12,8 +14,14 @@ import java.util.concurrent.RejectedExecutionException;
  * bounded independently of virtual thread implementation and has no caller-runs path.
  */
 public final class AsyncNativeIo implements AutoCloseable {
-    private final ExecutorService workers = Executors.newThreadPerTaskExecutor(
-            Thread.ofVirtual().name("ores-native-io-", 0).factory());
+    private final ExecutorService workers;
+    private final Set<Operation<?>> admittedWork = new HashSet<>();
+    private final Set<AutoCloseable> closingResources = new HashSet<>();
+    private final OresFuture<Void> physicalShutdown = new OresFuture<>(() -> false, () -> { });
+    private boolean closeScanPending;
+    private boolean resourceCloseFinished;
+    private boolean physicalShutdownPublished;
+    private Throwable resourceCloseFailure;
     private final Set<OresFuture<?>> pending = new HashSet<>();
     private final Set<OresFuture<?>> controls = new HashSet<>();
     private final Set<AutoCloseable> resources = new HashSet<>();
@@ -22,8 +30,125 @@ public final class AsyncNativeIo implements AutoCloseable {
 
     public AsyncNativeIo() { this(128); }
     AsyncNativeIo(int capacity) {
+        this(capacity, Executors.newThreadPerTaskExecutor(
+                Thread.ofVirtual().name("ores-native-io-", 0).factory()));
+    }
+
+    /** Test-only deterministic worker scheduler for never-started shutdown races. */
+    AsyncNativeIo(int capacity, ExecutorService workers) {
         if (capacity < 1) throw new IllegalArgumentException("I/O capacity must be positive");
         this.capacity = capacity;
+        this.workers = java.util.Objects.requireNonNull(workers, "workers");
+    }
+
+    /** Host-only quiescence receipt: success means callbacks AND closes finished. */
+    OresFuture<Void> physicalShutdown() { return physicalShutdown; }
+
+    /** Retains failed close resources for supervisor quarantine diagnostics. */
+    synchronized Throwable physicalShutdownFailure() { return resourceCloseFailure; }
+
+    private enum Phase { ADMITTED, RUNNING, RETIRING, RETIRED, CANCELLED_BEFORE_START }
+
+    private final class Operation<T> implements Runnable {
+        private final String operation;
+        private final Callable<T> work;
+        private final OresFuture<T> result;
+        private final Set<OresFuture<?>> admissionSet;
+        private final long queued;
+        private Phase phase = Phase.ADMITTED; // guarded by AsyncNativeIo.this
+
+        Operation(String operation, Callable<T> work, OresFuture<T> result,
+                Set<OresFuture<?>> admissionSet, long queued) {
+            this.operation = operation;
+            this.work = work;
+            this.result = result;
+            this.admissionSet = admissionSet;
+            this.queued = queued;
+        }
+
+        /** Called ONLY on a runnable returned by shutdownNow: not started. */
+        void cancelBeforeStart() {
+            synchronized (AsyncNativeIo.this) {
+                if (phase != Phase.ADMITTED) return;
+                phase = Phase.RETIRING;
+            }
+            settle(new RejectedExecutionException(
+                    "native I/O cancelled before worker admission"), null, true);
+        }
+
+        @Override public void run() {
+            boolean accepted;
+            synchronized (AsyncNativeIo.this) {
+                accepted = phase == Phase.ADMITTED && !closed;
+                if (phase != Phase.ADMITTED) return;
+                phase = accepted ? Phase.RUNNING : Phase.RETIRING;
+            }
+            if (!accepted) {
+                settle(new RejectedExecutionException(
+                        "native I/O worker not started before context close"), null, true);
+                return;
+            }
+            CorePerf.end(CorePerf.ASYNC_IO_QUEUE, queued);
+            long workPerf = CorePerf.start();
+            T value = null;
+            Throwable failure = null;
+            try {
+                value = work.call();
+            } catch (Throwable thrown) {
+                failure = thrown;
+            } finally {
+                CorePerf.end(CorePerf.ASYNC_IO_WORK, workPerf);
+            }
+            synchronized (AsyncNativeIo.this) { phase = Phase.RETIRING; }
+            settle(failure, value, false);
+        }
+
+        private void settle(Throwable failure, T value, boolean neverStarted) {
+            try {
+                // The worker has either provably never entered Callable, or
+                // finished its host I/O and perf finalizer. Keep this Operation
+                // tracked until inline Future terminal subscribers finish.
+                final boolean shutdown;
+                synchronized (AsyncNativeIo.this) { shutdown = closed; }
+                if (failure != null) {
+                    if (!neverStarted) {
+                        CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_FAILED, 1L);
+                        SourceBoundaryTrace.record(failure, "native:io", operation, "I/O");
+                    }
+                    result.failFromRuntime(failure);
+                } else if (shutdown) {
+                    result.failFromRuntime(new IllegalStateException(
+                            "I/O context closed after physical operation exit"));
+                } else {
+                    result.completeFromRuntime(value);
+                }
+                if (failure instanceof VirtualMachineError fatal) throw fatal;
+                if (failure instanceof ThreadDeath fatal) throw fatal;
+                if (failure instanceof LinkageError fatal) throw fatal;
+            } finally {
+                synchronized (AsyncNativeIo.this) {
+                    phase = neverStarted ? Phase.CANCELLED_BEFORE_START : Phase.RETIRED;
+                    admissionSet.remove(result);
+                    admittedWork.remove(this);
+                }
+                maybePublishPhysicalShutdown();
+            }
+        }
+    }
+
+    /** Never publish success while unstarted/running work or close is unresolved. */
+    private void maybePublishPhysicalShutdown() {
+        boolean publish;
+        synchronized (this) {
+            publish = closed && !closeScanPending && resourceCloseFinished
+                    && resourceCloseFailure == null && admittedWork.isEmpty()
+                    && !physicalShutdownPublished;
+            if (publish) {
+                physicalShutdownPublished = true;
+                closingResources.clear();
+            }
+        }
+        if (publish) physicalShutdown.completeFromRuntime(null);
     }
 
     public <T> OresFuture<T> submit(OresContext context,
@@ -48,8 +173,6 @@ public final class AsyncNativeIo implements AutoCloseable {
 
     private <T> OresFuture<T> submit(String operation, Callable<T> work,
             Set<OresFuture<?>> admitted, int limit) {
-        // Cancellation cannot promise rollback of a filesystem mutation. The
-        // operation remains owned by the context until completion or context close.
         OresFuture<T> result = new OresFuture<>(() -> false, () -> { });
         if (closed || admitted.size() >= limit) {
             CoreLog.record(CoreLog.Level.WARN, CoreLog.ASYNC_IO_REJECTED, 1L);
@@ -58,33 +181,16 @@ public final class AsyncNativeIo implements AutoCloseable {
             return result;
         }
         admitted.add(result);
-        long queued = CorePerf.start();
+        Operation<T> operationTask = new Operation<>(
+                operation, work, result, admitted, CorePerf.start());
+        admittedWork.add(operationTask);
         try {
-            workers.execute(() -> {
-                CorePerf.end(CorePerf.ASYNC_IO_QUEUE, queued);
-                long workPerf = CorePerf.start();
-                T value;
-                try {
-                    value = work.call();
-                } catch (Throwable failure) {
-                    CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_FAILED, 1L);
-                    synchronized (this) { admitted.remove(result); }
-                    SourceBoundaryTrace.record(failure, "native:io", operation, "I/O");
-                    result.failFromRuntime(failure);
-                    if (failure instanceof VirtualMachineError fatal) throw fatal;
-                    if (failure instanceof ThreadDeath fatal) throw fatal;
-                    if (failure instanceof LinkageError fatal) throw fatal;
-                    return;
-                } finally {
-                    CorePerf.end(CorePerf.ASYNC_IO_WORK, workPerf);
-                }
-                synchronized (this) { admitted.remove(result); }
-                result.completeFromRuntime(value);
-            });
+            workers.execute(operationTask);
         } catch (RuntimeException failure) {
+            // execute() returned an explicit rejection before accepting the
+            // runnable; it cannot have issued native I/O on this path.
             CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_REJECTED, 1L);
-            admitted.remove(result);
-            result.failFromRuntime(failure);
+            operationTask.cancelBeforeStart();
         }
         return result;
     }
@@ -100,23 +206,44 @@ public final class AsyncNativeIo implements AutoCloseable {
     synchronized void unregister(AutoCloseable resource) { resources.remove(resource); }
 
     @Override public void close() {
+        List<Runnable> discarded = List.of();
         Set<AutoCloseable> closing;
-        Set<OresFuture<?>> failing;
         synchronized (this) {
             if (closed) return;
             closed = true;
+            closeScanPending = true;
+            // Retain strong ownership through BOTH worker retirement and
+            // physical resource close. The close request may unblock a read,
+            // but it is not evidence that its callback has exited.
+            closingResources.addAll(resources);
             closing = new HashSet<>(resources);
             resources.clear();
-            failing = new HashSet<>(pending);
-            failing.addAll(controls);
-            controls.clear();
-            pending.clear();
         }
-        workers.shutdownNow();
+        try {
+            discarded = workers.shutdownNow();
+        } catch (RuntimeException | Error failure) {
+            synchronized (this) { resourceCloseFailure = failure; }
+        }
+        for (Runnable task : discarded) {
+            if (task instanceof AsyncNativeIo.Operation<?> admitted) {
+                admitted.cancelBeforeStart();
+            }
+        }
         for (AutoCloseable resource : closing) {
-            try { resource.close(); } catch (Exception ignored) { /* best-effort shutdown */ }
+            try {
+                resource.close();
+            } catch (Exception | LinkageError failure) {
+                synchronized (this) {
+                    if (resourceCloseFailure == null) resourceCloseFailure = failure;
+                    else if (resourceCloseFailure != failure)
+                        resourceCloseFailure.addSuppressed(failure);
+                }
+            }
         }
-        for (OresFuture<?> future : failing)
-            future.failFromRuntime(new IllegalStateException("I/O context closed"));
+        synchronized (this) {
+            resourceCloseFinished = true;
+            closeScanPending = false;
+        }
+        maybePublishPhysicalShutdown();
     }
 }

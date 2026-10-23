@@ -224,3 +224,18 @@ A minimal **stub** for `ActorPhysicalRetirementRegistry.Receipt` supplied settle
 This is useful **local behavioral evidence for the two helper classes only**. It does NOT compile the 8k-line `ActorRuntime`, test its STOP/supervision interplay, use the real `ActorPhysicalRetirementRegistry`, or establish JDK25/GraalVM/LLVM parity. Those remain explicit release gates. No private-source cross-org mirror was created.
 
 Also added source JUnit regressions for (a) a broken channel whose close fails while a healthy sibling still closes on STOP, and (b) a duplicate asynchronous completion while its original delegate remains running. Failed close/notify paths must quarantine and may never publish clean `ActorRef.done()`.
+
+## AsyncNativeIo physical-worker retirement (2026-10-23)
+
+An additional lifecycle audit identified a context-owned I/O hole in `AsyncNativeIo.close()`: it previously called `OresFuture.failFromRuntime` for all pending and control operations immediately after interrupting the workers. Interrupted host calls can ignore interruption and still own an NIO/FFI/mapped-buffer loan, so that publication was a **false physical retirement signal**.
+
+This branch now changes context-close behavior:
+
+- `close()` seals admission and calls `shutdownNow()` as an interruption REQUEST. It does not settle Futures belonging to physically active workers or discard their ownership entries.
+- Every submitted `Callable` publishes its outcome only after returning or throwing, including its host `CorePerf` finalizer. Only then does it remove the operation from the context's live admission set. A successful host operation that exits after the context closed is reported as a context-close failure; actual host failures retain their original cause.
+- A host operation that ignores interruption stays pending and strongly reachable until it exits, rather than fabricating `getDone` or releasing actor/native arena ownership.
+- `AsyncNativeIoTest` adds deterministic cases for an uncooperative SUCCESS and an uncooperative FAILURE. Both are held behind a latch while context.close requests interruption; neither Future may settle before actual worker exit. Exact-head focused JDK25 configuration includes this suite.
+
+**Limits:** This fixes premature `OresFuture` terminal publication and context bookkeeping. The context's existing resource-close traversal can still run while a worker is active; each resource driver must independently fence native access and physical release. Context close itself is not proof that every uncooperative worker has returned, and it is not a substitute for the incarnation-bound `ActorPhysicalRetirementRegistry`.
+
+**CI evidence at head:** push-triggered [focused run #39993103400](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/39993103400) failed before any job step in both `java` and `native` configurations; runner_name was empty. This is NO source-level JUnit/AOT test evidence. The project cannot export its private Git tree to another organization without the exact reviewed destination allowlist becoming active on protected main.
