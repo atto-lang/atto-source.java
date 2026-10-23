@@ -93,6 +93,9 @@ final class ActorPhysicalChannelLease implements AutoCloseable {
             }
             // Channel physical closure has completed before this receipt.
             // The registry callback can now complete the actor's STOP gate.
+            // Detach the verified-closed handle before the receipt can
+            // retire the actor. Separately admitted I/O loans remain pending.
+            onClosed.accept(this);
             receipt.completeAfterPhysicalRelease();
             closed = true;
         } catch (IOException | RuntimeException | Error failure) {
