@@ -163,3 +163,47 @@ numeric-ID approval, even when alternative orgs have available Actions minutes.
 Keep this PR in draft until JDK25 JUnit, native-image/LLVM and adversarial
 source-level execution passes on an authorized runner.
 
+
+## Automatic STOP close lane and independently tracked NIO I/O (new)
+
+The trusted host driver now registers a Java `Channel` and its actor
+retirement ticket **atomically under ActorCell.lifecycleLock**. A successful
+lease is retained on that exact ActorCell until verified closure. Actor STOP
+takes a sealed snapshot of the registered leases under the same lock, then
+submits their `close()` requests to a dedicated eight-worker bounded host
+executor **outside the actor lifecycle lock**. The executor is not an actor
+carrier or an Oreslang thread-pool domain. It is retired with ActorRuntime.
+STOP admission never waits for physical close; failed submissions, failed
+channel closures or callbacks that cannot be proven quiescent quarantine the
+arena. A verified-closed channel detaches from the actor's lease set before
+its physical receipt can permit actor DONE.
+
+The new host-only `ActorPhysicalIoCallbackLease<V,A>` implements JDK
+`CompletionHandler`: the driver must register one ticket **before** issuing
+each async read/write and pass this wrapper as the actual completion
+handler. It completes its ticket only after the native operation completes
+AND its trusted callback returns. A failed operation may still have a
+successfully retired operation callback, but a throwing callback or uncertain
+submission keeps a sticky physical failure. A channel's closure does not
+implicitly retire these independent operation callbacks or FFI loans.
+
+Deterministic tests include automatic STOP closing a real NIO pipe,
+a slow/blocked close, dual host closer races, injected close failures,
+actual `AsynchronousFileChannel.read` with a deliberately blocked completion
+callback, and a failing trusted I/O callback. All remain unexecuted pending
+authorized JDK25 CI.
+
+### Residual integration/verification caveats
+
+- The bridge is **not yet wired to every Oreslang HTTP/TCP/FFI server**;
+  existing native backends that bypass it still need integration.
+- A JDK `Channel.close` is only a synchronous channel close receipt. Even
+  after closure, independent native I/O callbacks, pinned memory, zero-copy
+  loans and FFI references must settle their own tickets.
+- A completion notification's *final host-only lifecycle recheck* may run
+  while the actor is finalizing; it is trusted bookkeeping rather than a
+  native resource callback. Audit that callback for reentrant exceptions
+  and do not claim full callback-exit safety without executed race proofs.
+- The bounded cleanup lane does not force-release a stuck native operation.
+  A stalled close may delay shutdown and quarantine instead of reclaiming
+  memory, as required for safety.
