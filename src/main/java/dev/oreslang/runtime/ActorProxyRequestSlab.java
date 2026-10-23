@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import java.util.Arrays;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Trusted-host, actor-owned request-slot slab. All hot-path state is charged
@@ -17,6 +18,7 @@ import java.util.Objects;
 public final class ActorProxyRequestSlab extends ActorShardBacking implements AutoCloseable {
     public enum Layout { SOA, AOSOA }
     public static final int PINS_PER_SLOT = 8;
+    private static final AtomicLong NEXT_SLAB_ID = new AtomicLong(1);
     private static final int FIELDS = 8;
     private static final int MAX_BYTES = 16 * 1024 * 1024;
     private static final int INCARNATION = 0;
@@ -33,6 +35,7 @@ public final class ActorProxyRequestSlab extends ActorShardBacking implements Au
     private static final int EXHAUSTED = 3;
 
     private final ActorRuntime.ActorShardLease lease;
+    private final long slabIdentity;
     private final Layout layout;
     private final int capacity;
     private final int lanes;
@@ -46,6 +49,10 @@ public final class ActorProxyRequestSlab extends ActorShardBacking implements Au
         ActorRuntime.currentActorId().orElseThrow(() ->
                 new SecurityException("proxy slab requires an owning actor turn"));
         this.layout = Objects.requireNonNull(layout, "layout");
+        this.slabIdentity = NEXT_SLAB_ID.getAndIncrement();
+        if (slabIdentity <= 0L) {
+            throw new IllegalStateException("proxy slab identity exhausted");
+        }
         if (capacity < 1 || capacity > 65536
                 || (layout == Layout.SOA && lanes != 1)
                 || (layout == Layout.AOSOA && lanes != 16 && lanes != 32 && lanes != 64)) {
@@ -83,6 +90,8 @@ public final class ActorProxyRequestSlab extends ActorShardBacking implements Au
         }
     }
 
+    /** Process-local identity for a trusted I/O completion envelope. */
+    public long identity() { owner(); return slabIdentity; }
     public int capacity() { return capacity; }
     public Layout layout() { return layout; }
     public int lanes() { return lanes; }
@@ -188,12 +197,24 @@ public final class ActorProxyRequestSlab extends ActorShardBacking implements Au
         return 0L;
     }
 
-    /** Exactly-once completion: replay, forged or retired receipts are refused. */
-    public boolean settle(long claim) {
+    /**
+     * Resolve only a fully correlated trusted completion envelope. A raw claim
+     * serial is insufficient: two different slabs may issue the same number.
+     * Callers must preserve the exact slab identity and request ticket through
+     * their mailbox/transport continuation; neither is external authority.
+     * Returns false for stale, misrouted, forged or repeated completions.
+     */
+    public boolean settle(long expectedSlab, long ticket, long claim) {
         owner();
+        if (expectedSlab != slabIdentity || ticket == 0L || claim == 0L) return false;
+        final int ticketRow;
+        try { ticketRow = checkedRow(ticket); }
+        catch (IllegalStateException stale) { return false; }
+        final int position = (int) claim - 1;
+        if (position < 0 || position >= capacity * PINS_PER_SLOT
+                || position / PINS_PER_SLOT != ticketRow) return false;
         int serial = (int) (claim >>> 32);
-        int position = (int) claim - 1;
-        if (serial <= 0 || position < 0 || position >= capacity * PINS_PER_SLOT) return false;
+        if (serial <= 0) return false;
         int row = position / PINS_PER_SLOT;
         int index = position % PINS_PER_SLOT;
         if (get(row, PHASE) != OPEN && get(row, PHASE) != RETIRING) return false;
