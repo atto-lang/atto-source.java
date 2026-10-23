@@ -4626,6 +4626,21 @@ public final class OresEvalRootNode extends RootNode {
                 Object receiver,
                 List<Object> args,
                 Env env) {
+            String staticallyResolvedExtension = Ast.CheckedExtensionCall.lookup(call);
+            if (staticallyResolvedExtension != null) {
+                // Dispatch is authorized by the exact checked AST call site,
+                // not by the receiver's erased int/bool runtime representation.
+                Ast.FunctionDecl target =
+                        findFunction(staticallyResolvedExtension, args.size() + 1);
+                if (target == null) {
+                    throw new IllegalStateException(
+                            "EXTENSION_TARGET_MISSING: checked alias method unavailable");
+                }
+                List<Object> actuals = new ArrayList<>(args.size() + 1);
+                actuals.add(receiver);
+                actuals.addAll(args);
+                return functionInvocation(target, actuals);
+            }
             Ast.MemberExpr member =
                     (Ast.MemberExpr) call.callee();
 
