@@ -8390,8 +8390,33 @@ public final class ActorRuntime implements AutoCloseable {
             // Submit close requests AFTER releasing the actor lifecycle lock;
             // the bounded host executor owns the physical close transition.
             // Rejection is recorded by the ticket as incomplete cleanup.
+            Throwable channelCloseSubmissionFailure = null;
             for (ActorPhysicalChannelLease lease : physicalChannels) {
-                lease.requestCloseOnActorStop(physicalCloseDispatcher);
+                try {
+                    lease.requestCloseOnActorStop(physicalCloseDispatcher);
+                } catch (RuntimeException | Error failure) {
+                    // A synchronous host-close admission hook can reenter
+                    // actor finalization and itself fail. Do not let that
+                    // suppress close requests for the other registered
+                    // channels, Future revocation or child cancellation.
+                    // This actor remains quarantined until a host proves
+                    // every physical receipt was safely released.
+                    if (channelCloseSubmissionFailure == null) {
+                        channelCloseSubmissionFailure = failure;
+                    } else if (channelCloseSubmissionFailure != failure) {
+                        channelCloseSubmissionFailure.addSuppressed(failure);
+                    }
+                }
+            }
+            if (channelCloseSubmissionFailure != null) {
+                synchronized (lifecycleLock) {
+                    sourceStopCleanupAborted = true;
+                    ref.terminationCause.compareAndSet(null,
+                            new OresScheduler.CleanupIncompleteError(
+                                    "actor host channel STOP admission failed; quarantine arena",
+                                    channelCloseSubmissionFailure));
+                    lifecycleLock.notifyAll();
+                }
             }
 
             // Runtime Future callbacks can take other actor/lifecycle locks.
