@@ -1,9 +1,12 @@
-name: Proxy outbound loopback host proof
+name: Proxy outbound loopback host and context-ownership proofs
 on:
   pull_request:
     paths:
+      - 'src/main/java/dev/oreslang/runtime/AsyncNativeIo.java'
+      - 'src/main/java/dev/oreslang/runtime/ProxyBodyCopy.java'
       - 'src/main/java/dev/oreslang/runtime/ProxyOutboundLoopback.java'
-      - 'src/test/java/dev/oreslang/runtime/ProxyOutboundLoopbackCheck.java'
+      - 'src/test/java/dev/oreslang/runtime/Proxy*Check.java'
+      - 'src/test/java/dev/oreslang/runtime/ProxyOutboundContextAuthorityTest.java'
       - 'scripts/test-proxy-outbound-loopback.sh'
       - '.github/workflows/proxy-outbound-loopback.yml'
   workflow_dispatch:
@@ -11,20 +14,48 @@ permissions:
   contents: read
 jobs:
   java21-loopback:
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    if: (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
-      - name: Show exact runner and source revision
+      - name: Verify exact PR head and JDK21
+        env:
+          EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           java -version
-          git rev-parse HEAD
+          javac -version
       - name: Real loopback socket regression (five iterations)
         run: bash scripts/test-proxy-outbound-loopback.sh
+
+  jdk25-context-gate:
+    if: (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - name: Verify exact source and compiler versions
+        env:
+          EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          java -version
+          mvn -version
+      - name: Run JDK25 real-runtime permission and ownership bridge checks
+        run: mvn -B -Dtest=ProxyOutboundContextAuthorityTest test
