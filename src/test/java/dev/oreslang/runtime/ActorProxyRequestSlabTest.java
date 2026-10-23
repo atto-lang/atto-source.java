@@ -164,6 +164,21 @@ final class ActorProxyRequestSlabTest {
     }
 
     @Test
+    void slabIdentitiesFailClosedBeforeLongOverflow() {
+        java.util.concurrent.atomic.AtomicLong next =
+                new java.util.concurrent.atomic.AtomicLong(Long.MAX_VALUE - 1L);
+        assertEquals(Long.MAX_VALUE - 1L, ActorProxyRequestSlab.allocateSlabIdentity(next));
+        assertEquals(Long.MAX_VALUE, next.get());
+        assertThrows(IllegalStateException.class,
+                () -> ActorProxyRequestSlab.allocateSlabIdentity(next));
+        assertEquals(Long.MAX_VALUE, next.get());
+        java.util.concurrent.atomic.AtomicLong invalid =
+                new java.util.concurrent.atomic.AtomicLong(0L);
+        assertThrows(IllegalStateException.class,
+                () -> ActorProxyRequestSlab.allocateSlabIdentity(invalid));
+    }
+
+    @Test
     void externalHostCannotAllocateActorOwnedSlab() {
         assertThrows(SecurityException.class, () ->
                 new ActorProxyRequestSlab(ActorProxyRequestSlab.Layout.SOA, 4, 1));
