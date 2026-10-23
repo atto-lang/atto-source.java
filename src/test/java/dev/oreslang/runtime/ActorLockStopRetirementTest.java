@@ -459,6 +459,52 @@ final class ActorLockStopRetirementTest {
     }
 
     @Test
+    void asynchronousPhysicalLockReceiptFailureQuarantinesSupervisorRestart()
+            throws Exception {
+        ActorRuntime runtime = new ActorRuntime();
+        try {
+            java.util.concurrent.CompletableFuture<Void> physicalReceipt =
+                    new java.util.concurrent.CompletableFuture<>();
+            CountDownLatch retirementStarted = new CountDownLatch(1);
+            var ref = runtime.<String>spawnShared(() -> (message, context) -> {
+                TaskOwnedLockLedger ledger = ActorRuntime.currentActorLockLedger();
+                assertNotNull(ledger);
+                ledger.register(new TaskOwnedLockLedger.Lease() {
+                    @Override public void revokeAfterQuiescence() {
+                        throw new AssertionError("only asynchronous receipt may revoke");
+                    }
+                    @Override public java.util.concurrent.CompletionStage<Void>
+                            settleAfterQuiescence() {
+                        retirementStarted.countDown();
+                        return physicalReceipt;
+                    }
+                });
+                context.self().stop();
+            });
+            ref.send("stop");
+            assertTrue(retirementStarted.await(5, TimeUnit.SECONDS));
+            assertFalse(ref.getDone().isDone(),
+                    "STOP certified cleanup before the physical receipt");
+            assertFalse(ref.awaitTermination(20, TimeUnit.MILLISECONDS));
+            physicalReceipt.completeExceptionally(
+                    new IllegalStateException("injected native handoff failure"));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (ref.failure().isEmpty() && System.nanoTime() < deadline) {
+                Thread.sleep(2);
+            }
+            assertTrue(ref.failure().isPresent(),
+                    "failed asynchronous retirement receipt was swallowed");
+            assertFalse(ref.getDone().isDone(),
+                    "failed physical receipt forged successful actor DONE");
+            assertFalse(ref.awaitTermination(20, TimeUnit.MILLISECONDS),
+                    "unsafe retirement made actor eligible for reuse");
+        } finally {
+            assertThrows(IllegalStateException.class, runtime::close,
+                    "quarantined actor must retain its arena and capability roots");
+        }
+    }
+
+    @Test
     void exitHookFailureQuarantinesActorAndWithholdsSuccessfulDone() throws Exception {
         ActorRuntime runtime = new ActorRuntime();
         try {
