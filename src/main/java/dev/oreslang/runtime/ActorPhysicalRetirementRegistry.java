@@ -68,31 +68,25 @@ final class ActorPhysicalRetirementRegistry {
                 // can still be executing on an external driver thread.
                 inFlightNotifications++;
             }
-            Throwable failure = null;
+            // The count covers BOTH the first fallible notification and the
+            // pending deferred STOP wake. In particular, do not open a
+            // zero-count window between the first callback and execute():
+            // a concurrent STOP could reclaim the actor before dispatch
+            // rejection becomes a sticky quarantine failure.
             try {
                 notifyOwner();
-            } catch (RuntimeException | Error callbackFailure) {
-                failure = callbackFailure;
-            } finally {
-                synchronized (lock) {
-                    inFlightNotifications--;
-                }
-                // Reevaluate STOP only AFTER the original callback has exited.
-                // In real actor runtimes this dispatch is host-only and deferred,
-                // never an inline finalizer on the native completion thread.
-                if (failure == null) {
-                    try {
-                        requestPostDrainWake();
-                    } catch (RuntimeException | Error callbackFailure) {
-                        if (failure == null) failure = callbackFailure;
-                        else if (failure != callbackFailure) {
-                            failure.addSuppressed(callbackFailure);
-                        }
-                    }
-                }
+            } catch (RuntimeException | Error notificationFailure) {
+                synchronized (lock) { inFlightNotifications--; }
+                throw notificationFailure;
             }
-            if (failure instanceof RuntimeException runtime) throw runtime;
-            if (failure instanceof Error fatal) throw fatal;
+            try {
+                requestPostDrainWake();
+            } catch (RuntimeException | Error dispatchFailure) {
+                // requestPostDrainWake latches an uncertain dispatch failure
+                // BEFORE dropping this final notification fence.
+                synchronized (lock) { inFlightNotifications--; }
+                throw dispatchFailure;
+            }
             return true;
         }
 
@@ -155,9 +149,24 @@ final class ActorPhysicalRetirementRegistry {
      * The legacy direct form is retained for isolated registry-only tests.
      * Actual ActorCells MUST supply an asynchronous host-only dispatcher.
      */
+    private void postDrainWake() {
+        // This release is paired with the successful admission of the final
+        // host-only wake. Until it runs, even a different concurrent STOP
+        // must observe the outstanding in-flight notification barrier.
+        synchronized (lock) {
+            if (inFlightNotifications <= 0) {
+                throw new IllegalStateException("physical post-drain notification underflow");
+            }
+            inFlightNotifications--;
+        }
+        notifyOwner();
+    }
+
     private void requestPostDrainWake() {
         if (postDrainExecutor == null) {
-            notifyOwner();
+            // Legacy isolated-registry callback tests have no executor; keep
+            // the count reserved until their second notification begins.
+            postDrainWake();
             return;
         }
         CompletableFuture<Boolean> allowed = new CompletableFuture<>();
@@ -181,7 +190,7 @@ final class ActorPhysicalRetirementRegistry {
                 // prevents an executor which enqueues then throws from
                 // authorizing Actor.done() before quarantine is latched.
                 if (allowed.join()) {
-                    notifyOwner();
+                    postDrainWake();
                 }
             });
             executingDispatch.set(false);
