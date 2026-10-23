@@ -954,7 +954,15 @@ public final class TreeShaker {
                 return new Ast.RuntimeCallExpr(runtime.operation(), arguments);
             }
             if (expression instanceof Ast.CallExpr call) {
-                Ast.Expr callee = rewriteExpression(call.callee(), module, locals);
+                // The checked extension is bound to a lexical named alias.
+                // Folding its receiver name to a raw scalar would erase that
+                // static identity and invalidate the authorized call target.
+                String checkedExtension = Ast.CheckedExtensionCall.lookup(call);
+                Ast.Expr callee = checkedExtension != null
+                        && call.callee() instanceof Ast.MemberExpr sourceMember
+                        && sourceMember.receiver() instanceof Ast.NameExpr
+                        ? call.callee()
+                        : rewriteExpression(call.callee(), module, locals);
                 List<Ast.Expr> arguments = new ArrayList<>();
                 for (Ast.Expr argument : call.arguments()) {
                     arguments.add(rewriteExpression(argument, module, locals));
