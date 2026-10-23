@@ -1,0 +1,91 @@
+name: Private desktop compiler candidates
+
+# Candidate binaries remain attached only to this private repository's Actions
+# run. Promotion to public release requires an independently approved release.
+on:
+  push:
+    branches:
+      - 'feat/desktop-compiler-release-candidates-*'
+    paths:
+      - '.github/workflows/desktop-compiler-candidates.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-compiler:
+    if: github.repository == 'ores-truffle-oreslang/oreslang-source.java'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            platform: macos-arm64
+            binary: ores-aot
+          - os: macos-15-intel
+            platform: macos-x86_64
+            binary: ores-aot
+          - os: windows-latest
+            platform: windows-x86_64
+            binary: ores-aot.exe
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 100
+    steps:
+      - name: Checkout exact source commit, without persistent credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Setup GraalVM
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          java-version: '25'
+          version: '25.3'
+          distribution: 'graalvm'
+          github-token: ${{ github.token }}
+          cache: maven
+      - name: Run compiler CLI regression test
+        shell: bash
+        run: mvn -B -ntp -Dtest=NativeCliIoTest test
+      - name: Build standalone native compiler
+        shell: bash
+        run: mvn -B -ntp -DskipTests -Pnative-aot package
+      - name: Test native compiler with actual Oreslang source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "target/${{ matrix.binary }}"
+          if [ "${{ runner.os }}" != Windows ]; then
+            chmod +x "target/${{ matrix.binary }}"
+          fi
+          "./target/${{ matrix.binary }}" --check examples/callables.ores
+      - name: Package private compiler candidate with source identity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path stage | Out-Null
+          $suffix = if ("${{ runner.os }}" -eq "Windows") { ".exe" } else { "" }
+          $compiler = "oreslang-compiler$suffix"
+          Copy-Item "target/${{ matrix.binary }}" "stage/$compiler"
+          $hash = (Get-FileHash "stage/$compiler" -Algorithm SHA256).Hash.ToLowerInvariant()
+          $record = @{
+            status = "PRIVATE_CANDIDATE_NOT_APPROVED_FOR_PUBLICATION"
+            source_repository = "${{ github.repository }}"
+            source_commit = "${{ github.sha }}"
+            platform = "${{ matrix.platform }}"
+            binary = $compiler
+            binary_sha256 = $hash
+          } | ConvertTo-Json
+          Set-Content -Path stage/provenance.json -Value $record -Encoding utf8
+          if ("${{ runner.os }}" -eq "Windows") {
+            Compress-Archive -Path stage/* -DestinationPath "oreslang-compiler-${{ matrix.platform }}.zip"
+          } else {
+            tar -C stage -czf "oreslang-compiler-${{ matrix.platform }}.tar.gz" .
+          }
+      - name: Upload PRIVATE candidate, never a public release
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiler-candidate-${{ matrix.platform }}
+          path: oreslang-compiler-${{ matrix.platform }}.*
+          retention-days: 7
+          if-no-files-found: error
