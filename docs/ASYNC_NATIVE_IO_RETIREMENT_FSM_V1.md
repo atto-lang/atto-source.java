@@ -40,9 +40,12 @@ behavior must be verified in runnable tests.
 5. Every operation stays in `admittedWork` until all synchronous runtime
    Future subscribers have exited. Completion may run on a native worker
    thread, not necessarily the actor carrier.
-6. Rejecting a newly registered resource after STOP must close it *outside*
-   the context lock, counting the in-flight rejected-resource close and
-   latching any failure for quarantine.
+6. Rejecting a newly registered resource *during* STOP must close it
+   outside the context lock, counting the in-flight rejected-resource close
+   and latching any failure for quarantine. After a successful shutdown
+   receipt has already been published, registration rejects immediately and
+   keeps responsibility for the never-admitted handle with its caller: the
+   retired context must not initiate any new close callback.
 7. `physicalShutdown` completes successfully only if STOP and the shutdown
    close scan finished, there are **zero admitted operations, zero pending
    rejected-resource close callbacks**, and no recorded close/notification
@@ -55,8 +58,10 @@ behavior must be verified in runnable tests.
 - **I2** A CANCELLED_BEFORE_START operation did not invoke its Callable.
 - **I3** Each operation follows exactly one retirement path; all transitions
   serialize on the context monitor.
-- **I4** A successful physicalShutdown receipt implies no admitted host
-  operation or rejected-resource close callback can still run.
+- **I4** A successful physicalShutdown receipt implies no previously
+  admitted host operation or previously authorized rejected-resource close
+  callback can still run. Future resource registrations against a retired
+  context are rejected without starting new native callbacks.
 - **I5** A close or terminal notification failure prevents successful
   physicalShutdown; retained native resource ownership is quarantined.
 - **I6** No resource close request or Future terminal callback runs while
@@ -72,8 +77,10 @@ specification inputs and adversarial acceptance criteria, not a proof.
 a queued never-started operation; STOP versus uninterruptible success and
 failure; a deliberately blocked inline terminal Future subscriber; a
 registered resource whose close fails; a hostile Error thrown by one resource
-while a sibling still closes; a resource registered after STOP whose close
-blocks; and a rejected late resource whose close fails and quarantines.
+while a sibling still closes; a resource registered during STOP whose close
+blocks; a rejected late resource whose close fails and quarantines; a
+fully retired context rejecting any new close callback; and a hostile
+close Error that cannot skip another resource's close.
 
 These tests are **committed but have not executed on the protected project's
 GitHub Actions runners**. Source-org Actions job scheduling fails with zero
