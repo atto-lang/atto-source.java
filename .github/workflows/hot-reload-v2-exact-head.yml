@@ -1,0 +1,99 @@
+name: Hot reload v2 exact-head
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/hot-reload-v2-exact-head.yml'
+      - 'pom.xml'
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorUpgradeEpochGate.java'
+      - 'src/main/java/dev/oreslang/runtime/LogicalActorProxyMailboxV1.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorUpgradePreflightV1.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorRoutePublicationV1.java'
+      - 'src/main/java/dev/oreslang/runtime/SharedActorHotReloadTransportV2.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorUpgradeEpochGateTest.java'
+      - 'src/test/java/dev/oreslang/runtime/LogicalActorProxyMailboxV1Test.java'
+      - 'src/test/java/dev/oreslang/runtime/LogicalActorProxyUpgradeWatermarkTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorUpgradePreflightV1Test.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorRoutePublicationV1Test.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorTrackedMessageCompletionTest.java'
+      - 'src/test/java/dev/oreslang/runtime/SharedActorHotReloadTransportV2Test.java'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hot-reload-v2-junit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout exact submitted source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Refuse a non-exact checkout
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Set up GraalVM JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+
+      - name: Run hot-reload v2 focused regressions
+        run: >-
+          mvn -B -ntp
+          -Dtest=LogicalActorProxyMailboxV1Test,LogicalActorProxyUpgradeWatermarkTest,ActorUpgradeEpochGateTest,ActorUpgradePreflightV1Test,ActorRoutePublicationV1Test,ActorTrackedMessageCompletionTest,SharedActorHotReloadTransportV2Test
+          -DfailIfNoTests=true
+          test
+
+      - name: Verify every focused JUnit class executed
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests=(
+            LogicalActorProxyMailboxV1Test
+            LogicalActorProxyUpgradeWatermarkTest
+            ActorUpgradeEpochGateTest
+            ActorUpgradePreflightV1Test
+            ActorRoutePublicationV1Test
+            ActorTrackedMessageCompletionTest
+            SharedActorHotReloadTransportV2Test
+          )
+          mkdir -p target/ci-evidence
+          {
+            printf 'head=%s\n' "$(git rev-parse HEAD)"
+            printf 'tree=%s\n' "$(git rev-parse 'HEAD^{tree}')"
+          } > target/ci-evidence/hot-reload-v2-exact-head.txt
+          for test_class in "${tests[@]}"; do
+            report="target/surefire-reports/TEST-dev.oreslang.runtime.${test_class}.xml"
+            test -s "$report"
+            grep -Eq 'tests="[1-9][0-9]*"' "$report"
+            grep -Eq 'errors="0"' "$report"
+            grep -Eq 'failures="0"' "$report"
+            printf 'verified=%s\n' "$test_class"               >> target/ci-evidence/hot-reload-v2-exact-head.txt
+          done
+
+      - name: Retain exact-head receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: hot-reload-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/ci-evidence/hot-reload-v2-exact-head.txt
+            target/surefire-reports/TEST-dev.oreslang.runtime.LogicalActorProxyMailboxV1Test.xml
+            target/surefire-reports/TEST-dev.oreslang.runtime.LogicalActorProxyUpgradeWatermarkTest.xml
+            target/surefire-reports/TEST-dev.oreslang.runtime.ActorUpgradeEpochGateTest.xml
+            target/surefire-reports/TEST-dev.oreslang.runtime.ActorUpgradePreflightV1Test.xml
+            target/surefire-reports/TEST-dev.oreslang.runtime.ActorRoutePublicationV1Test.xml
+            target/surefire-reports/TEST-dev.oreslang.runtime.ActorTrackedMessageCompletionTest.xml
+            target/surefire-reports/TEST-dev.oreslang.runtime.SharedActorHotReloadTransportV2Test.xml
+          retention-days: 7
+          if-no-files-found: error
