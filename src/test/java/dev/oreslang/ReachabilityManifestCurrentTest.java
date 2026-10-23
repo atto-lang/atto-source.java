@@ -169,6 +169,28 @@ final class ReachabilityManifestCurrentTest {
     }
 
     @Test
+    void nullConstantKeyFailsClosedDeterministically() {
+        TreeShaker.Result base = OresCompiler.compileForBuild(
+                "pub fnc main(): int { return 0; }",
+                BuildOptions.executable());
+        LinkedHashMap<String, Object> constants = new LinkedHashMap<>();
+        constants.put(null, 1L);
+
+        TreeShaker.Result forged = new TreeShaker.Result(
+                base.program(),
+                base.retainedSymbols(),
+                base.removedSymbols(),
+                constants,
+                base.rootSymbols(),
+                base.libraryBuild(),
+                base.semanticSymbols());
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> ReachabilityManifest.from(forged));
+    }
+
+    @Test
     void malformedUnicodeConstantFailsClosed() {
         TreeShaker.Result base = OresCompiler.compileForBuild(
                 "pub fnc main(): int { return 0; }",
