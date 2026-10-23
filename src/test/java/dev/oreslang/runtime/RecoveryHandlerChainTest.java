@@ -731,6 +731,14 @@ final class RecoveryHandlerChainTest {
         IllegalStateException replay = assertThrows(
                 IllegalStateException.class, () -> chain.dispatch(failure));
         assertTrue(replay.getMessage().contains("completed guest failure"));
+
+        var wrongExecution = RecoveryHandlerChain.<Integer>builder(
+                        ExecutionContext.task(7, 99), TEST_CODE_EPOCH)
+                .onThrow((e, next) -> next.resolve(1))
+                .freeze();
+        IllegalStateException crossOwnerReplay = assertThrows(
+                IllegalStateException.class, () -> wrongExecution.dispatch(failure));
+        assertTrue(crossOwnerReplay.getMessage().contains("completed guest failure"));
     }
 
     @Test void handlerFailureSealsOriginalEnvelopeAgainstReuse() {
