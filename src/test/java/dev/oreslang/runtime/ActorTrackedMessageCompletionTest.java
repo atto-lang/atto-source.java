@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.util.ArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -63,6 +64,56 @@ final class ActorTrackedMessageCompletionTest {
         } finally {
             releaseFirst.countDown();
             releaseSecond.countDown();
+        }
+    }
+
+    @Test
+    void publicDrainQuotaCannotStarveRuntimeTrackedCompletion()
+            throws Exception {
+        CountDownLatch firstEntered = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        AtomicInteger processed = new AtomicInteger();
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                if (message == 1) {
+                    firstEntered.countDown();
+                    if (!releaseFirst.await(5, TimeUnit.SECONDS))
+                        throw new AssertionError("first message release timed out");
+                }
+                processed.incrementAndGet();
+            });
+
+            ref.send(1);
+            assertTrue(firstEntered.await(5, TimeUnit.SECONDS));
+
+            var publicDrains = new ArrayList<OresFuture<Void>>();
+            for (int i = 0; i < 1_024; i++) {
+                OresFuture<Void> drain = ref.drain();
+                assertFalse(drain.isDone());
+                publicDrains.add(drain);
+            }
+            ExecutionException exhausted = assertThrows(
+                    ExecutionException.class,
+                    () -> ref.drain().get(5, TimeUnit.SECONDS));
+            assertInstanceOf(ActorRuntime.ActorResourceExhaustedException.class,
+                    exhausted.getCause());
+
+            // Internal per-message proof has an independent actor-mailbox
+            // budget and therefore cannot be starved by public observers.
+            OresFuture<Void> tracked = runtime.sendWithCompletion(ref, 2);
+            assertFalse(tracked.isDone());
+
+            releaseFirst.countDown();
+            for (OresFuture<Void> drain : publicDrains)
+                drain.get(5, TimeUnit.SECONDS);
+            tracked.get(5, TimeUnit.SECONDS);
+            assertEquals(2, processed.get());
+
+            ref.stop();
+            ref.getDone().get(5, TimeUnit.SECONDS);
+        } finally {
+            releaseFirst.countDown();
         }
     }
 
