@@ -228,3 +228,29 @@ must not be treated as zero-copy pointer/DMA lifetime certification.
 - A broken executor that drops never-started tasks without returning them
   from `shutdownNow` may keep the receipt pending forever, which is a safe
   quarantine rather than a false success.
+
+## Executor-admission ambiguity and defensive diagnostics (2026-10-23)
+
+Worker `ExecutorService.execute` rejection is not itself a physical-exit
+receipt: a broken executor can *start* a Runnable and then throw. The
+`ADMITTED -> RUNNING` transition still wins over `cancelBeforeStart()`,
+and the operation, terminal Future subscribers and actor-incarnation
+receipt remain owned until the real Callable returns. A genuine never-run
+rejection follows `ADMITTED -> RETIRING -> CANCELLED_BEFORE_START`.
+
+Production `submit()` now invokes `cancelBeforeStart()` in a `finally`
+block even if rejection diagnostics fail. Synchronously rejected
+actor-owned submissions also inspect their `OresFuture` terminal-listener
+failure before treating the unused actor ticket as physically released;
+diagnostic/notification faults are latched for quarantine. Potentially
+throwing perf queue instrumentation and Operation construction precede
+publishing the Future into the admitted set, so instrumentation cannot
+create a stranded slot with no runnable.
+
+Two deterministic JUnit regressions exercise a fully shut-down pool that
+never runs its Callable and an intentionally noncompliant pool which enters
+the Callable before throwing `RejectedExecutionException`. The second
+case must not publish a terminal Future or context shutdown receipt until
+the uninterruptible worker exits. Both tests are committed, not yet run
+on an authorized JDK25 runner.
+
