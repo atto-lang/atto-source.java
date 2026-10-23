@@ -31,7 +31,7 @@ final class GuestFailure {
             ExecutionContext.AllocationDomain allocationDomain,
             long parentExecution,
             long continuation,
-            long codeEpoch,
+            CodeImageIdentity codeImageIdentity,
             long sourceToken) {
         Provenance {
             Objects.requireNonNull(executionId, "executionId");
@@ -40,9 +40,9 @@ final class GuestFailure {
                 throw new IllegalArgumentException(
                         "logical ancestry handles cannot be negative");
             }
-            if (codeEpoch <= 0) {
-                throw new IllegalArgumentException(
-                        "compiler code epoch must be positive");
+            Objects.requireNonNull(codeImageIdentity, "codeImageIdentity");
+            if (!codeImageIdentity.runtimeAuthenticated()) {
+                throw new SecurityException("guest failure requires a runtime-issued code image");
             }
             if (sourceToken <= 0) {
                 throw new IllegalArgumentException(
@@ -95,11 +95,15 @@ final class GuestFailure {
             RecoveryHandlerChain.FailureKind kind,
             Throwable error,
             ExecutionContext executionContext,
-            long codeEpoch,
+            CodeImageIdentity codeImageIdentity,
             long sourceToken) {
         Objects.requireNonNull(kind, "kind");
         Objects.requireNonNull(error, "error");
         Objects.requireNonNull(executionContext, "executionContext");
+        Objects.requireNonNull(codeImageIdentity, "codeImageIdentity");
+        if (!codeImageIdentity.isActive()) {
+            throw new IllegalStateException("cannot mint guest failure for retired code image");
+        }
         if (kind != RecoveryHandlerChain.FailureKind.THROW
                 && kind != RecoveryHandlerChain.FailureKind.RAISE) {
             throw new IllegalArgumentException(
@@ -113,7 +117,7 @@ final class GuestFailure {
                         executionContext.allocationDomain(),
                         executionContext.parentExecution(),
                         executionContext.continuation(),
-                        codeEpoch,
+                        codeImageIdentity,
                         sourceToken),
                 COMPILER_ISSUER);
     }
@@ -139,14 +143,19 @@ final class GuestFailure {
             ExecutionContext.AllocationDomain allocationDomain,
             long parentExecution,
             long continuation,
-            long codeEpoch) {
+            CodeImageIdentity codeImageIdentity) {
         Objects.requireNonNull(executionId, "executionId");
         Objects.requireNonNull(allocationDomain, "allocationDomain");
+        Objects.requireNonNull(codeImageIdentity, "codeImageIdentity");
         return provenance.executionId().equals(executionId)
                 && provenance.allocationDomain().equals(allocationDomain)
                 && provenance.parentExecution() == parentExecution
                 && provenance.continuation() == continuation
-                && provenance.codeEpoch() == codeEpoch;
+                && provenance.codeImageIdentity().sameActiveImage(codeImageIdentity);
+    }
+
+    boolean codeImageActive() {
+        return provenance.codeImageIdentity().isActive();
     }
 
     synchronized void requireDispatchable() {
