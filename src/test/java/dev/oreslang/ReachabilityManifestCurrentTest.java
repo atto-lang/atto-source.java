@@ -27,6 +27,8 @@ final class ReachabilityManifestCurrentTest {
                 ReachabilityManifest.from(result);
 
         assertEquals(Set.of("__root__.main"), result.rootSymbols());
+        assertTrue(result.retainedSymbols().contains("__root__.helper"),
+                "shared fixture helper must remain a runtime dependency");
         assertEquals(expected, manifest.canonicalJson());
         assertEquals(64, manifest.sha256().length());
     }
@@ -48,6 +50,17 @@ final class ReachabilityManifestCurrentTest {
         assertEquals(java.util.List.of("__root__.answer"), manifest.roots());
         assertTrue(manifest.retainedSymbols().contains("__root__.helper"));
         assertTrue(manifest.removedSymbols().contains("__root__.dead"));
+    }
+
+    @Test
+    void overloadedLexicalIdentityFailsClosedUntilSharedContractExists() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.compileForBuild("""
+                        fnc pick(int value): int { return value; }
+                        fnc pick(int left, int right): int { return left + right; }
+                        pub fnc main(): int { return pick(1); }
+                        """, BuildOptions.executable()));
     }
 
     @Test
