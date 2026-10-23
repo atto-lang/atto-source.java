@@ -44,8 +44,8 @@ public final class NativeHttpRollingDispatcher implements AutoCloseable {
         Objects.requireNonNull(initialReadyHandler, "initialReadyHandler");
         if (listener.ownerHttp() != initialReadyHandler.ownerHttp())
             throw new SecurityException("foreign HTTP handler/acceptor context");
-        if (!initialReadyHandler.pooled())
-            throw new IllegalArgumentException("rolling HTTP target must be pooled");
+        if (!initialReadyHandler.pooled() || !initialReadyHandler.readyNow())
+            throw new IllegalArgumentException("initial rolling HTTP pool must be warmed and ready");
         this.routes = new ActorRollingGenerationRoute<>(
                 logicalId, initialReadyHandler, maximumLiveGenerations);
         this.listener.claimRollingDispatcher(this);
@@ -94,6 +94,8 @@ public final class NativeHttpRollingDispatcher implements AutoCloseable {
                             if (error != null) throw new IllegalStateException(
                                     "replacement worker startup failed", OresFuture.unwrap(error));
                             if (closed.get()) throw new IllegalStateException("rolling dispatcher closed");
+                            if (!replacement.readyNow())
+                                throw new IllegalStateException("replacement HTTP workers not healthy");
                             boolean promoted = routes.publishReady(expectedEpoch, replacement);
                             if (!promoted) replacement.stopUnpublishedPool();
                             outcome.completeFromRuntime(promoted);
