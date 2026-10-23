@@ -70,6 +70,13 @@ public final class Parser {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers modifiers = parseModifiers();
 
+            // 'declare' is a contextual introducer for type-only declarations.
+            // No runtime constructor, module value, or actor capability is created.
+            if (matchContextualIdentifier("declare")) {
+                rootDeclarations.add(parseDeclaredTypeOnly(annotations, modifiers));
+                continue;
+            }
+
             if (match(CLASS)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 // 'define' is optional; the old 'class ... define' order remains accepted.
@@ -339,6 +346,10 @@ public final class Parser {
         List<Ast.Annotation> annotations = parseAnnotations();
         Modifiers modifiers = parseModifiers();
 
+        if (matchContextualIdentifier("declare")) {
+            return parseDeclaredTypeOnly(annotations, modifiers);
+        }
+
         if (match(CLASS)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
             // 'define' is optional; retain the legacy class-first permutation.
@@ -421,6 +432,22 @@ public final class Parser {
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
         if (declaration != null) return declaration;
         throw error(peek(), "expected function, routine, model, class, interface, trait, type, or binding declaration");
+    }
+
+    /** Canonical 'declare [pub] type|trait|interface' source spelling.
+     * Reuse existing type-only AST nodes; do not synthesize a runtime value.
+     * Reject unsupported 'declare' kinds instead of treating them as callables.
+     */
+    private Ast.Decl parseDeclaredTypeOnly(
+            List<Ast.Annotation> annotations, Modifiers preceding) {
+        Modifiers modifiers = mergeModifiers(preceding, parseModifiers());
+        validateOnlyVisibilityModifiers(modifiers, "type-only declarations");
+        rejectCallableStructuralAnnotation(annotations, "type-only declarations");
+        rejectDiscardedDeclarationAnnotations(annotations, "type-only declarations");
+        if (match(TYPE)) return parseTypeAlias(modifiers.visibility);
+        if (match(TRAIT, INTERFACE)) return parseInterface(modifiers.visibility);
+        throw error(peek(),
+                "declare admits only type, trait, or interface; concrete values use define");
     }
 
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
@@ -734,8 +761,9 @@ public final class Parser {
     }
 
     private void validateOnlyVisibilityModifiers(Modifiers modifiers, String context) {
-        if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical
-                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
+        if (modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural
+                || modifiers.nonLexical || modifiers.trapped || modifiers.isStatic
+                || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
             throw error(previous(), context + " accept only private/pub visibility modifiers");
         }
     }
