@@ -49,6 +49,11 @@ public class TaskHandleTest {
                 return OresScheduler.done(19);
             });
             assertTrue(running.await(3, TimeUnit.SECONDS));
+            // A forged cancellation of an observation copy must not settle
+            // the Task's actual physical callback-drain receipt.
+            assertTrue(task.doneCallbacksDrained().toCompletableFuture().cancel(false));
+            assertFalse(task.doneCallbacksDrained().toCompletableFuture().isDone(),
+                    "observer cancelled authoritative Task cleanup receipt");
             task.getDone().whenCompleteRuntime((outcome, failure) -> {
                 subscriberEntered.countDown();
                 awaitUninterruptibly(unblockSubscriber);
