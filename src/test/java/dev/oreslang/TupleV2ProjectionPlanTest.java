@@ -99,12 +99,23 @@ final class TupleV2ProjectionPlanTest {
     }
 
     @Test
-    void projectionSlotsCannotForgeAnAbsenceWithARealSourceIndex() {
-        assertThrows(IllegalArgumentException.class, () ->
-                new StructuralTuplePolicy.ProjectedSlot(0, 0,
-                        Types.Primitive.INT, Materialization.SYNTHESIZE_NONE));
-        assertThrows(IllegalArgumentException.class, () ->
-                new StructuralTuplePolicy.ProjectedSlot(0, -1,
-                        Types.Primitive.INT, Materialization.KEEP_VALUE));
+    void checkedProjectionIsTheOnlySourceOfSlotProvenance() {
+        var absent = StructuralTuplePolicy.projection(
+                shape(false), tuple(Types.Primitive.INT, Types.Primitive.STRING)).orElseThrow();
+        assertEquals(List.of(0, 1, -1),
+                absent.visibleSlots().stream()
+                        .map(StructuralTuplePolicy.ProjectedSlot::sourceIndex).toList());
+        assertEquals(List.of(
+                Materialization.KEEP_VALUE,
+                Materialization.KEEP_VALUE,
+                Materialization.SYNTHESIZE_NONE),
+                absent.visibleSlots().stream()
+                        .map(StructuralTuplePolicy.ProjectedSlot::materialization).toList());
+        for (int index = 0; index < absent.visibleWidth(); index++) {
+            assertEquals(index, absent.visibleSlot(index).visibleIndex());
+        }
+        assertTrue(StructuralTuplePolicy.projection(shape(false), tuple(
+                Types.Primitive.INT,
+                new Types.Named("Option", List.of(Types.Primitive.STRING)))).isEmpty());
     }
 }
