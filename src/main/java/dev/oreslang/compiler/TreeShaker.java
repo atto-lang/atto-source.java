@@ -38,12 +38,28 @@ public final class TreeShaker {
             Set<String> retainedSymbols,
             Set<String> removedSymbols,
             Map<String, Object> compileTimeConstants,
-            Set<String> rootSymbols) {
+            Set<String> rootSymbols,
+            boolean libraryBuild) {
         public Result {
             retainedSymbols = Set.copyOf(retainedSymbols);
             removedSymbols = Set.copyOf(removedSymbols);
             compileTimeConstants = Map.copyOf(compileTimeConstants);
             rootSymbols = Set.copyOf(rootSymbols);
+        }
+
+        public Result(
+                Ast.Program program,
+                Set<String> retainedSymbols,
+                Set<String> removedSymbols,
+                Map<String, Object> compileTimeConstants,
+                Set<String> rootSymbols) {
+            this(
+                    program,
+                    retainedSymbols,
+                    removedSymbols,
+                    compileTimeConstants,
+                    rootSymbols,
+                    false);
         }
 
         public boolean retained(String symbol) {
@@ -110,7 +126,13 @@ public final class TreeShaker {
             Ast.Program pruned = pruneProgram(rewritten);
             LinkedHashSet<String> removed = new LinkedHashSet<>(symbols.keySet());
             removed.removeAll(retained);
-            return new Result(pruned, retained, removed, constantValues, roots);
+            return new Result(
+                    pruned,
+                    retained,
+                    removed,
+                    constantValues,
+                    roots,
+                    options.preservePublicApi());
         }
 
         private void collectConstants() {
