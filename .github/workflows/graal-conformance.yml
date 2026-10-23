@@ -50,6 +50,10 @@ jobs:
         run: |
           mvn -B -ntp -DskipTests package
           mvn -B -ntp -q dependency:build-classpath -Dmdep.outputFile=target/conformance-classpath.txt
+      - name: Execute exact LLVM class/String source through real JVM guest
+        run: |
+          scripts/run-source-parity.sh tests/fixtures/native-class-string/main.ores > target/java-class-string-parity.stdout
+          printf 'hello world\nhiiii 2hiiii' | cmp - target/java-class-string-parity.stdout
       - name: Execute byte-identical common-source v1 scalar through real JVM guest
         run: |
           python3 tests/test_native_guest_parity_v1_java.py \
