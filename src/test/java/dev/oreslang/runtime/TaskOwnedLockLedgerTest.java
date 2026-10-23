@@ -39,6 +39,48 @@ public final class TaskOwnedLockLedgerTest {
     }
 
     @Test
+    void taskDoneWaitsForCancelledQueuedWaiterSubscriberDrain() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            var mutex = OresMutex.shared(new int[] {8});
+            var heldByHost = mutex.tryLock().orElseThrow();
+            CountDownLatch callbackEntered = new CountDownLatch(1);
+            CountDownLatch finishCallback = new CountDownLatch(1);
+            AtomicBoolean carriedTaskAuthority = new AtomicBoolean();
+            TaskHandle<Void> task = scheduler.startTracked(resume -> {
+                var requested = mutex.lockAsync();
+                requested.whenComplete((guard, failure) -> {
+                    carriedTaskAuthority.set(OresScheduler.currentTaskDomain() != null);
+                    callbackEntered.countDown();
+                    try {
+                        if (!finishCallback.await(5, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("completion callback timeout");
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError(interrupted);
+                    }
+                });
+                return OresScheduler.done(null);
+            });
+            try {
+                assertTrue(callbackEntered.await(5, TimeUnit.SECONDS),
+                        "Task retirement did not cancel its queued waiter");
+                assertFalse(task.getDone().isDone(),
+                        "DONE published before host callback physically returned");
+            } finally {
+                finishCallback.countDown();
+                heldByHost.release();
+            }
+            assertEquals(new TaskHandle.Success<Void>(null),
+                    task.getDone().get(5, TimeUnit.SECONDS));
+            assertFalse(carriedTaskAuthority.get(),
+                    "queued cancellation callback inherited dead Task authority");
+            assertFalse(mutex.isPoisoned(),
+                    "a cancelled never-granted lock request cannot poison");
+        }
+    }
+
+    @Test
     void queuedAsyncLockRequestIsCancelledAtTaskQuiescence() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             OresMutex.Shared<int[]> mutex = OresMutex.shared(new int[] {12});
