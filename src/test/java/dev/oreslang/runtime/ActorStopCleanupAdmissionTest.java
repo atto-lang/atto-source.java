@@ -556,7 +556,7 @@ final class ActorStopCleanupAdmissionTest {
         try {
             // Deliberately pause worker START, not the caller's dispatch.
             // This isolates the logical pre-seal phase from any physical STOP.
-            ActorRuntime.PhysicalStopDispatcher pausedWorkers = work -> {
+            ActorRuntime.PhysicalStopDispatcher pausedWorkers = (work, discarded) -> {
                 Thread.ofVirtual().start(() -> {
                     try {
                         if (!releasePhysical.await(5, TimeUnit.SECONDS)) {
@@ -634,9 +634,9 @@ final class ActorStopCleanupAdmissionTest {
                          ActorRuntime.DispatcherConfig.defaults(),
                          ActorRuntime.TurnExecutor.direct(),
                          vm::executeControl,
-                         stopWork -> {
+                         (stopWork, discarded) -> {
+                             vm.executePhysicalStop(stopWork, discarded);
                              accepted.incrementAndGet();
-                             vm.executePhysicalStop(stopWork);
                          })) {
                 var parent = runtime.<String>spawnShared(() -> (message, context) -> {
                     var first = context.runtime().spawnShared(
