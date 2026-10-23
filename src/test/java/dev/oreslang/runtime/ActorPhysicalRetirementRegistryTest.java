@@ -259,6 +259,48 @@ final class ActorPhysicalRetirementRegistryTest {
         }
     }
 
+    @Test void oneFailedChannelCloseStillRequestsPhysicalReleaseForSibling()
+            throws Exception {
+        // STOP must dispatch cleanup for EVERY host channel even if one
+        // driver fails. A broken descriptor is quarantined; the sibling
+        // cannot be abandoned merely because another close threw.
+        var good = java.nio.channels.Pipe.open();
+        var closeFailure = new java.io.IOException("broken NIO close");
+        var brokenCloseCalled = new CountDownLatch(1);
+        java.nio.channels.Channel broken = new java.nio.channels.Channel() {
+            @Override public boolean isOpen() { return true; }
+            @Override public void close() throws java.io.IOException {
+                brokenCloseCalled.countDown();
+                throw closeFailure;
+            }
+        };
+        var runtime = new ActorRuntime();
+        try {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> { });
+            runtime.registerActorPhysicalChannelFromDriver(
+                    actor, broken, ActorPhysicalRetirementRegistry.Kind.FFI_LOAN);
+            runtime.registerActorPhysicalChannelFromDriver(
+                    actor, good.source(), ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE);
+            assertTrue(actor.cancel());
+            assertTrue(brokenCloseCalled.await(3, TimeUnit.SECONDS));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (good.source().isOpen() && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertFalse(good.source().isOpen(),
+                    "healthy sibling channel must be physically closed despite failure");
+            assertSame(closeFailure, actor.physicalRetirementFailure().orElseThrow());
+            assertEquals(Integer.valueOf(1),
+                    actor.pendingPhysicalRetirementsByKind().get("FFI_LOAN"));
+            assertFalse(actor.done().isDone(),
+                    "failed sibling retains actor and native memory quarantine");
+            assertThrows(IllegalStateException.class, runtime::close);
+        } finally {
+            good.source().close();
+            good.sink().close();
+        }
+    }
+
     @Test void nioPhysicalCloseFailureQuarantinesActor() throws Exception {
         var closeFailure = new java.io.IOException("mock kernel failed channel close");
         java.nio.channels.Channel brokenChannel = new java.nio.channels.Channel() {
