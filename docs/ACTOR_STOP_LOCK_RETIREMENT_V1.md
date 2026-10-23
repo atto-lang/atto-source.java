@@ -16,7 +16,7 @@ Status: draft, stacked on Java Task-owned mutex ledger PR #1923 (2026-10-22).
 3. Claim finalization once, under lifecycleLock, only when `activeTurns=0`, no scheduled ticket, `carrierActive=false`, no children and no pending STOP effects.
 4. Outside the monitor on a host finalizer: shut down and physically retire source-scheduler Tasks, initiate actor-ledger revocation, await every asynchronous physical handoff receipt **without blocking an actor carrier**.
 5. On proven clean settlement: revoke shard/snapshot leases, invoke actor exit hook, release owned memory, unregister actor, publish ready/DONE and the host terminal latch.
-6. On cleanup failure: set terminal diagnostic, **keep actor registered and its backing arena/loans retained**, never forge successful getDone/awaitTermination. A supervisor must quarantine rather than restart against possibly-live state.
+6. On cleanup failure: set terminal diagnostic, **keep actor registered and its backing arena/loans retained**, never forge successful getDone/awaitTermination. Runtime `close()` must also fail before invalidating global Shared/SyncCell/ActorGroup capability registries while any actor is unfinalized. A supervisor must quarantine rather than restart against possibly-live state.
 
 ## Constraints and tests
 
