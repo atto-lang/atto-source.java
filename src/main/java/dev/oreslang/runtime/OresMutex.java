@@ -81,6 +81,10 @@ public final class OresMutex {
          * The queue-unlink receipt alone is not Task quiescence evidence. */
         private volatile Runnable afterNotificationDrained;
         private final AtomicBoolean notificationReleased = new AtomicBoolean();
+        /** This private receipt is not the public Future terminal state.
+         * It settles only after already-registered inline callbacks drain. */
+        private final CompletableFuture<Void> notificationDrained =
+                new CompletableFuture<>();
         // One scheduled terminal publication per Future, even when timeout,
         // client cancellation, owner death and claimed handoff race.
         private final AtomicBoolean publicationClaimed = new AtomicBoolean();
@@ -88,14 +92,22 @@ public final class OresMutex {
         private GuardFuture() { }
 
         private void notificationComplete() {
-            Runnable release = releaseNotificationAdmission;
-            if (release != null && notificationReleased.compareAndSet(false, true)) {
-                releaseNotificationAdmission = null;
-                release.run();
+            try {
+                Runnable release = releaseNotificationAdmission;
+                if (release != null && notificationReleased.compareAndSet(false, true)) {
+                    releaseNotificationAdmission = null;
+                    release.run();
+                }
+                Runnable after = afterNotificationDrained;
+                afterNotificationDrained = null;
+                if (after != null) after.run();
+                notificationDrained.complete(null);
+            } catch (RuntimeException | Error failure) {
+                // A quota or runtime callback invariant failed. Never
+                // manufacture physical settlement from an unsafe receipt.
+                notificationDrained.completeExceptionally(failure);
+                throw failure;
             }
-            Runnable after = afterNotificationDrained;
-            afterNotificationDrained = null;
-            if (after != null) after.run();
         }
 
         @Override
@@ -142,8 +154,12 @@ public final class OresMutex {
         private void completeHandoffOnNotifier(
                 Guard<T> guard, Runnable rejected, Runnable physicalSettled) {
             if (!publicationClaimed.compareAndSet(false, true)) {
+                // Task-death cancellation can claim the public Future after
+                // dequeue, before this handoff publishes. Reclaim the guard,
+                // but do not certify physical retirement while cancellation
+                // subscribers are still running on the notifier.
                 try { rejected.run(); }
-                finally { physicalSettled.run(); }
+                finally { notificationDrained.thenRun(physicalSettled); }
                 return;
             }
             Shared.executeNotification(() -> {
@@ -170,7 +186,9 @@ public final class OresMutex {
 
         private void failHandoffOnNotifier(Throwable failure, Runnable physicalSettled) {
             if (!publicationClaimed.compareAndSet(false, true)) {
-                physicalSettled.run();
+                // The competing cancellation still owns the final callback
+                // drain; Future.isDone() is not a physical stop receipt.
+                notificationDrained.thenRun(physicalSettled);
                 return;
             }
             Shared.executeNotification(() -> {
