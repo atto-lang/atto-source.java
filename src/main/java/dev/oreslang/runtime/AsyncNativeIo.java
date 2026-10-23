@@ -41,13 +41,14 @@ public final class AsyncNativeIo implements AutoCloseable {
         Objects.requireNonNull(target, "target");
         if (context.nativeIo() != this)
             throw new SecurityException("loopback I/O authority must come from the owning OresContext");
-        // Reject remote/ambiguous destinations *before* permission matching;
-        // do not generalize this into a DNS hostname or wildcard egress API.
-        if (!"http".equals(target.getScheme())
-                || !"127.0.0.1".equals(target.getHost())
-                || target.getPort() < 1 || target.getPort() > 65535)
-            return CompletableFuture.failedFuture(
-                    new IllegalArgumentException("trusted loopback request requires literal 127.0.0.1"));
+        // Validate the complete canonical authority/path/method *before*
+        // consulting a permission scope, and repeat validation in the client
+        // immediately before network admission (defense in depth).
+        try {
+            ProxyOutboundLoopback.validateTarget(target, method);
+        } catch (RuntimeException invalid) {
+            return CompletableFuture.failedFuture(invalid);
+        }
         context.requirePermission(RuntimePermissions.Permission.NET,
                 "127.0.0.1:" + target.getPort(), "proxy.loopback.request");
 
