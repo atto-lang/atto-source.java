@@ -58,6 +58,9 @@ final class ActorStopCleanupAdmissionTest {
                                 if (state == 2) {
                                     try {
                                         assertTrue(OresScheduler.cancellationCleanupTurn());
+                                        // Real SourceTask defer lowering invokes these
+                                        // checks even after the actor is logically stopped.
+                                        context.runtime().schedulerSafepoint();
                                         assertInstanceOf(CancellationException.class, resume.failure());
                                         // A cleanup continuation cannot start new ordinary
                                         // tasks through the sealed actor scheduler.
