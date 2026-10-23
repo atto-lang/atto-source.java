@@ -45,9 +45,11 @@ Comma-separated and parenthesized named selections are equivalent, so
 `import types (X, Y, Z) from "../foo";` produce the same import selection.
 The existing brace form remains accepted for compatibility. `types` is the
 union selector for type-like declarations: `trait`, `struct`, `interface`,
-and `type`. On the current v0.6 AST, interface and type-alias declarations are
-available; trait/struct selectors are reserved and fail closed at link
-validation until those declaration kinds land on the current compiler branch.
+and `type`. The current `trait` selector links the same interface-like,
+type-only AST currently used by `declare trait`; it does not import executable
+values, supply typeclass instance resolution, or establish a distinct trait
+nominal kind. Named `struct` imports remain reserved and fail closed until
+their declaration and layout contract is implemented.
 
 Wildcard imports always require a namespace alias. A single named import may use
 `as` to choose its local binding; the original source name still controls export
