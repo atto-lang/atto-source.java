@@ -42,9 +42,12 @@ receipt to the parent FSM, the CONTROL coordinator compares:
 - the child's stable supervisor ID,
 - the original callback-captured child epoch,
 - the parent's frozen child-epoch map, and
-- the child's **currently observed** epoch.
+- the child's **currently observed** epoch, and
+- the child's actual **logically stopped** FSM state and matching recorded
+  success/failure outcome.
 
-A missing identity, stale generation, or generation mismatch throws before
+A missing identity, stale generation, unfinished child, contradictory
+outcome, or generation mismatch throws before
 issuing `ChildFinished`; CONTROL's existing emergency path then treats the
 protocol fault as failed rather than successfully completing the parent.
 
