@@ -292,6 +292,8 @@ final class CleanupAwareSchedulerCancellationTest {
             assertTrue(hookEntered.await(3, TimeUnit.SECONDS));
             assertFalse(work.isDone(),
                     "the quiescence callback still owns the actor lease");
+            assertTrue(scheduler.hasIncompleteCleanup(),
+                    "a terminal Task must still pin the actor arena while onQuiescent runs");
             closer = new Thread(scheduler::close, "close-before-lease-retirement");
             closer.start();
             assertFalse(work.isDone(),
@@ -300,6 +302,8 @@ final class CleanupAwareSchedulerCancellationTest {
             assertEquals(Integer.valueOf(42), work.get(3, TimeUnit.SECONDS));
             closer.join(3000);
             assertFalse(closer.isAlive());
+            assertFalse(scheduler.hasIncompleteCleanup(),
+                    "a successful physical release returns the Task to the scheduler pool");
         } finally {
             allowRetirement.countDown();
             if (closer != null) closer.join(3000);
