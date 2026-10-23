@@ -13,9 +13,15 @@ import static org.junit.jupiter.api.Assertions.*;
 /** Identical source corpus is also compiled/executed by the native backend. */
 final class SharedBorrowContractTest {
     @Test void sharedContract() throws Exception {
-        for (String line : Files.readAllLines(Path.of("src/test/resources/borrow-contract.tsv"))) {
+        var rows = Files.readAllLines(Path.of("src/test/resources/borrow-contract.tsv"));
+        assertEquals(162, rows.size(), "shared corpus must retain all borrow vectors");
+        var names = new java.util.HashSet<String>();
+        for (String line : rows) {
             String[] fields = line.split("\t", 3);
+            assertEquals(3, fields.length, "malformed shared borrow vector");
+            assertTrue(fields[0].equals("accept") || fields[0].equals("reject"), "unknown verdict");
             String name = fields[1];
+            assertTrue(names.add(name), "duplicate shared borrow vector: " + name);
             var parsed = Parser.parse(fields[2]);
             if (fields[0].equals("reject")) {
                 var failure = assertThrows(IllegalArgumentException.class,
