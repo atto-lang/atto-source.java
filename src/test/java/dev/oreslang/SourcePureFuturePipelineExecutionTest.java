@@ -47,6 +47,44 @@ final class SourcePureFuturePipelineExecutionTest {
     }
 
     @Test
+    void trapAwaitCoversFailedAsynchronousProducerWithoutReclassifyingResult() throws Exception {
+        assertEquals("true", run("""
+                define class Animal as
+                end
+                define class Dog extends Animal as
+                end
+                define class Cat extends Animal as
+                end
+
+                async fnc failed(): int {
+                  rt cooperate;
+                  val Animal animal = new Cat();
+                  val Dog dog = animal as Dog;
+                  return 1;
+                }
+                fnc increment(int value): int { return value + 1; }
+
+                pub fnc main(): void {
+                  val Option<int> none = trap await (failed() |> increment());
+                  stdio.stdout.write(none.is_none());
+                  return;
+                }
+                """, "pure-future-pipe-upstream-failure.ores"));
+    }
+
+    @Test
+    void scalarPipeStillRunsEagerlyAndProducesScalarValue() throws Exception {
+        assertEquals("22", run("""
+                fnc increment(int value): int { return value + 1; }
+                pub fnc main(): void {
+                  val int value = 21 |> increment();
+                  stdio.stdout.write(value);
+                  return;
+                }
+                """, "pure-future-pipe-scalar.ores"));
+    }
+
+    @Test
     void checkedPlanDoesNotTransferToReconstructedCall() {
         Ast.Program typed = TypeChecker.check(Parser.parse("""
                 async fnc source(): int { return 1; }
