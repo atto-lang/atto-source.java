@@ -59,6 +59,56 @@ final class TaskPipelineTest {
     }
 
     @Test
+    void inlineSchedulerCompletedInputPublishesBridgeBeforeDispatch() throws Exception {
+        // This executor really dispatches inline while startTracked() has not
+        // returned; no dummy asynchronous carrier hides publication races.
+        try (OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "pipeline-inline-complete", 1, Runnable::run)) {
+            AtomicInteger calls = new AtomicInteger();
+            TaskPipeline.PipelineHandle<Integer> handle = TaskPipeline.startTracked(
+                    scheduler,
+                    OresFuture.completed(41),
+                    List.of(value -> {
+                        calls.incrementAndGet();
+                        return ((Integer) value) + 1;
+                    }));
+            assertEquals(42, handle.result().get(5, TimeUnit.SECONDS));
+            assertEquals(1, calls.get(), "inline scheduling ran the stage more than once");
+            assertInstanceOf(TaskHandle.Succeeded.class,
+                    handle.getDone().get(5, TimeUnit.SECONDS));
+            assertEquals(0, TaskPipeline.pendingPipelineAwaitCount());
+        }
+    }
+
+    @Test
+    void inlineSchedulerPendingInputRegistersCycleEdgeAndDetachesOnCancel()
+            throws Exception {
+        OresFuture<Integer> shared = new OresFuture<>();
+        AtomicInteger calls = new AtomicInteger();
+        try (OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "pipeline-inline-pending", 1, Runnable::run)) {
+            int before = TaskPipeline.pendingPipelineAwaitCount();
+            TaskPipeline.PipelineHandle<Integer> handle = TaskPipeline.startTracked(
+                    scheduler, shared,
+                    List.of(value -> {
+                        calls.incrementAndGet();
+                        return ((Integer) value) + 1;
+                    }));
+            assertEquals(before + 1, TaskPipeline.pendingPipelineAwaitCount(),
+                    "first await must be tracked even on an inline executor");
+            assertTrue(handle.cancel());
+            assertTrue(handle.result().isCancelled());
+            assertInstanceOf(TaskHandle.Cancelled.class,
+                    handle.getDone().get(5, TimeUnit.SECONDS));
+            assertEquals(before, TaskPipeline.pendingPipelineAwaitCount());
+            assertFalse(shared.isCancelled(), "borrowed input must survive cancellation");
+            assertEquals(0, calls.get(), "cancelled stage must never run");
+            assertTrue(shared.completeFromRuntime(41));
+            assertEquals(0, shared.pendingRuntimeWaiterCount());
+        }
+    }
+
+    @Test
     void upstreamFailureSkipsLaterStageArgumentsAndSideEffects() throws Exception {
         OresFuture<Integer> source = new OresFuture<>();
         AtomicInteger invoked = new AtomicInteger();
