@@ -73,6 +73,18 @@ case " $* " in
   *' clean package '*) : ;;
   *) echo 'clean package required' >&2; exit 18 ;;
 esac
+case "${MOCK_EXPECT_PROFILE_REFS:-}" in
+  native64)
+    case " $* " in
+      *native-ref64*) : ;;
+      *) echo 'missing native-ref64 Maven profile' >&2; exit 21 ;;
+    esac ;;
+  compressed32)
+    case " $* " in
+      *native-ref64*) echo 'unexpected native-ref64 Maven profile' >&2; exit 22 ;;
+      *) : ;;
+    esac ;;
+esac
 if [ "${MOCK_MVN_FAIL:-0}" = 1 ]; then exit 19; fi
 rm -rf target
 mkdir -p target
@@ -112,10 +124,10 @@ assert_case() {
   echo "PASS (mocked): $name"
 }
 
-assert_case 'AOT compressed32' success aot compressed32 MOCK_EMBEDDED_MODE=aot MOCK_EMBEDDED_REFS=compressed32
-assert_case 'AOT native64' success aot native64 MOCK_EMBEDDED_MODE=aot MOCK_EMBEDDED_REFS=native64
-assert_case 'hybrid compressed32' success hybrid compressed32 MOCK_EMBEDDED_MODE=hybrid MOCK_EMBEDDED_REFS=compressed32
-assert_case 'hybrid native64' success hybrid native64 MOCK_EMBEDDED_MODE=hybrid MOCK_EMBEDDED_REFS=native64
+assert_case 'AOT compressed32' success aot compressed32 MOCK_EMBEDDED_MODE=aot MOCK_EMBEDDED_REFS=compressed32 MOCK_EXPECT_PROFILE_REFS=compressed32
+assert_case 'AOT native64' success aot native64 MOCK_EMBEDDED_MODE=aot MOCK_EMBEDDED_REFS=native64 MOCK_EXPECT_PROFILE_REFS=native64
+assert_case 'hybrid compressed32' success hybrid compressed32 MOCK_EMBEDDED_MODE=hybrid MOCK_EMBEDDED_REFS=compressed32 MOCK_EXPECT_PROFILE_REFS=compressed32
+assert_case 'hybrid native64' success hybrid native64 MOCK_EMBEDDED_MODE=hybrid MOCK_EMBEDDED_REFS=native64 MOCK_EXPECT_PROFILE_REFS=native64
 assert_case 'invalid mode' failure invalid compressed32
 assert_case 'invalid refs' failure aot invalid
 assert_case 'Maven failure' failure aot compressed32 MOCK_MVN_FAIL=1
