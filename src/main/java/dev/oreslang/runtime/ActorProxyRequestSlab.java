@@ -19,6 +19,19 @@ public final class ActorProxyRequestSlab extends ActorShardBacking implements Au
     public enum Layout { SOA, AOSOA }
     public static final int PINS_PER_SLOT = 8;
     private static final AtomicLong NEXT_SLAB_ID = new AtomicLong(1);
+
+    // Never silently roll slab IDs back to 1 after 64-bit exhaustion:
+    // a replayed completion would then have the same slab identity.
+    static long allocateSlabIdentity(AtomicLong counter) {
+        for (;;) {
+            long value = counter.get();
+            if (value <= 0 || value == Long.MAX_VALUE) {
+                throw new IllegalStateException("proxy slab identity exhausted");
+            }
+            if (counter.compareAndSet(value, value + 1)) return value;
+        }
+    }
+
     private static final int FIELDS = 8;
     private static final int MAX_BYTES = 16 * 1024 * 1024;
     private static final int INCARNATION = 0;
@@ -49,10 +62,7 @@ public final class ActorProxyRequestSlab extends ActorShardBacking implements Au
         ActorRuntime.currentActorId().orElseThrow(() ->
                 new SecurityException("proxy slab requires an owning actor turn"));
         this.layout = Objects.requireNonNull(layout, "layout");
-        this.slabIdentity = NEXT_SLAB_ID.getAndIncrement();
-        if (slabIdentity <= 0L) {
-            throw new IllegalStateException("proxy slab identity exhausted");
-        }
+        this.slabIdentity = allocateSlabIdentity(NEXT_SLAB_ID);
         if (capacity < 1 || capacity > 65536
                 || (layout == Layout.SOA && lanes != 1)
                 || (layout == Layout.AOSOA && lanes != 16 && lanes != 32 && lanes != 64)) {
