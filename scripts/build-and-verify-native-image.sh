@@ -48,12 +48,12 @@ if ! command -v file >/dev/null 2>&1; then
   exit 2
 fi
 
-  description="$(file "$executable")"
-  printf '%s\n' "$description"
-  case "$description" in
-    *ELF*|*Mach-O*|*PE32*) ;;
-    *) echo "artifact is not an OS-native executable" >&2; exit 1 ;;
-  esac
+description="$(file "$executable")"
+printf '%s\n' "$description"
+case "$description" in
+  *ELF*|*Mach-O*|*PE32*) ;;
+  *) echo "artifact is not an OS-native executable" >&2; exit 1 ;;
+esac
 
 info="$("$executable" --build-info)"
 printf '%s\n' "$info"
