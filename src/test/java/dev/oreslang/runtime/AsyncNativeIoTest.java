@@ -189,6 +189,27 @@ class AsyncNativeIoTest {
         assertInstanceOf(IllegalStateException.class, settled.getCause());
     }
 
+
+    @Test void unexpectedHostResourceErrorMustNotSkipSiblingCloseOrMintShutdownProof()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        var failed = new AssertionError("malformed host close adapter");
+        var healthyClosed = new java.util.concurrent.atomic.AtomicBoolean();
+        io.register(() -> { throw failed; });
+        io.register(() -> healthyClosed.set(true));
+        assertDoesNotThrow(io::close,
+                "nonfatal host close errors must not skip subsequent resources");
+        assertTrue(healthyClosed.get(), "healthy resource was left open");
+        assertSame(failed, io.physicalShutdownFailure(),
+                "first physical-close failure must remain the quarantine diagnostic");
+        assertFalse(io.physicalShutdown().isDone(),
+                "failed native resource close can never publish clean shutdown");
+        io.close();
+        assertSame(failed, io.physicalShutdownFailure(),
+                "repeated close must not erase the quarantine diagnostic");
+    }
+
+
     @Test void coreNumericLoggingDoesNotChangeIoFailuresOrLeakGuestExceptionText() throws Exception {
         CoreLog.configure(CoreLog.Level.OFF);
         CoreLog.configure(CoreLog.Level.WARN);
