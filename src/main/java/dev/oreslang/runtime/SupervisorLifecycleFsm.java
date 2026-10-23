@@ -124,6 +124,11 @@ public final class SupervisorLifecycleFsm {
             if (physicalReleased && !actorsDone) {
                 throw new IllegalArgumentException("physical release before actor retirement");
             }
+            if (physicalReleased && phase != Phase.RESTARTING
+                    && phase != Phase.STOPPED && phase != Phase.RECLAIMED) {
+                throw new IllegalArgumentException(
+                        "physical release cannot precede a settled shutdown post-hook");
+            }
             if (phase == Phase.RECLAIMED
                     && (!physicalReleased || !reclaimedChildren.equals(expectedChildren))) {
                 throw new IllegalArgumentException("reclaimed without release receipt");
