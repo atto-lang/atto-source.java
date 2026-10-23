@@ -5058,23 +5058,24 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean isRecoverSignal(Throwable failure) {
-            GuestControlSignal signal = guestControlSignalCause(failure);
-            return signal instanceof GuestControlSignal.Raise
-                    || signal instanceof GuestControlSignal.Panic
-                    || hasCause(failure, OresPanic.class);
+            // PANIC, cancellation and host fatal control may execute cleanup,
+            // but must never become a locally consumed RecoverySignal.
+            return dev.oreslang.runtime.TrapFailurePolicy.isRecoverableRaise(
+                    failure, OresPanic.class);
         }
 
         private RecoverySignalValue recoverySignal(Throwable failure) {
-            GuestControlSignal signal = guestControlSignalCause(failure);
-            if (signal instanceof GuestControlSignal.Raise
-                    || signal instanceof GuestControlSignal.Panic) {
-                return new RecoverySignalValue(
-                        signal.kind(),
-                        safeMessage(messageForPayload(signal.payload())));
+            if (!isRecoverSignal(failure)) {
+                throw new IllegalStateException(
+                        "recover boundary received an ineligible control signal");
             }
-            Throwable panic = causeOf(failure, OresPanic.class);
-            String message = panic == null ? failure.getMessage() : panic.getMessage();
-            return new RecoverySignalValue("panic", safeMessage(message));
+            GuestControlSignal signal = guestControlSignalCause(failure);
+            if (!(signal instanceof GuestControlSignal.Raise)) {
+                throw new IllegalStateException(
+                        "recover boundary lost its typed raise signal");
+            }
+            return new RecoverySignalValue(
+                    "raise", safeMessage(messageForPayload(signal.payload())));
         }
 
         private boolean isTrappableFailure(RuntimeException failure) {
