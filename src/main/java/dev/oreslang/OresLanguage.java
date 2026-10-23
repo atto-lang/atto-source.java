@@ -180,7 +180,17 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         if (program == null) {
             program = OresCompiler.parseAndTypeCheck(text);
         }
-        RootCallTarget evaluator = new OresEvalRootNode(this, program, codeUnitId).getCallTarget();
+        String sourceSha256;
+        try {
+            sourceSha256 = java.util.HexFormat.of().formatHex(
+                    java.security.MessageDigest.getInstance("SHA-256")
+                            .digest(text.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new AssertionError(impossible);
+        }
+        RootCallTarget evaluator =
+                new OresEvalRootNode(this, program, codeUnitId, sourceSha256)
+                        .getCallTarget();
         return new OresInteropRootNode(this, evaluator).getCallTarget();
     }
 }
