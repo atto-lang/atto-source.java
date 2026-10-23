@@ -157,9 +157,13 @@ When Task physical retirement races with the grant:
   accounting. Do not execute source defer/recover on a granting carrier.
 
 New Java JUnit tests check the publication predicate for pending,
-cancelled, timed-out, and successful Futures, and race async permit
-handoff against owner cancellation across 64 fresh locks. Tests are
-**committed but not executed** on the required JDK25/GraalVM runner.
+cancelled, timed-out, and successful Futures, race async permit
+handoff against owner cancellation across 64 fresh locks, and
+exercise **exhausted Task-owned lease admission** twice to verify
+waiter/domain reservation rollback (not a recursive-acquisition
+failure), followed by a successful fresh host acquisition.
+Tests are **committed but not executed** on the required
+JDK25/GraalVM runner.
 
 A separate local JDK21 **protocol model**, not compiled Oreslang source,
 completed three deterministic schedules plus 10,000 concurrent
