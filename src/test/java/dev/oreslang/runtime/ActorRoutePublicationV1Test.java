@@ -354,6 +354,35 @@ final class ActorRoutePublicationV1Test {
     }
 
     @Test
+    void physicalFenceCommitMustSucceedBeforeLogicalRouteBecomesVisible() {
+        try (var gate = new ActorUpgradeEpochGate(52, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128);
+             var authority = newAuthority(gate, mailbox)) {
+            try (var stage = authority.stage(image('b'))) {
+                assertTrue(stage.quiescent());
+                IllegalStateException failure = assertThrows(
+                        IllegalStateException.class,
+                        () -> stage.publish(
+                                state(2),
+                                "candidate",
+                                () -> {
+                                    throw new IllegalStateException(
+                                            "physical fence commit failed");
+                                }));
+                assertEquals("physical fence commit failed",
+                        failure.getMessage());
+                assertEquals(1L, authority.current().routeEpoch());
+                assertEquals("old-physical",
+                        authority.current().physicalRoute());
+                assertTrue(mailbox.snapshot().dispatchFrozen(),
+                        "failed physical commit must not silently reopen DATA");
+            }
+            assertFalse(mailbox.snapshot().dispatchFrozen(),
+                    "explicit stage rollback reopens the unchanged old route");
+        }
+    }
+
+    @Test
     void competingStagingAttemptCannotTakeOrReleaseAnotherStageFreeze() {
         try (var gate = new ActorUpgradeEpochGate(50, image('a'));
              var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128);
