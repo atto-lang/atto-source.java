@@ -7399,8 +7399,8 @@ public final class ActorRuntime implements AutoCloseable {
          * Repeated STOP, cancelled dispatch, and child completion are idempotent.
          */
         private void finalizeStopLocked() {
-            if (finalized || finalizationStarted || stopEffectsInFlight != 0
-                    || activeTurns != 0 || scheduled.get()
+            if (finalized || finalizationStarted || finalizationFailure != null
+                    || stopEffectsInFlight != 0 || activeTurns != 0 || scheduled.get()
                     || carrierActive || !children.isEmpty()) return;
             finalizationStarted = true;
             Thread.ofVirtual()
@@ -8013,24 +8013,34 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void drainMailboxReservations() {
-            synchronized (lifecycleLock) {
+            // ChannelRuntime.drainOne executes the supplied release callback
+            // outside the channel coordinator, but that is NOT sufficient if
+            // our caller holds the actor lifecycle monitor. User envelope
+            // release actions can re-enter STOP or block on another actor.
+            if (Thread.holdsLock(lifecycleLock)) {
+                throw new IllegalStateException(
+                        "actor mailbox cleanup cannot invoke callbacks under lifecycleLock");
+            }
+            try {
                 while (continuationMailbox.drainOne(continuation -> {
                     releaseMailboxSlot(true);
                     continuation.close();
                 })) {
-                    // Reclaim admitted control mail even after termination closes the channel.
+                    // Quiescent control envelopes still own quota receipts.
                 }
-                sourceHandoffRequested = false;
+                while (mailbox.drainOne(envelope -> {
+                    releaseMailboxSlot(false);
+                    envelope.close();
+                })) {
+                    // Release accepted user envelopes even after channel close.
+                }
+            } finally {
+                synchronized (lifecycleLock) {
+                    sourceHandoffRequested = false;
+                    sourceReceiveSuspended = false;
+                    activeMail = null;
+                }
             }
-
-            while (mailbox.drainOne(envelope -> {
-                releaseMailboxSlot(false);
-                envelope.close();
-            })) {
-                // Drain all committed user-message envelopes, including after close.
-            }
-            sourceReceiveSuspended = false;
-            activeMail = null;
         }
 
         private void fail(Throwable failure) {
@@ -8065,10 +8075,9 @@ public final class ActorRuntime implements AutoCloseable {
                 // one while holding lifecycleLock.
                 failedDrainWaiters = List.copyOf(pendingDrains);
                 pendingDrains.clear();
-                if (cause == null) mailbox.close();
-                else mailbox.close(cause);
-                continuationMailbox.close(cause);
-                drainMailboxReservations();
+                // ChannelRuntime.close may synchronously settle select/Future
+                // observers, so even channel closure belongs to the STOP
+                // effect phase outside this monitor.
                 descendants = List.copyOf(children);
                 pending = List.copyOf(pendingOperations);
                 pendingOperations.clear();
@@ -8080,24 +8089,57 @@ public final class ActorRuntime implements AutoCloseable {
             // other lifecycle locks. None execute under lifecycleLock, and
             // terminal retirement must not start until this batch of stop
             // effects (including descendant cancellation) has been issued.
+            Throwable stopFailure = null;
+            try {
+                if (cause == null) mailbox.close();
+                else mailbox.close(cause);
+                continuationMailbox.close(cause);
+                drainMailboxReservations();
+            } catch (Throwable failure) {
+                stopFailure = failure;
+            }
             try {
                 Throwable drainFailure = cause == null ? terminated(ref) : cause;
                 for (DrainWaiter waiter : failedDrainWaiters) {
-                    waiter.completion().failFromRuntime(drainFailure);
+                    try {
+                        waiter.completion().failFromRuntime(drainFailure);
+                    } catch (Throwable failure) {
+                        if (stopFailure == null) stopFailure = failure;
+                        else stopFailure.addSuppressed(failure);
+                    }
                 }
-                for (OresFuture<?> future : pending) future.cancel(false);
+                for (OresFuture<?> future : pending) {
+                    try {
+                        future.cancel(false);
+                    } catch (Throwable failure) {
+                        if (stopFailure == null) stopFailure = failure;
+                        else stopFailure.addSuppressed(failure);
+                    }
+                }
                 for (ActorCell<?> child : descendants) {
-                    child.cancel(new ActorCancelledException(
-                            child.ref.id(),
-                            "parent actor " + ref.id() + " terminated"));
+                    try {
+                        child.cancel(new ActorCancelledException(
+                                child.ref.id(),
+                                "parent actor " + ref.id() + " terminated"));
+                    } catch (Throwable failure) {
+                        if (stopFailure == null) stopFailure = failure;
+                        else stopFailure.addSuppressed(failure);
+                    }
                 }
             } finally {
                 synchronized (lifecycleLock) {
+                    if (stopFailure != null) {
+                        // An envelope release failed after dequeue. We cannot
+                        // prove its quota/loan callback completed; quarantine
+                        // rather than return the actor's memory to a successor.
+                        finalizationFailure = stopFailure;
+                        ref.terminationCause.compareAndSet(null, stopFailure);
+                    }
                     if (--stopEffectsInFlight < 0) {
                         throw new IllegalStateException(
                                 "actor STOP effect barrier underflow");
                     }
-                    finalizeStopLocked();
+                    if (finalizationFailure == null) finalizeStopLocked();
                     lifecycleLock.notifyAll();
                 }
             }
