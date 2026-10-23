@@ -92,3 +92,17 @@ The transport is lazy, bounded by the context's existing I/O capacity (up to 128
 **Verification distinction:** These context integration additions have not yet passed full Java/Graal Maven/JUnit, JDK25 AOT or actual Oreslang guest execution because source-org Actions jobs are failing before any test steps. Earlier standalone JDK21 socket proof establishes only the outbound transport behavior, not this new context integration. No cross-organization mirroring of private source has been performed; the independently approved carrier allowlist is still empty (see #1501).
 
 Remaining gates: real `OresContext`/actor guest integration tests, safe `OresFuture` response ownership and body-I/O scheduling on reactor workers, transport-level preallocation header limits, non-loopback egress with pinned addresses and TLS, and secure CONNECT.
+
+## Typed future and bounded body-copy handoff (follow-up, October 23)
+
+The runtime now has a **package-private** trusted-only `AsyncNativeIo.copyProxyLoopback(OresContext, URI, method, OutputStream hostSink)`. It calls the existing context-owned, actor- and resource-scoped NET gate first, then adapts the transport's `CompletionStage` into an `OresFuture<ProxyBodyCopy.Receipt>` with `OresFuture.from`. The receipt is an immutable snapshot of status, header pairs and transferred byte count, **not** a raw Java response/stream capability. All actual body reads and downstream writes are dispatched to the context's virtual-thread I/O executor. The sink must be trusted host code, never a guest closure; these APIs remain non-public and do not yet constitute an Oreslang guest API.
+
+`ProxyBodyCopy` owns the response-to-worker transition. A cancelled future cancels pending response acquisition, while cancellation of a running copy is observed by the stream worker. The response remains physically owned by the transport until its worker returns and closes it. Success is published **after** close, so an observable success does not precede admission-lease retirement. Worker rejection starts a short-lived virtual-thread cleanup operation rather than closing a blocking body stream on the caller's actor carrier. The context's existing resource shutdown closes the outbound client and outstanding bodies.
+
+The standalone JDK21 regression `ProxyBodyCopyCheck` verifies 150 concurrent cancellation/stream ownership interleavings per run, success delivery, cancellation before acquisition, rejected-worker cleanup, and a close gate proving the future cannot settle before body shutdown. **Five local runs passed** against exact committed source/test blobs:
+- `ProxyBodyCopy.java`: `bed82a52d45bfe212173d9a77f89a727c9dd42b3`.
+- `ProxyBodyCopyCheck.java`: `a10e4b3b0f3690178b74fd02a9c7207c2dc68c37`.
+
+`scripts/test-proxy-outbound-loopback.sh` now includes the helper and test, alongside the existing HTTP socket programs. An added JUnit reflection test asserts the typed handoff and receipt are not public guest APIs.
+
+**Validation limitation:** this standalone test exercises the JDK-only handoff with a synthetic response source, not the full `AsyncNativeIo`/OresFuture integration, actual Oreslang guest runtime or production actor scheduler. Full-source Maven/JUnit and JDK25/Graal execution are still required. No general egress, arbitrary upstream origins, CONNECT or host-to-guest callback delivery has been introduced. Private cross-org source mirroring remains unauthorized while main's approved destination allowlist is empty (security issue #1501).
