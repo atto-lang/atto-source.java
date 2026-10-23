@@ -487,6 +487,12 @@ public final class ActorRuntime implements AutoCloseable {
     private final ExecutorService privateDispatcher;
     private final ExecutorService sharedDispatcher;
     private final ExecutorService untrustedDispatcher;
+    /** Dedicated bounded host I/O close lane, never an actor execution pool. */
+    private final ThreadPoolExecutor physicalCloseDispatcher =
+            new ThreadPoolExecutor(8, 8, 30L, TimeUnit.SECONDS,
+                    new ArrayBlockingQueue<>(4_096),
+                    namedFactory("ores-actor-native-close-"),
+                    new ThreadPoolExecutor.AbortPolicy());
     private final ActorPhysicalTurnGate physicalTurnGate;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
     private final AtomicLong watchdogOverruns = new AtomicLong();
