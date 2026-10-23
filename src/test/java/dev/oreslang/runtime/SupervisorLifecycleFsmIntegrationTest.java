@@ -300,11 +300,11 @@ final class SupervisorLifecycleFsmIntegrationTest {
     void independentPureReducersRejectStaleGenerationCompletionAndNoEarlyReclaim() {
         var s = SupervisorLifecycleFsm.State.initial();
         s = SupervisorLifecycleFsm.reduce(s,
+                new SupervisorLifecycleFsm.RestartRequested(1));
+        s = SupervisorLifecycleFsm.reduce(s,
                 new SupervisorLifecycleFsm.ActorsFinished(1, false));
         s = SupervisorLifecycleFsm.reduce(s,
                 new SupervisorLifecycleFsm.PhysicalRelease(1));
-        s = SupervisorLifecycleFsm.reduce(s,
-                new SupervisorLifecycleFsm.RestartRequested(1));
         s = SupervisorLifecycleFsm.reduce(s,
                 new SupervisorLifecycleFsm.RestartCommitted(1));
         assertEquals(2, s.epoch());
