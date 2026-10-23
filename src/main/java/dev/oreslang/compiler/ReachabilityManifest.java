@@ -42,11 +42,10 @@ public final class ReachabilityManifest {
     }
 
     public static ReachabilityManifest from(
-            TreeShaker.Result result,
-            BuildOptions options) {
-        if (result == null || options == null) {
+            TreeShaker.Result result) {
+        if (result == null) {
             throw new IllegalArgumentException(
-                    "reachability result/options cannot be null");
+                    "reachability result cannot be null");
         }
 
         List<String> retained = sorted(
@@ -83,13 +82,27 @@ public final class ReachabilityManifest {
                 });
 
         return new ReachabilityManifest(
-                options.preservePublicApi()
+                result.libraryBuild()
                         ? "library"
                         : "executable",
                 roots,
                 retained,
                 removed,
                 constants);
+    }
+
+    public static ReachabilityManifest from(
+            TreeShaker.Result result,
+            BuildOptions options) {
+        if (result == null || options == null) {
+            throw new IllegalArgumentException(
+                    "reachability result/options cannot be null");
+        }
+        if (result.libraryBuild() != options.preservePublicApi()) {
+            throw new IllegalArgumentException(
+                    "reachability result build kind does not match BuildOptions");
+        }
+        return from(result);
     }
 
     public String buildKind() {
