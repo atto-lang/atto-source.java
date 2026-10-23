@@ -90,6 +90,7 @@ public final class SupervisorLifecycleTrace {
         }
         long sequence = 0;
         Map<Long, SupervisorLifecycleFsm.State> current = new HashMap<>();
+        Map<Long, Long> parentOf = new HashMap<>();
         for (Entry entry : snapshot.entries()) {
             if (entry.sequence() != ++sequence) {
                 throw new IllegalStateException("supervisor trace sequence discontinuity");
@@ -99,6 +100,31 @@ public final class SupervisorLifecycleTrace {
             if (!old.equals(entry.before())) {
                 throw new IllegalStateException("supervisor trace before-state mismatch at "
                         + entry.sequence());
+            }
+            if (entry.event() instanceof SupervisorLifecycleFsm.ShutdownRequested request) {
+                for (Long childId : request.children()) {
+                    if (childId.longValue() == entry.supervisorId()) {
+                        throw new IllegalStateException("supervisor cannot be its own child");
+                    }
+                    Long priorParent = parentOf.putIfAbsent(childId, entry.supervisorId());
+                    if (priorParent != null && priorParent.longValue() != entry.supervisorId()) {
+                        throw new IllegalStateException(
+                                "supervisor child has two parents in trace: " + childId);
+                    }
+                    // Walk ancestor identities, bounded by the actual trace
+                    // graph: a circular hierarchy must never verify.
+                    Long ancestor = entry.supervisorId();
+                    int budget = parentOf.size() + 1;
+                    while (ancestor != null && budget-- > 0) {
+                        if (ancestor.equals(childId)) {
+                            throw new IllegalStateException("supervisor hierarchy cycle");
+                        }
+                        ancestor = parentOf.get(ancestor);
+                    }
+                    if (ancestor != null) {
+                        throw new IllegalStateException("unbounded supervisor parent chain");
+                    }
+                }
             }
             // Cross-node refinement: a parent cannot accept logical child
             // retirement before that child's OWN lifecycle reached STOPPED.
