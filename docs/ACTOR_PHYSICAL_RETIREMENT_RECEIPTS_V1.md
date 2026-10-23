@@ -277,3 +277,38 @@ callbacks after device/driver shutdown, and concurrent actor STOP plus host
 close require executed integration verification before #1944 can be closed.
 Do not treat the queued wake alone as universal proof of native driver exit.
 No approval to cross-org mirror private source is implied.
+
+## Fail-closed runtime close and last observable DONE (2026-10-23)
+
+`ActorRuntime.close()` previously went on to clear ActorGroup, output-stream,
+sync-cell and shared-value registries even when `awaitFinalized` or dispatcher
+termination had **failed**. It also shut down the bounded physical-notification
+lane before late native receipts could wake STOP. That means a timeout could
+both discard ownership and prevent a future actor from finalizing.
+
+Now failed termination/carrier quiescence aborts before the shared-resource
+teardown and **does not shut down** the host physical-finalization lane.
+The ActorCells remain held in the runtime registry. A later physical loan
+receipt can perform the final STOP wake; a trusted caller can retry
+`ActorRuntime.close()` after its actors retire. The host-notification lane
+is shut down and joined before global shared-resource teardown *only after*
+the actors and dispatcher carriers have exited; a lane that cannot join
+also causes a quarantine error.
+
+The actor's internal `finalizedFuture` notification now precedes the
+external `ActorRef.done()` terminal notification. This prevents a
+late **internal finalization subscriber** from being invoked only after DONE
+has already been published. It does **not** replace the native-driver-specific
+physical loan receipts and is not a general proof that all possible
+callbacks are infallible after publication.
+
+A deterministic JUnit regression, `failedRuntimeCloseRetainsNativeLoansAndAllowsVerifiedRetry`,
+pins a trusted FFI receipt across an initial failed runtime shutdown;
+it checks that DONE remains pending and the late receipt can still
+finalize via the live host lane before an eventual successful close.
+
+**Not executed:** these changes and the previous final-notifier patches
+still require an authorized exact-head JDK25 JUnit and GraalVM native-image
+run, plus race testing with the real transport/FFI drivers.
+A successful source scan is only an audit of intended code paths, not
+an execution proof. Keep #1940 draft until all safety gates pass.
