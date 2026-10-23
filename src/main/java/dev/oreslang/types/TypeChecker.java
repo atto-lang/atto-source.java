@@ -1830,6 +1830,16 @@ public final class TypeChecker {
     }
 
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
+        // Parse into a dedicated lexical node, but do not authorize execution
+        // until RequestHandle provenance, scoped-loan fencing, suspension,
+        // cancellation and unwind behavior have all been implemented. This
+        // prevents the evaluator's generic statement fallback from silently
+        // treating a borrow as a no-op or a normal heap-backed local.
+        if (stmt instanceof Ast.UsingBorrowStmt) {
+            throw new IllegalArgumentException(
+                    "using request.borrow() as view requires verified transport-loan "
+                            + "lifetime checking and evaluator lowering; feature is not enabled");
+        }
         if (stmt instanceof Ast.BindingStmt binding) {
             String inferredName = binding.inferredTypeName() != null
                     ? binding.inferredTypeName() : shortInferredTypeNames.get(binding);
