@@ -1423,6 +1423,13 @@ public final class TreeShaker {
             } else if (expression instanceof Ast.RuntimeCallExpr runtime) {
                 for (Ast.Expr argument : runtime.arguments()) scanExpression(module, argument, locals);
             } else if (expression instanceof Ast.CallExpr call) {
+                // A checked alias extension is a statically resolved function
+                // edge even though source spells receiver.method(). Preserve
+                // its synthetic target during tree shaking.
+                String extensionTarget = Ast.CheckedExtensionCall.lookup(call);
+                if (extensionTarget != null) {
+                    mark(qualify(module, extensionTarget));
+                }
                 scanExpression(module, call.callee(), locals);
                 for (Ast.TypeRef type : call.typeArguments()) scanType(type);
                 for (Ast.Expr argument : call.arguments()) scanExpression(module, argument, locals);
