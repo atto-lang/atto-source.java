@@ -4678,19 +4678,18 @@ public final class TypeChecker {
         if (!(source instanceof Ast.NameExpr) && !(source instanceof Ast.CallExpr)) {
             return null;
         }
+        final Type prior;
         if (source instanceof Ast.CallExpr candidate
-                && !CheckedPureFuturePipe.lookup(candidate)
-                && !pendingPureFutureStages.containsKey(candidate)) {
-            // The parser injects nested pipes as CallExpr arguments. Their
-            // inner proof does not exist until we recursively check that call.
-            // Reject arbitrary scalar calls as speculative Future producers:
-            // only syntactically nested value pipes and known async/Future
-            // declarations are eligible for this preflight.
-            if (candidate.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT) {
-                if (checkedPureFuturePipe(candidate, env, generics, self) == null) {
-                    return null;
-                }
-            } else {
+                && candidate.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT) {
+            // A pipe chain is syntactically nested. Check its inner Future
+            // stage first, then type the outer stage against its result.
+            // The inner stage is checked exactly once on this traversal.
+            Type nested = checkedPureFuturePipe(candidate, env, generics, self);
+            if (nested == null) return null;
+            prior = nested;
+        } else {
+            if (source instanceof Ast.CallExpr candidate) {
+                // Avoid speculative retyping of ordinary scalar producers.
                 if (candidate.origin() != Ast.CallOrigin.DIRECT
                         || !(candidate.callee() instanceof Ast.NameExpr producerName)
                         || env.lookup(producerName.name()) != null) return null;
@@ -4700,8 +4699,8 @@ public final class TypeChecker {
                         || (!producer.async()
                                 && !producer.returnType().name().equals("Future"))) return null;
             }
+            prior = typeOf(source, env, generics, self);
         }
-        Type prior = typeOf(source, env, generics, self);
         if (!(prior instanceof Named pending) || !pending.name().equals("Future")
                 || pending.arguments().size() != 1) return null;
 
