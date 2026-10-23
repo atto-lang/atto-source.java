@@ -161,8 +161,8 @@ final class TupleV2ProjectionPlanTest {
 
     @Test
     void tupleArityLimitsApplyToSourceAndDeclaredShapes() {
-        var sixtyFour = java.util.Collections.nCopies(64, Types.Primitive.INT);
-        var sixtyFive = java.util.Collections.nCopies(65, Types.Primitive.INT);
+        List<Types.Type> sixtyFour = java.util.Collections.nCopies(64, Types.Primitive.INT);
+        List<Types.Type> sixtyFive = java.util.Collections.nCopies(65, Types.Primitive.INT);
         var allRequired = new Shape(
                 sixtyFour.stream().map(t -> new Slot(t, false)).toList(), false);
         assertEquals(64, StructuralTuplePolicy.projection(
