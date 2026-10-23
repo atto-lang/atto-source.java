@@ -7051,6 +7051,10 @@ public final class ActorRuntime implements AutoCloseable {
         private final TaskOwnedLockLedger actorLocks = new TaskOwnedLockLedger();
         /** One asynchronous terminal retirement claim; guarded by lifecycleLock. */
         private boolean finalizationStarted;
+        /** Stop cancellation/descendant notifications outside the actor
+         * monitor must complete before physical terminal retirement starts.
+         * Guarded by lifecycleLock; simultaneous supervisor STOP is counted. */
+        private int stopEffectsInFlight;
         private volatile Throwable finalizationFailure;
         /** Set under lifecycleLock by gracefulStop; no further user admissions. */
         private boolean sealing;
@@ -7390,7 +7394,7 @@ public final class ActorRuntime implements AutoCloseable {
          * Repeated STOP, cancelled dispatch, and child completion are idempotent.
          */
         private void finalizeStopLocked() {
-            if (finalized || finalizationStarted
+            if (finalized || finalizationStarted || stopEffectsInFlight != 0
                     || activeTurns != 0 || scheduled.get()
                     || carrierActive || !children.isEmpty()) return;
             finalizationStarted = true;
@@ -8041,7 +8045,8 @@ public final class ActorRuntime implements AutoCloseable {
             List<OresFuture<?>> pending;
             List<DrainWaiter> failedDrainWaiters;
             synchronized (lifecycleLock) {
-                if (finalized) return;
+                if (finalized || finalizationStarted) return;
+                stopEffectsInFlight++;
                 if (recordCause && cause != null) {
                     ref.terminationCause.compareAndSet(null, cause);
                 }
@@ -8066,21 +8071,30 @@ public final class ActorRuntime implements AutoCloseable {
                 lifecycleLock.notifyAll();
             }
 
-            // Runtime Future callbacks can take other actor/lifecycle locks.
-            // Publish failure only after teardown has released lifecycleLock.
-            Throwable drainFailure = cause == null ? terminated(ref) : cause;
-            for (DrainWaiter waiter : failedDrainWaiters) {
-                waiter.completion().failFromRuntime(drainFailure);
-            }
-
-            // Cancellation removes channel/select waiter registrations before
-            // any future channel activity can revive work for this dead actor.
-            for (OresFuture<?> future : pending) future.cancel(false);
-
-            for (ActorCell<?> child : descendants) {
-                child.cancel(new ActorCancelledException(
-                        child.ref.id(),
-                        "parent actor " + ref.id() + " terminated"));
+            // Runtime Future subscribers may synchronously block or reach
+            // other lifecycle locks. None execute under lifecycleLock, and
+            // terminal retirement must not start until this batch of stop
+            // effects (including descendant cancellation) has been issued.
+            try {
+                Throwable drainFailure = cause == null ? terminated(ref) : cause;
+                for (DrainWaiter waiter : failedDrainWaiters) {
+                    waiter.completion().failFromRuntime(drainFailure);
+                }
+                for (OresFuture<?> future : pending) future.cancel(false);
+                for (ActorCell<?> child : descendants) {
+                    child.cancel(new ActorCancelledException(
+                            child.ref.id(),
+                            "parent actor " + ref.id() + " terminated"));
+                }
+            } finally {
+                synchronized (lifecycleLock) {
+                    if (--stopEffectsInFlight < 0) {
+                        throw new IllegalStateException(
+                                "actor STOP effect barrier underflow");
+                    }
+                    finalizeStopLocked();
+                    lifecycleLock.notifyAll();
+                }
             }
         }
     }
