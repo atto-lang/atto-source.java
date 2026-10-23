@@ -15,7 +15,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 DisableProgramGroupPage=yes
 UninstallDisplayIcon={app}\oreslang.exe
-OutputDir=artifacts\installer
+OutputDir=..\..\artifacts\installer
 OutputBaseFilename=oreslang-windows-x86_64-setup
 Compression=lzma
 SolidCompression=yes
@@ -23,9 +23,9 @@ ChangesEnvironment=yes
 WizardStyle=modern
 
 [Files]
-Source: "stage\oreslang.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "stage\oreslang-compiler.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "stage\provenance.json"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\stage\oreslang.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\stage\oreslang-compiler.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\stage\provenance.json"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\Oreslang"; Filename: "{app}\oreslang.exe"; Parameters: "doctor"
