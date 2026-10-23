@@ -183,14 +183,15 @@ public final class TaskPipeline {
         // bridge identity BEFORE admission so even its first upstream await
         // participates in cycle detection and cancellation is never lost.
         AtomicReference<TaskHandle<T>> trackedRef = new AtomicReference<>();
+        AtomicReference<OresFuture<T>> exposedRef = new AtomicReference<>();
         OresFuture<T> exposed = new OresFuture<>(() -> {
-            retirePipelineAwait(exposed, null);
+            retirePipelineAwait(exposedRef.get(), null);
             TaskHandle<T> current = trackedRef.get();
             if (current != null) current.cancel("pipeline cancelled");
             OresFuture<?> currentOwned = ownedStage.getAndSet(null);
             if (currentOwned != null) currentOwned.cancel(false);
         });
-        AtomicReference<OresFuture<T>> exposedRef = new AtomicReference<>(exposed);
+        exposedRef.set(exposed);
 
         TaskHandle<T> tracked = starter.start(new OresScheduler.Task<>() {
             private boolean started;
