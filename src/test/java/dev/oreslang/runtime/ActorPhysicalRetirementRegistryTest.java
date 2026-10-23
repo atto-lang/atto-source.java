@@ -169,6 +169,56 @@ final class ActorPhysicalRetirementRegistryTest {
         }
     }
 
+    @Test void replacementActorMayRetireWhileOldIncarnationStillOwnsNativeIo()
+            throws Exception {
+        var oldWorkerEntered = new CountDownLatch(1);
+        var releaseOldWorker = new CountDownLatch(1);
+        var oldAdmitted = new CountDownLatch(1);
+        var replacementRan = new CountDownLatch(1);
+        try (var io = new AsyncNativeIo(2); var runtime = new ActorRuntime()) {
+            var oldActor = runtime.<String>spawnShared(() -> (message, context) -> {
+                io.submitCurrentActor(context.runtime(), "old-incarnation-read", () -> {
+                    oldWorkerEntered.countDown();
+                    while (releaseOldWorker.getCount() != 0) {
+                        try { releaseOldWorker.await(20, TimeUnit.MILLISECONDS); }
+                        catch (InterruptedException ignored) { /* old physical loan */ }
+                    }
+                    return 17;
+                });
+                oldAdmitted.countDown();
+            });
+            try {
+                oldActor.send("start");
+                assertTrue(oldAdmitted.await(3, TimeUnit.SECONDS));
+                assertTrue(oldWorkerEntered.await(3, TimeUnit.SECONDS));
+                assertTrue(oldActor.cancel());
+                assertEquals(Integer.valueOf(1), oldActor.pendingPhysicalRetirementsByKind()
+                        .get("NATIVE_IO_OPERATION"));
+                assertFalse(oldActor.done().isDone());
+                var replacement = runtime.<String>spawnShared(() -> (message, context) -> {
+                    io.submitCurrentActor(context.runtime(), "new-incarnation-io",
+                            () -> 23);
+                    replacementRan.countDown();
+                });
+                replacement.send("start");
+                assertTrue(replacementRan.await(3, TimeUnit.SECONDS));
+                assertTrue(replacement.cancel());
+                assertTrue(replacement.awaitTermination(3, TimeUnit.SECONDS),
+                        "new incarnation must not borrow the old physical ticket");
+                assertNotEquals(oldActor.id(), replacement.id());
+                assertFalse(oldActor.done().isDone(),
+                        "replacement DONE cannot authorize release of old native memory");
+                assertEquals(Integer.valueOf(1), oldActor.pendingPhysicalRetirementsByKind()
+                        .get("NATIVE_IO_OPERATION"));
+            } finally {
+                releaseOldWorker.countDown();
+            }
+            assertTrue(oldActor.awaitTermination(3, TimeUnit.SECONDS));
+            io.close();
+            assertNull(io.physicalShutdown().get(3, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void nativeIoOwnedReceiptCannotBeMintedFromRootOrForeignActorRuntime()
             throws Exception {
         try (var io = new AsyncNativeIo(1);
