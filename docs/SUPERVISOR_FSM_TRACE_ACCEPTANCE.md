@@ -21,8 +21,12 @@ by tracing. This is not durable crash recovery.
 `SupervisorLifecycleTrace.verifyComplete(snapshot)` must fail closed when
 any entries are dropped, sequences are missing, the prior node state does
 not match the earlier transition, or replay through the **actual pure FSM**
-does not produce the recorded after-state. It detects intra-node ordering,
-unknown effects, and callback-generation mismatches that reach the FSM. It
+does not produce the recorded after-state. It also checks
+**cross-node ordering**: every parent `ChildFinished` must refer to a child
+whose earlier trace events have actually reached logical STOPPED with a
+matching failed outcome; `ChildReclaimed` requires an earlier child
+RECLAIMED phase. It detects intra-node ordering, premature parent
+acknowledgment, and callback-generation mismatches that reach the FSM. It
 is **not** an independent formal specification: the replay uses the same Java
 reducer. Separately run TLA+ TLC with sibling and three-level topologies,
 and eventually prove a refinement mapping from recorded traces to independent
