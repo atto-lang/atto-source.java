@@ -481,6 +481,38 @@ final class ActorNativeArenaTest {
     }
 
     @Test
+    void staleReferenceCanBeClearedButCannotBeReadOrRestored() {
+        AtomicLong charged = new AtomicLong();
+        Object marker = new Object();
+        try (ActorNativeArena arena = arena(8192, charged)) {
+            Map<String, Object> holder = arena.fields(List.of("reference"), marker);
+            Map<String, Object> backing = arena.fields(List.of("payload"), marker);
+            ActorNativeArena.NativeValue nativeBacking = (ActorNativeArena.NativeValue) backing;
+            long original = nativeBacking.nativeOffset();
+            AtomicLong visibleOffset = new AtomicLong(original);
+            ActorNativeArena.NativeValue facade = new ActorNativeArena.NativeValue() {
+                @Override public ActorNativeArena nativeArena() { return arena; }
+                @Override public long nativeOffset() { return visibleOffset.get(); }
+            };
+            arena.registerNativeFacade(facade, nativeBacking);
+            holder.put("reference", facade);
+            assertSame(facade, holder.get("reference"));
+            assertEquals(1, arena.nativeReferenceCount());
+
+            visibleOffset.set(original + 8);
+            assertThrows(SecurityException.class, () -> holder.get("reference"));
+            assertSame(facade, holder.put("reference", null));
+            assertNull(holder.get("reference"));
+            assertEquals(0, arena.nativeReferenceCount());
+
+            assertThrows(SecurityException.class, () -> holder.put("reference", facade));
+            assertNull(holder.get("reference"));
+            assertEquals(0, arena.nativeReferenceCount());
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
     void primitiveRegionsHaveExplicitReleaseBoundsAndBudget() {
         AtomicLong charged = new AtomicLong();
         try (ActorNativeArena arena = arena(128, charged)) {
