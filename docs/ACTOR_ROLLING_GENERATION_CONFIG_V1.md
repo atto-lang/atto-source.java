@@ -49,3 +49,29 @@ A forced drain deadline, unrecoverable I/O error, incompatible executable upgrad
 8. Executed exact-source-tree CI evidence. A workflow that fails before running tests proves neither pass nor fail; private mirrors require reviewed destination authorization.
 
 The host-only proof here intentionally does not replace Java #1960/#1967, LLVM #606, ABI identity #494, actor memory lifetime #1566 or transport shutdown #1940.
+## Experimental HTTP/1.1 host integration (draft PR #1973)
+
+The first bridge to the existing `NativeHttp.Server` is now `NativeHttpRollingDispatcher`, a trusted host CONTROL object. It owns the server's exclusive accept lane, not a second socket. The single virtual-thread CONTROL executor takes one accept at a time, atomically acquires the active `ActorRollingGenerationRoute<NativeHttp.Handler>` target and its lease, registers `Exchange.completion()`, then invokes the exact pooled handler. The target remains pinned for the exchange's lifetime. Normal G1 -> G2 promotion does not call `Server.shutdown()`, `Server.close()`, or rebind.
+
+Sample **host-side** flow after source/config admission, never guest authority:
+
+```java
+NativeHttp.Server listener = http.listen("127.0.0.1", port, 128, 1_048_576, 30_000);
+NativeHttp.Handler g1 = http.handler(v1Code, "Proxy", ActorRuntime.ActorKind.SHARED).pooled(4);
+g1.warmup().get(10, TimeUnit.SECONDS); // actual actor get_ready() barriers
+try (var dispatch = new NativeHttpRollingDispatcher(listener, 1001, g1, 4)) {
+    dispatch.start();
+    NativeHttp.Handler g2 = http.handler(v2Code, "Proxy", ActorRuntime.ActorKind.SHARED).pooled(4);
+    boolean published = dispatch.promoteAfterWarmup(1, g2).get(10, TimeUnit.SECONDS);
+    // The same listener is still bound; new requests route to g2.
+    // G1 is still draining: do not stop its actors or reclaim its code here.
+}
+```
+
+The constructor rejects unpooled/unready initial handlers and foreign-context handlers; promotion warms all new actor workers and rejects unhealthy/stale/foreign candidates. Unpublished candidates receive stop/cancel requests; the terminal cleanup proof is still separate. Multiple concurrent candidate warmups are bounded to 8 and the route's own live-generation cap is enforced. A rejected candidate is never automatically promoted. A fatal dispatcher/listener error invokes explicit shutdown and is not promised to be interruption-free.
+
+**Current limits:** this path handles same-context, config-versioned `NativeHttp.Handler` pools. It does *not* yet support cross-`OresContext` executable hot-code cutovers, guest-callable `reload` commands, WebSocket/TCP/HTTP2 migration, per-worker physical retirement receipts, or typed ABI/capability migration. The server's existing `Exchange.completion()` is a **transport completion marker**, not proof of all Task/FFI/native/actor code being physically quiescent. `acknowledgePhysicallyRetired` is trusted host bookkeeping only and must not be called to free a pool without an independently verified terminal witness.
+
+`ActorRollingHttpSocketTest` is the first real loopback HTTP socket + `ActorRuntime` SHARED-actor acceptance fixture: a G1 request is deliberately held, a G2 request completes over the **same** listener/port/PID, and G1 later finishes. It tests the routing hypothesis, not the full `NativeHttpRollingDispatcher` guest path; that integration fixture remains a release blocker.
+
+The existing source `NativeHttpTest` uses Oreslang-compiled `http.listen` and `http.handler` separately; those source-level tests must be extended to exercise the rolling coordinator after safe host exposure and security review. Keep the PR draft until a real repository Maven/Graal build and tests execute.
