@@ -59,3 +59,27 @@ Do not change expected hashes without verifying the corresponding source blobs.
 Use source-repository CI first. Any private-source transfer must satisfy issue
 #962's independently reviewed provenance/destination policy; an existing mirror
 or a successful test result does not establish authorization for another transfer.
+
+
+## Implicit child-scope hardening (2026-10-22)
+
+`ActorRuntime.spawnInternal` now checks
+`ActorGroup.requireWorkerAdmissionOpen()` under the inherited group's
+authority lock before publishing a nested child. This closes the bypass
+where `ActorGroup.spawnWorker` respected a shutdown fence but an actor
+already inside that group could create a managed descendant after the
+supervisor froze admissions. Child link, managed group registration, and
+actor identity still publish atomically or roll back on admission failure.
+
+`ActorDefaultChildScopeTest` is registered in the focused JDK25 workflow:
+- Parent actor DONE must not publish while a child still executes.
+- Actor STOP fences a racing local spawn without leaking an orphan.
+- Default child failure is observable without implicit automatic restart.
+- Supervisor admission fencing also rejects a nested spawn from an
+  already-running managed worker, without altering event-bus membership.
+
+These are authored tests, not proof of complete supervisor integration.
+Actual source actor CONTROL hooks, authenticated terminal receipts,
+independent supervisor reassignment and arena/loan reclamation remain gated.
+Fresh JDK25 executing jobs are needed: source Actions currently fail without
+recorded execution steps.
