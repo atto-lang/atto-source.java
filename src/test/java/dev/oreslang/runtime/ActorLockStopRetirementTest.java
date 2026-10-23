@@ -446,10 +446,21 @@ final class ActorLockStopRetirementTest {
                 assertTrue(doneSubscriberEntered.await(5, TimeUnit.SECONDS));
                 assertTrue(ref.getDone().isDone(),
                         "test did not reach terminal CAS");
-                // By this point the finalizer has already unregistered the
-                // actor, but its terminal callback is still physically live.
+                // The public Future terminal CAS is visible, but its
+                // subscribers have not physically returned. Keep the actor
+                // registry and quota reservation until they do; a successor
+                // must not reuse a slot while a terminal callback is live.
+                Field actorsField = ActorRuntime.class.getDeclaredField("actors");
+                actorsField.setAccessible(true);
+                assertTrue(((Map<?, ?>) actorsField.get(runtime)).containsKey(ref.id()),
+                        "actor registry removed while DONE subscribers still running");
+                Field countField = ActorRuntime.class.getDeclaredField("actorCount");
+                countField.setAccessible(true);
+                assertTrue(((java.util.concurrent.atomic.AtomicInteger)
+                        countField.get(runtime)).get() >= 1,
+                        "old incarnation actor quota was recycled too early");
                 assertFalse(ref.awaitTermination(20, TimeUnit.MILLISECONDS),
-                        "missing actor map entry forged termination receipt");
+                        "callback still live but physical termination reported");
             } finally {
                 releaseSubscriber.countDown();
             }
