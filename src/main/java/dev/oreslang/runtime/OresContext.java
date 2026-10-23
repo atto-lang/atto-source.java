@@ -22,6 +22,11 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 
 public final class OresContext implements AutoCloseable {
+    // A failed physical shutdown must never let Truffle/actor heaps disappear
+    // merely because the host dropped the context wrapper. This quarantine is
+    // released only after every mandatory retirement gate has succeeded.
+    private static final java.util.Set<OresContext> QUARANTINED_CONTEXTS =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
     private static final ContextReference<OresContext> REFERENCE = ContextReference.create(OresLanguage.class);
 
     private final OresLanguage language;
@@ -429,34 +434,69 @@ public final class OresContext implements AutoCloseable {
 
     @Override
     public void close() {
-        nativeIo.close();
-        http.close();
+        // Context-close can race native callbacks. Preserve this entire actor,
+        // scheduler and heap ownership graph until physical native I/O and
+        // structured actor retirement can BOTH be joined. On failure, a host
+        // may explicitly retry close after the blocking native worker exits.
+        QUARANTINED_CONTEXTS.add(this);
         RuntimeException failure = null;
+        boolean nativeRetired = false;
+        boolean actorsRetired = false;
         try {
-            asyncRuntime.close();
-        } catch (RuntimeException asyncFailure) {
-            failure = asyncFailure;
+            nativeIo.close();
+            nativeRetired = true;
+        } catch (RuntimeException incompleteNative) {
+            failure = incompleteNative;
         }
         try {
             actors.close();
-        } catch (RuntimeException actorFailure) {
-            if (failure == null) failure = actorFailure;
-            else failure.addSuppressed(actorFailure);
+            actorsRetired = true;
+        } catch (RuntimeException incompleteActors) {
+            if (failure == null) failure = incompleteActors;
+            else if (failure != incompleteActors) failure.addSuppressed(incompleteActors);
+        }
+
+        // Do not close remaining services, shared code images or the GC while
+        // native workers or actor carriers might still touch those resources.
+        // This also keeps the VM alive for subsequent cleanup receipt delivery.
+        if (!nativeRetired || !actorsRetired) {
+            output.flush();
+            throw new IllegalStateException(
+                    "Oreslang context cleanup incomplete; physical state quarantined",
+                    failure);
+        }
+
+        try {
+            http.close();
+        } catch (RuntimeException httpFailure) {
+            failure = httpFailure;
+        }
+        try {
+            asyncRuntime.close();
+        } catch (RuntimeException asyncFailure) {
+            if (failure == null) failure = asyncFailure;
+            else if (failure != asyncFailure) failure.addSuppressed(asyncFailure);
         }
         try {
             vm.close();
         } catch (RuntimeException vmFailure) {
             if (failure == null) failure = vmFailure;
-            else failure.addSuppressed(vmFailure);
-        } finally {
-            synchronized (this) {
-                linkedCodeUnits.clear();
-                linkedImportResolutions.clear();
-                sharedCodeImages.close();
-            }
-            garbageCollector.close();
-            output.flush();
+            else if (failure != vmFailure) failure.addSuppressed(vmFailure);
         }
-        if (failure != null) throw failure;
+        if (failure != null) {
+            output.flush();
+            throw new IllegalStateException(
+                    "Oreslang context auxiliary shutdown incomplete; context quarantined",
+                    failure);
+        }
+
+        synchronized (this) {
+            linkedCodeUnits.clear();
+            linkedImportResolutions.clear();
+            sharedCodeImages.close();
+        }
+        garbageCollector.close();
+        output.flush();
+        QUARANTINED_CONTEXTS.remove(this);
     }
 }
