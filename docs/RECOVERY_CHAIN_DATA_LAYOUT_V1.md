@@ -337,8 +337,16 @@ immutable, but now owns a private runtime lifecycle ledger. Distinct lexical
 chains may see an active unhandled failure while it propagates outward; the same
 chain cannot execute twice for the same unwind. Successful recovery,
 `HandlerFailure`, terminal callback failure and reentrancy abort seal the
-failure capability so it cannot be dispatched again. This prevents a retained
-host reference from replaying a completed exceptional effect.
+failure capability so it cannot be dispatched again. Both the nested failure
+that triggers a recursion abort and the outer failure whose callback catches
+that abort are sealed. This prevents a retained host reference from replaying a
+completed exceptional effect.
+
+Only one recovery dispatch may be active for a given `GuestFailure` at a time.
+Sequential outward propagation through distinct chains remains legal after an
+`Unhandled` result, but concurrent or recursive redispatch of the same envelope
+fails closed before a second callback runs. A fatal host escape clears the
+in-flight lease while permanently terminating the envelope.
 
 The identity-based visited-chain ledger is bounded to 1024 entries. Exceeding the
 quota seals the failure and fails loudly rather than retaining an unbounded
