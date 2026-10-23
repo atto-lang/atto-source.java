@@ -2586,7 +2586,7 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (cell.lifecycleLock) {
                 if (!revoked.compareAndSet(false, true)) return firstFatal;
 
-                ActorShardColumns shard = attachedShard;
+                ActorShardBacking shard = attachedShard;
                 attachedShard = null;
                 cell.shardLeases.remove(this);
 

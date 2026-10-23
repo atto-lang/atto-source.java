@@ -10,6 +10,6 @@ package dev.oreslang.runtime;
 abstract sealed class ActorShardBacking
         permits ActorShardColumns, ActorDenseIndexColumns {
     abstract void revokeBackingFromLease();
-    abstract boolean ownedBy(ActorRuntime runtime, ActorRuntime.ActorId actor);
+    abstract boolean ownedBy(ActorRuntime runtime, ActorRuntime.ActorRef<?> actor);
     abstract boolean isPrivateBacked();
 }
