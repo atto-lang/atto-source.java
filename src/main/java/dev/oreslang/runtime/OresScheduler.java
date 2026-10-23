@@ -88,6 +88,22 @@ public final class OresScheduler implements AutoCloseable {
         return timer;
     }
 
+    /**
+     * Runtime-control deadline hook. The callback may only enqueue/retire VM
+     * control work; it must never execute guest code on the timer carrier.
+     */
+    static ScheduledFuture<?> scheduleRuntimeControlWake(
+            Runnable callback,
+            long delayNanos) {
+        Objects.requireNonNull(callback, "callback");
+        if (delayNanos < 0) {
+            throw new IllegalArgumentException(
+                    "runtime control wake delay cannot be negative");
+        }
+        return WALL_DEADLINES.schedule(
+                callback, delayNanos, TimeUnit.NANOSECONDS);
+    }
+
     @FunctionalInterface
     interface TurnExecutor {
         void execute(Runnable turn);
@@ -316,6 +332,15 @@ public final class OresScheduler implements AutoCloseable {
 
     public int parallelism() {
         return parallelism;
+    }
+
+    /** Host/test diagnostic for explicitly user-owned fixed carriers only.
+     * Runtime-owned scheduler facades return zero because they do not own the
+     * VM executor they dispatch onto.
+     */
+    int ownedCarrierCount() {
+        if (ownedExecutor instanceof ThreadPoolExecutor pool) return pool.getPoolSize();
+        return 0;
     }
 
     /** Number of physical dispatch turns flagged by the independent watchdog. */

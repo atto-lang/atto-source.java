@@ -63,6 +63,53 @@ final class ActorAffinitySoftSpillTest {
     }
 
     @Test
+    void coldHostNioBootstrapPinsLaneZeroEvenWhenSoftSpillWouldPreferAnotherLane() {
+        // These synthetic lanes deliberately cannot prove readiness for
+        // selector-safe no-bootstrap admission. On a trusted non-reactor
+        // thread, executeHostOnWarmLane must instead bootstrap lane ZERO.
+        // Normal actor DATA dispatch may soft-spill; bootstrap may not.
+        class DeferredExecutor extends AbstractExecutorService {
+            private boolean closed;
+            private final List<Runnable> pending = new java.util.ArrayList<>();
+            @Override public void execute(Runnable command) {
+                if (closed) throw new RejectedExecutionException("closed");
+                pending.add(command);
+            }
+            @Override public void shutdown() { closed = true; }
+            @Override public List<Runnable> shutdownNow() {
+                closed = true;
+                return List.copyOf(pending);
+            }
+            @Override public boolean isShutdown() { return closed; }
+            @Override public boolean isTerminated() { return closed; }
+            @Override public boolean awaitTermination(long timeout, TimeUnit unit) {
+                return closed;
+            }
+        }
+        DeferredExecutor[] lanes = {new DeferredExecutor(), new DeferredExecutor()};
+        ActorAffinityDispatcher dispatcher = new ActorAffinityDispatcher(
+                2, 4, new int[0], index -> lanes[index]);
+        try {
+            // A threshold of 4/2=2 makes an ordinary third DATA request
+            // eligible to spill away from lane 0.
+            dispatcher.executeOnLane(0, () -> {});
+            dispatcher.executeOnLane(0, () -> {});
+            assertEquals(2, lanes[0].pending.size());
+            dispatcher.executeHostOnWarmLane(() -> {});
+            assertEquals(3, lanes[0].pending.size(),
+                    "first host NIO bootstrap must target lane zero");
+            assertTrue(lanes[1].pending.isEmpty(),
+                    "cold destination cannot inherit the first bootstrap");
+            assertEquals(0, dispatcher.softSpills(),
+                    "host bootstrap is not a DATA soft-spill");
+            assertEquals(3, dispatcher.queuedTaskCount());
+        } finally {
+            assertEquals(3, dispatcher.shutdownNow().size());
+            assertEquals(0, dispatcher.queuedTaskCount());
+        }
+    }
+
+    @Test
     void enqueuedThenRejectedLaneTurnCannotExecuteAfterAdmissionFailure() {
         class EnqueueThenThrow extends AbstractExecutorService {
             private boolean closed;

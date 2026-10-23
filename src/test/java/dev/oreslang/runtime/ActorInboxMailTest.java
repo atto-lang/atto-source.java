@@ -34,11 +34,15 @@ final class ActorInboxMailTest {
             assertEquals(2, observed.size());
 
             assertEquals(ref.id(), observed.get(0).recipient());
+            assertEquals(ref.generation(), observed.get(0).recipientGeneration());
+            assertTrue(observed.get(0).senderGeneration().isEmpty());
             assertEquals(0L, observed.get(0).sequence());
             assertEquals("first", observed.get(0).value());
             assertTrue(observed.get(0).sender().isEmpty());
 
             assertEquals(ref.id(), observed.get(1).recipient());
+            assertEquals(ref.generation(), observed.get(1).recipientGeneration());
+            assertTrue(observed.get(1).senderGeneration().isEmpty());
             assertEquals(1L, observed.get(1).sequence());
             assertEquals("second", observed.get(1).value());
             assertTrue(observed.get(1).sender().isEmpty());
@@ -72,7 +76,11 @@ final class ActorInboxMailTest {
             var mail = observed.get();
             assertNotNull(mail);
             assertEquals(target.id(), mail.recipient());
+            assertEquals(target.generation(), mail.recipientGeneration());
             assertEquals(source.id(), mail.sender().orElseThrow());
+            assertEquals(
+                    source.generation(),
+                    mail.senderGeneration().orElseThrow());
             assertEquals(0L, mail.sequence());
             assertEquals("from-actor", mail.value());
 

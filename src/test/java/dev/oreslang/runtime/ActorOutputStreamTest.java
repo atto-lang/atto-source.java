@@ -50,6 +50,8 @@ final class ActorOutputStreamTest {
                         ref.outputs().next().join();
                 assertFalse(first.done());
                 assertEquals(ref.id(), first.value().actorId());
+                assertEquals(ref.generation(), ref.outputs().generation());
+                assertEquals(ref.generation(), first.value().generation());
                 assertEquals(0L, first.value().sequence());
                 assertEquals(List.of("one"), first.value().value(),
                         "output transport must snapshot before later actor mutation");
@@ -57,6 +59,7 @@ final class ActorOutputStreamTest {
                 GeneratorRuntime.Step<ActorRuntime.ActorOutput<Object>> second =
                         ref.outputs().next().join();
                 assertFalse(second.done());
+                assertEquals(ref.generation(), second.value().generation());
                 assertEquals(1L, second.value().sequence());
                 assertEquals("two", second.value().value());
 

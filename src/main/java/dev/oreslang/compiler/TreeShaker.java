@@ -681,6 +681,11 @@ public final class TreeShaker {
                 return List.of(new Ast.ReturnStmt(
                         rewriteExpression(returned.value(), module, locals)));
             }
+            if (statement instanceof Ast.TerminalEffectStmt effect) {
+                return List.of(new Ast.TerminalEffectStmt(
+                        effect.kind(),
+                        rewriteExpression(effect.value(), module, locals)));
+            }
             if (statement instanceof Ast.YieldStmt yielded) {
                 return List.of(new Ast.YieldStmt(
                         rewriteExpression(yielded.value(), module, locals),
@@ -1225,6 +1230,8 @@ public final class TreeShaker {
                     }
                 } else if (statement instanceof Ast.ReturnStmt returned) {
                     scanExpression(module, returned.value(), locals);
+                } else if (statement instanceof Ast.TerminalEffectStmt effect) {
+                    scanExpression(module, effect.value(), locals);
                 } else if (statement instanceof Ast.YieldStmt yielded) {
                     scanExpression(module, yielded.value(), locals);
                 } else if (statement instanceof Ast.ExprStmt expression) {
