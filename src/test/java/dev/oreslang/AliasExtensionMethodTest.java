@@ -41,6 +41,22 @@ final class AliasExtensionMethodTest {
     }
 
     @Test
+    void extensionDispatchMetadataRequiresExactCheckedCallIdentity() {
+        Ast.CallExpr first = new Ast.CallExpr(
+                new Ast.MemberExpr(new Ast.NameExpr("code"), "double"), java.util.List.of());
+        Ast.CallExpr sameShape = new Ast.CallExpr(
+                new Ast.MemberExpr(new Ast.NameExpr("code"), "double"), java.util.List.of());
+        assertNull(Ast.CheckedExtensionCall.lookup(first));
+        Ast.CheckedExtensionCall.record(first, "$mtd$Code$double");
+        assertEquals("$mtd$Code$double", Ast.CheckedExtensionCall.lookup(first));
+        assertNull(Ast.CheckedExtensionCall.lookup(sameShape));
+        Ast.copyCheckedMetadata(first, sameShape);
+        assertEquals("$mtd$Code$double", Ast.CheckedExtensionCall.lookup(sameShape));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedExtensionCall.record(first, "$mtd$Code$unsafe"));
+    }
+
+    @Test
     void typedAliasLocalCarriesExtensionButShadowingDoesNot() throws Exception {
         assertEquals("12", run("""
                 declare type Code = int;
