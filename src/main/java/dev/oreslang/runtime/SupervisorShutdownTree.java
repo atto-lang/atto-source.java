@@ -274,6 +274,11 @@ public final class SupervisorShutdownTree {
                 escalate(deadline);
             }, nanos, TimeUnit.NANOSECONDS);
         } catch (RuntimeException rejected) {
+            // Failure to install the deadline is a CONTROL infrastructure
+            // fault. Publish it before completing the synchronous observer,
+            // exactly as the scheduled deadline path publishes its status.
+            // Do not declare any actor/arena physically reclaimed.
+            markCoordinatorFailed();
             bounded.failFromRuntime(rejected);
             escalate(rejected);
             return bounded;
