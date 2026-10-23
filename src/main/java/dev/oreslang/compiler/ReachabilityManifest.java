@@ -86,17 +86,20 @@ public final class ReachabilityManifest {
             }
         }
 
+        for (Map.Entry<String, Object> entry :
+                result.compileTimeConstants().entrySet()) {
+            validateSymbol(
+                    "compile-time constant name", entry.getKey());
+            validateConstant(entry.getKey(), entry.getValue());
+        }
+
         LinkedHashMap<String, Object> constants = new LinkedHashMap<>();
         result.compileTimeConstants().entrySet().stream()
                 .sorted((left, right) ->
                         CODE_POINT_ORDER.compare(
                                 left.getKey(), right.getKey()))
-                .forEach(entry -> {
-                    validateSymbol(
-                            "compile-time constant name", entry.getKey());
-                    validateConstant(entry.getKey(), entry.getValue());
-                    constants.put(entry.getKey(), entry.getValue());
-                });
+                .forEach(entry ->
+                        constants.put(entry.getKey(), entry.getValue()));
 
         return new ReachabilityManifest(
                 result.libraryBuild()
