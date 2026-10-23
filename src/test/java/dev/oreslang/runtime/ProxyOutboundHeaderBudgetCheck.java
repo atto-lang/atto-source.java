@@ -20,6 +20,7 @@ public final class ProxyOutboundHeaderBudgetCheck {
         strippedOversize.put("Connection", List.of("X-Remove"));
         strippedOversize.put("X-Remove", List.of("b".repeat(32769)));
         expectDenied(strippedOversize);
+        // Count fields *before* stripping, not just the list we forward.
         Map<String, List<String>> tooMany = new LinkedHashMap<>();
         tooMany.put("Connection", List.of("X-Remove"));
         var entries = new ArrayList<String>();
@@ -31,6 +32,7 @@ public final class ProxyOutboundHeaderBudgetCheck {
         expectDenied(malformedHopName);
         System.out.println("PASS prefilter header budgets and hop-by-hop validation");
     }
+
     private static void expectDenied(Map<String, List<String>> map) {
         try {
             ProxyOutboundLoopback.filtered(HttpHeaders.of(map, (name, value) -> true));
