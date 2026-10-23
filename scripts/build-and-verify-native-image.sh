@@ -33,7 +33,7 @@ if ! command -v mvn >/dev/null 2>&1; then
 fi
 
 "$JAVA_HOME/bin/native-image" --version
-mvn -B -ntp -DskipTests "-P$profile" package
+mvn -B -ntp -DskipTests "-P$profile" clean package
 
 executable="./target/$binary"
 if [ ! -s "$executable" ] || [ ! -x "$executable" ]; then
@@ -42,23 +42,32 @@ if [ ! -s "$executable" ] || [ ! -x "$executable" ]; then
 fi
 
 # Catch wrappers or Java launch scripts being mistaken for Native Image outputs.
-if command -v file >/dev/null 2>&1; then
+# Do not downgrade verification when the OS file classifier is missing.
+if ! command -v file >/dev/null 2>&1; then
+  echo "file command required for native executable verification" >&2
+  exit 2
+fi
+
   description="$(file "$executable")"
   printf '%s\n' "$description"
   case "$description" in
     *ELF*|*Mach-O*|*PE32*) ;;
     *) echo "artifact is not an OS-native executable" >&2; exit 1 ;;
   esac
-fi
 
 info="$("$executable" --build-info)"
 printf '%s\n' "$info"
-printf '%s\n' "$info" | grep -F "\"build_mode\":\"$mode\"" >/dev/null || {
-  echo "native build mode does not match $mode" >&2; exit 1;
-}
-printf '%s\n' "$info" | grep -F "\"managed_reference_mode\":\"$refs\"" >/dev/null || {
-  echo "native managed reference mode does not match $refs" >&2; exit 1;
-}
+# Requiring the complete, canonical manifest prevents substring or warning-line
+# matches from certifying a wrong build mode/reference encoding.
+case "$mode" in
+  aot) guest_execution=interpreter-no-jit ;;
+  hybrid) guest_execution=runtime-selected ;;
+esac
+expected="{\"build_mode\":\"$mode\",\"default_execution_mode\":\"$mode\",\"managed_reference_mode\":\"$refs\",\"guest_execution\":\"$guest_execution\"}"
+if [ "$info" != "$expected" ]; then
+  echo "native build-info does not match canonical $mode/$refs manifest" >&2
+  exit 1
+fi
 
 # Exercise a REAL .ores file and packaged stdlib with Java build environment
 # variables removed. Only a successful native build plus execution passes.
@@ -71,7 +80,10 @@ printf '%s\n' "$info" | grep -F "\"managed_reference_mode\":\"$refs\"" >/dev/nul
 
 # A native executable must never silently switch on JVM JIT at runtime.
 set +e
-"$executable" --mode=jit --check examples/callables.ores >/dev/null 2>&1
+(
+  unset JAVA_HOME CLASSPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS
+  "$executable" --mode=jit --check examples/callables.ores
+) >/dev/null 2>&1
 status="$?"
 set -e
 if [ "$status" -ne 2 ]; then
