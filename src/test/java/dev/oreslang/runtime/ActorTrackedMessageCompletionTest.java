@@ -7,6 +7,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -84,17 +85,34 @@ final class ActorTrackedMessageCompletionTest {
             OresFuture<Void> queued = runtime.sendWithCompletion(ref, 2);
             assertFalse(queued.isDone());
 
-            ref.stop();
+            AtomicReference<Throwable> stopFailure = new AtomicReference<>();
+            Thread stopper = new Thread(() -> {
+                try {
+                    ref.stop();
+                } catch (Throwable failure) {
+                    stopFailure.set(failure);
+                }
+            });
+            stopper.start();
 
             ExecutionException queuedFailure = assertThrows(
                     ExecutionException.class,
                     () -> queued.get(5, TimeUnit.SECONDS));
             assertInstanceOf(ActorRuntime.ActorTerminatedException.class,
                     queuedFailure.getCause());
-            assertTrue(first.isDone(),
-                    "STOP must settle every exact-message observer fail-closed");
 
+            ExecutionException activeFailure = assertThrows(
+                    ExecutionException.class,
+                    () -> first.get(5, TimeUnit.SECONDS));
+            assertInstanceOf(ActorRuntime.ActorTerminatedException.class,
+                    activeFailure.getCause());
+
+            // Let the already-running trusted turn unwind before the host
+            // stop synchronization deadline expires.
             releaseFirst.countDown();
+            stopper.join(5_000);
+            assertFalse(stopper.isAlive(), "host stop did not finish");
+            assertNull(stopFailure.get());
             ref.getDone().get(5, TimeUnit.SECONDS);
         } finally {
             releaseFirst.countDown();
