@@ -14,15 +14,16 @@
 
 ## Exact-source JDK21 validation
 
-`bash scripts/test-proxy-outbound-loopback.sh` compiles the two actual Java files with `javac --release 21` and executes five successive real loopback socket regressions. The regression checks 201/404/204/302 status fidelity, repeated `Set-Cookie`, hop-by-hop header stripping, bounded admission under an unreleased response, 2 MiB streamed body, forbidden authorities/credentials/encoded path/HTTPS and redirect refusal.
+`bash scripts/test-proxy-outbound-loopback.sh` compiles the two actual Java files with `javac --release 21` and executes five successive runs of both the client/authority checks and a separate end-to-end listener-to-upstream forwarding wire test. The regression checks 201/404/204/302 status fidelity, repeated `Set-Cookie`, hop-by-hop header stripping, bounded admission under an unreleased response, 2 MiB streamed body, forbidden authorities/credentials/encoded path/HTTPS and redirect refusal, response cancellation/permit reclamation, HEAD semantics and real end-to-end host-only proxy forwarding (201/404/302, preserved Set-Cookie, hop-by-hop stripping, 2 MiB stream).
 
 Five consecutive local JDK21 runs passed on the following exact committed Git blobs, independently matched to tested bytes:
 
 - `src/main/java/dev/oreslang/runtime/ProxyOutboundLoopback.java`: `ab9f4828e96ec85adac9f526a5ea203cbaa3872f`.
-- `src/test/java/dev/oreslang/runtime/ProxyOutboundLoopbackCheck.java`: `8cd23f4c956a9ea7f674c650b5ed23de182e33c3`.
-- `scripts/test-proxy-outbound-loopback.sh`: `3db583094b5aac4af8fd29df9f7d863d1a74c497`.
+- `src/test/java/dev/oreslang/runtime/ProxyOutboundLoopbackCheck.java`: `2b4580dd591a2aa959df6b535841c4f0570fb271`.
+- `src/test/java/dev/oreslang/runtime/ProxyLoopbackForwardingWireCheck.java`: `03d2e5722696c1ed0b58aa60e351bbe1ea8b80cb`.
+- `scripts/test-proxy-outbound-loopback.sh`: `31e0bb351b2b1894226c13c19ca8f346e910b833`.
 
-The workflow `.github/workflows/proxy-outbound-loopback.yml` runs the same test in the **source repository** on GitHub-hosted Java 21. A queued or unexecuted job is **not** proof of CI success. No cross-organization private-source mirror is authorized by this work.
+The workflow `.github/workflows/proxy-outbound-loopback.yml` runs the same pair of real-wire tests in the **source repository** on GitHub-hosted Java 21. In the observed PR run the workflow failed before any job steps executed, so it does not supply compiler evidence. A queued or unexecuted job is **not** proof of CI success. No cross-organization private-source mirror is authorized by this work.
 
 ## Next runtime gates
 
@@ -34,3 +35,7 @@ The workflow `.github/workflows/proxy-outbound-loopback.yml` runs the same test 
 6. Verify full Java/Graal Maven/JUnit, guest compilation and Java 25 AOT/hybrid on an authorized runner. Standalone Java21 socket proof is **not** that evidence.
 
 See [transport issue #1942](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/1942) and [CI security issue #1501](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/1501). The native proxy applications must remain Oreslang-only.
+
+## Explicit boundary of the forwarding demonstration
+
+`ProxyLoopbackForwardingWireCheck` creates a Java `HttpServer` listener, a separate upstream loopback `HttpServer`, and a Java virtual-thread test adapter that forwards GET requests through `ProxyOutboundLoopback`. This is **test fixture code only**, not Oreslang source, an actor/middleware pipeline, or a deployable proxy listener. It demonstrates that the outbound primitive can preserve actual HTTP status/headers and stream 2 MiB end-to-end without exposing arbitrary egress.
