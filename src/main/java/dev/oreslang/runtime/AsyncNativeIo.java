@@ -232,12 +232,19 @@ public final class AsyncNativeIo implements AutoCloseable {
         for (AutoCloseable resource : closing) {
             try {
                 resource.close();
-            } catch (Exception | LinkageError failure) {
+            } catch (Exception | Error failure) {
+                // Host resource adapters can throw AssertionError or other
+                // ordinary Errors. Quarantine that resource, but continue
+                // closing healthy siblings before publishing any shutdown
+                // proof. JVM-fatal failures are never swallowed.
                 synchronized (this) {
                     if (resourceCloseFailure == null) resourceCloseFailure = failure;
                     else if (resourceCloseFailure != failure)
                         resourceCloseFailure.addSuppressed(failure);
                 }
+                if (failure instanceof VirtualMachineError fatal) throw fatal;
+                if (failure instanceof ThreadDeath fatal) throw fatal;
+                if (failure instanceof LinkageError fatal) throw fatal;
             }
         }
         synchronized (this) {
