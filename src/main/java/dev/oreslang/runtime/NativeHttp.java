@@ -28,7 +28,7 @@ public final class NativeHttp implements AutoCloseable {
     private final Set<Handler> pools = ConcurrentHashMap.newKeySet();
 
     public NativeHttp(OresContext context) {
-        this(Objects.requireNonNull(context), actorRuntime);
+        this(Objects.requireNonNull(context), context.actors());
     }
 
     /**
