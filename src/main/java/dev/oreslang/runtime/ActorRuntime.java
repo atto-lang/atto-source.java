@@ -7035,9 +7035,23 @@ public final class ActorRuntime implements AutoCloseable {
                 || value instanceof ActorGroupId;
     }
 
+    /**
+     * Standalone ActorRuntime.close() can fail before a native receipt arrives.
+     * Retain the runtime, ActorCells and arenas even if its caller discards
+     * the Java reference after the quarantine exception. This is intentionally
+     * strong and must only be released after a verified full shutdown.
+     */
+    private static final Set<ActorRuntime> PHYSICAL_SHUTDOWN_QUARANTINE =
+            ConcurrentHashMap.newKeySet();
+
+    static boolean physicallyQuarantined(ActorRuntime runtime) {
+        return PHYSICAL_SHUTDOWN_QUARANTINE.contains(runtime);
+    }
+
     @Override
     public void close() {
         requireSupervisorContext("close an ActorRuntime");
+        PHYSICAL_SHUTDOWN_QUARANTINE.add(this);
 
         final boolean firstClose;
         final List<ActorCell<?>> snapshot;
@@ -7153,6 +7167,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         actors.clear();
         actorCount.set(0);
+        PHYSICAL_SHUTDOWN_QUARANTINE.remove(this);
     }
 
     private ExecutorService dispatcherFor(ActorKind kind) {
