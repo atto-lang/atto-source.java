@@ -196,4 +196,70 @@ final class OresFutureTerminalAdmissionRetentionTest {
                 "completed notification drain must release callback ownership");
         assertEquals(101, future.get(5, TimeUnit.SECONDS));
     }
+    @Test
+    @Timeout(15)
+    void hostBlockingObservationWaitsForCancellationRevocation() throws Exception {
+        CountDownLatch revokerEntered = new CountDownLatch(1);
+        CountDownLatch releaseRevoker = new CountDownLatch(1);
+        OresFuture<Integer> future = new OresFuture<>(
+                () -> true,
+                () -> {
+                    revokerEntered.countDown();
+                    try {
+                        if (!releaseRevoker.await(5, TimeUnit.SECONDS)) {
+                            throw new AssertionError("revoker release timed out");
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError(interrupted);
+                    }
+                });
+
+        AtomicReference<Throwable> cancelFailure = new AtomicReference<>();
+        Thread canceller = Thread.startVirtualThread(() -> {
+            try {
+                assertTrue(future.cancel(false));
+            } catch (Throwable failure) {
+                cancelFailure.set(failure);
+            }
+        });
+        assertTrue(revokerEntered.await(5, TimeUnit.SECONDS));
+        assertTrue(future.isCancelled());
+        assertTrue(future.isDone());
+        assertThrows(TimeoutException.class,
+                () -> future.get(0, TimeUnit.NANOSECONDS),
+                "zero-timeout host polling cannot cross an unfinished revocation");
+
+        CountDownLatch observerDone = new CountDownLatch(1);
+        AtomicReference<Throwable> observerFailure = new AtomicReference<>();
+        Thread observer = Thread.startVirtualThread(() -> {
+            try {
+                assertThrows(CancellationException.class, future::get);
+            } catch (Throwable failure) {
+                observerFailure.set(failure);
+            } finally {
+                observerDone.countDown();
+            }
+        });
+
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (future.pendingRuntimeWaiterCount() == 0 && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+        assertEquals(1, future.pendingRuntimeWaiterCount(),
+                "host get must wait behind the cancellation revoker");
+        assertEquals(1L, observerDone.getCount(),
+                "host observer returned before producer authority was revoked");
+
+        releaseRevoker.countDown();
+        canceller.join(5_000);
+        observer.join(5_000);
+        assertFalse(canceller.isAlive());
+        assertFalse(observer.isAlive());
+        assertNull(cancelFailure.get());
+        assertNull(observerFailure.get());
+        assertEquals(0, future.pendingRuntimeWaiterCount());
+        assertThrows(CancellationException.class, future::join);
+    }
+
 }
