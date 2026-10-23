@@ -169,8 +169,9 @@ public final class NativeHttp implements AutoCloseable {
             synchronized (this) {
                 if (workers == null) throw new IllegalStateException("handler is not pooled");
                 for (Worker worker : workers)
-                    if (worker != null && !worker.actor.done().isDone())
-                        throw new IllegalStateException("cannot retire live HTTP pool worker");
+                    if (worker != null && (!worker.actor.done().isDone()
+                            || worker.actor.done().isCompletedExceptionally()))
+                        throw new IllegalStateException("cannot certify HTTP pool worker exit");
                 poolDiscarded = true;
             }
             pools.remove(this);
