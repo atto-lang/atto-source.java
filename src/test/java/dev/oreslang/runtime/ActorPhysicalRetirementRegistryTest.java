@@ -1,0 +1,163 @@
+package dev.oreslang.runtime;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+/**
+ * Physical native/IO loan retirement is distinct from logical Future.cancel
+ * and from guest defer. These are trusted host-adapter tests, not Oreslang
+ * guest-language API tests.
+ */
+@Timeout(20)
+final class ActorPhysicalRetirementRegistryTest {
+    @Test void actorStopWaitsForRealPhysicalIOAndFfiReceipts() throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            AtomicReference<ActorPhysicalRetirementRegistry.Receipt> tcp =
+                    new AtomicReference<>();
+            AtomicReference<ActorPhysicalRetirementRegistry.Receipt> ffi =
+                    new AtomicReference<>();
+            CountDownLatch registered = new CountDownLatch(1);
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                tcp.set(context.runtime().registerCurrentActorPhysicalReceipt(
+                        ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE));
+                ffi.set(context.runtime().registerCurrentActorPhysicalReceipt(
+                        ActorPhysicalRetirementRegistry.Kind.FFI_LOAN));
+                registered.countDown();
+            });
+
+            assertThrows(SecurityException.class, () ->
+                    runtime.registerCurrentActorPhysicalReceipt(
+                            ActorPhysicalRetirementRegistry.Kind.FFI_LOAN));
+            actor.send("register");
+            assertTrue(registered.await(3, TimeUnit.SECONDS));
+            assertEquals(actor.id(), tcp.get().actorId());
+            assertEquals(actor.generation(), tcp.get().generation());
+
+            assertTrue(actor.cancel());
+            assertFalse(actor.done().isDone(), "logical STOP cannot retire a TCP handle");
+            assertFalse(actor.awaitTermination(100, TimeUnit.MILLISECONDS));
+            assertTrue(tcp.get().completeAfterPhysicalRelease());
+            assertFalse(tcp.get().completeAfterPhysicalRelease(),
+                    "double settlement must be exactly once");
+            assertFalse(actor.done().isDone(), "FFI loan still physically outstanding");
+            Thread foreignDriver = Thread.ofVirtual().start(
+                    () -> assertTrue(ffi.get().completeAfterPhysicalRelease()));
+            foreignDriver.join(3_000);
+            assertFalse(foreignDriver.isAlive());
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(actor.physicalRetirementFailure().isEmpty());
+            ExecutionException cancelled = assertThrows(ExecutionException.class,
+                    () -> actor.done().get(3, TimeUnit.SECONDS));
+            assertInstanceOf(ActorRuntime.ActorCancelledException.class,
+                    cancelled.getCause());
+        }
+    }
+
+    @Test void supervisorCannotJoinUntilChildPhysicalLoanRetires() throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            AtomicReference<ActorRuntime.ActorRef<String>> childRef =
+                    new AtomicReference<>();
+            AtomicReference<ActorPhysicalRetirementRegistry.Receipt> childLoan =
+                    new AtomicReference<>();
+            CountDownLatch acquired = new CountDownLatch(1);
+            var parent = runtime.<String>spawnShared(() -> (message, context) -> {
+                var child = context.runtime().<String>spawnShared(() ->
+                        (childMessage, childContext) -> {
+                            childLoan.set(childContext.runtime()
+                                    .registerCurrentActorPhysicalReceipt(
+                                            ActorPhysicalRetirementRegistry.Kind.FFI_LOAN));
+                            acquired.countDown();
+                        });
+                childRef.set(child);
+                child.send("acquire");
+            });
+            parent.send("spawn");
+            assertTrue(acquired.await(3, TimeUnit.SECONDS));
+            assertNotNull(childRef.get());
+            assertEquals(parent.id(), childRef.get().parentId().orElseThrow());
+
+            assertTrue(parent.cancel());
+            assertFalse(childRef.get().done().isDone());
+            assertFalse(parent.done().isDone(),
+                    "parent supervisor awaits child's actual release, not cancel request");
+            assertFalse(parent.awaitTermination(100, TimeUnit.MILLISECONDS));
+            assertTrue(childLoan.get().completeAfterPhysicalRelease());
+            assertTrue(childRef.get().awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(parent.awaitTermination(3, TimeUnit.SECONDS));
+            assertNotEquals(parent.id(), childLoan.get().actorId());
+        }
+    }
+
+    @Test void failedPhysicalReleaseIsStickyAndCannotBeReclassifiedAsClean() {
+        var signals = new AtomicInteger();
+        var owner = ActorRuntime.ActorId.create();
+        var registry = new ActorPhysicalRetirementRegistry(owner, 22,
+                signals::incrementAndGet);
+        var ticket = registry.register(
+                ActorPhysicalRetirementRegistry.Kind.MUTEX_HANDOFF, false);
+        assertEquals(owner, ticket.actorId());
+        assertEquals(22L, ticket.generation());
+        registry.seal();
+        assertThrows(IllegalStateException.class,
+                () -> registry.register(ActorPhysicalRetirementRegistry.Kind.OTHER, false));
+        var cleanupTicket = registry.register(
+                ActorPhysicalRetirementRegistry.Kind.ASYNC_ITERATOR, true);
+        var failure = new IllegalStateException("native close did not complete");
+        assertTrue(ticket.failPhysicalRelease(failure));
+        assertFalse(ticket.failPhysicalRelease(new IllegalStateException("duplicate")));
+        assertFalse(ticket.completeAfterPhysicalRelease());
+        assertEquals(2, registry.snapshot().pending());
+        assertSame(failure, registry.snapshot().failure());
+        assertTrue(cleanupTicket.completeAfterPhysicalRelease());
+        assertEquals(1, registry.snapshot().pending());
+        assertThrows(IllegalStateException.class, registry::retireVerified,
+                "the failed native loan must keep the arena quarantined");
+        assertEquals(2, signals.get(),
+                "failure and successful retirement each notify lifecycle once");
+    }
+
+    @Test void concurrentlySettledPhysicalTicketCannotUnderflow() throws Exception {
+        var registry = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 1, () -> { });
+        var ticket = registry.register(ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE,
+                false);
+        var entered = new CountDownLatch(2);
+        var begin = new CountDownLatch(1);
+        var success = new AtomicInteger();
+        Runnable settle = () -> {
+            entered.countDown();
+            try {
+                if (!begin.await(3, TimeUnit.SECONDS)) {
+                    throw new AssertionError("test barrier was not released");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(interrupted);
+            }
+            if (ticket.completeAfterPhysicalRelease()) success.incrementAndGet();
+        };
+        Thread a = Thread.ofVirtual().start(settle);
+        Thread b = Thread.ofVirtual().start(settle);
+        assertTrue(entered.await(3, TimeUnit.SECONDS));
+        begin.countDown();
+        a.join(3_000);
+        b.join(3_000);
+        assertFalse(a.isAlive());
+        assertFalse(b.isAlive());
+        assertEquals(1, success.get());
+        assertEquals(0, registry.snapshot().pending());
+        registry.seal();
+        registry.retireVerified();
+        assertTrue(registry.snapshot().retired());
+        assertThrows(IllegalStateException.class, () ->
+                registry.register(ActorPhysicalRetirementRegistry.Kind.OTHER, true),
+                "late physical receipt must not resurrect a finalized generation");
+    }
+}
