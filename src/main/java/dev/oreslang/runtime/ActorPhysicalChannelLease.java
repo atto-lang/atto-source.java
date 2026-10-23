@@ -133,9 +133,13 @@ final class ActorPhysicalChannelLease implements AutoCloseable {
             // The registry callback can now complete the actor's STOP gate.
             // Detach the verified-closed handle before the receipt can
             // retire the actor. Separately admitted I/O loans remain pending.
+            // The descriptor has already physically closed. Publish that
+            // state before invoking owner detach / receipt observers: their
+            // callbacks can synchronously reenter this lease.
+            // This preserves the parent PR #1940's reentrant-close fix.
+            closed = true;
             onClosed.accept(this);
             receipt.completeAfterPhysicalRelease();
-            closed = true;
         } catch (IOException | RuntimeException | Error failure) {
             closeFailure = failure;
             recordFailedPhysicalRelease(failure);
