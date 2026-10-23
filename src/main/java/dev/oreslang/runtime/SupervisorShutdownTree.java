@@ -93,10 +93,19 @@ public final class SupervisorShutdownTree {
         }
 
         private void childFinished(long parentEpoch, long childId, long childEpoch,
-                long observedChildEpoch, boolean failed) {
+                SupervisorLifecycleFsm.State observedChild, boolean failed) {
             synchronized (treeLock) {
                 frozenChildEpochs.requireReceipt(
-                        childId, childEpoch, observedChildEpoch);
+                        childId, childEpoch, observedChild.epoch());
+                // A future which settled abnormally during emergency CONTROL
+                // teardown is NOT proof that the child finished its hooks.
+                // No parent can acknowledge it as a successful/failed logical
+                // retirement without a matching completed child state.
+                if (!observedChild.logicallyStopped()
+                        || observedChild.failed() != failed) {
+                    throw new IllegalStateException(
+                            "parent received child outcome without matching logical retirement");
+                }
                 transition(new SupervisorLifecycleFsm.ChildFinished(
                         parentEpoch, childId, failed));
             }
@@ -608,7 +617,7 @@ public final class SupervisorShutdownTree {
                     // The observed current child generation must agree with
                     // BOTH the frozen parent snapshot and callback's token.
                     node.childFinished(epoch, child.supervisorId, childEpoch,
-                            child.lifecycle.get().epoch(), failure != null);
+                            child.lifecycle.get(), failure != null);
                     if (failure != null) failures.add(failure);
                     stopChildren(node, reason, position - 1, failures);
                 }));
