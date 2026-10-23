@@ -741,6 +741,33 @@ final class RecoveryHandlerChainTest {
         assertTrue(crossOwnerReplay.getMessage().contains("completed guest failure"));
     }
 
+    @Test void completedFailureCannotBeProbedThroughForeignOwnerOrEpoch() {
+        GuestFailure failure = signal(
+                RecoveryHandlerChain.FailureKind.THROW,
+                new Exception("completed"));
+        var owner = RecoveryHandlerChain.<Integer>builder(
+                        TEST_EXECUTION, TEST_CODE_EPOCH)
+                .onThrow((e, next) -> next.resolve(7))
+                .freeze();
+        assertEquals(new RecoveryHandlerChain.Recovered<>(7), owner.dispatch(failure));
+
+        var foreignExecution = RecoveryHandlerChain.<Integer>builder(
+                        ExecutionContext.task(7, 99), TEST_CODE_EPOCH)
+                .onThrow((e, next) -> next.resolve(8))
+                .freeze();
+        var foreignEpoch = RecoveryHandlerChain.<Integer>builder(
+                        TEST_EXECUTION, TEST_CODE_EPOCH + 1)
+                .onThrow((e, next) -> next.resolve(9))
+                .freeze();
+
+        assertThrows(IllegalStateException.class,
+                () -> foreignExecution.dispatch(failure),
+                "completed envelope must fail before owner mismatch is reported");
+        assertThrows(IllegalStateException.class,
+                () -> foreignEpoch.dispatch(failure),
+                "completed envelope must fail before epoch mismatch is reported");
+    }
+
     @Test void handlerFailureSealsOriginalEnvelopeAgainstReuse() {
         GuestFailure failure = signal(
                 RecoveryHandlerChain.FailureKind.RAISE,
