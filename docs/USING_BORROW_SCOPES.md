@@ -55,3 +55,21 @@ malformed borrow calls/aliases, compatibility with using(...) function calls,
 and explicit typechecker rejection. The tests do NOT claim that Oreslang actors
 can execute scoped borrowing or that zero-guest-allocation source benchmarks
 have passed.
+
+## Stage-two compiler preflight (not feature activation)
+
+ScopedRequestBorrowPreflight now traverses the dedicated lexical AST before
+TypeChecker refuses source admission. It conservatively tracks derived aliases
+from view.method()/view.path(), rejects returning those values, rejects shadowing,
+and blocks unknown calls, await, runtime/channel operations, defer, nested
+loans and unsupported storage/control forms. These initial checks intentionally
+may reject otherwise-safe user programs rather than inventing effect summaries.
+
+The evaluator has matching explicit fail-closed checks in synchronous and
+suspendable statement dispatch. Neither path can silently ignore an
+unlowered UsingBorrowStmt. Successful syntactic preflight never makes a
+source program executable: TypeChecker still rejects ALL using borrowed scopes.
+
+Before activation, add typed lifetime projections (method/path must not become
+heap String implicitly), source-level no-escape/loan-pinning rules, trusted actor
+incarnation context, all terminal unwind cases, and parity in LLVM.
