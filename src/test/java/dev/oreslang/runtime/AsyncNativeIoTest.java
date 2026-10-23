@@ -235,6 +235,43 @@ class AsyncNativeIoTest {
         assertEquals(0, neverStarted.get());
     }
 
+    @Test void swallowedRuntimeSubscriberExceptionMustQuarantinePhysicalRetirement()
+            throws Exception {
+        var executor = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>());
+        var io = new AsyncNativeIo(1, executor);
+        var entered = new CountDownLatch(1);
+        var exit = new CountDownLatch(1);
+        var healthySiblingCalled = new CountDownLatch(1);
+        var callbackFailure = new IllegalStateException(
+                "trusted native release notifier failed");
+        var operation = io.submit("notifier-physical-failure", () -> {
+            entered.countDown();
+            while (exit.getCount() != 0) {
+                try { exit.await(20, TimeUnit.MILLISECONDS); }
+                catch (InterruptedException ignored) { /* physical worker */ }
+            }
+            return 1;
+        });
+        operation.whenCompleteRuntime((value, failure) -> {
+            throw callbackFailure;
+        });
+        operation.whenCompleteRuntime((value, failure) -> healthySiblingCalled.countDown());
+        try {
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            io.close();
+        } finally {
+            exit.countDown();
+        }
+        assertTrue(executor.awaitTermination(3, TimeUnit.SECONDS));
+        assertTrue(healthySiblingCalled.await(3, TimeUnit.SECONDS),
+                "a throwing notifier cannot suppress healthy sibling subscribers");
+        assertSame(callbackFailure, operation.runtimeNotificationFailure());
+        assertSame(callbackFailure, io.physicalShutdownFailure());
+        assertFalse(io.physicalShutdown().isDone(),
+                "a swallowed host cleanup failure cannot forge clean context retirement");
+    }
+
     @Test void physicalShutdownWaitsForTerminalSubscriberDrain()
             throws Exception {
         var io = new AsyncNativeIo(1);
