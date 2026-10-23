@@ -7085,6 +7085,15 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        // The dedicated host close lane is not a guest actor pool and is
+        // terminated only after the actor retirement join. If a native close
+        // stalls, interrupt the lane and fail closed rather than falsely
+        // publishing successful runtime shutdown.
+        physicalCloseDispatcher.shutdown();
+        if (!stillRunning.isEmpty() || !dispatchersTerminated || interrupted) {
+            physicalCloseDispatcher.shutdownNow();
+        }
+
         for (ActorGroup group : List.copyOf(actorGroups.values())) group.closeFromRuntime();
         actorGroups.clear();
         for (ActorOutputStream<?> stream : List.copyOf(actorOutputStreams)) {
@@ -7644,7 +7653,8 @@ public final class ActorRuntime implements AutoCloseable {
                                 physical.failure()));
                 return;
             }
-            if (physical.pending() != 0 || physical.inFlightNotifications() != 0) {
+            if (physical.pending() != 0 || physical.inFlightNotifications() != 0
+                    || !physicalChannelLeases.isEmpty()) {
                 // Keep ActorCell, arena and all shared/native loans alive.
                 // Removing the last receipt from pending is not enough while
                 // its physical host callback is still running.
