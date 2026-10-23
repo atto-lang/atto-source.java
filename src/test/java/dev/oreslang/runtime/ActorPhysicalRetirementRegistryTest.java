@@ -219,6 +219,85 @@ final class ActorPhysicalRetirementRegistryTest {
                 "failed real descriptor close may not be silently reported as retirement");
     }
 
+    @Test void actualAsyncFileReadCallbackMustExitAfterStopBeforeActorDone()
+            throws Exception {
+        var file = java.nio.file.Files.createTempFile("ores-actor-physical-", ".bin");
+        java.nio.file.Files.write(file, new byte[] { 9, 8, 7, 6 });
+        var callbackEntered = new CountDownLatch(1);
+        var allowCallbackExit = new CountDownLatch(1);
+        var callbackFailure = new AtomicReference<Throwable>();
+        try (var runtime = new ActorRuntime();
+             var channel = java.nio.channels.AsynchronousFileChannel.open(
+                     file, java.nio.file.StandardOpenOption.READ)) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> { });
+            runtime.registerActorPhysicalChannelFromDriver(
+                    actor, channel, ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE);
+            java.nio.channels.CompletionHandler<Integer, Void> delegate =
+                    new java.nio.channels.CompletionHandler<>() {
+                        private void drain() {
+                            callbackEntered.countDown();
+                            try {
+                                if (!allowCallbackExit.await(5, TimeUnit.SECONDS)) {
+                                    callbackFailure.set(new IllegalStateException(
+                                            "native read callback exit was withheld"));
+                                }
+                            } catch (InterruptedException interrupted) {
+                                Thread.currentThread().interrupt();
+                                callbackFailure.set(interrupted);
+                            }
+                        }
+                        @Override public void completed(Integer n, Void ignored) { drain(); }
+                        @Override public void failed(Throwable t, Void ignored) { drain(); }
+                    };
+            var receipt = runtime.<Integer, Void>registerActorIoCompletionFromDriver(
+                    actor, ActorPhysicalRetirementRegistry.Kind.OTHER, delegate);
+            var bytes = java.nio.ByteBuffer.allocate(4);
+            channel.read(bytes, 0L, null, receipt);
+            try {
+                assertTrue(callbackEntered.await(3, TimeUnit.SECONDS));
+                assertTrue(actor.cancel());
+                assertFalse(actor.done().isDone(),
+                        "Channel.close is not an in-flight read callback exit");
+                assertEquals(Integer.valueOf(1),
+                        actor.pendingPhysicalRetirementsByKind().get("OTHER"));
+                assertFalse(actor.awaitTermination(100, TimeUnit.MILLISECONDS));
+            } finally {
+                allowCallbackExit.countDown();
+            }
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertNull(callbackFailure.get());
+            assertFalse(channel.isOpen());
+            assertTrue(actor.pendingPhysicalRetirementsByKind().isEmpty());
+        } finally {
+            java.nio.file.Files.deleteIfExists(file);
+        }
+    }
+
+    @Test void failingNativeCallbackKeepsActorQuarantined() throws Exception {
+        var runtime = new ActorRuntime();
+        var actor = runtime.<String>spawnShared(() -> (message, context) -> { });
+        var callbackError = new IllegalStateException("host callback retained native pointer");
+        java.nio.channels.CompletionHandler<Integer, Void> broken =
+                new java.nio.channels.CompletionHandler<>() {
+                    @Override public void completed(Integer n, Void ignored) {
+                        throw callbackError;
+                    }
+                    @Override public void failed(Throwable t, Void ignored) {
+                        throw callbackError;
+                    }
+                };
+        var callback = runtime.<Integer, Void>registerActorIoCompletionFromDriver(
+                actor, ActorPhysicalRetirementRegistry.Kind.FFI_LOAN, broken);
+        assertTrue(actor.cancel());
+        assertSame(callbackError, assertThrows(IllegalStateException.class,
+                () -> callback.completed(1, null)));
+        assertSame(callbackError, actor.physicalRetirementFailure().orElseThrow());
+        assertEquals(Integer.valueOf(1),
+                actor.pendingPhysicalRetirementsByKind().get("FFI_LOAN"));
+        assertFalse(actor.done().isDone());
+        assertThrows(IllegalStateException.class, runtime::close);
+    }
+
     @Test void hostDriverCanPreRegisterButCannotRegisterAfterStop() throws Exception {
         try (var runtime = new ActorRuntime();
              var foreignRuntime = new ActorRuntime()) {
