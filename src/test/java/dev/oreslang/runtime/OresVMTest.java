@@ -55,8 +55,8 @@ final class OresVMTest {
             assertTrue(runningFinished.await(3, TimeUnit.SECONDS));
             assertEquals(1, runningStarted.get());
             assertEquals(0, queuedRan.get(), "cancelled-before-start job must never run");
-            assertEquals(1, onDiscard.get(), "shutdown must deliver exactly one failure receipt");
-            assertEquals(0, onDiscard.get() - 1);
+            assertEquals(1, onDiscard.get(),
+                    "shutdown must deliver exactly one failure receipt");
             org.junit.jupiter.api.Assertions.assertNull(unexpected.get(),
                     () -> String.valueOf(unexpected.get()));
         } finally {
