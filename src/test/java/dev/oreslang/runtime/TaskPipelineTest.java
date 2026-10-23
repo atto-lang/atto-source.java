@@ -626,6 +626,40 @@ final class TaskPipelineTest {
     }
 
     @Test
+    void implicitParentAuthorityCannotCrossIntoAnUnrelatedScheduler()
+            throws Exception {
+        AtomicInteger stageCalls = new AtomicInteger();
+        OresFuture<Integer> borrowed = OresFuture.completed(31);
+        try (OresScheduler owner = new OresScheduler(1);
+             OresScheduler foreign = new OresScheduler(1)) {
+            TaskHandle<Boolean> parent = owner.startTracked(resume -> {
+                assertTrue(resume.initial());
+                IllegalStateException pipelineError = assertThrows(
+                        IllegalStateException.class,
+                        () -> TaskPipeline.startInCurrentTaskOrRoot(
+                                foreign, borrowed,
+                                List.of(value -> {
+                                    stageCalls.incrementAndGet();
+                                    return value;
+                                })));
+                assertTrue(pipelineError.getMessage().contains("scheduler domains"));
+
+                IllegalStateException taskError = assertThrows(
+                        IllegalStateException.class,
+                        () -> foreign.startTrackedInCurrentTaskOrRoot(
+                                nested -> OresScheduler.done(42)));
+                assertTrue(taskError.getMessage().contains("scheduler domains"));
+                return OresScheduler.done(true);
+            });
+            assertEquals(true, parent.result().get(5, TimeUnit.SECONDS));
+            assertInstanceOf(TaskHandle.Success.class,
+                    parent.getDone().get(5, TimeUnit.SECONDS));
+            assertEquals(0, stageCalls.get());
+            assertFalse(borrowed.isCancelled());
+        }
+    }
+
+    @Test
     void aTrackedRootMayStartPipelineWithoutAnExistingParentTask()
             throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
