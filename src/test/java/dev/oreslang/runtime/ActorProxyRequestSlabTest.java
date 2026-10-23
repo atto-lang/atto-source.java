@@ -224,9 +224,10 @@ final class ActorProxyRequestSlabTest {
                             if (message == 2) {
                                 assertThrows(SecurityException.class, slab::close);
                             } else {
-                                assertThrows(SecurityException.class, () -> slab.pin(request.get()));
-                            assertThrows(SecurityException.class,
-                                    () -> slab.settle(1L, request.get(), receipt.get()));
+                                assertThrows(SecurityException.class,
+                                        () -> slab.pin(request.get()));
+                                assertThrows(SecurityException.class,
+                                        () -> slab.settle(1L, request.get(), receipt.get()));
                             }
                         } catch (Throwable t) { failure.set(t); }
                         finally {
