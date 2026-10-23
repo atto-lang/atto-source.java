@@ -2,6 +2,10 @@ package dev.oreslang.runtime;
 
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -40,6 +44,12 @@ public final class AsyncNativeIo implements AutoCloseable {
     private final Set<Operation<?>> pending = new HashSet<>();
     private final Set<Operation<?>> controls = new HashSet<>();
     private final Set<AutoCloseable> resources = new HashSet<>();
+    /** Identity, not equals/hashCode: each registered native handle is unique. */
+    private final Map<AutoCloseable, ResourceLeaseState> resourceLoans =
+            new IdentityHashMap<>();
+    private final AtomicLong nextResourceGeneration = new AtomicLong();
+    private final AtomicLong nextLoanGeneration = new AtomicLong();
+    private final ThreadLocal<ActorRuntime.ActorId> currentOperationActor = new ThreadLocal<>();
     /** A resource unregistered while workers have loans stays reachable. */
     private final Set<AutoCloseable> deferredUnregister = new HashSet<>();
     private final Object shutdownLock = new Object();
@@ -51,6 +61,81 @@ public final class AsyncNativeIo implements AutoCloseable {
     /** Guarded by shutdownLock; resource.close() may itself call this.close(). */
     private boolean resourceCloseActive;
     private Throwable incompleteReceipt;
+
+    /** Immutable receipt identity; actorId is null for root/host operations. */
+    record IoLoanIdentity(long resourceGeneration, long loanGeneration,
+            ActorRuntime.ActorId actorId) { }
+
+    private static final class ResourceLeaseState {
+        final long generation;
+        final AutoCloseable resource;
+        final ActorRuntime.ActorId registeredBy;
+        int active;
+        boolean unregistered;
+        ResourceLeaseState(long generation, AutoCloseable resource,
+                ActorRuntime.ActorId registeredBy) {
+            this.generation = generation;
+            this.resource = resource;
+            this.registeredBy = registeredBy;
+        }
+    }
+
+    /**
+     * Physical resource loan. An old generation or repeated close has no
+     * authority to retire a new resource registration.
+     */
+    final class IoLoan implements AutoCloseable {
+        private final ResourceLeaseState lease;
+        private final IoLoanIdentity identity;
+        private final AtomicBoolean released = new AtomicBoolean();
+
+        private IoLoan(ResourceLeaseState lease, IoLoanIdentity identity) {
+            this.lease = lease;
+            this.identity = identity;
+        }
+
+        IoLoanIdentity identity() { return identity; }
+
+        @Override public void close() {
+            if (!released.compareAndSet(false, true)) {
+                throw new IllegalStateException("duplicate physical I/O loan receipt");
+            }
+            synchronized (AsyncNativeIo.this) {
+                if (resourceLoans.get(lease.resource) != lease
+                        || lease.generation != identity.resourceGeneration()
+                        || lease.active <= 0) {
+                    recordIncomplete(new IllegalStateException(
+                            "stale physical I/O loan generation/underflow"));
+                    throw new IllegalStateException(
+                            "stale physical I/O loan cannot retire a resource");
+                }
+                lease.active--;
+                if (lease.active == 0 && lease.unregistered) {
+                    resourceLoans.remove(lease.resource);
+                    deferredUnregister.remove(lease.resource);
+                }
+                AsyncNativeIo.this.notifyAll();
+            }
+        }
+    }
+
+    /**
+     * Acquire a loan before touching a registered native resource. The worker
+     * incarnation is captured when I/O is admitted on its actor carrier,
+     * then restored on the host I/O worker; it is not inferred from threads.
+     */
+    synchronized IoLoan borrow(AutoCloseable resource) {
+        ResourceLeaseState state = resourceLoans.get(Objects.requireNonNull(resource));
+        if (closed || state == null || state.unregistered) {
+            throw new RejectedExecutionException(
+                    "native resource is closed, unregistered or shutdown-sealed");
+        }
+        state.active++;
+        ActorRuntime.ActorId actorId = currentOperationActor.get();
+        if (actorId == null) actorId = ActorRuntime.currentActorId().orElse(null);
+        return new IoLoan(state, new IoLoanIdentity(
+                state.generation, nextLoanGeneration.incrementAndGet(), actorId));
+    }
 
     public AsyncNativeIo() { this(128); }
 
@@ -106,7 +191,9 @@ public final class AsyncNativeIo implements AutoCloseable {
             return result;
         }
 
-        Operation<T> op = new Operation<>(operation, work, result, admitted);
+        Operation<T> op = new Operation<>(
+                operation, work, result, admitted,
+                ActorRuntime.currentActorId().orElse(null));
         admitted.add(op); // Reserve before publishing work to any executor.
         long queuedAt = CorePerf.start();
         op.queuedAt = queuedAt;
@@ -126,16 +213,18 @@ public final class AsyncNativeIo implements AutoCloseable {
         private final Callable<T> work;
         private final OresFuture<T> completion;
         private final Set<Operation<?>> owner;
+        private final ActorRuntime.ActorId admittedActor;
         private final AtomicReference<OperationState> state =
                 new AtomicReference<>(OperationState.ADMITTED);
         private long queuedAt;
 
         private Operation(String operation, Callable<T> work, OresFuture<T> completion,
-                Set<Operation<?>> owner) {
+                Set<Operation<?>> owner, ActorRuntime.ActorId admittedActor) {
             this.operation = operation;
             this.work = work;
             this.completion = completion;
             this.owner = owner;
+            this.admittedActor = admittedActor;
         }
 
         @Override public void run() {
@@ -146,12 +235,14 @@ public final class AsyncNativeIo implements AutoCloseable {
             T value = null;
             Throwable failure = null;
             try {
+                if (admittedActor != null) currentOperationActor.set(admittedActor);
                 value = work.call();
             } catch (Throwable caught) {
                 failure = caught;
                 CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_FAILED, 1L);
                 SourceBoundaryTrace.record(caught, "native:io", operation, "I/O");
             } finally {
+                currentOperationActor.remove();
                 CorePerf.end(CorePerf.ASYNC_IO_WORK, workPerf);
             }
 
@@ -223,6 +314,10 @@ public final class AsyncNativeIo implements AutoCloseable {
 
     synchronized void register(AutoCloseable resource) throws Exception {
         Objects.requireNonNull(resource);
+        if (resourceLoans.containsKey(resource)) {
+            throw new IllegalStateException(
+                    "duplicate registration or stale native resource generation");
+        }
         if (closed) {
             if (resourcesRetired) {
                 // The full worker and resource join already completed.
@@ -238,14 +333,26 @@ public final class AsyncNativeIo implements AutoCloseable {
             // native handle before all context loans have exited. Retain it
             // for the post-join resource sweep and reject publication.
             resources.add(resource);
+            resourceLoans.put(resource, new ResourceLeaseState(
+                    nextResourceGeneration.incrementAndGet(), resource,
+                    ActorRuntime.currentActorId().orElse(null)));
             throw new IllegalStateException("I/O context closed");
         }
         resources.add(resource);
+        resourceLoans.put(resource, new ResourceLeaseState(
+                nextResourceGeneration.incrementAndGet(), resource,
+                ActorRuntime.currentActorId().orElse(null)));
     }
 
     synchronized void unregister(AutoCloseable resource) {
-        if (resources.remove(resource) && (!pending.isEmpty() || !controls.isEmpty())) {
+        ResourceLeaseState state = resourceLoans.get(resource);
+        if (state == null || state.unregistered) return;
+        state.unregistered = true;
+        resources.remove(resource);
+        if (state.active != 0) {
             deferredUnregister.add(resource);
+        } else {
+            resourceLoans.remove(resource);
         }
     }
 
