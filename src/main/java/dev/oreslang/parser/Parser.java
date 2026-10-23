@@ -1152,30 +1152,59 @@ public final class Parser {
             throw error(peek(), "static class functions do not have a self receiver");
         }
 
-        // Pointerless receiver effects:
+        // A leading receiver is never a value parameter or overload discriminator:
+        //   method(self, Type value)       -> default read-only receiver
+        //   method(self)                   -> default read-only receiver, zero args
+        //   method(mut self, Type value)   -> mutable receiver
+        // Legacy two-parenthesis forms remain supported:
         //   method(mut self)(params)       -> mutable receiver
-        //   method(self Foo)(params)       -> explicit read receiver
-        // Ordinary methods without either form receive read-only self.
+        //   method(self Foo)(params)       -> explicitly typed receiver
+        // Ordinary instance methods without a receiver marker also receive self.
         int parameterStart = current;
         boolean explicitReceiver = false;
+        boolean inlineReceiver = false;
+        boolean inlineReceiverComma = false;
         if (mutableReceiver) {
             advance(); // mut
             consume(SELF, "mutable receiver syntax is 'mut self'");
-            Ast.TypeRef target = check(RPAREN) ? Ast.TypeRef.simple("self") : parseTypeRef();
-            receiverType = Ast.TypeRef.borrowed(target, true);
-            explicitReceiver = true;
+            if (match(COMMA)) {
+                inlineReceiver = true;
+                inlineReceiverComma = true;
+            } else if (check(RPAREN) && !checkNext(LPAREN)) {
+                inlineReceiver = true;
+            } else {
+                Ast.TypeRef target = check(RPAREN) ? Ast.TypeRef.simple("self") : parseTypeRef();
+                receiverType = Ast.TypeRef.borrowed(target, true);
+                explicitReceiver = true;
+            }
+            if (inlineReceiver) {
+                receiverType = Ast.TypeRef.borrowed(Ast.TypeRef.simple("self"), true);
+            }
         } else if (check(SELF)) {
             advance();
-            Ast.TypeRef candidateReceiver = parseTypeRef();
-            if (check(RPAREN) && checkNext(LPAREN)) {
-                receiverType = candidateReceiver;
-                explicitReceiver = true;
+            if (match(COMMA)) {
+                inlineReceiver = true;
+                inlineReceiverComma = true;
+            } else if (check(RPAREN) && !checkNext(LPAREN)) {
+                inlineReceiver = true;
             } else {
-                current = parameterStart;
+                Ast.TypeRef candidateReceiver = parseTypeRef();
+                if (check(RPAREN) && checkNext(LPAREN)) {
+                    receiverType = candidateReceiver;
+                    explicitReceiver = true;
+                } else {
+                    current = parameterStart;
+                }
             }
         }
 
-        if (explicitReceiver) {
+        if (inlineReceiver) {
+            if (inlineReceiverComma && check(RPAREN)) {
+                throw error(peek(), "receiver 'self' must be followed by a value parameter after ','");
+            }
+            params = parseParametersUntil(RPAREN);
+            consume(RPAREN, "expected ')' after inline self receiver and method parameters");
+        } else if (explicitReceiver) {
             consume(RPAREN, "expected ')' after explicit self receiver");
             consume(LPAREN, mutableReceiver
                     ? "explicit mutable receiver form is method(mut self)(params)"
@@ -3637,6 +3666,7 @@ public final class Parser {
     }
 
     private Ast.Expr parseRuntimeExpression() {
+        boolean mutableBorrow = match(MUT);
         Token operation;
         if (match(YIELD)) {
             operation = previous(); // compatibility spelling: rt yield
@@ -3645,6 +3675,9 @@ public final class Parser {
         }
 
         String name = operation.lexeme();
+        if (mutableBorrow && !name.equals("borrow")) {
+            throw error(operation, "expected borrow after 'rt mut'");
+        }
         if (operation.type() == YIELD || name.equals("yield") || name.equals("cooperate")) {
             if (match(LPAREN)) {
                 if (!check(RPAREN)) {
@@ -3665,6 +3698,7 @@ public final class Parser {
 
         // Mutable borrows use the same ownership checks as the legacy spelling.
         if (name.equals("borrow") && match(MUT)) {
+            if (mutableBorrow) throw error(previous(), "duplicate mut borrow qualifier");
             return new Ast.UnaryExpr("&mut", parseUnary());
         }
         Ast.Expr argument;
@@ -3678,7 +3712,8 @@ public final class Parser {
             // Command form has unary precedence: rt borrow value.member
             argument = parseUnary();
         }
-        return new Ast.RuntimeCallExpr(name, List.of(argument));
+        return mutableBorrow ? new Ast.UnaryExpr("&mut", argument)
+                : new Ast.RuntimeCallExpr(name, List.of(argument));
     }
 
     private Ast.Expr parseChannelOperation(
