@@ -284,6 +284,39 @@ class AsyncNativeIoTest {
         }
     }
 
+    @Test void lateRegistrationDuringResourceCloseKeepsContextQuarantinedUntilRetry()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        var firstClosed = new java.util.concurrent.atomic.AtomicInteger();
+        var lateClosed = new java.util.concurrent.atomic.AtomicInteger();
+        try {
+            io.register(() -> {
+                firstClosed.incrementAndGet();
+                // A callback may swallow the expected registration failure.
+                // Its late handle is still retained by register(), but was
+                // absent from the closing resources snapshot.
+                assertThrows(IllegalStateException.class,
+                        () -> io.register(lateClosed::incrementAndGet));
+            });
+            IllegalStateException incomplete =
+                    assertThrows(IllegalStateException.class, io::close);
+            assertTrue(incomplete.getMessage().contains("context quarantined"));
+            assertInstanceOf(IllegalStateException.class, incomplete.getCause());
+            assertTrue(incomplete.getCause().getMessage()
+                    .contains("resources remain after post-join close sweep"));
+            assertEquals(1, firstClosed.get());
+            assertEquals(0, lateClosed.get(),
+                    "the retained handle must not be silently abandoned");
+            io.close();
+            assertEquals(1, firstClosed.get(), "retired resource cannot close twice");
+            assertEquals(1, lateClosed.get(), "retry must close the late handle");
+            io.close();
+            assertEquals(1, lateClosed.get(), "fully retired close is idempotent");
+        } finally {
+            io.close();
+        }
+    }
+
     @Test void resourceCloseCallbackCannotRecursivelyCloseItsNativeContext()
             throws Exception {
         var io = new AsyncNativeIo(1);
