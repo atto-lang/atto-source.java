@@ -1104,7 +1104,8 @@ public final class TreeShaker {
             if (declaration instanceof Ast.ModelDecl model) {
                 return model.visibility() == Ast.Visibility.PUBLIC;
             }
-            return declaration instanceof Ast.TypeAliasDecl;
+            return declaration instanceof Ast.TypeAliasDecl alias
+                    && alias.visibility() == Ast.Visibility.PUBLIC;
         }
 
         private void markRoot(String id) {
