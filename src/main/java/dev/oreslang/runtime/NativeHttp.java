@@ -99,6 +99,47 @@ public final class NativeHttp implements AutoCloseable {
         }
         public synchronized long created() { supervisor(); return created; }
         public synchronized long reused() { supervisor(); return reused; }
+        /** True only for worker pools which can be warmed before routing publication. */
+        public boolean pooled() { return workers != null; }
+
+        /**
+         * Prestart each pooled worker and verify its actual actor ready receipt.
+         * A failed startup cannot certify a candidate for routing publication.
+         * The returned Future is host-owned; no carrier thread is parked.
+         */
+        OresFuture<Void> warmup() {
+            supervisor();
+            if (workers == null) throw new IllegalStateException("rolling handler must be pooled");
+            final java.util.List<Worker> prepared = new java.util.ArrayList<>();
+            synchronized (this) {
+                for (int index = 0; index < workers.length; index++) {
+                    // worker() round-robins through each slot, reusing healthy ones.
+                    prepared.add(worker());
+                }
+            }
+            OresFuture<Void> receipt = new OresFuture<>();
+            java.util.concurrent.atomic.AtomicInteger pending =
+                    new java.util.concurrent.atomic.AtomicInteger(prepared.size());
+            for (Worker instance : prepared) {
+                instance.actor.ready().whenCompleteRuntime((ignored, failure) -> {
+                    if (failure != null || !context.actors().isAlive(instance.actor)) {
+                        receipt.failFromRuntime(failure == null
+                                ? new IllegalStateException("warmed worker exited")
+                                : OresFuture.unwrap(failure));
+                    } else if (pending.decrementAndGet() == 0) {
+                        receipt.completeFromRuntime(null);
+                    }
+                });
+            }
+            return receipt;
+        }
+
+        /** Stop an unpublished failed/stale pool; never use for active retirement. */
+        void stopUnpublishedPool() {
+            supervisor();
+            if (workers == null) return;
+            stopPool();
+        }
         private synchronized Worker worker() {
             int slot = cursor;
             cursor = (cursor + 1) % workers.length;
@@ -203,6 +244,7 @@ public final class NativeHttp implements AutoCloseable {
         private final ArrayDeque<Exchange> pending = new ArrayDeque<>();
         private final Set<State> active = ConcurrentHashMap.newKeySet();
         private OresFuture<Object> waiter;
+        private NativeHttpRollingDispatcher rollingOwner;
         private boolean stopped, transportStopped;
         private OresFuture<Object> drained;
         private final AtomicLong accepted = new AtomicLong(), rejected = new AtomicLong(), completed = new AtomicLong();
@@ -241,8 +283,29 @@ public final class NativeHttp implements AutoCloseable {
         public long completed() { supervisor(); return completed.get(); }
         public int active() { supervisor(); return active.size(); }
 
+        /** A rolling dispatcher exclusively owns this listener's accept lane. */
+        synchronized void claimRollingDispatcher(NativeHttpRollingDispatcher owner) {
+            supervisor();
+            Objects.requireNonNull(owner);
+            if (stopped || rollingOwner != null || waiter != null || !pending.isEmpty())
+                throw new IllegalStateException("HTTP accept lane already owned or closed");
+            rollingOwner = owner;
+        }
+        synchronized void releaseRollingDispatcher(NativeHttpRollingDispatcher owner) {
+            if (rollingOwner == owner) rollingOwner = null;
+        }
+        synchronized OresFuture<Object> acceptForRolling(NativeHttpRollingDispatcher owner) {
+            if (rollingOwner != owner)
+                throw new SecurityException("unowned HTTP rolling accept");
+            return acceptOwned();
+        }
         public synchronized OresFuture<Object> accept() {
             supervisor();
+            if (rollingOwner != null)
+                throw new IllegalStateException("HTTP accept lane reserved by rolling dispatcher");
+            return acceptOwned();
+        }
+        private OresFuture<Object> acceptOwned() {
             if (stopped) return OresFuture.failed(new IllegalStateException("HTTP server closed"));
             if (waiter != null) throw new IllegalStateException("only one pending HTTP accept is permitted");
             Exchange exchange = pending.poll();
