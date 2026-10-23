@@ -630,4 +630,101 @@ final class ActorPhysicalRetirementRegistryTest {
                 registry.register(ActorPhysicalRetirementRegistry.Kind.OTHER, true),
                 "late physical receipt must not resurrect a finalized generation");
     }
+
+    @Test void rejectedStopCloseWithThrowingNotifierDoesNotSkipSiblingClosures() {
+        var notifierFailure = new IllegalStateException("actor retirement observer failed");
+        var rejected = new java.util.concurrent.RejectedExecutionException(
+                "close executor queue is saturated");
+        var broken = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 1, () -> { throw notifierFailure; });
+        var brokenReceipt = broken.register(
+                ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE, false);
+        java.nio.channels.Channel stuck = new java.nio.channels.Channel() {
+            @Override public boolean isOpen() { return true; }
+            @Override public void close() {
+                throw new AssertionError("rejected close must not execute");
+            }
+        };
+        var failedLease = new ActorPhysicalChannelLease(stuck, brokenReceipt,
+                ignored -> { });
+
+        var good = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 2, () -> { });
+        var goodReceipt = good.register(
+                ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE, false);
+        var actuallyClosed = new java.util.concurrent.atomic.AtomicBoolean();
+        java.nio.channels.Channel working = new java.nio.channels.Channel() {
+            @Override public boolean isOpen() { return !actuallyClosed.get(); }
+            @Override public void close() { actuallyClosed.set(true); }
+        };
+        var nextLease = new ActorPhysicalChannelLease(working, goodReceipt,
+                ignored -> { });
+        broken.seal();
+        good.seal();
+
+        // Simulates the sequential STOP loop: a notification failure on one
+        // executor rejection may not prevent attempting the next close.
+        assertDoesNotThrow(() -> {
+            failedLease.requestCloseOnActorStop(command -> { throw rejected; });
+            nextLease.requestCloseOnActorStop(Runnable::run);
+        });
+        assertTrue(actuallyClosed.get(), "remaining channel closure was skipped");
+        assertEquals(0, good.snapshot().pending());
+        assertSame(rejected, broken.snapshot().failure());
+        assertEquals(1, broken.snapshot().pending());
+        assertArrayEquals(new Throwable[] { notifierFailure }, rejected.getSuppressed());
+        assertThrows(IllegalStateException.class, broken::retireVerified);
+        good.retireVerified();
+    }
+
+    @Test void throwingSecondChannelProbeAfterRegistrationMustQuarantineActor() {
+        var secondProbeFailed = new IllegalStateException(
+                "host channel closed during admission");
+        var probes = new AtomicInteger();
+        java.nio.channels.Channel badProbe = new java.nio.channels.Channel() {
+            @Override public boolean isOpen() {
+                if (probes.incrementAndGet() == 2) throw secondProbeFailed;
+                return true;
+            }
+            @Override public void close() { }
+        };
+        var runtime = new ActorRuntime();
+        var actor = runtime.<String>spawnShared(
+                () -> (message, context) -> { });
+        assertSame(secondProbeFailed, assertThrows(IllegalStateException.class,
+                () -> runtime.registerActorPhysicalChannelFromDriver(
+                        actor, badProbe,
+                        ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE)));
+        assertEquals(2, probes.get());
+        assertTrue(actor.cancel());
+        assertSame(secondProbeFailed, actor.physicalRetirementFailure().orElseThrow());
+        assertEquals(Integer.valueOf(1), actor.pendingPhysicalRetirementsByKind()
+                .get("TCP_HTTP_HANDLE"));
+        assertFalse(actor.done().isDone(), "unproven channel handoff cannot permit DONE");
+        assertThrows(IllegalStateException.class, runtime::close,
+                "host probe exceptions after ticket admission must fail closed");
+    }
+
+    @Test void throwingCloseNotifierMustPreserveOriginalIoFailure() {
+        var observerFailure = new IllegalStateException("owner notifier");
+        var registry = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 9, () -> { throw observerFailure; });
+        var receipt = registry.register(
+                ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE, false);
+        var kernelFailure = new java.io.IOException("close failed");
+        java.nio.channels.Channel channel = new java.nio.channels.Channel() {
+            @Override public boolean isOpen() { return true; }
+            @Override public void close() throws java.io.IOException {
+                throw kernelFailure;
+            }
+        };
+        var lease = new ActorPhysicalChannelLease(channel, receipt, ignored -> { });
+        registry.seal();
+        assertSame(kernelFailure, assertThrows(java.io.IOException.class, lease::close));
+        assertSame(kernelFailure, registry.snapshot().failure());
+        assertArrayEquals(new Throwable[] { observerFailure },
+                kernelFailure.getSuppressed());
+        assertEquals(1, registry.snapshot().pending());
+        assertThrows(IllegalStateException.class, registry::retireVerified);
+    }
 }
