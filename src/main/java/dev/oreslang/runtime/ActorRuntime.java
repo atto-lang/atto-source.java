@@ -7206,6 +7206,8 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean pendingOperationRevocationPending;
         /** Physical terminal-notification receipts for Futures owned before STOP. */
         private int pendingStopFutureNotifications;
+        /** Terminal notification drains for public mailbox observers detached at STOP. */
+        private int pendingStopDrainNotifications;
         /** STOP has sealed admission and may execute only existing SourceTasks. */
         private boolean sourceStopCleanupActive;
         /** Any failed cleanup submission quarantines actor state. */
@@ -7519,6 +7521,7 @@ public final class ActorRuntime implements AutoCloseable {
                     || sourceStopCleanupPending
                     || pendingOperationRevocationPending
                     || pendingStopFutureNotifications != 0
+                    || pendingStopDrainNotifications != 0
                     || pendingCleanupFutures != 0
                     || activeTurns != 0
                     || scheduled.get()
@@ -8213,6 +8216,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // one while holding lifecycleLock.
                 failedDrainWaiters = List.copyOf(pendingDrains);
                 pendingDrains.clear();
+                pendingStopDrainNotifications = failedDrainWaiters.size();
                 if (cause == null) mailbox.close();
                 else mailbox.close(cause);
                 continuationMailbox.close(cause);
@@ -8229,13 +8233,6 @@ public final class ActorRuntime implements AutoCloseable {
                 pendingOperations.clear();
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
-            }
-
-            // Runtime Future callbacks can take other actor/lifecycle locks.
-            // Publish failure only after teardown has released lifecycleLock.
-            Throwable drainFailure = cause == null ? terminated(ref) : cause;
-            for (DrainWaiter waiter : failedDrainWaiters) {
-                waiter.completion().failFromRuntime(drainFailure);
             }
 
             // Propagate structured STOP to children before parent-owned
@@ -8386,6 +8383,55 @@ public final class ActorRuntime implements AutoCloseable {
                 if (admissionFailure == null) schedule();
             }
 
+            // Drain observer settlement is intentionally LAST. Host waiter
+            // callbacks are synchronous and may block indefinitely, so they
+            // cannot precede child STOP propagation, owned-Future revocation,
+            // or scheduler lexical-cancellation requests. Track their physical
+            // notification drains separately from guest resource receipts.
+            Throwable drainFailure = cause == null ? terminated(ref) : cause;
+            Throwable drainPublishFailure = null;
+            for (DrainWaiter waiter : failedDrainWaiters) {
+                OresFuture<Void> observer = waiter.completion();
+                try {
+                    observer.whenNotificationsDrainedRuntime(() -> {
+                        synchronized (lifecycleLock) {
+                            if (pendingStopDrainNotifications <= 0) {
+                                sourceStopCleanupAborted = true;
+                                ref.terminationCause.compareAndSet(null,
+                                        new OresScheduler.CleanupIncompleteError(
+                                                "actor STOP drain observer receipt underflow"));
+                                lifecycleLock.notifyAll();
+                                return;
+                            }
+                            pendingStopDrainNotifications--;
+                            if (stopped.get() && !sourceStopCleanupPending
+                                    && !pendingOperationRevocationPending) {
+                                finalizeStopLocked();
+                            }
+                            lifecycleLock.notifyAll();
+                        }
+                    });
+                    observer.failFromRuntime(drainFailure);
+                } catch (RuntimeException | Error failure) {
+                    // A failed observer registration/settlement cannot count
+                    // as a completed drain. Preserve the count and quarantine,
+                    // but always attempt every remaining observer.
+                    if (drainPublishFailure == null) drainPublishFailure = failure;
+                    else if (drainPublishFailure != failure) {
+                        drainPublishFailure.addSuppressed(failure);
+                    }
+                }
+            }
+            if (drainPublishFailure != null) {
+                synchronized (lifecycleLock) {
+                    sourceStopCleanupAborted = true;
+                    ref.terminationCause.compareAndSet(null,
+                            new OresScheduler.CleanupIncompleteError(
+                                    "actor STOP drain notification failed; quarantine arena",
+                                    drainPublishFailure));
+                    lifecycleLock.notifyAll();
+                }
+            }
         }
     }
 }
