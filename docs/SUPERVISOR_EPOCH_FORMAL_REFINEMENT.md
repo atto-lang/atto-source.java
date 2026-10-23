@@ -59,9 +59,11 @@ TLA+ specification of:
 - watchdog expiration and CONTROL loss are orthogonal sticky observations,
   never successful terminal-state receipts.
 
-TLC config `SupervisorEpochReceipts.cfg` bounds the child to two possible
-epochs and checks type, no early child acknowledgment, no premature parent
-STOPPED, published-generation identity, and no post-fence restart.
+TLC configs `SupervisorEpochReceipts.cfg` and
+`SupervisorEpochReceipts3.cfg` bound the child to two or three possible
+epochs, including two successive child restarts, and check type, no early
+child acknowledgment, no premature parent STOPPED, published-generation
+identity, and no post-fence restart.
 
 Existing sibling/depth-three `SupervisorTree.tla` configurations remain
 complementary: the epoch model is deliberately small and is not an
