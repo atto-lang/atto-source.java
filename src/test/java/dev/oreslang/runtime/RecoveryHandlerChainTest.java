@@ -349,6 +349,34 @@ final class RecoveryHandlerChainTest {
         assertEquals(2, visited.get());
     }
 
+    @Test void reentrancyAbortSealsNestedFailureEnvelope() {
+        @SuppressWarnings("unchecked")
+        RecoveryHandlerChain<Integer>[] holder = (RecoveryHandlerChain<Integer>[])
+                new RecoveryHandlerChain<?>[1];
+        var nestedFailure = new java.util.concurrent.atomic.AtomicReference<GuestFailure>();
+        holder[0] = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
+                .onRaise((e, next) -> {
+                    GuestFailure nested = signal(
+                            RecoveryHandlerChain.FailureKind.RAISE,
+                            new Exception("nested replay"));
+                    nestedFailure.set(nested);
+                    holder[0].dispatch(nested);
+                    next.resolve(1);
+                })
+                .freeze();
+
+        assertThrows(Error.class, () -> holder[0].dispatch(signal(
+                RecoveryHandlerChain.FailureKind.RAISE,
+                new Exception("outer"))));
+
+        var fallback = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
+                .onRaise((e, next) -> next.resolve(2))
+                .freeze();
+        assertThrows(
+                IllegalStateException.class,
+                () -> fallback.dispatch(nestedFailure.get()));
+    }
+
     @Test void indirectCycleAcrossRecoveryChainsIsAlsoDenied() {
         @SuppressWarnings("unchecked")
         RecoveryHandlerChain<Integer>[] holders = (RecoveryHandlerChain<Integer>[])
