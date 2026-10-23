@@ -8373,10 +8373,15 @@ public final class ActorRuntime implements AutoCloseable {
                     try {
                         physicalStopDispatcher.execute(teardown, discarded -> {
                             // A queued task discarded by shutdown did not
-                            // invoke child.cancel(). Record a failed dispatch
-                            // receipt and quarantine the entire parent tree.
+                            // invoke child.cancel(). This receipt MUST report
+                            // failure, even for a buggy dispatcher passing
+                            // null; it must never manufacture a clean release.
+                            Throwable rejected = discarded == null
+                                    ? new IllegalStateException(
+                                            "physical STOP discarded without failure reason")
+                                    : discarded;
                             if (received.compareAndSet(false, true)) {
-                                completeChildStopDispatch(discarded);
+                                completeChildStopDispatch(rejected);
                             } else {
                                 // A broken host may deliver duplicate or
                                 // conflicting callbacks. Never treat that as
@@ -8384,7 +8389,7 @@ public final class ActorRuntime implements AutoCloseable {
                                 quarantineChildStopFailure(
                                         new IllegalStateException(
                                                 "duplicate physical STOP discard receipt",
-                                                discarded));
+                                                rejected));
                             }
                         });
                     } catch (RuntimeException | Error admissionFailure) {
