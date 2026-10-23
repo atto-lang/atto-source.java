@@ -5,6 +5,8 @@ import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -110,6 +112,10 @@ public final class TaskOwnedLeases {
         // Insertion-ordered live leases permit O(1) explicit retirement, so
         // sequential acquisitions cannot exhaust the live-leases quota.
         private final LinkedHashSet<Entry> active = new LinkedHashSet<>();
+        // In-flight grants are tracked before async waiter publication. Their
+        // physical settlement is separate from Future/result settlement.
+        private final LinkedHashSet<CompletableFuture<Void>> physicalSettlements =
+                new LinkedHashSet<>();
         private static final int MAX_EARLY_FAILURES = 64;
         // Bounded: arbitrary repeated early failures must not grow Task memory.
         private final ArrayList<Throwable> earlyFailures = new ArrayList<>();
@@ -133,6 +139,27 @@ public final class TaskOwnedLeases {
             }
         }
 
+        void trackPhysicalSettlement(CompletableFuture<Void> receipt) {
+            Objects.requireNonNull(receipt, "receipt");
+            synchronized (lock) {
+                if (retired) throw new IllegalStateException(
+                        "task physical settlement registered after retirement");
+                if (physicalSettlements.size() == MAX_LEASES_PER_TASK) {
+                    throw new IllegalStateException("task in-flight settlement quota exceeded");
+                }
+                if (!physicalSettlements.add(receipt)) {
+                    throw new IllegalStateException("duplicate task physical settlement");
+                }
+            }
+            // Physical receipts do not retain a completed Task indefinitely.
+            // This callback invokes no guest code or user Future subscriber.
+            receipt.whenComplete((ignored, failure) -> {
+                synchronized (lock) {
+                    physicalSettlements.remove(receipt);
+                }
+            });
+        }
+
         private void forget(Entry entry) {
             synchronized (lock) {
                 active.remove(entry);
@@ -149,17 +176,26 @@ public final class TaskOwnedLeases {
             }
         }
 
+        // Synchronous host test utility. Runtime TaskHandle must use the
+        // nonblocking variant to avoid parking a Task's scheduler carrier.
         List<Throwable> releaseOnRetirement() {
+            return releaseOnRetirementAsync().join();
+        }
+
+        CompletableFuture<List<Throwable>> releaseOnRetirementAsync() {
             final ArrayList<Entry> reversed;
             final ArrayList<Throwable> errors;
+            final ArrayList<CompletableFuture<Void>> pending;
             synchronized (lock) {
-                if (retired) return List.of();
+                if (retired) throw new IllegalStateException("task leases retired twice");
                 retired = true;
                 reversed = new ArrayList<>(active);
                 Collections.reverse(reversed);
                 active.clear();
-                // One linearized snapshot of earlier failed releases; no
-                // registration or same-task close may follow retirement.
+                // Atomic snapshot with the retirement admission fence: an
+                // async waiter must register its receipt BEFORE publication.
+                pending = new ArrayList<>(physicalSettlements);
+                physicalSettlements.clear();
                 errors = new ArrayList<>(earlyFailures);
                 if (suppressedEarlyFailures != 0L) {
                     errors.add(new IllegalStateException(
@@ -168,17 +204,29 @@ public final class TaskOwnedLeases {
                 earlyFailures.clear();
                 suppressedEarlyFailures = 0L;
             }
-            // Do not invoke any release while holding the registry lock.
+            // Revoke leases only after the scheduler and children quiesce.
+            // Never run host releases or await claimed handoffs under lock.
             for (Entry entry : reversed) {
                 try {
                     entry.releaseOnce(true);
                 } catch (RuntimeException | Error failed) {
-                    // Never abandon sibling lease releases. The host owner
-                    // must treat failed cleanup as a failed quiescence proof.
                     errors.add(failed);
                 }
             }
-            return List.copyOf(errors);
+            if (pending.isEmpty()) return CompletableFuture.completedFuture(List.copyOf(errors));
+            CompletableFuture<?>[] all = pending.toArray(new CompletableFuture<?>[0]);
+            return CompletableFuture.allOf(all).handle((ignored, failure) -> {
+                for (CompletableFuture<Void> receipt : pending) {
+                    try {
+                        receipt.join(); // allOf has already joined every receipt
+                    } catch (CompletionException failed) {
+                        errors.add(failed.getCause() == null ? failed : failed.getCause());
+                    } catch (java.util.concurrent.CancellationException cancelled) {
+                        errors.add(cancelled);
+                    }
+                }
+                return List.copyOf(errors);
+            });
         }
 
         private static final class Entry implements Lease {
