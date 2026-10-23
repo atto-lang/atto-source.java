@@ -421,11 +421,14 @@ public final class NativeIo {
         @Override
         public void close() {
             try {
+                // Explicit close and context STOP obey the same two-phase
+                // protocol. Wake readers/writers without claiming their exit.
+                ownership.requestStop();
                 ownership.close();
                 context.nativeIo().unregister(ownership);
             } catch (IOException failure) {
-                // Keep the registered owner for STOP retry/quarantine if
-                // physical close fails, rather than losing the native handle.
+                // A still-active read/write keeps the descriptor registered
+                // for later STOP retry/quarantine. Never unregister first.
                 throw new IllegalStateException("network close failed for " + endpoint + ": " + failure.getMessage(), failure);
             }
         }
