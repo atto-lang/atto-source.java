@@ -109,3 +109,40 @@ owner/repo and immutable repo ID via independent review (#1538).
 5. Keep every involved PR draft until an independently reviewed exact-head
    artifact proves successful source compilation, lifecycle conformance
    and physical resource reclamation.
+
+## Concrete JDK NIO channel boundary (new follow-up)
+
+`ActorPhysicalChannelLease` is a host-only (not guest-language) bridge
+for a **synchronous JDK Channel.close() boundary**. A trusted acceptor calls
+`ActorRuntime.registerActorPhysicalChannelFromDriver(exactActorRef, channel,
+kind)` **before** publishing the accepted channel to that actor. The returned
+lease owns the physical close transition.
+
+- The lease calls the REAL `Channel.close()`, checks `!channel.isOpen()`,
+  and only then publishes `Receipt.completeAfterPhysicalRelease()`.
+  Concurrent `close()` calls serialize and do not double-close or release
+  the actor's retirement counter twice.
+- If `close()` throws, or returns while `isOpen()` is still true, the
+  ticket stays outstanding and a sticky physical failure quarantines the
+  actor's arena. The original actor failure remains the primary lifecycle
+  cause; the driver-close failure is visible through the physical diagnostic.
+- **No automatic close-on-STOP is implemented in this draft.** The driver
+  must issue the close itself as part of STOP or cleanup. Until that call
+  completes, the actor remains unretired. Do not infer physical completion
+  from merely cancelling the actor, an OresFuture, or a transport task.
+- JDK synchronous channel close is NOT a sufficient receipt for outstanding
+  overlapped operations, pending native callbacks, pinned receive buffers,
+  DMA/FFI loans, or zero-copy shared blobs. Each such lifetime requires its
+  own independently settled ticket.
+- Tests: actual `java.nio.channels.Pipe.SourceChannel` close, blocked
+  fake-kernel close, two concurrent closers, and injected `IOException`
+  failure. These source-level tests are committed but **not executed**.
+
+### Security and testing status
+
+The repository's protected-branch destination allowlist is still empty.
+Do not copy private Git trees to another GitHub org without exact reviewed
+numeric-ID approval, even when alternative orgs have available Actions minutes.
+Keep this PR in draft until JDK25 JUnit, native-image/LLVM and adversarial
+source-level execution passes on an authorized runner.
+
