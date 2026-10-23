@@ -136,6 +136,27 @@ final class SupervisorLifecycleFsmIntegrationTest {
     }
 
     @Test
+    void rejectedRedundantWatchdogCannotPoisonAlreadyCompletedShutdown() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             var control = Executors.newSingleThreadExecutor();
+             var rejectedWatchdog = Executors.newSingleThreadScheduledExecutor()) {
+            var tree = new SupervisorShutdownTree(runtime, control);
+            tree.setRoot("root", runtime.createActorGroup(),
+                    new SupervisorShutdownTree.Hooks() {});
+            tree.shutdown(SupervisorShutdownTree.Reason.NORMAL)
+                    .get(5, TimeUnit.SECONDS);
+            rejectedWatchdog.shutdown();
+            tree.shutdown(SupervisorShutdownTree.Reason.NORMAL,
+                    java.time.Duration.ofSeconds(1), rejectedWatchdog)
+                    .get(5, TimeUnit.SECONDS);
+            assertFalse(tree.status().hasFailures(),
+                    "an already-settled successful shutdown must not be poisoned");
+            assertTrue(tree.status().allLogicallyStopped());
+            assertFalse(tree.status().allPhysicallyReclaimed());
+        }
+    }
+
+    @Test
     void snapshotShowsEveryNodeQuiescingThenLogicallyStoppedNotPhysicallyReclaimed()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime();
