@@ -1809,6 +1809,32 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * Trusted native driver/supervisor adapter only: allocate a physical
+     * receipt for an actor from a non-guest host worker, BEFORE accepting or
+     * publishing a native resource loan on that actor's behalf. Unlike the
+     * actor-turn adapter, this cannot mint any new receipt after STOP.
+     *
+     * The full ActorRef identity check denies cross-runtime and stale
+     * incarnation enrollment even if a logical ActorId is reused.
+     */
+    ActorPhysicalRetirementRegistry.Receipt registerActorPhysicalReceiptFromDriver(
+            ActorRef<?> owner, ActorPhysicalRetirementRegistry.Kind kind) {
+        Objects.requireNonNull(owner, "owner");
+        Objects.requireNonNull(kind, "kind");
+        requireSupervisorContext("register native actor resource loan");
+        if (!owner.ownedBy(this)) {
+            throw new IllegalArgumentException("resource owner is from another runtime");
+        }
+        ActorCell<?> cell = actors.get(owner.id());
+        if (cell == null || cell.ref != owner) throw terminated(owner);
+        synchronized (cell.lifecycleLock) {
+            if (cell.finalized || cell.stopped.get() || closed.get()
+                    || actors.get(owner.id()) != cell) throw terminated(owner);
+            return cell.physicalRetirement.register(kind, false);
+        }
+    }
+
+    /**
      * Bind a runtime Future to the current actor lifetime. Outside an actor
      * turn the Future remains independently owned by its caller.
      */
