@@ -1044,6 +1044,8 @@ final class ActorPhysicalRetirementRegistryTest {
             assertTrue(actor.cancel());
             var timeout = assertThrows(IllegalStateException.class, runtime::close);
             assertTrue(timeout.getMessage().contains("quarantined"));
+            assertTrue(ActorRuntime.physicallyQuarantined(runtime),
+                    "a failed standalone close must retain the exact runtime");
             assertFalse(actor.done().isDone(), "failed global close cannot fabricate DONE");
             assertEquals(Integer.valueOf(1),
                     actor.pendingPhysicalRetirementsByKind().get("FFI_LOAN"));
@@ -1053,6 +1055,8 @@ final class ActorPhysicalRetirementRegistryTest {
                     "native notifier must complete STOP after the first failed close");
             assertDoesNotThrow(runtime::close,
                     "retry should reclaim only after actor and notifier retirement");
+            assertFalse(ActorRuntime.physicallyQuarantined(runtime),
+                    "only successful verified close may release quarantine root");
         } finally {
             // If the assertions fail, settle the trusted test-only loan to
             // allow eventual cleanup instead of pinning the JUnit process.
