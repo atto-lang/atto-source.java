@@ -74,7 +74,7 @@ final class TaskPipelineTest {
                     }));
             assertEquals(42, handle.result().get(5, TimeUnit.SECONDS));
             assertEquals(1, calls.get(), "inline scheduling ran the stage more than once");
-            assertInstanceOf(TaskHandle.Succeeded.class,
+            assertInstanceOf(TaskHandle.Success.class,
                     handle.getDone().get(5, TimeUnit.SECONDS));
             assertEquals(0, TaskPipeline.pendingPipelineAwaitCount());
         }
