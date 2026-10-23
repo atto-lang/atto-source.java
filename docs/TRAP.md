@@ -337,6 +337,34 @@ stdlib faults require compiler-issued carriers, not guessed Java class names
 or caller-modifiable stack traces. Until those call sites are migrated and
 full source-level tests pass, this branch remains DRAFT.
 
+### Verified focused hardening evidence — 2026-10-23
+
+After the stack-trace admission heuristic was removed, the exact checked-in
+Java blobs were reconstructed in an isolated local test directory and their
+`git hash-object` identities independently verified:
+
+- `TrapFailurePolicy.java`: `9d57a9697981169ca95b86441267b3305a1bf396`
+- `GuestControlSignal.java`: `02dcdc593f3cd3a9b6f63e09749e1fc4ead449fc`
+
+OpenJDK 21 compiled both files (`javac --release 21 -Xlint:all`) using a
+minimal `OresEvalRootNode` class stub. The 60/60 **standalone** Java
+policy assertions passed: real evaluator-nest issued throw/raise, panic
+bypass, dedicated cast-error identity, public-constructor host forgery,
+modified Java stack traces, suppressed terminal control, wrapped
+denials, cyclic/deep/wide error graphs and virtual hostile causes.
+
+This is not execution of the committed JUnit fixtures or full Truffle,
+actor, GraalVM Native Image, LLVM and guest-source tests. The normal
+source-org GitHub Actions have recently failed without running any
+steps; private-source cross-org CI remains blocked by the independent
+security review and allowlist tracked in #1501.
+
+The strict change may cause existing built-in runtime errors previously
+recognized only through JDK stack-frame names to escape `trap` or
+`catch`. Convert each intentionally guest-originated built-in error to
+a trusted, explicit effect carrier and add guest-language behavior
+regressions before advancing this draft PR.
+
 ## `raise`: deliberate trap escape
 
 `raise` is a distinct reserved control-flow keyword/effect.
