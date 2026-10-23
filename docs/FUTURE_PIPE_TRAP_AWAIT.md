@@ -160,13 +160,17 @@ binding. The runtime now publishes that bridge first, reconciles cancellation
 after TaskHandle admission, and includes focused inline-complete/inline-pending
 regressions. These tests are committed, but require an executing JDK 25 runner.
 
-**Remaining P0 source-lifetime gap:** source lowering currently uses the
-convenience `TaskPipeline.start(scheduler, input, stages)` rather than a
-parent-owned `TaskScope`. Scheduler shutdown can still cancel outstanding
-work, but no complete parent-to-child physical retirement proof is established
-for an independently cancelled `SourceTask`. Do not equate the exposed result
-Future with its `getDone()` retirement receipt, or claim actor/arena cleanup is
-safe before that integration and executable cancellation tests.
+**Structured root-task lifetime:** SourceTask functions and methods now
+enter tracked scheduler tasks, and compiler-lowered pipelines use
+`TaskPipeline.startInCurrentTaskOrRoot`. A running tracked parent captures
+its cancellation authority before child admission; cancelling its exposed
+result revokes descendant pipeline work, and the parent's `getDone()` waits
+for descendants' scheduler-confirmed physical retirement. A top-level
+synchronous entry point instead creates a separately tracked root pipeline.
+The borrowed input Future is not cancelled. Exact-head host and guest tests
+remain necessary: this linkage does not prove physical completion of
+arbitrary independently owned FFI operations or actor arena cleanup, and
+actor-affine pipeline lowering is still rejected.
 
 The runtime also tracks active pipeline bridge-await edges by Future identity,
 rejecting both direct self-await and multi-pipeline cycles, and removes edges
