@@ -1126,6 +1126,61 @@ public final class Ast {
     }
 
     /**
+     * Statically admitted alias-extension dispatch. Never select extension
+     * methods using the runtime Java class (e.g. Long), as that would make
+     * methods declared for Code appear on every int value.
+     */
+    public static final class CheckedExtensionCall {
+        private CheckedExtensionCall() { }
+        private static final java.lang.ref.ReferenceQueue<CallExpr> CLEARED =
+                new java.lang.ref.ReferenceQueue<>();
+        private static final java.util.Map<IdentityKey, String> TARGETS =
+                new java.util.HashMap<>();
+
+        private static final class IdentityKey extends java.lang.ref.WeakReference<CallExpr> {
+            private final int hash;
+            private IdentityKey(CallExpr call, java.lang.ref.ReferenceQueue<CallExpr> queue) {
+                super(call, queue);
+                hash = System.identityHashCode(call);
+            }
+            @Override public int hashCode() { return hash; }
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof IdentityKey key)) return false;
+                CallExpr value = get();
+                return value != null && value == key.get();
+            }
+        }
+
+        private static void expunge() {
+            java.lang.ref.Reference<? extends CallExpr> collected;
+            while ((collected = CLEARED.poll()) != null) TARGETS.remove(collected);
+        }
+
+        public static synchronized void record(CallExpr call, String target) {
+            java.util.Objects.requireNonNull(call, "extension call");
+            if (target == null || !target.startsWith("$mtd$")) {
+                throw new IllegalArgumentException("invalid statically checked extension target");
+            }
+            expunge();
+            String old = TARGETS.putIfAbsent(new IdentityKey(call, CLEARED), target);
+            if (old != null && !old.equals(target)) {
+                throw new IllegalStateException("extension call changed its statically resolved receiver");
+            }
+        }
+
+        public static synchronized String lookup(CallExpr call) {
+            expunge();
+            return TARGETS.get(new IdentityKey(call, null));
+        }
+
+        public static void copy(CallExpr source, CallExpr target) {
+            String resolved = lookup(source);
+            if (resolved != null) record(target, resolved);
+        }
+    }
+
+    /**
      * Compiler-verified static ordinary-class domain for a computed-index
      * receiver. The key is the exact receiver AST node admitted by the type
      * checker, so runtime never has to rediscover a class view from syntax or
@@ -1285,6 +1340,14 @@ public final class Ast {
                 if (source instanceof CallExpr sourceCall
                         && target instanceof CallExpr targetCall) {
                     CheckedOptionDepth.copy(sourceCall, targetCall);
+                }
+            }
+        },
+        EXTENSION_CALL("CheckedExtensionCall") {
+            @Override void copy(Expr source, Expr target) {
+                if (source instanceof CallExpr sourceCall
+                        && target instanceof CallExpr targetCall) {
+                    CheckedExtensionCall.copy(sourceCall, targetCall);
                 }
             }
         },
