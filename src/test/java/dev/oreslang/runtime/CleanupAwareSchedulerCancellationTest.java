@@ -196,6 +196,66 @@ final class CleanupAwareSchedulerCancellationTest {
         }
     }
 
+    @Test void shutdownDuringActiveCleanupCannotPublishDoneBeforeCarrierExit()
+            throws Exception {
+        OresFuture<Void> upstream = new OresFuture<>();
+        CountDownLatch suspended = new CountDownLatch(1);
+        CountDownLatch enteredCleanup = new CountDownLatch(1);
+        CountDownLatch releaseCleanup = new CountDownLatch(1);
+        AtomicInteger cleanupEntries = new AtomicInteger();
+        OresScheduler scheduler = new OresScheduler(2);
+        try {
+            OresFuture<Void> work = scheduler.start(
+                    new OresScheduler.CleanupAwareTask<Void>() {
+                        int pc;
+                        @Override public OresScheduler.Step<Void> resume(
+                                OresScheduler.Resume resume) throws Exception {
+                            if (pc++ == 0) {
+                                suspended.countDown();
+                                return OresScheduler.await(upstream);
+                            }
+                            assertTrue(OresScheduler.cancellationCleanupTurn());
+                            cleanupEntries.incrementAndGet();
+                            enteredCleanup.countDown();
+                            if (!releaseCleanup.await(4, TimeUnit.SECONDS)) {
+                                throw new IllegalStateException("test cleanup carrier timeout");
+                            }
+                            return OresScheduler.done(null);
+                        }
+                    });
+            assertTrue(suspended.await(3, TimeUnit.SECONDS));
+            assertTrue(work.cancel(false));
+            assertTrue(enteredCleanup.await(3, TimeUnit.SECONDS));
+            Thread closer = new Thread(scheduler::close, "close-during-source-cleanup");
+            closer.start();
+            try {
+                // Scheduler shutdown fences queued turns; it cannot treat a
+                // still-executing cleanup frame as a physical release receipt.
+                Thread.sleep(30);
+                assertFalse(work.isCancelled(),
+                        "cancel request is not a physical cleanup acknowledgment");
+                assertTrue(scheduler.hasIncompleteCleanup(),
+                        "closing an executing cleanup frame must quarantine");
+            } finally {
+                releaseCleanup.countDown();
+                closer.join(3000);
+            }
+            assertFalse(closer.isAlive());
+            assertEquals(1, cleanupEntries.get(),
+                    "another carrier must not replay the cleanup turn");
+            ExecutionException failure = assertThrows(ExecutionException.class,
+                    () -> work.get(3, TimeUnit.SECONDS));
+            assertInstanceOf(OresScheduler.CleanupIncompleteError.class,
+                    failure.getCause());
+            assertFalse(work.isCancelled(),
+                    "shutdown cleanup failure must dominate logical cancellation");
+            assertEquals(0, upstream.pendingRuntimeWaiterCount());
+        } finally {
+            releaseCleanup.countDown();
+            scheduler.close();
+        }
+    }
+
     @Test void ordinaryNonCleanupFutureRetainsImmediateCancellation() throws Exception {
         OresFuture<Integer> producer = new OresFuture<>();
         CountDownLatch waiting = new CountDownLatch(1);
