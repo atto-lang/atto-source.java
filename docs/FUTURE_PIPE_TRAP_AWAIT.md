@@ -1,7 +1,8 @@
 # Future-aware value pipelines and trap/await ordering
 
-Status: **partial host/runtime implementation; source syntax and parity
-remain unimplemented and unverified**. The Java runtime now has the staging
+Status: **partial source-level Java/GraalVM implementation, unverified
+by exact-head JUnit CI; complete effect, ownership, actor and backend parity
+remain unimplemented**. The Java runtime now has the staging
 helper `dev.oreslang.runtime.TaskPipeline.start`: one `OresScheduler.Task`
 executes deferred stages, awaiting any Future returned by a stage without
 allocating a new task for each stage. The helper returns an exposed Future
@@ -16,8 +17,12 @@ which lacks a separate owned lifetime receipt.
 
 The parser retains `Ast.CallExpr.origin` for value-pipe argument injection
 and Option/Result receiver combinators, distinct from ordinary calls and actor
-`pipe`. This is syntax provenance only, not a typed/effect-checked pipeline
-plan. `CallExpr.rewrite` retains that origin but drops identity-bound checked
+`pipe`. Syntax provenance alone is not authorization. The type checker now
+attaches `Ast.CheckedPureFuturePipe` identity-bound proofs to a **restricted**
+`Future<int> |> pureUnaryIntFunction()` subset: synchronous, non-generic,
+no captures, no effectful bodies, no additional stage arguments and no actor
+execution. Adjacent checked stages lower to one TaskPipeline task, preserving
+borrowed input-Future ownership. Rewritten ASTs lose this proof. `CallExpr.rewrite` retains that origin but drops identity-bound checked
 proofs; replacements require rechecking. Explicit checked-metadata transfers
 reject changed call origins before copying any proof.
 
@@ -26,11 +31,13 @@ JDK 21 and verifies parser/AST and frontend typing boundaries. The JUnit
 `FuturePipelineProvenanceTest` wraps the same checks. Neither proves guest
 runtime execution, Future lifting, cancellation, or actor scheduling.
 
-The existing Java source-language `|>` operator still eagerly injects the
-left value as the first argument of the stage call. The proposed *source-level*
-statically checked lifting rule remains unimplemented: there is no
-`Task.pipeline` source intrinsic or compiler-to-runtime lowering, and no
-Java/LLVM/JS/Wasm executable parity. Do not claim the sample below runs.
+Ordinary (non-Future) source `|>` still injects the left operand eagerly.
+Only the narrow, checked pure-int subset above has compiler-to-runtime
+lifting. Future stages with effect declarations, asynchronous stage returns,
+extra arguments, non-int payloads, HasFuture projections, actor affinity or
+loan/capture requirements still fail closed. There is no general
+`Task.pipeline` source intrinsic or Java/LLVM/JS/Wasm executable parity.
+Do not claim the general example below runs.
 
 ## Canonical spelling
 
