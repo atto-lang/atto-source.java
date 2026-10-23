@@ -155,6 +155,40 @@ final class FirstClassModelGraphTest {
     }
 
     @Test
+    void parserRejectsOversizedModelDeclarationsBeforeCompilerAdmission() {
+        // Only parse here: unknown operation names are permitted in the AST
+        // and resolved later. These are strict parser allocation boundaries.
+        String sixtyFourParameters = String.join(", ",
+                java.util.stream.IntStream.range(0, 64)
+                        .mapToObj(i -> "p" + i + ": int")
+                        .toList());
+        String sixtyFiveParameters = sixtyFourParameters + ", extra: int";
+        assertDoesNotThrow(() -> Parser.parse(
+                "define model Bounded(" + sixtyFourParameters + ") as\nOp()\nend"));
+        assertThrowsMessage("MODEL_CONFIG_BUDGET", () -> Parser.parse(
+                "define model Bounded(" + sixtyFiveParameters + ") as\nOp()\nend"));
+
+        String thirtyTwoArguments = "0,".repeat(31) + "0";
+        String thirtyThreeArguments = thirtyTwoArguments + ",0";
+        String fullOperation = "Op(" + thirtyTwoArguments + ")\n";
+        assertDoesNotThrow(() -> Parser.parse(
+                "define model Bounded as\nOp(" + thirtyTwoArguments + ")\nend"));
+        assertThrowsMessage("MODEL_STATIC_ARG_BUDGET", () -> Parser.parse(
+                "define model Bounded as\nOp(" + thirtyThreeArguments + ")\nend"));
+
+        assertDoesNotThrow(() -> Parser.parse(
+                "define model Bounded as\n" + "Op()\n".repeat(4096) + "end"));
+        assertThrowsMessage("MODEL_NODE_BUDGET", () -> Parser.parse(
+                "define model Bounded as\n" + "Op()\n".repeat(4097) + "end"));
+
+        assertDoesNotThrow(() -> Parser.parse(
+                "define model Bounded as\n" + fullOperation.repeat(512) + "end"));
+        assertThrowsMessage("MODEL_STATIC_ARG_BUDGET", () -> Parser.parse(
+                "define model Bounded as\n" + fullOperation.repeat(512)
+                        + "Op(0)\nend"));
+    }
+
+    @Test
     void canonicalGraphDigestIsDeterministicAndBindsOperationSemantics() {
         Ast.Program first = OresCompiler.parseAndTypeCheck(PRICE_MODEL);
         Ast.Program second = OresCompiler.parseAndTypeCheck(PRICE_MODEL);
