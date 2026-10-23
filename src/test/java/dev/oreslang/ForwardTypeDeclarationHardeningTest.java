@@ -21,6 +21,24 @@ final class ForwardTypeDeclarationHardeningTest {
     }
 
     @Test
+    void refinedForwardAliasesCannotEraseZordeBoundsBeforeTypedLowering() {
+        for (String declaration : new String[]{
+                "define type Code = int with min 0 and max 5;",
+                "define type Code = int with value gte 0 and value lte 5;",
+                "define type Code = int as positive integer;"
+        }) {
+            String source = """
+                    declare type Code;
+                    fnc identity(Code value): Code { return value; }
+                    """ + declaration;
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(source), source);
+            assertTrue(error.getMessage().contains("Zorde exact-value validation"),
+                    error.getMessage());
+        }
+    }
+
+    @Test
     void acceptsExactForwardAliasesAtFileRootWithCanonicalAndLegacyPub() {
         String source = """
                 declare type Port;
