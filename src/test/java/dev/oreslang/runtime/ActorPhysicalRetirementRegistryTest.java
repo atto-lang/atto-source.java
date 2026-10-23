@@ -147,6 +147,56 @@ final class ActorPhysicalRetirementRegistryTest {
         }
     }
 
+    @Test void concurrentHostClosePublishesExactlyOnePhysicalReceipt()
+            throws Exception {
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var open = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var calls = new AtomicInteger();
+        java.nio.channels.Channel channel = new java.nio.channels.Channel() {
+            @Override public boolean isOpen() { return open.get(); }
+            @Override public void close() throws java.io.IOException {
+                calls.incrementAndGet();
+                entered.countDown();
+                try {
+                    if (!release.await(5, TimeUnit.SECONDS)) {
+                        throw new java.io.IOException("test close deadline");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new java.io.IOException(interrupted);
+                }
+                open.set(false);
+            }
+        };
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(
+                    () -> (message, context) -> { });
+            var lease = runtime.registerActorPhysicalChannelFromDriver(
+                    actor, channel, ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE);
+            assertTrue(actor.cancel());
+            var failures = new java.util.concurrent.ConcurrentLinkedQueue<Throwable>();
+            Runnable close = () -> {
+                try { lease.close(); }
+                catch (Throwable t) { failures.add(t); }
+            };
+            Thread first = Thread.ofVirtual().start(close);
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            Thread second = Thread.ofVirtual().start(close);
+            assertFalse(actor.done().isDone(),
+                    "two pending close requests are still not a release receipt");
+            release.countDown();
+            first.join(3_000);
+            second.join(3_000);
+            assertFalse(first.isAlive());
+            assertFalse(second.isAlive());
+            assertTrue(failures.isEmpty(), () -> failures.toString());
+            assertEquals(1, calls.get(), "native close must run only once");
+            assertFalse(channel.isOpen());
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void nioPhysicalCloseFailureQuarantinesActor() throws Exception {
         var closeFailure = new java.io.IOException("mock kernel failed channel close");
         java.nio.channels.Channel brokenChannel = new java.nio.channels.Channel() {
