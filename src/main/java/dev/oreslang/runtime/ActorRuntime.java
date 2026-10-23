@@ -8208,6 +8208,36 @@ public final class ActorRuntime implements AutoCloseable {
                 waiter.completion().failFromRuntime(drainFailure);
             }
 
+            // Propagate structured STOP to children before parent-owned
+            // cancellation hooks or source terminal subscribers can block.
+            // Otherwise one stalled parent I/O revoker can keep a child
+            // executing indefinitely even though the parent's STOP was sealed.
+            // No parent lifecycle lock is held while cancelling descendants.
+            // Continue revoking every child even if one fails synchronously.
+            Throwable childCancellationFailure = null;
+            for (ActorCell<?> child : descendants) {
+                try {
+                    child.cancel(new ActorCancelledException(
+                            child.ref.id(),
+                            "parent actor " + ref.id() + " terminated"));
+                } catch (RuntimeException | Error failure) {
+                    if (childCancellationFailure == null) childCancellationFailure = failure;
+                    else if (childCancellationFailure != failure) {
+                        childCancellationFailure.addSuppressed(failure);
+                    }
+                }
+            }
+            if (childCancellationFailure != null) {
+                synchronized (lifecycleLock) {
+                    sourceStopCleanupAborted = true;
+                    ref.terminationCause.compareAndSet(null,
+                            new OresScheduler.CleanupIncompleteError(
+                                    "child STOP request failed; quarantine actor state",
+                                    childCancellationFailure));
+                    lifecycleLock.notifyAll();
+                }
+            }
+
             // The Future revocation must finish BEFORE arena reclamation,
             // not afterward. One failing revoker may not skip the others.
             // This is only the logical revoker phase: physical I/O / FFI
@@ -8271,11 +8301,6 @@ public final class ActorRuntime implements AutoCloseable {
                 if (admissionFailure == null) schedule();
             }
 
-            for (ActorCell<?> child : descendants) {
-                child.cancel(new ActorCancelledException(
-                        child.ref.id(),
-                        "parent actor " + ref.id() + " terminated"));
-            }
         }
     }
 }
