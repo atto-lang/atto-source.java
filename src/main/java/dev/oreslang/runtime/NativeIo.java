@@ -293,12 +293,47 @@ public final class NativeIo {
      */
     static final class SocketStopThenRelease implements AsyncNativeIo.StopThenRelease {
         private final Socket socket;
+        private final Object lock = new Object();
+        private int activeOperations;
+        private boolean stopRequested;
+        private boolean closing;
+        private boolean closed;
 
         SocketStopThenRelease(Socket socket) {
             this.socket = java.util.Objects.requireNonNull(socket, "socket");
         }
 
+        /**
+         * A read/write owns a physical connection lease for its entire host
+         * call (including protocol decoding/flushing). STOP seals admission
+         * before requesting half-close, which wakes blocking socket calls.
+         */
+        AutoCloseable borrowOperation() {
+            synchronized (lock) {
+                if (stopRequested || closing || closed || socket.isClosed()) {
+                    throw new IllegalStateException(
+                            "TCP physical connection no longer accepts I/O");
+                }
+                activeOperations++;
+            }
+            return () -> {
+                synchronized (lock) {
+                    if (activeOperations <= 0) {
+                        throw new IllegalStateException(
+                                "TCP physical operation loan underflow");
+                    }
+                    activeOperations--;
+                    lock.notifyAll();
+                }
+            };
+        }
+
+        int activeOperationCount() {
+            synchronized (lock) { return activeOperations; }
+        }
+
         @Override public void requestStop() throws IOException {
+            synchronized (lock) { stopRequested = true; }
             if (!socket.isConnected() || socket.isClosed()) return;
             IOException failed = null;
             try {
@@ -316,7 +351,27 @@ public final class NativeIo {
         }
 
         @Override public void close() throws IOException {
-            socket.close();
+            synchronized (lock) {
+                stopRequested = true;
+                if (closed) return;
+                if (closing || activeOperations != 0) {
+                    throw new IOException(
+                            "TCP descriptor still owns in-flight physical operation loans");
+                }
+                closing = true;
+            }
+            try {
+                socket.close();
+                if (!socket.isClosed()) {
+                    throw new IOException("TCP socket close returned without closed descriptor");
+                }
+                synchronized (lock) { closed = true; }
+            } finally {
+                synchronized (lock) {
+                    closing = false;
+                    lock.notifyAll();
+                }
+            }
         }
     }
 
@@ -342,20 +397,24 @@ public final class NativeIo {
 
         public String readLine() {
             context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.socket.read_line");
-            try {
+            try (var loan = ownership.borrowOperation()) {
                 return reader.readLine();
             } catch (IOException failure) {
                 throw new IllegalStateException("network read failed for " + endpoint + ": " + failure.getMessage(), failure);
+            } catch (Exception failure) {
+                throw new IllegalStateException("network read release failed for " + endpoint, failure);
             }
         }
 
         public void writeText(String value) {
             context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.socket.write_text");
-            try {
+            try (var loan = ownership.borrowOperation()) {
                 writer.write(value);
                 writer.flush();
             } catch (IOException failure) {
                 throw new IllegalStateException("network write failed for " + endpoint + ": " + failure.getMessage(), failure);
+            } catch (Exception failure) {
+                throw new IllegalStateException("network write release failed for " + endpoint, failure);
             }
         }
 
