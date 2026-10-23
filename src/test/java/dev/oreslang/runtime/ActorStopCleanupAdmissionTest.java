@@ -19,6 +19,85 @@ import org.junit.jupiter.api.Timeout;
  */
 @Timeout(20)
 final class ActorStopCleanupAdmissionTest {
+
+    // These fixtures are host-only deterministic test instrumentation. A
+    // context-aware actor BehaviorFactory must itself be stateless: capturing
+    // CountDownLatch/AtomicReference objects is intentionally rejected by the
+    // production runtime's source-isolation admission policy.
+    private static final java.util.concurrent.ConcurrentHashMap<String, StopFenceFixture>
+            STOP_FENCE_FIXTURES = new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static final class StopFenceFixture {
+        final CountDownLatch childrenOwned = new CountDownLatch(2);
+        final CountDownLatch revokerArmed = new CountDownLatch(1);
+        final CountDownLatch firstRevokerEntered = new CountDownLatch(1);
+        final CountDownLatch releaseRevokers = new CountDownLatch(1);
+        final CountDownLatch spawnerEntered = new CountDownLatch(1);
+        final CountDownLatch allowSpawner = new CountDownLatch(1);
+        final CountDownLatch spawnerFinished = new CountDownLatch(1);
+        final AtomicInteger forbiddenMessages = new AtomicInteger();
+        final AtomicInteger forbiddenGrandchildren = new AtomicInteger();
+        final AtomicReference<Throwable> spawnDenial = new AtomicReference<>();
+        final AtomicReference<Throwable> guestFailure = new AtomicReference<>();
+    }
+
+    private static StopFenceFixture stopFenceFixture(String message) {
+        int delimiter = message.indexOf('#');
+        String token = delimiter < 0 ? message : message.substring(0, delimiter);
+        StopFenceFixture fixture = STOP_FENCE_FIXTURES.get(token);
+        if (fixture == null) throw new IllegalStateException("unknown host-only STOP fixture");
+        return fixture;
+    }
+
+    private static ActorRuntime.Behavior<String> stopFenceResourceChild(
+            ActorRuntime.ActorContext<String> ignored) {
+        return (message, context) -> {
+            StopFenceFixture fixture = stopFenceFixture(message);
+            if (!message.endsWith("#own")) {
+                fixture.forbiddenMessages.incrementAndGet();
+                return;
+            }
+            OresFuture<Void> resource = new OresFuture<>(() -> {
+                fixture.firstRevokerEntered.countDown();
+                try {
+                    if (!fixture.releaseRevokers.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("test child revoker not released");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                }
+            });
+            context.runtime().ownCurrentActorFuture(resource);
+            if (resource.isCancelled()) {
+                fixture.guestFailure.compareAndSet(null,
+                        new AssertionError("child Future ownership was rejected"));
+            }
+            fixture.childrenOwned.countDown();
+            fixture.revokerArmed.countDown();
+        };
+    }
+
+    private static ActorRuntime.Behavior<String> stopFenceSpawnerChild(
+            ActorRuntime.ActorContext<String> ignored) {
+        return (message, context) -> {
+            StopFenceFixture fixture = stopFenceFixture(message);
+            fixture.spawnerEntered.countDown();
+            try {
+                if (!fixture.allowSpawner.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("test guest turn not resumed");
+                }
+                context.runtime().spawnShared(
+                        (ActorRuntime.BehaviorFactory<String>) child ->
+                                (grandchildMessage, grandchildContext) -> { });
+                fixture.forbiddenGrandchildren.incrementAndGet();
+            } catch (Throwable denial) {
+                fixture.spawnDenial.set(denial);
+            } finally {
+                fixture.spawnerFinished.countDown();
+            }
+        };
+    }
     @Test
     void stoppedActorRunsSuspendedCleanupThroughAsyncStageBeforeReclaim()
             throws Exception {
@@ -452,172 +531,117 @@ final class ActorStopCleanupAdmissionTest {
     @Test
     void inFlightChildCannotSpawnGrandchildAfterParentStopPreFence()
             throws Exception {
-        CountDownLatch revokerArmed = new CountDownLatch(1);
-        CountDownLatch spawnerEntered = new CountDownLatch(1);
-        CountDownLatch revokerEntered = new CountDownLatch(1);
-        CountDownLatch allowSpawner = new CountDownLatch(1);
-        CountDownLatch spawnerFinished = new CountDownLatch(1);
-        CountDownLatch releaseRevoker = new CountDownLatch(1);
-        AtomicReference<Throwable> spawnDenial = new AtomicReference<>();
-        AtomicReference<Throwable> stopFailure = new AtomicReference<>();
-        AtomicInteger forbiddenGrandchildren = new AtomicInteger();
-
-        try (ActorRuntime runtime = new ActorRuntime()) {
-            var parent = runtime.<String>spawnShared(() -> (message, context) -> {
-                var resourceChild = context.runtime().spawnShared(
-                        (ActorRuntime.BehaviorFactory<String>) childFactoryContext ->
-                                (childMessage, childContext) -> {
-                                    OresFuture<Void> resource = new OresFuture<>(() -> {
-                                        revokerEntered.countDown();
-                                        try {
-                                            if (!releaseRevoker.await(5, TimeUnit.SECONDS)) {
-                                                throw new IllegalStateException(
-                                                        "test revoker was not released");
-                                            }
-                                        } catch (InterruptedException interrupted) {
-                                            Thread.currentThread().interrupt();
-                                            throw new IllegalStateException(interrupted);
-                                        }
-                                    });
-                                    childContext.runtime().ownCurrentActorFuture(resource);
-                                    revokerArmed.countDown();
-                                });
-                var activeChild = context.runtime().spawnShared(
-                        (ActorRuntime.BehaviorFactory<String>) childFactoryContext ->
-                                (childMessage, childContext) -> {
-                                    spawnerEntered.countDown();
-                                    try {
-                                        if (!allowSpawner.await(5, TimeUnit.SECONDS)) {
-                                            throw new IllegalStateException(
-                                                    "test guest turn never resumed");
-                                        }
-                                        childContext.runtime().spawnShared(
-                                                (ActorRuntime.BehaviorFactory<String>) grandchildContext ->
-                                                        (grandchildMessage, grandchildActorContext) ->
-                                                                forbiddenGrandchildren.incrementAndGet());
-                                    } catch (Throwable denied) {
-                                        spawnDenial.set(denied);
-                                    } finally {
-                                        spawnerFinished.countDown();
-                                    }
-                                });
-                resourceChild.send("arm");
-                activeChild.send("attempt");
-            });
-            parent.send("start");
-            assertTrue(revokerArmed.await(3, TimeUnit.SECONDS));
-            assertTrue(spawnerEntered.await(3, TimeUnit.SECONDS));
-            Thread stopping = Thread.ofVirtual().start(() -> {
+        String token = java.util.UUID.randomUUID().toString();
+        StopFenceFixture fixture = new StopFenceFixture();
+        STOP_FENCE_FIXTURES.put(token, fixture);
+        try {
+            AtomicReference<Throwable> stopFailure = new AtomicReference<>();
+            try (ActorRuntime runtime = new ActorRuntime()) {
+                var parent = runtime.<String>spawnShared(() -> (message, context) -> {
+                    var resource = context.runtime().spawnShared(
+                            ActorStopCleanupAdmissionTest::stopFenceResourceChild);
+                    var spawner = context.runtime().spawnShared(
+                            ActorStopCleanupAdmissionTest::stopFenceSpawnerChild);
+                    resource.send(token + "#own");
+                    spawner.send(token + "#spawn");
+                });
+                parent.send("start");
+                assertTrue(fixture.revokerArmed.await(3, TimeUnit.SECONDS));
+                assertTrue(fixture.spawnerEntered.await(3, TimeUnit.SECONDS));
+                Thread stopping = Thread.ofVirtual().start(() -> {
+                    try {
+                        parent.cancel();
+                    } catch (Throwable failure) {
+                        stopFailure.set(failure);
+                    }
+                });
                 try {
-                    parent.cancel();
-                } catch (Throwable failure) {
-                    stopFailure.set(failure);
+                    assertTrue(fixture.firstRevokerEntered.await(3, TimeUnit.SECONDS));
+                    fixture.allowSpawner.countDown();
+                    assertTrue(fixture.spawnerFinished.await(3, TimeUnit.SECONDS));
+                    assertInstanceOf(CancellationException.class, fixture.spawnDenial.get(),
+                            "a pre-sealed child cannot create a new grandchild");
+                    assertEquals(0, fixture.forbiddenGrandchildren.get());
+                } finally {
+                    fixture.allowSpawner.countDown();
+                    fixture.releaseRevokers.countDown();
                 }
-            });
-            try {
-                assertTrue(revokerEntered.await(3, TimeUnit.SECONDS),
-                        "parent STOP must reach a blocking sibling revoker");
-                allowSpawner.countDown();
-                assertTrue(spawnerFinished.await(3, TimeUnit.SECONDS),
-                        "the already-running child must observe sealed spawn admission");
-                assertInstanceOf(CancellationException.class, spawnDenial.get(),
-                        "a pre-sealed child may not create an untracked grandchild");
-                assertEquals(0, forbiddenGrandchildren.get());
-            } finally {
-                allowSpawner.countDown();
-                releaseRevoker.countDown();
+                stopping.join(TimeUnit.SECONDS.toMillis(3));
+                assertFalse(stopping.isAlive());
+                assertNull(stopFailure.get(), () -> String.valueOf(stopFailure.get()));
+                assertTrue(parent.awaitTermination(3, TimeUnit.SECONDS));
+                assertEquals(0, fixture.forbiddenGrandchildren.get());
             }
-            stopping.join(TimeUnit.SECONDS.toMillis(3));
-            assertFalse(stopping.isAlive());
-            assertNull(stopFailure.get(), () -> String.valueOf(stopFailure.get()));
-            assertTrue(parent.awaitTermination(3, TimeUnit.SECONDS));
-            assertEquals(0, forbiddenGrandchildren.get());
+        } finally {
+            fixture.allowSpawner.countDown();
+            fixture.releaseRevokers.countDown();
+            STOP_FENCE_FIXTURES.remove(token);
         }
     }
+
 
     @Test
     void siblingMailboxesAreSealedBeforeAnyChildRevokerCanBlock()
             throws Exception {
-        CountDownLatch allChildrenOwned = new CountDownLatch(2);
-        CountDownLatch firstRevokerEntered = new CountDownLatch(1);
-        CountDownLatch releaseRevokers = new CountDownLatch(1);
-        AtomicReference<java.util.List<ActorRuntime.ActorRef<String>>> children =
-                new AtomicReference<>();
-        AtomicReference<Throwable> stopFailure = new AtomicReference<>();
-        AtomicReference<Throwable> guestFailure = new AtomicReference<>();
-        AtomicInteger forbiddenMessages = new AtomicInteger();
-
-        try (ActorRuntime runtime = new ActorRuntime()) {
-            var parent = runtime.<String>spawnShared(() -> (message, context) -> {
-                ActorRuntime.BehaviorFactory<String> factory = ignored ->
-                        (childMessage, childContext) -> {
-                            if (!"own".equals(childMessage)) {
-                                forbiddenMessages.incrementAndGet();
-                                return;
-                            }
-                            OresFuture<Void> operation = new OresFuture<>(() -> {
-                                firstRevokerEntered.countDown();
-                                try {
-                                    if (!releaseRevokers.await(5, TimeUnit.SECONDS)) {
-                                        throw new IllegalStateException(
-                                                "test failed to release child revokers");
-                                    }
-                                } catch (InterruptedException interrupted) {
-                                    Thread.currentThread().interrupt();
-                                    throw new IllegalStateException(interrupted);
-                                }
-                            });
-                            childContext.runtime().ownCurrentActorFuture(operation);
-                            if (operation.isCancelled()) {
-                                guestFailure.compareAndSet(null,
-                                        new AssertionError("child Future was rejected during admission"));
-                            }
-                            allChildrenOwned.countDown();
-                        };
-                var first = context.runtime().spawnShared(factory);
-                var second = context.runtime().spawnShared(factory);
-                children.set(java.util.List.of(first, second));
-                first.send("own");
-                second.send("own");
-            });
-            parent.send("spawn");
-            assertTrue(allChildrenOwned.await(3, TimeUnit.SECONDS),
-                    "both children must hold revocable resources before parent STOP");
-            Thread stopping = Thread.ofVirtual().start(() -> {
+        String token = java.util.UUID.randomUUID().toString();
+        StopFenceFixture fixture = new StopFenceFixture();
+        STOP_FENCE_FIXTURES.put(token, fixture);
+        try {
+            AtomicReference<java.util.List<ActorRuntime.ActorRef<String>>> children =
+                    new AtomicReference<>();
+            AtomicReference<Throwable> stopFailure = new AtomicReference<>();
+            try (ActorRuntime runtime = new ActorRuntime()) {
+                // The trusted HOST-created parent may capture the fixture token.
+                // Every CHILD is spawned using a stateless factory method ref.
+                var parent = runtime.<String>spawnShared(() -> (message, context) -> {
+                    var first = context.runtime().spawnShared(
+                            ActorStopCleanupAdmissionTest::stopFenceResourceChild);
+                    var second = context.runtime().spawnShared(
+                            ActorStopCleanupAdmissionTest::stopFenceResourceChild);
+                    children.set(java.util.List.of(first, second));
+                    first.send(token + "#own");
+                    second.send(token + "#own");
+                });
+                parent.send("spawn");
+                assertTrue(fixture.childrenOwned.await(3, TimeUnit.SECONDS));
+                Thread stopping = Thread.ofVirtual().start(() -> {
+                    try {
+                        parent.cancel();
+                    } catch (Throwable failure) {
+                        stopFailure.set(failure);
+                    }
+                });
                 try {
-                    parent.cancel();
-                } catch (Throwable problem) {
-                    stopFailure.set(problem);
+                    assertTrue(fixture.firstRevokerEntered.await(3, TimeUnit.SECONDS));
+                    assertFalse(parent.done().isDone());
+                    for (var child : children.get()) {
+                        RuntimeException rejected = assertThrows(RuntimeException.class,
+                                () -> child.send(token + "#forbidden"));
+                        assertTrue(rejected instanceof ActorRuntime.ActorSealedException
+                                        || rejected instanceof ActorRuntime.ActorTerminatedException,
+                                "sibling pre-fence must deny post-STOP mail: " + rejected);
+                    }
+                    assertEquals(0, fixture.forbiddenMessages.get());
+                } finally {
+                    fixture.releaseRevokers.countDown();
                 }
-            });
-            try {
-                assertTrue(firstRevokerEntered.await(3, TimeUnit.SECONDS),
-                        "one child must be blocked inside a synchronous revoker");
-                assertFalse(parent.done().isDone());
-                // The other child's full cancel() call has not necessarily
-                // begun yet. Admission fencing must not wait for it.
+                stopping.join(TimeUnit.SECONDS.toMillis(3));
+                assertFalse(stopping.isAlive());
+                assertNull(stopFailure.get(), () -> String.valueOf(stopFailure.get()));
+                assertNull(fixture.guestFailure.get(),
+                        () -> String.valueOf(fixture.guestFailure.get()));
+                assertTrue(parent.awaitTermination(3, TimeUnit.SECONDS));
                 for (var child : children.get()) {
-                    RuntimeException rejected = assertThrows(RuntimeException.class,
-                            () -> child.send("should-not-enter"));
-                    assertTrue(rejected instanceof ActorRuntime.ActorSealedException
-                                    || rejected instanceof ActorRuntime.ActorTerminatedException,
-                            "STOP pre-fence must deny every sibling: " + rejected);
+                    assertTrue(child.awaitTermination(3, TimeUnit.SECONDS));
                 }
-                assertEquals(0, forbiddenMessages.get());
-            } finally {
-                releaseRevokers.countDown();
+                assertEquals(0, fixture.forbiddenMessages.get());
             }
-            stopping.join(TimeUnit.SECONDS.toMillis(3));
-            assertFalse(stopping.isAlive());
-            assertNull(stopFailure.get(), () -> String.valueOf(stopFailure.get()));
-            assertNull(guestFailure.get(), () -> String.valueOf(guestFailure.get()));
-            assertTrue(parent.awaitTermination(3, TimeUnit.SECONDS));
-            for (var child : children.get()) {
-                assertTrue(child.awaitTermination(3, TimeUnit.SECONDS));
-            }
-            assertEquals(0, forbiddenMessages.get());
+        } finally {
+            fixture.releaseRevokers.countDown();
+            STOP_FENCE_FIXTURES.remove(token);
         }
     }
+
 
     @Test
     void parentStopRequestsChildCancellationBeforeBlockedParentRevoker()
