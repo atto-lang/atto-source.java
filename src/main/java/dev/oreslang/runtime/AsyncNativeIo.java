@@ -35,24 +35,29 @@ public final class AsyncNativeIo implements AutoCloseable {
     // OresContext performs both actor-local and scoped NET permission checks
     // synchronously before any outbound request is admitted or dispatched.
     private ProxyOutboundLoopback proxyLoopback;
+    // Physical copy workers are bounded independently from outstanding HTTP
+    // request permits. A cancelled Future keeps its slot until its worker exits.
+    private int activeProxyCopies;
 
     CompletableFuture<ProxyOutboundLoopback.Response> requestProxyLoopback(
             OresContext context, URI target, String method) {
+        authorizeProxyLoopback(context, target, method);
+        return requestAuthorizedProxyLoopback(target, method);
+    }
+
+    // Must run on the actor's calling turn, before dispatch to a host worker.
+    private void authorizeProxyLoopback(OresContext context, URI target, String method) {
         Objects.requireNonNull(context, "context");
         Objects.requireNonNull(target, "target");
         if (context.nativeIo() != this)
             throw new SecurityException("loopback I/O authority must come from the owning OresContext");
-        // Validate the complete canonical authority/path/method *before*
-        // consulting a permission scope, and repeat validation in the client
-        // immediately before network admission (defense in depth).
-        try {
-            ProxyOutboundLoopback.validateTarget(target, method);
-        } catch (RuntimeException invalid) {
-            return CompletableFuture.failedFuture(invalid);
-        }
+        ProxyOutboundLoopback.validateTarget(target, method);
         context.requirePermission(RuntimePermissions.Permission.NET,
                 "127.0.0.1:" + target.getPort(), "proxy.loopback.request");
+    }
 
+    private CompletableFuture<ProxyOutboundLoopback.Response> requestAuthorizedProxyLoopback(
+            URI target, String method) {
         ProxyOutboundLoopback transport;
         synchronized (this) {
             if (closed) return CompletableFuture.failedFuture(
@@ -79,18 +84,38 @@ public final class AsyncNativeIo implements AutoCloseable {
     OresFuture<ProxyBodyCopy.Receipt> copyProxyLoopback(
             OresContext context, URI target, String method, OutputStream hostSink) {
         Objects.requireNonNull(hostSink, "hostSink");
-        CompletableFuture<ProxyOutboundLoopback.Response> opened =
-                requestProxyLoopback(context, target, method);
+        // Actor-local authority MUST be captured on the caller's turn, never
+        // rechecked on a virtual thread with no actor execution identity.
+        authorizeProxyLoopback(context, target, method);
+        // Admission is synchronously bounded. A worker slot is held until its
+        // underlying copy actually exits, even after early OresFuture cancel.
+        java.util.concurrent.Executor admitted = task -> {
+            synchronized (this) {
+                if (closed || activeProxyCopies >= capacity)
+                    throw new RejectedExecutionException("proxy copy worker admission exhausted");
+                activeProxyCopies++;
+            }
+            try {
+                workers.execute(() -> {
+                    try { task.run(); }
+                    finally {
+                        synchronized (this) { activeProxyCopies--; }
+                    }
+                });
+            } catch (RuntimeException rejection) {
+                synchronized (this) { activeProxyCopies--; }
+                throw rejection;
+            }
+        };
         CompletableFuture<ProxyBodyCopy.Receipt> copied =
-                ProxyBodyCopy.start(opened, hostSink, workers);
+                ProxyBodyCopy.start(() -> requestAuthorizedProxyLoopback(target, method),
+                        hostSink, admitted);
         OresFuture<ProxyBodyCopy.Receipt> ores = OresFuture.from(copied);
         synchronized (this) {
             if (closed) {
                 copied.cancel(true);
                 return ores;
             }
-            // Physical outbound admission remains held by the transport until
-            // the copy worker exits even if OresFuture cancellation wins.
             if (!copied.isDone()) pending.add(ores);
         }
         copied.whenComplete((value, error) -> {
@@ -98,6 +123,8 @@ public final class AsyncNativeIo implements AutoCloseable {
         });
         return ores;
     }
+
+    synchronized int activeProxyCopies() { return activeProxyCopies; }
 
     public <T> OresFuture<T> submit(OresContext context,
             RuntimePermissions.Permission permission, String operation, Callable<T> work) {
