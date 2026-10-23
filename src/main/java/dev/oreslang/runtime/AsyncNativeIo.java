@@ -111,6 +111,10 @@ public final class AsyncNativeIo implements AutoCloseable {
                 ProxyBodyCopy.start(() -> requestAuthorizedProxyLoopback(target, method),
                         hostSink, admitted);
         OresFuture<ProxyBodyCopy.Receipt> ores = OresFuture.from(copied);
+        // Reuse the actor runtime's existing ownership registry: actor death
+        // cancels only this actor's Future, while the host I/O worker retains
+        // the physical lease until its stream/body close finishes.
+        context.actors().ownCurrentActorFuture(ores);
         synchronized (this) {
             if (closed) {
                 copied.cancel(true);
