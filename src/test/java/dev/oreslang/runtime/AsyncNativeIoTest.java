@@ -88,6 +88,108 @@ class AsyncNativeIoTest {
         assertFalse(Files.exists(outside.resolve("secret.txt")));
     }
 
+    @Test void nativeLoanGenerationAndDuplicateReceiptAreFailClosed()
+            throws Exception {
+        var io = new AsyncNativeIo(2);
+        var closed = new java.util.concurrent.atomic.AtomicInteger();
+        AutoCloseable resource = closed::incrementAndGet;
+        try {
+            io.register(resource);
+            AsyncNativeIo.IoLoan first = io.borrow(resource);
+            AsyncNativeIo.IoLoan second = io.borrow(resource);
+            assertEquals(first.identity().resourceGeneration(),
+                    second.identity().resourceGeneration());
+            assertNotEquals(first.identity().loanGeneration(),
+                    second.identity().loanGeneration());
+            assertNull(first.identity().actorId(),
+                    "host/ROOT loans do not invent an actor incarnation");
+
+            io.requestShutdown();
+            assertThrows(RejectedExecutionException.class, () -> io.borrow(resource),
+                    "logical shutdown must seal new per-resource admission");
+            assertThrows(IllegalStateException.class, io::close,
+                    "an outstanding physical resource loan must keep context quarantined");
+            assertEquals(0, closed.get(),
+                    "resource close is not proof that a loan has physically exited");
+
+            first.close();
+            assertThrows(IllegalStateException.class, first::close,
+                    "the same physical receipt cannot decrement the loan count twice");
+            assertThrows(IllegalStateException.class, io::close,
+                    "the second independent loan must remain outstanding");
+            second.close();
+            io.close();
+            assertEquals(1, closed.get(),
+                    "resource must close exactly once after the final loan");
+        } finally {
+            try { io.close(); } catch (IllegalStateException quarantined) { }
+        }
+    }
+
+    @Test void retiredResourceHandleCannotBeReusedUnderStaleGeneration()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        var closed = new java.util.concurrent.atomic.AtomicInteger();
+        AutoCloseable resource = closed::incrementAndGet;
+        try {
+            io.register(resource);
+            AsyncNativeIo.IoLoan older = io.borrow(resource);
+            io.unregister(resource);
+            assertThrows(RejectedExecutionException.class, () -> io.borrow(resource));
+            assertThrows(IllegalStateException.class, () -> io.register(resource),
+                    "a handle with an outstanding old-generation loan cannot be reused");
+            older.close();
+            io.register(resource);
+            AsyncNativeIo.IoLoan newer = io.borrow(resource);
+            assertTrue(newer.identity().resourceGeneration()
+                    > older.identity().resourceGeneration());
+            assertNotEquals(older.identity().loanGeneration(),
+                    newer.identity().loanGeneration());
+            assertThrows(IllegalStateException.class, older::close,
+                    "an old receipt may never retire a fresh generation");
+            newer.close();
+            io.close();
+            assertEquals(1, closed.get());
+        } finally {
+            io.close();
+        }
+    }
+
+    @Test void requestShutdownUnblocksRegisteredSocketReadBeforePhysicalJoin()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        try (var server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+             var socket = new Socket(InetAddress.getLoopbackAddress(),
+                     server.getLocalPort());
+             var peer = server.accept()) {
+            io.register(socket);
+            var readEntered = new CountDownLatch(1);
+            var readExited = new CountDownLatch(1);
+            var read = io.submit("socket.read", () -> {
+                try (AsyncNativeIo.IoLoan lease = io.borrow(socket)) {
+                    readEntered.countDown();
+                    try {
+                        return socket.getInputStream().read();
+                    } finally {
+                        readExited.countDown();
+                    }
+                }
+            });
+            assertTrue(readEntered.await(2, TimeUnit.SECONDS));
+            assertFalse(read.isDone());
+            io.requestShutdown();
+            assertTrue(readExited.await(2, TimeUnit.SECONDS),
+                    "transport wakeup must exit the blocking read without a peer write");
+            assertInstanceOf(Exception.class,
+                    assertThrows(ExecutionException.class,
+                            () -> read.get(2, TimeUnit.SECONDS)).getCause());
+            io.close();
+            assertTrue(socket.isClosed());
+        } finally {
+            io.close();
+        }
+    }
+
     @Test void queuedOperationDiscardIsDistinctFromRunningPhysicalRetirement()
             throws Exception {
         var io = new AsyncNativeIo(3, 1, 2);
