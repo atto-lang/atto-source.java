@@ -255,7 +255,8 @@ public final class ActorProxyRequestSlab extends ActorShardBacking implements Au
         put(row, ROUTE, 0);
         put(row, EPOCH, 0);
         live--;
-        if (get(row, INCARNATION) == Integer.MAX_VALUE) {
+        if (get(row, INCARNATION) == Integer.MAX_VALUE
+                || get(row, CLAIM_SERIAL) == Integer.MAX_VALUE) {
             put(row, PHASE, EXHAUSTED); // do not wrap to a stale live ticket
         } else {
             put(row, PHASE, FREE);
