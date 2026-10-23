@@ -121,7 +121,7 @@ public final class Parser {
                     throw error(previous(), "'shared' must modify an actor declaration; use 'shared actor <Name>'");
                 }
                 if (match(MODULE)) {
-                    if (modifiers.visibilitySeen || modifiers.async || modifiers.suspends || modifiers.suspends || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
+                    if (modifiers.visibilitySeen || modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
                             || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
                         throw error(previous(), "modules do not accept declaration modifiers");
                     }
@@ -383,7 +383,7 @@ public final class Parser {
             }
 
             Ast.ActorKind actorKind = resolveActorKind(actorToken, isolated, modifiers);
-            if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
+            if (modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
                     || modifiers.isStatic || modifiers.isAbstract) {
                 throw error(actorToken, "actor class declarations accept only visibility and actor-kind modifiers");
             }
@@ -471,8 +471,8 @@ public final class Parser {
         if (modifiers.suspends && modifiers.generator)
             throw error(previous(), "suspends generators need suspension-aware generator frames");
         if (modifiers.isAbstract) throw error(previous(), "top-level/module callables cannot be abstract");
-        if (modifiers.trapped && modifiers.async) {
-            throw error(previous(), "async trap fnc/routine is not enabled until trap spans every await suspension");
+        if (modifiers.trapped && (modifiers.async || modifiers.suspends)) {
+            throw error(previous(), "suspending trap fnc/routine is not enabled until trap spans every await suspension");
         }
         if (modifiers.trapped && modifiers.generator) {
             throw error(previous(), "trap generator fnc/routine is not enabled until trap spans generator suspension");
@@ -622,8 +622,8 @@ public final class Parser {
             Ast.Visibility classVisibility,
             boolean filePrivateScope) {
         Token keyword = advance(); // contextual 'constructor'
-        if (mods.async || mods.suspends || mods.generator || mods.structural || mods.nonLexical || mods.isStatic
-                || mods.isAbstract || mods.shared || mods.untrusted) {
+        if (mods.async || mods.suspends || mods.generator || mods.structural || mods.nonLexical || mods.trapped
+                || mods.isStatic || mods.isAbstract || mods.shared || mods.untrusted) {
             throw error(keyword,
                     "constructors accept only private/pub visibility; callable/actor modifiers are not permitted");
         }
@@ -657,7 +657,7 @@ public final class Parser {
     }
 
     private void validateClassModifiers(Modifiers modifiers) {
-        if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
+        if (modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
                 || modifiers.isStatic || modifiers.shared || modifiers.untrusted) {
             throw error(previous(),
                     "classes accept only private/pub visibility and abstract; callable/actor modifiers are not permitted");
@@ -665,21 +665,21 @@ public final class Parser {
     }
 
     private void validateClassFieldModifiers(Modifiers modifiers) {
-        if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
+        if (modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
                 || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
             throw error(peek(), "class fields accept only private/pub visibility modifiers");
         }
     }
 
     private void validateOnlyVisibilityModifiers(Modifiers modifiers, String context) {
-        if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical
-                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
+        if (modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural || modifiers.nonLexical
+                || modifiers.trapped || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
             throw error(previous(), context + " accept only private/pub visibility modifiers");
         }
     }
 
     private void validateInterfaceCallableModifiers(Modifiers modifiers) {
-        if (modifiers.visibilitySeen || modifiers.async || modifiers.generator || modifiers.nonLexical || modifiers.trapped
+        if (modifiers.visibilitySeen || modifiers.async || modifiers.suspends || modifiers.generator || modifiers.nonLexical || modifiers.trapped
                 || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
             throw error(previous(),
                     "interface callable signatures currently accept only the structural callable modifier");
@@ -687,7 +687,7 @@ public final class Parser {
     }
 
     private void validateNoModifiers(Modifiers modifiers, String context) {
-        if (modifiers.visibilitySeen || modifiers.async || modifiers.generator || modifiers.structural
+        if (modifiers.visibilitySeen || modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural
                 || modifiers.nonLexical || modifiers.trapped || modifiers.isStatic || modifiers.isAbstract
                 || modifiers.shared || modifiers.untrusted) {
             throw error(previous(), context + " do not accept declaration modifiers");
@@ -753,7 +753,7 @@ public final class Parser {
         modifiers = mergeModifiers(modifiers, parseModifiers());
         Ast.ActorKind kind = resolveActorKind(
                 actorToken, actorToken.type() == ISOACTOR, modifiers);
-        if (modifiers.async || modifiers.generator || modifiers.structural
+        if (modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural
                 || modifiers.nonLexical || modifiers.trapped || modifiers.isStatic
                 || modifiers.isAbstract) {
             throw error(actorToken,
@@ -912,8 +912,8 @@ public final class Parser {
         if (modifiers.visibility == Ast.Visibility.PUBLIC) {
             throw error(peek(), "actor state fields are private; expose state through actor methods");
         }
-        if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical
-                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
+        if (modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural || modifiers.nonLexical
+                || modifiers.trapped || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
             throw error(peek(), "actor state fields do not accept callable/static/actor modifiers");
         }
     }
@@ -1498,6 +1498,7 @@ public final class Parser {
             }
             params.add(new Ast.Param(type, name, structural, mutable));
         } while (match(COMMA));
+        requireDistinctParameterNames(params);
         return List.copyOf(params);
     }
 
@@ -1530,9 +1531,25 @@ public final class Parser {
     private List<String> parseGenericParameters() {
         if (!match(LT)) return List.of();
         List<String> names = new ArrayList<>();
-        do names.add(consume(IDENT, "expected generic parameter name").lexeme()); while (match(COMMA));
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        do {
+            String name = consume(IDENT, "expected generic parameter name").lexeme();
+            if (!seen.add(name)) {
+                throw error(previous(), "duplicate generic parameter name '" + name + "'");
+            }
+            names.add(name);
+        } while (match(COMMA));
         consume(GT, "expected '>' after generic parameters");
-        return names;
+        return List.copyOf(names);
+    }
+
+    private void requireDistinctParameterNames(List<Ast.Param> params) {
+        java.util.Set<String> names = new java.util.HashSet<>();
+        for (Ast.Param param : params) {
+            if (!names.add(param.name())) {
+                throw error(previous(), "duplicate parameter name '" + param.name() + "'");
+            }
+        }
     }
 
     private List<Ast.Param> parseParametersUntil(Token.Type terminator) {
@@ -1609,6 +1626,7 @@ public final class Parser {
             }
             params.add(new Ast.Param(type, name, structural, mutable));
         } while (match(COMMA));
+        requireDistinctParameterNames(params);
         return params;
     }
 
