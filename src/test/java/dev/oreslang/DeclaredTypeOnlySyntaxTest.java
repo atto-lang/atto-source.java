@@ -194,7 +194,9 @@ final class DeclaredTypeOnlySyntaxTest {
                 "declare interface Parent as end declare trait Child extends Parent as end",
                 "declare type Item = int; declare trait Item as end",
                 "declare interface Item as end declare type Item = int;",
-                "declare trait Item as end declare interface Item as end"
+                "declare trait Item as end declare interface Item as end",
+                "define class Item as end declare trait Item as end",
+                "declare type Item = int; define class Item as end"
         }) {
             IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                     () -> OresCompiler.parseAndTypeCheck(source), source);
