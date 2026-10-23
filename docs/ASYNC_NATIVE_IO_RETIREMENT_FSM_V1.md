@@ -176,25 +176,25 @@ must not be treated as zero-copy pointer/DMA lifetime certification.
 
 ## Explicit remaining limitations
 
-- **Concrete TCP migration (partial):** `NativeIo.connect()` now
-  registers a `SocketStopThenRelease` host resource. STOP requests
-  `shutdownInput()`/`shutdownOutput()` (when connected), while final
-  `Socket.close()` is deferred until the context worker and inline
-  notification barriers retire. A real-loopback JUnit regression asserts
-  that the tracked blocked read and terminal subscriber exit before final
-  descriptor close. This does **not** instrument independent external
-  callbacks/FFI, and `TcpConnection.close()` during normal operation
-  still needs independent per-connection active-read/write lease tracking,
-  including concurrent explicit close versus STOP. Java virtual-thread
-  interruption may itself cause socket closure; cancellation is not a loan
-  receipt. Do not claim universal TCP or actor-memory safety from this patch.
-- **Actor DONE remains a separate gate:** actor-instance ownership of each
-  `AsyncNativeIo` submission is not automatically enrolled with
-  `ActorPhysicalRetirementRegistry`. Joining context shutdown alone does
-  not certify `ActorRef.done()` when an actor is stopped without closing its
-  entire context. Issue #1944's final-notifier reentrancy/exception proof
-  also remains open. Do not merge until actor scope and callback exit are
-  proved on the real adapters and JDK25/AOT source tests execute.
+- **Concrete TCP migration (partial):** `NativeIo.connect()` now registers
+  `SocketStopThenRelease`. Context STOP half-closes input/output, deferring
+  final descriptor close until tracked context workers and synchronous
+  notifications retire. Connection read/write methods now hold explicit
+  per-worker, one-shot, same-thread physical operation loans; concurrent
+  explicit close fails closed until those loans retire. However external
+  callbacks/FFI, borrowed socket handles that outlive their owning actor
+  and socket-native pinned/DMA transfers still require independent receipts.
+  Java virtual-thread interruption may itself close a transport descriptor;
+  cancellation is not a proof that its native callback exited.
+- **Actor DONE now joins context-submitted native I/O work:** actor-turn
+  `submit(context,...)` and `submitClose(context,...)` mint physical
+  tickets before worker dispatch. But host drivers that bypass these APIs,
+  native code retaining loans *after* the Java Callable exits, and raw
+  connection handles crossing incarnations still need their own actor-scoped
+  receipts. Issue #1944's final-notifier reentrancy/exception ordering remains
+  open. The existing last wake may still execute on the retiring notifier's
+  thread. Do not claim callback-exit formal proof without resolving #1944
+  and running exact-source concurrency evidence.
 - This is the **AsyncNativeIo host executor and context ownership receipt**,
   not a universal FFI/GPU/pinned memory physical-release proof. Drivers with
   async callbacks or native ownership after `close()` must register separate
@@ -203,9 +203,10 @@ must not be treated as zero-copy pointer/DMA lifetime certification.
   synchronously. Host drivers whose close can block indefinitely must use an
   independently bounded, non-parking native close lane with a real physical
   retirement receipt; they must never block an actor carrier.
-- `physicalShutdown` requires an explicit join by the owning context or
-  supervisor. Merely exposing the receipt does not itself wire actor DONE or
-  supervisor restart policy to it.
+- `OresContext.close()` now fails closed and quarantines if
+  `physicalShutdown` is incomplete or failed, before actor/VM/GC teardown.
+  Per-actor STOP is independent: every other native/FFI driver must still
+  register a generation-scoped actor receipt and join it through DONE.
 - A broken executor that drops never-started tasks without returning them
   from `shutdownNow` may keep the receipt pending forever, which is a safe
   quarantine rather than a false success.
