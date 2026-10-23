@@ -158,6 +158,24 @@ return is NOT proof that a JNI/native driver has stopped accessing pinned
 memory it retained after return. Such drivers must acquire a separate
 `ActorPhysicalRetirementRegistry` ticket before handing out the loan.
 
+## Trusted Future notification failures
+
+`OresFuture` intentionally isolates ordinary host runtime waiter exceptions
+so one failed subscriber cannot stop sibling delivery or change the terminal
+value observed by guest code. `runtimeNotificationFailure()` now captures
+the first swallowed host waiter exception for trusted native runtime use.
+`AsyncNativeIo.Operation` reads this after the synchronous terminal drain;
+an observed failure latches a sticky context failure and calls
+`failPhysicalRelease()` for its actor ticket instead of successful
+retirement. Tests assert quarantined context and actor DONE while healthy
+sibling subscribers still execute.
+
+The captured failure is **not** a universal detector for a new asynchronous
+host subscriber registering after settlement, an external JNI callback, or
+callbacks executed by another driver after its Java Callable returned.
+Those lifetimes must be explicitly enrolled as their own physical tickets,
+not inferred from `Future.isDone()`.
+
 ## TCP per-connection read/write fencing
 
 `NativeIo.SocketStopThenRelease` now owns a synchronized active-operation
