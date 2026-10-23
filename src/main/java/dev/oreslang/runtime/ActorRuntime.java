@@ -7618,9 +7618,10 @@ public final class ActorRuntime implements AutoCloseable {
                                 physical.failure()));
                 return;
             }
-            if (physical.pending() != 0) {
+            if (physical.pending() != 0 || physical.inFlightNotifications() != 0) {
                 // Keep ActorCell, arena and all shared/native loans alive.
-                // The last genuine release receipt rechecks this gate.
+                // Removing the last receipt from pending is not enough while
+                // its physical host callback is still running.
                 return;
             }
             if (sourceStopCleanupAborted) {
