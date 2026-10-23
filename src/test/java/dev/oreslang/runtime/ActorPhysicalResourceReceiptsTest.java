@@ -57,6 +57,59 @@ final class ActorPhysicalResourceReceiptsTest {
     }
 
     @Test
+    void boundedReceiptAdmissionOverflowQuarantinesEvenAfterDrain() {
+        var registry = new ActorPhysicalResourceReceipts(() -> { });
+        var tickets = new java.util.ArrayList<ActorPhysicalResourceReceipts.Receipt>();
+        for (int i = 0; i < ActorPhysicalResourceReceipts.MAX_OUTSTANDING; i++) {
+            tickets.add(registry.register(ActorPhysicalResourceReceipts.Kind.OTHER, false));
+        }
+        assertThrows(IllegalStateException.class,
+                () -> registry.register(ActorPhysicalResourceReceipts.Kind.OTHER, false));
+        assertNotNull(registry.quarantineCause());
+        registry.sealOnStop();
+        for (var ticket : tickets) assertTrue(ticket.completeFromDriver());
+        assertEquals(0, registry.pending());
+        assertThrows(IllegalStateException.class, registry::finishAfterProof,
+                "overflow is permanent quarantine, not just an empty live set");
+    }
+
+    @Test
+    void stopAndPhysicalTicketPublicationLinearizeWithoutLostClaim()
+            throws Exception {
+        for (int attempt = 0; attempt < 100; attempt++) {
+            var registry = new ActorPhysicalResourceReceipts(() -> { });
+            CountDownLatch simultaneous = new CountDownLatch(1);
+            AtomicReference<ActorPhysicalResourceReceipts.Receipt> published =
+                    new AtomicReference<>();
+            Thread publisher = Thread.ofVirtual().start(() -> {
+                try {
+                    simultaneous.await();
+                    published.set(registry.register(TCP, false));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                } catch (IllegalStateException stopWon) {
+                    // Admission was atomically denied; no physical grant
+                    // should be published by this simulated driver.
+                }
+            });
+            simultaneous.countDown();
+            registry.sealOnStop();
+            publisher.join(TimeUnit.SECONDS.toMillis(3));
+            assertFalse(publisher.isAlive());
+            assertThrows(IllegalStateException.class,
+                    () -> registry.register(TCP, false));
+            if (published.get() != null) {
+                assertEquals(1, registry.pending(),
+                        "driver admission that beat STOP remains joined");
+                assertThrows(IllegalStateException.class, registry::finishAfterProof);
+                assertTrue(published.get().completeFromDriver());
+            }
+            assertEquals(0, registry.pending());
+            registry.finishAfterProof();
+        }
+    }
+
+    @Test
     void stopWaitsForLastPhysicalReceiptRatherThanLastCancelledFuture()
             throws Exception {
         AtomicReference<ActorPhysicalResourceReceipts.Receipt> mutex = new AtomicReference<>();
