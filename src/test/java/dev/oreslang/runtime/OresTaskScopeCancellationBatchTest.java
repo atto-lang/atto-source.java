@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
@@ -20,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * or depending on scheduling order of AsyncRuntime worker threads. They use
  * the production Task/Future cancellation methods; no guest code is enabled.
  */
+@Timeout(25)
 final class OresTaskScopeCancellationBatchTest {
     private static void injectOwned(
             OresTaskScope owner, OresFuture<Void> completion) throws Exception {
@@ -100,9 +102,12 @@ final class OresTaskScopeCancellationBatchTest {
             assertFalse(subscriberSawRevokedChild.get());
         } finally {
             releaseChildRevocation.countDown();
-            childCanceller.join();
-            if (rootCanceller != null) rootCanceller.join();
+            childCanceller.join(5_000);
+            if (rootCanceller != null) rootCanceller.join(5_000);
         }
+        assertFalse(childCanceller.isAlive(), "child cancellation did not finish");
+        if (rootCanceller != null)
+            assertFalse(rootCanceller.isAlive(), "root cancellation did not finish");
         assertNull(failure.get());
         assertTrue(rootCallback.await(3, TimeUnit.SECONDS));
         assertTrue(subscriberSawRevokedChild.get());
@@ -171,8 +176,9 @@ final class OresTaskScopeCancellationBatchTest {
             assertTrue(free.isCancelled());
         } finally {
             release.countDown();
-            first.join();
+            first.join(5_000);
         }
+        assertFalse(first.isAlive(), "unrelated scope hook did not complete");
         stalled.close();
         independent.close();
     }
