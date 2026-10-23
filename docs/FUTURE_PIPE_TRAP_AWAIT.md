@@ -17,8 +17,10 @@ which lacks a separate owned lifetime receipt. For Java/GraalVM, non-actor
 SourceTask admission now uses tracked child handles; the restricted source
 pipeline is admitted through `TaskPipeline.startInCurrentTaskOrRoot` and
 joins its active tracked parent Task's cancellation/physical-retirement tree.
-Canceling an exposed tracked Task result now requests revocation of its
-owned descendants as well. A synchronous/root host entry with no tracked
+Non-actor source Future composition helpers also use tracked parent-aware
+admission; a composed Future no longer silently escapes through an untracked
+scheduler Task. Canceling an exposed tracked Task result now requests
+revocation of its owned descendants as well. A synchronous/root host entry with no tracked
 parent still creates a **root** pipeline: this is not an actor/lifetime
 ownership proof and must not be generalized to escaping borrows or FFI.
 
