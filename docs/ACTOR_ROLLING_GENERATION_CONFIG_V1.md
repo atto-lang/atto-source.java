@@ -87,3 +87,22 @@ The existing source `NativeHttpTest` uses Oreslang-compiled `http.listen` and `h
 A failed/unpublished candidate has its pool fenced and cancelled; its registry reference is removed without altering the serving route. This is cancellation, **not** proof of immediate memory reclamation. Future production integration must consume authenticated retirement receipts and replace the caller-attested bookkeeping API.
 
 At present, an HTTP request is assigned a route at **rolling dispatch admission**, not when the kernel accepts the TCP connection. Requests queued at the transport boundary during a cutover can be assigned to G2; in-flight G1 exchanges with an acquired routing lease remain G1. This ordering is intentionally documented for the initial config-only path. A future source-level interface can make ingress-before-dispatch affinity stricter if required.
+
+## Real NativeHttp loopback integration fixture (2026-10-23)
+
+`NativeHttpRollingDispatcherIntegrationTest` now exercises the **actual** `NativeHttp.Server` HTTP socket, `Exchange.claim`/move/response, SHARED `ActorRuntime.spawnCodeActor` workers, and `NativeHttpRollingDispatcher` (not a substitute JDK `HttpServer` used as a mock). It specifically tests:
+
+- single bound listener and process PID, with a G1 request deliberately deferred *between actual actor mailbox turns* (without parking its scheduler carrier);
+- bad G2 worker initialization fails without publication while another request is still served by G1;
+- subsequent healthy G2 warmup, atomic generation promotion and G2 request completion **before** the original G1 response;
+- G1 cannot drain or retire until the old exchange finishes, and successful actor termination still does **not** automatically call physical reclaim;
+- wrong expected epoch, duplicate initial pool, foreign `NativeHttp` context, and an unready initial pool fail closed;
+- exclusive `Server.accept` ownership; the test-only trusted `NativeHttp(ActorRuntime)` constructor binds only literal loopback addresses and is package-private.
+
+The production constructor must remain lazy with respect to `OresContext.actors()`: `OresContext` creates `NativeHttp(this)` as a field initializer *before* assigning its `ActorRuntime`. Any eager actor-runtime dereference breaks every normal guest HTTP context. The host loopback fixture uses an explicit actor runtime solely to avoid requiring a privileged guest-controlled reload API for testing.
+
+The transferred `Exchange` is revocable: host CONTROL abort uses `abortFromRollingDispatcher(dispatcher)`, which checks the actual listener's exclusive dispatcher authority rather than illegally reusing the exchange's old mutable ownership capability. This avoids stranded exchanges if a dispatch is rejected after transfer.
+
+`NativeHttp` rejects new worker startup after close and refuses promotion of candidate worker pools with existing in-flight exchanges.
+
+**Verification caveat:** as of this change, this new full NativeHttp test is committed and included in the exact-head workflow but **has not been executed**. Prior standalone host routing smoke/stress is not proof of this path, and the separate full Oreslang guest-source hot reload and physical Task/FFI/code quiescence proofs remain release blockers.
