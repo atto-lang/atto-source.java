@@ -133,14 +133,24 @@ final class RecoveryHandlerChain<T> {
     private final Handler<T>[] handlers;
     private final byte[] effectMasks;
     private final ExecutionContext.ExecutionId ownerExecutionId;
+    private final ExecutionContext.AllocationDomain ownerAllocationDomain;
+    private final long ownerParentExecution;
+    private final long ownerContinuation;
 
     private RecoveryHandlerChain(
             Handler<T>[] handlers,
             byte[] effectMasks,
-            ExecutionContext.ExecutionId ownerExecutionId) {
+            ExecutionContext.ExecutionId ownerExecutionId,
+            ExecutionContext.AllocationDomain ownerAllocationDomain,
+            long ownerParentExecution,
+            long ownerContinuation) {
         this.handlers = handlers;
         this.effectMasks = effectMasks;
         this.ownerExecutionId = Objects.requireNonNull(ownerExecutionId, "ownerExecutionId");
+        this.ownerAllocationDomain =
+                Objects.requireNonNull(ownerAllocationDomain, "ownerAllocationDomain");
+        this.ownerParentExecution = ownerParentExecution;
+        this.ownerContinuation = ownerContinuation;
     }
 
     public static <T> Builder<T> builder(ExecutionContext ownerExecution) {
@@ -163,9 +173,14 @@ final class RecoveryHandlerChain<T> {
         if (!pendingFailure.compilerAuthenticated()) {
             throw new SecurityException("recovery requires a compiler-authenticated guest failure");
         }
-        if (!pendingFailure.belongsTo(ownerExecutionId)) {
+        if (!pendingFailure.belongsTo(
+                ownerExecutionId,
+                ownerAllocationDomain,
+                ownerParentExecution,
+                ownerContinuation)) {
             // A valid envelope is not portable across logical Task/actor
-            // invocations. Preserve it unchanged for outward propagation.
+            // invocations or actor generations. Preserve it unchanged for
+            // outward propagation rather than invoking a foreign callback.
             return new Unhandled<>(pendingFailure);
         }
         final FailureKind kind = pendingFailure.kind();
@@ -378,6 +393,9 @@ final class RecoveryHandlerChain<T> {
 
     public static final class Builder<T> {
         private final ExecutionContext.ExecutionId ownerExecutionId;
+        private final ExecutionContext.AllocationDomain ownerAllocationDomain;
+        private final long ownerParentExecution;
+        private final long ownerContinuation;
         @SuppressWarnings("unchecked")
         private Handler<T>[] handlers = (Handler<T>[]) new Handler<?>[4];
         private byte[] effectMasks = new byte[4];
@@ -386,6 +404,9 @@ final class RecoveryHandlerChain<T> {
         private Builder(ExecutionContext ownerExecution) {
             Objects.requireNonNull(ownerExecution, "ownerExecution");
             this.ownerExecutionId = ownerExecution.id();
+            this.ownerAllocationDomain = ownerExecution.allocationDomain();
+            this.ownerParentExecution = ownerExecution.parentExecution();
+            this.ownerContinuation = ownerExecution.continuation();
         }
 
         public Builder<T> register(Handler<T> handler) { return add(BOTH, handler); }
@@ -412,7 +433,10 @@ final class RecoveryHandlerChain<T> {
             return new RecoveryHandlerChain<>(
                     Arrays.copyOf(handlers, size),
                     Arrays.copyOf(effectMasks, size),
-                    ownerExecutionId);
+                    ownerExecutionId,
+                    ownerAllocationDomain,
+                    ownerParentExecution,
+                    ownerContinuation);
         }
     }
 }
