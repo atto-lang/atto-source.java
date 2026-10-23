@@ -179,6 +179,11 @@ final class SupervisorLifecycleFsmIntegrationTest {
                     .anyMatch(e -> e.supervisorId() == child.supervisorId()));
             assertTrue(tree.status().allLogicallyStopped());
             assertFalse(tree.status().allPhysicallyReclaimed());
+            var rootNode = tree.status().nodes().stream()
+                    .filter(n -> n.id() == root.supervisorId()).findFirst().orElseThrow();
+            assertEquals(java.util.Map.of(child.supervisorId(), child.lifecycle().epoch()),
+                    rootNode.frozenChildEpochs(),
+                    "shutdown snapshot must preserve the child's exact incarnation");
         }
     }
 
