@@ -13,6 +13,63 @@ import org.junit.jupiter.api.Timeout;
 /** Actual scheduler/physical Future tests, not a mock cancellation registry. */
 @Timeout(20)
 final class CleanupAwareSchedulerCancellationTest {
+    @Test void actorStopPhysicalGateWaitsForTerminalFutureSubscriberDrain()
+            throws Exception {
+        // A Task may leave the live Task set BEFORE its terminal Future
+        // notifies a synchronous subscriber on a physical worker. Actor
+        // arenas cannot be reclaimed while that callback remains active.
+        OresFuture<Integer> producer = new OresFuture<>();
+        CountDownLatch awaiting = new CountDownLatch(1);
+        CountDownLatch callbackEntered = new CountDownLatch(1);
+        CountDownLatch releaseCallback = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<Throwable> callbackFailure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> work = scheduler.start(
+                    new OresScheduler.CleanupAwareTask<Integer>() {
+                        @Override public OresScheduler.Step<Integer> resume(
+                                OresScheduler.Resume resume) {
+                            if (resume.initial()) {
+                                awaiting.countDown();
+                                return OresScheduler.await(producer);
+                            }
+                            return OresScheduler.done(7);
+                        }
+                    });
+            assertTrue(awaiting.await(3, TimeUnit.SECONDS));
+            work.whenCompleteRuntime((value, failure) -> {
+                callbackEntered.countDown();
+                try {
+                    if (!releaseCallback.await(5, TimeUnit.SECONDS)) {
+                        callbackFailure.set(new AssertionError(
+                                "test terminal subscriber was never released"));
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    callbackFailure.set(interrupted);
+                }
+            });
+            try {
+                producer.completeFromRuntime(7);
+                assertTrue(callbackEntered.await(3, TimeUnit.SECONDS));
+                assertFalse(scheduler.actorStopPhysicallyQuiescent(),
+                        "terminal Future settlement is not a subscriber-drain receipt");
+            } finally {
+                releaseCallback.countDown();
+            }
+            assertEquals(7, work.get(3, TimeUnit.SECONDS));
+            // The physical scheduler lease and all synchronous notification
+            // receipts must retire before an actor considers this safe.
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (!scheduler.actorStopPhysicallyQuiescent()
+                    && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertTrue(scheduler.actorStopPhysicallyQuiescent());
+            assertNull(callbackFailure.get());
+        }
+    }
+
     @Test void suspendedTaskRunsDeferredCleanupBeforePublishingCancellation()
             throws Exception {
         OresFuture<Integer> producer = new OresFuture<>();
