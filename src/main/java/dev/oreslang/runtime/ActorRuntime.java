@@ -138,7 +138,15 @@ public final class ActorRuntime implements AutoCloseable {
      */
     @FunctionalInterface
     public interface PhysicalStopDispatcher {
-        void execute(Runnable stopTask);
+        /**
+         * The executor must call neverStarted exactly once for a task accepted
+         * but later removed without ever starting (e.g. shutdownNow). This is
+         * a FAILURE receipt, never physical successful retirement.
+         *
+         * Rejected admission throws synchronously. A started task reports its
+         * physical completion through the stopTask's own finally block.
+         */
+        void execute(Runnable stopTask, Consumer<Throwable> neverStarted);
     }
 
     public static boolean isActorCarrierThread() {
@@ -8363,7 +8371,22 @@ public final class ActorRuntime implements AutoCloseable {
                         }
                     };
                     try {
-                        physicalStopDispatcher.execute(teardown);
+                        physicalStopDispatcher.execute(teardown, discarded -> {
+                            // A queued task discarded by shutdown did not
+                            // invoke child.cancel(). Record a failed dispatch
+                            // receipt and quarantine the entire parent tree.
+                            if (received.compareAndSet(false, true)) {
+                                completeChildStopDispatch(discarded);
+                            } else {
+                                // A broken host may deliver duplicate or
+                                // conflicting callbacks. Never treat that as
+                                // a successful physical teardown.
+                                quarantineChildStopFailure(
+                                        new IllegalStateException(
+                                                "duplicate physical STOP discard receipt",
+                                                discarded));
+                            }
+                        });
                     } catch (RuntimeException | Error admissionFailure) {
                         // Rejecting after enqueue is a host-contract breach:
                         // quarantine even if the queued callback later runs.
