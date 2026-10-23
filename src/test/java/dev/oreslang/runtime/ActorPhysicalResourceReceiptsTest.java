@@ -163,6 +163,39 @@ final class ActorPhysicalResourceReceiptsTest {
     }
 
     @Test
+    void staleIncarnationReceiptCannotReopenOrBlockSuccessor()
+            throws Exception {
+        AtomicReference<ActorPhysicalResourceReceipts.Receipt> firstReceipt =
+                new AtomicReference<>();
+        CountDownLatch firstAcquired = new CountDownLatch(1);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var first = runtime.<String>spawnShared(() -> (message, context) -> {
+                firstReceipt.set(context.runtime()
+                        .registerCurrentActorPhysicalReceipt(TCP));
+                firstAcquired.countDown();
+            });
+            first.send("open");
+            assertTrue(firstAcquired.await(3, TimeUnit.SECONDS));
+            assertTrue(first.cancel());
+            assertTrue(firstReceipt.get().completeFromDriver());
+            assertTrue(first.awaitTermination(3, TimeUnit.SECONDS));
+
+            CountDownLatch secondProcessed = new CountDownLatch(1);
+            var successor = runtime.<String>spawnShared(() ->
+                    (message, context) -> secondProcessed.countDown());
+            assertNotEquals(first.id(), successor.id());
+            assertFalse(firstReceipt.get().failFromDriver(
+                    new IllegalStateException("stale old-generation callback")));
+            successor.send("work");
+            assertTrue(secondProcessed.await(3, TimeUnit.SECONDS));
+            successor.stop();
+            assertTrue(successor.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(successor.failure().isEmpty(),
+                    "old receipt cannot poison replacement actor");
+        }
+    }
+
+    @Test
     void physicalReleaseFailureQuarantinesArenaAndNeverPublishesDone()
             throws Exception {
         ActorRuntime runtime = new ActorRuntime();
