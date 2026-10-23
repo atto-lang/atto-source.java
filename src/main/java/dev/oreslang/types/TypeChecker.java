@@ -61,10 +61,9 @@ public final class TypeChecker {
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
     private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
-    private record ExtensionReceiver(String alias, Env.Binding binding) { }
-    // Scoped to the active function and bound to its exact lexical parameter.
-    // This prevents a shadowing int from acquiring a named alias's methods.
-    private Map<String, ExtensionReceiver> extensionReceivers = Map.of();
+    // Bind aliases to the checked lexical Binding identity, so shadowing
+    // with a raw int never inherits the named type's methods.
+    private Map<Env.Binding, String> extensionReceivers;
     // Foreign aliases are visible only while expanding a public field in
     // their declaring class, never as names available to importer source.
     private final IdentityHashMap<Ast.ClassDecl, Map<String, Ast.TypeAliasDecl>> linkedClassAliases = new IdentityHashMap<>();
@@ -762,7 +761,7 @@ public final class TypeChecker {
                 (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
         validateFunctionGenericDefaults(fn);
         Env env = new Env(moduleBindingEnv(module), fn.nonLexical());
-        Map<String, ExtensionReceiver> scopedExtensionReceivers = new HashMap<>();
+        Map<Env.Binding, String> scopedExtensionReceivers = new IdentityHashMap<>();
         List<Type> argumentTypes = new ArrayList<>(fn.parameters().size());
         for (Ast.Param param : fn.parameters()) {
             Type parameterType = resolveParam(param, generics, null);
@@ -797,8 +796,7 @@ public final class TypeChecker {
             if (!param.type().arguments().isEmpty() || param.type().inferArguments()) continue;
             Ast.TypeAliasDecl namedAlias = findTypeAlias(param.type().name());
             if (namedAlias != null && module.equals(typeAliasOwners.get(namedAlias))) {
-                scopedExtensionReceivers.put(param.name(),
-                        new ExtensionReceiver(namedAlias.name(), env.lookup(param.name())));
+                scopedExtensionReceivers.put(env.lookup(param.name()), namedAlias.name());
             }
         }
         defineImplicitArguments(env, argumentTypes);
@@ -830,7 +828,7 @@ public final class TypeChecker {
                             + module + "." + fn.name() + "'");
         }
 
-        Map<String, ExtensionReceiver> previousExtensionReceivers = extensionReceivers;
+        Map<Env.Binding, String> previousExtensionReceivers = extensionReceivers;
         extensionReceivers = scopedExtensionReceivers;
         Ast.ActorKind previousActorKind = currentActorKind;
         boolean previousGenerator = currentGenerator;
@@ -1986,6 +1984,14 @@ public final class TypeChecker {
 
             if (recursiveLambda && declaredAhead instanceof Function) env.replace(binding.name(), declared, binding.kind());
             else env.define(binding.name(), declared, binding.kind(), missingExplicitFields);
+            if (extensionReceivers != null && binding.declaredType() != null
+                    && binding.declaredType().arguments().isEmpty()
+                    && !binding.declaredType().inferArguments()) {
+                Ast.TypeAliasDecl alias = findTypeAlias(binding.declaredType().name());
+                if (alias != null && currentLexicalModule.equals(typeAliasOwners.get(alias))) {
+                    extensionReceivers.put(env.lookup(binding.name()), alias.name());
+                }
+            }
             if (binding.kind() == Ast.BindingKind.CONST) {
                 if (constantInteger != null) {
                     env.defineConstantInteger(binding.name(), constantInteger);
@@ -2756,14 +2762,15 @@ public final class TypeChecker {
         if (expr instanceof Ast.CallExpr call) {
             if (call.callee() instanceof Ast.MemberExpr extension
                     && extension.receiver() instanceof Ast.NameExpr variable) {
-                ExtensionReceiver typed = extensionReceivers.get(variable.name());
-                if (typed != null && env.lookup(variable.name()) == typed.binding()) {
+                String alias = extensionReceivers == null
+                        ? null : extensionReceivers.get(env.lookup(variable.name()));
+                if (alias != null) {
                     // Extension methods are attached to the *named* Code
                     // alias, never to all ints sharing the same runtime ABI.
-                    String functionName = "$mtd$" + typed.alias() + "$" + extension.member();
+                    String functionName = "$mtd$" + alias + "$" + extension.member();
                     int argumentCount = fixedCallArity(
                             call.arguments(), env, generics, self,
-                            "extension method " + typed.alias() + "." + extension.member());
+                            "extension method " + alias + "." + extension.member());
                     Ast.FunctionDecl target = findFunction(functionName, argumentCount + 1);
                     if (target != null) {
                         if (call.typeArgumentsPresent()) {
@@ -2776,7 +2783,7 @@ public final class TypeChecker {
                                 target.returnType(),
                                 call.arguments(), env, generics, self,
                                 null, Map.of(),
-                                "extension method " + typed.alias() + "." + extension.member());
+                                "extension method " + alias + "." + extension.member());
                         Ast.CheckedExtensionCall.record(call, functionName);
                         return result;
                     }
