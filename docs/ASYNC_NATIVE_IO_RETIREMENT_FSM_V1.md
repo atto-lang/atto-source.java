@@ -71,9 +71,45 @@ These invariants have not been mechanically checked with TLA+/Apalache,
 Dafny, Alloy, or Java concurrency verification. They are intended as formal
 specification inputs and adversarial acceptance criteria, not a proof.
 
+## Two-stage native release and context quarantine
+
+Trusted host drivers that need to interrupt a worker before reclaiming a
+native buffer should register a `AsyncNativeIo.StopThenRelease` resource:
+
+- `requestStop()` is issued during STOP. It may request cancellation or
+  shutdown on a transport; **it may not release pinned buffers, FFI state,
+  or callback-owned memory**.
+- `close()` is the final physical release callback. The context claims each
+  release once and runs it outside the context admission monitor **only
+  after** the tracked Callable, perf cleanup, and synchronous Future terminal
+  listeners have retired. A pending final release blocks `physicalShutdown()`.
+- Failures in either phase are sticky. Sibling stop requests/final release
+  attempts continue, but the context is quarantined rather than asserting
+  that memory reclamation is safe.
+- Legacy `AutoCloseable` resources retain their old single-phase close
+  behavior. **Their close is only a cancellation/transport-close receipt,
+  not proof of native loan retirement.** Migrate ownership-sensitive drivers
+  to the staged contract and register any external asynchronous FFI, JNI, NIO
+  completion, or DMA callback with its own generation-scoped physical ticket.
+
+`OresContext.close()` now requests the native shutdown, then checks the
+physical receipt **before** invoking `AsyncRuntime.close()`,
+`ActorRuntime.close()`, `OresVM.close()`, shared code-image cleanup or
+GC cleanup. If a worker, terminal observer, or final resource release is
+still outstanding, close fails immediately and retains the context in an
+explicit strong-reference quarantine. A trusted owner can retry close after
+`nativeIo().physicalShutdown()` resolves. An observed physical release
+failure remains quarantined, even after a later retry.
+
+This is a *nonblocking, fail-closed* context gate, not an implementation
+of automatic retry/reaper, a universal actor-scoped native-loan instrumenter,
+or a license to reclaim an arena before an actor-incarnation receipt retires.
+In particular, a driver with callbacks outside the context I/O workers
+must still join those tickets through `ActorPhysicalRetirementRegistry`.
+
 ## Deterministic regression matrix
 
-`AsyncNativeIoTest` on JDK25 now includes: a single-worker executor with
+`AsyncNativeIoTest` on JDK25 additionally specifies staged final release after an uninterruptible worker and after a blocked terminal subscriber, and sticky failure on STOP request. The suite includes: a single-worker executor with
 a queued never-started operation; STOP versus uninterruptible success and
 failure; a deliberately blocked inline terminal Future subscriber; a
 registered resource whose close fails; a hostile Error thrown by one resource
