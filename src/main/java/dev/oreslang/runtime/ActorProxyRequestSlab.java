@@ -57,6 +57,7 @@ public final class ActorProxyRequestSlab extends ActorShardBacking implements Au
     private int[] storage;
     private int freeHead;
     private int live;
+    private boolean closed;
 
     public ActorProxyRequestSlab(Layout layout, int capacity, int lanes) {
         ActorRuntime.currentActorId().orElseThrow(() ->
@@ -264,9 +265,11 @@ public final class ActorProxyRequestSlab extends ActorShardBacking implements Au
     }
 
     @Override public void close() {
+        if (closed) return;
         owner();
         // Explicit close is permitted only after external I/O has quiesced.
         if (live != 0) throw new IllegalStateException("proxy slab has unretired requests");
         lease.close();
+        closed = true;
     }
 }
