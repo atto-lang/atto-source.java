@@ -37,6 +37,40 @@ public class TaskHandleTest {
         return (TaskCancellation) field.get(handle);
     }
 
+    @Test void taskTerminalCasIsNotPhysicalSubscriberDrain() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            CountDownLatch running = new CountDownLatch(1);
+            CountDownLatch leave = new CountDownLatch(1);
+            CountDownLatch subscriberEntered = new CountDownLatch(1);
+            CountDownLatch unblockSubscriber = new CountDownLatch(1);
+            TaskHandle<Integer> task = scheduler.startTracked(resume -> {
+                running.countDown();
+                awaitUninterruptibly(leave);
+                return OresScheduler.done(19);
+            });
+            assertTrue(running.await(3, TimeUnit.SECONDS));
+            task.getDone().whenCompleteRuntime((outcome, failure) -> {
+                subscriberEntered.countDown();
+                awaitUninterruptibly(unblockSubscriber);
+            });
+            try {
+                leave.countDown();
+                assertTrue(subscriberEntered.await(3, TimeUnit.SECONDS));
+                assertTrue(task.getDone().isDone(),
+                        "test did not reach the public terminal state");
+                assertFalse(task.doneCallbacksDrained().toCompletableFuture().isDone(),
+                        "Task DONE CAS was mistaken for a complete callback drain");
+            } finally {
+                leave.countDown();
+                unblockSubscriber.countDown();
+            }
+            assertEquals(new TaskHandle.Success<>(19),
+                    task.getDone().get(3, TimeUnit.SECONDS));
+            task.doneCallbacksDrained().toCompletableFuture()
+                    .get(3, TimeUnit.SECONDS);
+        }
+    }
+
     @Test void parentDoneAwaitsRunningChildPhysicalRetirement() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(2)) {
             TaskScope scope = scheduler.newTaskScope();
