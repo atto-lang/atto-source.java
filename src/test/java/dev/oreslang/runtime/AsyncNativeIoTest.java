@@ -210,6 +210,118 @@ class AsyncNativeIoTest {
     }
 
 
+
+    @Test void discardedBeforeStartIsCancelledAndCannotRunGuestHostIo()
+            throws Exception {
+        var executor = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>());
+        var io = new AsyncNativeIo(2, executor);
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var closeRequested = new CountDownLatch(1);
+        var neverStarted = new java.util.concurrent.atomic.AtomicInteger();
+        io.register(() -> closeRequested.countDown());
+        var running = io.submit("blocked", () -> {
+            entered.countDown();
+            while (release.getCount() != 0) {
+                try { release.await(20, TimeUnit.MILLISECONDS); }
+                catch (InterruptedException ignored) { /* simulates native I/O */ }
+            }
+            return 7;
+        });
+        try {
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            var queued = io.submit("queued", () -> {
+                neverStarted.incrementAndGet();
+                return 11;
+            });
+            assertFalse(queued.isDone(), "queued I/O has not entered its Callable");
+            io.close();
+            assertTrue(closeRequested.await(3, TimeUnit.SECONDS),
+                    "resource close must be requested even while worker is active");
+            assertEquals(0, neverStarted.get());
+            assertInstanceOf(RejectedExecutionException.class,
+                    assertThrows(ExecutionException.class,
+                            () -> queued.get(3, TimeUnit.SECONDS)).getCause());
+            assertFalse(running.isDone(),
+                    "shutdownNow cannot certify the uninterruptible worker exited");
+            assertFalse(io.physicalShutdown().isDone(),
+                    "physical context receipt joins worker and close callbacks");
+        } finally {
+            release.countDown();
+        }
+        assertInstanceOf(IllegalStateException.class,
+                assertThrows(ExecutionException.class,
+                        () -> running.get(3, TimeUnit.SECONDS)).getCause());
+        assertNull(io.physicalShutdown().get(3, TimeUnit.SECONDS));
+        assertEquals(0, neverStarted.get());
+    }
+
+
+    @Test void physicalShutdownWaitsForTerminalSubscriberDrain()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        var callbackEntered = new CountDownLatch(1);
+        var releaseCallback = new CountDownLatch(1);
+        var permitWorkExit = new CountDownLatch(1);
+        var started = new CountDownLatch(1);
+        var work = io.submit("callback-ownership", () -> {
+            started.countDown();
+            permitWorkExit.await();
+            return 5;
+        });
+        assertTrue(started.await(3, TimeUnit.SECONDS));
+        work.whenCompleteRuntime((value, failure) -> {
+            callbackEntered.countDown();
+            while (releaseCallback.getCount() != 0) {
+                try {
+                    releaseCallback.await(30, TimeUnit.MILLISECONDS);
+                } catch (InterruptedException ignored) {
+                    // Physical host subscriber deliberately ignores STOP
+                    // interruption until the test releases its native loan.
+                }
+            }
+        });
+        permitWorkExit.countDown();
+        try {
+            assertTrue(callbackEntered.await(3, TimeUnit.SECONDS));
+            io.close();
+            assertFalse(io.physicalShutdown().isDone(),
+                    "settled Future is not a drained inline subscriber receipt");
+        } finally {
+            releaseCallback.countDown();
+        }
+        assertNull(io.physicalShutdown().get(3, TimeUnit.SECONDS));
+    }
+
+
+    @Test void failedHostCloseDoesNotSkipSiblingOrPublishCleanShutdown()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        var siblingClosed = new CountDownLatch(1);
+        var fatalClose = new AssertionError("untrusted host close callback failed");
+        io.register(() -> { throw fatalClose; });
+        io.register(siblingClosed::countDown);
+        io.close();
+        assertTrue(siblingClosed.await(3, TimeUnit.SECONDS),
+                "each resource close request must be attempted independently");
+        assertSame(fatalClose, io.physicalShutdownFailure());
+        assertFalse(io.physicalShutdown().isDone(),
+                "a host close that threw has no trustworthy release receipt");
+    }
+
+
+    @Test void failedResourceCloseQuarantinesPhysicalContextRetirement()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        var failedClose = new java.io.IOException("driver close cannot prove release");
+        io.register(() -> { throw failedClose; });
+        io.close();
+        assertSame(failedClose, io.physicalShutdownFailure());
+        assertFalse(io.physicalShutdown().isDone(),
+                "uncertain resource close is not a physical-retirement proof");
+    }
+
     @Test void coreNumericLoggingDoesNotChangeIoFailuresOrLeakGuestExceptionText() throws Exception {
         CoreLog.configure(CoreLog.Level.OFF);
         CoreLog.configure(CoreLog.Level.WARN);
