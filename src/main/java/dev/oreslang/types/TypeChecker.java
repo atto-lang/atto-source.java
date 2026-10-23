@@ -4615,6 +4615,17 @@ public final class TypeChecker {
                     "Future value-pipe currently requires a named unary stage with no extra arguments");
         }
         Ast.FunctionDecl stage = findFunction(name.name(), 1);
+        // This implementation invokes the checked declaration through the
+        // current evaluator. Cross-module/imported callable execution needs
+        // its own owner/environment binding, not just a declaration pointer.
+        // Fail closed rather than accidentally run an imported body with the
+        // caller's module namespace or privileges.
+        if (stage != null
+                && !java.util.Objects.equals(
+                        unqualifiedFunctionOwners.get(name.name()), currentLexicalModule)) {
+            throw new IllegalArgumentException(
+                    "Future value-pipe stage must be declared in the current module until module ownership is proven");
+        }
         if (stage == null || stage.kind() != Ast.CallableKind.FNC
                 || stage.actorKind() != Ast.ActorKind.NONE
                 || stage.async() || stage.suspends() || stage.generator()
