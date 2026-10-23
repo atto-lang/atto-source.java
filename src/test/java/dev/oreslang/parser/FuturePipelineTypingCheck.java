@@ -55,6 +55,31 @@ public final class FuturePipelineTypingCheck {
                 != lifted.modules().get(0).declarations().get(2)) {
             throw new AssertionError("checked Future stage bound to the wrong declaration identity");
         }
+        // A later bad declaration must invalidate the entire compilation
+        // rather than leak a proof for an earlier successfully visited pipe.
+        Ast.Program invalidWholeProgram = Parser.parse("""
+                async fnc source(): int { return 21; }
+                fnc save(int value): int { return value + 1; }
+                fnc main(): void {
+                  val Future<int> pending = source() |> save();
+                  return;
+                }
+                fnc invalid(): bool { return 123; }
+                """);
+        Ast.FunctionDecl partlyCheckedMain = (Ast.FunctionDecl)
+                invalidWholeProgram.modules().getFirst().declarations().get(2);
+        Ast.CallExpr unsafeEarlierPipe = (Ast.CallExpr)
+                ((Ast.BindingStmt) partlyCheckedMain.body().getFirst()).initializer();
+        try {
+            TypeChecker.checkTypes(invalidWholeProgram);
+            throw new AssertionError("later invalid declaration unexpectedly type-checked");
+        } catch (IllegalArgumentException expected) {
+            if (TypeChecker.CheckedPureFuturePipe.lookup(unsafeEarlierPipe)) {
+                throw new AssertionError(
+                        "failed compilation published a partially checked Future proof");
+            }
+        }
+
         // Host code must not have a public proof-minting capability,
         // even if it constructs a matching function declaration and CallExpr.
         try {
