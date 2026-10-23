@@ -684,9 +684,29 @@ public final class OresMutex {
                 handoffInFlight = false;
             }
 
-            /** Signalled after the grant or reclamation has physically finished. */
+            /**
+             * Finalize the claim on the granting carrier. A successfully
+             * published but abandoned guard is revoked only AFTER all
+             * synchronous completion subscribers have returned; a cancelled
+             * unpublished grant was already reclaimed by this carrier.
+             */
             private void finishHandoff() {
-                physicalSettlement.complete(null);
+                final SharedGuard abandoned;
+                final GuardFuture<T> pending;
+                synchronized (this) {
+                    handoffInFlight = false;
+                    abandoned = retired ? guard : null;
+                    pending = future;
+                }
+                try {
+                    if (abandoned != null) {
+                        abandoned.releaseFromRuntime(isPublishedAsyncGrant(pending));
+                    }
+                    physicalSettlement.complete(null);
+                } catch (RuntimeException | Error failure) {
+                    physicalSettlement.completeExceptionally(failure);
+                    throw failure;
+                }
             }
 
             private void failHandoff(Throwable failure) {
@@ -748,10 +768,12 @@ public final class OresMutex {
             private void retireAbandoned() {
                 GuardFuture<T> pending;
                 SharedGuard acquired;
+                boolean claimed;
                 synchronized (this) {
                     retired = true;
                     pending = future;
                     acquired = guard;
+                    claimed = handoffInFlight;
                 }
                 // Binding a guard is NOT publication. The grant may still
                 // lose the Future completion race to Task cancellation or
@@ -772,9 +794,12 @@ public final class OresMutex {
                     // required; if it was not, merely reclaim the permit.
                     // The guard CAS protects exact-once release against the
                     // concurrent granting carrier.
-                    if (acquired != null) {
+                    if (acquired != null && !claimed) {
                         acquired.releaseFromRuntime(isPublishedAsyncGrant(pending));
                     }
+                    // Claimed permits are still owned by the granting carrier.
+                    // It performs the abandoned release in finishHandoff(),
+                    // then resolves the physical receipt joined by getDone().
                 }
             }
         }
