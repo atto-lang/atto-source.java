@@ -9,9 +9,12 @@ instrument native TCP/HTTP, FFI, or LLVM runtimes.
 
 - Exactly one `ActorPhysicalRetirementRegistry` belongs to each ActorCell,
   identified by its immutable ActorId and generation.
-- Only a trusted host adapter executing with that actor's *physical*
-  single-writer lease can register a resource ticket. Registration happens
-  **before** acquiring/publishing the physical resource or native loan.
+- A trusted actor-turn adapter must hold the actor's *physical*
+  single-writer lease to register a resource ticket. Alternatively, a trusted
+  native host driver/supervisor may register against an exact ActorRef from
+  outside all guest/actor turns before accepting/handing a resource to that
+  actor. Both paths register **before** acquiring/publishing the physical
+  resource or native loan.
 - Every ticket declares a kind: MUTEX_HANDOFF, TCP_HTTP_HANDLE, FFI_LOAN,
   ASYNC_ITERATOR, SHARED_BLOB_LEASE, OTHER. Diagnostics expose only immutable
   per-kind counts and the failure cause; no ticket escapes guest syntax.
@@ -44,6 +47,9 @@ instrument native TCP/HTTP, FFI, or LLVM runtimes.
 // Inside a trusted runtime adapter, while holding this actor's lease:
 var receipt = runtime.registerCurrentActorPhysicalReceipt(
     ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE);
+// Or from the native host transport acceptor, outside actor/guest turns:
+// var receipt = runtime.registerActorPhysicalReceiptFromDriver(
+//     exactActorRef, ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE);
 // Acquire native/transport loan only after registration succeeds.
 // The resource close machinery retains the opaque receipt.
 requestPhysicalClose(nativeHandle);
@@ -64,6 +70,9 @@ stopped but a DMA/FFI loan remains active.
 `ActorPhysicalRetirementRegistryTest` covers:
 - Actor cancelled with outstanding TCP + FFI tickets; DONE waits for BOTH;
   external completion callback is allowed, double-settlement is ignored.
+- A native host transport acceptor registers its TCP loan BEFORE delivering
+  work; rejects foreign-runtime ActorRefs, new tickets after logical STOP,
+  and tickets after finalized retirement.
 - Parent actor STOP with child FFI loan: parent and child DONE remain pending
   until the child's physical release.
 - SourceTask with an FFI ticket: after STOP its authenticated cancellation
