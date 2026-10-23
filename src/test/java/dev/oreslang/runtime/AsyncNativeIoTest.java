@@ -322,6 +322,100 @@ class AsyncNativeIoTest {
                 "uncertain resource close is not a physical-retirement proof");
     }
 
+
+    @Test void racedLateResourceCloseCannotBlockContextMonitorOrForgeRetirement()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        var workerEntered = new CountDownLatch(1);
+        var letWorkerExit = new CountDownLatch(1);
+        var closeEntered = new CountDownLatch(1);
+        var letCloseExit = new CountDownLatch(1);
+        var operation = io.submit("ongoing", () -> {
+            workerEntered.countDown();
+            while (letWorkerExit.getCount() != 0) {
+                try { letWorkerExit.await(20, TimeUnit.MILLISECONDS); }
+                catch (InterruptedException ignored) { /* native I/O is uncooperative */ }
+            }
+            return 99;
+        });
+        assertTrue(workerEntered.await(3, TimeUnit.SECONDS));
+        io.close(); // seals further resource admission without a worker receipt
+        var closeFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        Thread rejected = Thread.ofVirtual().start(() -> {
+            try {
+                io.register(() -> {
+                    closeEntered.countDown();
+                    if (!letCloseExit.await(3, TimeUnit.SECONDS)) {
+                        throw new IOException("test native close deadline");
+                    }
+                });
+            } catch (Throwable failure) {
+                closeFailure.set(failure);
+            }
+        });
+        try {
+            assertTrue(closeEntered.await(3, TimeUnit.SECONDS));
+            letWorkerExit.countDown();
+            assertInstanceOf(IllegalStateException.class,
+                    assertThrows(ExecutionException.class,
+                            () -> operation.get(3, TimeUnit.SECONDS)).getCause());
+            assertFalse(io.physicalShutdown().isDone(),
+                    "late rejected resource close still owns a physical host callback");
+            assertNull(io.physicalShutdownFailure());
+        } finally {
+            letWorkerExit.countDown();
+            letCloseExit.countDown();
+        }
+        rejected.join(3_000);
+        assertFalse(rejected.isAlive());
+        assertInstanceOf(IllegalStateException.class, closeFailure.get(),
+                "registration must reject after successfully closing late handle");
+        assertNull(io.physicalShutdown().get(3, TimeUnit.SECONDS));
+    }
+
+
+    @Test void retiredContextCannotInitiateNewNativeCloseCallbacks()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        io.close();
+        assertNull(io.physicalShutdown().get(3, TimeUnit.SECONDS));
+        var attemptedClose = new java.util.concurrent.atomic.AtomicInteger();
+        assertThrows(IllegalStateException.class,
+                () -> io.register(attemptedClose::incrementAndGet));
+        assertEquals(0, attemptedClose.get(),
+                "fully retired context has no authority to run new close callback");
+    }
+
+
+    @Test void failedLateRegistrationCloseQuarantinesContext()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var pending = io.submit("inflight", () -> {
+            entered.countDown();
+            while (release.getCount() != 0) {
+                try { release.await(20, TimeUnit.MILLISECONDS); }
+                catch (InterruptedException ignored) { /* native work */ }
+            }
+            return 1;
+        });
+        assertTrue(entered.await(3, TimeUnit.SECONDS));
+        var failure = new IOException("rejected native handle did not physically close");
+        try {
+            io.close();
+            assertSame(failure, assertThrows(IOException.class,
+                    () -> io.register(() -> { throw failure; })));
+            assertSame(failure, io.physicalShutdownFailure());
+            assertFalse(io.physicalShutdown().isDone());
+        } finally {
+            release.countDown();
+        }
+        assertThrows(ExecutionException.class, () -> pending.get(3, TimeUnit.SECONDS));
+        assertFalse(io.physicalShutdown().isDone(),
+                "failed late handle close must keep physical shutdown quarantined");
+    }
+
     @Test void coreNumericLoggingDoesNotChangeIoFailuresOrLeakGuestExceptionText() throws Exception {
         CoreLog.configure(CoreLog.Level.OFF);
         CoreLog.configure(CoreLog.Level.WARN);
