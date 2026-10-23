@@ -174,4 +174,34 @@ final class TupleV2ProjectionPlanTest {
                         .map(t -> new Slot(t, false)).toList(), false));
     }
 
+    @Test
+    void staticPackResolutionRetainsItsOriginalProjectionProof() {
+        var input = tuple(Types.Primitive.INT, Types.Primitive.STRING,
+                Types.Primitive.BOOL, Types.Primitive.DECIMAL);
+        var pack = new StructuralTuplePolicy.Candidate("pack", 1, shape(true));
+        var resolved = StructuralTuplePolicy.resolveExplicitTupleSpread(List.of(pack), input);
+        assertEquals(new StructuralTuplePolicy.Selection("pack", true),
+                resolved.selection());
+        var plan = resolved.packingProjection().orElseThrow();
+        assertEquals(1, plan.hiddenTailWidth());
+        assertEquals(3, plan.visibleWidth());
+        assertTrue(plan.requiresNonescapingOwnershipCheck());
+        assertEquals(Materialization.WRAP_SOME, plan.visibleSlot(2).materialization());
+
+        // Expanded arity wins deterministically; it has no implicit tuple
+        // packing projection and cannot fall back after a type mismatch.
+        var expanded = new StructuralTuplePolicy.Candidate("expanded", 4, null);
+        var direct = StructuralTuplePolicy.resolveExplicitTupleSpread(
+                List.of(pack, expanded), input);
+        assertEquals(new StructuralTuplePolicy.Selection("expanded", false),
+                direct.selection());
+        assertTrue(direct.packingProjection().isEmpty());
+
+        var omitted = StructuralTuplePolicy.resolveExplicitTupleSpread(
+                List.of(pack), tuple(Types.Primitive.INT, Types.Primitive.STRING));
+        assertEquals(Materialization.SYNTHESIZE_NONE,
+                omitted.packingProjection().orElseThrow()
+                        .visibleSlot(2).materialization());
+    }
+
 }
