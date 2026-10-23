@@ -166,7 +166,14 @@ final class ImportGraph {
                             || (decl instanceof Ast.TypeAliasDecl alias
                                     && alias.visibility() == Ast.Visibility.PUBLIC
                                     && alias.name().equals(name));
-                    case TRAIT, STRUCT -> false;
+                    // Until traits have distinct nominal metadata, a trait is
+                    // exactly the existing interface-like type declaration.
+                    // This selector never imports an executable value.
+                    case TRAIT -> decl instanceof Ast.InterfaceDecl iface
+                            && !iface.moduleContract()
+                            && iface.visibility() == Ast.Visibility.PUBLIC
+                            && iface.name().equals(name);
+                    case STRUCT -> false;
                     case ALL -> (decl instanceof Ast.FunctionDecl fn
                                     && fn.visibility() == Ast.Visibility.PUBLIC
                                     && fn.name().equals(name))
