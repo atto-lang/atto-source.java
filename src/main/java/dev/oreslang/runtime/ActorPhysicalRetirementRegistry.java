@@ -79,11 +79,20 @@ final class ActorPhysicalRetirementRegistry {
                 synchronized (lock) { inFlightNotifications--; }
                 throw notificationFailure;
             }
+            if (postDrainExecutor == null) {
+                // The legacy isolated-test wake decrements its own fence
+                // BEFORE invoking the synchronous last notifier. A notifier
+                // exception must not be mistaken for executor rejection and
+                // decrement the same fence a second time.
+                requestPostDrainWake();
+                return true;
+            }
             try {
                 requestPostDrainWake();
             } catch (RuntimeException | Error dispatchFailure) {
-                // requestPostDrainWake latches an uncertain dispatch failure
-                // BEFORE dropping this final notification fence.
+                // The asynchronous dispatcher latches rejection before this
+                // count is released. Its runnable cannot enter postDrainWake
+                // unless dispatch acceptance was successfully authorized.
                 synchronized (lock) { inFlightNotifications--; }
                 throw dispatchFailure;
             }
