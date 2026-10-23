@@ -1785,7 +1785,7 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<?> cell = currentActor.get();
         if (cell == null) return future;
 
-        if (!ownFuture(cell, future)) {
+        if (!ownFuture(cell, future, true)) {
             return future;
         }
         return future;
@@ -2085,22 +2085,50 @@ public final class ActorRuntime implements AutoCloseable {
 
     private boolean ownFuture(
             ActorCell<?> cell,
-            OresFuture<?> future) {
-        if (cell.stopped.get() || cell.finalized || closed.get()) {
-            future.cancel(false);
+            OresFuture<?> future,
+            boolean allowSourceCleanup) {
+        // Only an executing scheduler-minted cleanup continuation may create
+        // bounded post-STOP resource-close Futures. Captured generic Future
+        // callbacks never gain this authority, even for the same ActorId.
+        boolean cleanupTurn = allowSourceCleanup
+                && currentActor.get() == cell
+                && OresScheduler.cancellationCleanupTurn();
+        boolean accepted = false;
+        boolean cleanupOwned = false;
+        synchronized (cell.lifecycleLock) {
+            if (!cell.finalized && !closed.get()
+                    && (!cell.stopped.get()
+                            || (cleanupTurn && cell.sourceStopCleanupActive))) {
+                cleanupOwned = cell.stopped.get();
+                if (!cleanupOwned
+                        || cell.pendingCleanupFutures < INTERNAL_CONTINUATION_SLOTS) {
+                    accepted = cell.pendingOperations.add(future);
+                    if (accepted && cleanupOwned) cell.pendingCleanupFutures++;
+                }
+            }
+        }
+        if (!accepted) {
+            // Cancellation callbacks can reenter actor control: always settle
+            // outside lifecycleLock, including capacity-denial failures.
+            if (!future.isDone()) future.cancel(false);
             return false;
         }
 
-        cell.pendingOperations.add(future);
-        if (cell.stopped.get() || cell.finalized || closed.get()) {
-            cell.pendingOperations.remove(future);
-            future.cancel(false);
-            return false;
-        }
-
-        future.whenCompleteRuntime(
-                (ignored, failure) ->
-                        cell.pendingOperations.remove(future));
+        final boolean cleanupReceipt = cleanupOwned;
+        future.whenCompleteRuntime((ignored, failure) -> {
+            boolean notify = false;
+            synchronized (cell.lifecycleLock) {
+                if (cell.pendingOperations.remove(future) && cleanupReceipt) {
+                    if (cell.pendingCleanupFutures <= 0) {
+                        throw new IllegalStateException(
+                                "actor cleanup Future admission underflow");
+                    }
+                    cell.pendingCleanupFutures--;
+                    notify = cell.stopped.get();
+                }
+            }
+            if (notify) cell.sourceTaskCleanupQuiesced();
+        });
         return true;
     }
 
@@ -2118,7 +2146,7 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(continuation, "continuation");
 
         ActorCell<?> cell = actors.get(target.actorId());
-        if (cell == null || !ownFuture(cell, future)) return;
+        if (cell == null || !ownFuture(cell, future, false)) return;
 
         future.whenCompleteRuntime(
                 (value, failure) ->
@@ -7068,6 +7096,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorCell<?> parent;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
+        /** Bounded async-close Future receipts admitted only by cleanup Tasks. */
+        private int pendingCleanupFutures;
         /**
          * Mutable scheduler metadata belongs to this actor, never to the shared
          * AST/evaluator. Keys are immutable shared code-site identities.
@@ -7447,6 +7477,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (finalized
                     || sourceSchedulerClosing
                     || sourceStopCleanupPending
+                    || pendingCleanupFutures != 0
                     || activeTurns != 0
                     || scheduled.get()
                     || carrierActive
