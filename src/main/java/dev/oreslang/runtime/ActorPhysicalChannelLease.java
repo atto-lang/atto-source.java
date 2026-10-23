@@ -97,6 +97,7 @@ final class ActorPhysicalChannelLease implements AutoCloseable {
         }
     }
 
+    @SuppressWarnings("removal") // ThreadDeath is deprecated, but must still escape STOP.
     private static void rethrowFatal(Throwable failure) {
         if (failure instanceof VirtualMachineError fatal) throw fatal;
         if (failure instanceof ThreadDeath fatal) throw fatal;
