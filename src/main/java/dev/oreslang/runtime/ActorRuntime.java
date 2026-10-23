@@ -1881,6 +1881,21 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * Trusted host driver completion handler. The driver registers BEFORE
+     * calling an NIO asynchronous read/write and passes this handler directly
+     * to the native operation. Actor DONE joins the callback's physical exit,
+     * independently of descriptor close and logical Future cancellation.
+     */
+    <V, A> ActorPhysicalIoCallbackLease<V, A> registerActorIoCompletionFromDriver(
+            ActorRef<?> owner,
+            ActorPhysicalRetirementRegistry.Kind kind,
+            java.nio.channels.CompletionHandler<? super V, ? super A> handler) {
+        Objects.requireNonNull(handler, "handler");
+        var receipt = registerActorPhysicalReceiptFromDriver(owner, kind);
+        return new ActorPhysicalIoCallbackLease<>(receipt, handler);
+    }
+
+    /**
      * Bind a runtime Future to the current actor lifetime. Outside an actor
      * turn the Future remains independently owned by its caller.
      */
