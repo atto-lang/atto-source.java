@@ -7915,6 +7915,7 @@ public final class ActorRuntime implements AutoCloseable {
                 while (processed < dispatcherConfig.throughput()
                         && (!stopped.get() || sourceStopCleanupActive)) {
                     MessageEnvelope envelope;
+                    boolean sourceTaskCommand;
                     synchronized (lifecycleLock) {
                         if ((stopped.get() && !sourceStopCleanupActive)
                                 || finalized) break;
@@ -7923,6 +7924,7 @@ public final class ActorRuntime implements AutoCloseable {
                         // commands may run after STOP. Never consume ordinary
                         // guest mail or generic Future continuations here.
                         envelope = sourceTaskMailbox.tryRead().orElse(null);
+                        sourceTaskCommand = envelope != null;
                         if (envelope == null && !stopped.get()) {
                             envelope = continuationMailbox.tryRead().orElse(null);
                             if (envelope == null && !sourceReceiveSuspended) {
@@ -7948,7 +7950,7 @@ public final class ActorRuntime implements AutoCloseable {
                         synchronized (lifecycleLock) {
                             if (finalized || (stopped.get()
                                     && (!sourceStopCleanupActive
-                                            || !activeEnvelope.isContinuation()))) break;
+                                            || !sourceTaskCommand))) break;
                         }
 
                         if (activeEnvelope.isContinuation()) {
@@ -8096,13 +8098,18 @@ public final class ActorRuntime implements AutoCloseable {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
             List<DrainWaiter> failedDrainWaiters;
+            OresScheduler cleanupScheduler;
             synchronized (lifecycleLock) {
                 if (finalized) return;
                 if (recordCause && cause != null) {
                     ref.terminationCause.compareAndSet(null, cause);
                 }
-                stopped.set(true);
+                // STOP is single-shot. Reentrant supervisor/host requests must
+                // not re-close a channel or reset the cleanup admission fence.
+                if (!stopped.compareAndSet(false, true)) return;
                 sealing = true;
+                cleanupScheduler = sourceScheduler;
+                sourceStopCleanupPending = cleanupScheduler != null;
                 // Detach pending observers under the actor monitor. Settling an
                 // OresFuture invokes runtime callbacks inline, so never settle
                 // one while holding lifecycleLock.
@@ -8111,7 +8118,9 @@ public final class ActorRuntime implements AutoCloseable {
                 if (cause == null) mailbox.close();
                 else mailbox.close(cause);
                 continuationMailbox.close(cause);
-                drainMailboxReservations();
+                drainOrdinaryMailboxReservations();
+                // Leave sourceTaskMailbox open: the stopped actor's scheduler
+                // still owns authenticated lexical unwind continuations.
                 descendants = List.copyOf(children);
                 pending = List.copyOf(pendingOperations);
                 pendingOperations.clear();
@@ -8129,6 +8138,35 @@ public final class ActorRuntime implements AutoCloseable {
             // Cancellation removes channel/select waiter registrations before
             // any future channel activity can revive work for this dead actor.
             for (OresFuture<?> future : pending) future.cancel(false);
+
+            // The scheduler snapshot must happen outside lifecycleLock:
+            // cancellation may invoke synchronous Future subscribers, and
+            // a running SourceTask may be at its own actor STOP safepoint.
+            if (cleanupScheduler != null) {
+                Throwable admissionFailure = null;
+                try {
+                    cleanupScheduler.beginActorStopCleanup(
+                            this::sourceTaskCleanupQuiesced);
+                } catch (RuntimeException | Error failure) {
+                    admissionFailure = failure;
+                } finally {
+                    synchronized (lifecycleLock) {
+                        sourceStopCleanupPending = false;
+                        sourceStopCleanupAborted = admissionFailure != null;
+                        sourceStopCleanupActive = admissionFailure == null
+                                && !forceKillFenced && !closed.get();
+                        if (admissionFailure != null) {
+                            ref.terminationCause.compareAndSet(null,
+                                    new OresScheduler.CleanupIncompleteError(
+                                            "actor source cancellation admission failed",
+                                            admissionFailure));
+                        }
+                        finalizeStopLocked();
+                        lifecycleLock.notifyAll();
+                    }
+                }
+                if (admissionFailure == null) schedule();
+            }
 
             for (ActorCell<?> child : descendants) {
                 child.cancel(new ActorCancelledException(
