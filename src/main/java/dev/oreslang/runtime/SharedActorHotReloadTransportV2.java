@@ -60,15 +60,6 @@ final class SharedActorHotReloadTransportV2 {
     }
 
     private void settlePhysicalCompletion(
-            ActorRoutePublicationV1<ActorRuntime.ActorRef<byte[]>>
-                    .CompletionReceipt<byte[]> impossible) {
-        // This overload must never be selected. CompletionReceipt is static
-        // with R as its route type; retained only to make accidental generic
-        // nesting fail loudly at compile time.
-        throw new AssertionError(impossible);
-    }
-
-    private void settlePhysicalCompletion(
             ActorRoutePublicationV1.CompletionReceipt<
                     ActorRuntime.ActorRef<byte[]>> completion,
             Throwable failure) {
