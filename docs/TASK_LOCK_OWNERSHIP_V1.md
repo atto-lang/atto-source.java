@@ -51,3 +51,5 @@ Cross-repo reference: platform-conformance PR #158; native substrate LLVM PR #86
   Actor STOP must join this drain receipt before releasing Task tracking or
   retiring actor backing storage. This is distinct from the lock permit's
   own physical-settlement receipt.
+
+- **Two independent Task notification drains:** A Task's `getDone()` terminal CAS and callback drain do not imply the scheduler's separate source-result Future has drained all its subscribers. `TaskHandle.terminalCallbacksDrained()` now joins both source-result and Task-DONE completion drains into one read-only, unforgeable observation stage. Actor STOP retains the Task until this *combined* receipt settles. This applies to ordinary tracked Tasks and UNTRUSTED wall-deadline Tasks, preserving the original quota callback and propagating its exceptional failure as an unsafe receipt. The new JUnit regressions block source-result subscribers after `getDone()` is already terminal; these project tests still require JDK25 CI.
