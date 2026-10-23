@@ -155,6 +155,8 @@ final class CleanupAwareSchedulerCancellationTest {
             assertSame(fatal, assertThrows(ExecutionException.class,
                     () -> work.get(3, TimeUnit.SECONDS)).getCause());
             assertFalse(work.isCancelled());
+            assertTrue(scheduler.hasIncompleteCleanup(),
+                    "panic during cancellation unwind must quarantine actor/FFI loans");
         }
     }
 
@@ -258,6 +260,49 @@ final class CleanupAwareSchedulerCancellationTest {
             assertEquals(0, upstream.pendingRuntimeWaiterCount());
         } finally {
             releaseCleanup.countDown();
+            scheduler.close();
+        }
+    }
+
+    @Test void terminalFutureWaitsForPhysicalQuiescenceHookEvenDuringClose()
+            throws Exception {
+        CountDownLatch hookEntered = new CountDownLatch(1);
+        CountDownLatch allowRetirement = new CountDownLatch(1);
+        OresScheduler scheduler = new OresScheduler(1);
+        Thread closer = null;
+        try {
+            OresFuture<Integer> work = scheduler.start(
+                    new OresScheduler.CleanupAwareTask<Integer>() {
+                        @Override public OresScheduler.Step<Integer> resume(
+                                OresScheduler.Resume resume) {
+                            return OresScheduler.done(42);
+                        }
+                    },
+                    () -> {
+                        hookEntered.countDown();
+                        boolean released = false;
+                        while (!released) {
+                            try {
+                                released = allowRetirement.await(25, TimeUnit.MILLISECONDS);
+                            } catch (InterruptedException ignored) {
+                                // shutdownNow is not a physical retire receipt.
+                            }
+                        }
+                    });
+            assertTrue(hookEntered.await(3, TimeUnit.SECONDS));
+            assertFalse(work.isDone(),
+                    "the quiescence callback still owns the actor lease");
+            closer = new Thread(scheduler::close, "close-before-lease-retirement");
+            closer.start();
+            assertFalse(work.isDone(),
+                    "external close must not overtake the quiescence callback");
+            allowRetirement.countDown();
+            assertEquals(Integer.valueOf(42), work.get(3, TimeUnit.SECONDS));
+            closer.join(3000);
+            assertFalse(closer.isAlive());
+        } finally {
+            allowRetirement.countDown();
+            if (closer != null) closer.join(3000);
             scheduler.close();
         }
     }
