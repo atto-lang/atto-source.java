@@ -493,6 +493,92 @@ final class TaskPipelineTest {
     }
 
     @Test
+    void successfullyReturnedParentStillJoinsItsPhysicallyRunningPipelineChild()
+            throws Exception {
+        CountDownLatch stageEntered = new CountDownLatch(1);
+        CountDownLatch releaseStage = new CountDownLatch(1);
+        AtomicReference<TaskPipeline.PipelineHandle<Integer>> child =
+                new AtomicReference<>();
+
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            TaskHandle<Integer> parent = scheduler.startTracked(resume -> {
+                if (!resume.initial())
+                    throw new IllegalStateException("parent must not resume");
+                child.set(TaskPipeline.startInCurrentTaskOrRoot(
+                        scheduler, OresFuture.completed(11),
+                        List.of(value -> {
+                            stageEntered.countDown();
+                            if (!releaseStage.await(5, TimeUnit.SECONDS)) {
+                                throw new IllegalStateException("stage release timed out");
+                            }
+                            return ((Integer) value) + 1;
+                        })));
+                // Returning from the parent is not physical child retirement.
+                return OresScheduler.done(99);
+            });
+            assertTrue(stageEntered.await(5, TimeUnit.SECONDS));
+            try {
+                assertEquals(99, parent.result().get(5, TimeUnit.SECONDS));
+                assertFalse(parent.getDone().isDone(),
+                        "successful result must not prematurely retire child work");
+                assertFalse(child.get().getDone().isDone(),
+                        "child stage has not physically unwound");
+            } finally {
+                releaseStage.countDown();
+            }
+            assertInstanceOf(TaskHandle.Success.class,
+                    child.get().getDone().get(5, TimeUnit.SECONDS));
+            assertInstanceOf(TaskHandle.Success.class,
+                    parent.getDone().get(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void parentCancellationBeforeChildAdmissionPreventsLateStageExecution()
+            throws Exception {
+        CountDownLatch aboutToAdmit = new CountDownLatch(1);
+        CountDownLatch admitNow = new CountDownLatch(1);
+        AtomicReference<TaskPipeline.PipelineHandle<Integer>> lateChild =
+                new AtomicReference<>();
+        AtomicInteger stageCalls = new AtomicInteger();
+        OresFuture<Integer> borrowed = OresFuture.completed(5);
+
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            TaskHandle<Integer> parent = scheduler.startTracked(resume -> {
+                if (!resume.initial()) {
+                    throw new IllegalStateException("parent unexpectedly resumed");
+                }
+                aboutToAdmit.countDown();
+                if (!admitNow.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("late-admission gate timed out");
+                }
+                lateChild.set(TaskPipeline.startInCurrentTaskOrRoot(
+                        scheduler, borrowed, List.of(value -> {
+                            stageCalls.incrementAndGet();
+                            return ((Integer) value) + 1;
+                        })));
+                return OresScheduler.done(0);
+            });
+            assertTrue(aboutToAdmit.await(5, TimeUnit.SECONDS));
+            try {
+                assertTrue(parent.result().cancel(false));
+                assertFalse(parent.getDone().isDone(),
+                        "the parent has not left its blocked physical turn");
+            } finally {
+                admitNow.countDown();
+            }
+            assertInstanceOf(TaskHandle.Cancelled.class,
+                    parent.getDone().get(5, TimeUnit.SECONDS));
+            TaskPipeline.PipelineHandle<Integer> child = lateChild.get();
+            assertNotNull(child, "late child must be accounted for, even after cancellation");
+            assertInstanceOf(TaskHandle.Cancelled.class,
+                    child.getDone().get(5, TimeUnit.SECONDS));
+            assertEquals(0, stageCalls.get(), "revoked parent must never execute late stages");
+            assertFalse(borrowed.isCancelled(), "borrowed input survives parent revocation");
+        }
+    }
+
+    @Test
     void aTrackedRootMayStartPipelineWithoutAnExistingParentTask()
             throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
