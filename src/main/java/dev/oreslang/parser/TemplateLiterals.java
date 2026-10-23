@@ -133,37 +133,9 @@ final class TemplateLiterals {
                 }
                 continue;
             }
-            if (c == '
-                literal.setLength(0);
-                int close = interpolationEnd(raw, at + 1, 0);
-                String source = raw.substring(at + 1, close);
-                if (source.isBlank()) throw syntax("empty template interpolation");
-                pieces.add(Parser.parseInterpolatedExpression(source));
-                at = close + 1;
-                continue;
-            }
-            literal.append(c);
-        }
-        pieces.add(new Ast.LiteralExpr(literal.toString()));
-        Ast.Expr result = pieces.getFirst();
-        for (int i = 1; i < pieces.size(); i++) {
-            result = new Ast.BinaryExpr("+", result, pieces.get(i));
-        }
-        return result;
-    }
-
-    private static void requireDepth(int nesting) {
-        if (nesting > MAX_NESTING) throw syntax("template interpolation nesting limit exceeded");
-    }
-
-    private static IllegalArgumentException syntax(String detail) {
-        return new IllegalArgumentException("Oreslang template error: " + detail);
-    }
-}
- && at < raw.length() && raw.charAt(at) == '{') {
-                if (++interpolations > MAX_INTERPOLATIONS) {
+            if (c == '$' && at < raw.length() && raw.charAt(at) == '{') {
+                if (++interpolations > MAX_INTERPOLATIONS)
                     throw syntax("template interpolation count limit exceeded");
-                }
                 pieces.add(new Ast.LiteralExpr(literal.toString()));
                 literal.setLength(0);
                 int close = interpolationEnd(raw, at + 1, 0);
@@ -177,9 +149,8 @@ final class TemplateLiterals {
         }
         pieces.add(new Ast.LiteralExpr(literal.toString()));
         Ast.Expr result = pieces.getFirst();
-        for (int i = 1; i < pieces.size(); i++) {
+        for (int i = 1; i < pieces.size(); i++)
             result = new Ast.BinaryExpr("+", result, pieces.get(i));
-        }
         return result;
     }
 
