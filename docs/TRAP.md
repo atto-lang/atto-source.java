@@ -296,11 +296,14 @@ scans are intentionally bounded and fail closed on malformed graphs.
 the Java signal was constructed directly by trusted evaluator code. It does
 not bind the signal to its original logical Task/actor incarnation, prevent a
 foreign Java adapter from replaying a previously emitted signal, or guarantee
-GraalVM Native Image and LLVM parity. Moreover, legacy ordinary Java runtime
-errors are still mapped by `isMappedGuestFailure` using Java stack-trace
-provenance; a mutable stack trace is not cryptographic or capability-backed
-proof of trusted guest origin. Replacing that mapping with immutable
-compiler/runtime-minted effects is a separate required merge gate. Any host
+GraalVM Native Image and LLVM parity. The previous legacy `isMappedGuestFailure` fallback that admitted ordinary
+JDK exceptions based on mutable `StackTraceElement` strings has now been
+removed. Instead, only a dedicated `OresEvalRootNode$OresCastError` class
+with the exact evaluator JVM nest-host identity remains implicitly mapped.
+Other built-in faults must be explicitly emitted as trusted guest Throw
+signals; until migrated, generic JDK exceptions **fail closed**, potentially
+changing trap/catch behavior. Restoring language conformance for those known
+built-ins without reintroducing host exception spoofing is a merge blocker. Any host
 interop capable of unrestricted reflection/Unsafe access to VM objects
 must remain outside the untrusted security model.
 
@@ -316,6 +319,23 @@ GraalVM evaluator, guest parser/source fixtures or LLVM native code. Both
 files' local bytes were independently verified against the named Git blobs.
 Cross-organization private CI remains blocked pending the independently
 reviewed allowlist in security issue #1501.
+
+### 2026-10-23 fail-closed trap/catch hardening
+
+`TrapFailurePolicy` now traverses each throwable cause/suppression graph
+**once**, tracking which nodes belong to the primary cause chain and refusing
+cycles or overlarge graphs. This avoids authorizing ordinary catch/trap from
+a second read of a potentially mutated host graph. Explicit security denial
+remains guest-catchable (but never trappable); guest `raise`, panic, shutdown,
+cancellation, timeout, and host fatal remain non-consumable at these boundaries.
+
+**Compatibility gate:** this change intentionally removes the unsafe
+`StackTraceElement`-based admission of generic JDK exceptions. Verified
+interpreter-issued `throw` and the dedicated cast fault still participate.
+Remaining language-generated arithmetic, assertion, indexing or other
+stdlib faults require compiler-issued carriers, not guessed Java class names
+or caller-modifiable stack traces. Until those call sites are migrated and
+full source-level tests pass, this branch remains DRAFT.
 
 ## `raise`: deliberate trap escape
 
