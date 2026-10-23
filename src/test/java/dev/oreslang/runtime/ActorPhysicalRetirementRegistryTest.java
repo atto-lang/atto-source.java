@@ -1193,6 +1193,29 @@ final class ActorPhysicalRetirementRegistryTest {
                 "dispatch rejection permanently quarantines this incarnation");
     }
 
+    @Test void deferredFinalWakeFailureSticksBeforeVerifiedRetirement() {
+        var queued = new java.util.ArrayDeque<Runnable>();
+        var calls = new AtomicInteger();
+        var notificationFailure = new IllegalStateException("final host STOP recheck failed");
+        var registry = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 58, () -> {
+                    if (calls.incrementAndGet() == 2) throw notificationFailure;
+                }, queued::add);
+        var receipt = registry.register(
+                ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE, false);
+        registry.seal();
+        assertTrue(receipt.completeAfterPhysicalRelease());
+        assertEquals(1, registry.snapshot().inFlightNotifications());
+        assertEquals(1, calls.get());
+        assertThrows(IllegalStateException.class, registry::retireVerified);
+        assertSame(notificationFailure, assertThrows(
+                IllegalStateException.class, () -> queued.remove().run()));
+        assertEquals(0, registry.snapshot().inFlightNotifications());
+        assertSame(notificationFailure, registry.snapshot().failure(),
+                "a failed final wake must permanently quarantine the generation");
+        assertThrows(IllegalStateException.class, registry::retireVerified);
+    }
+
     @Test void acceptedButNeverRunPostDrainWakeKeepsRetirementFenced() {
         var queued = new java.util.ArrayDeque<Runnable>();
         var notifications = new AtomicInteger();
