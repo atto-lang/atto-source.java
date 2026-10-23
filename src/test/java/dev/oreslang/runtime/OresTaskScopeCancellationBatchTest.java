@@ -176,4 +176,54 @@ final class OresTaskScopeCancellationBatchTest {
         stalled.close();
         independent.close();
     }
+
+    @Test
+    void lateWaitersAcrossDeferredCancelCasDeliverOnlyOnce() throws Exception {
+        final int rounds = 192;
+        for (int iteration = 0; iteration < rounds; iteration++) {
+            AtomicInteger hooks = new AtomicInteger();
+            AtomicInteger observed = new AtomicInteger();
+            OresFuture<Void> future = new OresFuture<>(hooks::incrementAndGet);
+            CountDownLatch subscribe = new CountDownLatch(1);
+            CountDownLatch subscribed = new CountDownLatch(1);
+            AtomicReference<Throwable> problem = new AtomicReference<>();
+            Thread lateSubscriber = Thread.ofVirtual().start(() -> {
+                try {
+                    awaitUninterruptibly(subscribe);
+                    future.whenCompleteRuntime((ignored, failure) -> {
+                        if (!(failure instanceof java.util.concurrent.CancellationException))
+                            problem.compareAndSet(null, new AssertionError(
+                                    "late subscriber lost cancellation identity"));
+                        observed.incrementAndGet();
+                    });
+                } catch (Throwable failure) {
+                    problem.set(failure);
+                } finally {
+                    subscribed.countDown();
+                }
+            });
+            Runnable deferred = future.cancelDeferredNotification();
+            assertNotNull(deferred);
+            assertTrue(future.isCancelled());
+            assertEquals(1, hooks.get());
+            subscribe.countDown();
+            try {
+                assertTrue(subscribed.await(3, TimeUnit.SECONDS));
+                assertEquals(0, observed.get(),
+                        "deferred cancellation cannot notify before scope revocation");
+                assertNull(future.runtimeTerminalStateOrNull(),
+                        "a deferred cancellation must not be treated as await-ready");
+            } finally {
+                deferred.run();
+                lateSubscriber.join();
+            }
+            assertNull(problem.get());
+            assertEquals(1, observed.get());
+            deferred.run();
+            assertEquals(1, observed.get());
+            assertFalse(future.cancel(true));
+            assertEquals(0, future.pendingRuntimeWaiterCount());
+        }
+    }
+
 }
