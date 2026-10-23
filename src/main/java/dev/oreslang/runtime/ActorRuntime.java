@@ -4904,11 +4904,12 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    private void unregisterActor(ActorCell<?> cell) {
-        // Keep the actor discoverable until all runtime-owned teardown that is
-        // part of its termination contract has completed. ActorRef.awaitTermination()
-        // treats absence from this map as terminal, so removing the actor first
-        // would let observers race ahead of creator-owned ActorGroup cleanup.
+    private void retireActorGroupBindings(ActorCell<?> cell) {
+        // The group retirement callbacks can fail or invoke external host
+        // observers. Run them before public DONE, but keep the old actor
+        // registered until all terminal Future subscribers have drained.
+        // Otherwise another incarnation may reclaim its registry slot while
+        // a callback still owns its terminal notification stack.
         Set<ActorGroupId> affected = new java.util.HashSet<>();
         synchronized (groupMembershipLock) {
             Set<ActorGroupId> memberships = groupMemberships.get(cell.ref.id());
@@ -4924,6 +4925,12 @@ public final class ActorRuntime implements AutoCloseable {
             ActorGroup group = actorGroups.get(groupId);
             if (group != null) group.actorTerminated(cell.ref.id());
         }
+    }
+
+    private void releaseActorRegistrySlot(ActorCell<?> cell) {
+        // Public terminal state may be visible during OresFuture's synchronous
+        // callback drain; the incarnation and its actor quota slot must stay
+        // rooted until that drain physically returns.
         if (actors.remove(cell.ref.id(), cell)) {
             int remaining = actorCount.decrementAndGet();
             if (remaining < 0) {
@@ -7554,7 +7561,7 @@ public final class ActorRuntime implements AutoCloseable {
                 actorExitHook.accept(executionDomain);
                 if (memorySlice != null) memorySlice.close();
                 codeActorState = null;
-                unregisterActor(this);
+                retireActorGroupBindings(this);
                 // Parent child-ownership must remain live until this child's
                 // own DONE subscribers and terminal receipt have drained.
                 // Otherwise parent shutdown can reclaim its arena while a
@@ -7569,6 +7576,9 @@ public final class ActorRuntime implements AutoCloseable {
                 if (terminal == null) ref.doneFuture.completeFromRuntime(null);
                 else ref.doneFuture.failFromRuntime(terminal);
                 finalizedFuture.completeFromRuntime(null);
+                // In particular, do not release the registry slot while
+                // terminal observers are still synchronously running.
+                releaseActorRegistrySlot(this);
                 // Only after observer notification and arena/lock cleanup
                 // may awaitTermination() report a complete actor incarnation.
                 synchronized (lifecycleLock) {
