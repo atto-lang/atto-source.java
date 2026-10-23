@@ -50,7 +50,9 @@ BeginShutdown ==
     /\ \A n \in Nodes : phase[n] \in {"Running", "Restarting"}
     /\ phase' = [n \in Nodes |-> "Pre"]
     /\ fenced' = [n \in Nodes |-> TRUE]
-    /\ UNCHANGED <<epoch, workerDone, loans, preDone, postDone, timedOut>>
+    /\ workerDone' = [n \in Nodes |-> FALSE]
+    /\ loans' = [n \in Nodes |-> 1]
+    /\ UNCHANGED <<epoch, preDone, postDone, timedOut>>
 
 \* A child shutdown hook cannot precede the parent's pre-hook.
 PreComplete(n) ==
