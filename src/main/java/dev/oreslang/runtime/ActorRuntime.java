@@ -7795,9 +7795,13 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void sourceTaskCleanupQuiesced() {
             synchronized (lifecycleLock) {
+                // The physical registry uses this as the *last* trusted
+                // post-drain wake. Notify blocked joiners first: once
+                // finalizeStopLocked() publishes ActorRef.done(), this
+                // callback must be a leaf with no further fallible actions.
+                lifecycleLock.notifyAll();
                 if (stopped.get() && !sourceStopCleanupPending
                         && activeTurns == 0) finalizeStopLocked();
-                lifecycleLock.notifyAll();
             }
         }
 
