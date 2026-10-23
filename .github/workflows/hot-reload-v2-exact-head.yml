@@ -12,6 +12,8 @@ on:
       - 'src/main/java/dev/oreslang/runtime/ActorUpgradePreflightV1.java'
       - 'src/main/java/dev/oreslang/runtime/ActorRoutePublicationV1.java'
       - 'src/main/java/dev/oreslang/runtime/SharedActorHotReloadTransportV2.java'
+      - 'src/main/java/dev/oreslang/runtime/SharedSourceActorHotReloadTransportV2.java'
+      - 'src/main/java/dev/oreslang/runtime/RestoringSourceActorExecutorV2.java'
       - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
       - 'src/main/java/dev/oreslang/nodes/SourceActorCheckpointCodecV1.java'
       - 'src/test/java/dev/oreslang/runtime/ActorUpgradeEpochGateTest.java'
@@ -21,6 +23,7 @@ on:
       - 'src/test/java/dev/oreslang/runtime/ActorRoutePublicationV1Test.java'
       - 'src/test/java/dev/oreslang/runtime/ActorTrackedMessageCompletionTest.java'
       - 'src/test/java/dev/oreslang/runtime/SharedActorHotReloadTransportV2Test.java'
+      - 'src/test/java/dev/oreslang/runtime/SourceCompiledSharedHotReloadV2Test.java'
       - 'src/test/java/dev/oreslang/nodes/SourceActorCheckpointCodecV1Test.java'
       - 'src/test/java/dev/oreslang/HotReloadActorGenerationLinkTest.java'
   workflow_dispatch:
@@ -55,7 +58,7 @@ jobs:
       - name: Run hot-reload v2 focused regressions
         run: >-
           mvn -B -ntp
-          -Dtest=LogicalActorProxyMailboxV1Test,LogicalActorProxyUpgradeWatermarkTest,ActorUpgradeEpochGateTest,ActorUpgradePreflightV1Test,ActorRoutePublicationV1Test,ActorTrackedMessageCompletionTest,SharedActorHotReloadTransportV2Test,SourceActorCheckpointCodecV1Test,HotReloadActorGenerationLinkTest
+          -Dtest=LogicalActorProxyMailboxV1Test,LogicalActorProxyUpgradeWatermarkTest,ActorUpgradeEpochGateTest,ActorUpgradePreflightV1Test,ActorRoutePublicationV1Test,ActorTrackedMessageCompletionTest,SharedActorHotReloadTransportV2Test,SourceCompiledSharedHotReloadV2Test,SourceActorCheckpointCodecV1Test,HotReloadActorGenerationLinkTest
           -DfailIfNoTests=true
           test
 
@@ -71,6 +74,7 @@ jobs:
             "dev.oreslang.runtime.ActorRoutePublicationV1Test"
             "dev.oreslang.runtime.ActorTrackedMessageCompletionTest"
             "dev.oreslang.runtime.SharedActorHotReloadTransportV2Test"
+            "dev.oreslang.runtime.SourceCompiledSharedHotReloadV2Test"
             "dev.oreslang.nodes.SourceActorCheckpointCodecV1Test"
             "dev.oreslang.HotReloadActorGenerationLinkTest"
           )
@@ -103,6 +107,7 @@ jobs:
             target/surefire-reports/TEST-dev.oreslang.runtime.ActorRoutePublicationV1Test.xml
             target/surefire-reports/TEST-dev.oreslang.runtime.ActorTrackedMessageCompletionTest.xml
             target/surefire-reports/TEST-dev.oreslang.runtime.SharedActorHotReloadTransportV2Test.xml
+            target/surefire-reports/TEST-dev.oreslang.runtime.SourceCompiledSharedHotReloadV2Test.xml
             target/surefire-reports/TEST-dev.oreslang.nodes.SourceActorCheckpointCodecV1Test.xml
             target/surefire-reports/TEST-dev.oreslang.HotReloadActorGenerationLinkTest.xml
           retention-days: 7
