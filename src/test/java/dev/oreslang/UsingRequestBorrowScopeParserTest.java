@@ -61,7 +61,7 @@ final class UsingRequestBorrowScopeParserTest {
         assertInstanceOf(Ast.UsingBorrowStmt.class, outer.body().getFirst());
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(source)));
-        assertTrue(error.getMessage().contains("feature is not enabled"), error::getMessage);
+        assertTrue(error.getMessage().contains("nested using loans require verified alias compatibility"), error::getMessage);
     }
 
     @Test
