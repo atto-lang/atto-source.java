@@ -498,23 +498,36 @@ public final class Ast {
         }
     }
 
+    /** Type-only nominal declarations. Contract, trait, and interface are
+     * distinct source kinds even while trait member checking uses the existing
+     * interface-like structural contract machinery. */
     public record InterfaceDecl(
             String name,
             Visibility visibility,
             List<String> genericParameters,
             List<TypeRef> parents,
             List<InterfaceMember> members,
-            boolean moduleContract) implements Decl {
+            boolean moduleContract,
+            boolean traitDeclaration) implements Decl {
         public InterfaceDecl {
+            if (moduleContract && traitDeclaration) {
+                throw new IllegalArgumentException("a module contract cannot also be a trait");
+            }
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             members = List.copyOf(members);
         }
-        public InterfaceDecl(String name, List<String> genericParameters, List<InterfaceMember> members) {
-            this(name, Visibility.PRIVATE, genericParameters, List.of(), members, false);
+        /** Keep the existing six-argument AST construction ABI. */
+        public InterfaceDecl(String name, Visibility visibility, List<String> genericParameters,
+                             List<TypeRef> parents, List<InterfaceMember> members, boolean moduleContract) {
+            this(name, visibility, genericParameters, parents, members, moduleContract, false);
         }
-        public InterfaceDecl(String name, Visibility visibility, List<String> genericParameters, List<TypeRef> parents, List<InterfaceMember> members) {
-            this(name, visibility, genericParameters, parents, members, false);
+        public InterfaceDecl(String name, List<String> genericParameters, List<InterfaceMember> members) {
+            this(name, Visibility.PRIVATE, genericParameters, List.of(), members, false, false);
+        }
+        public InterfaceDecl(String name, Visibility visibility, List<String> genericParameters,
+                             List<TypeRef> parents, List<InterfaceMember> members) {
+            this(name, visibility, genericParameters, parents, members, false, false);
         }
     }
 
