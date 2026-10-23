@@ -41,7 +41,18 @@ public final class SupervisorLifecycleFsmOracle {
     private static void focused() {
         var s = SupervisorLifecycleFsm.State.initial();
         mustReject(s, new SupervisorLifecycleFsm.RestartCommitted(1));
+        mustReject(s, new SupervisorLifecycleFsm.ActorsFinished(1, false));
         mustReject(s, new SupervisorLifecycleFsm.PhysicalRelease(1));
+        // A manually supplied RUNNING state cannot carry fake retirement.
+        try {
+            new SupervisorLifecycleFsm.State(
+                    SupervisorLifecycleFsm.Phase.RUNNING, 1, 1,
+                    Set.of(), Set.of(), Set.of(),
+                    false, true, false, false, false, false);
+            throw new AssertionError("unadmitted actor completion state accepted");
+        } catch (IllegalArgumentException expected) {
+            // invariants correctly reject forged active-state receipts
+        }
         s = apply(s, new SupervisorLifecycleFsm.ShutdownRequested(1, CHILDREN));
         check(!s.admissionsOpen(), "admissions remained open after fence");
         mustReject(s, new SupervisorLifecycleFsm.RestartRequested(1));
