@@ -307,6 +307,46 @@ final class CleanupAwareSchedulerCancellationTest {
         }
     }
 
+    @Test void failedPhysicalRetirementQuarantinesCleanupTaskInsteadOfPublishingSuccess()
+            throws Exception {
+        IllegalStateException failedLoanRevocation =
+                new IllegalStateException("actor FFI loan did not retire");
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> work = scheduler.start(
+                    new OresScheduler.CleanupAwareTask<Integer>() {
+                        @Override public OresScheduler.Step<Integer> resume(
+                                OresScheduler.Resume resume) {
+                            return OresScheduler.done(42);
+                        }
+                    },
+                    () -> { throw failedLoanRevocation; });
+            ExecutionException failure = assertThrows(ExecutionException.class,
+                    () -> work.get(3, TimeUnit.SECONDS));
+            assertInstanceOf(OresScheduler.CleanupIncompleteError.class,
+                    failure.getCause(), "incomplete physical release must dominate Done");
+            assertSame(failedLoanRevocation, failure.getCause().getCause());
+            assertTrue(scheduler.hasIncompleteCleanup(),
+                    "outstanding actor/FFI loans must remain registered");
+            assertFalse(work.isCancelled());
+        }
+    }
+
+    @Test void failedPhysicalRetirementPreservesFailureIdentityForOrdinaryTask()
+            throws Exception {
+        IllegalStateException failedLoanRevocation =
+                new IllegalStateException("ordinary Task owner release failed");
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> work = scheduler.start(
+                    resume -> OresScheduler.done(42),
+                    () -> { throw failedLoanRevocation; });
+            assertSame(failedLoanRevocation,
+                    assertThrows(ExecutionException.class,
+                            () -> work.get(3, TimeUnit.SECONDS)).getCause());
+            assertTrue(scheduler.hasIncompleteCleanup(),
+                    "physical retirement failure cannot be swept away");
+        }
+    }
+
     @Test void ordinaryNonCleanupFutureRetainsImmediateCancellation() throws Exception {
         OresFuture<Integer> producer = new OresFuture<>();
         CountDownLatch waiting = new CountDownLatch(1);
