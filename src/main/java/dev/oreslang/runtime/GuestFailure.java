@@ -177,6 +177,13 @@ final class GuestFailure {
         complete(Lifecycle.TERMINATED);
     }
 
+    synchronized void terminateIfActive() {
+        if (lifecycle != Lifecycle.ACTIVE) return;
+        lifecycle = Lifecycle.TERMINATED;
+        dispatching = false;
+        visitedChains.clear();
+    }
+
     private void complete(Lifecycle terminal) {
         if (lifecycle != Lifecycle.ACTIVE) {
             throw new IllegalStateException(
