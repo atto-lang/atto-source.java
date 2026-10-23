@@ -2,7 +2,10 @@
 
 Oreslang is a statically typed GraalVM/Truffle language with nominal typing by default, explicit structural-call opt-ins, actor-oriented concurrency, hot-loadable code generations, and deny-by-default isolate capabilities.
 
-This repository contains the Java/Truffle reference implementation.
+This repository contains the Java/Truffle reference implementation. The LLVM version is in oreslang-source.llvm and WASM version is in oreslang-source.wasm etc etc.
+
+Do not use python for anything, use Rust instead of python to support the language.
+
 
 Notes on the compiler and runtime:
 
