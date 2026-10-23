@@ -2096,6 +2096,9 @@ public final class ActorRuntime implements AutoCloseable {
         boolean accepted = false;
         boolean cleanupOwned = false;
         synchronized (cell.lifecycleLock) {
+            // Re-registering the same owned Future must not cancel it or
+            // charge the bounded cleanup receipts a second time.
+            if (cell.pendingOperations.contains(future)) return true;
             if (!cell.finalized && !closed.get()
                     && (!cell.stopped.get()
                             || (cleanupTurn && cell.sourceStopCleanupActive))) {
@@ -2105,6 +2108,11 @@ public final class ActorRuntime implements AutoCloseable {
                     accepted = cell.pendingOperations.add(future);
                     if (accepted && cleanupOwned) cell.pendingCleanupFutures++;
                 }
+            }
+            if (!accepted && cleanupTurn && cell.stopped.get()) {
+                // Cleanup may not silently swallow a capacity or lifecycle
+                // denial and proceed to publish a false clean arena receipt.
+                cell.sourceStopCleanupAborted = true;
             }
         }
         if (!accepted) {
