@@ -304,6 +304,25 @@ public final class HotReloadManager implements AutoCloseable {
             if (actorTypeName == null || actorTypeName.isBlank())
                 throw new IllegalArgumentException("actor type name cannot be blank");
         }
+
+        /**
+         * Canonical security/resource boundary receipt. Upgrades must preserve
+         * this identity unless an explicit supervisor-authorized capability
+         * migration protocol is added later.
+         */
+        public String capabilitySha256() {
+            String capabilities = policy.capabilities().stream()
+                    .map(Enum::name)
+                    .sorted()
+                    .collect(java.util.stream.Collectors.joining(","));
+            String canonical = "ores-isolate-policy-v1\n"
+                    + "capabilities=" + capabilities + "\n"
+                    + "maxHeapBytes=" + policy.maxHeapBytes() + "\n"
+                    + "maxMailboxMessages=" + policy.maxMailboxMessages() + "\n"
+                    + "maxWallTime=" + policy.maxWallTime() + "\n"
+                    + "adversarial=" + policy.adversarial() + "\n";
+            return digest(canonical);
+        }
     }
 
     public static final class Generation implements AutoCloseable {
