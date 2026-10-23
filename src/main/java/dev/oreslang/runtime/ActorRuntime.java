@@ -8216,6 +8216,32 @@ public final class ActorRuntime implements AutoCloseable {
             terminateTree(cancellation, true);
         }
 
+        /**
+         * Phase one of structured STOP: seal the complete reachable tree
+         * without invoking a single guest callback or resource revoker.
+         *
+         * Snapshot each descendant's children under that descendant's own
+         * lifecycle lock, then release it before walking deeper. Concurrent
+         * child spawns linearize on the same lock and check parent.sealing,
+         * so a grandchild can neither escape the snapshot nor enter afterward.
+         * Iterative traversal avoids recursive host stack growth.
+         */
+        private void presealDescendantAdmissions(List<ActorCell<?>> roots) {
+            ArrayDeque<ActorCell<?>> toSeal = new ArrayDeque<>(roots);
+            Set<ActorCell<?>> seen =
+                    Collections.newSetFromMap(new IdentityHashMap<>());
+            while (!toSeal.isEmpty()) {
+                ActorCell<?> child = toSeal.removeFirst();
+                if (!seen.add(child)) continue;
+                synchronized (child.lifecycleLock) {
+                    if (!child.finalized) {
+                        child.sealing = true;
+                        toSeal.addAll(child.children);
+                    }
+                }
+            }
+        }
+
         private void quarantineChildStopFailure(Throwable failure) {
             synchronized (lifecycleLock) {
                 sourceStopCleanupAborted = true;
@@ -8299,17 +8325,10 @@ public final class ActorRuntime implements AutoCloseable {
                 lifecycleLock.notifyAll();
             }
 
-            // Seal admission for EVERY direct child first. Invoking the
-            // full child cancellation path can synchronously call arbitrary
-            // resource revokers, one of which may block indefinitely. Until
-            // an independent CONTROL fan-out exists, siblings must at least
-            // reject new mail and child spawns at this pre-cancellation fence.
-            // Never hold the parent's lock while acquiring a child's lock.
-            for (ActorCell<?> child : descendants) {
-                synchronized (child.lifecycleLock) {
-                    if (!child.finalized) child.sealing = true;
-                }
-            }
+            // Physical sibling teardown may block or queue. All descendants,
+            // not merely immediate children, must reject new work BEFORE
+            // those asynchronous dispatches are submitted.
+            presealDescendantAdmissions(descendants);
 
             // Propagate every sibling STOP without coupling it to another
             // sibling's blocking revoker when a VM-owned physical STOP
