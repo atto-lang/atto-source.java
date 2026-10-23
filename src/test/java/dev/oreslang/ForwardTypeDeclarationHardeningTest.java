@@ -322,6 +322,26 @@ final class ForwardTypeDeclarationHardeningTest {
     }
 
     @Test
+    void wildcardCannotIntroduceANominalOrForwardTypeName() {
+        for (String source : new String[]{
+                "define type _ = int;",
+                "define class _ as end",
+                "define actor _ as end",
+                "define interface _ as end",
+                "define trait _ as end",
+                "define contract _ as end",
+                "declare type _; define type Good = int;",
+                "declare pub interface _; define pub interface Good as end",
+                "define module m as declare trait _; define trait Good as end end"
+        }) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(source), source);
+            assertTrue(error.getMessage().contains("cannot be used as a declared type name"),
+                    () -> "unexpected nominal type binder diagnostic: " + error.getMessage());
+        }
+    }
+
+    @Test
     void ordinaryNamedGenericsStayAdmittedWithMatchingForwardSignatures() {
         String source = """
                 declare pub type Box<T>;
