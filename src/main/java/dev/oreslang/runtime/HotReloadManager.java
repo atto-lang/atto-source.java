@@ -99,8 +99,24 @@ public final class HotReloadManager implements AutoCloseable {
     public synchronized Generation load(IncrementalCompiler.CompiledUnit unit) {
         java.util.Objects.requireNonNull(unit, "unit");
         validateAdmissionInputs(unit.unitId(), unit.sourceText());
-        CapabilityChecker.check(unit.program(), guestPolicy);
-        return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText());
+
+        // CompiledUnit is a public record, not a signed compiler capability.
+        // Never authorize its potentially unrelated AST and execute its source.
+        String verifiedDigest = digest(unit.sourceText());
+        if (!verifiedDigest.equals(unit.sourceDigest())) {
+            throw new SecurityException("compiled hot-load unit source digest mismatch");
+        }
+
+        // Multi-unit imports require a trusted, complete dependency closure.
+        // A caller-provided dependency set or prechecked AST is not that proof.
+        if (!unit.dependencies().isEmpty()) {
+            throw new SecurityException("compiled hot-load requires a verified import closure");
+        }
+        var checked = OresCompiler.validateForIsolate(unit.sourceText(), guestPolicy);
+        if (!checked.imports().isEmpty()) {
+            throw new SecurityException("compiled hot-load with imports requires a verified import closure");
+        }
+        return stage(unit.unitId(), verifiedDigest, unit.sourceText());
     }
 
     private void validateAdmissionInputs(
