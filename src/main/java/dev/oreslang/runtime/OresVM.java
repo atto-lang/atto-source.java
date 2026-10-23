@@ -1,6 +1,9 @@
 package dev.oreslang.runtime;
 
 import java.util.Objects;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
@@ -31,13 +34,63 @@ public final class OresVM implements AutoCloseable {
 
     private enum StartupState { NEW, STARTING, STARTED, FAILED, CLOSED }
 
+    /**
+     * The queue-owned lifecycle has one atomic physical-start decision.
+     * shutdownNow may discard ADMITTED work; it may not claim a RUNNING
+     * revoker has retired merely because an interrupt was requested.
+     */
+    private enum PhysicalStopState {
+        ADMITTED, RUNNING, RETIRED, CANCELLED_BEFORE_START
+    }
+
+    private static final class PhysicalStopJob implements Runnable {
+        private final Runnable body;
+        private final Consumer<Throwable> discarded;
+        private final AtomicReference<PhysicalStopState> state =
+                new AtomicReference<>(PhysicalStopState.ADMITTED);
+
+        private PhysicalStopJob(Runnable body, Consumer<Throwable> discarded) {
+            this.body = Objects.requireNonNull(body, "body");
+            this.discarded = Objects.requireNonNull(discarded, "discarded");
+        }
+
+        @Override public void run() {
+            if (!state.compareAndSet(
+                    PhysicalStopState.ADMITTED, PhysicalStopState.RUNNING)) return;
+            try {
+                body.run();
+            } finally {
+                // ActorRuntime's own body finally reports the physical
+                // dispatch receipt only after child.cancel() has returned.
+                state.set(PhysicalStopState.RETIRED);
+            }
+        }
+
+        private void cancelBeforeStart(Throwable cause) {
+            if (state.compareAndSet(PhysicalStopState.ADMITTED,
+                    PhysicalStopState.CANCELLED_BEFORE_START)) {
+                discarded.accept(cause);
+            }
+        }
+    }
+
     private final ThreadPoolExecutor controlExecutor;
     private final ThreadPoolExecutor physicalStopExecutor;
     private final OresScheduler rootScheduler;
     private final AtomicBoolean closed = new AtomicBoolean();
     private volatile StartupState startupState = StartupState.NEW;
 
-    private OresVM(int controlParallelism, OresScheduler.TurnExecutor turnExecutor, Executor rootAdmission) {
+    private OresVM(int controlParallelism, OresScheduler.TurnExecutor turnExecutor,
+            Executor rootAdmission) {
+        this(controlParallelism, turnExecutor, rootAdmission,
+                Integer.getInteger("ores.runtime.physical-stop.parallelism",
+                        DEFAULT_PHYSICAL_STOP_PARALLELISM),
+                Integer.getInteger("ores.runtime.physical-stop.queue-capacity",
+                        DEFAULT_PHYSICAL_STOP_QUEUE_CAPACITY));
+    }
+
+    private OresVM(int controlParallelism, OresScheduler.TurnExecutor turnExecutor,
+            Executor rootAdmission, int physicalParallelism, int physicalQueue) {
         ActorHeapAdmission.requireSupportedJvmMode(
                 System.getProperty("ores.runtime.gc.mode", "hybrid"));
         if (controlParallelism <= 0) {
@@ -59,12 +112,8 @@ public final class OresVM implements AutoCloseable {
                 factory,
                 new ThreadPoolExecutor.AbortPolicy());
 
-        int physicalParallelism = Integer.getInteger(
-                "ores.runtime.physical-stop.parallelism",
-                DEFAULT_PHYSICAL_STOP_PARALLELISM);
-        int physicalQueue = Integer.getInteger(
-                "ores.runtime.physical-stop.queue-capacity",
-                DEFAULT_PHYSICAL_STOP_QUEUE_CAPACITY);
+        // Limits are fixed at VM startup; no mutable global/test properties
+        // may affect physical STOP capacity after admission.
         if (physicalParallelism <= 0 || physicalParallelism > 128
                 || physicalQueue <= 0 || physicalQueue > 65_536) {
             controlExecutor.shutdownNow();
@@ -91,7 +140,7 @@ public final class OresVM implements AutoCloseable {
                     rootAdmission == null ? controlExecutor : rootAdmission,
                     turnExecutor);
         } catch (RuntimeException | Error failure) {
-            physicalStopExecutor.shutdownNow();
+            shutdownPhysicalStops();
             controlExecutor.shutdownNow();
             throw failure;
         }
@@ -101,7 +150,7 @@ public final class OresVM implements AutoCloseable {
         } catch (RuntimeException | Error failure) {
             rootScheduler.close();
             controlExecutor.shutdownNow();
-            physicalStopExecutor.shutdownNow();
+            shutdownPhysicalStops();
             throw failure;
         }
     }
@@ -117,6 +166,15 @@ public final class OresVM implements AutoCloseable {
                         DEFAULT_CONTROL_PARALLELISM),
                 turnExecutor,
                 rootAdmission);
+    }
+
+    /** Test-only deterministic executor limits; no global property mutation. */
+    static OresVM createWithPhysicalStopLimits(int parallelism, int queueCapacity) {
+        return new OresVM(
+                Integer.getInteger("ores.runtime.control.parallelism",
+                        DEFAULT_CONTROL_PARALLELISM),
+                OresScheduler.TurnExecutor.direct(),
+                null, parallelism, queueCapacity);
     }
 
     /**
@@ -199,12 +257,46 @@ public final class OresVM implements AutoCloseable {
      * ActorRuntime, which keeps its fail-closed retirement barrier.
      */
     void executePhysicalStop(Runnable work) {
+        executePhysicalStop(work, ignored -> { });
+    }
+
+    void executePhysicalStop(Runnable work, Consumer<Throwable> neverStarted) {
         Objects.requireNonNull(work, "work");
+        Objects.requireNonNull(neverStarted, "neverStarted");
         if (!started()) {
             throw new RejectedExecutionException(
                     "Oreslang VM physical STOP executor is not available");
         }
-        physicalStopExecutor.execute(work);
+        physicalStopExecutor.execute(new PhysicalStopJob(work, neverStarted));
+    }
+
+    /**
+     * ThreadPoolExecutor.shutdownNow() returns queued jobs it never ran.
+     * Cancel their ADMITTED states and deliver an explicit FAILURE receipt.
+     * A concurrent worker can win RUNNING before this CAS: its own finally
+     * owns the completion, and shutdown cannot pretend it physically exited.
+     */
+    private void shutdownPhysicalStops() {
+        List<Runnable> discarded = physicalStopExecutor.shutdownNow();
+        Throwable callbackFailure = null;
+        for (Runnable pending : discarded) {
+            try {
+                if (!(pending instanceof PhysicalStopJob job)) {
+                    throw new IllegalStateException(
+                            "untracked physical STOP job discarded by shutdownNow");
+                }
+                job.cancelBeforeStart(new RejectedExecutionException(
+                        "VM closed before physical STOP worker started"));
+            } catch (RuntimeException | Error failure) {
+                if (callbackFailure == null) callbackFailure = failure;
+                else if (callbackFailure != failure) callbackFailure.addSuppressed(failure);
+            }
+        }
+        if (callbackFailure != null) {
+            throw new IllegalStateException(
+                    "VM physical STOP discard notification failed; quarantine required",
+                    callbackFailure);
+        }
     }
 
     public boolean isRootSchedulerCurrent() {
