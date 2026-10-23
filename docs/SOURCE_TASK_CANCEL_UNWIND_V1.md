@@ -134,6 +134,31 @@ Otherwise arbitrary completion callbacks may form a re-entrant locking
 cycle with a foreign carrier. Do not treat bounded quarantine as successful
 or live actor shutdown.
 
+### Two-phase ActorCell scheduler close (October 23)
+
+`ActorRuntime.ActorCell.finalizeStopLocked` no longer invokes
+`OresScheduler.close()` under the actor lifecycle monitor. It atomically
+claims a one-shot close responsibility, starts a runtime-owned virtual
+close worker, and defers finalization. The worker runs arbitrary Task
+cancellation observers outside `lifecycleLock`, then re-enters the
+monitor to verify the **same scheduler** issued the receipt and rechecks
+carrier activity, children and remaining physical source Tasks before
+heap release or successful actor `done()`.
+
+A new `ActorTwoPhaseSourceSchedulerCloseTest` uses a blocked cancellation
+subscriber and an independent concurrent STOP request. The concurrent
+STOP must return while the subscriber remains blocked, and actor DONE must
+remain unsettled until shutdown completes. This is an exact-head JUnit
+regression **committed but not executed**.
+
+The virtual close worker's creation is intentionally one-shot. Failure to
+launch or failure in scheduler close quarantines the actor and leaves DONE
+pending, rather than inferring a physical cleanup receipt from a logical
+terminal Future. This staging implementation still does **not** provide
+post-STOP guest defer/finally admission: those cases fail closed until a
+separately authorized CONTROL-only lane and actor-generation handoff are
+implemented and executed.
+
 ## Unresolved release gates
 
 1. **Post-stop actor cleanup lane**. ActorRuntime currently closes
