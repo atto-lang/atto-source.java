@@ -1,0 +1,30 @@
+name: Proxy outbound loopback host proof
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/ProxyOutboundLoopback.java'
+      - 'src/test/java/dev/oreslang/runtime/ProxyOutboundLoopbackCheck.java'
+      - 'scripts/test-proxy-outbound-loopback.sh'
+      - '.github/workflows/proxy-outbound-loopback.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  java21-loopback:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Show exact runner and source revision
+        run: |
+          java -version
+          git rev-parse HEAD
+      - name: Real loopback socket regression (five iterations)
+        run: bash scripts/test-proxy-outbound-loopback.sh
