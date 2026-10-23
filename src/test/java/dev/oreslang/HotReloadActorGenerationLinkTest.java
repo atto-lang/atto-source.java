@@ -55,6 +55,8 @@ final class HotReloadActorGenerationLinkTest {
                     "LINK_ONLY must not execute module main");
 
             String code = view.executor().actorCodeSha256("Counter");
+            assertEquals(generation.sha256(), code,
+                    "actor code receipt must be the exact staged source digest");
             String schema = view.executor().actorStateSchemaSha256("Counter");
             String message = view.executor().actorMessageAbiSha256("Counter");
             assertEquals(64, code.length());
