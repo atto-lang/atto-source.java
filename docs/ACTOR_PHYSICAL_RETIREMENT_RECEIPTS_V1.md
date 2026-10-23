@@ -211,3 +211,16 @@ authorized JDK25 CI.
 ## Reentrant close audit (2026-10-23)
 
 The synchronous NIO physical-close winner sets its `closed` flag immediately after `Channel.close()` returns and `!channel.isOpen()` is verified, BEFORE invoking the owner-detach or retirement callbacks. These trusted callbacks can reenter `ActorPhysicalChannelLease.close()` via host-only lifecycle notification or an `ActorRef.done()` waiter. Such reentrance now observes the physically-closed state rather than throwing a false recursive-close error. A failed owner-detach still records a sticky failed receipt, retains quarantine and does not report successful actor retirement. Deterministic JUnit cases exercise both paths. This is committed source coverage, not executed test evidence.
+
+## Isolated exact-source host smoke (2026-10-23)
+
+Two host helper source files were inspected at this PR branch and reproduced byte-for-byte in a local Java 21 test directory. The Git blob hashes matched the fetched GitHub blobs exactly:
+
+- `ActorPhysicalIoCallbackLease.java`: `4ddb01dd7c0748318add0e3376a7ea20aa59dc44`
+- `ActorPhysicalChannelLease.java`: `7189ae9482d16bdbb76c8f23e5d36dd5537363c499b03f9deec4af`
+
+A minimal **stub** for `ActorPhysicalRetirementRegistry.Receipt` supplied settlement counters/failure state to compile and exercise these exact production helpers in isolation using `javac 21.0.12.1`. The following **8 isolated cases passed**: normal NIO completion; overlapping duplicate callback quarantine; throwing callback quarantine; actual JDK NIO Pipe physical close; reentrant verified channel close; blocked physical close; throwing owner-detach callback; rejected bounded close executor submission.
+
+This is useful **local behavioral evidence for the two helper classes only**. It does NOT compile the 8k-line `ActorRuntime`, test its STOP/supervision interplay, use the real `ActorPhysicalRetirementRegistry`, or establish JDK25/GraalVM/LLVM parity. Those remain explicit release gates. No private-source cross-org mirror was created.
+
+Also added source JUnit regressions for (a) a broken channel whose close fails while a healthy sibling still closes on STOP, and (b) a duplicate asynchronous completion while its original delegate remains running. Failed close/notify paths must quarantine and may never publish clean `ActorRef.done()`.
