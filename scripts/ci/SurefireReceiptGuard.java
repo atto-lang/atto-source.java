@@ -98,7 +98,8 @@ class SurefireReceiptGuard {
                     Element testcase = (Element) cases.item(caseIndex);
                     String caseName = testcase.getAttribute("name");
                     require(!caseName.isBlank(), "blank testcase ID: " + selected);
-                    String id = testcase.getAttribute("classname") + "\\u0000" + caseName;
+                    String cls = testcase.getAttribute("classname");
+                    String id = cls.length() + ":" + cls + caseName;
                     require(distinctCases.add(id), "duplicate testcase ID: " + selected + "." + caseName);
                     int caseSkips = testcase.getElementsByTagName("skipped").getLength();
                     require(caseSkips <= 1, "multiple skipped markers: " + selected + "." + caseName);
