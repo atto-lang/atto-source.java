@@ -57,16 +57,22 @@ final class AliasExtensionMethodTest {
 
     @Test
     void extensionDispatchMetadataRequiresExactCheckedCallIdentity() {
+        Ast.NameExpr receiver = new Ast.NameExpr("code");
         Ast.CallExpr first = new Ast.CallExpr(
-                new Ast.MemberExpr(new Ast.NameExpr("code"), "double"), java.util.List.of());
+                new Ast.MemberExpr(receiver, "double"), java.util.List.of());
         Ast.CallExpr sameShape = new Ast.CallExpr(
                 new Ast.MemberExpr(new Ast.NameExpr("code"), "double"), java.util.List.of());
+        Ast.CallExpr preservedReceiver = new Ast.CallExpr(
+                new Ast.MemberExpr(receiver, "double"), java.util.List.of());
         assertNull(Ast.CheckedExtensionCall.lookup(first));
         Ast.CheckedExtensionCall.record(first, "$mtd$Code$double");
         assertEquals("$mtd$Code$double", Ast.CheckedExtensionCall.lookup(first));
         assertNull(Ast.CheckedExtensionCall.lookup(sameShape));
         Ast.copyCheckedMetadata(first, sameShape);
-        assertEquals("$mtd$Code$double", Ast.CheckedExtensionCall.lookup(sameShape));
+        assertNull(Ast.CheckedExtensionCall.lookup(sameShape),
+                "rewriting to another receiver must lose authority");
+        Ast.copyCheckedMetadata(first, preservedReceiver);
+        assertEquals("$mtd$Code$double", Ast.CheckedExtensionCall.lookup(preservedReceiver));
         assertThrows(IllegalStateException.class,
                 () -> Ast.CheckedExtensionCall.record(first, "$mtd$Code$unsafe"));
     }
