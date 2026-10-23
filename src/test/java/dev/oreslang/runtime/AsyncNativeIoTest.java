@@ -95,8 +95,7 @@ class AsyncNativeIoTest {
             var registeredClosed = new java.util.concurrent.atomic.AtomicInteger();
             AutoCloseable resource = registeredClosed::incrementAndGet;
             io.register(resource);
-            runtime.setNativeIoLoanRetirementGate(
-                    id -> io.outstandingActorOperations(id) == 0);
+            runtime.setNativeIoLoanRetirementGate(io::actorPhysicallyRetired);
             io.setActorLoanRetiredListener(runtime::onNativeIoLoanRetired);
 
             var firstLoan = new java.util.concurrent.atomic.AtomicReference<AsyncNativeIo.IoLoan>();
@@ -141,8 +140,7 @@ class AsyncNativeIoTest {
             throws Exception {
         try (var io = new AsyncNativeIo(2);
              var runtime = new ActorRuntime()) {
-            runtime.setNativeIoLoanRetirementGate(
-                    id -> io.outstandingActorOperations(id) == 0);
+            runtime.setNativeIoLoanRetirementGate(io::actorPhysicallyRetired);
             io.setActorLoanRetiredListener(runtime::onNativeIoLoanRetired);
             var entered = new CountDownLatch(1);
             var release = new CountDownLatch(1);
