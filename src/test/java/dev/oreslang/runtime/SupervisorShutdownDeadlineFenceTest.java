@@ -16,6 +16,11 @@ final class SupervisorShutdownDeadlineFenceTest {
         assertTrue(result.failed());
         assertFalse(result.deadlineExpired());
         assertEquals(SupervisorLifecycleFsm.Phase.RUNNING, result.phase());
+        assertFalse(result.admissionsOpen(), "failed CONTROL cannot admit fresh actors");
+        assertFalse(result.restartPermitted(), "failed CONTROL cannot restart");
+        assertThrows(IllegalStateException.class, () ->
+                SupervisorLifecycleFsm.reduce(result,
+                        new SupervisorLifecycleFsm.RestartRequested(result.epoch())));
         assertFalse(result.logicallyStopped());
     }
 
