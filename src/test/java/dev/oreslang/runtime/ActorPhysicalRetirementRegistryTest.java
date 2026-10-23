@@ -1217,4 +1217,58 @@ final class ActorPhysicalRetirementRegistryTest {
         assertThrows(IllegalStateException.class, registry::retireVerified);
     }
 
+
+    @Test void concurrentStopCannotOvertakeFailedFinalizationHandoff()
+            throws Exception {
+        var handoffEntered = new CountDownLatch(1);
+        var allowHandoffFailure = new CountDownLatch(1);
+        var failure = new IllegalStateException("finalization handoff failed");
+        var registry = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 914L,
+                () -> { },
+                () -> {
+                    handoffEntered.countDown();
+                    try {
+                        assertTrue(allowHandoffFailure.await(5, TimeUnit.SECONDS));
+                    } catch (InterruptedException interruption) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(interruption);
+                    }
+                    throw failure;
+                });
+        var receipt = registry.register(ActorPhysicalRetirementRegistry.Kind.FFI_LOAN, false);
+        registry.seal();
+        var actualFailure = new AtomicReference<Throwable>();
+        Thread worker = Thread.ofVirtual().start(() -> {
+            try {
+                receipt.completeAfterPhysicalRelease();
+            } catch (Throwable throwable) {
+                actualFailure.set(throwable);
+            }
+        });
+        try {
+            assertTrue(handoffEntered.await(3, TimeUnit.SECONDS));
+            var snapshot = registry.snapshot();
+            assertEquals(0, snapshot.pending());
+            assertEquals(0, snapshot.inFlightNotifications(),
+                    "physical notifier exited before the handoff began");
+            assertTrue(snapshot.finalizationHandoffInFlight(),
+                    "the finalization handoff must remain reserved");
+            assertFalse(registry.isCurrentFinalizationHandoffThread(),
+                    "a foreign STOP caller must not impersonate the handoff owner");
+            assertThrows(IllegalStateException.class, registry::retireVerified,
+                    "a second STOP must not publish DONE before handoff failure");
+            assertFalse(registry.snapshot().retired());
+        } finally {
+            allowHandoffFailure.countDown();
+        }
+        worker.join(3_000);
+        assertFalse(worker.isAlive());
+        assertSame(failure, actualFailure.get());
+        assertSame(failure, registry.snapshot().failure());
+        assertFalse(registry.snapshot().finalizationHandoffInFlight());
+        assertFalse(registry.snapshot().retired());
+        assertThrows(IllegalStateException.class, registry::retireVerified);
+    }
+
 }

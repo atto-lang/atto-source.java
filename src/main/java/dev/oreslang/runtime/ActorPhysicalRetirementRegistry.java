@@ -26,7 +26,8 @@ final class ActorPhysicalRetirementRegistry {
     }
 
     record Snapshot(
-            int pending, int inFlightNotifications, Map<Kind, Integer> byKind,
+            int pending, int inFlightNotifications, boolean finalizationHandoffInFlight,
+            Map<Kind, Integer> byKind,
             boolean sealed, boolean retired, Throwable failure) {
         Snapshot {
             byKind = Map.copyOf(byKind);
@@ -76,17 +77,30 @@ final class ActorPhysicalRetirementRegistry {
                 inFlightNotifications--;
                 readyForFinalization = sealed && firstFailure == null
                         && pending.isEmpty() && inFlightNotifications == 0;
+                if (readyForFinalization) {
+                    // Reserve finalization ownership before releasing the
+                    // registry monitor. Otherwise another actor STOP caller
+                    // could commit DONE before this handoff reports a failure.
+                    if (finalizationHandoffThread != null) {
+                        throw new IllegalStateException("duplicate finalization handoff");
+                    }
+                    finalizationHandoffThread = Thread.currentThread();
+                }
             }
             if (failure instanceof RuntimeException runtime) throw runtime;
             if (failure instanceof Error fatal) throw fatal;
             if (readyForFinalization) {
                 // Distinct trusted finalization handoff, NOT a second physical
-                // notifier. An earlier notifier failure is already sticky.
+                // notifier. Unrelated threads cannot retire until it finishes.
                 try {
                     notificationDrained.run();
                 } catch (RuntimeException | Error callbackFailure) {
                     recordFailure(callbackFailure);
                     throw callbackFailure;
+                } finally {
+                    synchronized (lock) {
+                        finalizationHandoffThread = null;
+                    }
                 }
             }
             return true;
@@ -120,6 +134,7 @@ final class ActorPhysicalRetirementRegistry {
             Collections.newSetFromMap(new IdentityHashMap<>());
     private Throwable firstFailure;
     private int inFlightNotifications;
+    private Thread finalizationHandoffThread;
     private boolean sealed;
     private boolean retired;
 
@@ -193,6 +208,14 @@ final class ActorPhysicalRetirementRegistry {
         }
     }
 
+    /** True only on the trusted finalization handoff's synchronous carrier. */
+    boolean isCurrentFinalizationHandoffThread() {
+        synchronized (lock) {
+            return finalizationHandoffThread != null
+                    && finalizationHandoffThread == Thread.currentThread();
+        }
+    }
+
     Snapshot snapshot() {
         synchronized (lock) {
             Map<Kind, Integer> counts = new EnumMap<>(Kind.class);
@@ -200,7 +223,8 @@ final class ActorPhysicalRetirementRegistry {
                 counts.merge(receipt.kind(), 1, Integer::sum);
             }
             return new Snapshot(
-                    pending.size(), inFlightNotifications, counts,
+                    pending.size(), inFlightNotifications,
+                    finalizationHandoffThread != null, counts,
                     sealed, retired, firstFailure);
         }
     }
@@ -213,7 +237,9 @@ final class ActorPhysicalRetirementRegistry {
     void retireVerified() {
         synchronized (lock) {
             if (retired || firstFailure != null || !sealed
-                    || !pending.isEmpty() || inFlightNotifications != 0) {
+                    || !pending.isEmpty() || inFlightNotifications != 0
+                    || (finalizationHandoffThread != null
+                            && finalizationHandoffThread != Thread.currentThread())) {
                 throw new IllegalStateException(
                         "cannot retire actor with outstanding/failed physical receipts");
             }

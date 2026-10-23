@@ -7669,7 +7669,9 @@ public final class ActorRuntime implements AutoCloseable {
                                 physical.failure()));
                 return;
             }
-            if (physical.pending() != 0 || physical.inFlightNotifications() != 0
+            if ((physical.finalizationHandoffInFlight()
+                        && !physicalRetirement.isCurrentFinalizationHandoffThread())
+                    || physical.pending() != 0 || physical.inFlightNotifications() != 0
                     || !physicalChannelLeases.isEmpty()) {
                 // Keep ActorCell, arena and all shared/native loans alive.
                 // Removing the last receipt from pending is not enough while
