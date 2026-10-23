@@ -759,6 +759,31 @@ public final class Parser {
         return new ActorPrefix(transport, serial);
     }
 
+    /** Validate the frozen language-owned physical-turn tier declaration. */
+    private void parseBuiltInMaxActorThreadsEnum() {
+        if (maxActorThreadsEnumDeclared)
+            throw error(previous(), "duplicate built-in MaxActorThreads enum declaration");
+        String name = consume(IDENT, "expected MaxActorThreads enum name").lexeme();
+        if (!name.equals("MaxActorThreads"))
+            throw error(previous(), "general enum lowering is unsupported; only built-in MaxActorThreads is available");
+        consume(AS, "MaxActorThreads enum requires 'as'");
+        for (Ast.MaxActorThreads tier : Ast.MaxActorThreads.values()) {
+            String member = consume(IDENT, "expected MaxActorThreads." + tier.name()).lexeme();
+            if (!member.equals(tier.name()))
+                throw error(previous(), "built-in MaxActorThreads requires " + tier.name() + " in canonical order");
+            String type = consume(IDENT, "MaxActorThreads." + tier.name() + " requires int").lexeme();
+            if (!type.equals("int"))
+                throw error(previous(), "MaxActorThreads." + tier.name() + " must have int backing type");
+            consume(EQUAL, "expected '=' after MaxActorThreads." + tier.name() + " int");
+            String number = consume(INT, "expected canonical numeric value for " + tier.name()).lexeme();
+            if (!number.replace("_", "").equals(Integer.toString(tier.value())))
+                throw error(previous(), "MaxActorThreads." + tier.name() + " must equal " + tier.value());
+            match(SEMICOLON);
+        }
+        consume(END, "expected 'end' after MaxActorThreads.HIGH");
+        maxActorThreadsEnumDeclared = true;
+    }
+
     private Ast.ClassDecl parseDefinedActorClass(
             Token actorToken,
             Modifiers modifiers,
@@ -4114,6 +4139,43 @@ public final class Parser {
             throw error(previous(), "duplicate structural callable modifier; use either 'structural' or '@structural', not both");
         }
         return new CallableStructural(modifierStructural || annotationStructural, List.copyOf(remaining));
+    }
+
+    /**
+     * Physical actor parallelism is static compiler policy. Keep MEDIUM/HIGH
+     * fail-closed until per-turn state isolation and authenticated runtime
+     * leases are wired through the current actor runtime.
+     */
+    private Ast.MaxActorThreads actorMaxThreads(List<Ast.Annotation> annotations) {
+        Ast.MaxActorThreads result = Ast.MaxActorThreads.LOW;
+        boolean seen = false;
+        for (Ast.Annotation annotation : annotations) {
+            if (!annotation.name().equals("ActorMaxThreads")) {
+                throw error(previous(), "@" + annotation.name()
+                        + " on actor class declarations is not implemented");
+            }
+            if (seen) throw error(previous(), "duplicate @ActorMaxThreads on actor declaration");
+            seen = true;
+            if (annotation.arguments().size() != 1)
+                throw error(previous(), "@ActorMaxThreads requires exactly one MaxActorThreads enum value");
+            Ast.TypeRef value = annotation.arguments().getFirst();
+            if (!value.arguments().isEmpty() || value.inferArguments()
+                    || !value.name().startsWith("MaxActorThreads.")) {
+                throw error(previous(), "@ActorMaxThreads expects MaxActorThreads.LOW, .MEDIUM or .HIGH");
+            }
+            String member = value.name().substring("MaxActorThreads.".length());
+            try {
+                result = Ast.MaxActorThreads.valueOf(member);
+            } catch (IllegalArgumentException invalid) {
+                throw error(previous(), "unknown MaxActorThreads enum member: " + member);
+            }
+            if (result != Ast.MaxActorThreads.LOW) {
+                throw error(previous(), "@ActorMaxThreads(MaxActorThreads." + member
+                        + ") requires compiler-proven per-turn actor state isolation; "
+                        + "parallel actor execution is not yet enabled");
+            }
+        }
+        return result;
     }
 
     /**
