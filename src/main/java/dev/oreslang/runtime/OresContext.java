@@ -440,6 +440,22 @@ public final class OresContext implements AutoCloseable {
         return PHYSICAL_QUARANTINE.size();
     }
 
+    /** Package-private fail-closed barrier shared by the context and JUnit. */
+    static void requireNativeIoPhysicalRetirement(AsyncNativeIo io) {
+        Throwable physicalFailure = io.physicalShutdownFailure();
+        if (physicalFailure != null) {
+            throw new IllegalStateException(
+                    "native I/O physical retirement failed; context quarantined",
+                    physicalFailure);
+        }
+        if (!io.physicalShutdown().isDone()) {
+            // Do NOT block an actor carrier waiting for an uninterruptible
+            // native worker. A trusted owner may retry after the receipt.
+            throw new IllegalStateException(
+                    "native I/O still owns physical loans; context quarantined");
+        }
+    }
+
     @Override
     public void close() {
         if (fullyClosed) return;
@@ -452,19 +468,7 @@ public final class OresContext implements AutoCloseable {
         try {
             nativeIo.close();
             http.close();
-            Throwable physicalFailure = nativeIo.physicalShutdownFailure();
-            if (physicalFailure != null) {
-                throw new IllegalStateException(
-                        "native I/O physical retirement failed; context quarantined",
-                        physicalFailure);
-            }
-            if (!nativeIo.physicalShutdown().isDone()) {
-                // Do NOT block an actor carrier waiting for an uninterruptible
-                // native worker. A trusted owner may retry close after the
-                // physicalShutdown() receipt arrives.
-                throw new IllegalStateException(
-                        "native I/O still owns physical loans; context quarantined");
-            }
+            requireNativeIoPhysicalRetirement(nativeIo);
             // Preserve fail-closed ordering for the remaining actor/VM
             // retirements as well: any failure skips later arena reclamation.
             asyncRuntime.close();
