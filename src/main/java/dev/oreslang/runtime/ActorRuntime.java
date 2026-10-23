@@ -7445,9 +7445,28 @@ public final class ActorRuntime implements AutoCloseable {
                     || stopEffectsInFlight != 0 || activeTurns != 0 || scheduled.get()
                     || carrierActive || !children.isEmpty()) return;
             finalizationStarted = true;
-            Thread.ofVirtual()
-                    .name("ores-actor-lock-retirement-" + ref.id())
-                    .start(this::retireStopOutsideMonitor);
+            scheduleHostRetirement("ores-actor-lock-retirement-",
+                    this::retireStopOutsideMonitor);
+        }
+
+        /**
+         * Finalization is a one-way claim. If host thread creation fails, or
+         * a later async stage throws, the actor MUST remain quarantined:
+         * there is no safe way to reopen its admission and no successful
+         * physical-retirement receipt to publish to its supervisor.
+         */
+        private void scheduleHostRetirement(String prefix, Runnable action) {
+            try {
+                Thread.ofVirtual().name(prefix + ref.id()).start(() -> {
+                    try {
+                        action.run();
+                    } catch (Throwable failure) {
+                        quarantineStopRetirement(failure);
+                    }
+                });
+            } catch (Throwable failure) {
+                quarantineStopRetirement(failure);
+            }
         }
 
         private void retireStopOutsideMonitor() {
@@ -7470,27 +7489,25 @@ public final class ActorRuntime implements AutoCloseable {
                 // Do not reclaim actor memory until all such handles prove
                 // physical quiescence and descendant cleanup.
                 sourceTasksSettled().whenComplete((ignored, taskFailure) ->
-                        Thread.ofVirtual()
-                                .name("ores-actor-source-task-retired-" + ref.id())
-                                .start(() -> {
-                                    if (taskFailure != null) {
-                                        quarantineStopRetirement(taskFailure);
-                                        return;
-                                    }
-                                    // Never park an actor carrier on claimed
-                                    // handoffs in the actor-incarnation ledger.
-                                    actorLocks.retireAfterQuiescence().whenComplete(
-                                            (nothing, lockFailure) ->
-                                                    Thread.ofVirtual()
-                                                            .name("ores-actor-lock-settled-" + ref.id())
-                                                            .start(() -> {
-                                                                if (lockFailure == null) {
-                                                                    finishStopOutsideMonitor();
-                                                                } else {
-                                                                    quarantineStopRetirement(lockFailure);
-                                                                }
-                                                            }));
-                                }));
+                        scheduleHostRetirement("ores-actor-source-task-retired-", () -> {
+                            if (taskFailure != null) {
+                                quarantineStopRetirement(taskFailure);
+                                return;
+                            }
+                            // Never park an actor carrier on claimed handoffs.
+                            // A scheduling/continuation failure must quarantine,
+                            // not silently strand the Future and fake DONE.
+                            actorLocks.retireAfterQuiescence().whenComplete(
+                                    (nothing, lockFailure) ->
+                                            scheduleHostRetirement(
+                                                    "ores-actor-lock-settled-", () -> {
+                                                        if (lockFailure == null) {
+                                                            finishStopOutsideMonitor();
+                                                        } else {
+                                                            quarantineStopRetirement(lockFailure);
+                                                        }
+                                                    }));
+                        }));
             } catch (Throwable failure) {
                 quarantineStopRetirement(failure);
             }
@@ -7498,10 +7515,13 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void quarantineStopRetirement(Throwable failure) {
             // Retain the actor in its registry with heap/arenas still alive.
-            // Never turn a failed cleanup receipt into successful DONE.
-            finalizationFailure = Objects.requireNonNull(failure);
-            ref.terminationCause.compareAndSet(null, failure);
+            // Preserve the first authoritative physical-cleanup failure:
+            // competing failed callbacks may report additional symptoms but
+            // cannot clear this incarnation's fail-closed terminal fence.
+            Objects.requireNonNull(failure);
             synchronized (lifecycleLock) {
+                if (finalizationFailure == null) finalizationFailure = failure;
+                ref.terminationCause.compareAndSet(null, failure);
                 lifecycleLock.notifyAll();
             }
         }
