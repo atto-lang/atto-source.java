@@ -206,7 +206,11 @@ public final class AsyncNativeIo implements AutoCloseable {
     synchronized void register(AutoCloseable resource) throws Exception {
         Objects.requireNonNull(resource);
         if (closed) {
-            resource.close();
+            // A RUNNING connect may create a resource after close() sealed
+            // admission. Closing it on this worker/monitor would release a
+            // native handle before all context loans have exited. Retain it
+            // for the post-join resource sweep and reject publication.
+            resources.add(resource);
             throw new IllegalStateException("I/O context closed");
         }
         resources.add(resource);
