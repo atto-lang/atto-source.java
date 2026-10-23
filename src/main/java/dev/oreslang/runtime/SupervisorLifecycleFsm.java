@@ -79,6 +79,15 @@ public final class SupervisorLifecycleFsm {
             if (!completedChildren.containsAll(reclaimedChildren)) {
                 throw new IllegalArgumentException("physical child ack before child logical completion");
             }
+            if (phase == Phase.RUNNING
+                    && (preHookDone || actorsDone || postHookDone
+                        || physicalReleased || deadlineExpired
+                        || !expectedChildren.isEmpty()
+                        || !completedChildren.isEmpty()
+                        || !reclaimedChildren.isEmpty())) {
+                throw new IllegalArgumentException(
+                        "active supervisor cannot own shutdown/restart receipts");
+            }
             if (physicalReleased && !actorsDone) {
                 throw new IllegalArgumentException("physical release before actor retirement");
             }
@@ -183,6 +192,11 @@ public final class SupervisorLifecycleFsm {
             }
         } else if (e instanceof ActorsFinished result) {
             if (actors) return s;
+            // An actor retirement receipt belongs to an admitted shutdown
+            // or restart epoch. A spoofed/pre-fence completion while RUNNING
+            // would incorrectly satisfy a future shutdown's release barrier.
+            require(p != Phase.RUNNING,
+                    "actor retirement without admitted shutdown or restart");
             // Receipts can arrive while the tree is being fenced, but must
             // always belong to the current epoch.
             actors = true;
@@ -190,6 +204,8 @@ public final class SupervisorLifecycleFsm {
             if (p == Phase.WAIT_ACTORS) next = Phase.AFTER_HOOK;
         } else if (e instanceof PhysicalRelease) {
             if (released) return s;
+            require(p != Phase.RUNNING,
+                    "physical release without admitted shutdown or restart");
             require(actors, "cannot reclaim memory before actors retire");
             released = true;
             if (p == Phase.STOPPED && reclaimed.equals(expected)) next = Phase.RECLAIMED;
