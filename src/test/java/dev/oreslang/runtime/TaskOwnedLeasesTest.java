@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -387,4 +388,45 @@ public class TaskOwnedLeasesTest {
             assertFalse(pending.isCancelled());
         }
     }
+    @Test void leaseRegistryJoinsClaimedHandoffAndPreservesRepeatedObservers()
+            throws Exception {
+        var registry = new TaskOwnedLeases.Registry();
+        var physicalReceipt = new CompletableFuture<Void>();
+        registry.trackPhysicalSettlement(physicalReceipt);
+        var first = registry.releaseOnRetirementAsync();
+        var second = registry.releaseOnRetirementAsync();
+        assertSame(first, second, "repeated retirement cannot forge clean completion");
+        assertFalse(first.isDone(), "in-flight handoff has not returned its permit");
+        physicalReceipt.complete(null);
+        assertEquals(List.of(), first.get(3, TimeUnit.SECONDS));
+        assertSame(first, registry.releaseOnRetirementAsync());
+    }
+
+    @Test void failedPhysicalReceiptCannotPublishCleanTaskDone() throws Exception {
+        var registered = new CountDownLatch(1);
+        var receipt = new CompletableFuture<Void>();
+        var never = new OresFuture<Integer>();
+        var physicalFailure = new IllegalStateException("handoff permit not reclaimed");
+        try (var scheduler = new OresScheduler(1)) {
+            TaskHandle<Integer> task = scheduler.startTracked(resume -> {
+                TaskHandle.registerPhysicalSettlement(receipt);
+                registered.countDown();
+                return OresScheduler.await(never);
+            });
+            assertTrue(registered.await(3, TimeUnit.SECONDS));
+            assertTrue(task.cancel("test physical receipt failure"));
+            assertTrue(task.result().isCancelled());
+            assertFalse(task.getDone().isDone());
+            receipt.completeExceptionally(physicalFailure);
+            var outcome = assertInstanceOf(TaskHandle.Failed.class,
+                    task.getDone().get(4, TimeUnit.SECONDS));
+            var failed = assertInstanceOf(
+                    TaskOwnedLeases.CleanupFailure.class, outcome.failure());
+            assertSame(physicalFailure, failed.failures().get(0));
+            assertEquals(List.of(physicalFailure),
+                    task.cleanupFailures().get(3, TimeUnit.SECONDS));
+            assertInstanceOf(TaskHandle.Cancelled.class, failed.originalOutcome());
+        }
+    }
+
 }
