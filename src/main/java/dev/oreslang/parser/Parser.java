@@ -26,6 +26,19 @@ public final class Parser {
     // to follow a parenthesized guard expression.
     private int matchGuardStartToken = -1;
 
+    // Forward type signatures are compile-time-only and intentionally absent
+    // from executable ASTs. The v1 contract requires an exact same-scope
+    // definition; cross-file and unresolved linker stubs fail closed.
+    private record ForwardType(Token.Type kind, String name, Ast.Visibility visibility,
+                               List<String> generics) { }
+    private final List<ForwardType> rootForwards = new ArrayList<>();
+    private List<ForwardType> moduleForwards;
+    // The current AST represents traits using InterfaceDecl. Keep the parsed
+    // source kind during forward validation, rather than permitting trait and
+    // interface declarations to substitute for one another silently.
+    private final java.util.IdentityHashMap<Ast.InterfaceDecl, Token.Type> interfaceKinds =
+            new java.util.IdentityHashMap<>();
+
     public Parser(List<Token> tokens) {
         this.tokens = List.copyOf(tokens);
     }
@@ -71,6 +84,11 @@ public final class Parser {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers modifiers = parseModifiers();
 
+            if (isContextualIdentifier("declare")) {
+                rootForwards.add(parseForwardType(annotations, modifiers));
+                continue;
+            }
+
             if (match(CLASS)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 // 'define' is optional; the old 'class ... define' order remains accepted.
@@ -106,7 +124,7 @@ public final class Parser {
                 validateOnlyVisibilityModifiers(modifiers, "interfaces");
                 rejectCallableStructuralAnnotation(annotations, "interface declarations");
                 rejectDiscardedDeclarationAnnotations(annotations, "interface declarations");
-                rootDeclarations.add(parseInterface(modifiers.visibility));
+                rootDeclarations.add(parseDefinedInterface(modifiers.visibility, INTERFACE));
                 continue;
             }
 
@@ -149,11 +167,12 @@ public final class Parser {
                     continue;
                 }
                 if (match(INTERFACE, TRAIT)) {
+                    Token.Type declarationKind = previous().type();
                     modifiers = mergeModifiers(modifiers, parseModifiers());
                     validateOnlyVisibilityModifiers(modifiers, "interfaces/traits");
                     rejectCallableStructuralAnnotation(annotations, "interface declarations");
                     rejectDiscardedDeclarationAnnotations(annotations, "interface declarations");
-                    rootDeclarations.add(parseInterface(modifiers.visibility));
+                    rootDeclarations.add(parseDefinedInterface(modifiers.visibility, declarationKind));
                     continue;
                 }
                 if (match(TYPE)) {
@@ -172,6 +191,7 @@ public final class Parser {
             rootDeclarations.add(declaration);
         }
 
+        validateForwardTypes(rootForwards, rootDeclarations, "file root");
         if (!rootDeclarations.isEmpty()) {
             modules.add(new Ast.ModuleDecl(ROOT_MODULE, List.of(), List.of(), rootDeclarations));
         }
@@ -262,8 +282,19 @@ public final class Parser {
         // Keep the pre-"as" spelling accepted while existing source migrates.
         match(AS);
         List<Ast.Decl> declarations = new ArrayList<>();
-        while (!check(END) && !check(EOF)) declarations.add(parseModuleMember());
-        consume(END, "expected 'end' to close module " + name);
+        List<ForwardType> enclosing = moduleForwards;
+        List<ForwardType> forwards = new ArrayList<>();
+        moduleForwards = forwards;
+        try {
+            while (!check(END) && !check(EOF)) {
+                Ast.Decl declaration = parseModuleMember();
+                if (declaration != null) declarations.add(declaration);
+            }
+            consume(END, "expected 'end' to close module " + name);
+            validateForwardTypes(forwards, declarations, "module " + name);
+        } finally {
+            moduleForwards = enclosing;
+        }
         return new Ast.ModuleDecl(name, annotations, contracts, declarations);
     }
 
@@ -278,6 +309,12 @@ public final class Parser {
         rejectUnsupportedAcceleratorSyntax();
         List<Ast.Annotation> annotations = parseAnnotations();
         Modifiers modifiers = parseModifiers();
+
+        if (isContextualIdentifier("declare")) {
+            if (moduleForwards == null) throw error(peek(), "forward declaration outside module scope");
+            moduleForwards.add(parseForwardType(annotations, modifiers));
+            return null;
+        }
 
         if (match(CLASS)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
@@ -309,7 +346,7 @@ public final class Parser {
             validateOnlyVisibilityModifiers(modifiers, "interfaces");
             rejectCallableStructuralAnnotation(annotations, "interface declarations");
             rejectDiscardedDeclarationAnnotations(annotations, "interface declarations");
-            return parseInterface(modifiers.visibility);
+            return parseDefinedInterface(modifiers.visibility, INTERFACE);
         }
 
         if (match(DEFINE)) {
@@ -337,11 +374,12 @@ public final class Parser {
                         modifiers.isAbstract, false);
             }
             if (match(INTERFACE, TRAIT)) {
+                Token.Type declarationKind = previous().type();
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 validateOnlyVisibilityModifiers(modifiers, "interfaces/traits");
                 rejectCallableStructuralAnnotation(annotations, "interface declarations");
                 rejectDiscardedDeclarationAnnotations(annotations, "interface declarations");
-                return parseInterface(modifiers.visibility);
+                return parseDefinedInterface(modifiers.visibility, declarationKind);
             }
             if (match(TYPE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
@@ -426,10 +464,11 @@ public final class Parser {
             return parseContract(modifiers.visibility);
         }
         if (match(INTERFACE, TRAIT)) {
+            Token.Type declarationKind = previous().type();
             validateOnlyVisibilityModifiers(modifiers, "interfaces/traits");
             rejectCallableStructuralAnnotation(annotations, "interface/trait declarations");
             rejectDiscardedDeclarationAnnotations(annotations, "interface/trait declarations");
-            return parseInterface(modifiers.visibility);
+            return parseDefinedInterface(modifiers.visibility, declarationKind);
         }
         if (match(TYPE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
@@ -928,6 +967,12 @@ public final class Parser {
         return new Ast.InterfaceDecl(iface.name(), iface.visibility(), iface.genericParameters(), iface.parents(), iface.members(), true);
     }
 
+    private Ast.InterfaceDecl parseDefinedInterface(Ast.Visibility visibility, Token.Type kind) {
+        Ast.InterfaceDecl declaration = parseInterface(visibility);
+        interfaceKinds.put(declaration, kind);
+        return declaration;
+    }
+
     private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility) { return parseInterface(visibility, false); }
 
     private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility, boolean moduleContract) {
@@ -1197,6 +1242,89 @@ public final class Parser {
             return namespace + "." + symbol;
         }
         return consumeCallableName("expected method name (methods omit 'fnc')");
+    }
+
+
+    private ForwardType parseForwardType(List<Ast.Annotation> annotations, Modifiers before) {
+        Token start = advance(); // contextual 'declare'; do not reserve it globally
+        if (!annotations.isEmpty() || before.visibilitySeen || before.async || before.suspends
+                || before.generator || before.structural || before.nonLexical || before.trapped
+                || before.isStatic || before.isAbstract || before.shared || before.untrusted) {
+            throw error(start, "forward declarations must start with 'declare'; visibility follows it");
+        }
+        Modifiers after = parseModifiers();
+        if (after.async || after.suspends || after.generator || after.structural
+                || after.nonLexical || after.trapped || after.isStatic || after.isAbstract
+                || after.shared || after.untrusted) {
+            throw error(start, "forward declarations accept only private/pub visibility");
+        }
+        if (!match(TYPE, TRAIT, INTERFACE)) {
+            throw error(peek(), "'declare' supports only type, trait or interface");
+        }
+        Token.Type kind = previous().type();
+        String name = consume(IDENT, "expected forward type name").lexeme();
+        List<String> generics = parseGenericParameters();
+        consume(SEMICOLON, "forward declaration must end with ';' and cannot supply a body");
+        return new ForwardType(kind, name, after.visibility, List.copyOf(generics));
+    }
+
+    private static String definedName(Ast.Decl declaration) {
+        if (declaration instanceof Ast.TypeAliasDecl alias) return alias.name();
+        if (declaration instanceof Ast.InterfaceDecl iface) return iface.name();
+        if (declaration instanceof Ast.ClassDecl klass) return klass.name();
+        if (declaration instanceof Ast.FunctionDecl fn) return fn.name();
+        if (declaration instanceof Ast.FieldDecl field) return field.name();
+        return null;
+    }
+
+    private void validateForwardTypes(List<ForwardType> declarations, List<Ast.Decl> definitions, String scope) {
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (ForwardType forward : declarations) {
+            if (!seen.add(forward.name())) {
+                throw new IllegalArgumentException("duplicate forward declaration '" + forward.name() + "' in " + scope);
+            }
+            Ast.Decl definition = null;
+            for (Ast.Decl candidate : definitions) {
+                if (!forward.name().equals(definedName(candidate))) continue;
+                if (definition != null) {
+                    throw new IllegalArgumentException("ambiguous forward type '" + forward.name()
+                            + "': multiple definitions in " + scope);
+                }
+                definition = candidate;
+            }
+            if (definition == null) {
+                throw new IllegalArgumentException("unresolved forward declaration '"
+                        + forward.name() + "' in " + scope + "; cross-file forwards are not supported");
+            }
+            Token.Type actual;
+            List<String> generics;
+            Ast.Visibility visibility;
+            if (definition instanceof Ast.TypeAliasDecl alias) {
+                actual = TYPE;
+                generics = alias.genericParameters();
+                visibility = alias.visibility();
+            } else if (definition instanceof Ast.InterfaceDecl iface) {
+                actual = iface.moduleContract() ? CONTRACT : interfaceKinds.getOrDefault(iface, INTERFACE);
+                generics = iface.genericParameters();
+                visibility = iface.visibility();
+            } else {
+                throw new IllegalArgumentException("forward type '" + forward.name()
+                        + "' resolved to a value declaration instead of a type/trait/interface in " + scope);
+            }
+            if (actual != forward.kind()) {
+                throw new IllegalArgumentException("forward declaration kind mismatch for '"
+                        + forward.name() + "' in " + scope + ": expected " + forward.kind()
+                        + " but definition is " + actual);
+            }
+            if (!generics.equals(forward.generics())) {
+                throw new IllegalArgumentException("forward declaration generic parameter mismatch for '"
+                        + forward.name() + "' in " + scope);
+            }
+            if (visibility != forward.visibility()) {
+                throw new IllegalArgumentException("forward declaration visibility mismatch for '"
+                        + forward.name() + "' in " + scope + "; cannot widen or narrow visibility");
+            }
+        }
     }
 
     private Ast.TypeAliasDecl parseTypeAlias(Ast.Visibility visibility) {
