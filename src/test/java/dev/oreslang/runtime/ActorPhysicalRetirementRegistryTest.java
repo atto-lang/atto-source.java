@@ -1082,11 +1082,85 @@ final class ActorPhysicalRetirementRegistryTest {
         assertEquals(1, notifications.get(), "native retirement notifier only runs once");
         assertEquals(0, callbackInFlight.get());
         assertEquals(1, queued.size(), "post-drain actor STOP is a separate host wake");
-        assertEquals(0, registry.snapshot().inFlightNotifications());
+        assertEquals(1, registry.snapshot().inFlightNotifications(),
+                "a queued wake is still an outstanding physical notification fence");
+        assertThrows(IllegalStateException.class, registry::retireVerified,
+                "STOP may not retire before its queued final wake executes");
         queued.removeFirst().run();
+        assertEquals(0, registry.snapshot().inFlightNotifications());
         assertEquals(2, notifications.get());
         registry.retireVerified();
         assertTrue(registry.snapshot().retired());
+    }
+
+    @Test void rejectedPostDrainWakeCannotRaceConcurrentStopRetirement()
+            throws Exception {
+        var enteredDispatch = new CountDownLatch(1);
+        var releaseDispatch = new CountDownLatch(1);
+        var notifications = new AtomicInteger();
+        var rejection = new java.util.concurrent.RejectedExecutionException(
+                "STOP wake dispatch failed after the first notifier returned");
+        var registry = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 56, notifications::incrementAndGet,
+                wake -> {
+                    enteredDispatch.countDown();
+                    try {
+                        if (!releaseDispatch.await(3, TimeUnit.SECONDS)) {
+                            throw new AssertionError("STOP wake admission did not resume");
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError(interrupted);
+                    }
+                    throw rejection;
+                });
+        var receipt = registry.register(
+                ActorPhysicalRetirementRegistry.Kind.FFI_LOAN, false);
+        registry.seal();
+        var failure = new AtomicReference<Throwable>();
+        var settler = Thread.ofVirtual().start(() -> {
+            try { receipt.completeAfterPhysicalRelease(); }
+            catch (Throwable thrown) { failure.set(thrown); }
+        });
+        try {
+            assertTrue(enteredDispatch.await(3, TimeUnit.SECONDS));
+            assertEquals(0, registry.snapshot().pending());
+            assertEquals(1, registry.snapshot().inFlightNotifications(),
+                    "first notifier exit must not drop the wake admission fence");
+            assertThrows(IllegalStateException.class, registry::retireVerified,
+                    "a concurrent actor STOP cannot overtake rejected host dispatch");
+        } finally {
+            releaseDispatch.countDown();
+        }
+        settler.join(3_000);
+        assertFalse(settler.isAlive());
+        assertSame(rejection, failure.get());
+        assertSame(rejection, registry.snapshot().failure());
+        assertEquals(0, registry.snapshot().inFlightNotifications());
+        assertEquals(1, notifications.get());
+        assertThrows(IllegalStateException.class, registry::retireVerified,
+                "dispatch rejection permanently quarantines this incarnation");
+    }
+
+    @Test void acceptedButNeverRunPostDrainWakeKeepsRetirementFenced() {
+        var queued = new java.util.ArrayDeque<Runnable>();
+        var notifications = new AtomicInteger();
+        var registry = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 57,
+                notifications::incrementAndGet, queued::add);
+        var receipt = registry.register(
+                ActorPhysicalRetirementRegistry.Kind.NATIVE_IO_OPERATION, false);
+        registry.seal();
+        assertTrue(receipt.completeAfterPhysicalRelease());
+        assertEquals(1, notifications.get());
+        assertEquals(1, queued.size());
+        assertEquals(1, registry.snapshot().inFlightNotifications(),
+                "the host can drop a queued wake but may never fake DONE");
+        assertThrows(IllegalStateException.class, registry::retireVerified);
+        queued.remove().run();
+        assertEquals(2, notifications.get());
+        assertEquals(0, registry.snapshot().inFlightNotifications());
+        registry.retireVerified();
     }
 
     @Test void enqueueThenThrowCannotAuthorizeNativePostDrainWake() {
