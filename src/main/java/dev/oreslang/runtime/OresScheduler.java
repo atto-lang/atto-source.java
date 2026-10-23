@@ -437,9 +437,11 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     /**
-     * Source interpreter only: true while the scheduler delivers the first
-     * authenticated terminal-cleanup resume. It is NOT a caller-provided
-     * CancellationException classifier and never grants cancellation rights.
+     * Source interpreter only: true during every scheduler-authenticated
+     * terminal-cleanup turn, including subsequent awaited defer/iterator-close
+     * resumptions. Cancellation is injected exactly once, but its cleanup
+     * authority persists until the Task physically retires. This is NOT a
+     * caller-provided CancellationException classifier or general guest right.
      */
     public static boolean cancellationCleanupTurn() {
         return Boolean.TRUE.equals(CURRENT_CANCELLATION_CLEANUP.get());
@@ -969,7 +971,6 @@ public final class OresScheduler implements AutoCloseable {
                 // saved lexical continuation rather than clearing it. Only
                 // one resume is injected; later awaits belong to shielded
                 // cleanup, and must be allowed to complete normally.
-                boolean injectedCleanup = false;
                 java.util.concurrent.CancellationException requested =
                         completion.deferredCancellationCause();
                 if (requested != null && !cleanupCancellationInjected.get()
@@ -979,7 +980,6 @@ public final class OresScheduler implements AutoCloseable {
                         return;
                     }
                     cleanupCancellationInjected.set(true);
-                    injectedCleanup = true;
                     resume = Resume.completed(null, requested);
                 }
 
