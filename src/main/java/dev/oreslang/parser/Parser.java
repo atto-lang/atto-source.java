@@ -1826,7 +1826,17 @@ public final class Parser {
         // parsed distinctly so compiler admission cannot silently desugar it.
         if (check(IDENT) && peek().lexeme().equals("using") && !checkNext(LPAREN)) {
             advance();
-            Ast.Expr resource = parseExpression();
+            // 'as' delimits the scoped alias here, rather than Oreslang's
+            // ordinary checked-cast expression. Restore prior refinement
+            // mode even if the resource expression is malformed.
+            boolean previousRefinementMode = suppressRefinementOperators;
+            Ast.Expr resource;
+            try {
+                suppressRefinementOperators = true;
+                resource = parseExpression();
+            } finally {
+                suppressRefinementOperators = previousRefinementMode;
+            }
             if (!(resource instanceof Ast.CallExpr call)
                     || !(call.callee() instanceof Ast.MemberExpr member)
                     || !member.member().equals("borrow")
