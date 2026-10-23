@@ -47,3 +47,37 @@ AOT/hybrid executable. Precompiled, explicitly registered interop needs its own
 reachability metadata. A native build succeeding is not evidence that every
 interop extension or untrusted isolate path works: run those deployment-specific
 tests separately.
+
+## Reproducible Native Image build and smoke
+
+From the repository root, install Maven and a **GraalVM JDK 25 with Native Image**
+matching the pinned Graal/Truffle dependencies (and the native platform C
+compiler). Point `JAVA_HOME` at that GraalVM JDK; a stock OpenJDK cannot
+produce the binary. Build and verify with:
+
+```sh
+sh scripts/build-and-verify-native-image.sh aot compressed32
+sh scripts/build-and-verify-native-image.sh hybrid compressed32
+# Optional, on a supported Native Image platform:
+sh scripts/build-and-verify-native-image.sh aot native64
+```
+
+The script invokes the Maven native profile with `--no-fallback`, requires a
+real OS-native executable at `target/ores-aot` or `target/ores-hybrid`,
+checks the embedded build mode and managed reference layout, runs native CLI
+source validation, executes `examples/together.ores` and the packaged stdlib
+fixture `examples/native-core-library.ores` with Java build variables unset,
+and checks that JVM JIT mode is rejected with exit code 2. A failed compilation
+or fixture fails the command; a successful JVM `mvn package` alone does not count.
+The main `ci.yml` workflow runs this exact gate for AOT compressed32, AOT
+native64, and hybrid compressed32 before its larger source-level test matrix.
+
+**Evidence requirements:** Treat Native Image support as *verified* only when
+the exact source commit has a completed build **and** successful native binary
+execution on a real runner. A queued, skipped, or rejected GitHub Actions job
+(including jobs with zero executed steps) does not establish compatibility.
+Native images are platform-specific (Linux, macOS, Windows); a successful Linux
+run must not be represented as proof of a Windows or macOS artifact. Native
+Image compilation of the Oreslang *host* is also not proof that every Oreslang
+source feature has application-specific AOT codegen or that isolate/shared
+library deployment has passed its separate runtime contract.
