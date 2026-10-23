@@ -3352,6 +3352,7 @@ public final class Parser {
     }
 
     private Ast.Expr parseRuntimeExpression() {
+        boolean mutableBorrow = match(MUT);
         Token operation;
         if (match(YIELD)) {
             operation = previous(); // compatibility spelling: rt yield
@@ -3360,6 +3361,9 @@ public final class Parser {
         }
 
         String name = operation.lexeme();
+        if (mutableBorrow && !name.equals("borrow")) {
+            throw error(operation, "expected borrow after 'rt mut'");
+        }
         if (operation.type() == YIELD || name.equals("yield") || name.equals("cooperate")) {
             if (match(LPAREN)) {
                 if (!check(RPAREN)) {
@@ -3380,6 +3384,7 @@ public final class Parser {
 
         // Mutable borrows use the same ownership checks as the legacy spelling.
         if (name.equals("borrow") && match(MUT)) {
+            if (mutableBorrow) throw error(previous(), "duplicate mut borrow qualifier");
             return new Ast.UnaryExpr("&mut", parseUnary());
         }
         Ast.Expr argument;
@@ -3393,7 +3398,8 @@ public final class Parser {
             // Command form has unary precedence: rt borrow value.member
             argument = parseUnary();
         }
-        return new Ast.RuntimeCallExpr(name, List.of(argument));
+        return mutableBorrow ? new Ast.UnaryExpr("&mut", argument)
+                : new Ast.RuntimeCallExpr(name, List.of(argument));
     }
 
     private Ast.Expr parseChannelOperation(
