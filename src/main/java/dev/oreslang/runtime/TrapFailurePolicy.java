@@ -1,108 +1,101 @@
 package dev.oreslang.runtime;
 
 import java.util.ArrayDeque;
-import java.util.Collections;
-import java.util.Deque;
 import java.util.IdentityHashMap;
-import java.util.NoSuchElementException;
-import java.util.Set;
+import java.util.Objects;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeoutException;
 
 /**
- * Distinct guest failure boundaries:
- * <ul>
- *   <li>{@code trap} converts explicit guest {@code throw} signals and
- *       classified interpreter-origin failures into a structured
- *       {@code TrapResult}. Unclassified host runtime exceptions, authority
- *       denial and runtime timeout remain terminal.</li>
- *   <li>Explicit guest {@code catch} may recover a denied operation, but cannot
- *       consume runtime timeout, panic, scheduler cancellation or host failures.</li>
- * </ul>
+ * Deny-by-default exceptional-effect boundaries in the guest interpreter.
+ * An ordinary guest THROW is catchable/trappable. A RAISE may enter only an
+ * eligible recover boundary; PANIC, cancellation, forced shutdown and host
+ * fatal errors are not locally consumable.
  *
- * <p>Wrapped and suppressed failures are inspected with bounded, identity-based
- * traversal. Cyclic and oversized graphs fail closed.</p>
+ * <p>This classifier does not mint GuestControlSignal provenance. A future
+ * compiler-issued signal envelope must prevent foreign Java code from
+ * manufacturing a guest RAISE. Until then callers must not export this as an
+ * untrusted guest/FFI recovery admission interface.</p>
  */
 public final class TrapFailurePolicy {
     private static final int MAX_FAILURE_NODES = 64;
+    private enum Boundary { TRAP, GUEST_CATCH, RECOVER }
+
+    private record Pending(Throwable failure, boolean primaryCause) { }
 
     private TrapFailurePolicy() { }
 
     public static boolean isTrappable(
             RuntimeException failure, Class<? extends Throwable> panicType) {
-        return permits(failure, panicType, false);
+        return permits(failure, panicType, Boundary.TRAP);
     }
 
     public static boolean isGuestCatchable(
             Throwable failure, Class<? extends Throwable> panicType) {
-        return permits(failure, panicType, true);
+        return permits(failure, panicType, Boundary.GUEST_CATCH);
+    }
+
+    public static boolean isRecoverableRaise(
+            Throwable failure, Class<? extends Throwable> panicType) {
+        return permits(failure, panicType, Boundary.RECOVER);
     }
 
     private static boolean permits(
-            Throwable failure,
-            Class<? extends Throwable> panicType,
-            boolean explicitGuestCatch) {
-        if (failure == null) return false;
+            Throwable failure, Class<? extends Throwable> panicType,
+            Boundary boundary) {
+        Objects.requireNonNull(failure, "failure");
+        Objects.requireNonNull(panicType, "panicType");
 
-        // First inspect the entire causal/suppressed graph for control signals
-        // that must never be downgraded into an ordinary guest error.
-        Deque<Throwable> pending = new ArrayDeque<>();
-        Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
-        pending.add(failure);
-        while (!pending.isEmpty()) {
-            Throwable current = pending.removeFirst();
-            if (!seen.add(current)) return false;
-            if (seen.size() > MAX_FAILURE_NODES) return false;
-            if ((panicType != null && panicType.isInstance(current))
-                    || current instanceof GuestControlSignal.Raise
-                    || current instanceof GuestControlSignal.Panic
-                    || current instanceof Error
-                    || current instanceof CancellationException
-                    || current instanceof InterruptedException
-                    || current instanceof RejectedExecutionException
-                    || current instanceof TimeoutException) {
-                return false;
+        ArrayDeque<Pending> pending = new ArrayDeque<>();
+        IdentityHashMap<Throwable, Boolean> visited = new IdentityHashMap<>();
+        pending.addLast(new Pending(failure, true));
+        boolean sawPrimaryRaise = false;
+        try {
+            while (!pending.isEmpty()) {
+                if (visited.size() >= MAX_FAILURE_NODES) return false;
+                Pending entry = pending.removeFirst();
+                Throwable current = entry.failure();
+                if (visited.put(current, Boolean.TRUE) != null) return false;
+                if (panicType.isInstance(current)
+                        || current instanceof Error
+                        || current instanceof GuestControlSignal.Panic
+                        || current instanceof CancellationException
+                        || current instanceof InterruptedException
+                        || current instanceof RejectedExecutionException) {
+                    return false;
+                }
+                if (current instanceof GuestControlSignal.Raise) {
+                    if (boundary != Boundary.RECOVER || !entry.primaryCause()) return false;
+                    sawPrimaryRaise = true;
+                }
+                if (boundary == Boundary.RECOVER
+                        && (current instanceof GuestControlSignal.Throw
+                                || current instanceof SecurityException
+                                || current instanceof TimeoutException)) {
+                    return false;
+                }
+                if (boundary == Boundary.TRAP
+                        && (current instanceof SecurityException
+                                || current instanceof TimeoutException)) {
+                    return false;
+                }
+                Throwable cause = current.getCause();
+                if (cause != null) {
+                    if (pending.size() + visited.size() >= MAX_FAILURE_NODES) return false;
+                    pending.addLast(new Pending(cause, entry.primaryCause()));
+                }
+                for (Throwable suppressed : current.getSuppressed()) {
+                    if (suppressed instanceof SourceBoundaryTrace) continue;
+                    if (pending.size() + visited.size() >= MAX_FAILURE_NODES) return false;
+                    pending.addLast(new Pending(suppressed, false));
+                }
             }
-            if (!explicitGuestCatch && current instanceof SecurityException) {
-                return false;
-            }
-            if (current.getCause() != null) pending.addLast(current.getCause());
-            for (Throwable suppressed : current.getSuppressed()) pending.addLast(suppressed);
+        } catch (RuntimeException malformedHostGraph) {
+            // Never turn a foreign Throwable accessor failure into permission to
+            // consume the original guest control effect.
+            return false;
         }
-
-        // Classification follows the primary cause chain only. A suppressed
-        // guest throw must never make an unrelated host failure trappable.
-        Set<Throwable> causeSeen = Collections.newSetFromMap(new IdentityHashMap<>());
-        for (Throwable current = failure;
-                current != null && causeSeen.add(current);
-                current = current.getCause()) {
-            if (current instanceof GuestControlSignal.Throw) return true;
-            if (current instanceof SecurityException) return explicitGuestCatch;
-            if (isMappedGuestFailure(current)) return true;
-        }
-        return false;
-    }
-
-    private static boolean isMappedGuestFailure(Throwable failure) {
-        if (failure instanceof IllegalArgumentException
-                || failure instanceof IllegalStateException
-                || failure instanceof ArithmeticException
-                || failure instanceof IndexOutOfBoundsException
-                || failure instanceof ClassCastException
-                || failure instanceof UnsupportedOperationException
-                || failure instanceof NoSuchElementException
-                || failure instanceof NegativeArraySizeException
-                || failure instanceof ArrayStoreException) {
-            // These JDK exception types are guest errors only when they were
-            // raised by the Oreslang runtime itself. A host/FFI exception with
-            // the same Java class must be explicitly mapped by its adapter.
-            StackTraceElement[] trace = failure.getStackTrace();
-            return trace.length > 0
-                    && trace[0].getClassName().startsWith("dev.oreslang.");
-        }
-        // The interpreter's cast failure is a dedicated guest runtime type.
-        return failure.getClass().getName()
-                .equals("dev.oreslang.nodes.OresEvalRootNode$OresCastError");
+        return boundary != Boundary.RECOVER || sawPrimaryRaise;
     }
 }
