@@ -70,6 +70,67 @@ final class CleanupAwareSchedulerCancellationTest {
         }
     }
 
+    @Test void actorStopPhysicalGateWaitsForInFlightRetirementCallback()
+            throws Exception {
+        CountDownLatch callbackEntered = new CountDownLatch(1);
+        CountDownLatch releaseCallback = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<Throwable> callbackFailure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> work = scheduler.start(
+                    ignored -> OresScheduler.done(1),
+                    () -> {
+                        callbackEntered.countDown();
+                        try {
+                            if (!releaseCallback.await(5, TimeUnit.SECONDS)) {
+                                callbackFailure.set(new AssertionError(
+                                        "physical callback was not released"));
+                            }
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            callbackFailure.set(interrupted);
+                        }
+                    });
+            try {
+                assertTrue(callbackEntered.await(3, TimeUnit.SECONDS));
+                assertFalse(scheduler.actorStopPhysicallyQuiescent(),
+                        "removing a Task from the live set cannot retire an in-flight loan");
+                assertFalse(work.isDone(), "Future publication follows physical retirement");
+            } finally {
+                releaseCallback.countDown();
+            }
+            assertEquals(1, work.get(3, TimeUnit.SECONDS));
+            assertNull(callbackFailure.get());
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (!scheduler.actorStopPhysicallyQuiescent()
+                    && System.nanoTime() < deadline) Thread.onSpinWait();
+            assertTrue(scheduler.actorStopPhysicallyQuiescent());
+        }
+    }
+
+    @Test void failedPhysicalRetirementCallbackFailsClosed()
+            throws Exception {
+        RuntimeException failure = new IllegalStateException("physical loan release failed");
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            CountDownLatch retiredAttempted = new CountDownLatch(1);
+            OresFuture<Integer> work = scheduler.start(
+                    ignored -> OresScheduler.done(3),
+                    () -> {
+                        retiredAttempted.countDown();
+                        throw failure;
+                    });
+            assertTrue(retiredAttempted.await(3, TimeUnit.SECONDS));
+            // Callback exceptions must not convert a failed physical release
+            // to a safe arena-retirement outcome.
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (!scheduler.hasIncompleteCleanup()
+                    && System.nanoTime() < deadline) Thread.onSpinWait();
+            assertTrue(scheduler.hasIncompleteCleanup());
+            assertTrue(scheduler.actorStopPhysicallyQuiescent(),
+                    "quiescence alone does not imply successful cleanup");
+        }
+    }
+
     @Test void suspendedTaskRunsDeferredCleanupBeforePublishingCancellation()
             throws Exception {
         OresFuture<Integer> producer = new OresFuture<>();
