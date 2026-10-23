@@ -39,8 +39,8 @@ final class ActorPhysicalRetirementRegistryTest {
             assertTrue(registered.await(3, TimeUnit.SECONDS));
             assertEquals(actor.id(), tcp.get().actorId());
             assertEquals(actor.generation(), tcp.get().generation());
-            assertEquals(1, actor.pendingPhysicalRetirementsByKind().get("TCP_HTTP_HANDLE"));
-            assertEquals(1, actor.pendingPhysicalRetirementsByKind().get("FFI_LOAN"));
+            assertEquals(Integer.valueOf(1), actor.pendingPhysicalRetirementsByKind().get("TCP_HTTP_HANDLE"));
+            assertEquals(Integer.valueOf(1), actor.pendingPhysicalRetirementsByKind().get("FFI_LOAN"));
 
             assertTrue(actor.cancel());
             assertFalse(actor.done().isDone(), "logical STOP cannot retire a TCP handle");
@@ -50,7 +50,7 @@ final class ActorPhysicalRetirementRegistryTest {
                     "double settlement must be exactly once");
             assertFalse(actor.done().isDone(), "FFI loan still physically outstanding");
             assertFalse(actor.pendingPhysicalRetirementsByKind().containsKey("TCP_HTTP_HANDLE"));
-            assertEquals(1, actor.pendingPhysicalRetirementsByKind().get("FFI_LOAN"));
+            assertEquals(Integer.valueOf(1), actor.pendingPhysicalRetirementsByKind().get("FFI_LOAN"));
             Thread foreignDriver = Thread.ofVirtual().start(
                     () -> assertTrue(ffi.get().completeAfterPhysicalRelease()));
             foreignDriver.join(3_000);
@@ -193,9 +193,9 @@ final class ActorPhysicalRetirementRegistryTest {
         assertFalse(ticket.failPhysicalRelease(new IllegalStateException("duplicate")));
         assertFalse(ticket.completeAfterPhysicalRelease());
         assertEquals(2, registry.snapshot().pending());
-        assertEquals(1, registry.snapshot().byKind().get(
+        assertEquals(Integer.valueOf(1), registry.snapshot().byKind().get(
                 ActorPhysicalRetirementRegistry.Kind.MUTEX_HANDOFF));
-        assertEquals(1, registry.snapshot().byKind().get(
+        assertEquals(Integer.valueOf(1), registry.snapshot().byKind().get(
                 ActorPhysicalRetirementRegistry.Kind.ASYNC_ITERATOR));
         assertThrows(UnsupportedOperationException.class,
                 () -> registry.snapshot().byKind().put(
