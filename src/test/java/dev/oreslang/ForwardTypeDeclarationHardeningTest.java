@@ -101,6 +101,61 @@ final class ForwardTypeDeclarationHardeningTest {
     }
 
     @Test
+    void nativeScalarIntersectionAlsoTypeChecksOnJava() {
+        // Identical Oreslang source form exercised by the native executable
+        // source matrix. Java and LLVM must still be run separately before
+        // making observable-execution parity claims.
+        for (String body : new String[]{
+                """
+                declare pub type Code;
+                define pub type Code = int;
+                fnc id(Code code): Code { return code; }
+                pub fnc main(): int { return id(7); }
+                """,
+                """
+                declare type Flag;
+                define type Flag = bool;
+                fnc ready(Flag value): Flag { return value; }
+                pub fnc main(): int { return ready(true) ? 7 : 0; }
+                """,
+                """
+                define module foo as
+                  declare type Code;
+                  define type Code = int;
+                  fnc id(Code code): Code { return code; }
+                  pub fnc main(): int { return id(7); }
+                end
+                """
+        }) {
+            assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(body)), body);
+        }
+    }
+
+    @Test
+    void rejectsCrossKindTypeNamespaceCollisionsEvenWithoutForwards() {
+        for (String source : new String[]{
+                "define type Box = int; define class Box as end",
+                "define type Named = int; define interface Named as end",
+                "define trait Named as end define interface Named as end",
+                "define contract Named as end define interface Named as end"
+        }) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypes(Parser.parse(source)), source);
+            assertTrue(error.getMessage().contains("duplicate type namespace"),
+                    error.getMessage());
+        }
+        // Distinct modules retain separate type namespaces.
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse("""
+                define module one as
+                  define type Box = int;
+                end
+                define module two as
+                  define class Box as end
+                end
+                """)));
+    }
+
+    @Test
     void rejectsUnresolvedForwardsAndCrossModuleAccidentalLinking() {
         rejects("""
                 declare type Orphan;
