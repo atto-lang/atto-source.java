@@ -1936,7 +1936,7 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "source actor task requires an executing actor turn");
         }
-        if (cell.kind != ActorKind.UNTRUSTED) return cell.sourceScheduler().start(task);
+        if (cell.kind != ActorKind.UNTRUSTED) return cell.startTrackedSourceTask(task);
         // Do not mint multiple independent root budgets from one physical
         // mailbox turn. While one source-task cohort is live, its nested
         // tasks share the same quota; a second top-level task fails closed.
@@ -7101,6 +7101,10 @@ public final class ActorRuntime implements AutoCloseable {
          */
         private boolean sourceHandoffRequested;
         private OresScheduler sourceScheduler;
+        /** Source-scheduler logical Task ownership is distinct from actor
+         * incarnation ownership. Retain live Task handles until their own
+         * lock, child, and quiescence receipts have physically completed. */
+        private final Set<TaskHandle<?>> sourceTaskHandles = ConcurrentHashMap.newKeySet();
         /** self.end()/self.endWithCleanup(...) lifecycle state; guarded by lifecycleLock. */
         private boolean endRequested;
         private Runnable finalCleanup;
@@ -7316,6 +7320,40 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        private <T> OresFuture<T> startTrackedSourceTask(OresScheduler.Task<T> task) {
+            // The enclosing actor turn cannot finalize until this method has
+            // returned, so source Task enrollment wins over concurrent STOP.
+            TaskHandle<T> handle = sourceScheduler().startTracked(task);
+            sourceTaskHandles.add(handle);
+            handle.getDone().whenCompleteRuntime((ignored, failure) ->
+                    sourceTaskHandles.remove(handle));
+            return handle.result();
+        }
+
+        /**
+         * Independent physical receipt for every source Task that STOP still
+         * owns. A cancelled result Future may have settled while its Task's
+         * hidden lock ledger is waiting for an in-flight permit handoff.
+         */
+        private CompletableFuture<Void> sourceTasksSettled() {
+            List<TaskHandle<?>> pending = List.copyOf(sourceTaskHandles);
+            if (pending.isEmpty()) return CompletableFuture.completedFuture(null);
+            CompletableFuture<Void> barrier = new CompletableFuture<>();
+            AtomicInteger remaining = new AtomicInteger(pending.size());
+            AtomicReference<Throwable> error = new AtomicReference<>();
+            for (TaskHandle<?> handle : pending) {
+                handle.getDone().whenCompleteRuntime((ignored, failure) -> {
+                    if (failure != null) error.compareAndSet(null, failure);
+                    if (remaining.decrementAndGet() == 0) {
+                        Throwable unsafe = error.get();
+                        if (unsafe == null) barrier.complete(null);
+                        else barrier.completeExceptionally(unsafe);
+                    }
+                });
+            }
+            return barrier;
+        }
+
         private boolean beginTurn() {
             synchronized (lifecycleLock) {
                 if (stopped.get() || forceKillFenced || finalized) return false;
@@ -7423,14 +7461,31 @@ public final class ActorRuntime implements AutoCloseable {
                     sourceScheduler = null;
                 }
                 if (scheduler != null) scheduler.close();
-                // Never park a carrier on a claimed mutex handoff. Its private
-                // receipt, not public GuardFuture.isDone(), gates actor DONE.
-                actorLocks.retireAfterQuiescence().whenComplete((ignored, failure) ->
+                // A tracked source Task's lock ledger is its own lifetime
+                // scope, even when the surrounding actor remains alive.
+                // Do not reclaim actor memory until all such handles prove
+                // physical quiescence and descendant cleanup.
+                sourceTasksSettled().whenComplete((ignored, taskFailure) ->
                         Thread.ofVirtual()
-                                .name("ores-actor-lock-settled-" + ref.id())
+                                .name("ores-actor-source-task-retired-" + ref.id())
                                 .start(() -> {
-                                    if (failure == null) finishStopOutsideMonitor();
-                                    else quarantineStopRetirement(failure);
+                                    if (taskFailure != null) {
+                                        quarantineStopRetirement(taskFailure);
+                                        return;
+                                    }
+                                    // Never park an actor carrier on claimed
+                                    // handoffs in the actor-incarnation ledger.
+                                    actorLocks.retireAfterQuiescence().whenComplete(
+                                            (nothing, lockFailure) ->
+                                                    Thread.ofVirtual()
+                                                            .name("ores-actor-lock-settled-" + ref.id())
+                                                            .start(() -> {
+                                                                if (lockFailure == null) {
+                                                                    finishStopOutsideMonitor();
+                                                                } else {
+                                                                    quarantineStopRetirement(lockFailure);
+                                                                }
+                                                            }));
                                 }));
             } catch (Throwable failure) {
                 quarantineStopRetirement(failure);
