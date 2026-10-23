@@ -414,7 +414,9 @@ public final class Parser {
             }
             rejectCallableStructuralAnnotation(annotations, "actor class declarations");
             Ast.MaxActorThreads maxThreads = actorMaxThreads(annotations);
-            return parseActorClass(actorKind, modifiers.visibility, maxThreads, modifiers.supervisor);
+            return parseActorClass(
+                    actorKind, modifiers.visibility, ActorPrefix.DEFAULT,
+                    maxThreads, modifiers.supervisor);
         }
         if (match(FNC)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
