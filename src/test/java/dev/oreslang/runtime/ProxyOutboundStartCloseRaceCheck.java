@@ -54,20 +54,23 @@ public final class ProxyOutboundStartCloseRaceCheck {
                     return true;
                 });
                 gate.countDown();
-                stream.get(5, TimeUnit.SECONDS);
-                close.get(5, TimeUnit.SECONDS);
-                if (client.inFlight() != 0) throw new AssertionError("stream/close race leaked permit");
+                if (!stream.get(5, TimeUnit.SECONDS) || !close.get(5, TimeUnit.SECONDS))
+                    throw new AssertionError("race futures did not finish");
+                if (client.inFlight() != 0)
+                    throw new AssertionError("start/close race leaked an admission permit on turn " + turn);
             }
+            var afterRaces = client.request(target, "GET").join();
+            afterRaces.close();
+            if (client.inFlight() != 0) throw new AssertionError("capacity not reusable after stress");
+            System.out.println("PASS 150 concurrent stream-start/close races plus closed-stream denial");
         } finally {
             server.stop(0);
             workers.shutdownNow();
         }
-        System.out.println("PASS stream-start/close race: 150 turns");
     }
 
     private static boolean responseIsClosedMessage(IOException failure) {
-        String text = failure.getMessage();
-        return text != null && (text.contains("closed") || text.contains("cancelled")
-                || text.contains("stream"));
+        String message = failure.getMessage();
+        return message != null && (message.contains("closed") || message.contains("cancelled"));
     }
 }
