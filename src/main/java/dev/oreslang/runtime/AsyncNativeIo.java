@@ -1,5 +1,8 @@
 package dev.oreslang.runtime;
 
+import java.net.URI;
+import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.Callable;
@@ -24,6 +27,42 @@ public final class AsyncNativeIo implements AutoCloseable {
     AsyncNativeIo(int capacity) {
         if (capacity < 1) throw new IllegalArgumentException("I/O capacity must be positive");
         this.capacity = capacity;
+    }
+
+    // Trusted runtime entry point ONLY. Deliberately package-private: the
+    // Oreslang guest must not get a raw host CompletableFuture/Response handle.
+    // OresContext performs both actor-local and scoped NET permission checks
+    // synchronously before any outbound request is admitted or dispatched.
+    private ProxyOutboundLoopback proxyLoopback;
+
+    CompletableFuture<ProxyOutboundLoopback.Response> requestProxyLoopback(
+            OresContext context, URI target, String method) {
+        Objects.requireNonNull(context, "context");
+        Objects.requireNonNull(target, "target");
+        // Reject remote/ambiguous destinations *before* permission matching;
+        // do not generalize this into a DNS hostname or wildcard egress API.
+        if (!"http".equals(target.getScheme())
+                || !"127.0.0.1".equals(target.getHost())
+                || target.getPort() < 1 || target.getPort() > 65535)
+            return CompletableFuture.failedFuture(
+                    new IllegalArgumentException("trusted loopback request requires literal 127.0.0.1"));
+        context.requirePermission(RuntimePermissions.Permission.NET,
+                "127.0.0.1:" + target.getPort(), "proxy.loopback.request");
+
+        ProxyOutboundLoopback transport;
+        synchronized (this) {
+            if (closed) return CompletableFuture.failedFuture(
+                    new RejectedExecutionException("context native I/O already closed"));
+            if (proxyLoopback == null) {
+                // The transport and all its pending/delivered response leases
+                // are retired by AsyncNativeIo.close() via the resource set.
+                proxyLoopback = new ProxyOutboundLoopback(Math.min(capacity, 128));
+                resources.add(proxyLoopback);
+            }
+            transport = proxyLoopback;
+        }
+        // request() is nonblocking. Never join its Future on an actor carrier.
+        return transport.request(target, method);
     }
 
     public <T> OresFuture<T> submit(OresContext context,
