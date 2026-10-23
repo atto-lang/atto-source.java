@@ -343,6 +343,7 @@ public final class TypeChecker {
             String previousModule = currentLexicalModule;
             currentLexicalModule = module.name();
             try {
+                validateTypeOnlyNamespace(module);
                 validateModelTypeNamespace(module);
                 validateModuleValueNamespace(module);
                 checkModuleAdherence(module);
@@ -363,6 +364,32 @@ public final class TypeChecker {
         }
     }
 
+    /** Trait, interface, and transparent aliases live in one type-only
+     * namespace. A duplicate spelling must not resolve by collection order. */
+    private void validateTypeOnlyNamespace(Ast.ModuleDecl module) {
+        Map<String, String> kinds = new LinkedHashMap<>();
+        for (Ast.Decl declaration : module.declarations()) {
+            String name;
+            String kind;
+            if (declaration instanceof Ast.InterfaceDecl iface) {
+                name = iface.name();
+                kind = iface.moduleContract() ? "contract"
+                        : iface.traitDeclaration() ? "trait" : "interface";
+            } else if (declaration instanceof Ast.TypeAliasDecl alias) {
+                name = alias.name();
+                kind = "type alias";
+            } else {
+                continue;
+            }
+            String prior = kinds.putIfAbsent(name, kind);
+            if (prior != null) {
+                throw new IllegalArgumentException(
+                        "TYPE_DECL_NAME_COLLISION: '" + module.name() + "." + name
+                                + "' is declared as both " + prior + " and " + kind);
+            }
+        }
+    }
+
     private void validateModelTypeNamespace(Ast.ModuleDecl module) {
         Set<String> modelNames = new LinkedHashSet<>();
         for (Ast.Decl declaration : module.declarations()) {
@@ -378,7 +405,8 @@ public final class TypeChecker {
                 category = "class";
             } else if (declaration instanceof Ast.InterfaceDecl iface) {
                 name = iface.name();
-                category = iface.moduleContract() ? "contract" : "interface";
+                category = iface.moduleContract() ? "contract"
+                        : iface.traitDeclaration() ? "trait" : "interface";
             } else if (declaration instanceof Ast.TypeAliasDecl alias) {
                 name = alias.name();
                 category = "type alias";
@@ -584,7 +612,8 @@ public final class TypeChecker {
     }
 
     private void checkInterface(Ast.InterfaceDecl iface) {
-        Set<String> generics = uniqueGenerics(iface.genericParameters(), "interface " + iface.name());
+        Set<String> generics = uniqueGenerics(iface.genericParameters(),
+                (iface.traitDeclaration() ? "trait " : "interface ") + iface.name());
         Type interfaceSelf = iface.moduleContract() ? null : new SelfType(nominalInterfaceType(iface));
 
         Set<String> interfaceFieldNames = new LinkedHashSet<>();
@@ -604,8 +633,11 @@ public final class TypeChecker {
         for (Ast.TypeRef parentRef : iface.parents()) {
             Ast.InterfaceDecl parent = findInterface(parentRef.name());
             if (parent == null) throw new IllegalArgumentException("unknown parent interface '" + parentRef.name() + "' for " + iface.name());
-            if (iface.moduleContract() != parent.moduleContract()) {
-                throw new IllegalArgumentException("interfaces and module contracts cannot extend each other");
+            if (iface.moduleContract() != parent.moduleContract()
+                    || iface.traitDeclaration() != parent.traitDeclaration()) {
+                throw new IllegalArgumentException(
+                        "TYPE_PARENT_KIND_MISMATCH: interface, trait and module contract"
+                                + " declarations may only extend parents of the same kind");
             }
             if (iface.moduleContract()) resolveModuleContractRef(parentRef, parent, generics);
             else resolve(parentRef, generics, null);
@@ -6909,11 +6941,12 @@ public final class TypeChecker {
         for (Ast.TypeRef parentRef : iface.parents()) {
             Ast.InterfaceDecl parent = findInterface(parentRef.name());
             if (parent == null) throw new IllegalArgumentException("unknown parent interface '" + parentRef.name() + "' for " + iface.name());
-            if (iface.moduleContract() != parent.moduleContract()) {
+            if (iface.moduleContract() != parent.moduleContract()
+                    || iface.traitDeclaration() != parent.traitDeclaration()) {
                 throw new IllegalArgumentException(
-                        (iface.moduleContract() ? "module contract '" : "interface '") + iface.name()
-                                + "' cannot extend " + (parent.moduleContract() ? "module contract '" : "interface '")
-                                + parent.name() + "' across the interface/contract boundary");
+                        "TYPE_PARENT_KIND_MISMATCH: type-only declaration '" + iface.name()
+                                + "' cannot extend a different interface/trait/contract kind: '"
+                                + parent.name() + "'");
             }
             Type resolvedParent = iface.moduleContract() ? resolveModuleContractRef(parentRef, parent, generics) : resolve(parentRef, generics, null);
             if (!(resolvedParent instanceof Named parentType)) {
