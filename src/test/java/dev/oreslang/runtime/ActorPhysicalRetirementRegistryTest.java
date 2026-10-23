@@ -75,12 +75,10 @@ final class ActorPhysicalRetirementRegistryTest {
                     ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE);
             assertTrue(pipe.source().isOpen());
             assertTrue(actor.cancel());
-            assertFalse(actor.done().isDone(),
-                    "a valid Channel.close request is not a physical receipt");
-            assertEquals(Integer.valueOf(1), actor.pendingPhysicalRetirementsByKind()
-                    .get("TCP_HTTP_HANDLE"));
-            lease.close();
-            assertFalse(pipe.source().isOpen(), "real NIO descriptor must now be closed");
+            // STOP now schedules verified native-channel close asynchronously,
+            // without any guest actor turn or caller close() invocation.
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertFalse(pipe.source().isOpen(), "STOP must close the real NIO descriptor");
             lease.close(); // idempotent
             assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
             assertTrue(actor.pendingPhysicalRetirementsByKind().isEmpty());
