@@ -25,8 +25,13 @@ public final class ProxyOutboundLoopbackCheck {
                 exchange.getResponseHeaders().add("X-Remove", "not-forwarded");
                 exchange.getResponseHeaders().add("X-Origin", "ok");
                 byte[] body = "created".getBytes(StandardCharsets.UTF_8);
-                exchange.sendResponseHeaders(201, body.length);
-                exchange.getResponseBody().write(body);
+                if ("HEAD".equals(exchange.getRequestMethod())) {
+                    exchange.getResponseHeaders().set("Content-Length", Integer.toString(body.length));
+                    exchange.sendResponseHeaders(201, -1);
+                } else {
+                    exchange.sendResponseHeaders(201, body.length);
+                    exchange.getResponseBody().write(body);
+                }
             } finally { exchange.close(); }
         });
         origin.createContext("/stream", exchange -> {
@@ -99,6 +104,17 @@ public final class ProxyOutboundLoopbackCheck {
             if (empty.status()!=204) throw new AssertionError("lost 204 status");
             if (empty.streamBody(new ByteArrayOutputStream(), () -> false)!=0)
                 throw new AssertionError("unexpected body on 204");
+            var cancelled = client.request(URI.create(base + "/stream"), "GET").join();
+            try {
+                cancelled.streamBody(new ByteArrayOutputStream(), () -> true);
+                throw new AssertionError("pre-stream cancellation was ignored");
+            } catch (IOException expected) {
+                if (!expected.getMessage().contains("cancelled")) throw expected;
+            }
+            var reclaimed = client.request(URI.create(base + "/created"), "HEAD").join();
+            if (reclaimed.status()!=201) throw new AssertionError("cancellation did not return permit");
+            if (reclaimed.streamBody(new ByteArrayOutputStream(), () -> false)!=0)
+                throw new AssertionError("HEAD unexpectedly yielded a body");
             var redirect = client.request(URI.create(base + "/redirect"), "GET").join();
             if (redirect.status()!=302) throw new AssertionError("unsafe redirect followed");
             redirect.close();
