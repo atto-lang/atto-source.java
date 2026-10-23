@@ -205,6 +205,36 @@ final class ActorPhysicalRetirementRegistryTest {
         }
     }
 
+    @Test void failedPhysicalLoanQuarantinesActualActorAndRuntimeCloseFailsClosed()
+            throws Exception {
+        // This test deliberately leaves one actor unretired; its runtime
+        // close MUST report the quarantine instead of freeing the arena.
+        var runtime = new ActorRuntime();
+        var ticket = new AtomicReference<ActorPhysicalRetirementRegistry.Receipt>();
+        var started = new CountDownLatch(1);
+        var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+            ticket.set(context.runtime().registerCurrentActorPhysicalReceipt(
+                    ActorPhysicalRetirementRegistry.Kind.FFI_LOAN));
+            started.countDown();
+        });
+        actor.send("claim");
+        assertTrue(started.await(3, TimeUnit.SECONDS));
+        assertTrue(actor.cancel());
+        var nativeFailure = new IllegalStateException("native handle still leased");
+        assertTrue(ticket.get().failPhysicalRelease(nativeFailure));
+        assertFalse(ticket.get().completeAfterPhysicalRelease(),
+                "failed physical close cannot later masquerade as successful settlement");
+        assertSame(nativeFailure, actor.physicalRetirementFailure().orElseThrow());
+        assertEquals(Integer.valueOf(1),
+                actor.pendingPhysicalRetirementsByKind().get("FFI_LOAN"));
+        assertFalse(actor.awaitTermination(100, TimeUnit.MILLISECONDS));
+        assertFalse(actor.done().isDone());
+        assertInstanceOf(ActorRuntime.ActorCancelledException.class,
+                actor.failure().orElseThrow());
+        assertThrows(IllegalStateException.class, runtime::close,
+                "runtime close must fail rather than silently free a quarantined actor");
+    }
+
     @Test void failedPhysicalReleaseIsStickyAndCannotBeReclassifiedAsClean() {
         var signals = new AtomicInteger();
         var owner = ActorRuntime.ActorId.create();
