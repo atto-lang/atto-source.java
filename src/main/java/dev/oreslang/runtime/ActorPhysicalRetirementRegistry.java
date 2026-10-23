@@ -1,7 +1,9 @@
 package dev.oreslang.runtime;
 
 import java.util.Collections;
+import java.util.EnumMap;
 import java.util.IdentityHashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -23,7 +25,13 @@ final class ActorPhysicalRetirementRegistry {
         SHARED_BLOB_LEASE, OTHER
     }
 
-    record Snapshot(int pending, boolean sealed, boolean retired, Throwable failure) { }
+    record Snapshot(
+            int pending, Map<Kind, Integer> byKind,
+            boolean sealed, boolean retired, Throwable failure) {
+        Snapshot {
+            byKind = Map.copyOf(byKind);
+        }
+    }
 
     final class Receipt {
         private final ActorRuntime.ActorId actorId;
@@ -139,7 +147,12 @@ final class ActorPhysicalRetirementRegistry {
 
     Snapshot snapshot() {
         synchronized (lock) {
-            return new Snapshot(pending.size(), sealed, retired, firstFailure);
+            Map<Kind, Integer> counts = new EnumMap<>(Kind.class);
+            for (Receipt receipt : pending) {
+                counts.merge(receipt.kind(), 1, Integer::sum);
+            }
+            return new Snapshot(
+                    pending.size(), counts, sealed, retired, firstFailure);
         }
     }
 
