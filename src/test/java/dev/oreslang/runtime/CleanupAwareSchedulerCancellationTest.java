@@ -57,7 +57,7 @@ final class CleanupAwareSchedulerCancellationTest {
             } finally {
                 releaseCallback.countDown();
             }
-            assertEquals(7, work.get(3, TimeUnit.SECONDS));
+            assertEquals(Integer.valueOf(7), work.get(3, TimeUnit.SECONDS));
             // The physical scheduler lease and all synchronous notification
             // receipts must retire before an actor considers this safe.
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
@@ -99,7 +99,7 @@ final class CleanupAwareSchedulerCancellationTest {
             } finally {
                 releaseCallback.countDown();
             }
-            assertEquals(1, work.get(3, TimeUnit.SECONDS));
+            assertEquals(Integer.valueOf(1), work.get(3, TimeUnit.SECONDS));
             assertNull(callbackFailure.get());
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
             while (!scheduler.actorStopPhysicallyQuiescent()
