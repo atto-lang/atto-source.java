@@ -180,6 +180,7 @@ final class RecoveryHandlerChain<T> {
         if (!pendingFailure.compilerAuthenticated()) {
             throw new SecurityException("recovery requires a compiler-authenticated guest failure");
         }
+        pendingFailure.requireDispatchable();
         if (!pendingFailure.belongsTo(
                 ownerExecutionId,
                 ownerAllocationDomain,
