@@ -78,7 +78,7 @@ jobs:
           java --version
           native-image --version
       - name: Build interpreter-only AOT image
-        run: mvn -B -ntp -Pnative-aot -DskipTests package
+        run: sh scripts/build-and-verify-native-image.sh aot compressed32
       - name: Verify compressed reference mode is baked into AOT image
         run: |
           ./target/ores-aot --build-info | tee /tmp/ores-aot-build-info.json
@@ -128,7 +128,7 @@ jobs:
           java --version
           native-image --version
       - name: Build full-width AOT image
-        run: mvn -B -ntp -Pnative-aot,native-ref64 -DskipTests package
+        run: sh scripts/build-and-verify-native-image.sh aot native64
       - name: Verify native64 reference mode is baked into AOT image
         run: |
           ./target/ores-aot --build-info | tee /tmp/ores-aot-ref64-build-info.json
@@ -157,7 +157,7 @@ jobs:
           java --version
           native-image --version
       - name: Build AOT host with guest JIT
-        run: mvn -B -ntp -Pnative-hybrid -DskipTests package
+        run: sh scripts/build-and-verify-native-image.sh hybrid compressed32
       - name: Verify compressed reference mode is baked into hybrid image
         run: |
           ./target/ores-hybrid --build-info | tee /tmp/ores-hybrid-build-info.json
