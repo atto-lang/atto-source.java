@@ -179,7 +179,18 @@ public final class TaskPipeline {
         }
 
         AtomicReference<OresFuture<?>> ownedStage = new AtomicReference<>();
-        AtomicReference<OresFuture<T>> exposedRef = new AtomicReference<>();
+        // The scheduler may run the initial dispatch inline. Publish the
+        // bridge identity BEFORE admission so even its first upstream await
+        // participates in cycle detection and cancellation is never lost.
+        AtomicReference<TaskHandle<T>> trackedRef = new AtomicReference<>();
+        OresFuture<T> exposed = new OresFuture<>(() -> {
+            retirePipelineAwait(exposed, null);
+            TaskHandle<T> current = trackedRef.get();
+            if (current != null) current.cancel("pipeline cancelled");
+            OresFuture<?> currentOwned = ownedStage.getAndSet(null);
+            if (currentOwned != null) currentOwned.cancel(false);
+        });
+        AtomicReference<OresFuture<T>> exposedRef = new AtomicReference<>(exposed);
 
         TaskHandle<T> tracked = starter.start(new OresScheduler.Task<>() {
             private boolean started;
@@ -268,14 +279,13 @@ public final class TaskPipeline {
             }
         });
 
+        if (!trackedRef.compareAndSet(null, tracked)) {
+            throw new IllegalStateException("pipeline task handle bound twice");
+        }
+        // A cancellation from an inline dispatch can precede TaskHandle
+        // publication. Reconcile that request before observing settlement.
+        if (exposed.isCancelled()) tracked.cancel("pipeline cancelled");
         OresFuture<T> task = tracked.result();
-        OresFuture<T> exposed = new OresFuture<>(() -> {
-            retirePipelineAwait(exposedRef.get(), null);
-            tracked.cancel("pipeline cancelled");
-            OresFuture<?> currentOwned = ownedStage.getAndSet(null);
-            if (currentOwned != null) currentOwned.cancel(false);
-        });
-        exposedRef.set(exposed);
 
         AtomicReference<OresFuture.RuntimeWaiterRegistration<T>> subscription =
                 new AtomicReference<>();
