@@ -140,6 +140,38 @@ public class TaskOwnedMutexRetirementTest {
     }
 
     @Test
+    void exhaustedTrackedTaskLeaseQuotaRollsBackAsyncAcquisitionAdmission()
+            throws Exception {
+        var shared = OresMutex.shared(new int[] { 0 });
+        try (var scheduler = new OresScheduler(1)) {
+            TaskHandle<Integer> task = scheduler.startTracked(resume -> {
+                for (int i = 0; i < TaskOwnedLeases.MAX_LEASES_PER_TASK; i++) {
+                    TaskOwnedLeases.register(() -> { });
+                }
+                // The async path reserves a logical owner and two waiter
+                // quotas BEFORE it attempts lease registration. Both
+                // failures must unwind those reservations; the second
+                // attempt must not be mistaken for recursive acquisition.
+                for (int attempt = 0; attempt < 2; attempt++) {
+                    var rejected = assertThrows(IllegalStateException.class,
+                            shared::lockAsync);
+                    assertTrue(rejected.getMessage().contains("lease quota"),
+                            "admission must fail for quota, not stale mutex ownership");
+                }
+                return OresScheduler.done(7);
+            });
+            assertInstanceOf(TaskHandle.Success.class,
+                    task.getDone().get(5, TimeUnit.SECONDS));
+            assertTrue(task.cleanupFailures().get(3, TimeUnit.SECONDS).isEmpty());
+        }
+        // This also proves no physical permit was consumed by a failed
+        // registration on the tracked Task's scheduler carrier.
+        assertFalse(shared.isPoisoned());
+        var guard = shared.tryLock().orElseThrow();
+        guard.release();
+    }
+
+    @Test
     void onlyCompletedSuccessfulAsyncGrantsCountAsPublishedOwnership() {
         var waiting = new CompletableFuture<Object>();
         assertFalse(OresMutex.Shared.isPublishedAsyncGrant(null));
