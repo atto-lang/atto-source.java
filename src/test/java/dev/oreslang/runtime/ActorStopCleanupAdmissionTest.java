@@ -375,6 +375,7 @@ final class ActorStopCleanupAdmissionTest {
         // observer can block forever; it cannot hold up child STOP admission.
         CountDownLatch childAdmitted = new CountDownLatch(1);
         CountDownLatch releaseParentTurn = new CountDownLatch(1);
+        CountDownLatch parentTurnLeaving = new CountDownLatch(1);
         CountDownLatch drainSubscriberEntered = new CountDownLatch(1);
         CountDownLatch releaseDrainSubscriber = new CountDownLatch(1);
         AtomicReference<ActorRuntime.ActorRef<String>> childRef = new AtomicReference<>();
@@ -387,8 +388,12 @@ final class ActorStopCleanupAdmissionTest {
                         (childMessage, childContext) -> { });
                 childRef.set(child);
                 childAdmitted.countDown();
-                if (!releaseParentTurn.await(5, TimeUnit.SECONDS)) {
-                    throw new IllegalStateException("parent turn did not release");
+                try {
+                    if (!releaseParentTurn.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("parent turn did not release");
+                    }
+                } finally {
+                    parentTurnLeaving.countDown();
                 }
             });
             parent.send("hold");
@@ -420,9 +425,15 @@ final class ActorStopCleanupAdmissionTest {
                         "STOP must publish the failed drain");
                 assertTrue(childRef.get().awaitTermination(3, TimeUnit.SECONDS),
                         "child STOP must be requested before a drain observer blocks");
+                // Let the parent guest turn exit WHILE the drain callback
+                // is still blocked. The observer receipt alone must now be
+                // sufficient to prevent premature physical finalization.
+                releaseParentTurn.countDown();
+                assertTrue(parentTurnLeaving.await(3, TimeUnit.SECONDS));
                 assertFalse(parent.done().isDone(),
-                        "observer physical drain and parent active turn remain joined");
-                assertFalse(parent.awaitTermination(100, TimeUnit.MILLISECONDS));
+                        "drain notification receipt must outlive the parent guest turn");
+                assertFalse(parent.awaitTermination(150, TimeUnit.MILLISECONDS),
+                        "subscriber still holds a terminal-notification receipt");
             } finally {
                 releaseDrainSubscriber.countDown();
                 releaseParentTurn.countDown();
