@@ -4,7 +4,6 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.Objects;
-import java.util.function.BiConsumer;
 
 /**
  * Trusted CONTROL-only, SHARED-only logical ActorRef publication authority.
@@ -24,6 +23,51 @@ import java.util.function.BiConsumer;
  */
 final class ActorRoutePublicationV1<R> implements AutoCloseable {
     private static final int MAX_CHECKPOINT_BYTES = 1024 * 1024;
+
+    @FunctionalInterface
+    interface DispatchSubmit<R> {
+        void submit(
+                R physicalRoute,
+                LogicalActorProxyMailboxV1.Envelope envelope,
+                CompletionReceipt<R> completionReceipt);
+    }
+
+    /**
+     * Opaque same-process completion capability minted only for one accepted
+     * logical dispatch. Remote transports must bind this capability to their
+     * authenticated correlation/terminal receipt rather than reconstructing
+     * completion from a caller-supplied sequence number.
+     */
+    static final class CompletionReceipt<R> {
+        private final ActorRoutePublicationV1<R> owner;
+        private final long actorIdentity;
+        private final long incarnation;
+        private final long routeEpoch;
+        private final R physicalRoute;
+        private final long messageSequence;
+        private boolean consumed;
+
+        private CompletionReceipt(
+                ActorRoutePublicationV1<R> owner,
+                Published<R> publication,
+                long messageSequence) {
+            this.owner = owner;
+            this.actorIdentity = publication.actorIdentity();
+            this.incarnation = publication.incarnation();
+            this.routeEpoch = publication.routeEpoch();
+            this.physicalRoute = publication.physicalRoute();
+            this.messageSequence = messageSequence;
+        }
+
+        long actorIdentity() { return actorIdentity; }
+        long incarnation() { return incarnation; }
+        long routeEpoch() { return routeEpoch; }
+        long messageSequence() { return messageSequence; }
+
+        void complete() {
+            owner.complete(this);
+        }
+    }
 
     static final class StateSnapshot {
         private final String schemaSha256;
@@ -253,36 +297,73 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
 
     /**
      * Dispatch and physical send are one route admission critical section.
-     * The callback MUST be a trusted nonblocking transport submitter. Unknown
-     * delivery outcomes remain outstanding; never requeue an ambiguous send.
+     * The callback MUST be a trusted nonblocking transport submitter. It
+     * receives an opaque completion capability bound to this actor identity,
+     * incarnation, route epoch and message sequence. Unknown delivery outcomes
+     * remain outstanding; never requeue an ambiguous send.
+     *
+     * @return the completion capability, or null when DATA is frozen/empty.
      */
-    boolean dispatchNext(BiConsumer<R, LogicalActorProxyMailboxV1.Envelope> submit) {
+    CompletionReceipt<R> dispatchNext(DispatchSubmit<R> submit) {
         Objects.requireNonNull(submit, "trusted transport submit");
         synchronized (lock) {
             requireOperational();
-            if (pending != null) return false;
+            if (pending != null) return null;
             var envelope = mailbox.pollDispatch();
-            if (envelope == null) return false;
+            if (envelope == null) return null;
+
+            final CompletionReceipt<R> receipt;
             try {
-                submit.accept(active.physicalRoute(), envelope);
+                receipt = new CompletionReceipt<>(
+                        this, active, envelope.messageSequence());
+            } catch (RuntimeException | Error allocationFailure) {
+                // No physical submit was attempted, so this dispatch is
+                // provably unsent and may be restored without duplication.
+                try {
+                    mailbox.requeueProvenUnsent(envelope.messageSequence());
+                } catch (RuntimeException | Error rollbackFailure) {
+                    poisoned = true;
+                    if (allocationFailure != rollbackFailure)
+                        allocationFailure.addSuppressed(rollbackFailure);
+                }
+                throw allocationFailure;
+            }
+
+            try {
+                submit.submit(active.physicalRoute(), envelope, receipt);
             } catch (RuntimeException | Error unknownDelivery) {
                 // The physical transport may already have accepted the send.
                 // Never requeue, refund credits or publish over an ambiguous
-                // in-flight delivery without a trusted completion receipt.
+                // in-flight delivery without the matching completion receipt.
                 poisoned = true;
                 throw new IllegalStateException(
                         "ambiguous physical submit; logical DATA quarantined",
                         unknownDelivery);
             }
-            return true;
+            return receipt;
         }
     }
 
-    /** Only authenticated old-route completion receipts may invoke this. */
-    void complete(long messageSequence) {
+    private void complete(CompletionReceipt<R> receipt) {
         synchronized (lock) {
             requireOperational();
-            mailbox.complete(messageSequence);
+            if (receipt == null || receipt.owner != this || receipt.consumed)
+                throw new IllegalStateException(
+                        "stale, foreign or consumed logical completion receipt");
+
+            var publication = active;
+            if (receipt.actorIdentity != publication.actorIdentity()
+                    || receipt.incarnation != publication.incarnation()
+                    || receipt.routeEpoch != publication.routeEpoch()
+                    || receipt.physicalRoute != publication.physicalRoute()) {
+                throw new IllegalStateException(
+                        "logical completion receipt does not match authoritative route");
+            }
+
+            // Mark consumed only after mailbox completion succeeds, so an
+            // internal accounting failure remains retryable/fail-closed.
+            mailbox.complete(receipt.messageSequence);
+            receipt.consumed = true;
         }
     }
 
