@@ -284,6 +284,32 @@ class AsyncNativeIoTest {
         }
     }
 
+    @Test void resourceRegisteredAfterVerifiedRetirementRemainsCallerOwned()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        var firstClosed = new java.util.concurrent.atomic.AtomicInteger();
+        var lateClosed = new java.util.concurrent.atomic.AtomicInteger();
+        try {
+            io.register(firstClosed::incrementAndGet);
+            io.close();
+            assertEquals(1, firstClosed.get());
+            AutoCloseable callerOwned = lateClosed::incrementAndGet;
+            IllegalStateException rejection =
+                    assertThrows(IllegalStateException.class,
+                            () -> io.register(callerOwned));
+            assertTrue(rejection.getMessage().contains("caller retains resource ownership"),
+                    "fully retired context cannot silently assume ownership of a late handle");
+            io.close();
+            assertEquals(0, lateClosed.get(),
+                    "a rejected post-retirement transfer is owned by the caller");
+            callerOwned.close();
+            assertEquals(1, lateClosed.get(), "caller explicitly retires rejected handle");
+            assertEquals(1, firstClosed.get(), "former context resources close once");
+        } finally {
+            io.close();
+        }
+    }
+
     @Test void lateRegistrationDuringResourceCloseKeepsContextQuarantinedUntilRetry()
             throws Exception {
         var io = new AsyncNativeIo(1);
