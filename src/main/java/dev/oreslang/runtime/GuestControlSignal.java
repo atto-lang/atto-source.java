@@ -4,9 +4,14 @@ package dev.oreslang.runtime;
  * Guest-language exceptional control channels.
  *
  * <p>Throw is an ordinary guest error and may be handled by try/catch or
- * converted to TrapResult at a trap boundary. Raise and Panic are deliberate
- * non-trappable control signals; only a recover boundary may consume them.
- * Runtime-enforced cancellation and termination use separate runtime signals.
+ * converted to TrapResult at a trap boundary. Raise may be handled only
+ * by an eligible recovery boundary. Panic is never locally consumable and
+ * must escape to the applicable supervisor/termination boundary.
+ * Cancellation and forced termination use separate runtime signals.
+ *
+ * <p>These draft host constructors are not yet compiler-authenticated.
+ * They must be sealed behind trusted VM-issued provenance before exposing
+ * recover admission to untrusted guest or foreign callers.
  */
 public abstract sealed class GuestControlSignal extends RuntimeException
         permits GuestControlSignal.Throw, GuestControlSignal.Raise, GuestControlSignal.Panic {
