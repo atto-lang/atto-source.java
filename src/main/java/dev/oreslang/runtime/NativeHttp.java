@@ -81,6 +81,7 @@ public final class NativeHttp implements AutoCloseable {
         }
         private Worker[] workers;
         private volatile boolean poolDiscarded;
+        private boolean poolDrainRequested;
         NativeHttp ownerHttp() { return NativeHttp.this; }
         private int cursor;
         private long created, reused;
@@ -157,6 +158,34 @@ public final class NativeHttp implements AutoCloseable {
             synchronized (this) { poolDiscarded = true; }
             try { stopPool(); }
             finally { pools.remove(this); }
+        }
+
+        /**
+         * After all accepted exchanges drain, stop workers gracefully without
+         * destroying their actor memory or code image. Repeated calls are
+         * idempotent and never stop another configuration generation.
+         */
+        void requestGracefulPoolStop() {
+            supervisor();
+            final java.util.List<Worker> existing;
+            synchronized (this) {
+                if (workers == null) throw new IllegalStateException("handler is not pooled");
+                if (poolDrainRequested) return;
+                poolDrainRequested = true;
+                poolDiscarded = true;
+                existing = java.util.Arrays.stream(workers)
+                        .filter(Objects::nonNull).toList();
+            }
+            Throwable firstFailure = null;
+            for (Worker worker : existing) {
+                try { worker.actor.gracefulStop(); }
+                catch (RuntimeException | Error failure) {
+                    if (firstFailure == null) firstFailure = failure;
+                    else firstFailure.addSuppressed(failure);
+                }
+            }
+            if (firstFailure instanceof Error fatal) throw fatal;
+            if (firstFailure instanceof RuntimeException runtime) throw runtime;
         }
 
         /**
