@@ -157,6 +157,32 @@ final class SupervisorLifecycleFsmIntegrationTest {
     }
 
     @Test
+    void realSupervisorShutdownProducesCompleteReplayableControlTrace() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             var control = Executors.newSingleThreadExecutor()) {
+            var tree = new SupervisorShutdownTree(runtime, control, true);
+            var root = tree.setRoot("root", runtime.createActorGroup(),
+                    new SupervisorShutdownTree.Hooks() {});
+            var child = root.addChild("child", runtime.createActorGroup(),
+                    new SupervisorShutdownTree.Hooks() {});
+            var initial = tree.trace();
+            assertTrue(initial.complete());
+            assertEquals(0, initial.entries().size());
+            tree.shutdown(SupervisorShutdownTree.Reason.NORMAL).get(5, TimeUnit.SECONDS);
+            var recorded = tree.trace();
+            SupervisorLifecycleTrace.verifyComplete(recorded);
+            assertTrue(recorded.issued() >= 7, "hooks and actor barriers must be journaled");
+            assertEquals(0, recorded.dropped());
+            assertTrue(recorded.entries().stream()
+                    .anyMatch(e -> e.supervisorId() == root.supervisorId()));
+            assertTrue(recorded.entries().stream()
+                    .anyMatch(e -> e.supervisorId() == child.supervisorId()));
+            assertTrue(tree.status().allLogicallyStopped());
+            assertFalse(tree.status().allPhysicallyReclaimed());
+        }
+    }
+
+    @Test
     void snapshotShowsEveryNodeQuiescingThenLogicallyStoppedNotPhysicallyReclaimed()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime();
