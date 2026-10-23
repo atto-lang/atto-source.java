@@ -26,7 +26,7 @@ final class ActorPhysicalRetirementRegistry {
     }
 
     record Snapshot(
-            int pending, Map<Kind, Integer> byKind,
+            int pending, int inFlightNotifications, Map<Kind, Integer> byKind,
             boolean sealed, boolean retired, Throwable failure) {
         Snapshot {
             byKind = Map.copyOf(byKind);
@@ -55,16 +55,40 @@ final class ActorPhysicalRetirementRegistry {
          * cannot prove native callback or queued mutex handoff retirement.
          */
         boolean completeAfterPhysicalRelease() {
-            boolean changed;
             synchronized (lock) {
                 if (state != 0) return false;
                 if (!pending.remove(this)) {
                     throw new IllegalStateException("foreign physical receipt");
                 }
                 state = 1;
-                changed = true;
+                // A concurrently observed empty pending set is NOT a safe
+                // physical retirement receipt while this terminal callback
+                // can still be executing on an external driver thread.
+                inFlightNotifications++;
             }
-            if (changed) stateChanged.run(); // never inside registry monitor
+            Throwable failure = null;
+            try {
+                notifyOwner();
+            } catch (RuntimeException | Error callbackFailure) {
+                failure = callbackFailure;
+            } finally {
+                synchronized (lock) {
+                    inFlightNotifications--;
+                }
+                // Wake a STOP that observed the in-flight notification fence.
+                // This recheck runs only AFTER the physical driver has crossed
+                // back out of the first owner callback. Do not hold lock here.
+                try {
+                    notifyOwner();
+                } catch (RuntimeException | Error callbackFailure) {
+                    if (failure == null) failure = callbackFailure;
+                    else if (failure != callbackFailure) {
+                        failure.addSuppressed(callbackFailure);
+                    }
+                }
+            }
+            if (failure instanceof RuntimeException runtime) throw runtime;
+            if (failure instanceof Error fatal) throw fatal;
             return true;
         }
 
@@ -82,7 +106,7 @@ final class ActorPhysicalRetirementRegistry {
                 // Retain the ticket and the actor: there is no proof the
                 // underlying native/IO resource was actually reclaimed.
             }
-            stateChanged.run(); // supervisor may observe quarantine
+            notifyOwner(); // supervisor may observe quarantine
             return true;
         }
     }
@@ -94,6 +118,7 @@ final class ActorPhysicalRetirementRegistry {
     private final Set<Receipt> pending =
             Collections.newSetFromMap(new IdentityHashMap<>());
     private Throwable firstFailure;
+    private int inFlightNotifications;
     private boolean sealed;
     private boolean retired;
 
@@ -132,10 +157,26 @@ final class ActorPhysicalRetirementRegistry {
             }
         }
         if (quotaFailure != null) {
-            stateChanged.run();
+            notifyOwner();
             throw quotaFailure;
         }
         return result;
+    }
+
+    /**
+     * Retirement notifications are trusted host callbacks. A broken callback
+     * is not an arena-release receipt: fail closed and retain the actor.
+     */
+    private void notifyOwner() {
+        try {
+            stateChanged.run();
+        } catch (RuntimeException | Error failure) {
+            synchronized (lock) {
+                if (firstFailure == null) firstFailure = failure;
+                else if (firstFailure != failure) firstFailure.addSuppressed(failure);
+            }
+            throw failure;
+        }
     }
 
     /** No callbacks or guest work. Called atomically with actor logical STOP. */
@@ -152,7 +193,8 @@ final class ActorPhysicalRetirementRegistry {
                 counts.merge(receipt.kind(), 1, Integer::sum);
             }
             return new Snapshot(
-                    pending.size(), counts, sealed, retired, firstFailure);
+                    pending.size(), inFlightNotifications, counts,
+                    sealed, retired, firstFailure);
         }
     }
 
@@ -163,7 +205,8 @@ final class ActorPhysicalRetirementRegistry {
      */
     void retireVerified() {
         synchronized (lock) {
-            if (retired || firstFailure != null || !sealed || !pending.isEmpty()) {
+            if (retired || firstFailure != null || !sealed
+                    || !pending.isEmpty() || inFlightNotifications != 0) {
                 throw new IllegalStateException(
                         "cannot retire actor with outstanding/failed physical receipts");
             }
