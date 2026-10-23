@@ -4541,11 +4541,14 @@ public final class OresEvalRootNode extends RootNode {
                         || call.arguments().size() != 1) {
                     throw new IllegalStateException("checked Future stage shape changed");
                 }
-                Ast.FunctionDecl target = findFunction(name.name(), 1);
-                if (target == null) {
+                Ast.FunctionDecl target = Ast.CheckedPureFuturePipe.target(call);
+                if (target == null || !target.name().equals(name.name())
+                        || target.parameters().size() != 1) {
                     throw new IllegalStateException(
-                            "checked Future stage function is missing: " + name.name());
+                            "checked Future stage declaration proof is missing or incompatible");
                 }
+                // Invoke the exact AST declaration admitted by the type checker:
+                // no late name/arity lookup may substitute a different callable.
                 stages.add(value -> invoke(functionInvocation(target, List.of(value))));
             }
             OresScheduler scheduler = OresScheduler.current();
