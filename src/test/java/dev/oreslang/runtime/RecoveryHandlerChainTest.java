@@ -576,7 +576,8 @@ final class RecoveryHandlerChainTest {
                 1001);
         var invoked = new java.util.concurrent.atomic.AtomicInteger();
         var reloaded = RecoveryHandlerChain.<Integer>builder(
-                        TEST_EXECUTION, TEST_CODE_IMAGE + 1)
+                        TEST_EXECUTION,
+                        CodeImageIdentity.issue("recovery-test-reloaded", 18))
                 .onRaise((e, next) -> {
                     invoked.incrementAndGet();
                     next.resolve(55);
@@ -815,8 +816,9 @@ final class RecoveryHandlerChainTest {
                         ExecutionContext.task(7, 99), TEST_CODE_IMAGE)
                 .onThrow((e, next) -> next.resolve(8))
                 .freeze();
-        var foreignEpoch = RecoveryHandlerChain.<Integer>builder(
-                        TEST_EXECUTION, TEST_CODE_IMAGE + 1)
+        var foreignImage = RecoveryHandlerChain.<Integer>builder(
+                        TEST_EXECUTION,
+                        CodeImageIdentity.issue("recovery-test-foreign", 18))
                 .onThrow((e, next) -> next.resolve(9))
                 .freeze();
 
@@ -824,8 +826,8 @@ final class RecoveryHandlerChainTest {
                 () -> foreignExecution.dispatch(failure),
                 "completed envelope must fail before owner mismatch is reported");
         assertThrows(IllegalStateException.class,
-                () -> foreignEpoch.dispatch(failure),
-                "completed envelope must fail before epoch mismatch is reported");
+                () -> foreignImage.dispatch(failure),
+                "completed envelope must fail before code-image mismatch is reported");
     }
 
     @Test void handlerFailureSealsOriginalEnvelopeAgainstReuse() {
