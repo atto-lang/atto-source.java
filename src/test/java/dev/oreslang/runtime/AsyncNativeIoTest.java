@@ -154,6 +154,41 @@ class AsyncNativeIoTest {
         io.close();
     }
 
+    @Test void failingUncooperativeIoCannotPublishFailureBeforePhysicalExit()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var finalizerExited = new CountDownLatch(1);
+        var worker = io.submit("host-failure-after-close", () -> {
+            entered.countDown();
+            try {
+                while (release.getCount() != 0) {
+                    try {
+                        release.await(30, TimeUnit.MILLISECONDS);
+                    } catch (InterruptedException ignored) {
+                        // Some native calls cannot be interrupted.
+                    }
+                }
+                throw new IllegalStateException("host I/O failure");
+            } finally {
+                finalizerExited.countDown();
+            }
+        });
+        try {
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            io.close();
+            assertFalse(worker.isDone(),
+                    "logical context close cannot fabricate physical failure");
+        } finally {
+            release.countDown();
+        }
+        assertTrue(finalizerExited.await(3, TimeUnit.SECONDS));
+        ExecutionException settled = assertThrows(ExecutionException.class,
+                () -> worker.get(3, TimeUnit.SECONDS));
+        assertInstanceOf(IllegalStateException.class, settled.getCause());
+    }
+
     @Test void coreNumericLoggingDoesNotChangeIoFailuresOrLeakGuestExceptionText() throws Exception {
         CoreLog.configure(CoreLog.Level.OFF);
         CoreLog.configure(CoreLog.Level.WARN);
