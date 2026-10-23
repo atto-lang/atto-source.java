@@ -113,6 +113,59 @@ public final class TaskOwnedLockLedgerTest {
     }
 
     @Test
+    void blockedHostSubscribersCannotStarveUnrelatedMutexHandoffs()
+            throws Exception {
+        final int blocked = 4;
+        java.util.List<OresMutex.Shared<int[]>> mutexes = new java.util.ArrayList<>();
+        java.util.List<OresMutex.Guard<int[]>> originals = new java.util.ArrayList<>();
+        java.util.List<java.util.concurrent.CompletableFuture<OresMutex.Guard<int[]>>>
+                waiting = new java.util.ArrayList<>();
+        CountDownLatch allBlocked = new CountDownLatch(blocked);
+        CountDownLatch releaseCallbacks = new CountDownLatch(1);
+        try {
+            for (int i = 0; i < blocked; i++) {
+                var mutex = OresMutex.shared(new int[] {i});
+                mutexes.add(mutex);
+                originals.add(mutex.tryLock().orElseThrow());
+                var pending = mutex.lockAsync();
+                pending.whenComplete((guard, error) -> {
+                    allBlocked.countDown();
+                    try {
+                        if (!releaseCallbacks.await(3, TimeUnit.SECONDS))
+                            throw new IllegalStateException("callback release timed out");
+                    } catch (InterruptedException interruption) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(interruption);
+                    }
+                });
+                waiting.add(pending);
+            }
+            for (var original : originals) original.release();
+            assertTrue(allBlocked.await(3, TimeUnit.SECONDS),
+                    "notifier did not admit independent blocked callbacks");
+
+            var separate = OresMutex.shared(new int[] {99});
+            var first = separate.tryLock().orElseThrow();
+            var future = separate.lockAsync();
+            first.release();
+            // A fixed four-worker pool would strand this fifth handoff while
+            // all workers are running blocked non-Async host callbacks.
+            var grant = future.get(3, TimeUnit.SECONDS);
+            assertEquals(99, grant.value()[0]);
+            grant.release();
+        } finally {
+            releaseCallbacks.countDown();
+        }
+        for (var future : waiting) {
+            var guard = future.get(3, TimeUnit.SECONDS);
+            guard.release();
+        }
+        for (var mutex : mutexes) {
+            assertFalse(mutex.isPoisoned());
+        }
+    }
+
+    @Test
     void blockedHostFutureSubscriberDoesNotParkReleasingCarrierOrForgeTaskDone()
             throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
