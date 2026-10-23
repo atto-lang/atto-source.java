@@ -388,6 +388,58 @@ class AsyncNativeIoTest {
                 "uncertain resource close is not a physical-retirement proof");
     }
 
+    @Test void actualTcpSocketStopDefersFinalCloseUntilReadObserverExit()
+            throws Exception {
+        var executor = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>());
+        var io = new AsyncNativeIo(1, executor);
+        var callbackEntered = new CountDownLatch(1);
+        var allowCallbackExit = new CountDownLatch(1);
+        var workerEntered = new CountDownLatch(1);
+        try (var server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+             var socket = new Socket(InetAddress.getLoopbackAddress(),
+                     server.getLocalPort());
+             var peer = server.accept()) {
+            // Open the Java stream before the STOP/interrupt race.
+            var reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+            io.register(new NativeIo.SocketStopThenRelease(socket));
+            var read = io.submit("tcp-native-read", () -> {
+                workerEntered.countDown();
+                return reader.readLine();
+            });
+            read.whenCompleteRuntime((value, failure) -> {
+                callbackEntered.countDown();
+                while (allowCallbackExit.getCount() != 0) {
+                    try { allowCallbackExit.await(20, TimeUnit.MILLISECONDS); }
+                    catch (InterruptedException ignored) { /* retained callback loan */ }
+                }
+            });
+            try {
+                assertTrue(workerEntered.await(3, TimeUnit.SECONDS));
+                io.close();
+                assertTrue(callbackEntered.await(3, TimeUnit.SECONDS),
+                        "input half-close must unblock pending socket read");
+                assertTrue(socket.isInputShutdown(),
+                        "STOP requested stream cancellation");
+                assertFalse(socket.isClosed(),
+                        "final Socket.close is withheld through the callback loan");
+                assertFalse(io.physicalShutdown().isDone());
+            } finally {
+                allowCallbackExit.countDown();
+                if (!socket.isClosed()) socket.shutdownInput();
+            }
+            assertInstanceOf(IllegalStateException.class,
+                    assertThrows(ExecutionException.class,
+                            () -> read.get(3, TimeUnit.SECONDS)).getCause());
+            assertNull(io.physicalShutdown().get(3, TimeUnit.SECONDS));
+            assertTrue(socket.isClosed(),
+                    "socket final close follows tracked worker/callback exit");
+        } finally {
+            allowCallbackExit.countDown();
+            io.close();
+        }
+    }
+
     @Test void contextReclamationGateRequiresActualWorkerAndReceiptExit()
             throws Exception {
         var io = new AsyncNativeIo(1);
