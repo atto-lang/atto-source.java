@@ -74,6 +74,87 @@ public final class TaskOwnedLockLedgerTest {
     }
 
     @Test
+    void losingGrantAndFailureHandoffsWaitForCancellationSubscriberDrain()
+            throws Exception {
+        // Force the owner-death publication claim to win, then leave its
+        // synchronous host cancellation subscriber blocked. Both losing
+        // handoff paths must withhold physicalSettlement until it unwinds.
+        for (boolean granted : new boolean[] {false, true}) {
+            var constructor = OresMutex.GuardFuture.class.getDeclaredConstructor();
+            constructor.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            OresMutex.GuardFuture<int[]> future =
+                    (OresMutex.GuardFuture<int[]>) constructor.newInstance();
+            var field = OresMutex.GuardFuture.class.getDeclaredField(
+                    "publicationClaimed");
+            field.setAccessible(true);
+            assertTrue(((java.util.concurrent.atomic.AtomicBoolean)
+                    field.get(future)).compareAndSet(false, true));
+            CountDownLatch callbackEntered = new CountDownLatch(1);
+            CountDownLatch unblockCallback = new CountDownLatch(1);
+            AtomicReference<Throwable> notifierFailure = new AtomicReference<>();
+            future.whenComplete((value, failure) -> {
+                callbackEntered.countDown();
+                try {
+                    if (!unblockCallback.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("callback release timed out");
+                    }
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(error);
+                }
+            });
+            var completeCancellation =
+                    OresMutex.GuardFuture.class.getDeclaredMethod(
+                            "completeCancellationFromRuntime", boolean.class);
+            completeCancellation.setAccessible(true);
+            Thread cancellingNotifier = Thread.ofPlatform().start(() -> {
+                try {
+                    completeCancellation.invoke(future, false);
+                } catch (Throwable error) {
+                    notifierFailure.set(error);
+                }
+            });
+            try {
+                assertTrue(callbackEntered.await(5, TimeUnit.SECONDS));
+                assertTrue(future.isCancelled());
+                AtomicBoolean physicallySettled = new AtomicBoolean();
+                if (granted) {
+                    var mutex = OresMutex.shared(new int[] {9});
+                    var guard = mutex.tryLock().orElseThrow();
+                    var handoff = OresMutex.GuardFuture.class.getDeclaredMethod(
+                            "completeHandoffOnNotifier", OresMutex.Guard.class,
+                            Runnable.class, Runnable.class);
+                    handoff.setAccessible(true);
+                    handoff.invoke(future, guard, (Runnable) guard::release,
+                            (Runnable) () -> physicallySettled.set(true));
+                    assertTrue(guard.released(),
+                            "abandoned physical grant was not returned");
+                } else {
+                    var handoff = OresMutex.GuardFuture.class.getDeclaredMethod(
+                            "failHandoffOnNotifier", Throwable.class,
+                            Runnable.class);
+                    handoff.setAccessible(true);
+                    handoff.invoke(future,
+                            new IllegalStateException("claimed failure"),
+                            (Runnable) () -> physicallySettled.set(true));
+                }
+                assertFalse(physicallySettled.get(),
+                        "a losing handoff bypassed blocked cancellation callbacks");
+                unblockCallback.countDown();
+                cancellingNotifier.join(5000);
+                assertFalse(cancellingNotifier.isAlive());
+                assertNull(notifierFailure.get());
+                assertTrue(physicallySettled.get(),
+                        "handoff was not retired after cancellation subscribers drained");
+            } finally {
+                unblockCallback.countDown();
+                cancellingNotifier.join(5000);
+            }
+        }
+    }
+
+    @Test
     void taskDoneWaitsForCancelledQueuedWaiterSubscriberDrain() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             var mutex = OresMutex.shared(new int[] {8});
