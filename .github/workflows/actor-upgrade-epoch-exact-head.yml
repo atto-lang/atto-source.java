@@ -6,7 +6,14 @@ on:
       - '.github/workflows/actor-upgrade-epoch-exact-head.yml'
       - 'pom.xml'
       - 'src/main/java/dev/oreslang/runtime/ActorUpgradeEpochGate.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorUpgradePreflightV1.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorRoutePublicationV1.java'
+      - 'src/main/java/dev/oreslang/runtime/LogicalActorProxyMailboxV1.java'
       - 'src/test/java/dev/oreslang/runtime/ActorUpgradeEpochGateTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorUpgradePreflightCurrentMainTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorRoutePublicationV1Test.java'
+      - 'src/test/java/dev/oreslang/runtime/LogicalActorProxyMailboxV1Test.java'
+      - 'src/test/java/dev/oreslang/runtime/LogicalActorProxyUpgradeWatermarkTest.java'
   workflow_dispatch:
 
 permissions:
@@ -34,7 +41,7 @@ jobs:
           distribution: graalvm
           cache: maven
       - name: Run focused actor JUnit regression
-        run: mvn -B -ntp -Dtest=ActorUpgradeEpochGateTest -DfailIfNoTests=true test
+        run: mvn -B -ntp -Dtest=ActorUpgradeEpochGateTest,ActorUpgradePreflightCurrentMainTest,ActorRoutePublicationV1Test,LogicalActorProxyMailboxV1Test,LogicalActorProxyUpgradeWatermarkTest -DfailIfNoTests=true test
       - name: Record exact-tree JUnit receipt (not a Graal isolate proof)
         if: always()
         env:
