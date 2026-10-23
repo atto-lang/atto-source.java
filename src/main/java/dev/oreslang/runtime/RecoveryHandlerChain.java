@@ -234,12 +234,17 @@ final class RecoveryHandlerChain<T> {
                     // shutdown signals must not masquerade as ordinary
                     // handler errors. Retain both error identities.
                     if (untrustedOrTerminalGraph(callbackFailure)) {
+                        pendingFailure.markTerminated();
                         return new TerminalCallbackFailure<>(pendingFailure, callbackFailure);
                     }
                     if (untrustedOrTerminalGraph(failure)) {
                         return new Unhandled<>(pendingFailure);
                     }
+                    pendingFailure.markTerminated();
                     return new HandlerFailure<>(pendingFailure, callbackFailure);
+                } catch (Error callbackFatal) {
+                    pendingFailure.markTerminated();
+                    throw callbackFatal;
                 }
                 decision = cursor.state;
                 resolved = cursor.value;
@@ -256,7 +261,9 @@ final class RecoveryHandlerChain<T> {
                 return new Unhandled<>(pendingFailure);
             }
             if (decision == Cursor.OPEN) {
-                // Fail closed while preserving the pending original error.
+                // Fail closed while preserving the pending original error as
+                // diagnostic context, but do not leave it replayable.
+                pendingFailure.markTerminated();
                 return new HandlerFailure<>(pendingFailure,
                         new IllegalStateException("recovery handler must resolve or delegate"));
             }
