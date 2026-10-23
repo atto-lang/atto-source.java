@@ -41,16 +41,22 @@ final class ActorRoutePublicationV1Test {
             assertEquals(40, old.actorIdentity());
             authority.admit(new byte[] {1});
             List<String> delivered = new ArrayList<>();
-            assertTrue(authority.dispatchNext((route, envelope) ->
-                    delivered.add(route + ":" + envelope.messageSequence())));
+            var oldReceipt = authority.dispatchNext((route, envelope, receipt) ->
+                    delivered.add(route + ":" + envelope.messageSequence()));
+            assertNotNull(oldReceipt);
+            assertEquals(40L, oldReceipt.actorIdentity());
+            assertEquals(1L, oldReceipt.incarnation());
+            assertEquals(1L, oldReceipt.routeEpoch());
+            assertEquals(1L, oldReceipt.messageSequence());
             assertEquals(List.of("old-physical:1"), delivered);
 
             try (var stage = authority.stage(image('b'))) {
                 var queued = authority.admit(new byte[] {2});
                 assertEquals(2, queued.messageSequence());
                 assertFalse(stage.quiescent());
-                assertFalse(authority.dispatchNext((route, mail) -> fail("frozen")));
-                authority.complete(1);
+                assertNull(authority.dispatchNext(
+                        (route, mail, receipt) -> fail("frozen")));
+                oldReceipt.complete();
                 assertTrue(stage.quiescent());
                 var restored = state(9);
                 assertTrue(stage.publish(restored, "new-physical"));
@@ -70,10 +76,12 @@ final class ActorRoutePublicationV1Test {
                         ActorUpgradeEpochGate.LeaseKind.SUSPENDED_TASK)) {
                     assertTrue(next.taskAdmission().permits(newTask));
                 }
-                assertTrue(authority.dispatchNext((route, envelope) ->
-                        delivered.add(route + ":" + envelope.messageSequence())));
+                var newReceipt = authority.dispatchNext((route, envelope, receipt) ->
+                        delivered.add(route + ":" + envelope.messageSequence()));
+                assertNotNull(newReceipt);
+                assertEquals(2L, newReceipt.routeEpoch());
                 assertEquals(List.of("old-physical:1", "new-physical:2"), delivered);
-                authority.complete(2);
+                newReceipt.complete();
                 assertEquals(0, mailbox.snapshot().retainedMessages());
             }
         }
@@ -86,10 +94,11 @@ final class ActorRoutePublicationV1Test {
              var authority = newAuthority(gate, mailbox)) {
             var lease = gate.pin(ActorUpgradeEpochGate.LeaseKind.SUSPENDED_TASK);
             authority.admit(new byte[] {1});
-            assertTrue(authority.dispatchNext((r, e) -> {}));
+            var messageReceipt = authority.dispatchNext((r, e, receipt) -> {});
+            assertNotNull(messageReceipt);
             try (var stage = authority.stage(image('b'))) {
                 assertFalse(stage.publish(state(2), "candidate"));
-                authority.complete(1);
+                messageReceipt.complete();
                 assertFalse(stage.publish(state(2), "candidate"),
                         "Task remains pinned after the last old mail.done");
                 lease.close(); // actual system closes only on physical Task exit
@@ -115,13 +124,16 @@ final class ActorRoutePublicationV1Test {
             assertEquals(1, authority.current().routeEpoch());
             assertEquals(1, mailbox.snapshot().routeEpoch());
             List<Long> routed = new ArrayList<>();
-            assertTrue(authority.dispatchNext((r, e) -> {
+            var firstReceipt = authority.dispatchNext((r, e, receipt) -> {
                 assertEquals("old-physical", r);
                 routed.add(e.messageSequence());
-            }));
-            authority.complete(1);
-            assertTrue(authority.dispatchNext((r, e) -> routed.add(e.messageSequence())));
-            authority.complete(2);
+            });
+            assertNotNull(firstReceipt);
+            firstReceipt.complete();
+            var secondReceipt = authority.dispatchNext(
+                    (r, e, receipt) -> routed.add(e.messageSequence()));
+            assertNotNull(secondReceipt);
+            secondReceipt.complete();
             assertEquals(List.of(1L, 2L), routed);
             assertFalse(gate.frozen());
         }
@@ -180,7 +192,7 @@ final class ActorRoutePublicationV1Test {
             assertThrows(IllegalStateException.class, stage::close);
             assertThrows(IllegalStateException.class, authority::current);
             assertThrows(IllegalStateException.class,
-                    () -> authority.dispatchNext((r,e) -> fail("unsafe")));
+                    () -> authority.dispatchNext((r, e, receipt) -> fail("unsafe")));
             assertEquals(1, mailbox.snapshot().routeEpoch());
         }
     }
@@ -206,7 +218,7 @@ final class ActorRoutePublicationV1Test {
             authority.admit(new byte[] {1});
             var entered = new CountDownLatch(1);
             var release = new CountDownLatch(1);
-            var send = pool.submit(() -> authority.dispatchNext((route, msg) -> {
+            var send = pool.submit(() -> authority.dispatchNext((route, msg, receipt) -> {
                 assertEquals("old-physical", route);
                 entered.countDown();
                 try {
@@ -226,10 +238,11 @@ final class ActorRoutePublicationV1Test {
             } finally {
                 release.countDown();
             }
-            assertTrue(send.get(5, TimeUnit.SECONDS));
+            var inFlightReceipt = send.get(5, TimeUnit.SECONDS);
+            assertNotNull(inFlightReceipt);
             try (var stage = staging.get(5, TimeUnit.SECONDS)) {
                 assertFalse(stage.quiescent());
-                authority.complete(1);
+                inFlightReceipt.complete();
                 assertTrue(stage.publish(state(2), "replacement"));
                 assertEquals(2, authority.current().routeEpoch());
             }
@@ -305,11 +318,12 @@ final class ActorRoutePublicationV1Test {
             assertEquals(1L, authority.current().routeEpoch());
             assertEquals(1, mailbox.snapshot().retainedMessages());
 
-            assertTrue(authority.dispatchNext((route, envelope) -> {
+            var retainedReceipt = authority.dispatchNext((route, envelope, receipt) -> {
                 assertEquals("old-physical", route);
                 assertEquals(1L, envelope.messageSequence());
-            }));
-            authority.complete(1L);
+            });
+            assertNotNull(retainedReceipt);
+            retainedReceipt.complete();
             assertEquals(0, mailbox.snapshot().retainedMessages());
 
             try (var valid = authority.stage(image('c'))) {
@@ -318,6 +332,24 @@ final class ActorRoutePublicationV1Test {
             }
             assertEquals(image('c'), authority.current().image());
             assertEquals(2L, authority.current().routeEpoch());
+        }
+    }
+
+    @Test
+    void completionReceiptIsSingleUseAndCannotBeReplayedAfterCompletion() {
+        try (var gate = new ActorUpgradeEpochGate(51, image('a'));
+             var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128);
+             var authority = newAuthority(gate, mailbox)) {
+            authority.admit(new byte[] {1});
+            var receipt = authority.dispatchNext((route, envelope, completion) -> {
+                assertEquals("old-physical", route);
+                assertEquals(1L, completion.messageSequence());
+            });
+            assertNotNull(receipt);
+            receipt.complete();
+            assertThrows(IllegalStateException.class, receipt::complete);
+            assertEquals(1L, mailbox.snapshot().completionWatermark());
+            assertEquals(0, mailbox.snapshot().retainedMessages());
         }
     }
 
