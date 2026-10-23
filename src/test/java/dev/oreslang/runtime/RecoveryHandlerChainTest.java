@@ -674,6 +674,24 @@ final class RecoveryHandlerChainTest {
                 "retirement must seal the old failure capability after rejection");
     }
 
+    @Test void codeImageIdentityHasNoPublicMintOrWireSurface() throws Exception {
+        assertFalse(java.lang.reflect.Modifier.isPublic(
+                CodeImageIdentity.class.getModifiers()));
+        assertFalse(java.io.Serializable.class.isAssignableFrom(
+                CodeImageIdentity.class));
+        assertTrue(java.util.Arrays.stream(
+                        CodeImageIdentity.class.getDeclaredConstructors())
+                .allMatch(constructor ->
+                        java.lang.reflect.Modifier.isPrivate(
+                                constructor.getModifiers())));
+
+        var issue = CodeImageIdentity.class.getDeclaredMethod(
+                "issue", String.class, long.class);
+        var revoke = CodeImageIdentity.class.getDeclaredMethod("revoke");
+        assertFalse(java.lang.reflect.Modifier.isPublic(issue.getModifiers()));
+        assertFalse(java.lang.reflect.Modifier.isPublic(revoke.getModifiers()));
+    }
+
     @Test void recoveryOutcomeRetainsExactAuthenticatedEnvelope() {
         Throwable original = new Exception("pending");
         GuestFailure failure = signal(RecoveryHandlerChain.FailureKind.THROW, original);
