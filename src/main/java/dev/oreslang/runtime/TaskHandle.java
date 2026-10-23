@@ -115,6 +115,11 @@ public final class TaskHandle<T> {
     // with package access must not cancel/complete it to forge quiescence.
     private final java.util.concurrent.CompletionStage<Void> doneCallbacksReceipt =
             doneCallbacksDrained.minimalCompletionStage();
+    private final java.util.concurrent.CompletableFuture<Void> sourceCallbacksDrained =
+            new java.util.concurrent.CompletableFuture<>();
+    private final java.util.concurrent.CompletionStage<Void> terminalCallbacksReceipt =
+            java.util.concurrent.CompletableFuture.allOf(
+                    doneCallbacksDrained, sourceCallbacksDrained).minimalCompletionStage();
     // Observation only: cancelling getDone() must never forge a quiescence
     // witness or suppress the scheduler's eventual terminal outcome.
     private final OresFuture<TaskOutcome<T>> done =
@@ -181,6 +186,11 @@ public final class TaskHandle<T> {
      */
     java.util.concurrent.CompletionStage<Void> doneCallbacksDrained() {
         return doneCallbacksReceipt;
+    }
+
+    /** Both source-result and Task-DONE subscribers have drained. */
+    java.util.concurrent.CompletionStage<Void> terminalCallbacksDrained() {
+        return terminalCallbacksReceipt;
     }
 
     /**
@@ -371,7 +381,8 @@ public final class TaskHandle<T> {
         try {
             source = scheduler.start(
                     resume -> handle.resumeAtCancellationBoundary(resume, task),
-                    handle::onQuiescent);
+                    handle::onQuiescent,
+                    () -> handle.sourceCallbacksDrained.complete(null));
         } catch (RuntimeException | Error failure) {
             handle.revoker.close();
             handle.cancellation.cancel("admission rejected");
@@ -414,7 +425,15 @@ public final class TaskHandle<T> {
                             extraOnQuiescent.run();
                         }
                     },
-                    remainingNanos, deadlineFailure, onNotificationDrained);
+                    remainingNanos, deadlineFailure, () -> {
+                        try {
+                            onNotificationDrained.run();
+                            handle.sourceCallbacksDrained.complete(null);
+                        } catch (RuntimeException | Error failure) {
+                            handle.sourceCallbacksDrained.completeExceptionally(failure);
+                            throw failure;
+                        }
+                    });
         } catch (RuntimeException | Error failure) {
             handle.revoker.close();
             handle.cancellation.cancel("admission rejected");
