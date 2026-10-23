@@ -63,10 +63,10 @@ final class TransparentTypeAliasTest {
         rejected("""
                 type Entry<A, B> = record { key: A, value: B };
                 define type alias Pair<A, B> as Entry<A, B>;
-                fnc bad(Pair<int, string> pair): int {
+                fnc bad(Pair<string, int> pair): int {
                     return pair[0];
                 }
-                """, "indexing requires");
+                """, "record/struct field key has type INT but expected STRING");
     }
 
     @Test
