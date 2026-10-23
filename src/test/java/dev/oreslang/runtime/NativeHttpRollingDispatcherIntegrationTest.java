@@ -110,9 +110,10 @@ final class NativeHttpRollingDispatcherIntegrationTest {
             var server = http.listen("127.0.0.1", 0, 16, 1024, 10_000);
             int port = server.port();
 
+            CompletableFuture<HttpResponse<String>> previous = null;
             try (var rolling = new NativeHttpRollingDispatcher(server, 4451L, g1, 3)) {
                 rolling.start();
-                CompletableFuture<HttpResponse<String>> previous =
+                previous =
                         client.sendAsync(request(port), HttpResponse.BodyHandlers.ofString());
                 assertTrue(g1Code.entered.await(8, TimeUnit.SECONDS),
                         "actual G1 worker must claim HTTP exchange before publication");
@@ -160,15 +161,12 @@ final class NativeHttpRollingDispatcherIntegrationTest {
                         HttpResponse.BodyHandlers.ofString()).body());
                 assertNull(rolling.failure(), "listener must survive successful reload");
             } finally {
-                if (g1Code.actor.get() != null && previousNeedsRelease(g1Code))
-                    g1Code.actor.get().send("RELEASE_G1");
+                if (previous != null && !previous.isDone() && g1Code.actor.get() != null) {
+                    try { g1Code.actor.get().send("RELEASE_G1"); }
+                    catch (RuntimeException ignored) { /* old request already cancelled */ }
+                }
             }
         }
-    }
-
-    /** Whether the deliberately deferred first G1 exchange is still held. */
-    private static boolean previousNeedsRelease(VersionCode code) {
-        return code.entered.getCount() == 0;
     }
 
     @Test
