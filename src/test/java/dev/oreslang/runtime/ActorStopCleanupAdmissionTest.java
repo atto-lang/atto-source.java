@@ -428,6 +428,68 @@ final class ActorStopCleanupAdmissionTest {
     }
 
     @Test
+    void actorStopRetainsOwnedFutureAcrossOtherBlockedTerminalSubscribers()
+            throws Exception {
+        CountDownLatch admitted = new CountDownLatch(1);
+        CountDownLatch subscriberEntered = new CountDownLatch(1);
+        CountDownLatch releaseSubscriber = new CountDownLatch(1);
+        AtomicReference<OresFuture<Void>> ownedOperation = new AtomicReference<>();
+        AtomicReference<Throwable> foreignFailure = new AtomicReference<>();
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                OresFuture<Void> future = new OresFuture<>();
+                context.runtime().ownCurrentActorFuture(future);
+                // Install AFTER actor ownership. Previously that first
+                // ownership waiter removed the Future before this subscriber
+                // finished, allowing STOP to miss this in-flight callback.
+                future.whenCompleteRuntime((ignored, failure) -> {
+                    subscriberEntered.countDown();
+                    try {
+                        if (!releaseSubscriber.await(5, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("terminal subscriber held too long");
+                        }
+                    } catch (InterruptedException interruption) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(interruption);
+                    }
+                });
+                ownedOperation.set(future);
+                admitted.countDown();
+            });
+            actor.send("own");
+            assertTrue(admitted.await(3, TimeUnit.SECONDS));
+            Thread settling = Thread.ofVirtual().start(() -> {
+                try {
+                    ownedOperation.get().cancel(false);
+                } catch (Throwable failure) {
+                    foreignFailure.set(failure);
+                }
+            });
+            try {
+                assertTrue(subscriberEntered.await(3, TimeUnit.SECONDS),
+                        "a foreign producer is physically inside terminal delivery");
+                assertTrue(ownedOperation.get().isCancelled());
+                assertTrue(actor.cancel());
+                assertFalse(actor.done().isDone(),
+                        "the first terminal subscriber cannot release actor ownership");
+                assertFalse(actor.awaitTermination(100, TimeUnit.MILLISECONDS),
+                        "actor arena may still be reachable from a later subscriber");
+            } finally {
+                releaseSubscriber.countDown();
+            }
+            settling.join(TimeUnit.SECONDS.toMillis(3));
+            assertFalse(settling.isAlive());
+            assertNull(foreignFailure.get(), () -> String.valueOf(foreignFailure.get()));
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS),
+                    "owner receipt must release the arena after every subscriber drains");
+            assertInstanceOf(ActorRuntime.ActorCancelledException.class,
+                    assertThrows(ExecutionException.class,
+                            () -> actor.done().get(3, TimeUnit.SECONDS)).getCause());
+        }
+    }
+
+    @Test
     void actorStopJoinsCancellationAlreadyWinningOnAnotherThread()
             throws Exception {
         CountDownLatch admitted = new CountDownLatch(1);
