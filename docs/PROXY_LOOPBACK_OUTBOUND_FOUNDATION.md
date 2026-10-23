@@ -120,3 +120,11 @@ Local focused JDK21 validation of the worker-first algorithm: a behavior-equival
 `ProxyBodyCopyCheck` also now explicitly waits for acquisition to start before testing pending-HTTP cancellation; an independent staged-worker test verifies cancellation *before* acquisition starts, avoiding timing-dependent assertions.
 
 **Still required:** executable source-repository Maven/JUnit and actual Oreslang guest code proving cancellation/await/backpressure against a real socket, a bounded deadline/abort mechanism for a physically blocked downstream writer, and reviewed external DNS/IP/TLS/CONNECT networking. Worker cancellation never falsely retires a physically blocked stream. Private cross-organization source mirroring remains unauthorized without the independently approved destination and carrier contract from #1501.
+
+## Exact-source JDK21 worker-first verification and CI gate
+
+A subsequent local check reconstructed **the exact committed `ProxyBodyCopy.java` Git blob** (`fc52afc277a03b04499ac644f544e82e91a10d8d`) and compiled it using `javac --release 21`. An independent, deterministic host-only harness passed **ten successive runs of 200 cancellation/physical-close interleavings (2,000 total)**, plus worker-rejection-before-acquisition, cancellation-before-dispatch (no network start), cancellation-after-acquisition, and close-before-success. The only compiler diagnostic was a deprecation/removal warning for `ThreadDeath` handling. The focused harness verifies the exact helper source, not the complete Java runtime or Gradle/Maven integration.
+
+`ProxyActorOwnedFutureTest` verifies use of the existing `ActorRuntime.ownCurrentActorFuture` ownership hook with two actors and independent `OresFuture.from(CompletionStage)` adapters. The source workflow now includes this test in the JDK 25 Maven gate.
+
+**CI remains unexecuted:** at PR head `c63b38cd600005e3d3c3cd44200465bae0f9ad62`, Actions run `40003784169` marked both `java21-loopback` and `jdk25-context-gate` as failed with zero steps executed. This is not evidence of exhausted billed minutes, nor a compiler/test outcome. No private code was copied to an unapproved CI organization.
