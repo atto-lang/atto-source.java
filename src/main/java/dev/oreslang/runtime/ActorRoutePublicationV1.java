@@ -4,6 +4,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Trusted CONTROL-only, SHARED-only logical ActorRef publication authority.
@@ -222,6 +223,8 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
     private final LogicalActorProxyMailboxV1 mailbox;
     private volatile Published<R> active;
     private Stage pending;
+    private final AtomicReference<Throwable> asynchronousQuarantine =
+            new AtomicReference<>();
     private boolean poisoned;
     private Throwable poisonCause;
     private boolean closed;
@@ -368,15 +371,20 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
         }
     }
 
+    /**
+     * One-way fail-closed fence safe to invoke from a physical completion
+     * thread, including an actor carrier. It deliberately acquires no route,
+     * mailbox or generation monitor. All later CONTROL/DATA entry points
+     * observe the atomic fence before touching mutable publication state.
+     */
     void quarantine(Throwable failure) {
-        Objects.requireNonNull(failure, "quarantine failure");
-        synchronized (lock) {
-            if (poisonCause == null) poisonCause = failure;
-            poisoned = true;
-        }
+        asynchronousQuarantine.compareAndSet(
+                null, Objects.requireNonNull(failure, "quarantine failure"));
     }
 
     Throwable quarantineCause() {
+        Throwable asynchronous = asynchronousQuarantine.get();
+        if (asynchronous != null) return asynchronous;
         synchronized (lock) {
             return poisonCause;
         }
@@ -389,6 +397,11 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
     }
 
     private void requireOperational() {
+        Throwable asynchronous = asynchronousQuarantine.get();
+        if (asynchronous != null)
+            throw new IllegalStateException(
+                    "logical actor authority asynchronously quarantined",
+                    asynchronous);
         if (closed)
             throw new IllegalStateException("logical actor authority closed");
         if (poisoned)
