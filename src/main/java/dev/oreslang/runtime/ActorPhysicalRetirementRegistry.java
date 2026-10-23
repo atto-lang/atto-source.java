@@ -164,11 +164,15 @@ final class ActorPhysicalRetirementRegistry {
         Thread submitter = Thread.currentThread();
         java.util.concurrent.atomic.AtomicBoolean executingDispatch =
                 new java.util.concurrent.atomic.AtomicBoolean(true);
+        java.util.concurrent.atomic.AtomicBoolean ranInline =
+                new java.util.concurrent.atomic.AtomicBoolean();
         try {
             postDrainExecutor.execute(() -> {
                 // Direct/caller-runs execution would deadlock on its own
-                // approval gate; reject it explicitly, fail closed.
+                // approval gate. Remember this protocol violation even if a
+                // broken executor swallows the Runnable's exception.
                 if (Thread.currentThread() == submitter && executingDispatch.get()) {
+                    ranInline.set(true);
                     throw new IllegalStateException(
                             "physical retirement wake requires asynchronous host dispatch");
                 }
@@ -181,6 +185,10 @@ final class ActorPhysicalRetirementRegistry {
                 }
             });
             executingDispatch.set(false);
+            if (ranInline.get()) {
+                throw new IllegalStateException(
+                        "physical retirement wake requires asynchronous host dispatch");
+            }
             allowed.complete(true);
         } catch (RuntimeException | Error failure) {
             executingDispatch.set(false);
