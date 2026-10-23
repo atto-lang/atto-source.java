@@ -173,6 +173,15 @@ public final class ActorRuntime implements AutoCloseable {
      * <p>Use identity comparison, not equals(): ActorExecutionContext is a
      * record whose value equality is intentionally not a lease identity.</p>
      */
+    /** Trusted internal lookup: a direct actor turn owns an actor-scoped
+     * fallback ledger if it does not run in a separately tracked Task. */
+    static TaskOwnedLockLedger currentActorLockLedger() {
+        ActorExecutionContext context = CURRENT_ACTOR_EXECUTION.get();
+        if (context == null) return null;
+        ActorCell<?> cell = context.runtime().currentActor.get();
+        return cell == null ? null : cell.actorLocks;
+    }
+
     static Object currentMutexExecutionSegment() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
         return current == null ? Thread.currentThread() : current;
@@ -7033,6 +7042,13 @@ public final class ActorRuntime implements AutoCloseable {
          * runnable can never consume a newer scheduled=false->true claim. */
         private Object scheduledDispatchToken;
         private final AtomicBoolean stopped = new AtomicBoolean();
+        /** Actor-owned permits for direct actor turns. Tracked Tasks maintain
+         * their own ledgers; actor STOP waits for every remaining actor permit
+         * to revoke after the last physical carrier has exited. */
+        private final TaskOwnedLockLedger actorLocks = new TaskOwnedLockLedger();
+        /** One asynchronous terminal retirement claim; guarded by lifecycleLock. */
+        private boolean finalizationStarted;
+        private volatile Throwable finalizationFailure;
         /** Set under lifecycleLock by gracefulStop; no further user admissions. */
         private boolean sealing;
         // Lifetime-affine structured owner: never transferred before physical
@@ -7364,64 +7380,108 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        /**
+         * Claim terminal retirement under lifecycleLock; external hooks,
+         * scheduler shutdown, permit revocation, and Future observers run
+         * outside the monitor on a bounded-by-actor-count host finalizer.
+         * Repeated STOP, cancelled dispatch, and child completion are idempotent.
+         */
         private void finalizeStopLocked() {
-            // External termination is not observable until the dispatcher has
-            // fully crossed back out of the TurnExecutor boundary. For
-            // Truffle-backed runtimes that boundary owns context enter/leave.
-            if (finalized
-                    || activeTurns != 0
-                    || scheduled.get()
-                    || carrierActive
-                    || !children.isEmpty()) return;
-            finalized = true;
-            OresScheduler scheduler = sourceScheduler;
-            sourceScheduler = null;
-            if (scheduler != null) {
-                try {
-                    scheduler.close();
-                } catch (RuntimeException ignored) {
-                    // Actor teardown remains authoritative; source scheduler
-                    // cancellation is best-effort after the actor has finalized.
-                }
+            if (finalized || finalizationStarted
+                    || activeTurns != 0 || scheduled.get()
+                    || carrierActive || !children.isEmpty()) return;
+            finalizationStarted = true;
+            Thread.ofVirtual()
+                    .name("ores-actor-lock-retirement-" + ref.id())
+                    .start(this::retireStopOutsideMonitor);
+        }
+
+        private void retireStopOutsideMonitor() {
+            if (Thread.holdsLock(lifecycleLock)) {
+                quarantineStopRetirement(new IllegalStateException(
+                        "actor terminal cleanup invoked under lifecycle monitor"));
+                return;
             }
-            drainMailboxReservations();
-            staticSelectCursors.clear();
-            codeActorState = null;
-            Throwable terminalOutput = ref.terminationCause.get();
-            outputStream.close(terminalOutput);
-            for (ActorShardLease lease : List.copyOf(shardLeases)) {
-                lease.revokeFromActorStop();
-            }
-            shardLeases.clear();
-            for (ActorShardSnapshotLease snapshot : List.copyOf(shardSnapshotLeases)) {
-                snapshot.revokeFromActorStop();
-            }
-            shardSnapshotLeases.clear();
-            if (memorySlice != null) memorySlice.close();
             try {
+                // Source Task cancellation and physical scheduler quiescence
+                // must finish before a direct actor lock may be revoked.
+                OresScheduler scheduler;
+                synchronized (lifecycleLock) {
+                    scheduler = sourceScheduler;
+                    sourceScheduler = null;
+                }
+                if (scheduler != null) scheduler.close();
+                // Never park a carrier on a claimed mutex handoff. Its private
+                // receipt, not public GuardFuture.isDone(), gates actor DONE.
+                actorLocks.retireAfterQuiescence().whenComplete((ignored, failure) ->
+                        Thread.ofVirtual()
+                                .name("ores-actor-lock-settled-" + ref.id())
+                                .start(() -> {
+                                    if (failure == null) finishStopOutsideMonitor();
+                                    else quarantineStopRetirement(failure);
+                                }));
+            } catch (Throwable failure) {
+                quarantineStopRetirement(failure);
+            }
+        }
+
+        private void quarantineStopRetirement(Throwable failure) {
+            // Retain the actor in its registry with heap/arenas still alive.
+            // Never turn a failed cleanup receipt into successful DONE.
+            finalizationFailure = Objects.requireNonNull(failure);
+            ref.terminationCause.compareAndSet(null, failure);
+            synchronized (lifecycleLock) {
+                lifecycleLock.notifyAll();
+            }
+        }
+
+        private void finishStopOutsideMonitor() {
+            if (Thread.holdsLock(lifecycleLock)) {
+                quarantineStopRetirement(new IllegalStateException(
+                        "actor finalization attempted under lifecycle monitor"));
+                return;
+            }
+            try {
+                // Cleanup/hook and observer operations must not execute under
+                // lifecycleLock or while guest code holds an actor turn.
+                drainMailboxReservations();
+                staticSelectCursors.clear();
+                Throwable terminalOutput = ref.terminationCause.get();
+                outputStream.close(terminalOutput);
+                for (ActorShardLease lease : List.copyOf(shardLeases)) {
+                    lease.revokeFromActorStop();
+                }
+                shardLeases.clear();
+                for (ActorShardSnapshotLease snapshot : List.copyOf(shardSnapshotLeases)) {
+                    snapshot.revokeFromActorStop();
+                }
+                shardSnapshotLeases.clear();
+
+                // Actor exit hooks can be external/native cleanup providers.
+                // A failure must quarantine the backing memory rather than
+                // releasing an arena that may still contain live loans.
                 actorExitHook.accept(executionDomain);
-            } catch (VirtualMachineError | ThreadDeath fatal) {
-                throw fatal;
-            } catch (Throwable ignored) {
-                // Actor termination must still complete. Runtime cleanup hooks
-                // are best-effort and retryable by the process collector.
+                if (memorySlice != null) memorySlice.close();
+                codeActorState = null;
+                unregisterActor(this);
+                if (parent != null) parent.childFinalized(this);
+                synchronized (lifecycleLock) {
+                    finalized = true;
+                    lifecycleLock.notifyAll();
+                }
+                Throwable terminal = ref.terminationCause.get();
+                if (!ref.readyFuture.isDone()) {
+                    ref.readyFuture.failFromRuntime(
+                            terminal == null
+                                    ? new ActorTerminatedException(ref.id(), kind, null)
+                                    : terminal);
+                }
+                if (terminal == null) ref.doneFuture.completeFromRuntime(null);
+                else ref.doneFuture.failFromRuntime(terminal);
+                finalizedFuture.completeFromRuntime(null);
+            } catch (Throwable failure) {
+                quarantineStopRetirement(failure);
             }
-            unregisterActor(this);
-            if (parent != null) parent.childFinalized(this);
-            Throwable terminal = ref.terminationCause.get();
-            if (!ref.readyFuture.isDone()) {
-                // Preserve the initializer failure as the direct cause of
-                // readiness rejection. Only a graceful stop-before-ready has
-                // no underlying failure and needs a synthesized marker.
-                ref.readyFuture.failFromRuntime(
-                        terminal == null
-                                ? new ActorTerminatedException(ref.id(), kind, null)
-                                : terminal);
-            }
-            if (terminal == null) ref.doneFuture.completeFromRuntime(null);
-            else ref.doneFuture.failFromRuntime(terminal);
-            finalizedFuture.completeFromRuntime(null);
-            lifecycleLock.notifyAll();
         }
 
         private void childFinalized(ActorCell<?> child) {
@@ -7981,6 +8041,9 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 stopped.set(true);
                 sealing = true;
+                // Fencing is safe under lifecycleLock: it only updates trusted
+                // ledger metadata and NEVER executes revokers or subscribers.
+                actorLocks.fence();
                 // Detach pending observers under the actor monitor. Settling an
                 // OresFuture invokes runtime callbacks inline, so never settle
                 // one while holding lifecycleLock.
