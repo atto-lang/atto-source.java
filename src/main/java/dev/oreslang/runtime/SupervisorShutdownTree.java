@@ -115,7 +115,12 @@ public final class SupervisorShutdownTree {
 
     /** Coherent tree snapshot. Logical stop never implies physical reclamation. */
     public record NodeStatus(
-            long id, Long parentId, String name, SupervisorLifecycleFsm.State lifecycle) {}
+            long id, Long parentId, String name, SupervisorLifecycleFsm.State lifecycle,
+            Map<Long, Long> frozenChildEpochs) {
+        public NodeStatus {
+            frozenChildEpochs = Map.copyOf(frozenChildEpochs);
+        }
+    }
     public record TreeStatus(
             List<NodeStatus> nodes,
             boolean allLogicallyStopped,
@@ -126,7 +131,8 @@ public final class SupervisorShutdownTree {
     }
 
     private static void statuses(Supervisor node, Long parentId, List<NodeStatus> out) {
-        out.add(new NodeStatus(node.supervisorId, parentId, node.name, node.lifecycle.get()));
+        out.add(new NodeStatus(node.supervisorId, parentId, node.name,
+                node.lifecycle.get(), node.frozenChildEpochs.expectedEpochs()));
         for (Supervisor child : node.children) statuses(child, node.supervisorId, out);
     }
 
