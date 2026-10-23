@@ -64,6 +64,132 @@ final class ActorPhysicalRetirementRegistryTest {
         }
     }
 
+    @Test void actorOwnedNativeIoBlocksDoneThroughWorkerAndTerminalSubscriberExit()
+            throws Exception {
+        var entered = new CountDownLatch(1);
+        var letWorkerExit = new CountDownLatch(1);
+        var subscriberEntered = new CountDownLatch(1);
+        var letSubscriberExit = new CountDownLatch(1);
+        var admitted = new CountDownLatch(1);
+        var operationRef = new AtomicReference<OresFuture<Integer>>();
+        try (var io = new AsyncNativeIo(1); var runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                var operation = io.submitCurrentActor(context.runtime(), "owned-physical-io", () -> {
+                    entered.countDown();
+                    while (letWorkerExit.getCount() != 0) {
+                        try { letWorkerExit.await(20, TimeUnit.MILLISECONDS); }
+                        catch (InterruptedException ignored) { /* uninterruptible native loan */ }
+                    }
+                    return 42;
+                });
+                operation.whenCompleteRuntime((value, failure) -> {
+                    subscriberEntered.countDown();
+                    while (letSubscriberExit.getCount() != 0) {
+                        try { letSubscriberExit.await(20, TimeUnit.MILLISECONDS); }
+                        catch (InterruptedException ignored) { /* retained native notifier */ }
+                    }
+                });
+                operationRef.set(operation);
+                admitted.countDown();
+            });
+            try {
+                actor.send("begin");
+                assertTrue(admitted.await(3, TimeUnit.SECONDS));
+                assertTrue(entered.await(3, TimeUnit.SECONDS));
+                assertEquals(Integer.valueOf(1), actor.pendingPhysicalRetirementsByKind()
+                        .get("NATIVE_IO_OPERATION"));
+                assertTrue(actor.cancel());
+                assertFalse(actor.done().isDone(),
+                        "STOP must not release an actor arena while its worker owns a loan");
+                io.close();
+                assertFalse(operationRef.get().isDone());
+                letWorkerExit.countDown();
+                assertTrue(subscriberEntered.await(3, TimeUnit.SECONDS));
+                assertFalse(actor.done().isDone(),
+                        "visible terminal Future must not bypass blocked native subscriber");
+                assertEquals(Integer.valueOf(1), actor.pendingPhysicalRetirementsByKind()
+                        .get("NATIVE_IO_OPERATION"));
+            } finally {
+                letWorkerExit.countDown();
+                letSubscriberExit.countDown();
+                io.close();
+            }
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(0, actor.pendingPhysicalRetirementsByKind().size());
+            assertTrue(actor.physicalRetirementFailure().isEmpty());
+            assertNull(io.physicalShutdown().get(3, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test void queuedNeverStartedNativeIoReleasesOnlyItsOwnActorTicket()
+            throws Exception {
+        var executor = new java.util.concurrent.ThreadPoolExecutor(1, 1, 0L,
+                TimeUnit.MILLISECONDS, new java.util.concurrent.LinkedBlockingQueue<>());
+        var firstEntered = new CountDownLatch(1);
+        var releaseFirst = new CountDownLatch(1);
+        var bothAdmitted = new CountDownLatch(1);
+        var neverExecuted = new AtomicInteger();
+        try (var io = new AsyncNativeIo(2, executor); var runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                io.submitCurrentActor(context.runtime(), "running", () -> {
+                    firstEntered.countDown();
+                    while (releaseFirst.getCount() != 0) {
+                        try { releaseFirst.await(20, TimeUnit.MILLISECONDS); }
+                        catch (InterruptedException ignored) { /* physical worker */ }
+                    }
+                    return 1;
+                });
+                io.submitCurrentActor(context.runtime(), "queued", () -> {
+                    neverExecuted.incrementAndGet();
+                    return 2;
+                });
+                bothAdmitted.countDown();
+            });
+            try {
+                actor.send("begin");
+                assertTrue(bothAdmitted.await(3, TimeUnit.SECONDS));
+                assertTrue(firstEntered.await(3, TimeUnit.SECONDS));
+                assertEquals(Integer.valueOf(2), actor.pendingPhysicalRetirementsByKind()
+                        .get("NATIVE_IO_OPERATION"));
+                assertTrue(actor.cancel());
+                io.close();
+                assertEquals(0, neverExecuted.get());
+                assertEquals(Integer.valueOf(1), actor.pendingPhysicalRetirementsByKind()
+                        .get("NATIVE_IO_OPERATION"),
+                        "shutdownNow only retires the genuinely never-started ticket");
+                assertFalse(actor.done().isDone());
+            } finally {
+                releaseFirst.countDown();
+                io.close();
+            }
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(0, neverExecuted.get());
+            assertTrue(actor.physicalRetirementFailure().isEmpty());
+            assertNull(io.physicalShutdown().get(3, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test void nativeIoOwnedReceiptCannotBeMintedFromRootOrForeignActorRuntime()
+            throws Exception {
+        try (var io = new AsyncNativeIo(1);
+             var own = new ActorRuntime();
+             var foreign = new ActorRuntime()) {
+            assertThrows(SecurityException.class, () ->
+                    io.submitCurrentActor(own, "forged", () -> 1));
+            var denied = new CountDownLatch(1);
+            var actor = own.<String>spawnShared(() -> (message, context) -> {
+                assertThrows(SecurityException.class, () ->
+                        io.submitCurrentActor(foreign, "foreign", () -> 1));
+                denied.countDown();
+            });
+            actor.send("check");
+            assertTrue(denied.await(3, TimeUnit.SECONDS));
+            assertEquals(0, actor.pendingPhysicalRetirementsByKind().size());
+            assertTrue(actor.cancel());
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void verifiedNioCloseIsAlreadyVisibleToReentrantOwnerCallback()
             throws Exception {
         var closeCalls = new AtomicInteger();
