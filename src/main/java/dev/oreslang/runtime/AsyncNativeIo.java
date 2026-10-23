@@ -68,15 +68,18 @@ public final class AsyncNativeIo implements AutoCloseable {
         private final OresFuture<T> result;
         private final Set<OresFuture<?>> admissionSet;
         private final long queued;
+        private final ActorPhysicalRetirementRegistry.Receipt actorReceipt;
         private Phase phase = Phase.ADMITTED; // guarded by AsyncNativeIo.this
 
         Operation(String operation, Callable<T> work, OresFuture<T> result,
-                Set<OresFuture<?>> admissionSet, long queued) {
+                Set<OresFuture<?>> admissionSet, long queued,
+                ActorPhysicalRetirementRegistry.Receipt actorReceipt) {
             this.operation = operation;
             this.work = work;
             this.result = result;
             this.admissionSet = admissionSet;
             this.queued = queued;
+            this.actorReceipt = actorReceipt;
         }
 
         /** Called ONLY on a runnable returned by shutdownNow: not started. */
@@ -122,6 +125,7 @@ public final class AsyncNativeIo implements AutoCloseable {
         }
 
         private void settle(Throwable failure, T value, boolean neverStarted) {
+            Throwable notificationFailure = null;
             try {
                 // The worker has either provably never entered Callable, or
                 // finished its host I/O and perf finalizer. Keep this Operation
@@ -143,18 +147,38 @@ public final class AsyncNativeIo implements AutoCloseable {
                 if (failure instanceof VirtualMachineError fatal) throw fatal;
                 if (failure instanceof ThreadDeath fatal) throw fatal;
                 if (failure instanceof LinkageError fatal) throw fatal;
-            } catch (RuntimeException | Error notificationFailure) {
+            } catch (RuntimeException | Error failedNotification) {
                 // Future terminal notifications run synchronous host listeners.
                 // A failed listener is not a completed physical drain receipt.
-                recordPhysicalShutdownFailure(notificationFailure);
-                throw notificationFailure;
+                notificationFailure = failedNotification;
+                recordPhysicalShutdownFailure(failedNotification);
+                throw failedNotification;
             } finally {
                 synchronized (AsyncNativeIo.this) {
                     phase = neverStarted ? Phase.CANCELLED_BEFORE_START : Phase.RETIRED;
                     admissionSet.remove(result);
-                    admittedWork.remove(this);
                 }
-                maybePublishPhysicalShutdown();
+                // The actor ticket was minted on its OWN execution lease
+                // before dispatch. Its physical proof is issued only after
+                // Callable, perf finalizers and terminal subscribers return.
+                // Keep the context operation admitted during this notifier.
+                try {
+                    if (actorReceipt != null) {
+                        if (notificationFailure == null) {
+                            actorReceipt.completeAfterPhysicalRelease();
+                        } else {
+                            actorReceipt.failPhysicalRelease(notificationFailure);
+                        }
+                    }
+                } catch (RuntimeException | Error receiptFailure) {
+                    recordPhysicalShutdownFailure(receiptFailure);
+                    throw receiptFailure;
+                } finally {
+                    synchronized (AsyncNativeIo.this) {
+                        admittedWork.remove(this);
+                    }
+                    maybePublishPhysicalShutdown();
+                }
             }
         }
     }
@@ -210,42 +234,85 @@ public final class AsyncNativeIo implements AutoCloseable {
 
     public <T> OresFuture<T> submit(OresContext context,
             RuntimePermissions.Permission permission, String operation, Callable<T> work) {
-        // Actor-local authority must be checked before leaving its execution turn.
+        // Actor-local authority must be checked on the owning execution turn.
         context.requireCapability(permission.capability(), operation);
-        return submit(operation, work);
+        return submitActorAware(context, operation, work, pending, capacity);
     }
 
     public <T> OresFuture<T> submitClose(OresContext context, Callable<T> work) {
         context.requireCapability(IsolatePolicy.Capability.NETWORK, "socket.close_async");
-        return submitControl("socket.close_async", work);
+        return submitActorAware(context, "socket.close_async", work, controls, 16);
     }
 
-    synchronized <T> OresFuture<T> submitControl(String operation, Callable<T> work) {
+    /**
+     * Mint the actor's generation-bound release ticket before queue admission.
+     * Root context work has no actor incarnation and retains the context-level
+     * physicalShutdown receipt instead. An actor from another runtime may not
+     * delegate its loan into this context.
+     */
+    private <T> OresFuture<T> submitActorAware(OresContext context, String operation,
+            Callable<T> work, Set<OresFuture<?>> admitted, int limit) {
+        if (context.nativeIo() != this) {
+            throw new SecurityException("native I/O context affinity mismatch");
+        }
+        ActorPhysicalRetirementRegistry.Receipt actorReceipt = null;
+        if (ActorRuntime.inActorExecution()) {
+            ActorRuntime runtime = context.actors();
+            if (ActorRuntime.currentActorRuntime() != runtime) {
+                throw new SecurityException("native I/O actor runtime affinity mismatch");
+            }
+            actorReceipt = runtime.registerCurrentActorPhysicalReceipt(
+                    ActorPhysicalRetirementRegistry.Kind.NATIVE_IO_OPERATION);
+        }
+        return submit(operation, work, admitted, limit, actorReceipt);
+    }
+
+    <T> OresFuture<T> submitControl(String operation, Callable<T> work) {
         return submit(operation, work, controls, 16);
     }
 
-    synchronized <T> OresFuture<T> submit(String operation, Callable<T> work) {
+    <T> OresFuture<T> submit(String operation, Callable<T> work) {
         return submit(operation, work, pending, capacity);
     }
 
     private <T> OresFuture<T> submit(String operation, Callable<T> work,
             Set<OresFuture<?>> admitted, int limit) {
+        return submit(operation, work, admitted, limit, null);
+    }
+
+    private <T> OresFuture<T> submit(String operation, Callable<T> work,
+            Set<OresFuture<?>> admitted, int limit,
+            ActorPhysicalRetirementRegistry.Receipt actorReceipt) {
         OresFuture<T> result = new OresFuture<>(() -> false, () -> { });
-        if (closed || admitted.size() >= limit) {
-            CoreLog.record(CoreLog.Level.WARN, CoreLog.ASYNC_IO_REJECTED, 1L);
-            result.failFromRuntime(new RejectedExecutionException(
-                    closed ? "I/O context closed" : "I/O admission capacity exhausted"));
+        Operation<T> operationTask = null;
+        String rejection = null;
+        synchronized (this) {
+            if (closed || admitted.size() >= limit) {
+                rejection = closed ? "I/O context closed" : "I/O admission capacity exhausted";
+            } else {
+                admitted.add(result);
+                operationTask = new Operation<>(
+                        operation, work, result, admitted, CorePerf.start(), actorReceipt);
+                admittedWork.add(operationTask);
+            }
+        }
+        if (rejection != null) {
+            // Neither the Future callback nor the actor's receipt notifier
+            // may execute with the AsyncNativeIo admission lock held.
+            try {
+                CoreLog.record(CoreLog.Level.WARN, CoreLog.ASYNC_IO_REJECTED, 1L);
+                result.failFromRuntime(new RejectedExecutionException(rejection));
+            } finally {
+                if (actorReceipt != null) actorReceipt.completeAfterPhysicalRelease();
+            }
             return result;
         }
-        admitted.add(result);
-        Operation<T> operationTask = new Operation<>(
-                operation, work, result, admitted, CorePerf.start());
-        admittedWork.add(operationTask);
         try {
             workers.execute(operationTask);
         } catch (RuntimeException failure) {
-            // execute() returned an explicit rejection before accepting the
-            // runnable; it cannot have issued native I/O on this path.
+            // A rejected execute() is not proof that a malicious executor did
+            // not concurrently run the task. The phase CAS below decides:
+            // a RUNNING operation remains owned until its actual exit.
             CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_REJECTED, 1L);
             operationTask.cancelBeforeStart();
         }
