@@ -62,3 +62,29 @@ irreversible quarantine diagnostic, rather than disappearing into a callback
 while `finalizationStarted` remains permanently true. A separate JUnit
 fault injection asynchronously fails the actor lock-retirement witness; the
 actor must not publish DONE or release its quarantined backing memory.
+
+
+## Runtime refinement: actor registry and Task notification drain
+
+A public `OresFuture` terminal CAS is observable **before** its already-registered
+synchronous host subscribers return. Therefore an actor must not use Task
+`getDone().isDone()`, or the beginning of its own subscription, as proof of
+physical terminal callback completion. Each tracked `TaskHandle` now exposes
+a runtime-only **read-only `doneCallbacksDrained()` witness**, triggered by
+`OresFuture`'s final notification hook. The actor retains that Task handle
+until this witness settles, and its source-Task STOP join waits on these
+witnesses. Observers receive `minimalCompletionStage()`, not the mutable
+underlying `CompletableFuture`.
+
+For the actor's own terminal notification, group-binding cleanup still
+precedes public DONE, but registry removal and actor-quota release now occur
+**after** synchronous terminal subscribers return, before the incarnation's
+termination latch and parent child-finalization notice. This keeps
+`ActorRuntime.close()` and successor admission from misinterpreting a removed
+registry entry or recycled actor slot while an old callback is still active.
+
+Deterministic JUnit regressions cover a blocked Task `getDone` subscriber
+during actor STOP, a blocked actor DONE subscriber while the registry is held,
+and attempted cancellation of a Task drain observation. The local source-free
+Java 21 read-only receipt/callback model passed 500 iterations; it is **not**
+a GraalVM/JDK25 integration result. CI and native parity remain required.
