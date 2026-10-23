@@ -323,9 +323,13 @@ public final class AsyncNativeIo implements AutoCloseable {
             if (closed || admitted.size() >= limit) {
                 rejection = closed ? "I/O context closed" : "I/O admission capacity exhausted";
             } else {
-                admitted.add(result);
+                // Compute potentially throwing instrumentation and construct
+                // the runnable BEFORE admitting its Future. A host perf
+                // failure cannot leave an admission slot with no Operation.
+                long queued = CorePerf.start();
                 operationTask = new Operation<>(
-                        operation, work, result, admitted, CorePerf.start(), actorReceipt);
+                        operation, work, result, admitted, queued, actorReceipt);
+                admitted.add(result);
                 admittedWork.add(operationTask);
             }
         }
