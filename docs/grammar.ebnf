@@ -20,6 +20,8 @@ top_level_item  = annotated_module_decl
                 | actor_callable_decl
                 | callable_decl
                 | class_decl
+                | model_decl
+                | declared_type_only
                 | interface_decl
                 | type_decl
                 | binding_decl ;
@@ -32,6 +34,8 @@ module_member   = contract_decl
                 | actor_callable_decl
                 | callable_decl
                 | class_decl
+                | model_decl
+                | declared_type_only
                 | interface_decl
                 | type_decl
                 | binding_decl ;
@@ -120,6 +124,24 @@ interface_body  = "{" { interface_member } "}"
 interface_member= { annotation } [ "structural" ] "fnc" IDENT [ generic_params ] "(" [ param_list ] ")" type_return_spec member_terminator
                 | IDENT ":" type_ref member_terminator
                 | [ binding_kind ] type_ref IDENT member_terminator ;
+
+(* 'declare' is contextual. Unlike model/class/actor, these definitions do
+   not bind instantiable runtime values. 'define' forms remain compatibility. *)
+declared_type_only
+                = "declare" visibility
+                  ( "type" IDENT [ generic_params ] "=" type_ref stmt_terminator
+                  | ( "trait" | "interface" ) IDENT [ generic_params ]
+                    [ "extends" type_ref { "," type_ref } ] interface_body ) ;
+
+(* Model operation expressions are statically restricted by the ModelGraph
+   compiler: inert scalar literals or model configuration parameter names. *)
+model_decl      = visibility "define" [ visibility ] "model" IDENT
+                  [ "(" [ model_param { "," model_param } ] ")" ]
+                  "as" model_op { model_op } "end" ;
+model_param     = ( IDENT ":" type_ref | type_ref IDENT )
+                  [ "=" expression ] ;
+model_op        = IDENT "(" [ expression { "," expression } ] ")"
+                  [ ";" ] ;
 
 type_decl       = "type" IDENT [ generic_params ] "=" type_ref stmt_terminator ;
 
