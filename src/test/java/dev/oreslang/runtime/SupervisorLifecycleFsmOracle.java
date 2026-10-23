@@ -43,15 +43,21 @@ public final class SupervisorLifecycleFsmOracle {
         mustReject(s, new SupervisorLifecycleFsm.RestartCommitted(1));
         mustReject(s, new SupervisorLifecycleFsm.PhysicalRelease(1));
         s = apply(s, new SupervisorLifecycleFsm.ShutdownRequested(1, CHILDREN));
+        check(apply(s, new SupervisorLifecycleFsm.ShutdownRequested(1, CHILDREN)) == s,
+                "idempotent shutdown must retain original child topology");
+        mustReject(s, new SupervisorLifecycleFsm.ShutdownRequested(1, Set.of(11L)));
         check(!s.admissionsOpen(), "admissions remained open after fence");
         mustReject(s, new SupervisorLifecycleFsm.RestartRequested(1));
         mustReject(s, new SupervisorLifecycleFsm.ChildFinished(1, 11, false));
         s = apply(s, new SupervisorLifecycleFsm.ActorsFinished(1, false));
+        mustReject(s, new SupervisorLifecycleFsm.ActorsFinished(1, true));
         s = apply(s, new SupervisorLifecycleFsm.PhysicalRelease(1));
         s = apply(s, new SupervisorLifecycleFsm.BeforeHookFinished(1, false));
+        mustReject(s, new SupervisorLifecycleFsm.BeforeHookFinished(1, true));
         check(s.phase() == SupervisorLifecycleFsm.Phase.WAIT_CHILDREN,
                 "early actor completion lost at children barrier");
         s = apply(s, new SupervisorLifecycleFsm.ChildFinished(1, 22, false));
+        mustReject(s, new SupervisorLifecycleFsm.ChildFinished(1, 22, true));
         var beforeDuplicate = s;
         s = apply(s, new SupervisorLifecycleFsm.ChildFinished(1, 22, false));
         check(s == beforeDuplicate, "duplicate child completion changed revision");
@@ -59,6 +65,7 @@ public final class SupervisorLifecycleFsmOracle {
         check(s.phase() == SupervisorLifecycleFsm.Phase.AFTER_HOOK,
                 "workers already retired but no transition to post-hook");
         s = apply(s, new SupervisorLifecycleFsm.AfterHookFinished(1, false));
+        mustReject(s, new SupervisorLifecycleFsm.AfterHookFinished(1, true));
         check(s.phase() == SupervisorLifecycleFsm.Phase.STOPPED,
                 "parent reclaimed before children physically released");
         s = apply(s, new SupervisorLifecycleFsm.ChildReclaimed(1, 11));
@@ -96,7 +103,9 @@ public final class SupervisorLifecycleFsmOracle {
                 new SupervisorLifecycleFsm.BeforeHookFinished(e, false),
                 new SupervisorLifecycleFsm.BeforeHookFinished(e, true),
                 new SupervisorLifecycleFsm.ChildFinished(e, 11, false),
+                new SupervisorLifecycleFsm.ChildFinished(e, 11, true),
                 new SupervisorLifecycleFsm.ChildFinished(e, 22, false),
+                new SupervisorLifecycleFsm.ChildFinished(e, 22, true),
                 new SupervisorLifecycleFsm.ChildReclaimed(e, 11),
                 new SupervisorLifecycleFsm.ChildReclaimed(e, 22),
                 new SupervisorLifecycleFsm.ActorsFinished(e, false),
@@ -115,6 +124,14 @@ public final class SupervisorLifecycleFsmOracle {
         check(s.expectedChildren().containsAll(s.completedChildren()), "unknown child");
         check(s.completedChildren().containsAll(s.reclaimedChildren()),
                 "physically released child without logical receipt");
+        check(s.completedChildren().containsAll(s.failedChildren()),
+                "child failure without completion receipt");
+        check(!s.preHookFailed() || s.preHookDone(), "pre-hook failure without receipt");
+        check(!s.actorsFailed() || s.actorsDone(), "actor failure without receipt");
+        check(!s.postHookFailed() || s.postHookDone(), "post-hook failure without receipt");
+        check(s.failed() || (!s.preHookFailed() && !s.actorsFailed()
+                && !s.postHookFailed() && s.failedChildren().isEmpty()),
+                "failure aggregate dropped completed failure receipt");
         check(!s.physicalReleased() || s.actorsDone(), "arena reclaimed before actor");
         if (terminal) {
             check(s.preHookDone() && s.postHookDone() && s.actorsDone(), "early terminal");
@@ -197,7 +214,8 @@ public final class SupervisorLifecycleFsmOracle {
 
     public static void main(String[] args) {
         focused();
-        System.out.println("PASS: epoch fencing, early receipt, idempotence, timeout, loan barriers");
+        System.out.println("PASS: epoch fencing, early receipts, conflicting acknowledgments, "
+                + "child topology, timeouts and loan barriers");
         exhaustive();
     }
 }
