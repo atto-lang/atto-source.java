@@ -1892,6 +1892,37 @@ public final class Parser {
 
     private Ast.Stmt parseStatement() {
         rejectUnsupportedAcceleratorSyntax();
+        // A contextual statement keyword: calls to a function named using(...)
+        // retain their existing expression behavior. Scoped borrow syntax is
+        // parsed distinctly so compiler admission cannot silently desugar it.
+        if (check(IDENT) && peek().lexeme().equals("using")
+                && (checkNext(IDENT) || checkNext(SELF))) {
+            advance();
+            // 'as' delimits the scoped alias here, rather than Oreslang's
+            // ordinary checked-cast expression. Restore prior refinement
+            // mode even if the resource expression is malformed.
+            boolean previousRefinementMode = suppressRefinementOperators;
+            Ast.Expr resource;
+            try {
+                suppressRefinementOperators = true;
+                resource = parseExpression();
+            } finally {
+                suppressRefinementOperators = previousRefinementMode;
+            }
+            if (!(resource instanceof Ast.CallExpr call)
+                    || !(call.callee() instanceof Ast.MemberExpr member)
+                    || !member.member().equals("borrow")
+                    || !call.arguments().isEmpty() || call.typeArgumentsPresent()) {
+                throw error(previous(),
+                        "using borrowed scope requires a zero-argument resource.borrow() call");
+            }
+            consume(AS, "using borrowed scope requires 'as <view>'");
+            Token name = consume(IDENT, "using borrowed scope requires a binding name");
+            if (name.lexeme().equals("_") || name.lexeme().equals("using")) {
+                throw error(name, "using borrowed scope needs a named, usable view binding");
+            }
+            return new Ast.UsingBorrowStmt(resource, name.lexeme(), parseBlock());
+        }
         // Keep these distinct from ordinary calls/identifiers. Exception
         // effect checking, typed recovery and actor CONTROL delivery have
         // not yet been lowered in the Java/Graal production compiler.
