@@ -6880,18 +6880,10 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        for (ActorGroup group : List.copyOf(actorGroups.values())) group.closeFromRuntime();
-        actorGroups.clear();
-        for (ActorOutputStream<?> stream : List.copyOf(actorOutputStreams)) {
-            stream.closeAndDrainFromRuntime();
-        }
-        actorOutputStreams.clear();
-        for (SyncCell<?> cell : List.copyOf(syncCells)) cell.invalidateFromRuntime();
-        syncCells.clear();
-        for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
-        sharedValues.clear();
-        sharedMemoryBytes.set(0L);
-
+        // Fail closed: global shared structures and capability registries
+        // can still be referenced by a quarantined actor whose lock/loan
+        // retirement failed. Never invalidate or free them while any actor
+        // has not produced a complete physical lifecycle receipt.
         if (interrupted) Thread.currentThread().interrupt();
         if (!stillRunning.isEmpty() || !dispatchersTerminated || interrupted) {
             if (interrupted) {
@@ -6906,6 +6898,19 @@ public final class ActorRuntime implements AutoCloseable {
                             + stillRunning.size() + " actor(s) still running, dispatchersTerminated="
                             + dispatchersTerminated);
         }
+
+        for (ActorGroup group : List.copyOf(actorGroups.values())) group.closeFromRuntime();
+        actorGroups.clear();
+        for (ActorOutputStream<?> stream : List.copyOf(actorOutputStreams)) {
+            stream.closeAndDrainFromRuntime();
+        }
+        actorOutputStreams.clear();
+        for (SyncCell<?> cell : List.copyOf(syncCells)) cell.invalidateFromRuntime();
+        syncCells.clear();
+        for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
+        sharedValues.clear();
+        sharedMemoryBytes.set(0L);
+
         actors.clear();
         actorCount.set(0);
     }
