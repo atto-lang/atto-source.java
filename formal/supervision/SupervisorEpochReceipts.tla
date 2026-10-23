@@ -62,7 +62,10 @@ FenceChild ==
     /\ parentPhase = "Fencing"
     /\ ~childFenced
     /\ childFenced' = TRUE
-    /\ UNCHANGED <<parentPhase, childPhase, childEpoch, pinnedEpoch,
+    \* A reserved (not committed) restart is cancelled by the fence.
+    /\ childPhase' = IF childPhase = "Restarting" THEN "Running"
+                     ELSE childPhase
+    /\ UNCHANGED <<parentPhase, childEpoch, pinnedEpoch,
                    childAck, actorsDone, failed, timedOut, rejectedReceipt>>
 
 \* Freeze records the currently fenced child epoch, never a prior version.
@@ -184,7 +187,7 @@ NoUnfencedPublishedEpoch ==
         parentPhase \in {"Pre", "WaitChild", "WaitActors", "Stopped"})
 
 NoRestartAfterChildFence ==
-    childFenced => ~(childPhase = "Restarting" /\ pinnedEpoch > 0)
+    childFenced => childPhase # "Restarting"
 
 AcceptedGenerationIsImmutable ==
     (parentPhase \in {"Pre", "WaitChild", "WaitActors", "Stopped"})
