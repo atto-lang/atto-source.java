@@ -101,6 +101,44 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
             }
         }
 
+
+        /**
+         * Trusted CONTROL-only publication hook. The caller holds the
+         * generation gate monitor, while this holds the physical dispatch
+         * monitor. The callback MUST be allocation-free, nonblocking and
+         * exception-free after its own prechecks: it publishes the sole
+         * authoritative route together with the generation image.
+         *
+         * No DATA dispatch can observe the callback before the mailbox epoch
+         * changes, because both happen under the same mailbox lock. Existing
+         * public commit() remains a host-only legacy primitive; it must not
+         * be used to publish a physical actor route independently.
+         */
+        void commitWithPublication(Runnable publishAuthoritativeRoute) {
+            Objects.requireNonNull(publishAuthoritativeRoute, "publication");
+            synchronized (lock) {
+                requireTicketLocked(this);
+                if (!drainedThroughLocked(dispatchWatermark)) {
+                    throw new IllegalStateException(
+                            "cannot publish with old-route messages outstanding");
+                }
+                if (routeEpoch == Long.MAX_VALUE)
+                    throw new IllegalStateException("logical route epoch exhausted");
+
+                // The callback is supplied ONLY by the CONTROL-owned route
+                // coordinator after its immutable candidate was fully staged.
+                // A failing callback deliberately leaves DATA frozen, rather
+                // than reopening an unproven physical target.
+                publishAuthoritativeRoute.run();
+                LogicalActorProxyMailboxV1.this.routeEpoch = routeEpoch + 1L;
+                dispatchFrozen = false;
+                activeFreeze = null;
+                consumed = true;
+                checkStructuralInvariantsLocked();
+                lock.notifyAll();
+            }
+        }
+
         public void rollback() {
             synchronized (lock) {
                 requireTicketLocked(this);
