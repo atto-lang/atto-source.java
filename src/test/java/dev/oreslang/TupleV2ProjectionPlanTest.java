@@ -204,4 +204,23 @@ final class TupleV2ProjectionPlanTest {
                         .visibleSlot(2).materialization());
     }
 
+    @Test
+    void fixedProductBinderHasTheSameSixtyFourSlotResourceLimit() {
+        List<String> maxNames = java.util.stream.IntStream.range(0, 64)
+                .mapToObj(i -> "p" + i).toList();
+        var maxArgs = java.util.Collections.nCopies(
+                64, dev.oreslang.types.FixedProductCallPlan.InputSlot.positional());
+        var plan = dev.oreslang.types.FixedProductCallPlan.bind(maxNames, maxArgs);
+        assertEquals(64, plan.abiToSource().size());
+
+        List<String> tooManyNames = java.util.stream.IntStream.range(0, 65)
+                .mapToObj(i -> "p" + i).toList();
+        var tooManyArgs = java.util.Collections.nCopies(
+                65, dev.oreslang.types.FixedProductCallPlan.InputSlot.positional());
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.FixedProductCallPlan.bind(tooManyNames, tooManyArgs));
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.FixedProductCallPlan.bind(tooManyNames, maxArgs));
+    }
+
 }
