@@ -88,6 +88,89 @@ class AsyncNativeIoTest {
         assertFalse(Files.exists(outside.resolve("secret.txt")));
     }
 
+    @Test void differentActorIncarnationsCannotReleaseEachOthersNativeLoans()
+            throws Exception {
+        try (var io = new AsyncNativeIo(4);
+             var runtime = new ActorRuntime()) {
+            var registeredClosed = new java.util.concurrent.atomic.AtomicInteger();
+            AutoCloseable resource = registeredClosed::incrementAndGet;
+            io.register(resource);
+            runtime.setNativeIoLoanRetirementGate(
+                    id -> io.outstandingActorOperations(id) == 0);
+            io.setActorLoanRetiredListener(runtime::onNativeIoLoanRetired);
+
+            var firstLoan = new java.util.concurrent.atomic.AtomicReference<AsyncNativeIo.IoLoan>();
+            var secondLoan = new java.util.concurrent.atomic.AtomicReference<AsyncNativeIo.IoLoan>();
+            var admitted = new CountDownLatch(2);
+            var a = runtime.<String>spawnShared(() -> (message, ctx) -> {
+                firstLoan.set(io.borrow(resource));
+                admitted.countDown();
+            });
+            var b = runtime.<String>spawnShared(() -> (message, ctx) -> {
+                secondLoan.set(io.borrow(resource));
+                admitted.countDown();
+            });
+            a.send("borrow");
+            b.send("borrow");
+            assertTrue(admitted.await(3, TimeUnit.SECONDS));
+            assertNotEquals(a.id(), b.id());
+            assertEquals(a.id(), firstLoan.get().identity().actorId());
+            assertEquals(b.id(), secondLoan.get().identity().actorId());
+            assertEquals(1, io.outstandingActorOperations(a.id()));
+            assertEquals(1, io.outstandingActorOperations(b.id()));
+
+            a.cancel();
+            b.cancel();
+            assertFalse(a.done().isDone());
+            assertFalse(b.done().isDone());
+            firstLoan.get().close();
+            assertTrue(a.awaitTermination(3, TimeUnit.SECONDS),
+                    "first arena must be released by its own final physical loan");
+            assertFalse(b.done().isDone(),
+                    "a stale or foreign generation receipt cannot finalize another actor");
+            assertEquals(0, io.outstandingActorOperations(a.id()));
+            assertEquals(1, io.outstandingActorOperations(b.id()));
+            secondLoan.get().close();
+            assertTrue(b.awaitTermination(3, TimeUnit.SECONDS));
+            io.close();
+            assertEquals(1, registeredClosed.get());
+        }
+    }
+
+    @Test void actorNativeOperationAdmissionBlocksDoneBeforePhysicalWorkerExit()
+            throws Exception {
+        try (var io = new AsyncNativeIo(2);
+             var runtime = new ActorRuntime()) {
+            runtime.setNativeIoLoanRetirementGate(
+                    id -> io.outstandingActorOperations(id) == 0);
+            io.setActorLoanRetiredListener(runtime::onNativeIoLoanRetired);
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var admitted = new CountDownLatch(1);
+            var actor = runtime.<String>spawnShared(() -> (message, ctx) -> {
+                io.submit("actor-owned-native", () -> {
+                    entered.countDown();
+                    release.await();
+                    return 3;
+                });
+                admitted.countDown();
+            });
+            try {
+                actor.send("start");
+                assertTrue(admitted.await(3, TimeUnit.SECONDS));
+                assertTrue(entered.await(3, TimeUnit.SECONDS));
+                assertEquals(1, io.outstandingActorOperations(actor.id()));
+                actor.cancel();
+                assertFalse(actor.done().isDone(),
+                        "task completion alone cannot free the actor while native work runs");
+            } finally {
+                release.countDown();
+            }
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(0, io.outstandingActorOperations(actor.id()));
+        }
+    }
+
     @Test void nativeLoanGenerationAndDuplicateReceiptAreFailClosed()
             throws Exception {
         var io = new AsyncNativeIo(2);
