@@ -5508,7 +5508,12 @@ public final class ActorRuntime implements AutoCloseable {
         if (cell != null && cell.watchdogLease != null) {
             cell.watchdogLease.checkpoint();
         }
-        if (cell != null && cell.stopped.get() && !cell.endRequested) {
+        if (cell != null && cell.stopped.get() && !cell.endRequested
+                && !(cell.sourceStopCleanupActive
+                        && OresScheduler.cancellationCleanupTurn())) {
+            // An authenticated SourceTask unwind continues to need the
+            // compiler's ordinary safepoints, but STOP may never resurrect
+            // user mail, fresh tasks, or an arbitrary guest continuation.
             throw new ActorCancellationSignal("actor execution stopped");
         }
         if (cell != null && cell.kind == ActorKind.UNTRUSTED) {
