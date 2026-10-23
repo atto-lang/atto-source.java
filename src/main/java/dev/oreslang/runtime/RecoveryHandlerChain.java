@@ -136,6 +136,7 @@ final class RecoveryHandlerChain<T> {
     private final ExecutionContext.AllocationDomain ownerAllocationDomain;
     private final long ownerParentExecution;
     private final long ownerContinuation;
+    private final long ownerCodeEpoch;
 
     private RecoveryHandlerChain(
             Handler<T>[] handlers,
@@ -143,7 +144,8 @@ final class RecoveryHandlerChain<T> {
             ExecutionContext.ExecutionId ownerExecutionId,
             ExecutionContext.AllocationDomain ownerAllocationDomain,
             long ownerParentExecution,
-            long ownerContinuation) {
+            long ownerContinuation,
+            long ownerCodeEpoch) {
         this.handlers = handlers;
         this.effectMasks = effectMasks;
         this.ownerExecutionId = Objects.requireNonNull(ownerExecutionId, "ownerExecutionId");
@@ -151,10 +153,15 @@ final class RecoveryHandlerChain<T> {
                 Objects.requireNonNull(ownerAllocationDomain, "ownerAllocationDomain");
         this.ownerParentExecution = ownerParentExecution;
         this.ownerContinuation = ownerContinuation;
+        if (ownerCodeEpoch <= 0) {
+            throw new IllegalArgumentException("recovery code epoch must be positive");
+        }
+        this.ownerCodeEpoch = ownerCodeEpoch;
     }
 
-    public static <T> Builder<T> builder(ExecutionContext ownerExecution) {
-        return new Builder<>(ownerExecution);
+    public static <T> Builder<T> builder(
+            ExecutionContext ownerExecution, long codeEpoch) {
+        return new Builder<>(ownerExecution, codeEpoch);
     }
 
     public int size() { return handlers.length; }
@@ -177,7 +184,8 @@ final class RecoveryHandlerChain<T> {
                 ownerExecutionId,
                 ownerAllocationDomain,
                 ownerParentExecution,
-                ownerContinuation)) {
+                ownerContinuation,
+                ownerCodeEpoch)) {
             // A valid envelope is not portable across logical Task/actor
             // invocations or actor generations. Preserve it unchanged for
             // outward propagation rather than invoking a foreign callback.
@@ -411,17 +419,22 @@ final class RecoveryHandlerChain<T> {
         private final ExecutionContext.AllocationDomain ownerAllocationDomain;
         private final long ownerParentExecution;
         private final long ownerContinuation;
+        private final long ownerCodeEpoch;
         @SuppressWarnings("unchecked")
         private Handler<T>[] handlers = (Handler<T>[]) new Handler<?>[4];
         private byte[] effectMasks = new byte[4];
         private int size;
 
-        private Builder(ExecutionContext ownerExecution) {
+        private Builder(ExecutionContext ownerExecution, long codeEpoch) {
             Objects.requireNonNull(ownerExecution, "ownerExecution");
+            if (codeEpoch <= 0) {
+                throw new IllegalArgumentException("recovery code epoch must be positive");
+            }
             this.ownerExecutionId = ownerExecution.id();
             this.ownerAllocationDomain = ownerExecution.allocationDomain();
             this.ownerParentExecution = ownerExecution.parentExecution();
             this.ownerContinuation = ownerExecution.continuation();
+            this.ownerCodeEpoch = codeEpoch;
         }
 
         public Builder<T> register(Handler<T> handler) { return add(BOTH, handler); }
@@ -451,7 +464,8 @@ final class RecoveryHandlerChain<T> {
                     ownerExecutionId,
                     ownerAllocationDomain,
                     ownerParentExecution,
-                    ownerContinuation);
+                    ownerContinuation,
+                    ownerCodeEpoch);
         }
     }
 }
