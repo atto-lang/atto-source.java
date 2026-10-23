@@ -416,7 +416,7 @@ public final class HotReloadManager implements AutoCloseable {
                 parsed.execute(OresEvalRootNode.LINK_ONLY_COMMAND);
                 context.enter();
                 try {
-                    linkedActorContext = OresLanguage.currentEnteredContextForHost();
+                    linkedActorContext = OresContext.get(null);
                 } finally {
                     context.leave();
                 }
