@@ -119,6 +119,12 @@ public final class OresContext implements AutoCloseable {
                     vm::executePhysicalStop);
             async = new AsyncRuntime(this::executeAsyncTurn);
             gc = new RuntimeGarbageCollector();
+            // Install BEFORE publishing this actor runtime to any guest.
+            // The arena-release gate runs before actorExitHook and is notified
+            // by the final physical worker/resource-loan receipt.
+            actors.setNativeIoLoanRetirementGate(
+                    actorId -> nativeIo.outstandingActorOperations(actorId) == 0);
+            nativeIo.setActorLoanRetiredListener(actors::onNativeIoLoanRetired);
             actors.setActorExitHook(gc::retireActorDomain);
 
             this.vm = vm;
