@@ -45,7 +45,12 @@ public final class ActorRollingGenerationRoute<T> implements AutoCloseable {
 
         private Lease(Generation generation) { this.generation = generation; }
 
-        public T target() { return generation.target; }
+        public T target() {
+            synchronized (ActorRollingGenerationRoute.this) {
+                if (released) throw new IllegalStateException("routing lease released");
+                return generation.target;
+            }
+        }
         public long epoch() { return generation.epoch; }
 
         public boolean released() {
@@ -107,8 +112,11 @@ public final class ActorRollingGenerationRoute<T> implements AutoCloseable {
             throw new IllegalStateException("live actor generation cap reached");
         if (active.epoch == Long.MAX_VALUE)
             throw new IllegalStateException("actor route epoch exhausted");
-        if (active.target == readyTarget)
-            throw new IllegalArgumentException("replacement must have fresh physical identity");
+        for (Generation generation : generations.values()) {
+            if (generation.target == readyTarget)
+                throw new IllegalArgumentException(
+                        "replacement must not reuse a retained physical actor");
+        }
         Generation next = new Generation(active.epoch + 1L, readyTarget);
         // No code runs between the old->draining and new->active assignments.
         active.phase = Phase.DRAINING;
