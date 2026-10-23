@@ -66,7 +66,8 @@ public final class AsyncNativeIo implements AutoCloseable {
     private boolean resourcesRetired;
     /** Guarded by shutdownLock; resource.close() may itself call this.close(). */
     private boolean resourceCloseActive;
-    private Throwable incompleteReceipt;
+    /** Published lock-free to actor finalization gates; mutations synchronized. */
+    private volatile Throwable incompleteReceipt;
 
     /** Immutable receipt identity; actorId is null for root/host operations. */
     record IoLoanIdentity(long resourceGeneration, long loanGeneration,
@@ -151,6 +152,13 @@ public final class AsyncNativeIo implements AutoCloseable {
         // monitor here: rejected Futures can deliver host callbacks while the
         // AsyncNativeIo monitor is held by the admitting actor.
         return actorOperations.getOrDefault(Objects.requireNonNull(id), 0);
+    }
+
+    boolean actorPhysicallyRetired(ActorRuntime.ActorId id) {
+        // A failed native completion receipt can invalidate retirement even
+        // after its count reaches zero. Quarantine all affected context heaps
+        // until the physical failure has been independently reconciled.
+        return incompleteReceipt == null && outstandingActorOperations(id) == 0;
     }
 
     void setActorLoanRetiredListener(Consumer<ActorRuntime.ActorId> callback) {
