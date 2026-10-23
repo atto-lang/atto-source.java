@@ -12,6 +12,41 @@ import org.junit.jupiter.api.Test;
 /** The real OresScheduler TaskHandle + OresMutex synchronous guard path. */
 public final class TaskOwnedLockLedgerTest {
     @Test
+    void immediatelyAvailableAsyncMutexCannotOutliveRequestingTask()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            for (int round = 0; round < 128; round++) {
+                var mutex = OresMutex.shared(new int[] {round});
+                AtomicReference<java.util.concurrent.CompletableFuture<OresMutex.Guard<int[]>>>
+                        result = new AtomicReference<>();
+                TaskHandle<Void> task = scheduler.startTracked(resume -> {
+                    // The first acquisition takes the immediate physical
+                    // permit path. Its Future publication may race Task exit.
+                    result.set(mutex.lockAsync());
+                    return OresScheduler.done(null);
+                });
+                assertEquals(new TaskHandle.Success<Void>(null),
+                        task.getDone().get(5, TimeUnit.SECONDS));
+                assertNotNull(result.get());
+                assertTrue(result.get().isDone(),
+                        "Task DONE published ahead of immediate grant settlement");
+                if (!result.get().isCompletedExceptionally()) {
+                    assertTrue(result.get().join().released(),
+                            "late async grant retained a live dead-Task permit");
+                }
+                assertTrue(mutex.isPoisoned(),
+                        "unreleased Task-owned writer must poison after quiescence");
+                mutex.recover(value -> {
+                    value[0] = 0;
+                    return null;
+                });
+                var recovered = mutex.tryLock().orElseThrow();
+                recovered.release();
+            }
+        }
+    }
+
+    @Test
     void mutexCreatorMayRetireWhileAnotherTaskLaterAcquiresItsGuard() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(2)) {
             AtomicReference<OresMutex.Shared<int[]>> published = new AtomicReference<>();
