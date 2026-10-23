@@ -287,25 +287,29 @@ public final class SupervisorShutdownTree {
         return bounded;
     }
 
+    /**
+     * An incompletely fenced node did not enter the shutdown automaton.
+     * Treat its missed fence as a coordinator failure, not as a fabricated
+     * successful shutdown or an invalid RUNNING -> deadline transition.
+     * Pure for deterministic regression coverage without runtime reflection.
+     */
+    static SupervisorLifecycleFsm.Event deadlineEventFor(
+            SupervisorLifecycleFsm.State current) {
+        Objects.requireNonNull(current, "current");
+        if (current.phase() == SupervisorLifecycleFsm.Phase.RUNNING
+                || current.phase() == SupervisorLifecycleFsm.Phase.RESTARTING) {
+            return new SupervisorLifecycleFsm.CoordinatorFailed(current.epoch());
+        }
+        return new SupervisorLifecycleFsm.DeadlineExpired(current.epoch());
+    }
+
     private void markDeadline() {
         synchronized (treeLock) {
             List<Supervisor> nodes = new ArrayList<>();
             collect(root, nodes);
             for (Supervisor node : nodes) {
                 SupervisorLifecycleFsm.State current = node.lifecycle.get();
-                if (current.phase() == SupervisorLifecycleFsm.Phase.RUNNING
-                        || current.phase() == SupervisorLifecycleFsm.Phase.RESTARTING) {
-                    // A partial admission-fence failure may leave some nodes
-                    // outside the shutdown FSM. DeadlineExpired is invalid
-                    // for these phases. Record CONTROL/coordinator failure
-                    // instead of throwing on the watchdog thread and
-                    // losing the timed shutdown observer's completion.
-                    node.transition(new SupervisorLifecycleFsm.CoordinatorFailed(
-                            current.epoch()));
-                } else {
-                    node.transition(new SupervisorLifecycleFsm.DeadlineExpired(
-                            current.epoch()));
-                }
+                node.transition(deadlineEventFor(current));
             }
         }
     }
