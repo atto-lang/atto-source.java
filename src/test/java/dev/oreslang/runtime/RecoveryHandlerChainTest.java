@@ -237,6 +237,85 @@ final class RecoveryHandlerChainTest {
         assertSame(pendingError, result.pendingError());
     }
 
+    @Test void callbackCannotResolveOrDelegateAfterMakingPendingSignalTerminal() {
+        for (boolean resolves : List.of(true, false)) {
+            List<String> trace = new ArrayList<>();
+            Throwable pending = new Exception("original raise");
+            var chain = RecoveryHandlerChain.<Integer>builder()
+                    .onRaise((err, c) -> { trace.add("older"); c.resolve(3); })
+                    .onRaise((err, c) -> {
+                        pending.addSuppressed(new SecurityException("revoked"));
+                        if (resolves) c.resolve(7);
+                        else c.next();
+                    })
+                    .freeze();
+            var outcome = assertInstanceOf(RecoveryHandlerChain.Unhandled.class,
+                    chain.dispatch(RecoveryHandlerChain.FailureKind.RAISE, pending));
+            assertSame(pending, outcome.error());
+            assertEquals(RecoveryHandlerChain.FailureKind.RAISE, outcome.kind());
+            assertTrue(trace.isEmpty(), "must not reach older handler or return success");
+        }
+    }
+
+    @Test void cancellationAndSecurityThrownByHandlerAreTerminalOutcomes() {
+        RuntimeException[] terminal = {
+                new java.util.concurrent.CancellationException("cancel"),
+                new SecurityException("denied"),
+                new java.util.concurrent.RejectedExecutionException("stopped"),
+                new java.util.concurrent.CompletionException(
+                        new java.util.concurrent.TimeoutException("deadline"))
+        };
+        for (RuntimeException callback : terminal) {
+            Throwable pending = new Exception("original");
+            var chain = RecoveryHandlerChain.<Integer>builder()
+                    .register((e, c) -> { throw callback; }).freeze();
+            var result = assertInstanceOf(RecoveryHandlerChain.TerminalCallbackFailure.class,
+                    chain.dispatch(RecoveryHandlerChain.FailureKind.RAISE, pending));
+            assertSame(pending, result.pendingError());
+            assertSame(callback, result.terminalError());
+            assertEquals(RecoveryHandlerChain.FailureKind.RAISE, result.pendingKind());
+        }
+    }
+
+    @Test void ordinaryHandlerFailureRemainsDistinctFromTerminalSignals() {
+        RuntimeException callback = new IllegalArgumentException("ordinary callback fault");
+        Throwable pending = new Exception("pending raise");
+        var chain = RecoveryHandlerChain.<Integer>builder()
+                .register((e, c) -> { throw callback; }).freeze();
+        var result = assertInstanceOf(RecoveryHandlerChain.HandlerFailure.class,
+                chain.dispatch(RecoveryHandlerChain.FailureKind.RAISE, pending));
+        assertSame(pending, result.pendingError());
+        assertSame(callback, result.callbackError());
+    }
+
+    @Test void callbackCannotEscapeAHostFatalWithoutRevokingItsCursor() {
+        Error fatal = new AssertionError("host fatal");
+        Throwable pending = new Exception("pending");
+        List<RecoveryHandlerChain.Continuation<Integer>> escaped = new ArrayList<>();
+        var chain = RecoveryHandlerChain.<Integer>builder()
+                .register((e, c) -> { escaped.add(c); throw fatal; }).freeze();
+        assertSame(fatal, assertThrows(AssertionError.class,
+                () -> chain.dispatch(RecoveryHandlerChain.FailureKind.RAISE, pending)));
+        assertEquals(1, escaped.size());
+        assertThrows(IllegalStateException.class, () -> escaped.getFirst().next());
+    }
+
+    @Test void callbackCausingHostAccessorFailureCannotSwallowOriginalError() {
+        Throwable pending = new Exception("pending");
+        RuntimeException callback = new RuntimeException("ordinary");
+        callback.initCause(new Exception("cause") {
+            @Override public synchronized Throwable getCause() {
+                throw new IllegalStateException("host graph unavailable");
+            }
+        });
+        var chain = RecoveryHandlerChain.<Integer>builder()
+                .register((e, c) -> { throw callback; }).freeze();
+        var result = assertInstanceOf(RecoveryHandlerChain.TerminalCallbackFailure.class,
+                chain.dispatch(RecoveryHandlerChain.FailureKind.RAISE, pending));
+        assertSame(pending, result.pendingError());
+        assertSame(callback, result.terminalError());
+    }
+
     @Test void inaccessibleCauseFailsClosed() {
         Throwable pending = new Exception("pending") {
             @Override public synchronized Throwable getCause() {
