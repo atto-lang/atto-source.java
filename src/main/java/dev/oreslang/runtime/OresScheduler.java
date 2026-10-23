@@ -718,6 +718,10 @@ public final class OresScheduler implements AutoCloseable {
         private final ExecutionContext executionContext;
         private final Runnable onQuiescent;
         private final AtomicBoolean quiescenceNotified = new AtomicBoolean();
+        // Wall-deadline terminal admission and the physical retirement receipt
+        // must be atomic relative to one another. Never publish quiescence
+        // between TERMINAL CAS and an incomplete lexical-unwind veto.
+        private final Object deadlineRetirementLock = new Object();
         private final java.util.Map<String, dev.oreslang.interop.MixedInteropBridge.Invoker>
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
         private final AtomicInteger phase = new AtomicInteger(NEW);
@@ -1204,19 +1208,26 @@ public final class OresScheduler implements AutoCloseable {
          */
         private void expireFromWallDeadline(Throwable failure) {
             Objects.requireNonNull(failure, "failure");
-            if (task instanceof CleanupAwareTask<?>
-                    && cleanupCancellationInjected.get()) {
-                cleanupIncomplete.set(true);
-                failure = new CleanupIncompleteError(
-                        "deadline terminated in-progress source cleanup; quarantine loans",
-                        failure);
+            synchronized (deadlineRetirementLock) {
+                int observed;
+                do {
+                    observed = phase.get();
+                    if (observed == TERMINAL) return;
+                } while (!phase.compareAndSet(observed, TERMINAL));
+                Resume queued = pendingResume.get();
+                boolean lexicalFramesPossible = observed == RUNNING || observed == WAITING
+                        || (observed == QUEUED && (queued == null || !queued.initial()));
+                if (task instanceof CleanupAwareTask<?> && lexicalFramesPossible) {
+                    // A wall deadline has NO actor-lane cleanup authority, even
+                    // before the first cancellation injection. Report an
+                    // incomplete unwind and quarantine all lexical resources.
+                    cleanupIncomplete.set(true);
+                    failure = new CleanupIncompleteError(
+                            "deadline terminated live source continuation; quarantine loans",
+                            failure);
+                }
             }
             detachActiveAwaitRegistration();
-            int observed;
-            do {
-                observed = phase.get();
-                if (observed == TERMINAL) return;
-            } while (!phase.compareAndSet(observed, TERMINAL));
             pendingResume.set(null);
             terminalOutcome.compareAndSet(null, new TerminalFailure<>(failure));
             if (!executing.get()) {
@@ -1274,9 +1285,12 @@ public final class OresScheduler implements AutoCloseable {
             // A stopped guest carrier is not evidence that its suspended
             // lexical defer/finally was executed. Keep actor/FFI loans
             // quarantined when cleanup could not finish.
-            if (cleanupIncomplete.get()) return;
-            if (phase.get() == TERMINAL && !executing.get()
-                    && quiescenceNotified.compareAndSet(false, true)) {
+            synchronized (deadlineRetirementLock) {
+                if (cleanupIncomplete.get() || phase.get() != TERMINAL
+                        || executing.get()
+                        || !quiescenceNotified.compareAndSet(false, true)) return;
+            }
+            {
                 // Keep the task observable in the scheduler's live set while a
                 // cancelled/failed guest turn is still physically executing.
                 // A terminal Future is not a carrier-exit witness.
