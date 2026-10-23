@@ -291,3 +291,40 @@ It is **not** an exact-full-tree build of the Oreslang source repository
 or proof of GraalVM JIT/AOT/hybrid, LLVM, guest syntax, static capture
 ownership, task unwind/defer or actor/supervisor parity. Keep this PR
 DRAFT until those independent acceptance gates execute.
+
+## Host-cause accessor admission and public API containment (2026-10-23)
+
+A foreign Java `Throwable` may override `getCause()` with an accessor that
+alternates values or exposes different causes on successive reads. Earlier
+preflight only guarded against an accessor *throwing*, not one lying. The
+isolated dispatcher now fails closed for classes whose public `getCause`
+is not the standard inherited `Throwable` implementation, including nested
+causes. Class metadata is cached with `ClassValue`. That intentionally
+rejects some otherwise legitimate foreign wrappers pending a trusted mapping.
+The root ordinary-error fast path reads the root cause and suppressed list
+once per scan. Three focused tests cover alternating hidden cancellation,
+nested hidden security denial, and normal inherited-cause success.
+
+The host dispatcher class is also package-private. No public guest/Java
+recovery API is enabled by this experimental substrate, and a regression test
+asserts the restricted visibility.
+
+**Latest isolated executable evidence:** upstream source revision
+`4ecc382231e085400c97b45e391dbaff8a294e44`,
+verified mirrored source blob
+`e084b886d2d9d2a814ef96a247cf0300ce30d30f` and test blob
+`001c258190c4fe9e5473a373d79bca87ab6e9f14`,
+private Actions run
+https://github.com/agent-pontifex-test/agent-pontifex-e2e-tests/actions/runs/39903552289 .
+Logs confirm OpenJDK 25.0.4.1, `javac --release 21`, and
+**28 tests passed, 0 failures, 0 errors, 0 skipped, BUILD SUCCESS**.
+This is an exact-blob isolated two-file Maven/JUnit harness, not complete
+source-tree compilation or language-level recover acceptance.
+
+**Still not proven:** immutable trusted guest error admission;
+logical-task/suspend-aware continuation authority; ownership-checked
+`rt borrow/take/share/copy` capture binding; correct panic/cancellation
+bypass through native/JIT/AOT; unwind, defer and supervisor parity; and
+LLVM lowering. Java host `Throwable` subclasses with inherited accessors
+are still mutable and potentially subject to concurrent changes, so no
+immutable guest-provenance guarantee is claimed. Keep PR DRAFT.
