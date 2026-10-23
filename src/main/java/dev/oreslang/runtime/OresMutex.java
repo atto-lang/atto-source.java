@@ -1124,10 +1124,18 @@ public final class OresMutex {
                 // An immediately available mutex must be just as safe as a
                 // queued grant: never execute a non-Async Future callback
                 // inline on the actor or scheduler carrier.
-                future.completeHandoffOnNotifier(
-                        guard,
-                        () -> guard.releaseFromRuntime(),
-                        () -> waiter.physicalSettlement.complete(null));
+                try {
+                    future.completeHandoffOnNotifier(
+                            guard,
+                            () -> guard.releaseFromRuntime(),
+                            () -> waiter.physicalSettlement.complete(null));
+                } catch (RuntimeException | Error notifierFailure) {
+                    // No notification thread accepted this physical grant.
+                    // Retain the unresolved Task lease for quarantine instead
+                    // of manufacturing a successful retirement receipt.
+                    waiter.physicalSettlement.completeExceptionally(notifierFailure);
+                    throw notifierFailure;
+                }
             }
 
             return future;
