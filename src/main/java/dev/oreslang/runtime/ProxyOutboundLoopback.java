@@ -216,7 +216,7 @@ public final class ProxyOutboundLoopback implements AutoCloseable {
         return List.copyOf(result);
     }
 
-    public static final class Response implements AutoCloseable {
+    public static final class Response implements ProxyBodyCopy.Source {
         private final int status;
         private final List<Map.Entry<String, String>> headers;
         private final InputStream body;
