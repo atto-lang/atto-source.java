@@ -114,7 +114,10 @@ contract_decl   = visibility "define" "contract" IDENT [ generic_params ]
 interface_decl  = visibility "interface" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
                   interface_body
-                | "define" "interface" IDENT [ generic_params ]
+                | "define" visibility "interface" IDENT [ generic_params ]
+                  [ "extends" type_ref { "," type_ref } ]
+                  interface_body
+                | visibility "define" "interface" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
                   interface_body ;
 
@@ -137,7 +140,7 @@ interface_member= { annotation } [ "structural" ] "fnc" IDENT [ generic_params ]
                 | IDENT ":" type_ref member_terminator
                 | [ binding_kind ] type_ref IDENT member_terminator ;
 
-type_decl       = "type" IDENT [ generic_params ] "=" type_ref stmt_terminator
+type_decl       = visibility "type" IDENT [ generic_params ] "=" type_ref stmt_terminator
                 | "define" visibility "type" IDENT [ generic_params ] "=" type_ref stmt_terminator
                 | visibility "define" "type" IDENT [ generic_params ] "=" type_ref stmt_terminator ;
 
