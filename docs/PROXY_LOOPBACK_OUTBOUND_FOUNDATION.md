@@ -55,3 +55,28 @@ The new real-socket `ProxyOutboundLifecycleCheck` uses latches to exercise close
 A deterministic real-socket regression reproduced a permit being reclaimed while the downstream body writer was still blocked. The old code failed the assertion that the writer remained accounted. The fix retains admission until both the body close and the physical copy worker finish. Five runs of each of four socket test programs passed locally with Java 21, and an additional 50 bounded handoff tests passed. No JDK25/guest conformance is claimed.
 
 Private-source cross-organization mirroring remains unauthorized: the source-main approved-destination allowlist is empty, per CI security issue #1501. No private source was transferred.
+
+## 2026-10-23 follow-up: stream-start and raw-header admission
+
+This PR now includes the previously isolated, locally verified four-file hardening patch. The response lifecycle uses a synchronized state transition to order `streamBody` startup against `close`. A second stream call is rejected, close-before-start cannot reactivate a released response, and a slow downstream writer keeps its outbound permit until the physical copy worker finishes. The owner monitor is not held across network reads, writes or `body.close()`.
+
+The `filtered(HttpHeaders)` helper now verifies **all** received header field names, values, field count (100), and aggregate character/byte estimate (32,768 Latin-1 header octets) **before** stripping hop-by-hop fields. That closes a bypass in which a discarded oversized `Connection`-nominated field previously escaped the retained-header budget. This is an admission check after Java `HttpClient` has parsed headers, **not** a pre-allocation limit on incoming wire header bytes; an earlier transport/parser-level bound remains required.
+
+New regressions:
+
+- `ProxyOutboundStartCloseRaceCheck.java`: 150 synchronized close/start race attempts per execution, closed-before-start denial, permit retirement and reuse.
+- `ProxyOutboundHeaderBudgetCheck.java`: oversized discarded fields, raw field count overflow, malformed `Connection` tokens, and repeated `Set-Cookie` preservation.
+- `scripts/test-proxy-outbound-loopback.sh`: runs six Java 21 socket/header programs five times each.
+
+The exact previously tested patch was applied to the same PR head and all four Git blob hashes match the locally verified patch:
+
+- Transport: `d6ee5966178e59de55befa3e2cfe4a394e6e8426`.
+- Stream-start race test: `1b2f2a13869a72bfc4258f04abebfefa13c7bfb2`.
+- Header-budget test: `4f7f3355435b6284d051f171e1ebd2e86dfb3ff6`.
+- Test runner script: `d00371952f10c80781783d13905acddd305ab828`.
+
+Local evidence for these exact file bytes, from the isolated audit: **30/30** test-program executions passed (six programs × five runs), plus ten additional stream-start/close and ten additional header-budget executions. The 150-turn race test ran 2,250 race attempts in total. Tests used JDK 21; they do not establish JDK 25, Graal guest execution, actor integration or production viability.
+
+**GitHub Actions:** exact branch-head job failed before any execution steps, so the CI result is neither a compiler failure nor a pass. The source `main` private-source transfer destination allowlist remains empty. No private-source cross-organization mirror is approved or attempted. Refer to [issue #1501](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/1501).
+
+The integration remains draft until the context-owned `AsyncNativeIo` bridge, actor-local and resource-scoped network permissions, host I/O worker isolation, verified tests and general-egress destination pinning are implemented and reviewed.
