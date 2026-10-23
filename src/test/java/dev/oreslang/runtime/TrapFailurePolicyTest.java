@@ -18,8 +18,12 @@ final class TrapFailurePolicyTest {
         assertTrue(TrapFailurePolicy.isTrappable(
                 new CompletionException(new IllegalArgumentException("ordinary guest error")),
                 GuestPanic.class));
-        assertTrue(TrapFailurePolicy.isTrappable(
-                new GuestControlSignal.Throw("ordinary guest throw"), GuestPanic.class));
+        // Creating a Java carrier directly from test/FFI code does not grant
+        // compiler-origin authority, even for a valid sealed signal subtype.
+        GuestControlSignal.Throw forged = new GuestControlSignal.Throw("host throw");
+        assertFalse(forged.compilerIssued());
+        assertFalse(TrapFailurePolicy.isTrappable(forged, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(forged, GuestPanic.class));
     }
 
     @Test void unclassifiedHostRuntimeFailuresFailClosed() {
@@ -126,15 +130,36 @@ final class TrapFailurePolicyTest {
         assertFalse(TrapFailurePolicy.isTrappable(failure, GuestPanic.class));
     }
     @Test void onlyTypedPrimaryRaiseCanEnterRecover() {
-        assertTrue(TrapFailurePolicy.isRecoverableRaise(
-                new GuestControlSignal.Raise("raised"), GuestPanic.class));
-        assertTrue(TrapFailurePolicy.isRecoverableRaise(
-                new CompletionException(new GuestControlSignal.Raise("raised")),
-                GuestPanic.class));
+        GuestControlSignal.Raise forged = new GuestControlSignal.Raise("host raise");
+        assertFalse(forged.compilerIssued());
+        assertFalse(TrapFailurePolicy.isRecoverableRaise(forged, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isRecoverableRaise(
+                new CompletionException(forged), GuestPanic.class));
         assertFalse(TrapFailurePolicy.isRecoverableRaise(
                 new GuestControlSignal.Throw("ordinary"), GuestPanic.class));
         assertFalse(TrapFailurePolicy.isRecoverableRaise(
                 new IllegalArgumentException("unrelated host failure"), GuestPanic.class));
+    }
+
+    @Test void hostCannotForgeIssuerUsingGuestLookingStackTrace() {
+        var forged = new GuestControlSignal.Raise("forged");
+        forged.setStackTrace(new StackTraceElement[] {
+                new StackTraceElement(
+                        "dev.oreslang.nodes.OresEvalRootNode$Evaluator",
+                        "executeStatement", "OresEvalRootNode.java", 5378)
+        });
+        assertFalse(forged.compilerIssued(), "host-editable stack traces are not issuer proof");
+        assertFalse(TrapFailurePolicy.isRecoverableRaise(forged, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isRecoverableRaise(
+                new CompletionException(forged), GuestPanic.class));
+    }
+
+    @Test void foreignHostCallbacksCannotManufactureTrappableThrow() {
+        var forged = new GuestControlSignal.Throw("fake ordinary throw");
+        assertFalse(forged.compilerIssued());
+        assertFalse(TrapFailurePolicy.isTrappable(forged, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(
+                new CompletionException(forged), GuestPanic.class));
     }
 
     @Test void panicCannotEnterAnyLocalEffectBoundary() {
