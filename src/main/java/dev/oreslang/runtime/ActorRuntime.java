@@ -1777,6 +1777,38 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * Trusted runtime/IO adapter only: mint a physical release obligation
+     * BEFORE acquiring or handing a resource to an actor. No guest-facing
+     * method exports this capability. A close request or cancellation is not
+     * a receipt; the adapter must settle after actual physical retirement.
+     *
+     * Post-STOP enrollment requires an authenticated lexical cleanup turn,
+     * or the actor's explicitly registered final-cleanup callback. The
+     * registry is bound to the specific ActorCell and actor generation.
+     */
+    ActorPhysicalRetirementRegistry.Receipt registerCurrentActorPhysicalReceipt(
+            ActorPhysicalRetirementRegistry.Kind kind) {
+        Objects.requireNonNull(kind, "kind");
+        requireCallerRuntimeAffinity("register actor physical retirement");
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null || !currentThreadOwnsActorExecutionLease()) {
+            throw new SecurityException(
+                    "physical resource receipt requires the owning actor execution lease");
+        }
+        synchronized (cell.lifecycleLock) {
+            boolean cleanup = cell.stopped.get()
+                    && ((cell.sourceStopCleanupActive
+                            && OresScheduler.cancellationCleanupTurn())
+                        || cell.finalCleanupActive);
+            if (cell.finalized || closed.get()
+                    || (cell.stopped.get() && !cleanup)) {
+                throw terminated(cell.ref);
+            }
+            return cell.physicalRetirement.register(kind, cleanup);
+        }
+    }
+
+    /**
      * Bind a runtime Future to the current actor lifetime. Outside an actor
      * turn the Future remains independently owned by its caller.
      */
@@ -2362,6 +2394,15 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean ownedBy(ActorRuntime runtime) { return ActorRuntime.this == runtime; }
         public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
         public Optional<Throwable> failure() { return Optional.ofNullable(terminationCause.get()); }
+
+        /** Trusted diagnostic: physical close/loan failure is separate from
+         * the original actor throw/cancellation cause. A quarantined actor
+         * remains in the registry until an external isolation policy resolves it. */
+        public Optional<Throwable> physicalRetirementFailure() {
+            ActorCell<?> cell = actors.get(id);
+            if (cell == null || cell.ref != this) return Optional.empty();
+            return Optional.ofNullable(cell.physicalRetirement.snapshot().failure());
+        }
 
         /**
          * Actor initialization barrier. Accessing ready starts an unstarted
@@ -7104,6 +7145,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorCell<?> parent;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
+        /** Host-only physical loan/handle receipts, owned by this incarnation. */
+        private final ActorPhysicalRetirementRegistry physicalRetirement;
         /** Bounded async-close Future receipts admitted only by cleanup Tasks. */
         private int pendingCleanupFutures;
         /**
@@ -7215,6 +7258,8 @@ public final class ActorRuntime implements AutoCloseable {
                 String codeActorType,
                 ActorCell<?> parent) {
             this.ref = ref;
+            this.physicalRetirement = new ActorPhysicalRetirementRegistry(
+                    ref.id(), ref.generation(), this::sourceTaskCleanupQuiesced);
             this.kind = kind;
             this.dispatchLane = dispatcherFor(kind) instanceof ActorAffinityDispatcher lanes
                     ? lanes.reserveLane() : -1;
@@ -7500,6 +7545,23 @@ public final class ActorRuntime implements AutoCloseable {
                     || carrierActive
                     || !children.isEmpty()) return;
             OresScheduler scheduler = sourceScheduler;
+            ActorPhysicalRetirementRegistry.Snapshot physical =
+                    physicalRetirement.snapshot();
+            if (physical.failure() != null) {
+                // A failed/uncertain native/IO release is NOT evidence of
+                // quiescence. Preserve the original actor failure as primary,
+                // but retain this physical diagnostic and quarantine its arena.
+                ref.terminationCause.compareAndSet(null,
+                        new OresScheduler.CleanupIncompleteError(
+                                "actor physical retirement failed; quarantine arena",
+                                physical.failure()));
+                return;
+            }
+            if (physical.pending() != 0) {
+                // Keep ActorCell, arena and all shared/native loans alive.
+                // The last genuine release receipt rechecks this gate.
+                return;
+            }
             if (sourceStopCleanupAborted) {
                 ref.terminationCause.compareAndSet(null,
                         new OresScheduler.CleanupIncompleteError(
@@ -7536,6 +7598,9 @@ public final class ActorRuntime implements AutoCloseable {
                     return;
                 }
             }
+            // Under lifecycleLock no new resource can be registered after
+            // STOP. This closes the physical receipt registry permanently.
+            physicalRetirement.retireVerified();
             finalized = true;
             sourceScheduler = null;
             // Cleanup admission never outlives this actor incarnation.
@@ -8174,6 +8239,9 @@ public final class ActorRuntime implements AutoCloseable {
                 // not re-close a channel or reset the cleanup admission fence.
                 if (!stopped.compareAndSet(false, true)) return;
                 sealing = true;
+                // Monotonic STOP fence: resource adapters can no longer mint
+                // ordinary physical obligations, only authenticated cleanup.
+                physicalRetirement.seal();
                 cleanupScheduler = sourceScheduler;
                 sourceStopCleanupPending = cleanupScheduler != null;
                 pendingOperationRevocationPending = true;
