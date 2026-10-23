@@ -673,7 +673,8 @@ public class TaskHandleTest {
             try {
                 assertTrue(h.result().cancel(false));
                 assertFalse(h.getDone().isDone());
-                assertFalse(h.isCancellationRequested());
+                assertTrue(h.isCancellationRequested(),
+                        "direct result cancellation revokes owned child authority");
             } finally {
                 release.countDown();
             }
