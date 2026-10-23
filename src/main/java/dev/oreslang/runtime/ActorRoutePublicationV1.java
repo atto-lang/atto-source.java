@@ -223,6 +223,7 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
     private volatile Published<R> active;
     private Stage pending;
     private boolean poisoned;
+    private Throwable poisonCause;
     private boolean closed;
 
     ActorRoutePublicationV1(ActorUpgradeEpochGate initial,
@@ -367,6 +368,20 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
         }
     }
 
+    void quarantine(Throwable failure) {
+        Objects.requireNonNull(failure, "quarantine failure");
+        synchronized (lock) {
+            if (poisonCause == null) poisonCause = failure;
+            poisoned = true;
+        }
+    }
+
+    Throwable quarantineCause() {
+        synchronized (lock) {
+            return poisonCause;
+        }
+    }
+
     private void requireStage(Stage stage) {
         requireOperational();
         if (stage.finished || pending != stage || active != stage.prior)
@@ -374,8 +389,11 @@ final class ActorRoutePublicationV1<R> implements AutoCloseable {
     }
 
     private void requireOperational() {
-        if (closed || poisoned)
-            throw new IllegalStateException("logical actor authority closed or quarantined");
+        if (closed)
+            throw new IllegalStateException("logical actor authority closed");
+        if (poisoned)
+            throw new IllegalStateException(
+                    "logical actor authority quarantined", poisonCause);
         // Legacy host helpers can still mutate the generation gate and mailbox
         // independently. Detect that divergence before admitting or dispatching
         // any DATA: a route snapshot alone cannot authorize mismatched epochs.
