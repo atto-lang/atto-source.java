@@ -221,12 +221,13 @@ public final class ProxyOutboundLoopback implements AutoCloseable {
         private final List<Map.Entry<String, String>> headers;
         private final InputStream body;
         private final Runnable release;
-        private final AtomicBoolean closed = new AtomicBoolean();
-        private final AtomicBoolean consumed = new AtomicBoolean();
-        // A response can be closed while a downstream write is still blocked.
-        // Capacity belongs to the physical stream until its worker returns.
-        private final AtomicBoolean streamingActive = new AtomicBoolean();
-        private final AtomicBoolean closeFinished = new AtomicBoolean();
+        // One response-state monitor linearizes stream start against close.
+        // No monitor is held across a socket read/write or body.close().
+        private boolean closed;
+        private boolean consumed;
+        private boolean streamingActive;
+        private boolean closeFinished;
+        private boolean retired;
 
         private Response(int status, List<Map.Entry<String, String>> headers,
                          InputStream body, Runnable release) {
@@ -243,35 +244,55 @@ public final class ProxyOutboundLoopback implements AutoCloseable {
         public long streamBody(OutputStream target, BooleanSupplier cancelled) throws IOException {
             Objects.requireNonNull(target);
             Objects.requireNonNull(cancelled);
-            if (!consumed.compareAndSet(false, true))
-                throw new IllegalStateException("body stream already consumed");
-            streamingActive.set(true);
+            synchronized (this) {
+                if (closed) throw new IOException("response owner already closed");
+                if (consumed) throw new IllegalStateException("body stream already consumed");
+                consumed = true;
+                streamingActive = true;
+            }
             try {
                 byte[] chunk = new byte[8192];
                 long total = 0;
                 while (true) {
-                    if (closed.get() || cancelled.getAsBoolean())
+                    if (isClosed() || cancelled.getAsBoolean())
                         throw new IOException("response streaming cancelled or owner closed");
                     int n = body.read(chunk);
                     if (n < 0) return total;
-                    if (closed.get() || cancelled.getAsBoolean())
+                    if (isClosed() || cancelled.getAsBoolean())
                         throw new IOException("response streaming cancelled or owner closed");
                     target.write(chunk, 0, n);
                     total += n;
                 }
             } finally {
-                streamingActive.set(false);
                 try { close(); }
-                finally { if (closeFinished.get()) release.run(); }
+                finally {
+                    boolean releaseNow;
+                    synchronized (this) {
+                        streamingActive = false;
+                        releaseNow = closeFinished && !retired;
+                        if (releaseNow) retired = true;
+                    }
+                    if (releaseNow) release.run();
+                }
             }
         }
 
+        private synchronized boolean isClosed() { return closed; }
+
         @Override public void close() throws IOException {
-            if (!closed.compareAndSet(false, true)) return;
+            synchronized (this) {
+                if (closed) return;
+                closed = true;
+            }
             try { body.close(); }
             finally {
-                closeFinished.set(true);
-                if (!streamingActive.get()) release.run();
+                boolean releaseNow;
+                synchronized (this) {
+                    closeFinished = true;
+                    releaseNow = !streamingActive && !retired;
+                    if (releaseNow) retired = true;
+                }
+                if (releaseNow) release.run();
             }
         }
     }
