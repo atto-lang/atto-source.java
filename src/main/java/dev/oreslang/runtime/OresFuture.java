@@ -485,18 +485,15 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         if (state.get() != PENDING) return null;
         BooleanSupplier admission = cancelAdmission;
         if (admission == null || !admission.getAsBoolean()) return null;
+        // Allocation of the single-use notifier and its claim flag MUST
+        // happen before the terminal CAS. If either allocation fails, this
+        // Future stays pending and its owning scope can abort cancellation
+        // preflight/retry rather than leaving a Cancelled Future with no
+        // way to finish deferred subscriber delivery.
         Cancelled terminal = new Cancelled(
                 new CancellationException("OresFuture was cancelled"));
-        if (!state.compareAndSet(PENDING, terminal)) return null;
-        cancelAdmission = null;
-        // Revoke this producer now, but keep *subscriber* admission closed
-        // until the owning scope has revoked every sibling. Otherwise a
-        // listener registered between those two phases runs synchronously
-        // as soon as cancelRevocationComplete flips, bypassing the scope's
-        // revoke-all-before-notify guarantee.
-        invokeCancelHook();
         AtomicBoolean delivered = new AtomicBoolean();
-        return () -> {
+        Runnable deliver = () -> {
             if (!delivered.compareAndSet(false, true)) return;
             try {
                 // Late registrations published during the deferred interval
@@ -512,6 +509,15 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
                 if (drained != null) drained.run();
             }
         };
+        if (!state.compareAndSet(PENDING, terminal)) return null;
+        cancelAdmission = null;
+        // Revoke this producer now, but keep *subscriber* admission closed
+        // until the owning scope has revoked every sibling. Otherwise a
+        // listener registered between those two phases runs synchronously
+        // as soon as cancelRevocationComplete flips, bypassing the scope's
+        // revoke-all-before-notify guarantee.
+        invokeCancelHook();
+        return deliver;
     }
 
     @Override
