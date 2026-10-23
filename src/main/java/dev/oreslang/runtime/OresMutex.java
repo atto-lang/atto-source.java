@@ -845,10 +845,17 @@ public final class OresMutex {
                         }
                         // Cancellation/completion can race with dequeue. Once
                         // removed from the queue, this path owns wait/domain cleanup.
+                        candidate.queueRevoked.set(true);
                         endWait(candidate.ownerDomain);
                         releaseDomain(candidate.ownerDomain);
                         settleAsyncWaiterQuota(candidate);
-                        candidate.physicalSettlement.complete(null);
+                        // Future.isDone() can become true before its
+                        // synchronous completion listeners have unwound.
+                        // This branch runs under asyncQueueLock: use an async
+                        // continuation so DONE observers never run under the
+                        // queue monitor, even if notification already drained.
+                        candidate.future.notificationDrained.thenRunAsync(
+                                () -> candidate.physicalSettlement.complete(null));
                     }
 
                     if (waiter == null) {
