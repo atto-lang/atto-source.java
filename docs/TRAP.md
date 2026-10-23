@@ -277,6 +277,46 @@ This is dynamic, not merely transitive/static. A synchronous callback invoked wh
 
 If no dynamic `trap` boundary exists, `throw` retains normal Oreslang `try/catch` / unhandled-exception behavior.
 
+## Trusted guest-effect issuance (Java interpreter staging)
+
+The Java interpreter now stamps exceptional signals with **direct caller Class
+identity** (the VM-owned `OresEvalRootNode` and its real JVM nestmates).
+The `GuestControlSignal.Throw/Raise/Panic` diagnostic constructors are still
+public for compatibility, but a host/FFI-created instance carries
+`compilerIssued() == false` and cannot be admitted as a guest `throw` into
+`trap`/`catch` or as a guest `raise` into `recover`. Guest exception
+types, mutable Java stack trace strings, and an exception's public class name
+are not sufficient admission credentials.
+
+`TrapFailurePolicy` also refuses overridden host `getCause()` accessors
+when classifying either a trap/catch failure or an eligible raise. These host
+scans are intentionally bounded and fail closed on malformed graphs.
+
+**Not yet a production security boundary:** this first stage only proves that
+the Java signal was constructed directly by trusted evaluator code. It does
+not bind the signal to its original logical Task/actor incarnation, prevent a
+foreign Java adapter from replaying a previously emitted signal, or guarantee
+GraalVM Native Image and LLVM parity. Moreover, legacy ordinary Java runtime
+errors are still mapped by `isMappedGuestFailure` using Java stack-trace
+provenance; a mutable stack trace is not cryptographic or capability-backed
+proof of trusted guest origin. Replacing that mapping with immutable
+compiler/runtime-minted effects is a separate required merge gate. Any host
+interop capable of unrestricted reflection/Unsafe access to VM objects
+must remain outside the untrusted security model.
+
+**Executed focused local evidence, 2026-10-23:** OpenJDK 21 compiled exact
+Git blob `02dcdc593f3cd3a9b6f63e09749e1fc4ead449fc` for
+`GuestControlSignal.java` and
+`7eff2826ac36a1aa5ce9e4985e09da1606a4f747` for
+`TrapFailurePolicy.java`. A minimal evaluator class stub and
+`SourceBoundaryTrace` stub enabled **31/31 manual isolated assertions**
+(7 issuance, 18 effect-admission, 6 adversarial cause-accessor assertions).
+This does *not* count as execution of the committed JUnit suite, the actual
+GraalVM evaluator, guest parser/source fixtures or LLVM native code. Both
+files' local bytes were independently verified against the named Git blobs.
+Cross-organization private CI remains blocked pending the independently
+reviewed allowlist in security issue #1501.
+
 ## `raise`: deliberate trap escape
 
 `raise` is a distinct reserved control-flow keyword/effect.
