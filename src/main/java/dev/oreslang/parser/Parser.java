@@ -1761,6 +1761,9 @@ public final class Parser {
         java.util.Set<String> seen = new java.util.HashSet<>();
         do {
             String name = consume(IDENT, "expected generic parameter name").lexeme();
+            if ("_".equals(name)) {
+                throw error(previous(), "'_' is a generic argument inference hole, not a declaration parameter name");
+            }
             if (!seen.add(name)) {
                 throw error(previous(), "duplicate generic parameter name '" + name + "'");
             }
