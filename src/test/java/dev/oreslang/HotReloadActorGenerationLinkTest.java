@@ -62,6 +62,7 @@ final class HotReloadActorGenerationLinkTest {
             assertEquals(64, code.length());
             assertEquals(64, schema.length());
             assertEquals(64, message.length());
+            assertEquals(64, view.capabilitySha256().length());
 
             try (var routePin = generation.pinActorRoute()) {
                 assertSame(generation, routePin.generation());
