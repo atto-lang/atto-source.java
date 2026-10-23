@@ -224,6 +224,15 @@ public final class AsyncNativeIo implements AutoCloseable {
     synchronized void register(AutoCloseable resource) throws Exception {
         Objects.requireNonNull(resource);
         if (closed) {
+            if (resourcesRetired) {
+                // The full worker and resource join already completed.
+                // There is no remaining physical owner capable of sweeping
+                // newly added handles. Reject the transfer outright: the
+                // caller still owns this unregistered resource and must close
+                // it. Never add it to an already-retired context.
+                throw new IllegalStateException(
+                        "I/O context fully retired; caller retains resource ownership");
+            }
             // A RUNNING connect may create a resource after close() sealed
             // admission. Closing it on this worker/monitor would release a
             // native handle before all context loans have exited. Retain it
