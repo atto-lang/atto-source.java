@@ -7370,7 +7370,8 @@ public final class ActorRuntime implements AutoCloseable {
                 ActorCell<?> parent) {
             this.ref = ref;
             this.physicalRetirement = new ActorPhysicalRetirementRegistry(
-                    ref.id(), ref.generation(), this::sourceTaskCleanupQuiesced);
+                    ref.id(), ref.generation(),
+                    this::physicalRetirementObserved, this::sourceTaskCleanupQuiesced);
             this.kind = kind;
             this.dispatchLane = dispatcherFor(kind) instanceof ActorAffinityDispatcher lanes
                     ? lanes.reserveLane() : -1;
@@ -7756,6 +7757,17 @@ public final class ActorRuntime implements AutoCloseable {
             else ref.doneFuture.failFromRuntime(terminal);
             finalizedFuture.completeFromRuntime(null);
             lifecycleLock.notifyAll();
+        }
+
+        /**
+         * Physical receipt notifier: diagnostics only, never finalization.
+         * The registry calls sourceTaskCleanupQuiesced separately only AFTER
+         * the last physical notifier has fully returned and been accounted.
+         */
+        private void physicalRetirementObserved() {
+            synchronized (lifecycleLock) {
+                lifecycleLock.notifyAll();
+            }
         }
 
         private void sourceTaskCleanupQuiesced() {

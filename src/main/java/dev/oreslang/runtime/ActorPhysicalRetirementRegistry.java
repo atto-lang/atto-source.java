@@ -61,9 +61,8 @@ final class ActorPhysicalRetirementRegistry {
                     throw new IllegalStateException("foreign physical receipt");
                 }
                 state = 1;
-                // A concurrently observed empty pending set is NOT a safe
-                // physical retirement receipt while this terminal callback
-                // can still be executing on an external driver thread.
+                // A removed ticket is not permission to retire while its
+                // trusted host notification is executing.
                 inFlightNotifications++;
             }
             Throwable failure = null;
@@ -71,24 +70,25 @@ final class ActorPhysicalRetirementRegistry {
                 notifyOwner();
             } catch (RuntimeException | Error callbackFailure) {
                 failure = callbackFailure;
-            } finally {
-                synchronized (lock) {
-                    inFlightNotifications--;
-                }
-                // Wake a STOP that observed the in-flight notification fence.
-                // This recheck runs only AFTER the physical driver has crossed
-                // back out of the first owner callback. Do not hold lock here.
-                try {
-                    notifyOwner();
-                } catch (RuntimeException | Error callbackFailure) {
-                    if (failure == null) failure = callbackFailure;
-                    else if (failure != callbackFailure) {
-                        failure.addSuppressed(callbackFailure);
-                    }
-                }
+            }
+            boolean readyForFinalization;
+            synchronized (lock) {
+                inFlightNotifications--;
+                readyForFinalization = sealed && firstFailure == null
+                        && pending.isEmpty() && inFlightNotifications == 0;
             }
             if (failure instanceof RuntimeException runtime) throw runtime;
             if (failure instanceof Error fatal) throw fatal;
+            if (readyForFinalization) {
+                // Distinct trusted finalization handoff, NOT a second physical
+                // notifier. An earlier notifier failure is already sticky.
+                try {
+                    notificationDrained.run();
+                } catch (RuntimeException | Error callbackFailure) {
+                    recordFailure(callbackFailure);
+                    throw callbackFailure;
+                }
+            }
             return true;
         }
 
@@ -114,6 +114,7 @@ final class ActorPhysicalRetirementRegistry {
     private final ActorRuntime.ActorId ownerActorId;
     private final long ownerGeneration;
     private final Runnable stateChanged;
+    private final Runnable notificationDrained;
     private final Object lock = new Object();
     private final Set<Receipt> pending =
             Collections.newSetFromMap(new IdentityHashMap<>());
@@ -124,13 +125,15 @@ final class ActorPhysicalRetirementRegistry {
 
     ActorPhysicalRetirementRegistry(
             ActorRuntime.ActorId ownerActorId, long ownerGeneration,
-            Runnable stateChanged) {
+            Runnable stateChanged, Runnable notificationDrained) {
         this.ownerActorId = Objects.requireNonNull(ownerActorId, "ownerActorId");
         if (ownerGeneration <= 0) {
             throw new IllegalArgumentException("actor generation must be positive");
         }
         this.ownerGeneration = ownerGeneration;
         this.stateChanged = Objects.requireNonNull(stateChanged, "stateChanged");
+        this.notificationDrained = Objects.requireNonNull(
+                notificationDrained, "notificationDrained");
     }
 
     /**
@@ -163,18 +166,22 @@ final class ActorPhysicalRetirementRegistry {
         return result;
     }
 
+    private void recordFailure(Throwable failure) {
+        synchronized (lock) {
+            if (firstFailure == null) firstFailure = failure;
+            else if (firstFailure != failure) firstFailure.addSuppressed(failure);
+        }
+    }
+
     /**
-     * Retirement notifications are trusted host callbacks. A broken callback
-     * is not an arena-release receipt: fail closed and retain the actor.
+     * Trusted physical-event observer: it must never invoke actor finalization.
+     * The separate notificationDrained callback runs after this returns.
      */
     private void notifyOwner() {
         try {
             stateChanged.run();
         } catch (RuntimeException | Error failure) {
-            synchronized (lock) {
-                if (firstFailure == null) firstFailure = failure;
-                else if (firstFailure != failure) firstFailure.addSuppressed(failure);
-            }
+            recordFailure(failure);
             throw failure;
         }
     }
