@@ -9,7 +9,8 @@ Do not use python for anything, use Rust instead of python to support the langua
 
 Notes on the compiler and runtime:
 
-- Strive for min gc or zero gc where possible. Having separate heaps/arenas per actor helps reduce gc overhead.
+- Strive for min gc or zero gc where possible. Having separate heaps/arenas per actor helps reduce gc overhead. Our borrow checking should reduce need for gc to zero.
+- Borrow checking uses reserved keywords `rt copy, rt share, rt take, rt borrow`
 - We want full AOT for GraalVM with Native Images so we can get single binary executable files.
 - Strive for hard real time not just soft-real time by minimizing JIT (or having JIT switched off for certain paths) and moving towards full AOT.
 - Use data-oriented design and data oriented programming - be mindful of using AoS, SoA, AoSoA and SoAoS where possible.
