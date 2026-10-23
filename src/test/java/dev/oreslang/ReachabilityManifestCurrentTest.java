@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 
@@ -101,6 +102,54 @@ final class ReachabilityManifestCurrentTest {
                 IllegalArgumentException.class,
                 () -> ReachabilityManifest.from(
                         forged, BuildOptions.executable()));
+    }
+
+    @Test
+    void incompleteSemanticClassificationFailsClosed() {
+        TreeShaker.Result base = OresCompiler.compileForBuild(
+                "pub fnc main(): int { return 0; }",
+                BuildOptions.executable());
+
+        TreeShaker.Result forged = new TreeShaker.Result(
+                base.program(),
+                base.retainedSymbols(),
+                base.removedSymbols(),
+                base.compileTimeConstants(),
+                base.rootSymbols(),
+                base.libraryBuild(),
+                Set.of("__root__.main", "__root__.missing"));
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> ReachabilityManifest.from(forged));
+    }
+
+    @Test
+    void nullCompileTimeConstantRemainsCanonicalJsonNull() {
+        TreeShaker.Result base = OresCompiler.compileForBuild(
+                "pub fnc main(): int { return 0; }",
+                BuildOptions.executable());
+        LinkedHashMap<String, Object> constants = new LinkedHashMap<>();
+        constants.put("__root__.optional", null);
+
+        TreeShaker.Result forged = new TreeShaker.Result(
+                base.program(),
+                base.retainedSymbols(),
+                base.removedSymbols(),
+                constants,
+                base.rootSymbols(),
+                base.libraryBuild(),
+                base.semanticSymbols());
+
+        assertEquals(
+                null,
+                ReachabilityManifest.from(forged)
+                        .compileTimeConstants()
+                        .get("__root__.optional"));
+        assertTrue(
+                ReachabilityManifest.from(forged)
+                        .canonicalJson()
+                        .contains("\"__root__.optional\":null"));
     }
 
     @Test
