@@ -191,6 +191,58 @@ final class ActorStopCleanupAdmissionTest {
     }
 
     @Test
+    void actorStopJoinsExistingFutureRevokerBeforePublishingDone()
+            throws Exception {
+        CountDownLatch admitted = new CountDownLatch(1);
+        CountDownLatch revokerEntered = new CountDownLatch(1);
+        CountDownLatch releaseRevoker = new CountDownLatch(1);
+        AtomicReference<Throwable> cancelFailure = new AtomicReference<>();
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                OresFuture<Void> leasedOperation = new OresFuture<>(() -> {
+                    revokerEntered.countDown();
+                    try {
+                        if (!releaseRevoker.await(5, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException(
+                                    "test held the operation revoker too long");
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(interrupted);
+                    }
+                });
+                context.runtime().ownCurrentActorFuture(leasedOperation);
+                admitted.countDown();
+            });
+            actor.send("own-resource");
+            assertTrue(admitted.await(3, TimeUnit.SECONDS));
+            Thread cancellation = Thread.ofVirtual().start(() -> {
+                try {
+                    actor.cancel();
+                } catch (Throwable failure) {
+                    cancelFailure.set(failure);
+                }
+            });
+            try {
+                assertTrue(revokerEntered.await(3, TimeUnit.SECONDS));
+                assertFalse(actor.done().isDone(),
+                        "logical STOP must not reclaim ahead of owned revoker");
+                assertFalse(actor.awaitTermination(100, TimeUnit.MILLISECONDS));
+            } finally {
+                releaseRevoker.countDown();
+            }
+            cancellation.join(TimeUnit.SECONDS.toMillis(3));
+            assertFalse(cancellation.isAlive());
+            assertNull(cancelFailure.get(), () -> String.valueOf(cancelFailure.get()));
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            ExecutionException failed = assertThrows(ExecutionException.class,
+                    () -> actor.done().get(3, TimeUnit.SECONDS));
+            assertInstanceOf(ActorRuntime.ActorCancelledException.class,
+                    failed.getCause());
+        }
+    }
+
+    @Test
     void stopBeforeQueuedSourceStartDoesNotRunDiscardedInitialTask()
             throws Exception {
         var admitted = new CountDownLatch(1);
