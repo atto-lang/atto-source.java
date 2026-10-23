@@ -7383,6 +7383,12 @@ public final class ActorRuntime implements AutoCloseable {
         private OresScheduler sourceScheduler() {
             synchronized (lifecycleLock) {
                 if (sourceScheduler != null) return sourceScheduler;
+                // Creation itself must linearize with STOP; otherwise an
+                // already-active guest message could create a NEW, unsealed
+                // source scheduler after STOP took its cancellation snapshot.
+                if (stopped.get() || finalized || closed.get()) {
+                    throw terminated(ref);
+                }
 
                 java.util.concurrent.Executor mailboxExecutor = command -> {
                     if (!enqueueSourceTaskContinuation(this, command)) {
