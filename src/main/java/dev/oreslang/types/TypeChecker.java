@@ -375,28 +375,12 @@ public final class TypeChecker {
         }
     }
 
-    /** A forward type is exactly one type-only promise, not a second alias
-     * in the nominal namespace. Its matching completed definition may appear
-     * later in the same lexical module. Reject missing/duplicate completions,
-     * visibility laundering, and unrelated kind collisions before collection. */
+    /** All type introducers are complete declarations. The canonical
+     * 'declare type T = U;' and compatible 'define type T = U;' share one
+     * TypeAliasDecl, namespace, visibility rule and alias-cycle validation. */
     private void validateTypeOnlyNamespace(Ast.ModuleDecl module) {
         Map<String, String> kinds = new LinkedHashMap<>();
-        Map<String, Ast.Visibility> forwards = new LinkedHashMap<>();
-        Map<String, Ast.Visibility> completed = new LinkedHashMap<>();
         for (Ast.Decl declaration : module.declarations()) {
-            if (declaration instanceof Ast.TypeForwardDecl forward) {
-                if (completed.containsKey(forward.name())) {
-                    throw new IllegalArgumentException(
-                            "TYPE_FORWARD_AFTER_DEFINITION: '" + module.name() + "."
-                                    + forward.name() + "' cannot be promised after completion");
-                }
-                if (forwards.putIfAbsent(forward.name(), forward.visibility()) != null) {
-                    throw new IllegalArgumentException(
-                            "TYPE_FORWARD_DUPLICATE: '" + module.name() + "." + forward.name()
-                                    + "' is declared more than once");
-                }
-                continue;
-            }
             String name;
             String kind;
             if (declaration instanceof Ast.InterfaceDecl iface) {
@@ -406,7 +390,6 @@ public final class TypeChecker {
             } else if (declaration instanceof Ast.TypeAliasDecl alias) {
                 name = alias.name();
                 kind = "type alias";
-                completed.put(name, alias.visibility());
             } else if (declaration instanceof Ast.ClassDecl klass) {
                 name = klass.name();
                 kind = klass.actorKind() == Ast.ActorKind.NONE ? "class" : "actor";
@@ -418,25 +401,6 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "TYPE_DECL_NAME_COLLISION: '" + module.name() + "." + name
                                 + "' is declared as both " + prior + " and " + kind);
-            }
-        }
-        for (Map.Entry<String, Ast.Visibility> promise : forwards.entrySet()) {
-            String qualified = module.name() + "." + promise.getKey();
-            if (!completed.containsKey(promise.getKey())) {
-                if (kinds.containsKey(promise.getKey())) {
-                    throw new IllegalArgumentException(
-                            "TYPE_FORWARD_KIND_MISMATCH: '" + qualified
-                                    + "' promised a type alias but is completed by "
-                                    + kinds.get(promise.getKey()));
-                }
-                throw new IllegalArgumentException(
-                        "TYPE_FORWARD_UNRESOLVED: '" + qualified
-                                + "' has no matching completed type definition");
-            }
-            if (completed.get(promise.getKey()) != promise.getValue()) {
-                throw new IllegalArgumentException(
-                        "TYPE_FORWARD_VISIBILITY_MISMATCH: '" + qualified
-                                + "' must retain the same visibility in its definition");
             }
         }
     }
