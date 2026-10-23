@@ -148,14 +148,22 @@ public final class HotReloadManager implements AutoCloseable {
             active.set(generation);
             return generation;
         } catch (RuntimeException | Error failure) {
-            if (generation != null) {
-                // Roll back every publication surface and revoke the freshly
-                // issued code-image capability before propagating admission
-                // failure. close() is idempotent and manager cleanup is
-                // identity-conditional, so partial map publication is safe.
-                generation.close();
-            } else {
-                context.close(true);
+            try {
+                if (generation != null) {
+                    // Roll back every publication surface and revoke the freshly
+                    // issued code-image capability before propagating admission
+                    // failure. close() is idempotent and manager cleanup is
+                    // identity-conditional, so partial map publication is safe.
+                    generation.close();
+                } else {
+                    context.close(true);
+                }
+            } catch (RuntimeException | Error cleanupFailure) {
+                // Admission failure remains the authoritative outcome. Cleanup
+                // diagnostics are retained without replacing its identity/kind.
+                if (cleanupFailure != failure) {
+                    failure.addSuppressed(cleanupFailure);
+                }
             }
             throw failure;
         }
