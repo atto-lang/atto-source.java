@@ -217,9 +217,11 @@ final class RecoveryHandlerChain<T> {
             CURRENT_DISPATCH.set(scope);
         }
         if (scope.aborted != null) {
+            pendingFailure.markTerminated();
             throw scope.aborted;
         }
         if (scope.active.containsKey(this) || scope.active.size() >= MAX_NESTED_DISPATCHES) {
+            pendingFailure.markTerminated();
             scope.aborted = new DispatchAbort(
                     "reentrant or excessively nested recovery dispatch", failure);
             throw scope.aborted;
