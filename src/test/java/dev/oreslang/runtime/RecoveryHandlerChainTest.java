@@ -19,7 +19,7 @@ final class RecoveryHandlerChainTest {
     @Test void registrationIsLifoAndExplicitBindingIsPreserved() {
         String context = "bound";
         StringBuilder trace = new StringBuilder();
-        RecoveryHandlerChain<Integer> chain = RecoveryHandlerChain.<Integer>builder()
+        RecoveryHandlerChain<Integer> chain = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
                 .onRaise((error, c) -> {
                     trace.append("A");
                     c.resolve(42);
@@ -37,7 +37,7 @@ final class RecoveryHandlerChainTest {
 
     @Test void localHandlerShortCircuitsAndNeverCallsEarlierHandlers() {
         List<Integer> visited = new ArrayList<>();
-        var chain = RecoveryHandlerChain.<Integer>builder()
+        var chain = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
                 .register((e, c) -> { visited.add(1); c.resolve(42); })
                 .register((e, c) -> { visited.add(2); c.resolve(7); })
                 .freeze();
@@ -48,7 +48,7 @@ final class RecoveryHandlerChainTest {
 
     @Test void exhaustedChainPreservesOriginalErrorIdentityAndKind() {
         Throwable original = new IllegalArgumentException("test");
-        var chain = RecoveryHandlerChain.<Integer>builder()
+        var chain = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
                 .onRaise((e, c) -> c.next())
                 .onRaise((e, c) -> c.next())
                 .freeze();
@@ -60,7 +60,7 @@ final class RecoveryHandlerChainTest {
 
     @Test void panicCancellationAndFatalCannotMintLocalRecoveryEnvelope() {
         List<String> trace = new ArrayList<>();
-        var chain = RecoveryHandlerChain.<Integer>builder()
+        var chain = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
                 .register((e, c) -> { trace.add("invoked"); c.resolve(0); })
                 .freeze();
         Throwable error = new AssertionError("fatal");
@@ -76,7 +76,7 @@ final class RecoveryHandlerChainTest {
 
     @Test void throwAndRaiseFiltersAreIndependent() {
         StringBuilder trace = new StringBuilder();
-        var chain = RecoveryHandlerChain.<Integer>builder()
+        var chain = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
                 .onThrow((e, c) -> { trace.append('T'); c.resolve(1); })
                 .onRaise((e, c) -> { trace.append('R'); c.resolve(2); })
                 .freeze();
@@ -88,7 +88,7 @@ final class RecoveryHandlerChainTest {
     }
 
     @Test void incompleteHandlerFailsClosedAndCannotSilentlySwallow() {
-        var chain = RecoveryHandlerChain.<Integer>builder().register((e, c) -> { }).freeze();
+        var chain = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION).register((e, c) -> { }).freeze();
         Exception original = new Exception("pending");
         var result = assertInstanceOf(RecoveryHandlerChain.HandlerFailure.class,
                 chain.dispatch(signal(RecoveryHandlerChain.FailureKind.THROW, original)));
@@ -99,7 +99,7 @@ final class RecoveryHandlerChainTest {
 
     @Test void continuationIsOneShotAndRevokedAfterHandlerReturns() {
         List<RecoveryHandlerChain.Continuation<Integer>> leaked = new ArrayList<>();
-        var chain = RecoveryHandlerChain.<Integer>builder()
+        var chain = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
                 .register((e, c) -> { leaked.add(c); c.resolve(7); })
                 .register((e, c) -> { leaked.add(c); c.next(); })
                 .freeze();
@@ -114,7 +114,7 @@ final class RecoveryHandlerChainTest {
 
     @Test void doubleDecisionIsRejectedWithoutLosingOriginalFailure() {
         Throwable original = new Exception("original raise");
-        var chain = RecoveryHandlerChain.<Integer>builder()
+        var chain = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
                 .register((e, c) -> { c.next(); c.resolve(9); }).freeze();
         var result = assertInstanceOf(RecoveryHandlerChain.HandlerFailure.class,
                 chain.dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE, original)));
@@ -126,7 +126,7 @@ final class RecoveryHandlerChainTest {
         List<RecoveryHandlerChain.Continuation<Integer>> leaked = new ArrayList<>();
         RuntimeException boom = new IllegalArgumentException("handler failed");
         Throwable original = new Exception("original raise");
-        var chain = RecoveryHandlerChain.<Integer>builder()
+        var chain = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
                 .register((e, c) -> { leaked.add(c); throw boom; }).freeze();
         var result = assertInstanceOf(RecoveryHandlerChain.HandlerFailure.class,
                 chain.dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE, original)));
@@ -139,7 +139,7 @@ final class RecoveryHandlerChainTest {
 
     @Test void wrappedAndSuppressedTerminalControlIsNeverRecoverable() {
         var visited = new ArrayList<String>();
-        var chain = RecoveryHandlerChain.<Integer>builder()
+        var chain = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
                 .register((e, c) -> { visited.add("called"); c.resolve(9); }).freeze();
         Throwable[] prohibited = {
                 new java.util.concurrent.CompletionException(
@@ -164,7 +164,7 @@ final class RecoveryHandlerChainTest {
     }
 
     @Test void cyclicAndExcessiveFailureGraphsFailClosed() {
-        var chain = RecoveryHandlerChain.<Integer>builder()
+        var chain = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
                 .register((e, c) -> c.resolve(7)).freeze();
         RuntimeException a = new RuntimeException("A");
         RuntimeException b = new RuntimeException("B");
@@ -183,7 +183,7 @@ final class RecoveryHandlerChainTest {
 
     @Test void crossThreadContinuationUseIsRejected() throws Exception {
         var errors = new java.util.concurrent.atomic.AtomicReference<Throwable>();
-        var chain = RecoveryHandlerChain.<Integer>builder()
+        var chain = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
                 .register((e, c) -> {
                     Thread foreign = new Thread(() -> {
                         try {
@@ -208,7 +208,7 @@ final class RecoveryHandlerChainTest {
 
     @Test void noEligibleHandlerDoesNotInvokeRecovery() {
         var visited = new ArrayList<String>();
-        var chain = RecoveryHandlerChain.<Integer>builder()
+        var chain = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
                 .onThrow((e, c) -> { visited.add("throw"); c.resolve(1); })
                 .freeze();
         Throwable original = new RuntimeException("not a throw");
@@ -219,7 +219,7 @@ final class RecoveryHandlerChainTest {
     }
 
     @Test void immutableSnapshotAndBoundedRegistration() {
-        var builder = RecoveryHandlerChain.<Integer>builder();
+        var builder = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION);
         var frozen = builder.register((e, c) -> c.resolve(1)).freeze();
         builder.register((e, c) -> c.resolve(2));
         assertEquals(1, frozen.size());
@@ -235,7 +235,7 @@ final class RecoveryHandlerChainTest {
     @Test void resolvedThenCallbackThrowsDoesNotConsumeFailure() {
         RuntimeException callbackError = new RuntimeException("callback failed after resolve");
         Throwable pendingError = new Exception("raised first");
-        var chain = RecoveryHandlerChain.<Integer>builder()
+        var chain = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
                 .register((e, c) -> { c.resolve(7); throw callbackError; }).freeze();
         var result = assertInstanceOf(RecoveryHandlerChain.HandlerFailure.class,
                 chain.dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE, pendingError)));
@@ -247,7 +247,7 @@ final class RecoveryHandlerChainTest {
         for (boolean resolves : List.of(true, false)) {
             List<String> trace = new ArrayList<>();
             Throwable pending = new Exception("original raise");
-            var chain = RecoveryHandlerChain.<Integer>builder()
+            var chain = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
                     .onRaise((err, c) -> { trace.add("older"); c.resolve(3); })
                     .onRaise((err, c) -> {
                         pending.addSuppressed(new SecurityException("revoked"));
@@ -273,7 +273,7 @@ final class RecoveryHandlerChainTest {
         };
         for (RuntimeException callback : terminal) {
             Throwable pending = new Exception("original");
-            var chain = RecoveryHandlerChain.<Integer>builder()
+            var chain = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
                     .register((e, c) -> { throw callback; }).freeze();
             var result = assertInstanceOf(RecoveryHandlerChain.TerminalCallbackFailure.class,
                     chain.dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE, pending)));
@@ -286,7 +286,7 @@ final class RecoveryHandlerChainTest {
     @Test void ordinaryHandlerFailureRemainsDistinctFromTerminalSignals() {
         RuntimeException callback = new IllegalArgumentException("ordinary callback fault");
         Throwable pending = new Exception("pending raise");
-        var chain = RecoveryHandlerChain.<Integer>builder()
+        var chain = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
                 .register((e, c) -> { throw callback; }).freeze();
         var result = assertInstanceOf(RecoveryHandlerChain.HandlerFailure.class,
                 chain.dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE, pending)));
@@ -298,7 +298,7 @@ final class RecoveryHandlerChainTest {
         Error fatal = new AssertionError("host fatal");
         Throwable pending = new Exception("pending");
         List<RecoveryHandlerChain.Continuation<Integer>> escaped = new ArrayList<>();
-        var chain = RecoveryHandlerChain.<Integer>builder()
+        var chain = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
                 .register((e, c) -> { escaped.add(c); throw fatal; }).freeze();
         assertSame(fatal, assertThrows(AssertionError.class,
                 () -> chain.dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE, pending))));
@@ -314,7 +314,7 @@ final class RecoveryHandlerChainTest {
                 throw new IllegalStateException("host graph unavailable");
             }
         });
-        var chain = RecoveryHandlerChain.<Integer>builder()
+        var chain = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
                 .register((e, c) -> { throw callback; }).freeze();
         var result = assertInstanceOf(RecoveryHandlerChain.TerminalCallbackFailure.class,
                 chain.dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE, pending)));
@@ -328,7 +328,7 @@ final class RecoveryHandlerChainTest {
                 new RecoveryHandlerChain<?>[1];
         var visited = new java.util.concurrent.atomic.AtomicInteger();
         var leaked = new ArrayList<RecoveryHandlerChain.Continuation<Integer>>();
-        holder[0] = RecoveryHandlerChain.<Integer>builder()
+        holder[0] = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
                 .register((err, c) -> {
                     visited.incrementAndGet();
                     leaked.add(c);
@@ -354,14 +354,14 @@ final class RecoveryHandlerChainTest {
         RecoveryHandlerChain<Integer>[] holders = (RecoveryHandlerChain<Integer>[])
                 new RecoveryHandlerChain<?>[2];
         var calls = new java.util.concurrent.atomic.AtomicInteger();
-        holders[0] = RecoveryHandlerChain.<Integer>builder()
+        holders[0] = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
                 .register((e, c) -> {
                     calls.incrementAndGet();
                     holders[1].dispatch(signal(RecoveryHandlerChain.FailureKind.THROW,
                             new Exception("B pending")));
                     c.resolve(1);
                 }).freeze();
-        holders[1] = RecoveryHandlerChain.<Integer>builder()
+        holders[1] = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
                 .register((e, c) -> {
                     calls.incrementAndGet();
                     holders[0].dispatch(signal(RecoveryHandlerChain.FailureKind.THROW,
@@ -380,7 +380,7 @@ final class RecoveryHandlerChainTest {
         @SuppressWarnings("unchecked")
         RecoveryHandlerChain<Integer>[] holder = (RecoveryHandlerChain<Integer>[])
                 new RecoveryHandlerChain<?>[1];
-        holder[0] = RecoveryHandlerChain.<Integer>builder()
+        holder[0] = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
                 .register((e, c) -> {
                     try {
                         holder[0].dispatch(signal(RecoveryHandlerChain.FailureKind.THROW,
@@ -399,9 +399,9 @@ final class RecoveryHandlerChainTest {
 
     @Test void distinctNestedRecoveryChainsArePermitted() {
         var trace = new ArrayList<String>();
-        var inner = RecoveryHandlerChain.<Integer>builder()
+        var inner = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
                 .register((e, c) -> { trace.add("inner"); c.resolve(3); }).freeze();
-        var outer = RecoveryHandlerChain.<Integer>builder()
+        var outer = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
                 .register((e, c) -> {
                     trace.add("outer");
                     assertEquals(new RecoveryHandlerChain.Recovered<>(3),
@@ -421,7 +421,7 @@ final class RecoveryHandlerChainTest {
                 new RecoveryHandlerChain<?>[65];
         for (int i = chains.length - 1; i >= 0; i--) {
             final int index = i;
-            chains[index] = RecoveryHandlerChain.<Integer>builder()
+            chains[index] = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
                     .register((e, c) -> {
                         if (index + 1 < chains.length) {
                             chains[index + 1].dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE,
@@ -451,7 +451,7 @@ final class RecoveryHandlerChainTest {
             }
         };
         var invoked = new java.util.concurrent.atomic.AtomicInteger();
-        var chain = RecoveryHandlerChain.<Integer>builder()
+        var chain = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
                 .register((e, c) -> { invoked.incrementAndGet(); c.resolve(1); }).freeze();
         var result = assertInstanceOf(RecoveryHandlerChain.Unhandled.class,
                 chain.dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE, foreign)));
@@ -470,7 +470,7 @@ final class RecoveryHandlerChainTest {
         };
         Throwable pending = new RuntimeException("ordinary wrapper", wrappedForeign);
         var invoked = new java.util.concurrent.atomic.AtomicInteger();
-        var chain = RecoveryHandlerChain.<Integer>builder()
+        var chain = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
                 .register((e, c) -> { invoked.incrementAndGet(); c.resolve(3); }).freeze();
         for (var kind : new RecoveryHandlerChain.FailureKind[] {
                 RecoveryHandlerChain.FailureKind.THROW,
@@ -486,7 +486,7 @@ final class RecoveryHandlerChainTest {
 
     @Test void regularThrowableCauseTraversalStillAdmitsOrdinaryErrors() {
         Throwable pending = new RuntimeException("outer", new IllegalArgumentException("guest ordinary"));
-        var chain = RecoveryHandlerChain.<Integer>builder()
+        var chain = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
                 .onRaise((e, c) -> c.resolve(17)).freeze();
         assertEquals(new RecoveryHandlerChain.Recovered<>(17),
                 chain.dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE, pending)));
@@ -498,7 +498,7 @@ final class RecoveryHandlerChainTest {
                 throw new IllegalStateException("cause unavailable");
             }
         };
-        var chain = RecoveryHandlerChain.<Integer>builder()
+        var chain = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
                 .register((e, c) -> c.resolve(7)).freeze();
         for (var kind : new RecoveryHandlerChain.FailureKind[] {
                 RecoveryHandlerChain.FailureKind.THROW,
@@ -530,7 +530,7 @@ final class RecoveryHandlerChainTest {
     @Test void recoveryOutcomeRetainsExactAuthenticatedEnvelope() {
         Throwable original = new Exception("pending");
         GuestFailure failure = signal(RecoveryHandlerChain.FailureKind.THROW, original);
-        var chain = RecoveryHandlerChain.<Integer>builder()
+        var chain = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
                 .onThrow((e, c) -> c.next())
                 .freeze();
 
@@ -564,14 +564,72 @@ final class RecoveryHandlerChainTest {
         assertFalse(java.lang.reflect.Modifier.isPublic(issuer.getModifiers()));
     }
 
+    @Test void validFailureCannotCrossLogicalExecutionBoundary() {
+        ExecutionContext otherExecution = ExecutionContext.task(7, 12);
+        Throwable pending = new Exception("other task");
+        GuestFailure failure = GuestFailure.issueFromCompiler(
+                RecoveryHandlerChain.FailureKind.RAISE,
+                pending,
+                otherExecution,
+                99);
+        var invoked = new java.util.concurrent.atomic.AtomicInteger();
+        var chain = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
+                .onRaise((e, next) -> {
+                    invoked.incrementAndGet();
+                    next.resolve(7);
+                })
+                .freeze();
+
+        var outcome = assertInstanceOf(
+                RecoveryHandlerChain.Unhandled.class, chain.dispatch(failure));
+        assertSame(failure, outcome.pendingFailure());
+        assertSame(pending, outcome.error());
+        assertEquals(RecoveryHandlerChain.FailureKind.RAISE, outcome.kind());
+        assertEquals(0, invoked.get());
+    }
+
+    @Test void exhaustedChainCannotBeReplayedForSecondHandlerPass() {
+        Throwable pending = new Exception("same unwind");
+        GuestFailure failure = signal(RecoveryHandlerChain.FailureKind.RAISE, pending);
+        var invoked = new java.util.concurrent.atomic.AtomicInteger();
+        var chain = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
+                .onRaise((e, next) -> {
+                    invoked.incrementAndGet();
+                    next.next();
+                })
+                .freeze();
+
+        var first = assertInstanceOf(
+                RecoveryHandlerChain.Unhandled.class, chain.dispatch(failure));
+        var second = assertInstanceOf(
+                RecoveryHandlerChain.Unhandled.class, chain.dispatch(failure));
+        assertSame(failure, first.pendingFailure());
+        assertSame(failure, second.pendingFailure());
+        assertEquals(1, invoked.get(), "same lexical chain must execute at most once per unwind");
+    }
+
+    @Test void recoveredFailureCannotBeReused() {
+        GuestFailure failure = signal(
+                RecoveryHandlerChain.FailureKind.THROW,
+                new Exception("one-shot"));
+        var chain = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
+                .onThrow((e, next) -> next.resolve(42))
+                .freeze();
+
+        assertEquals(new RecoveryHandlerChain.Recovered<>(42), chain.dispatch(failure));
+        IllegalStateException replay = assertThrows(
+                IllegalStateException.class, () -> chain.dispatch(failure));
+        assertTrue(replay.getMessage().contains("cannot be dispatched again"));
+    }
+
     @Test void emptyChainAndNullRegistrationAreSafe() {
-        var empty = RecoveryHandlerChain.<Integer>builder().freeze();
+        var empty = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION).freeze();
         assertEquals(0, empty.size());
         Throwable pendingError = new Exception("empty");
         var result = assertInstanceOf(RecoveryHandlerChain.Unhandled.class,
                 empty.dispatch(signal(RecoveryHandlerChain.FailureKind.THROW, pendingError)));
         assertSame(pendingError, result.error());
-        var builder = RecoveryHandlerChain.<Integer>builder();
+        var builder = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION);
         assertThrows(NullPointerException.class, () -> builder.register(null));
         assertThrows(NullPointerException.class, () -> builder.onRaise(null));
     }
@@ -583,7 +641,7 @@ final class RecoveryHandlerChainTest {
             int[] masks = new int[depth];
             boolean[] resolves = new boolean[depth];
             var trace = new ArrayList<Integer>();
-            var builder = RecoveryHandlerChain.<Integer>builder();
+            var builder = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION);
             for (int i = 0; i < depth; i++) {
                 masks[i] = 1 + random.nextInt(3);
                 resolves[i] = random.nextBoolean();
@@ -623,7 +681,7 @@ final class RecoveryHandlerChainTest {
     }
 
     @Test void longDelegationChainIsIterative() {
-        var builder = RecoveryHandlerChain.<Integer>builder();
+        var builder = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION);
         builder.register((e, c) -> c.resolve(123));
         for (int i = 1; i < RecoveryHandlerChain.MAX_HANDLERS; i++) {
             builder.register((e, c) -> c.next());
