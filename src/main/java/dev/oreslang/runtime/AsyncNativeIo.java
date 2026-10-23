@@ -39,6 +39,8 @@ public final class AsyncNativeIo implements AutoCloseable {
             OresContext context, URI target, String method) {
         Objects.requireNonNull(context, "context");
         Objects.requireNonNull(target, "target");
+        if (context.nativeIo() != this)
+            throw new SecurityException("loopback I/O authority must come from the owning OresContext");
         // Reject remote/ambiguous destinations *before* permission matching;
         // do not generalize this into a DNS hostname or wildcard egress API.
         if (!"http".equals(target.getScheme())
