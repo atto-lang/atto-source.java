@@ -379,6 +379,55 @@ final class ActorPhysicalRetirementRegistryTest {
         }
     }
 
+    @Test void duplicateCallbackDuringPhysicalExecutionQuarantinesNativeLoan()
+            throws Exception {
+        // An asynchronous provider must not notify the same operation twice.
+        // If it does while the first callback remains physically executing,
+        // the actor must never receive a clean retirement receipt.
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var callbackCount = new AtomicInteger();
+        var runtime = new ActorRuntime();
+        var actor = runtime.<String>spawnShared(() -> (message, context) -> { });
+        java.nio.channels.CompletionHandler<Integer, Void> delegate =
+                new java.nio.channels.CompletionHandler<>() {
+                    @Override public void completed(Integer value, Void ignored) {
+                        callbackCount.incrementAndGet();
+                        entered.countDown();
+                        try {
+                            if (!release.await(5, TimeUnit.SECONDS)) {
+                                throw new IllegalStateException("held native callback expired");
+                            }
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new IllegalStateException(interrupted);
+                        }
+                    }
+                    @Override public void failed(Throwable failure, Void ignored) {
+                        throw new AssertionError("unexpected failed operation", failure);
+                    }
+                };
+        var io = runtime.<Integer, Void>registerActorIoCompletionFromDriver(
+                actor, ActorPhysicalRetirementRegistry.Kind.FFI_LOAN, delegate);
+        Thread initial = Thread.ofVirtual().start(() -> io.completed(4, null));
+        try {
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            assertTrue(actor.cancel());
+            assertThrows(IllegalStateException.class, () -> io.completed(5, null));
+            assertTrue(actor.physicalRetirementFailure().isPresent());
+            assertFalse(actor.done().isDone());
+            assertEquals(Integer.valueOf(1), actor.pendingPhysicalRetirementsByKind()
+                    .get("FFI_LOAN"));
+        } finally {
+            release.countDown();
+        }
+        initial.join(3_000);
+        assertFalse(initial.isAlive());
+        assertEquals(1, callbackCount.get(), "duplicate callback cannot reenter delegate");
+        assertFalse(actor.done().isDone());
+        assertThrows(IllegalStateException.class, runtime::close);
+    }
+
     @Test void failingNativeCallbackKeepsActorQuarantined() throws Exception {
         var runtime = new ActorRuntime();
         var actor = runtime.<String>spawnShared(() -> (message, context) -> { });
