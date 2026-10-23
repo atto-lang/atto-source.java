@@ -316,6 +316,11 @@ final class RecoveryHandlerChainTest {
         assertSame(callback, result.terminalError());
     }
 
+    @Test void unauthenticatedDispatcherStaysPackagePrivate() {
+        assertFalse(java.lang.reflect.Modifier.isPublic(RecoveryHandlerChain.class.getModifiers()),
+                "host prototype must not become a public guest or Java API before trusted admission");
+    }
+
     @Test void alternatingForeignCauseCannotHideCancellationOnFirstRead() {
         var causeReads = new java.util.concurrent.atomic.AtomicInteger();
         Throwable hiddenCancellation = new java.util.concurrent.CancellationException("hidden");
