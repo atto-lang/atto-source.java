@@ -174,10 +174,15 @@ public final class TaskHandle<T> {
             throw new IllegalArgumentException(
                     "reason must contain 1..256 nonblank characters");
         }
-        // Cancellation is a request against live work. A terminal result is
-        // immutable even when its physical quiescence notification is pending.
+        // The Task result and its physical descendant lifetime are separate:
+        // a parent may return successfully while a child is still running.
+        // Allow revoking those live children without mutating the settled
+        // parent result. Once the complete getDone barrier is terminal,
+        // cancellation is no longer meaningful.
         OresFuture<T> current = result.get();
-        if (done.isDone() || (current != null && current.isDone())) return false;
+        if (done.isDone()) return false;
+        if (current != null && current.isDone()
+                && !cancellation.hasOutstandingLifetimeChildren()) return false;
         return cancellation.cancel(reason);
     }
 
