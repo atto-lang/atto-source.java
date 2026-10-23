@@ -109,10 +109,37 @@ jobs:
           } else {
             tar -C stage -czf "oreslang-compiler-${{ matrix.platform }}.tar.gz" .
           }
+      - name: Build and smoke-test per-user Windows installer (PRIVATE)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          choco install innosetup --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup installation failed' }
+          $iscc = Join-Path "${env:ProgramFiles(x86)}" 'Inno Setup 6/ISCC.exe'
+          if (-not (Test-Path -LiteralPath $iscc)) { throw 'Inno Setup compiler not found' }
+          $env:ORESLANG_INSTALLER_VERSION = '0.1.0.0'
+          & $iscc 'packaging/windows/Oreslang.iss'
+          if ($LASTEXITCODE -ne 0) { throw 'Windows installer build failed' }
+          $setup = 'artifacts/installer/oreslang-windows-x86_64-setup.exe'
+          if (-not (Test-Path -LiteralPath $setup)) { throw 'Installer artifact not created' }
+          $p = Start-Process -FilePath (Resolve-Path $setup) -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw "Windows installer failed with code $($p.ExitCode)" }
+          $installed = Join-Path $env:LOCALAPPDATA 'Programs/Oreslang/oreslang.exe'
+          $uninstall = Join-Path $env:LOCALAPPDATA 'Programs/Oreslang/unins000.exe'
+          if (-not (Test-Path -LiteralPath $installed)) { throw 'Windows installer omitted CLI' }
+          & $installed doctor
+          if ($LASTEXITCODE -ne 0) { throw 'Installed CLI doctor failed' }
+          & $installed check examples/callables.ores
+          if ($LASTEXITCODE -ne 0) { throw 'Installed CLI compiler check failed' }
+          $p = Start-Process -FilePath $uninstall -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw "Windows uninstaller failed with code $($p.ExitCode)" }
       - name: Upload PRIVATE candidate, never a public release
         uses: actions/upload-artifact@v4
         with:
           name: compiler-candidate-${{ matrix.platform }}
-          path: oreslang-compiler-${{ matrix.platform }}.*
+          path: |
+            oreslang-compiler-${{ matrix.platform }}.*
+            artifacts/installer/oreslang-windows-x86_64-setup.exe
           retention-days: 7
           if-no-files-found: error
