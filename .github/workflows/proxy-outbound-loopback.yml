@@ -7,6 +7,7 @@ on:
       - 'src/main/java/dev/oreslang/runtime/ProxyOutboundLoopback.java'
       - 'src/test/java/dev/oreslang/runtime/Proxy*Check.java'
       - 'src/test/java/dev/oreslang/runtime/ProxyOutboundContextAuthorityTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ProxyActorOwnedFutureTest.java'
       - 'scripts/test-proxy-outbound-loopback.sh'
       - '.github/workflows/proxy-outbound-loopback.yml'
   workflow_dispatch:
@@ -58,4 +59,4 @@ jobs:
           java -version
           mvn -version
       - name: Run JDK25 real-runtime permission and ownership bridge checks
-        run: mvn -B -Dtest=ProxyOutboundContextAuthorityTest test
+        run: mvn -B -Dtest=ProxyOutboundContextAuthorityTest,ProxyActorOwnedFutureTest test
