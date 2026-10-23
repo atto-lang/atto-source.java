@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.IncrementalCompiler;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.LinkedProgramRunner;
@@ -9,6 +10,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -42,6 +44,7 @@ final class DeclaredTypeOnlySyntaxTest {
             assertEquals(index % 2 == 1 ? Ast.Visibility.PUBLIC : Ast.Visibility.PRIVATE,
                     iface.visibility());
             assertFalse(iface.moduleContract(), "traits/interfaces are not module contracts");
+            assertEquals(index < 4, iface.traitDeclaration(), "source trait kind must survive parsing");
         }
     }
 
@@ -154,6 +157,76 @@ final class DeclaredTypeOnlySyntaxTest {
             assertThrows(IllegalArgumentException.class,
                     () -> LinkedProgramRunner.validate(imported), selection);
         }
+    }
+
+    @Test
+    void wrongKindImportsFailClosedForPublicTypeOnlyDeclarations() throws Exception {
+        Path exported = temp.resolve("kinds.ores");
+        Files.writeString(exported, """
+                declare pub trait Tagged as end
+                declare pub interface Endpoint as end
+                """);
+        for (String badSelection : new String[] {
+                "trait Endpoint", "interface Tagged", "type Tagged", "type Endpoint"
+        }) {
+            Path imported = temp.resolve("wrong-" + badSelection.replace(' ', '-') + ".ores");
+            Files.writeString(imported,
+                    "import " + badSelection + " from './kinds';"
+                    + "pub routine main(): void { return; }");
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> LinkedProgramRunner.validate(imported), badSelection);
+            assertTrue(error.getMessage().contains("does not match an exported declaration"),
+                    error.getMessage());
+        }
+    }
+
+    @Test
+    void rejectsCrossKindInheritanceButAllowsSameKindParents() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                declare trait Tagged as end
+                declare trait Derived extends Tagged as end
+                declare interface Endpoint as end
+                declare interface DerivedApi extends Endpoint as end
+                """));
+
+        for (String source : new String[] {
+                "declare trait Parent as end declare interface Child extends Parent as end",
+                "declare interface Parent as end declare trait Child extends Parent as end",
+                "declare type Item = int; declare trait Item as end",
+                "declare interface Item as end declare type Item = int;",
+                "declare trait Item as end declare interface Item as end"
+        }) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source), source);
+            assertTrue(error.getMessage().contains("TYPE_PARENT_KIND_MISMATCH")
+                            || error.getMessage().contains("TYPE_DECL_NAME_COLLISION"),
+                    error.getMessage());
+        }
+    }
+
+    @Test
+    void publicTraitKindParticipatesInIncrementalAbi() {
+        String body = " fnc tag() => int; end";
+        IncrementalCompiler traitCompiler = new IncrementalCompiler();
+        IncrementalCompiler interfaceCompiler = new IncrementalCompiler();
+        String trait = traitCompiler.compile(Map.of("api.ores", "declare pub trait Tagged as" + body))
+                .units().get("api.ores").abiDigest();
+        String iface = interfaceCompiler.compile(Map.of("api.ores", "declare pub interface Tagged as" + body))
+                .units().get("api.ores").abiDigest();
+        assertNotEquals(trait, iface, "changing a public interface to a trait invalidates importers");
+    }
+
+    @Test
+    void legacyTraitSpellingRetainsTraitIdentity() {
+        Ast.Program program = Parser.parse("""
+                define trait Legacy as end
+                declare trait Canonical as end
+                define interface Api as end
+                """);
+        var declarations = program.modules().getFirst().declarations();
+        assertTrue(((Ast.InterfaceDecl) declarations.get(0)).traitDeclaration());
+        assertTrue(((Ast.InterfaceDecl) declarations.get(1)).traitDeclaration());
+        assertFalse(((Ast.InterfaceDecl) declarations.get(2)).traitDeclaration());
     }
 
 }
