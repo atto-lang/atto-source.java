@@ -14,8 +14,8 @@ import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Current executable trap/await precedence, plus a fail-closed guard until
- * Future-aware |> stage lifting is implemented (see docs/FUTURE_PIPE_TRAP_AWAIT.md).
+ * Executable trap/await precedence, plus a fail-closed guard for asynchronous
+ * Future-returning stages outside the first pure-int lowering slice.
  */
 final class FuturePipeTrapAwaitContractTest {
     @Test
@@ -96,10 +96,9 @@ final class FuturePipeTrapAwaitContractTest {
                   return;
                 }
                 """;
-        // The existing eager |> desugaring passes Future<int> into save(int).
-        // Until future-aware lifting is implemented, compiling this as though
-        // it handled the resolved int would be unsound. This assertion MUST
-        // be replaced with a positive end-to-end test when lifting lands.
+        // A Future-returning stage requires a checked ownership and effect plan.
+        // The first source lowering only admits synchronous, pure int -> int
+        // stages; this async stage must remain rejected.
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(source)));
     }
