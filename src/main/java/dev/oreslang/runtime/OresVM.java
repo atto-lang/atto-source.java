@@ -81,11 +81,21 @@ public final class OresVM implements AutoCloseable {
                 physicalFactory,
                 new ThreadPoolExecutor.AbortPolicy());
 
-        this.rootScheduler = OresScheduler.runtimeOwned(
-                "ores-root-scheduler",
-                rootAdmission == null ? controlParallelism : 1,
-                rootAdmission == null ? controlExecutor : rootAdmission,
-                turnExecutor);
+        // Scheduler creation itself can fail before startup(). Ensure the
+        // newly allocated physical and CONTROL workers are not leaked.
+        final OresScheduler initializedRoot;
+        try {
+            initializedRoot = OresScheduler.runtimeOwned(
+                    "ores-root-scheduler",
+                    rootAdmission == null ? controlParallelism : 1,
+                    rootAdmission == null ? controlExecutor : rootAdmission,
+                    turnExecutor);
+        } catch (RuntimeException | Error failure) {
+            physicalStopExecutor.shutdownNow();
+            controlExecutor.shutdownNow();
+            throw failure;
+        }
+        this.rootScheduler = initializedRoot;
         try {
             startup();
         } catch (RuntimeException | Error failure) {
