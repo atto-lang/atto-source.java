@@ -7340,7 +7340,7 @@ public final class ActorRuntime implements AutoCloseable {
             // terminal subscribers have returned. Removing the handle from
             // our reverse index at the start of such a subscriber permits
             // actor STOP to overlook a still-running callback.
-            handle.doneCallbacksDrained().whenComplete((ignored, failure) -> {
+            handle.terminalCallbacksDrained().whenComplete((ignored, failure) -> {
                 if (failure == null) sourceTaskHandles.remove(handle);
                 else quarantineStopRetirement(failure);
             });
@@ -7359,7 +7359,7 @@ public final class ActorRuntime implements AutoCloseable {
             AtomicInteger remaining = new AtomicInteger(pending.size());
             AtomicReference<Throwable> error = new AtomicReference<>();
             for (TaskHandle<?> handle : pending) {
-                handle.doneCallbacksDrained().whenComplete((ignored, failure) -> {
+                handle.terminalCallbacksDrained().whenComplete((ignored, failure) -> {
                     if (failure != null) error.compareAndSet(null, failure);
                     if (remaining.decrementAndGet() == 0) {
                         Throwable unsafe = error.get();
