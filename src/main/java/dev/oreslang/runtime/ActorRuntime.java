@@ -7180,6 +7180,8 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean sourceSchedulerClosing;
         /** STOP is waiting for the scheduler's cancellation snapshot. */
         private boolean sourceStopCleanupPending;
+        /** STOP must revoke preexisting Future operations before arena release. */
+        private boolean pendingOperationRevocationPending;
         /** STOP has sealed admission and may execute only existing SourceTasks. */
         private boolean sourceStopCleanupActive;
         /** Any failed cleanup submission quarantines actor state. */
@@ -7491,6 +7493,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (finalized
                     || sourceSchedulerClosing
                     || sourceStopCleanupPending
+                    || pendingOperationRevocationPending
                     || pendingCleanupFutures != 0
                     || activeTurns != 0
                     || scheduled.get()
@@ -8173,6 +8176,7 @@ public final class ActorRuntime implements AutoCloseable {
                 sealing = true;
                 cleanupScheduler = sourceScheduler;
                 sourceStopCleanupPending = cleanupScheduler != null;
+                pendingOperationRevocationPending = true;
                 // No guest Task can enter after STOP: seal the scheduler's
                 // own admission monitor while our lifecycle monitor is held.
                 // This phase does not cancel Futures or invoke subscribers.
@@ -8204,9 +8208,36 @@ public final class ActorRuntime implements AutoCloseable {
                 waiter.completion().failFromRuntime(drainFailure);
             }
 
-            // Cancellation removes channel/select waiter registrations before
-            // any future channel activity can revive work for this dead actor.
-            for (OresFuture<?> future : pending) future.cancel(false);
+            // The Future revocation must finish BEFORE arena reclamation,
+            // not afterward. One failing revoker may not skip the others.
+            // This is only the logical revoker phase: physical I/O / FFI
+            // loan receipts remain a separate supervisor integration gate.
+            Throwable revocationFailure = null;
+            try {
+                for (OresFuture<?> future : pending) {
+                    try {
+                        future.cancel(false);
+                    } catch (RuntimeException | Error failure) {
+                        if (revocationFailure == null) revocationFailure = failure;
+                        else if (revocationFailure != failure) {
+                            revocationFailure.addSuppressed(failure);
+                        }
+                    }
+                }
+            } finally {
+                synchronized (lifecycleLock) {
+                    pendingOperationRevocationPending = false;
+                    if (revocationFailure != null) {
+                        sourceStopCleanupAborted = true;
+                        ref.terminationCause.compareAndSet(null,
+                                new OresScheduler.CleanupIncompleteError(
+                                        "actor owned Future revocation failed; quarantine arena",
+                                        revocationFailure));
+                    }
+                    finalizeStopLocked();
+                    lifecycleLock.notifyAll();
+                }
+            }
 
             // The snapshot and admission seal happened AT STOP under its
             // monitor. Publish cancellation only now, outside lifecycleLock:
