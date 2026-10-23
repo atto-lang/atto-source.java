@@ -45,32 +45,27 @@ public final class FuturePipelineTypingCheck {
         Ast.BindingStmt pending = (Ast.BindingStmt) liftedMain.body().get(0);
         Ast.CallExpr second = (Ast.CallExpr) pending.initializer();
         Ast.CallExpr first = (Ast.CallExpr) second.arguments().getFirst();
-        if (!Ast.CheckedPureFuturePipe.lookup(first)
-                || !Ast.CheckedPureFuturePipe.lookup(second)) {
+        if (!TypeChecker.CheckedPureFuturePipe.lookup(first)
+                || !TypeChecker.CheckedPureFuturePipe.lookup(second)) {
             throw new AssertionError("checked Future chain lost a stage proof");
         }
-        if (Ast.CheckedPureFuturePipe.target(first)
+        if (TypeChecker.CheckedPureFuturePipe.target(first)
                 != lifted.modules().get(0).declarations().get(1)
-                || Ast.CheckedPureFuturePipe.target(second)
+                || TypeChecker.CheckedPureFuturePipe.target(second)
                 != lifted.modules().get(0).declarations().get(2)) {
             throw new AssertionError("checked Future stage bound to the wrong declaration identity");
         }
-        // A forged rebinding for the same checked AST identity must fail:
-        // matching spelling and arity do not grant a second declaration authority.
-        Ast.Program impostor = Parser.parse("""
-                fnc save(int value): int { return value - 999; }
-                """);
-        Ast.FunctionDecl wrongSave = (Ast.FunctionDecl)
-                impostor.modules().getFirst().declarations().getFirst();
+        // Host code must not have a public proof-minting capability,
+        // even if it constructs a matching function declaration and CallExpr.
         try {
-            Ast.CheckedPureFuturePipe.record(first, wrongSave);
-            throw new AssertionError("checked Future stage was rebound to an impostor declaration");
-        } catch (IllegalStateException expected) {
-            if (!expected.getMessage().contains("rebound"))
-                throw new AssertionError("wrong stage-rebinding diagnostic", expected);
+            TypeChecker.CheckedPureFuturePipe.class.getMethod(
+                    "record", Ast.CallExpr.class, Ast.FunctionDecl.class);
+            throw new AssertionError("pipeline proof minting is publicly accessible");
+        } catch (NoSuchMethodException expected) {
+            // The compiler is the only permitted issuer.
         }
 
-        if (Ast.CheckedPureFuturePipe.lookup(
+        if (TypeChecker.CheckedPureFuturePipe.lookup(
                 second.rewrite(second.callee(), second.typeArguments(),
                         second.typeArgumentsPresent(), second.arguments()))) {
             throw new AssertionError("rewritten Future stage inherited stale lowering proof");
