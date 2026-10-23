@@ -49,6 +49,23 @@ final class ActorPhysicalChannelLease implements AutoCloseable {
         return channel;
     }
 
+    /** Queue host-only closure without parking an actor STOP callback. */
+    void requestCloseOnActorStop(Executor executor) {
+        Objects.requireNonNull(executor, "executor");
+        if (!stopCloseSubmitted.compareAndSet(false, true)) return;
+        try {
+            executor.execute(() -> {
+                try {
+                    close();
+                } catch (IOException | RuntimeException | Error ignored) {
+                    // close() already records any physical close failure.
+                }
+            });
+        } catch (RuntimeException | Error rejected) {
+            receipt.failPhysicalRelease(rejected);
+        }
+    }
+
     /** The receipt only settles after actual Channel.close() and !isOpen(). */
     @Override
     public synchronized void close() throws IOException {
