@@ -534,6 +534,53 @@ final class TaskPipelineTest {
     }
 
     @Test
+    void aSettledSuccessfulParentCanStillCancelItsPhysicallyActiveChild()
+            throws Exception {
+        CountDownLatch stageEntered = new CountDownLatch(1);
+        CountDownLatch releaseStage = new CountDownLatch(1);
+        AtomicReference<TaskPipeline.PipelineHandle<Integer>> child =
+                new AtomicReference<>();
+        OresFuture<Integer> borrowed = OresFuture.completed(21);
+
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            TaskHandle<Integer> parent = scheduler.startTracked(resume -> {
+                if (!resume.initial()) {
+                    throw new IllegalStateException("parent must not resume");
+                }
+                child.set(TaskPipeline.startInCurrentTaskOrRoot(scheduler, borrowed,
+                        List.of(value -> {
+                            stageEntered.countDown();
+                            if (!releaseStage.await(5, TimeUnit.SECONDS)) {
+                                throw new IllegalStateException("stage gate timed out");
+                            }
+                            return ((Integer) value) + 1;
+                        })));
+                return OresScheduler.done(99);
+            });
+            assertTrue(stageEntered.await(5, TimeUnit.SECONDS));
+            try {
+                assertEquals(99, parent.result().get(5, TimeUnit.SECONDS));
+                assertFalse(parent.getDone().isDone());
+                assertTrue(parent.cancel("cancel physically active descendants"),
+                        "terminal parent value must not hide a live child");
+                assertFalse(parent.getDone().isDone(),
+                        "cancelling a child does not prove physical retirement");
+                assertEquals(99, parent.result().get(5, TimeUnit.SECONDS),
+                        "late descendant cancellation must preserve parent success");
+                assertFalse(borrowed.isCancelled());
+            } finally {
+                releaseStage.countDown();
+            }
+            assertInstanceOf(TaskHandle.Cancelled.class,
+                    child.get().getDone().get(5, TimeUnit.SECONDS));
+            assertEquals(new TaskHandle.Success<>(99),
+                    parent.getDone().get(5, TimeUnit.SECONDS));
+            assertFalse(parent.cancel("too late"));
+            assertFalse(borrowed.isCancelled());
+        }
+    }
+
+    @Test
     void parentCancellationBeforeChildAdmissionPreventsLateStageExecution()
             throws Exception {
         CountDownLatch aboutToAdmit = new CountDownLatch(1);
