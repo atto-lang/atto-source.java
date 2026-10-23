@@ -339,3 +339,54 @@ execution and formal verification.
 This is a **safety** fence; it does not guarantee progress if a host teardown
 worker hangs or cannot obtain capacity. Physical loan receipts and bounded
 quarantine remain separate integration requirements.
+
+## Physical STOP dispatch shutdownNow accounting (2026-10-23)
+
+`OresVM` now wraps every physical STOP submission in an atomic
+`PhysicalStopJob` state machine:
+
+- `ADMITTED → RUNNING → RETIRED`: a worker won execution and the actor
+  callback runs only on that worker. VM shutdown can request interruption but
+  cannot claim the running revoker physically retired.
+- `ADMITTED → CANCELLED_BEFORE_START`: `shutdownNow()` returned a job that
+  never started. Exactly one failed `neverStarted` callback is delivered to
+  the owning `ActorRuntime`; no STOP guest revoker executes.
+- Rejected admission throws synchronously. ActorRuntime quarantines its
+  parent tree. A buggy dispatcher that sends null or duplicate failed
+  callbacks is also quarantined, never treated as cleanup success.
+
+`PhysicalStopDispatcher` requires both an admitted `Runnable` and a
+`Consumer<Throwable>` for never-started jobs. `OresVM.executePhysicalStop`
+uses the wrapper to arbitrate worker entry against shutdown. The VM reports
+each discarded queued task even when physical worker shutdown interrupts
+other tasks, and continues closing CONTROL if a discard callback fails.
+
+A successful callback requires the worker's original `child.cancel()` to
+return from its synchronous host revocation path; child finalization and
+native/FFI physical-loan retirement remain **independent** actor-done gates.
+A never-started task is **not** counted as successfully retired: its failed
+receipt sets `sourceStopCleanupAborted`, and the parent arena remains
+quarantined even if the receipt counter itself reaches zero.
+
+The focused JUnit matrix now includes:
+
+- `OresVMTest.shutdownNowReportsQueuedPhysicalStopNeverStartedExactlyOnce`
+- `OresVMTest.saturatedPhysicalStopQueueRejectsNewSubmissionWithoutFabricatingReceipt`
+- `OresVMTest.concurrentWorkerStartAndShutdownClaimOneExclusiveReceipt`
+- `ActorStopCleanupAdmissionTest.vmShutdownDiscardsQueuedSiblingStopAndQuarantinesParent`
+- `ActorStopCleanupAdmissionTest.missingOrDuplicatedPhysicalStopDiscardReceiptCannotAuthorizeReclamation`
+- `FormalPhysicalStopJobModelCheckTest.shutdownAndWorkerStartupNeverForgeSuccessfulPhysicalRetirement`
+
+The model uses **three** jobs with one running worker and one queue slot,
+including possible worker-start lag. An independent enumerator checked
+150 states covering queue saturation, cancellation-before-start and running
+during shutdown; no early-finalization violation appeared in that
+bounded abstraction. This is not actual JDK25/JUnit/native or LLVM execution.
+
+**Still open:** native I/O / FFI loan completion must supply an independent
+physical lease receipt, since a synchronous revocation hook returning does
+not prove an asynchronous kernel/native operation has fully exited. A
+long-running native callback may outlive VM `close()` and must not be treated
+as released by interruption or timeout. Formal modeling should extend to
+actor generations, native loans and supervisor restart. Real CI is blocked by
+the private-source mirror authorization gate.
