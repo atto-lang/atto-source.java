@@ -104,6 +104,20 @@ public final class NativeHttp implements AutoCloseable {
         /** True only for worker pools which can be warmed before routing publication. */
         public boolean pooled() { return workers != null; }
 
+        /** Nonblocking health snapshot for the supervisor publication boundary. */
+        boolean readyNow() {
+            supervisor();
+            synchronized (this) {
+                if (workers == null || poolDiscarded) return false;
+                for (Worker instance : workers) {
+                    if (instance == null || !instance.actor.ready().isDone()
+                            || instance.actor.ready().isCompletedExceptionally()
+                            || !context.actors().isAlive(instance.actor)) return false;
+                }
+                return true;
+            }
+        }
+
         /**
          * Prestart each pooled worker and verify its actual actor ready receipt.
          * A failed startup cannot certify a candidate for routing publication.
