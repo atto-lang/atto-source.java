@@ -161,18 +161,29 @@ final class ActorPhysicalRetirementRegistry {
             return;
         }
         CompletableFuture<Boolean> allowed = new CompletableFuture<>();
+        Thread submitter = Thread.currentThread();
+        java.util.concurrent.atomic.AtomicBoolean executingDispatch =
+                new java.util.concurrent.atomic.AtomicBoolean(true);
         try {
             postDrainExecutor.execute(() -> {
-                // A fast executor must not observe approval until its
+                // Direct/caller-runs execution would deadlock on its own
+                // approval gate; reject it explicitly, fail closed.
+                if (Thread.currentThread() == submitter && executingDispatch.get()) {
+                    throw new IllegalStateException(
+                            "physical retirement wake requires asynchronous host dispatch");
+                }
+                // A fast worker must not observe approval until its
                 // submission has returned without throwing. This also
-                // prevents a callback which enqueues then throws from
+                // prevents an executor which enqueues then throws from
                 // authorizing Actor.done() before quarantine is latched.
                 if (allowed.join()) {
                     notifyOwner();
                 }
             });
+            executingDispatch.set(false);
             allowed.complete(true);
         } catch (RuntimeException | Error failure) {
+            executingDispatch.set(false);
             synchronized (lock) {
                 if (firstFailure == null) firstFailure = failure;
                 else if (firstFailure != failure) firstFailure.addSuppressed(failure);
