@@ -1,9 +1,13 @@
 package dev.oreslang.runtime;
 
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.Objects;
+import java.util.Set;
 
 /**
- * Immutable compiler/runtime-issued exceptional effect envelope.
+ * Compiler/runtime-issued exceptional effect envelope with immutable provenance
+ * and runtime-owned one-unwind replay state.
  *
  * <p>This type is deliberately package-private and has no public constructor.
  * Guest source and FFI code must never be able to manufacture or relabel one.
@@ -52,6 +56,16 @@ final class GuestFailure {
     private final Throwable error;
     private final Provenance provenance;
     private final Object issuerSeal;
+
+    /*
+     * Runtime-owned one-unwind lifecycle state. Provenance and payload identity
+     * are immutable; this ledger only prevents a valid failure capability from
+     * being replayed through the same lexical recovery chain or reused after a
+     * successful recovery.
+     */
+    private final Set<RecoveryHandlerChain<?>> visitedChains =
+            Collections.newSetFromMap(new IdentityHashMap<>());
+    private boolean recovered;
 
     private GuestFailure(
             RecoveryHandlerChain.FailureKind kind,
@@ -107,5 +121,28 @@ final class GuestFailure {
 
     boolean compilerAuthenticated() {
         return issuerSeal == COMPILER_ISSUER;
+    }
+
+    boolean belongsTo(ExecutionContext.ExecutionId executionId) {
+        return provenance.executionId().equals(
+                Objects.requireNonNull(executionId, "executionId"));
+    }
+
+    synchronized boolean enterRecoveryChain(RecoveryHandlerChain<?> chain) {
+        Objects.requireNonNull(chain, "chain");
+        if (recovered) {
+            throw new IllegalStateException(
+                    "recovered guest failure cannot be dispatched again");
+        }
+        return visitedChains.add(chain);
+    }
+
+    synchronized void markRecovered() {
+        if (recovered) {
+            throw new IllegalStateException(
+                    "guest failure was already recovered");
+        }
+        recovered = true;
+        visitedChains.clear();
     }
 }
