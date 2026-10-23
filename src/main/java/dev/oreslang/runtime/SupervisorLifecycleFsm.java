@@ -219,6 +219,7 @@ public final class SupervisorLifecycleFsm {
                         "conflicting or downgraded shutdown child generations");
                 return s;
             }
+            require(!controlFault, "cannot begin guest-hook shutdown after CONTROL loss");
             expected = request.children().keySet();
             generations = request.children();
             done = Set.of();
@@ -240,6 +241,7 @@ public final class SupervisorLifecycleFsm {
                         "conflicting or unauthenticated shutdown child set for frozen epoch");
                 return s;
             }
+            require(!controlFault, "cannot begin guest-hook shutdown after CONTROL loss");
             expected = request.children();
             generations = Map.of();
             done = Set.of();
