@@ -1,0 +1,102 @@
+# Actor physical resource retirement registry — Java draft
+
+Status: **DRAFT / no exact-head executed JDK25 proof**. Stacked onto
+actor STOP cleanup PR #1936 (which stacks on mutex/grant retirement #1933).
+The work introduces a host runtime substrate; it does **not** automatically
+instrument native TCP/HTTP, FFI, or LLVM runtimes.
+
+## Runtime contract
+
+- Exactly one `ActorPhysicalRetirementRegistry` belongs to each ActorCell,
+  identified by its immutable ActorId and generation.
+- Only a trusted host adapter executing with that actor's *physical*
+  single-writer lease can register a resource ticket. Registration happens
+  **before** acquiring/publishing the physical resource or native loan.
+- Every ticket declares a kind: MUTEX_HANDOFF, TCP_HTTP_HANDLE, FFI_LOAN,
+  ASYNC_ITERATOR, SHARED_BLOB_LEASE, OTHER. Diagnostics expose only immutable
+  per-kind counts and the failure cause; no ticket escapes guest syntax.
+- STOP seals ordinary ticket admission under the actor lifecycle monitor.
+  Only a scheduler-authenticated cancellation cleanup turn or explicit
+  `endWithCleanup` body may register further physical close tickets, bounded
+  globally per actor to 4096 pending receipts. Guest code cannot manufacture
+  or close tickets through Oreslang source APIs.
+- A physical driver calls `Receipt.completeAfterPhysicalRelease()` **only
+  after** the native close, final callback, mutex handoff reclamation, shared
+  blob lifetime, or other release barrier really completes. The settlement
+  callback may be on a foreign completion thread, but never executes guest
+  code directly. Repeated settlement returns false; no double decrement.
+- `Receipt.failPhysicalRelease(Throwable)` is sticky, retains the ticket,
+  keeps the ActorCell reachable, and quarantines the arena. A failed release
+  cannot be converted into success by a late completion or duplicate call.
+  Capacity exhaustion also records a sticky failure.
+- The actor's finalization gate joins physical ticket settlement **in addition
+  to** SourceTask physical quiescence, terminal Future subscribers,
+  cleanup-created Futures, owned Future revocation, and child-actor completion.
+  The registry becomes irreversibly retired only on the verified finalization
+  winner, before ActorRef.done and arena closure.
+- A parent/supervisor cannot publish completion until each child has retired
+  all of its physical tickets. A replacement actor incarnation has its own
+  registry and cannot inherit or reuse old receipts.
+
+## Trusted adapter pattern (conceptual Java host code)
+
+```java
+// Inside a trusted runtime adapter, while holding this actor's lease:
+var receipt = runtime.registerCurrentActorPhysicalReceipt(
+    ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE);
+// Acquire native/transport loan only after registration succeeds.
+// The resource close machinery retains the opaque receipt.
+requestPhysicalClose(nativeHandle);
+// Later, on trusted driver's ACTUAL physical release callback:
+receipt.completeAfterPhysicalRelease();
+// If the close fails and physical release cannot be proven:
+// receipt.failPhysicalRelease(failure);
+```
+
+The ticket is a claim of physical release, **not** a promise that an
+`OresFuture.cancel()` or `closeAsync()` request will finish. An adapter
+must not settle it when cancellation is merely accepted, on producer Future
+completion without the handle-close barrier, or when an actor is logically
+stopped but a DMA/FFI loan remains active.
+
+## Tests committed, not passed
+
+`ActorPhysicalRetirementRegistryTest` covers:
+- Actor cancelled with outstanding TCP + FFI tickets; DONE waits for BOTH;
+  external completion callback is allowed, double-settlement is ignored.
+- Parent actor STOP with child FFI loan: parent and child DONE remain pending
+  until the child's physical release.
+- SourceTask with an FFI ticket: after STOP its authenticated cancellation
+  cleanup registers an async-iterator ticket and both settle separately.
+- `endWithCleanup` registration of a physical close after logical STOP.
+- Sticky physical release failure, duplicate release failure, immutable
+  per-kind diagnostics, late post-retirement registration denial.
+- Two simultaneous foreign completion threads racing to settle one ticket
+  result in exactly one success and no negative outstanding count.
+
+The focused exact-head JDK25/GraalVM workflow includes this suite.
+If GitHub Actions reports zero steps, mark CI **not executed** rather than
+passing or failing tests. No private Git tree may cross organizations until
+protected-branch private-source policy approves the destination's exact
+owner/repo and immutable repo ID via independent review (#1538).
+
+## Remaining P0 integration and execution gates
+
+1. Connect real native IO close, TCP/HTTP transport, FFI loan, mutex async
+   handoff, async iterator and shared-blob lease owners to ticket registration
+   and their **physical** settlement events. A resource not registered is
+   invisible to this registry, so the current patch alone does not prove all
+   actor resources are safe at DONE. Task-owned mutex receipts already
+   participate in TaskHandle and SourceTask scheduler barriers separately.
+2. Prove actor/driver lock-order compatibility, reentrant native callbacks,
+   timed-out close and cancellation racing an in-flight callback. On failure,
+   record quarantine rather than clearing tickets or releasing the arena.
+3. Run JDK25 source/JUnit tests and GraalVM native-image tests on an approved
+   runner. Add deterministic crash/restart, force isolation and cancellation
+   matrix plus actual source `defer`/`finally`/iterator-close programs.
+4. Connect LLVM scheduler/resource-registry ticket issuance to actual
+   guest/native lifetime transitions and compare semantic traces across
+   Java and LLVM with sanitizer evidence.
+5. Keep every involved PR draft until an independently reviewed exact-head
+   artifact proves successful source compilation, lifecycle conformance
+   and physical resource reclamation.
