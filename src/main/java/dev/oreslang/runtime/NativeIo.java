@@ -316,7 +316,15 @@ public final class NativeIo {
                 }
                 activeOperations++;
             }
+            final Thread physicalOwner = Thread.currentThread();
+            final java.util.concurrent.atomic.AtomicBoolean released =
+                    new java.util.concurrent.atomic.AtomicBoolean();
             return () -> {
+                if (Thread.currentThread() != physicalOwner) {
+                    throw new SecurityException(
+                            "TCP physical loan release requires its acquiring host worker");
+                }
+                if (!released.compareAndSet(false, true)) return;
                 synchronized (lock) {
                     if (activeOperations <= 0) {
                         throw new IllegalStateException(
