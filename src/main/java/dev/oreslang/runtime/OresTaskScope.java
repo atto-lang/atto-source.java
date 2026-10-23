@@ -33,13 +33,48 @@ public final class OresTaskScope implements AutoCloseable {
     // All members of one owned tree share a strict admission/plan monitor.
     // Lock order: treeAdmissionGate -> individual scope.gate.
     private final Object treeAdmissionGate;
-    // Serializes only producer revocation for overlapping parent/child
-    // cancellation walks. Completion subscribers run AFTER this monitor is
-    // released, so a blocked subscriber cannot stall another subtree.
-    // Without this separate gate, child.cancel() and root.cancel() can seal
-    // overlapping trees, then deliver root waiters while a child hook is
-    // still revoking its producer.
-    private final Object treeRevocationGate;
+    // Tracks all overlapping subtree revocation walks without locking
+    // either producer cancellation hooks or host completion subscribers.
+    // Owned child scopes share this exact coordinator with their root.
+    private final CancellationBatch treeCancellationBatch;
+
+    /**
+     * Preallocated notification bucket. Linked-list publication is pointer-
+     * only AFTER cancellation becomes irreversible: no queue-node allocation
+     * can strand the deferred Future notifications during an OOME.
+     */
+    private static final class CancellationReport {
+        final ArrayList<Runnable> notifications = new ArrayList<>();
+        CancellationReport next;
+    }
+
+    /**
+     * Revocation-phase barrier shared by all scopes in one owned tree.
+     * A child and parent can seal separate subtrees concurrently; neither
+     * may deliver host subscribers until both walks have finished revoking.
+     * Cancellation hooks execute outside this monitor and may reenter cancel
+     * or request another cancellation on an independent thread.
+     */
+    private static final class CancellationBatch {
+        private int active;
+        private CancellationReport pending;
+
+        synchronized void enter() {
+            if (active == Integer.MAX_VALUE)
+                throw new IllegalStateException("too many overlapping TaskScope cancellations");
+            active++;
+        }
+
+        synchronized CancellationReport finish(CancellationReport report) {
+            // Only preallocated pointers are linked at publication time.
+            report.next = pending;
+            pending = report;
+            if (--active != 0) return null;
+            CancellationReport release = pending;
+            pending = null;
+            return release;
+        }
+    }
 
     /**
      * Reserve ownership before executable admission. The slot itself is
@@ -128,8 +163,8 @@ public final class OresTaskScope implements AutoCloseable {
         this.parent = parent;
         this.treeAdmissionGate = parent == null
                 ? new Object() : parent.treeAdmissionGate;
-        this.treeRevocationGate = parent == null
-                ? new Object() : parent.treeRevocationGate;
+        this.treeCancellationBatch = parent == null
+                ? new CancellationBatch() : parent.treeCancellationBatch;
     }
 
     public <T> OresTask<T> submit(AsyncRuntime.Task<T> work) {
@@ -469,32 +504,34 @@ public final class OresTaskScope implements AutoCloseable {
 
     /** Cancel all owned descendants. Does NOT imply physical quiescence. */
     public boolean cancel() {
-        ArrayList<Runnable> notifications = new ArrayList<>();
-        // First seal the ENTIRE owned tree, then revoke ALL producers, then
-        // invoke any synchronous Future subscribers. A parent cancellation
-        // hook must never admit a fresh Task into an as-yet-unvisited child.
+        // Allocate the operation's notification bucket before entering the
+        // irrevocable cancellation phase. finish() then only links pointers.
+        CancellationReport report = new CancellationReport();
+        treeCancellationBatch.enter();
         boolean won = false;
         Throwable firstFailure = null;
-        // Keep overlapping revocation phases ordered across a whole owned
-        // tree, including independent child.cancel() racing root.cancel().
-        // Never invoke a Future completion subscriber under this monitor:
-        // notification delivery below is intentionally outside the gate.
         try {
-            synchronized (treeRevocationGate) {
-                won = cancelTreeIterative(notifications);
-            }
+            // First seal the requested subtree, then revoke every producer
+            // without running any terminal Future subscribers inline.
+            won = cancelTreeIterative(report.notifications);
         } catch (RuntimeException | Error failure) {
             firstFailure = failure;
-        }
-        // Even if a cancellation hook/link fails, always deliver deferred
-        // notifications already claimed. Withholding one leaves the Future's
-        // revocation barrier permanently closed to its host subscribers.
-        for (Runnable notification : notifications) {
-            try {
-                notification.run();
-            } catch (RuntimeException | Error failure) {
-                if (firstFailure == null) firstFailure = failure;
-                else if (firstFailure != failure) firstFailure.addSuppressed(failure);
+        } finally {
+            // Another parent/child cancel may be mid-revocation. Notification
+            // batches remain held until the last overlapping walk leaves.
+            // No user hook or subscriber executes under the batch monitor.
+            CancellationReport ready = treeCancellationBatch.finish(report);
+            while (ready != null) {
+                for (Runnable notification : ready.notifications) {
+                    try {
+                        notification.run();
+                    } catch (RuntimeException | Error failure) {
+                        if (firstFailure == null) firstFailure = failure;
+                        else if (firstFailure != failure)
+                            firstFailure.addSuppressed(failure);
+                    }
+                }
+                ready = ready.next;
             }
         }
         if (firstFailure instanceof RuntimeException failure) throw failure;
