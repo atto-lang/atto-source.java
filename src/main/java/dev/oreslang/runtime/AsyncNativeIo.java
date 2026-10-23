@@ -78,8 +78,20 @@ public final class AsyncNativeIo implements AutoCloseable {
                 } finally {
                     CorePerf.end(CorePerf.ASYNC_IO_WORK, workPerf);
                 }
-                synchronized (this) { admitted.remove(result); }
-                result.completeFromRuntime(value);
+                // Reaching this point proves the host Callable physically
+                // returned. A context close must never publish a terminal
+                // Future while the same worker may still own native loans.
+                final boolean closedAtRetirement;
+                synchronized (this) {
+                    admitted.remove(result);
+                    closedAtRetirement = closed;
+                }
+                if (closedAtRetirement) {
+                    result.failFromRuntime(new IllegalStateException(
+                            "I/O context closed after physical operation exit"));
+                } else {
+                    result.completeFromRuntime(value);
+                }
             });
         } catch (RuntimeException failure) {
             CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_REJECTED, 1L);
@@ -101,22 +113,24 @@ public final class AsyncNativeIo implements AutoCloseable {
 
     @Override public void close() {
         Set<AutoCloseable> closing;
-        Set<OresFuture<?>> failing;
         synchronized (this) {
             if (closed) return;
             closed = true;
             closing = new HashSet<>(resources);
             resources.clear();
-            failing = new HashSet<>(pending);
-            failing.addAll(controls);
-            controls.clear();
-            pending.clear();
+            // Keep running operation ownership in pending/controls until the
+            // physical worker exits. Interrupt is only a request; it cannot
+            // certify that a native call, pinned buffer or host callback
+            // actually relinquished its loan.
         }
         workers.shutdownNow();
         for (AutoCloseable resource : closing) {
             try { resource.close(); } catch (Exception ignored) { /* best-effort shutdown */ }
         }
-        for (OresFuture<?> future : failing)
-            future.failFromRuntime(new IllegalStateException("I/O context closed"));
+        // Do not fabricate a physical retirement receipt here. Each worker
+        // publishes terminal failure/success only after its Callable returns.
+        // An uncooperative worker deliberately leaves its Future unsettled
+        // and its physical loan retained until a trusted quiescence witness
+        // arrives.
     }
 }
