@@ -38,3 +38,27 @@ Tests added in `ActorLockStopRetirementTest`:
 **Not proven here**: a compiled Java/Graal JDK25 run, actual native LLVM actor stop, untrusted suspended SourceTask finally unwinding, forced supervisor restart tied to cleanup receipt, reliable service-level distributed lock expiry/fencing, or all external callback admission exhaustion cases. Keep PR draft until those run.
 
 Links: Java #1923, platform conformance #158, LLVM #863.
+
+## Formal STOP/restart contract
+
+The executable bounded Java model `FormalActorStopRetirementModelCheckTest`
+explores all reachable interleavings of carrier exit, cancellation/STOP-effect
+drain, descendant completion, source-Task completion, physical lock handoff,
+and synchronous Future callback drain. It requires
+`RUNNING -> STOPPING -> QUIESCING -> RETIRING -> TERMINATED`;
+an exceptional host-stage dispatch, cleanup callback, or physical receipt leads
+to `QUARANTINED` instead of successful termination.
+
+The supervisor can activate a new incarnation only after `TERMINATED`, with
+all receipt bits clear. A stale generation and duplicate STOP are idempotent.
+The model passed four standalone local Java 21 checks (107 reachable model
+states); that evidence is **only about the bounded model**. Concrete Java
+GraalVM, source lowered `await`, child-native loan lifetimes, restart
+admission, and LLVM parity still require executable refinement tests.
+
+The runtime now wraps virtual-thread dispatch and all chained retirement
+stages so host scheduling/continuation failures are captured in the actor's
+irreversible quarantine diagnostic, rather than disappearing into a callback
+while `finalizationStarted` remains permanently true. A separate JUnit
+fault injection asynchronously fails the actor lock-retirement witness; the
+actor must not publish DONE or release its quarantined backing memory.
