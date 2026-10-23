@@ -6016,14 +6016,12 @@ public final class TypeChecker {
                                 + " cannot satisfy " + structural.target());
             }
             if (structural.binding() != null) {
-                // A named interface target becomes a proven structural view of
-                // that interface; inline shapes retain their record type.
-                Type bindingType = resolvedTarget instanceof Named ? resolvedTarget : targetShape;
-                // Structural matching must not erase a record's readonly
-                // capability, including readonly members inside an explicit
-                // struct. A named structural contract needs the same shape
-                // overlay when the subject is a record.
-                if (subject instanceof Record) bindingType = targetShape;
+                // Structural pattern matching proves shape only, NEVER
+                // mutable field authority. Keep the current-main structural
+                // CONTRACT kind, including public method slots, rather than
+                // exposing the nominal subject or a writable record alias.
+                Type bindingType = new Record(
+                        targetShape.members(), true, AggregateKind.CONTRACT);
                 bindingType = overlayReadonlyCapabilities(subject, bindingType);
                 bindings.define(structural.binding(), bindingType, Ast.BindingKind.VAL);
             }
@@ -6159,7 +6157,10 @@ public final class TypeChecker {
         if (subject instanceof SelfType selfType) {
             return structuralPatternMayMatch(selfType.bound(), targetShape);
         }
-        if (subject instanceof Record) return assignable(subject, targetShape);
+        if (subject instanceof Record sourceRecord) {
+            return assignable(sourceRecord,
+                    new Record(targetShape.members(), true, AggregateKind.CONTRACT));
+        }
         if (subject instanceof Named named) {
             Ast.ClassDecl klass = findClass(named.name());
             if (klass != null) {
@@ -8185,9 +8186,13 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("structural interface must resolve to a named type");
             }
             Type shape = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
-            return substituteGenerics(
+            Type specialized = substituteGenerics(
                     shape,
                     genericBindings(iface.genericParameters(), named.arguments(), "interface " + iface.name()));
+            if (!(specialized instanceof Record record)) {
+                throw new IllegalStateException("structural interface shape must be a record");
+            }
+            return new Record(record.members(), true, AggregateKind.CONTRACT);
         }
 
         Ast.ClassDecl klass = findClass(param.type().name());
@@ -8201,7 +8206,11 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("structural class must resolve to a named type");
             }
             Type shape = publicClassShape(klass, new LinkedHashSet<>());
-            return substituteGenerics(shape, classGenericBindings(klass, named));
+            Type specialized = substituteGenerics(shape, classGenericBindings(klass, named));
+            if (!(specialized instanceof Record record)) {
+                throw new IllegalStateException("structural class shape must be a record");
+            }
+            return new Record(record.members(), true, AggregateKind.CONTRACT);
         }
 
         throw new IllegalArgumentException(
@@ -9549,9 +9558,20 @@ public final class TypeChecker {
         if (!aggregateKindsCompatible(actual.kind(), expected.kind())) return false;
         if (expected.kind() == AggregateKind.STRUCT
                 && actual.members().size() != expected.members().size()) return false;
+        // A read-only structural view can be covariant, but a writable
+        // structural alias must be invariant in each exposed member. Do not
+        // use bidirectional assignability: Unknown and Generic are permissive.
+        if (!expected.readOnly() && actual.readOnly()) return false;
         for (Map.Entry<String, Type> required : expected.members().entrySet()) {
             Type candidate = actual.members().get(required.getKey());
-            if (candidate == null || !assignable(candidate, required.getValue())) return false;
+            if (candidate == null) return false;
+            if (expected.readOnly()) {
+                if (!candidate.equals(required.getValue())
+                        && (Types.containsUncertainType(candidate)
+                                || !assignable(candidate, required.getValue()))) return false;
+            } else if (!candidate.equals(required.getValue())) {
+                return false;
+            }
         }
         return true;
     }
