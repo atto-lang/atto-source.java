@@ -30,7 +30,11 @@ final class SupervisorLifecycleFsmIntegrationTest {
             assertFalse(root.lifecycle().actorsDone(), "initiation is not retirement");
             assertFalse(root.terminated().isDone());
             while (!queued.isEmpty()) queued.removeFirst().run();
-            root.terminated().get(5, TimeUnit.SECONDS);
+            var shutdownFailure = assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> root.terminated().get(5, TimeUnit.SECONDS));
+            assertTrue(shutdownFailure.getCause().getMessage().contains("shutdown failed"),
+                    "a sticky FSM infrastructure failure cannot report clean termination");
             assertTrue(tree.status().hasFailures(), "failure remains sticky");
             assertFalse(tree.status().allPhysicallyReclaimed());
         }
@@ -94,6 +98,40 @@ final class SupervisorLifecycleFsmIntegrationTest {
             root.terminated().get(5, TimeUnit.SECONDS);
             assertThrows(java.util.concurrent.ExecutionException.class,
                     () -> bounded.get(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void rejectedWatchdogMarksInfrastructureFailureBeforeObserverReturns() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             var control = Executors.newSingleThreadExecutor();
+             var rejectedWatchdog = Executors.newSingleThreadScheduledExecutor()) {
+            rejectedWatchdog.shutdown();
+            var heldHook = new OresFuture<Void>();
+            CountDownLatch entered = new CountDownLatch(1);
+            var tree = new SupervisorShutdownTree(runtime, control);
+            var root = tree.setRoot("root", runtime.createActorGroup(),
+                    new SupervisorShutdownTree.Hooks() {
+                        @Override public OresFuture<Void> onShutdown(
+                                SupervisorShutdownTree.Reason reason) {
+                            entered.countDown();
+                            return heldHook;
+                        }
+                    });
+            var bounded = tree.shutdown(SupervisorShutdownTree.Reason.REQUESTED,
+                    java.time.Duration.ofSeconds(1), rejectedWatchdog);
+            assertTrue(tree.status().hasFailures(),
+                    "failed deadline registration must appear in status immediately");
+            assertFalse(tree.status().allPhysicallyReclaimed());
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> bounded.get(5, TimeUnit.SECONDS));
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            assertFalse(root.terminated().isDone(),
+                    "infrastructure failure cannot manufacture actor/hook completion");
+            heldHook.completeFromRuntime(null);
+            var actualFailure = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> root.terminated().get(5, TimeUnit.SECONDS));
+            assertTrue(actualFailure.getCause().getMessage().contains("shutdown failed"));
         }
     }
 
