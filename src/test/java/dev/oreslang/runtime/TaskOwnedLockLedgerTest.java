@@ -12,6 +12,73 @@ import org.junit.jupiter.api.Test;
 /** The real OresScheduler TaskHandle + OresMutex synchronous guard path. */
 public final class TaskOwnedLockLedgerTest {
     @Test
+    void wallDeadlineTaskHasOwnGuardLedgerAndReleasesQuotaCallbacks()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresMutex.Shared<int[]> mutex = OresMutex.shared(new int[]{5});
+            AtomicReference<OresMutex.Guard<int[]>> leaked = new AtomicReference<>();
+            java.util.concurrent.atomic.AtomicInteger physical = new java.util.concurrent.atomic.AtomicInteger();
+            java.util.concurrent.atomic.AtomicInteger notified = new java.util.concurrent.atomic.AtomicInteger();
+            TaskHandle<Void> task = TaskHandle.startWithWallDeadline(
+                    scheduler,
+                    resume -> {
+                        var guard = mutex.tryLock().orElseThrow();
+                        leaked.set(guard);
+                        guard.value()[0] = 29;
+                        return OresScheduler.done(null);
+                    },
+                    physical::incrementAndGet,
+                    TimeUnit.SECONDS.toNanos(5),
+                    new IllegalStateException("injected wall budget exhausted"),
+                    notified::incrementAndGet);
+            assertEquals(new TaskHandle.Success<Void>(null),
+                    task.getDone().get(3, TimeUnit.SECONDS));
+            assertNotNull(leaked.get());
+            assertTrue(leaked.get().released(), "wall-deadline Task lost its lock ledger");
+            assertTrue(mutex.isPoisoned());
+            assertEquals(1, physical.get(), "physical quota retirement duplicated");
+            assertEquals(1, notified.get(), "timed notification quota retirement duplicated");
+        }
+    }
+
+    @Test
+    void wallDeadlineSuspendedTaskIsQuiescentBeforeSchedulerCloseReturnsDone()
+            throws Exception {
+        OresScheduler scheduler = new OresScheduler(1);
+        try {
+            var mutex = OresMutex.shared(new int[]{8});
+            OresFuture<Integer> never = new OresFuture<>();
+            CountDownLatch suspended = new CountDownLatch(1);
+            AtomicReference<OresMutex.Guard<int[]>> held = new AtomicReference<>();
+            java.util.concurrent.atomic.AtomicInteger physical = new java.util.concurrent.atomic.AtomicInteger();
+            TaskHandle<Void> task = TaskHandle.startWithWallDeadline(
+                    scheduler,
+                    resume -> {
+                        if (!resume.initial()) {
+                            throw new IllegalStateException("cancelled Task resumed");
+                        }
+                        var guard = mutex.tryLock().orElseThrow();
+                        held.set(guard);
+                        suspended.countDown();
+                        return OresScheduler.await(never);
+                    },
+                    physical::incrementAndGet,
+                    TimeUnit.SECONDS.toNanos(5),
+                    new IllegalStateException("deadline exceeded"),
+                    () -> { });
+            assertTrue(suspended.await(3, TimeUnit.SECONDS));
+            scheduler.close();
+            assertInstanceOf(TaskHandle.Cancelled.class,
+                    task.getDone().get(3, TimeUnit.SECONDS));
+            assertEquals(1, physical.get());
+            assertTrue(held.get().released());
+            assertTrue(mutex.isPoisoned());
+        } finally {
+            scheduler.close();
+        }
+    }
+
+    @Test
     void mutexCreatorMayRetireWhileAnotherTaskLaterAcquiresItsGuard() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(2)) {
             AtomicReference<OresMutex.Shared<int[]>> published = new AtomicReference<>();
