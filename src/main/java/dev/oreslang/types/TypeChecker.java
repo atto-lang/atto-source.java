@@ -366,6 +366,35 @@ public final class TypeChecker {
     }
 
     private void validate(Ast.Program program) {
+        // Classes, traits/interfaces and transparent type aliases all occupy
+        // the *type* namespace. Keeping them in distinct lookup maps must not
+        // permit same-scope spelling collisions or ambiguous nominal identity.
+        // Functions/bindings are checked separately in the value namespace.
+        for (Ast.ModuleDecl module : program.modules()) {
+            Map<String, String> types = new LinkedHashMap<>();
+            for (Ast.Decl decl : module.declarations()) {
+                String name;
+                String category;
+                if (decl instanceof Ast.ClassDecl klass) {
+                    name = klass.name();
+                    category = "class";
+                } else if (decl instanceof Ast.InterfaceDecl iface) {
+                    name = iface.name();
+                    category = iface.moduleContract() ? "contract" : "interface/trait";
+                } else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    name = alias.name();
+                    category = "type alias";
+                } else {
+                    continue;
+                }
+                String previous = types.putIfAbsent(name, category);
+                if (previous != null) {
+                    throw new IllegalArgumentException(
+                            "duplicate type namespace name '" + module.name() + "." + name
+                                    + "' (" + previous + " versus " + category + ")");
+                }
+            }
+        }
         // Local overload identity must be validated before class-shape
         // construction. Otherwise same-name/same-arity declarations whose
         // types differ can fail later as a generic structural conflict before
