@@ -8,6 +8,13 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class RecoveryHandlerChainTest {
+    private static final ExecutionContext TEST_EXECUTION = ExecutionContext.task(7, 11);
+
+    private static GuestFailure signal(
+            RecoveryHandlerChain.FailureKind kind, Throwable error) {
+        return GuestFailure.issueFromCompiler(kind, error, TEST_EXECUTION, 1);
+    }
+
 
     @Test void registrationIsLifoAndExplicitBindingIsPreserved() {
         String context = "bound";
@@ -22,8 +29,8 @@ final class RecoveryHandlerChainTest {
                     c.next();
                 })
                 .freeze();
-        var result = chain.dispatch(RecoveryHandlerChain.FailureKind.RAISE,
-                new IllegalStateException("raised"));
+        var result = chain.dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE,
+                new IllegalStateException("raised")));
         assertEquals(new RecoveryHandlerChain.Recovered<>(42), result);
         assertEquals("boundBA", trace.toString());
     }
@@ -35,7 +42,7 @@ final class RecoveryHandlerChainTest {
                 .register((e, c) -> { visited.add(2); c.resolve(7); })
                 .freeze();
         assertEquals(new RecoveryHandlerChain.Recovered<>(7),
-                chain.dispatch(RecoveryHandlerChain.FailureKind.THROW, new Exception()));
+                chain.dispatch(signal(RecoveryHandlerChain.FailureKind.THROW, new Exception())));
         assertEquals(List.of(2), visited);
     }
 
@@ -45,13 +52,13 @@ final class RecoveryHandlerChainTest {
                 .onRaise((e, c) -> c.next())
                 .onRaise((e, c) -> c.next())
                 .freeze();
-        var result = chain.dispatch(RecoveryHandlerChain.FailureKind.RAISE, original);
+        var result = chain.dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE, original));
         var unhandled = assertInstanceOf(RecoveryHandlerChain.Unhandled.class, result);
         assertSame(original, unhandled.error());
         assertEquals(RecoveryHandlerChain.FailureKind.RAISE, unhandled.kind());
     }
 
-    @Test void panicCancellationAndFatalNeverInvokeGuestRecovery() {
+    @Test void panicCancellationAndFatalCannotMintLocalRecoveryEnvelope() {
         List<String> trace = new ArrayList<>();
         var chain = RecoveryHandlerChain.<Integer>builder()
                 .register((e, c) -> { trace.add("invoked"); c.resolve(0); })
@@ -60,12 +67,11 @@ final class RecoveryHandlerChainTest {
         for (var kind : List.of(RecoveryHandlerChain.FailureKind.PANIC,
                 RecoveryHandlerChain.FailureKind.CANCELLATION,
                 RecoveryHandlerChain.FailureKind.HOST_FATAL)) {
-            var result = assertInstanceOf(RecoveryHandlerChain.Unhandled.class,
-                    chain.dispatch(kind, error));
-            assertSame(error, result.error());
-            assertEquals(kind, result.kind());
+            assertThrows(IllegalArgumentException.class,
+                    () -> GuestFailure.issueFromCompiler(kind, error, TEST_EXECUTION, 2));
         }
-        assertEquals(List.of(), trace);
+        assertEquals(1, chain.size());
+        assertTrue(trace.isEmpty());
     }
 
     @Test void throwAndRaiseFiltersAreIndependent() {
@@ -75,9 +81,9 @@ final class RecoveryHandlerChainTest {
                 .onRaise((e, c) -> { trace.append('R'); c.resolve(2); })
                 .freeze();
         assertEquals(new RecoveryHandlerChain.Recovered<>(1),
-                chain.dispatch(RecoveryHandlerChain.FailureKind.THROW, new Exception()));
+                chain.dispatch(signal(RecoveryHandlerChain.FailureKind.THROW, new Exception())));
         assertEquals(new RecoveryHandlerChain.Recovered<>(2),
-                chain.dispatch(RecoveryHandlerChain.FailureKind.RAISE, new Exception()));
+                chain.dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE, new Exception())));
         assertEquals("TR", trace.toString());
     }
 
@@ -85,7 +91,7 @@ final class RecoveryHandlerChainTest {
         var chain = RecoveryHandlerChain.<Integer>builder().register((e, c) -> { }).freeze();
         Exception original = new Exception("pending");
         var result = assertInstanceOf(RecoveryHandlerChain.HandlerFailure.class,
-                chain.dispatch(RecoveryHandlerChain.FailureKind.THROW, original));
+                chain.dispatch(signal(RecoveryHandlerChain.FailureKind.THROW, original)));
         assertSame(original, result.pendingError());
         assertEquals(RecoveryHandlerChain.FailureKind.THROW, result.pendingKind());
         assertInstanceOf(IllegalStateException.class, result.callbackError());
@@ -98,7 +104,7 @@ final class RecoveryHandlerChainTest {
                 .register((e, c) -> { leaked.add(c); c.next(); })
                 .freeze();
         assertEquals(new RecoveryHandlerChain.Recovered<>(7),
-                chain.dispatch(RecoveryHandlerChain.FailureKind.THROW, new Exception()));
+                chain.dispatch(signal(RecoveryHandlerChain.FailureKind.THROW, new Exception())));
         for (var c : leaked) {
             assertThrows(IllegalStateException.class, c::next);
             assertThrows(IllegalStateException.class, () -> c.resolve(100));
@@ -111,7 +117,7 @@ final class RecoveryHandlerChainTest {
         var chain = RecoveryHandlerChain.<Integer>builder()
                 .register((e, c) -> { c.next(); c.resolve(9); }).freeze();
         var result = assertInstanceOf(RecoveryHandlerChain.HandlerFailure.class,
-                chain.dispatch(RecoveryHandlerChain.FailureKind.RAISE, original));
+                chain.dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE, original)));
         assertSame(original, result.pendingError());
         assertInstanceOf(IllegalStateException.class, result.callbackError());
     }
@@ -123,7 +129,7 @@ final class RecoveryHandlerChainTest {
         var chain = RecoveryHandlerChain.<Integer>builder()
                 .register((e, c) -> { leaked.add(c); throw boom; }).freeze();
         var result = assertInstanceOf(RecoveryHandlerChain.HandlerFailure.class,
-                chain.dispatch(RecoveryHandlerChain.FailureKind.RAISE, original));
+                chain.dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE, original)));
         assertSame(boom, result.callbackError());
         assertSame(original, result.pendingError());
         assertEquals(RecoveryHandlerChain.FailureKind.RAISE, result.pendingKind());
@@ -146,13 +152,13 @@ final class RecoveryHandlerChainTest {
         };
         for (Throwable signal : prohibited) {
             var result = assertInstanceOf(RecoveryHandlerChain.Unhandled.class,
-                    chain.dispatch(RecoveryHandlerChain.FailureKind.RAISE, signal));
+                    chain.dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE, signal)));
             assertSame(signal, result.error());
         }
         RuntimeException ordinary = new RuntimeException("ordinary");
         ordinary.addSuppressed(new SecurityException("suppressed denial"));
         var result = assertInstanceOf(RecoveryHandlerChain.Unhandled.class,
-                chain.dispatch(RecoveryHandlerChain.FailureKind.THROW, ordinary));
+                chain.dispatch(signal(RecoveryHandlerChain.FailureKind.THROW, ordinary)));
         assertSame(ordinary, result.error());
         assertTrue(visited.isEmpty());
     }
@@ -165,14 +171,14 @@ final class RecoveryHandlerChainTest {
         a.initCause(b);
         b.initCause(a);
         assertInstanceOf(RecoveryHandlerChain.Unhandled.class,
-                chain.dispatch(RecoveryHandlerChain.FailureKind.THROW, a));
+                chain.dispatch(signal(RecoveryHandlerChain.FailureKind.THROW, a)));
 
         RuntimeException wide = new RuntimeException("wide");
         for (int i = 0; i < 65; i++) {
             wide.addSuppressed(new RuntimeException("suppressed-" + i));
         }
         assertInstanceOf(RecoveryHandlerChain.Unhandled.class,
-                chain.dispatch(RecoveryHandlerChain.FailureKind.RAISE, wide));
+                chain.dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE, wide)));
     }
 
     @Test void crossThreadContinuationUseIsRejected() throws Exception {
@@ -196,7 +202,7 @@ final class RecoveryHandlerChainTest {
                     c.resolve(7);
                 }).freeze();
         assertEquals(new RecoveryHandlerChain.Recovered<>(7),
-                chain.dispatch(RecoveryHandlerChain.FailureKind.THROW, new Exception()));
+                chain.dispatch(signal(RecoveryHandlerChain.FailureKind.THROW, new Exception())));
         assertInstanceOf(IllegalStateException.class, errors.get());
     }
 
@@ -207,7 +213,7 @@ final class RecoveryHandlerChainTest {
                 .freeze();
         Throwable original = new RuntimeException("not a throw");
         var result = assertInstanceOf(RecoveryHandlerChain.Unhandled.class,
-                chain.dispatch(RecoveryHandlerChain.FailureKind.RAISE, original));
+                chain.dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE, original)));
         assertSame(original, result.error());
         assertTrue(visited.isEmpty());
     }
@@ -218,7 +224,7 @@ final class RecoveryHandlerChainTest {
         builder.register((e, c) -> c.resolve(2));
         assertEquals(1, frozen.size());
         assertEquals(new RecoveryHandlerChain.Recovered<>(1),
-                frozen.dispatch(RecoveryHandlerChain.FailureKind.THROW, new Exception()));
+                frozen.dispatch(signal(RecoveryHandlerChain.FailureKind.THROW, new Exception())));
         for (int i = 2; i < RecoveryHandlerChain.MAX_HANDLERS; i++) {
             builder.register((e, c) -> c.next());
         }
@@ -232,7 +238,7 @@ final class RecoveryHandlerChainTest {
         var chain = RecoveryHandlerChain.<Integer>builder()
                 .register((e, c) -> { c.resolve(7); throw callbackError; }).freeze();
         var result = assertInstanceOf(RecoveryHandlerChain.HandlerFailure.class,
-                chain.dispatch(RecoveryHandlerChain.FailureKind.RAISE, pendingError));
+                chain.dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE, pendingError)));
         assertSame(callbackError, result.callbackError());
         assertSame(pendingError, result.pendingError());
     }
@@ -250,7 +256,7 @@ final class RecoveryHandlerChainTest {
                     })
                     .freeze();
             var outcome = assertInstanceOf(RecoveryHandlerChain.Unhandled.class,
-                    chain.dispatch(RecoveryHandlerChain.FailureKind.RAISE, pending));
+                    chain.dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE, pending)));
             assertSame(pending, outcome.error());
             assertEquals(RecoveryHandlerChain.FailureKind.RAISE, outcome.kind());
             assertTrue(trace.isEmpty(), "must not reach older handler or return success");
@@ -270,7 +276,7 @@ final class RecoveryHandlerChainTest {
             var chain = RecoveryHandlerChain.<Integer>builder()
                     .register((e, c) -> { throw callback; }).freeze();
             var result = assertInstanceOf(RecoveryHandlerChain.TerminalCallbackFailure.class,
-                    chain.dispatch(RecoveryHandlerChain.FailureKind.RAISE, pending));
+                    chain.dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE, pending)));
             assertSame(pending, result.pendingError());
             assertSame(callback, result.terminalError());
             assertEquals(RecoveryHandlerChain.FailureKind.RAISE, result.pendingKind());
@@ -283,7 +289,7 @@ final class RecoveryHandlerChainTest {
         var chain = RecoveryHandlerChain.<Integer>builder()
                 .register((e, c) -> { throw callback; }).freeze();
         var result = assertInstanceOf(RecoveryHandlerChain.HandlerFailure.class,
-                chain.dispatch(RecoveryHandlerChain.FailureKind.RAISE, pending));
+                chain.dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE, pending)));
         assertSame(pending, result.pendingError());
         assertSame(callback, result.callbackError());
     }
@@ -295,7 +301,7 @@ final class RecoveryHandlerChainTest {
         var chain = RecoveryHandlerChain.<Integer>builder()
                 .register((e, c) -> { escaped.add(c); throw fatal; }).freeze();
         assertSame(fatal, assertThrows(AssertionError.class,
-                () -> chain.dispatch(RecoveryHandlerChain.FailureKind.RAISE, pending)));
+                () -> chain.dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE, pending))));
         assertEquals(1, escaped.size());
         assertThrows(IllegalStateException.class, () -> escaped.getFirst().next());
     }
@@ -311,7 +317,7 @@ final class RecoveryHandlerChainTest {
         var chain = RecoveryHandlerChain.<Integer>builder()
                 .register((e, c) -> { throw callback; }).freeze();
         var result = assertInstanceOf(RecoveryHandlerChain.TerminalCallbackFailure.class,
-                chain.dispatch(RecoveryHandlerChain.FailureKind.RAISE, pending));
+                chain.dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE, pending)));
         assertSame(pending, result.pendingError());
         assertSame(callback, result.terminalError());
     }
@@ -326,20 +332,20 @@ final class RecoveryHandlerChainTest {
                 .register((err, c) -> {
                     visited.incrementAndGet();
                     leaked.add(c);
-                    holder[0].dispatch(RecoveryHandlerChain.FailureKind.RAISE,
-                            new Exception("nested failure"));
+                    holder[0].dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE,
+                            new Exception("nested failure")));
                     c.resolve(7);
                 }).freeze();
         Throwable original = new Exception("original");
         Error abort = assertThrows(Error.class,
-                () -> holder[0].dispatch(RecoveryHandlerChain.FailureKind.RAISE, original));
+                () -> holder[0].dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE, original)));
         assertTrue(abort.getMessage().contains("reentrant"));
         assertEquals("nested failure", abort.getCause().getMessage());
         assertEquals(1, visited.get());
         assertThrows(IllegalStateException.class, () -> leaked.getFirst().resolve(5));
         // The guard must be removed on unwind, not retained on a pooled carrier.
         assertThrows(Error.class,
-                () -> holder[0].dispatch(RecoveryHandlerChain.FailureKind.RAISE, original));
+                () -> holder[0].dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE, original)));
         assertEquals(2, visited.get());
     }
 
@@ -351,20 +357,20 @@ final class RecoveryHandlerChainTest {
         holders[0] = RecoveryHandlerChain.<Integer>builder()
                 .register((e, c) -> {
                     calls.incrementAndGet();
-                    holders[1].dispatch(RecoveryHandlerChain.FailureKind.THROW,
-                            new Exception("B pending"));
+                    holders[1].dispatch(signal(RecoveryHandlerChain.FailureKind.THROW,
+                            new Exception("B pending")));
                     c.resolve(1);
                 }).freeze();
         holders[1] = RecoveryHandlerChain.<Integer>builder()
                 .register((e, c) -> {
                     calls.incrementAndGet();
-                    holders[0].dispatch(RecoveryHandlerChain.FailureKind.THROW,
-                            new Exception("A reentered"));
+                    holders[0].dispatch(signal(RecoveryHandlerChain.FailureKind.THROW,
+                            new Exception("A reentered")));
                     c.resolve(2);
                 }).freeze();
         Error abort = assertThrows(Error.class,
-                () -> holders[0].dispatch(RecoveryHandlerChain.FailureKind.THROW,
-                        new Exception("outer")));
+                () -> holders[0].dispatch(signal(RecoveryHandlerChain.FailureKind.THROW,
+                        new Exception("outer"))));
         assertTrue(abort.getMessage().contains("reentrant"));
         assertEquals("A reentered", abort.getCause().getMessage());
         assertEquals(2, calls.get());
@@ -377,8 +383,8 @@ final class RecoveryHandlerChainTest {
         holder[0] = RecoveryHandlerChain.<Integer>builder()
                 .register((e, c) -> {
                     try {
-                        holder[0].dispatch(RecoveryHandlerChain.FailureKind.THROW,
-                                new Exception("inner"));
+                        holder[0].dispatch(signal(RecoveryHandlerChain.FailureKind.THROW,
+                                new Exception("inner")));
                     } catch (Error ignored) {
                         // A foreign host callback may catch Throwable/Error,
                         // but it cannot reset the dispatch scope's poison bit.
@@ -386,8 +392,8 @@ final class RecoveryHandlerChainTest {
                     c.resolve(8);
                 }).freeze();
         Error abort = assertThrows(Error.class,
-                () -> holder[0].dispatch(RecoveryHandlerChain.FailureKind.THROW,
-                        new Exception("outer")));
+                () -> holder[0].dispatch(signal(RecoveryHandlerChain.FailureKind.THROW,
+                        new Exception("outer"))));
         assertEquals("inner", abort.getCause().getMessage());
     }
 
@@ -399,13 +405,13 @@ final class RecoveryHandlerChainTest {
                 .register((e, c) -> {
                     trace.add("outer");
                     assertEquals(new RecoveryHandlerChain.Recovered<>(3),
-                            inner.dispatch(RecoveryHandlerChain.FailureKind.RAISE,
-                                    new Exception("inner pending")));
+                            inner.dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE,
+                                    new Exception("inner pending"))));
                     c.resolve(5);
                 }).freeze();
         assertEquals(new RecoveryHandlerChain.Recovered<>(5),
-                outer.dispatch(RecoveryHandlerChain.FailureKind.RAISE,
-                        new Exception("outer pending")));
+                outer.dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE,
+                        new Exception("outer pending"))));
         assertEquals(List.of("outer", "inner"), trace);
     }
 
@@ -418,15 +424,15 @@ final class RecoveryHandlerChainTest {
             chains[index] = RecoveryHandlerChain.<Integer>builder()
                     .register((e, c) -> {
                         if (index + 1 < chains.length) {
-                            chains[index + 1].dispatch(RecoveryHandlerChain.FailureKind.RAISE,
-                                    new Exception("depth " + (index + 1)));
+                            chains[index + 1].dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE,
+                                    new Exception("depth " + (index + 1))));
                         }
                         c.resolve(index);
                     }).freeze();
         }
         Error abort = assertThrows(Error.class,
-                () -> chains[0].dispatch(RecoveryHandlerChain.FailureKind.RAISE,
-                        new Exception("root")));
+                () -> chains[0].dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE,
+                        new Exception("root"))));
         assertTrue(abort.getMessage().contains("nested"));
         assertEquals("depth 64", abort.getCause().getMessage());
     }
@@ -448,7 +454,7 @@ final class RecoveryHandlerChainTest {
         var chain = RecoveryHandlerChain.<Integer>builder()
                 .register((e, c) -> { invoked.incrementAndGet(); c.resolve(1); }).freeze();
         var result = assertInstanceOf(RecoveryHandlerChain.Unhandled.class,
-                chain.dispatch(RecoveryHandlerChain.FailureKind.RAISE, foreign));
+                chain.dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE, foreign)));
         assertSame(foreign, result.error());
         assertEquals(0, invoked.get());
         assertEquals(0, causeReads.get(), "untrusted virtual accessor must not run");
@@ -470,7 +476,7 @@ final class RecoveryHandlerChainTest {
                 RecoveryHandlerChain.FailureKind.THROW,
                 RecoveryHandlerChain.FailureKind.RAISE }) {
             var outcome = assertInstanceOf(RecoveryHandlerChain.Unhandled.class,
-                    chain.dispatch(kind, pending));
+                    chain.dispatch(signal(kind, pending)));
             assertSame(pending, outcome.error());
             assertEquals(kind, outcome.kind());
         }
@@ -483,7 +489,7 @@ final class RecoveryHandlerChainTest {
         var chain = RecoveryHandlerChain.<Integer>builder()
                 .onRaise((e, c) -> c.resolve(17)).freeze();
         assertEquals(new RecoveryHandlerChain.Recovered<>(17),
-                chain.dispatch(RecoveryHandlerChain.FailureKind.RAISE, pending));
+                chain.dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE, pending)));
     }
 
     @Test void inaccessibleCauseFailsClosed() {
@@ -498,10 +504,64 @@ final class RecoveryHandlerChainTest {
                 RecoveryHandlerChain.FailureKind.THROW,
                 RecoveryHandlerChain.FailureKind.RAISE }) {
             var result = assertInstanceOf(RecoveryHandlerChain.Unhandled.class,
-                    chain.dispatch(kind, pending));
+                    chain.dispatch(signal(kind, pending)));
             assertSame(pending, result.error());
             assertEquals(kind, result.kind());
         }
+    }
+
+    @Test void compilerEnvelopeCarriesImmutableLogicalProvenance() {
+        ExecutionContext context = ExecutionContext.actor(
+                101, 202, 303, 404, 5, 606, 707);
+        Throwable original = new IllegalArgumentException("typed guest error");
+        GuestFailure failure = GuestFailure.issueFromCompiler(
+                RecoveryHandlerChain.FailureKind.RAISE, original, context, 808);
+
+        assertEquals(RecoveryHandlerChain.FailureKind.RAISE, failure.kind());
+        assertSame(original, failure.error());
+        assertTrue(failure.compilerAuthenticated());
+        assertEquals(context.id(), failure.provenance().executionId());
+        assertEquals(context.allocationDomain(), failure.provenance().allocationDomain());
+        assertEquals(606, failure.provenance().parentExecution());
+        assertEquals(707, failure.provenance().continuation());
+        assertEquals(808, failure.provenance().sourceToken());
+    }
+
+    @Test void recoveryOutcomeRetainsExactAuthenticatedEnvelope() {
+        Throwable original = new Exception("pending");
+        GuestFailure failure = signal(RecoveryHandlerChain.FailureKind.THROW, original);
+        var chain = RecoveryHandlerChain.<Integer>builder()
+                .onThrow((e, c) -> c.next())
+                .freeze();
+
+        var unhandled = assertInstanceOf(
+                RecoveryHandlerChain.Unhandled.class, chain.dispatch(failure));
+        assertSame(failure, unhandled.pendingFailure());
+        assertSame(original, unhandled.error());
+        assertEquals(failure.provenance(), unhandled.provenance());
+    }
+
+    @Test void recoveryDispatchHasNoRawKindThrowableAdmissionOverload() {
+        var dispatchMethods = java.util.Arrays.stream(
+                        RecoveryHandlerChain.class.getDeclaredMethods())
+                .filter(method -> method.getName().equals("dispatch"))
+                .toList();
+        assertEquals(1, dispatchMethods.size());
+        assertArrayEquals(
+                new Class<?>[] { GuestFailure.class },
+                dispatchMethods.getFirst().getParameterTypes());
+        assertFalse(java.lang.reflect.Modifier.isPublic(GuestFailure.class.getModifiers()));
+        assertTrue(java.util.Arrays.stream(GuestFailure.class.getDeclaredConstructors())
+                .allMatch(constructor ->
+                        java.lang.reflect.Modifier.isPrivate(constructor.getModifiers())));
+        var issuer = assertDoesNotThrow(() ->
+                GuestFailure.class.getDeclaredMethod(
+                        "issueFromCompiler",
+                        RecoveryHandlerChain.FailureKind.class,
+                        Throwable.class,
+                        ExecutionContext.class,
+                        long.class));
+        assertFalse(java.lang.reflect.Modifier.isPublic(issuer.getModifiers()));
     }
 
     @Test void emptyChainAndNullRegistrationAreSafe() {
@@ -509,7 +569,7 @@ final class RecoveryHandlerChainTest {
         assertEquals(0, empty.size());
         Throwable pendingError = new Exception("empty");
         var result = assertInstanceOf(RecoveryHandlerChain.Unhandled.class,
-                empty.dispatch(RecoveryHandlerChain.FailureKind.THROW, pendingError));
+                empty.dispatch(signal(RecoveryHandlerChain.FailureKind.THROW, pendingError)));
         assertSame(pendingError, result.error());
         var builder = RecoveryHandlerChain.<Integer>builder();
         assertThrows(NullPointerException.class, () -> builder.register(null));
@@ -549,7 +609,7 @@ final class RecoveryHandlerChainTest {
                 if (resolves[i]) { expectedResult = i; break; }
             }
             Throwable pending = new RuntimeException("scenario-" + scenario);
-            var result = builder.freeze().dispatch(kind, pending);
+            var result = builder.freeze().dispatch(signal(kind, pending));
             assertEquals(expectedTrace, trace, "scenario=" + scenario);
             if (expectedResult == null) {
                 var unhandled = assertInstanceOf(
@@ -569,6 +629,6 @@ final class RecoveryHandlerChainTest {
             builder.register((e, c) -> c.next());
         }
         assertEquals(new RecoveryHandlerChain.Recovered<>(123),
-                builder.freeze().dispatch(RecoveryHandlerChain.FailureKind.RAISE, new Exception()));
+                builder.freeze().dispatch(signal(RecoveryHandlerChain.FailureKind.RAISE, new Exception())));
     }
 }
