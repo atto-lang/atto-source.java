@@ -281,6 +281,50 @@ final class ActorLockStopRetirementTest {
     }
 
     @Test
+    void failedMailboxEnvelopeReleaseQuarantinesActorAndGlobalRuntime()
+            throws Exception {
+        ActorRuntime runtime = new ActorRuntime();
+        try {
+            var ref = runtime.<String>spawnShared(() -> (message, context) -> {});
+            Field actorsField = ActorRuntime.class.getDeclaredField("actors");
+            actorsField.setAccessible(true);
+            Object cell = ((Map<?, ?>) actorsField.get(runtime)).get(ref.id());
+            assertNotNull(cell);
+            var reserve = cell.getClass().getDeclaredMethod("reserveMailboxSlot");
+            reserve.setAccessible(true);
+            assertEquals(Boolean.TRUE, reserve.invoke(cell));
+            Class<?> envelopeClass = Class.forName(
+                    "dev.oreslang.runtime.ActorRuntime$MessageEnvelope");
+            var constructor = envelopeClass.getDeclaredMethod(
+                    "message", Object.class, Runnable.class,
+                    ActorRuntime.ActorId.class, long.class);
+            constructor.setAccessible(true);
+            CountDownLatch callbackRan = new CountDownLatch(1);
+            Object envelope = constructor.invoke(null, "queued",
+                    (Runnable) () -> {
+                        callbackRan.countDown();
+                        throw new IllegalStateException(
+                                "injected native mailbox loan release failure");
+                    }, null, 0L);
+            Field mailboxField = cell.getClass().getDeclaredField("mailbox");
+            mailboxField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            ChannelRuntime.Channel<Object> queue =
+                    (ChannelRuntime.Channel<Object>) mailboxField.get(cell);
+            assertTrue(queue.tryWrite(envelope));
+            ref.stop();
+            assertTrue(callbackRan.await(5, TimeUnit.SECONDS));
+            assertTrue(ref.failure().isPresent());
+            assertFalse(ref.getDone().isDone(),
+                    "failed user envelope revocation forged actor DONE");
+            assertFalse(ref.awaitTermination(20, TimeUnit.MILLISECONDS),
+                    "failed mailbox cleanup released quarantined actor");
+        } finally {
+            assertThrows(IllegalStateException.class, runtime::close);
+        }
+    }
+
+    @Test
     void messageReleaseCallbacksRunOutsideMonitorAndGateActorDone()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
