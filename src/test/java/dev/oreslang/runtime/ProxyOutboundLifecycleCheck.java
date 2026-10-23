@@ -21,6 +21,8 @@ public final class ProxyOutboundLifecycleCheck {
         var workers = Executors.newVirtualThreadPerTaskExecutor();
         var entered = new CountDownLatch(1);
         var release = new CountDownLatch(1);
+        var cancelledEntered = new CountDownLatch(1);
+        var cancelledRelease = new CountDownLatch(1);
         var origin = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 8);
         origin.setExecutor(workers);
         origin.createContext("/ready", exchange -> {
@@ -38,6 +40,17 @@ public final class ProxyOutboundLifecycleCheck {
                 for (int i = 0; i < 32; i++) exchange.getResponseBody().write(bytes);
             } catch (IOException aborted) {
                 // Closing the owned response interrupts the producer.
+            } finally { exchange.close(); }
+        });
+        origin.createContext("/cancel-gate", exchange -> {
+            cancelledEntered.countDown();
+            try {
+                if (!cancelledRelease.await(5, TimeUnit.SECONDS)) return;
+                exchange.sendResponseHeaders(200, -1);
+            } catch (IOException aborted) {
+                // Expected after cancelling the pending client response.
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
             } finally { exchange.close(); }
         });
         origin.createContext("/gate", exchange -> {
@@ -127,9 +140,18 @@ public final class ProxyOutboundLifecycleCheck {
             if (pendingScope.inFlight()!=0)
                 throw new AssertionError("pending handshake permit was not reclaimed");
 
-            // Explicitly cancelled (not scope-closed) responses retire their
-            // permits when the upstream completion/cancellation is observed.
+            // Guest-side cancellation must retire the pending transport call
+            // without closing the scope, permitting a later valid request.
             var reusable = new ProxyOutboundLoopback(1);
+            var abandoned = reusable.request(URI.create(base + "/cancel-gate"), "GET");
+            if (!cancelledEntered.await(5, TimeUnit.SECONDS))
+                throw new AssertionError("cancellable upstream was not admitted");
+            if (!abandoned.cancel(true))
+                throw new AssertionError("cancellable upstream was already completed");
+            cancelledRelease.countDown();
+            waitUntilRetired(reusable);
+            if (reusable.inFlight()!=0)
+                throw new AssertionError("explicit cancellation failed to reclaim permit");
             var value = reusable.request(URI.create(base + "/ready"), "GET").join();
             var bytes = new ByteArrayOutputStream();
             if (value.streamBody(bytes, () -> false)!=2 || !bytes.toString().equals("ok"))
@@ -139,6 +161,7 @@ public final class ProxyOutboundLifecycleCheck {
             System.out.println("PASS owner shutdown, pending headers cancellation and close-once admission");
         } finally {
             release.countDown();
+            cancelledRelease.countDown();
             origin.stop(0);
             workers.shutdownNow();
         }
