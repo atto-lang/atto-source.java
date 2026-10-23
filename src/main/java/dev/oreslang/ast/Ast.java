@@ -610,7 +610,7 @@ public final class Ast {
     public enum BindingKind { CONST, VAL, LET }
 
     public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
-            BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
+            BlockStmt, UsingBorrowStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
             ForOfStmt, ForOfDestructureStmt, ForStmt, DoWhileStmt, LoopStmt, SelectStmt { }
 
     /**
@@ -700,6 +700,23 @@ public final class Ast {
 
     public record BlockStmt(List<Stmt> body) implements Stmt {
         public BlockStmt { body = List.copyOf(body); }
+    }
+    /**
+     * Scoped transport/resource loan syntax. Keeping it as a distinct AST node
+     * prevents a generic call/block rewrite from accidentally extending a
+     * borrow lifetime across returns, exceptions or suspension.
+     *
+     * The execution and ownership admission gates remain CLOSED until
+     * authenticated transport handles, loan fencing, and unwind cleanup are
+     * implemented across all applicable backends.
+     */
+    public record UsingBorrowStmt(Expr resource, String binding, List<Stmt> body) implements Stmt {
+        public UsingBorrowStmt {
+            if (resource == null || binding == null || binding.isBlank() || body == null) {
+                throw new IllegalArgumentException("using borrowed scope needs resource, alias and body");
+            }
+            body = List.copyOf(body);
+        }
     }
     public record BreakStmt() implements Stmt { }
     public record ContinueStmt() implements Stmt { }
