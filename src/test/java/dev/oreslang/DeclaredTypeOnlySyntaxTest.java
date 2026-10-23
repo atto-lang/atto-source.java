@@ -179,6 +179,18 @@ final class DeclaredTypeOnlySyntaxTest {
     }
 
     @Test
+    void declareAndDefinePublicTypeAliasesHaveTheSameIncrementalAbi() {
+        String declared = new IncrementalCompiler()
+                .compile(Map.of("types.ores", "declare pub type Code = int;"))
+                .units().get("types.ores").abiDigest();
+        String defined = new IncrementalCompiler()
+                .compile(Map.of("types.ores", "define pub type Code = int;"))
+                .units().get("types.ores").abiDigest();
+        assertEquals(declared, defined,
+                "source introducer must not alter public ABI or invalidate importers");
+    }
+
+    @Test
     void publicAndGenericTypeAliasesShareIdenticalSemantics() {
         Ast.Program declared = OresCompiler.parseAndTypeCheck("""
                 define module api as
