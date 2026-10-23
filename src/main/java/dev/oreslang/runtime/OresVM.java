@@ -173,7 +173,7 @@ public final class OresVM implements AutoCloseable {
         return new OresVM(
                 Integer.getInteger("ores.runtime.control.parallelism",
                         DEFAULT_CONTROL_PARALLELISM),
-                OresScheduler.TurnExecutor.direct(),
+                Runnable::run,
                 null, parallelism, queueCapacity);
     }
 
@@ -325,18 +325,31 @@ public final class OresVM implements AutoCloseable {
                 // ActorRuntime has already requested structured closure. A
                 // failed close may leave an actor quarantined; never assume a
                 // dropped queued STOP task is a physical retirement receipt.
-                physicalStopExecutor.shutdownNow();
-                controlExecutor.shutdownNow();
+                RuntimeException physicalShutdownFailure = null;
+                try {
+                    shutdownPhysicalStops();
+                } catch (RuntimeException failure) {
+                    physicalShutdownFailure = failure;
+                } finally {
+                    // Even a broken discard observer cannot prevent CONTROL
+                    // carrier teardown or poison later shutdown attempts.
+                    controlExecutor.shutdownNow();
+                }
                 try {
                     boolean physicalDone =
                             physicalStopExecutor.awaitTermination(5, TimeUnit.SECONDS);
                     boolean controlDone =
                             controlExecutor.awaitTermination(5, TimeUnit.SECONDS);
                     if (!controlDone || !physicalDone) {
-                        throw new IllegalStateException(
+                        IllegalStateException incomplete = new IllegalStateException(
                                 "Oreslang VM carrier teardown incomplete: control="
                                         + controlDone + ", physicalStop=" + physicalDone);
+                        if (physicalShutdownFailure != null) {
+                            incomplete.addSuppressed(physicalShutdownFailure);
+                        }
+                        throw incomplete;
                     }
+                    if (physicalShutdownFailure != null) throw physicalShutdownFailure;
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
                     throw new IllegalStateException(
