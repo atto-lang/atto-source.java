@@ -1835,6 +1835,30 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * Concrete NIO bridge for a trusted external transport driver.
+     * The driver retains this wrapper and must close IT (not the raw channel)
+     * when the handle is no longer active. The ticket is admitted before the
+     * socket/pipe is published to the actor, and is settled only after the
+     * underlying Channel.close physically completes.
+     *
+     * Additional asynchronous kernel/native loan lifetimes require separate
+     * tickets. This overload does not authorize source actors to access
+     * java.nio Channel objects.
+     */
+    ActorPhysicalChannelLease registerActorPhysicalChannelFromDriver(
+            ActorRef<?> owner, java.nio.channels.Channel channel,
+            ActorPhysicalRetirementRegistry.Kind kind) {
+        Objects.requireNonNull(channel, "channel");
+        Objects.requireNonNull(kind, "kind");
+        if (!channel.isOpen()) {
+            throw new IllegalArgumentException(
+                    "physical Channel must still be open before actor handoff");
+        }
+        var receipt = registerActorPhysicalReceiptFromDriver(owner, kind);
+        return new ActorPhysicalChannelLease(channel, receipt);
+    }
+
+    /**
      * Bind a runtime Future to the current actor lifetime. Outside an actor
      * turn the Future remains independently owned by its caller.
      */
