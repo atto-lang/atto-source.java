@@ -718,7 +718,10 @@ public final class OresScheduler implements AutoCloseable {
         private final Task<T> task;
         private final ExecutionContext executionContext;
         private final Runnable onQuiescent;
-        private final AtomicBoolean quiescenceNotified = new AtomicBoolean();
+        // 0=unclaimed, 1=retirement callback executing, 2=retired,
+        // 3=callback failed. The publication path cannot overtake state 1.
+        private final AtomicInteger quiescenceState = new AtomicInteger();
+        private final AtomicReference<Throwable> quiescenceFailure = new AtomicReference<>();
         private final java.util.Map<String, dev.oreslang.interop.MixedInteropBridge.Invoker>
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
         private final AtomicInteger phase = new AtomicInteger(NEW);
@@ -1262,23 +1265,31 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void retireWhenQuiescent() {
-            // A stopped guest carrier is not evidence that its suspended
-            // lexical defer/finally was executed. Keep actor/FFI loans
-            // quarantined when cleanup could not finish.
-            if (cleanupIncomplete.get()) return;
-            if (phase.get() == TERMINAL && !executing.get()
-                    && quiescenceNotified.compareAndSet(false, true)) {
-                // Keep the task observable in the scheduler's live set while a
-                // cancelled/failed guest turn is still physically executing.
-                // A terminal Future is not a carrier-exit witness.
-                tasks.remove(this);
-                cancelWallDeadline();
-                try {
-                    onQuiescent.run();
-                } finally {
-                    deadlineQuiescenceRetired.set(true);
-                    releaseDeadlineSlotIfRetired();
-                }
+            // Never run physical retirement while a source defer/finally/FFI
+            // obligation remains incomplete, or while a guest carrier runs.
+            if (cleanupIncomplete.get() || phase.get() != TERMINAL
+                    || executing.get() || !quiescenceState.compareAndSet(0, 1))
+                return;
+            cancelWallDeadline();
+            try {
+                // Keep the Task registered until the callback has actually
+                // finished: it may revoke actor-owned loans and can fail.
+                if (cleanupIncomplete.get()) return;
+                onQuiescent.run();
+                if (!cleanupIncomplete.get()) tasks.remove(this);
+            } catch (Throwable retirementFailure) {
+                // Do not publish a preceding successful guest result when
+                // physical owner/FFI loan retirement failed. The callback is
+                // at-most-once; leave the Task strongly held in quarantine.
+                quiescenceFailure.compareAndSet(null, retirementFailure);
+                cleanupIncomplete.set(true);
+                if (retirementFailure instanceof VirtualMachineError fatal) throw fatal;
+                if (retirementFailure instanceof ThreadDeath fatal) throw fatal;
+                if (retirementFailure instanceof LinkageError fatal) throw fatal;
+            } finally {
+                deadlineQuiescenceRetired.set(true);
+                releaseDeadlineSlotIfRetired();
+                quiescenceState.set(cleanupIncomplete.get() ? 3 : 2);
             }
         }
 
@@ -1289,11 +1300,13 @@ public final class OresScheduler implements AutoCloseable {
             // TERMINAL phase is merely logical arbitration, never proof that
             // the physical guest turn has left the actor/Truffle boundary.
             if (executing.get()) return;
-            // Even after carrier exit, onQuiescent may still be releasing an
-            // actor/task lease. External close must not overtake that callback.
-            // Incomplete cleanup is intentionally quarantined and never
-            // invokes onQuiescent; publish its terminal failure once quiescent.
-            if (!cleanupIncomplete.get() && !deadlineQuiescenceRetired.get()) return;
+            // State 1 denotes an in-flight physical release callback.
+            // Scheduler.close() may race it but cannot issue a terminal Future.
+            int retirement = quiescenceState.get();
+            if (retirement == 1) return;
+            if (!cleanupIncomplete.get()
+                    && (retirement != 2 || !deadlineQuiescenceRetired.get()))
+                return;
             TerminalOutcome<T> outcome = terminalOutcome.get();
             // Terminal phase CAS can precede the outcome write. Never
             // synthesize a clean cancellation receipt without an outcome.
@@ -1304,8 +1317,10 @@ public final class OresScheduler implements AutoCloseable {
                 // A terminal outcome can race denied cleanup dispatch or a
                 // fatal defer. Neither a winning Done nor logical Cancelled
                 // proves physical release after quarantine has been latched.
+                Throwable retirementFailure = quiescenceFailure.get();
                 Throwable incomplete = outcome instanceof TerminalFailure<?> failed
-                        ? failed.failure() : new CleanupIncompleteError(
+                        ? failed.failure() : retirementFailure != null
+                            ? retirementFailure : new CleanupIncompleteError(
                                 "physical source cleanup incomplete; quarantine actor loans");
                 if (!(incomplete instanceof Error)) {
                     incomplete = new CleanupIncompleteError(
@@ -1317,6 +1332,14 @@ public final class OresScheduler implements AutoCloseable {
                 } else {
                     completion.failFromRuntime(incomplete);
                 }
+                return;
+            }
+            Throwable retirementFailure = quiescenceFailure.get();
+            if (retirementFailure != null) {
+                // Ordinary Tasks also require the physical onQuiescent lease
+                // before their result is observable. Preserve the callback
+                // failure identity rather than converting it into success.
+                completion.failFromRuntime(retirementFailure);
                 return;
             }
             if (pendingCancellation != null
