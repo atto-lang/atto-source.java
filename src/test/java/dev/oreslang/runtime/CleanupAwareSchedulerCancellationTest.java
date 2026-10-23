@@ -231,11 +231,17 @@ final class CleanupAwareSchedulerCancellationTest {
             try {
                 // Scheduler shutdown fences queued turns; it cannot treat a
                 // still-executing cleanup frame as a physical release receipt.
-                Thread.sleep(30);
-                assertFalse(work.isCancelled(),
-                        "cancel request is not a physical cleanup acknowledgment");
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                while (!scheduler.hasIncompleteCleanup() &&
+                        System.nanoTime() < deadline) {
+                    Thread.sleep(2);
+                }
                 assertTrue(scheduler.hasIncompleteCleanup(),
                         "closing an executing cleanup frame must quarantine");
+                assertFalse(work.isDone(),
+                        "no terminal Future while the cleanup carrier still executes");
+                assertFalse(work.isCancelled(),
+                        "cancel request is not a physical cleanup acknowledgment");
             } finally {
                 releaseCleanup.countDown();
                 closer.join(3000);
