@@ -240,8 +240,10 @@ completion, or a removed queue node.
   finish their domain bookkeeping before the claim receipt is completed.
 * A public cancellation or timeout may retire the pending request, but may
   not complete the physical receipt if a grant is claimed. The releasing
-  carrier settles that receipt only after publishing the grant or physically
-  reclaiming the losing grant. A failed, undelivered grant is never poisoned.
+  carrier settles that receipt only after publishing the grant (including
+  synchronous Future observers) or physically reclaiming the losing grant.
+  A published abandoned guard is poisoned **after** the granting carrier
+  completes that publication path; an undelivered grant is never poisoned.
 * TaskHandle performs lease revocation after scheduler/child physical
   quiescence, then asynchronously **joins outstanding physical receipts**
   before publishing either `cleanupFailures()` or `getDone()`. There is
@@ -256,7 +258,10 @@ The focused regression deliberately blocks between dequeue and grant binding,
 cancels the owning suspended Task, witnesses the Future's cancellation, and
 asserts `getDone()` is still incomplete. It then permits reclamation and
 asserts no false poisoning, no second simultaneous owner, and successful
-subsequent reacquisition. Additional ledger tests cover idempotent observation
+subsequent reacquisition. A second deterministic schedule blocks a successful
+publication subscriber and checks that retirement cannot revoke its guard
+until the carrier leaves the publication path, after which abandonment
+poisons exactly once. Additional ledger tests cover idempotent observation
 and failed physical receipts. These are committed JUnit source tests, **not
 passing JDK25 execution evidence**.
 
