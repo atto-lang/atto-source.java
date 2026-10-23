@@ -3,6 +3,9 @@ package dev.oreslang.runtime;
 import java.io.IOException;
 import java.nio.channels.Channel;
 import java.util.Objects;
+import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 /**
  * Trusted host/NIO boundary: exactly one actor physical-retirement ticket
@@ -21,15 +24,19 @@ import java.util.Objects;
 final class ActorPhysicalChannelLease implements AutoCloseable {
     private final Channel channel;
     private final ActorPhysicalRetirementRegistry.Receipt receipt;
+    private final Consumer<ActorPhysicalChannelLease> onClosed;
+    private final AtomicBoolean stopCloseSubmitted = new AtomicBoolean();
     private boolean closeStarted;
     private boolean closed;
     private Thread closingThread;
     private Throwable closeFailure;
 
     ActorPhysicalChannelLease(Channel channel,
-            ActorPhysicalRetirementRegistry.Receipt receipt) {
+            ActorPhysicalRetirementRegistry.Receipt receipt,
+            Consumer<ActorPhysicalChannelLease> onClosed) {
         this.channel = Objects.requireNonNull(channel, "channel");
         this.receipt = Objects.requireNonNull(receipt, "receipt");
+        this.onClosed = Objects.requireNonNull(onClosed, "onClosed");
         if (!channel.isOpen()) {
             receipt.failPhysicalRelease(new IllegalStateException(
                     "physical Channel was closed before registry handoff"));
