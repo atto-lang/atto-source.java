@@ -133,6 +133,115 @@ final class ActorStopCleanupAdmissionTest {
     }
 
     @Test
+    void repeatedStopAndLateProducerCannotReplayMultipleAsyncCleanupStages()
+            throws Exception {
+        // A single cancellation must enter the existing SourceTask frame
+        // exactly once, then keep cleanup authority through two real awaits.
+        // Neither a second STOP nor a late upstream completion may resurrect
+        // the ordinary actor mailbox or replay a previously retired turn.
+        OresFuture<Integer> upstream = new OresFuture<>();
+        OresFuture<Integer> closeFirst = new OresFuture<>();
+        OresFuture<Integer> closeSecond = new OresFuture<>();
+        CountDownLatch awaitingUpstream = new CountDownLatch(1);
+        CountDownLatch firstCloseEntered = new CountDownLatch(1);
+        CountDownLatch secondCloseEntered = new CountDownLatch(1);
+        AtomicInteger initialTurns = new AtomicInteger();
+        AtomicInteger completedCleanup = new AtomicInteger();
+        AtomicInteger unexpectedMessages = new AtomicInteger();
+        AtomicReference<Throwable> unexpectedFailure = new AtomicReference<>();
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                if (!"start".equals(message)) {
+                    unexpectedMessages.incrementAndGet();
+                    return;
+                }
+                context.runtime().startActorTask(
+                        new OresScheduler.CleanupAwareTask<Void>() {
+                            int stage;
+                            @Override public OresScheduler.Step<Void> resume(
+                                    OresScheduler.Resume resume) {
+                                switch (stage++) {
+                                    case 0:
+                                        initialTurns.incrementAndGet();
+                                        awaitingUpstream.countDown();
+                                        return OresScheduler.await(upstream);
+                                    case 1:
+                                        try {
+                                            assertTrue(OresScheduler.cancellationCleanupTurn());
+                                            assertInstanceOf(CancellationException.class,
+                                                    resume.failure());
+                                            context.runtime().schedulerSafepoint();
+                                        } catch (Throwable failure) {
+                                            unexpectedFailure.compareAndSet(null, failure);
+                                        }
+                                        firstCloseEntered.countDown();
+                                        return OresScheduler.await(closeFirst);
+                                    case 2:
+                                        try {
+                                            assertTrue(OresScheduler.cancellationCleanupTurn(),
+                                                    "authority must persist after first cleanup await");
+                                            assertEquals(Integer.valueOf(11), resume.value());
+                                            assertNull(resume.failure());
+                                            context.runtime().schedulerSafepoint();
+                                        } catch (Throwable failure) {
+                                            unexpectedFailure.compareAndSet(null, failure);
+                                        }
+                                        secondCloseEntered.countDown();
+                                        return OresScheduler.await(closeSecond);
+                                    case 3:
+                                        try {
+                                            assertTrue(OresScheduler.cancellationCleanupTurn(),
+                                                    "authority must persist after second cleanup await");
+                                            assertEquals(Integer.valueOf(22), resume.value());
+                                            assertNull(resume.failure());
+                                        } catch (Throwable failure) {
+                                            unexpectedFailure.compareAndSet(null, failure);
+                                        }
+                                        completedCleanup.incrementAndGet();
+                                        return OresScheduler.done(null);
+                                    default:
+                                        unexpectedFailure.compareAndSet(null,
+                                                new AssertionError("SourceTask replayed"));
+                                        return OresScheduler.done(null);
+                                }
+                            }
+                        });
+            });
+            actor.send("start");
+            assertTrue(awaitingUpstream.await(3, TimeUnit.SECONDS));
+            assertTrue(actor.cancel());
+            assertTrue(firstCloseEntered.await(3, TimeUnit.SECONDS));
+            assertFalse(actor.done().isDone());
+
+            // A repeat request is harmless even while asynchronous cleanup
+            // is suspended. Do not rely on cancel()'s boolean for idempotence.
+            actor.cancel();
+            assertTrue(upstream.completeFromRuntime(99));
+            assertEquals(0, upstream.pendingRuntimeWaiterCount(),
+                    "original await subscriber must be detached after STOP");
+            assertFalse(actor.done().isDone());
+
+            closeFirst.completeFromRuntime(11);
+            assertTrue(secondCloseEntered.await(3, TimeUnit.SECONDS));
+            actor.cancel();
+            assertFalse(actor.done().isDone(),
+                    "second asynchronous close remains a physical barrier");
+
+            closeSecond.completeFromRuntime(22);
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(1, initialTurns.get());
+            assertEquals(1, completedCleanup.get());
+            assertEquals(0, unexpectedMessages.get());
+            assertNull(unexpectedFailure.get(),
+                    () -> String.valueOf(unexpectedFailure.get()));
+            assertInstanceOf(ActorRuntime.ActorCancelledException.class,
+                    assertThrows(ExecutionException.class,
+                            () -> actor.done().get(3, TimeUnit.SECONDS)).getCause());
+        }
+    }
+
+    @Test
     void actorCrashRetainsOriginalFailureUntilSuspendedCleanupReleasesGuard()
             throws Exception {
         var mutex = OresMutex.shared(new int[] { 0 });
