@@ -486,4 +486,31 @@ final class TreeShakerTest {
                 Ast.CheckedStructuralFieldDomain.lookup(indexed.receiver()),
                 "optimizer must transfer the checked structural field domain");
     }
+
+    @Test
+    void libraryBuildOnlyRootsPublicTypeOnlyDeclarations() {
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                declare type Hidden = int;
+                declare pub type Exposed = int;
+                declare trait InternalTrait as end
+                declare pub trait ExternalTrait as end
+                declare interface InternalInterface as end
+                declare pub interface ExternalInterface as end
+
+                pub fnc identity(Exposed value): Exposed {
+                  return value;
+                }
+                """, BuildOptions.library(Map.of()));
+
+        String root = Parser.ROOT_MODULE + ".";
+        assertTrue(result.retained(root + "Exposed"));
+        assertTrue(result.retained(root + "ExternalTrait"));
+        assertTrue(result.retained(root + "ExternalInterface"));
+        assertTrue(result.removed(root + "Hidden"),
+                "private aliases cannot become public API reachability roots");
+        assertTrue(result.removed(root + "InternalTrait"),
+                "private traits cannot become public API roots");
+        assertTrue(result.removed(root + "InternalInterface"),
+                "private interfaces cannot become public API roots");
+    }
 }
