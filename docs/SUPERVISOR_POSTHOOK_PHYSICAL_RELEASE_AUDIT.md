@@ -51,6 +51,14 @@ is implemented by this patch.
 - reject pre-fence `RUNNING` physical receipts instead of merely
   resetting them on subsequent shutdown admission.
 
+`SupervisorLifecycleFsmIntegrationTest` additionally creates a real
+`ActorRuntime`, holds an asynchronous `onStopped` hook pending,
+and asserts the FSM stays in `AFTER_HOOK` with `actorsDone=true`,
+`physicalReleased=false`, and an unsettled termination Future.
+After completing the hook, the node must reach logical `STOPPED`
+without falsely claiming `RECLAIMED`. The bounded CONTROL trace
+is replayed through the production reducer.
+
 The independent `SupervisorTree.tla` action `ReturnLoan` now requires
 a node in `Restarting` or `Stopped` and the new TLC invariant
 `NoEarlyPhysicalRelease` rejects zero outstanding local loans during
