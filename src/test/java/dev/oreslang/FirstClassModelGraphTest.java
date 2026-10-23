@@ -155,6 +155,26 @@ final class FirstClassModelGraphTest {
     }
 
     @Test
+    void publicModelVisibilitySpellingsPreserveGraphIdentity() {
+        String canonical = PRICE_MODEL.replace(
+                "pub define model PriceEstimate(",
+                "define pub model PriceEstimate(");
+        ModelGraphCompiler.CompiledModel legacyModel =
+                ModelGraphCompiler.compile(OresCompiler.parseAndTypeCheck(PRICE_MODEL))
+                        .find("PriceEstimate");
+        ModelGraphCompiler.CompiledModel canonicalModel =
+                ModelGraphCompiler.compile(OresCompiler.parseAndTypeCheck(canonical))
+                        .find("PriceEstimate");
+        assertNotNull(canonicalModel);
+        assertEquals(Ast.Visibility.PUBLIC, canonicalModel.declaration().visibility());
+        assertEquals(legacyModel.graphDigest(), canonicalModel.graphDigest());
+        assertEquals(legacyModel.configuredGraphDigest(
+                        legacyModel.bindConfiguration(java.util.List.of())),
+                canonicalModel.configuredGraphDigest(
+                        canonicalModel.bindConfiguration(java.util.List.of())));
+    }
+
+    @Test
     void parserRejectsOversizedModelDeclarationsBeforeCompilerAdmission() {
         // Only parse here: unknown operation names are permitted in the AST
         // and resolved later. These are strict parser allocation boundaries.
