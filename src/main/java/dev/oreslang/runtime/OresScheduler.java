@@ -318,6 +318,12 @@ public final class OresScheduler implements AutoCloseable {
         return parallelism;
     }
 
+    /** Host/test diagnostic for explicitly user-owned fixed carriers only. */
+    int ownedCarrierCount() {
+        if (ownedExecutor instanceof ThreadPoolExecutor pool) return pool.getPoolSize();
+        return 0;
+    }
+
     /** Number of physical dispatch turns flagged by the independent watchdog. */
     public long watchdogOverruns() {
         return watchdogOverruns.get();
