@@ -4592,7 +4592,15 @@ public final class TypeChecker {
         if (call.origin() != Ast.CallOrigin.VALUE_PIPE_ARGUMENT
                 || call.arguments().isEmpty()) return null;
 
-        Type prior = typeOf(call.arguments().getFirst(), env, generics, self);
+        // The first executable lowering slice only admits a named Future
+        // binding or a function-call producer. Avoid rechecking arbitrary
+        // scalar-pipe operands (especially assignments and rt take) in this
+        // speculative Future detection path.
+        Ast.Expr source = call.arguments().getFirst();
+        if (!(source instanceof Ast.NameExpr) && !(source instanceof Ast.CallExpr)) {
+            return null;
+        }
+        Type prior = typeOf(source, env, generics, self);
         if (!(prior instanceof Named pending) || !pending.name().equals("Future")
                 || pending.arguments().size() != 1) return null;
 
