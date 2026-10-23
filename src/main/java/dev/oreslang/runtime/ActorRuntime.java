@@ -1989,6 +1989,9 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                     cell.activeUntrustedTimedAdmissions--;
                 }
+                // Last subscriber drain can happen after the final physical
+                // SourceTask receipt. Recheck STOP without a nested monitor.
+                cell.sourceTaskCleanupQuiesced();
             }
         };
         Runnable releaseTimedWhenSafe = () -> {
@@ -7450,9 +7453,11 @@ public final class ActorRuntime implements AutoCloseable {
                                 "actor source cleanup admission failed; quarantine arena"));
                 return;
             }
-            if (scheduler != null && !scheduler.actorStopPhysicallyQuiescent()) {
-                // Existing guest scopes still own deferred cleanup or physical
-                // retirement receipts; ActorRef.done and arena stay pending.
+            if (scheduler != null && (!scheduler.actorStopPhysicallyQuiescent()
+                    || activeUntrustedSourceTaskCount != 0
+                    || activeUntrustedTimedAdmissions != 0)) {
+                // Both guest execution and untrusted terminal notification
+                // drains must retire before actor arena release.
                 return;
             }
             if (scheduler != null) {
