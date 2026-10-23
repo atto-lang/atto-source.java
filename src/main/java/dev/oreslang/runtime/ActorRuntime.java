@@ -7370,7 +7370,8 @@ public final class ActorRuntime implements AutoCloseable {
                 ActorCell<?> parent) {
             this.ref = ref;
             this.physicalRetirement = new ActorPhysicalRetirementRegistry(
-                    ref.id(), ref.generation(), this::sourceTaskCleanupQuiesced);
+                    ref.id(), ref.generation(), this::sourceTaskCleanupQuiesced,
+                    physicalCloseDispatcher::execute);
             this.kind = kind;
             this.dispatchLane = dispatcherFor(kind) instanceof ActorAffinityDispatcher lanes
                     ? lanes.reserveLane() : -1;
