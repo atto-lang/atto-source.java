@@ -125,4 +125,102 @@ final class TrapFailurePolicyTest {
         }
         assertFalse(TrapFailurePolicy.isTrappable(failure, GuestPanic.class));
     }
+    @Test void onlyTypedPrimaryRaiseCanEnterRecover() {
+        assertTrue(TrapFailurePolicy.isRecoverableRaise(
+                new GuestControlSignal.Raise("raised"), GuestPanic.class));
+        assertTrue(TrapFailurePolicy.isRecoverableRaise(
+                new CompletionException(new GuestControlSignal.Raise("raised")),
+                GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isRecoverableRaise(
+                new GuestControlSignal.Throw("ordinary"), GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isRecoverableRaise(
+                new IllegalArgumentException("unrelated host failure"), GuestPanic.class));
+    }
+
+    @Test void panicCannotEnterAnyLocalEffectBoundary() {
+        for (RuntimeException panic : new RuntimeException[] {
+                new GuestControlSignal.Panic("explicit"),
+                new GuestPanic()
+        }) {
+            assertFalse(TrapFailurePolicy.isRecoverableRaise(panic, GuestPanic.class));
+            assertFalse(TrapFailurePolicy.isGuestCatchable(panic, GuestPanic.class));
+            assertFalse(TrapFailurePolicy.isTrappable(panic, GuestPanic.class));
+            assertFalse(TrapFailurePolicy.isRecoverableRaise(
+                    new CompletionException(panic), GuestPanic.class));
+        }
+    }
+
+    @Test void suppressedRaiseCannotAuthorizeUnrelatedHostFailure() {
+        RuntimeException host = new RuntimeException("foreign");
+        host.addSuppressed(new GuestControlSignal.Raise("forged secondary"));
+        assertFalse(TrapFailurePolicy.isRecoverableRaise(host, GuestPanic.class));
+    }
+
+    @Test void pendingRaiseWithTerminalCleanupIsNotRecoverable() {
+        for (Throwable terminal : new Throwable[] {
+                new GuestControlSignal.Panic("panic"),
+                new GuestPanic(),
+                new CancellationException("cancelled"),
+                new RejectedExecutionException("scheduler stopped"),
+                new SecurityException("permission denied"),
+                new TimeoutException("expired"),
+                new AssertionError("host fatal"),
+                new GuestControlSignal.Throw("mixed effects")
+        }) {
+            var original = new GuestControlSignal.Raise("primary");
+            original.addSuppressed(terminal);
+            assertFalse(TrapFailurePolicy.isRecoverableRaise(original, GuestPanic.class),
+                    terminal::toString);
+        }
+    }
+
+    @Test void nestedTerminalControlBlocksOtherwiseRecoverableRaise() {
+        RuntimeException wrapped = new CompletionException(new GuestControlSignal.Raise("raised"));
+        wrapped.addSuppressed(new CompletionException(new CancellationException("cancelled")));
+        assertFalse(TrapFailurePolicy.isRecoverableRaise(wrapped, GuestPanic.class));
+    }
+
+    @Test void malformedForeignCauseAccessorFailsClosed() {
+        RuntimeException foreign = new RuntimeException("foreign") {
+            @Override public synchronized Throwable getCause() {
+                throw new SecurityException("malformed host cause");
+            }
+        };
+        assertFalse(TrapFailurePolicy.isRecoverableRaise(foreign, GuestPanic.class));
+    }
+
+    @Test void alternatingForeignCauseCannotSmuggleRaise() {
+        var reads = new java.util.concurrent.atomic.AtomicInteger();
+        RuntimeException foreign = new RuntimeException("foreign") {
+            @Override public synchronized Throwable getCause() {
+                reads.incrementAndGet();
+                return new GuestControlSignal.Raise("synthetic");
+            }
+        };
+        assertFalse(TrapFailurePolicy.isRecoverableRaise(foreign, GuestPanic.class));
+        assertEquals(0, reads.get());
+    }
+
+    @Test void cyclicRecoveryCauseGraphFailsClosed() {
+        RuntimeException wrapper = new RuntimeException("wrapper");
+        var raise = new GuestControlSignal.Raise("raised");
+        wrapper.initCause(raise);
+        raise.initCause(wrapper);
+        assertFalse(TrapFailurePolicy.isRecoverableRaise(wrapper, GuestPanic.class));
+    }
+
+    @Test void excessiveRecoveryCauseDepthFailsClosed() {
+        RuntimeException wrapped = new GuestControlSignal.Raise("raised");
+        for (int index = 0; index < 65; index++) {
+            wrapped = new CompletionException(wrapped);
+        }
+        assertFalse(TrapFailurePolicy.isRecoverableRaise(wrapped, GuestPanic.class));
+    }
+
+    @Test void nullAndMissingPanicClassCannotAuthorizeRecovery() {
+        assertFalse(TrapFailurePolicy.isRecoverableRaise(null, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isRecoverableRaise(
+                new GuestControlSignal.Raise("raised"), null));
+    }
+
 }
