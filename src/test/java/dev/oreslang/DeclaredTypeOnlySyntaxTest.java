@@ -239,7 +239,7 @@ final class DeclaredTypeOnlySyntaxTest {
                 "declare interface Tagged as end"
         }) {
             assertThrows(IllegalArgumentException.class,
-                    () -> OresCompiler.parseAndTypeCheck(declaration + """
+                    () -> OresCompiler.parseAndTypeCheck(declaration + "\n" + """
                             fnc invalid(): void {
                               val captured = Tagged;
                               return;
