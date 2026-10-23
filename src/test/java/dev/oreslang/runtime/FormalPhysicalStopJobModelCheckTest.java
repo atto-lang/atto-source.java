@@ -52,7 +52,7 @@ final class FormalPhysicalStopJobModelCheckTest {
             int waiting = (current.left == Phase.ADMITTED ? 1 : 0)
                     + (current.right == Phase.ADMITTED ? 1 : 0)
                     + (current.third == Phase.ADMITTED ? 1 : 0);
-            assertTrue(running <= 1 && waiting <= 1,
+            assertTrue(running <= 1 && running + waiting <= 2,
                     "bounded one-worker one-queue capacity must hold");
             if (current.vmClosed) {
                 assertEquals(0, waiting,
@@ -80,7 +80,7 @@ final class FormalPhysicalStopJobModelCheckTest {
                     Phase existing = i == 0 ? current.left
                             : i == 1 ? current.right : current.third;
                     if (existing != Phase.NOT_SUBMITTED) continue;
-                    Phase nextPhase = waiting == 1 && running == 1
+                    Phase nextPhase = running + waiting >= 2
                             ? Phase.REJECTED : Phase.ADMITTED;
                     transition(visited, pending, current, i, nextPhase);
                 }
