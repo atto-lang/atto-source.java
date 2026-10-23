@@ -55,7 +55,7 @@ public final class Ast {
         public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) { this(name, annotations, List.of(), declarations); }
     }
 
-    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl, ModelDecl { }
+    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl, TypeForwardDecl, ModelDecl { }
 
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }
@@ -616,6 +616,15 @@ public final class Ast {
         public MethodArity {
             if (name == null || name.isBlank()) throw new IllegalArgumentException("method name cannot be blank");
             if (arity < 0) throw new IllegalArgumentException("method arity cannot be negative");
+        }
+    }
+
+    /** Type-only promise of exactly one matching completed alias. No runtime
+     * object or synthesized unknown target may escape this compiler metadata. */
+    public record TypeForwardDecl(String name, Visibility visibility) implements Decl {
+        public TypeForwardDecl {
+            if (name == null || name.isBlank()) throw new IllegalArgumentException("invalid forward type name");
+            java.util.Objects.requireNonNull(visibility, "forward type visibility");
         }
     }
 
