@@ -42,6 +42,44 @@ final class ActorLockStopRetirementTest {
     }
 
     @Test
+    void sourceTaskLeakedGuardRetiresBeforeActorLifetimeEnds() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var mutex = OresMutex.shared(new int[] {3});
+            AtomicReference<OresMutex.Guard<int[]>> owned = new AtomicReference<>();
+            CountDownLatch submitted = new CountDownLatch(1);
+            var ref = runtime.<String>spawnShared(() -> (message, context) -> {
+                if (message.equals("start")) {
+                    context.runtime().startActorTask(resume -> {
+                        var guard = mutex.tryLock().orElseThrow();
+                        guard.value()[0] = 15;
+                        owned.set(guard); // missing explicit defer/release
+                        return OresScheduler.done(null);
+                    });
+                    submitted.countDown();
+                } else if (message.equals("stop")) {
+                    context.self().stop();
+                }
+            });
+            ref.send("start");
+            assertTrue(submitted.await(5, TimeUnit.SECONDS));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while ((owned.get() == null || !owned.get().released())
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(2);
+            }
+            assertNotNull(owned.get(), "compiler-started Task never acquired its guard");
+            assertTrue(owned.get().released(),
+                    "Task leaked mutex until actor STOP rather than Task DONE");
+            assertTrue(mutex.isPoisoned(),
+                    "Task abandoned a mutable shared critical section");
+            assertTrue(ref.isAlive(),
+                    "Task lifetime must not implicitly terminate its actor");
+            ref.send("stop");
+            assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void actorStopCancelsQueuedAsyncAcquisitionBeforeTerminationReceipt()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
