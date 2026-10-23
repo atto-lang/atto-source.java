@@ -37,6 +37,7 @@ final class ActorRollingHttpSocketTest {
         long pidBefore = ProcessHandle.current().pid();
         CountDownLatch oldEntered = new CountDownLatch(1);
         CountDownLatch releaseOld = new CountDownLatch(1);
+        CountDownLatch oldHandled = new CountDownLatch(1);
         CountDownLatch newHandled = new CountDownLatch(1);
         try (ActorRuntime actors = new ActorRuntime();
              HttpClient client = HttpClient.newHttpClient();
@@ -45,6 +46,7 @@ final class ActorRollingHttpSocketTest {
                 oldEntered.countDown();
                 if (!releaseOld.await(10, TimeUnit.SECONDS))
                     throw new AssertionError("held old actor exceeded test deadline");
+                oldHandled.countDown();
             });
             var g2 = actors.<byte[]>spawnShared(() -> (message, ctx) -> {
                 newHandled.countDown();
@@ -60,8 +62,11 @@ final class ActorRollingHttpSocketTest {
                     try (var pinned = route.acquire()) {
                         // Bind the exact message to the epoch captured on
                         // HTTP admission. Do not refund the lease on send().
-                        actors.sendWithCompletion(pinned.target(),
-                                new byte[] {1}).get(8, TimeUnit.SECONDS);
+                        pinned.target().send(new byte[] {1});
+                        boolean delivered = pinned.epoch() == 1L
+                                ? oldHandled.await(8, TimeUnit.SECONDS)
+                                : newHandled.await(8, TimeUnit.SECONDS);
+                        if (!delivered) throw new IllegalStateException("actor request not completed");
                         byte[] body = ("G" + pinned.epoch()).getBytes(StandardCharsets.UTF_8);
                         exchange.sendResponseHeaders(200, body.length);
                         try (var out = exchange.getResponseBody()) { out.write(body); }
