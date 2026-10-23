@@ -105,8 +105,10 @@ public final class SupervisorLifecycleFsm {
             return new State(Phase.RUNNING, 1L, 0L, Set.of(), Set.of(), Set.of(),
                     false, false, false, false, false, false);
         }
-        public boolean admissionsOpen() { return phase == Phase.RUNNING; }
-        public boolean restartPermitted() { return phase == Phase.RUNNING; }
+        // CONTROL failure is a fail-closed admission fence, even before
+        // a partially failed tree can record ShutdownRequested on this node.
+        public boolean admissionsOpen() { return phase == Phase.RUNNING && !failed; }
+        public boolean restartPermitted() { return phase == Phase.RUNNING && !failed; }
         public boolean logicallyStopped() {
             return phase == Phase.STOPPED || phase == Phase.RECLAIMED;
         }
@@ -143,7 +145,8 @@ public final class SupervisorLifecycleFsm {
 
         if (e instanceof RestartRequested) {
             if (p == Phase.RESTARTING) return s;
-            require(p == Phase.RUNNING, "restart requested after shutdown fence");
+            require(p == Phase.RUNNING && !failed,
+                    "restart requested after shutdown or coordinator failure fence");
             next = Phase.RESTARTING;
         } else if (e instanceof RestartCommitted) {
             require(p == Phase.RESTARTING, "restart completion out of order");
