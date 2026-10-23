@@ -300,6 +300,74 @@ final class ActorStopCleanupAdmissionTest {
     }
 
     @Test
+    void actorDoneWaitsForBlockedTerminalSubscriberAfterGuestCleanup()
+            throws Exception {
+        CountDownLatch awaitingProducer = new CountDownLatch(1);
+        CountDownLatch subscriberEntered = new CountDownLatch(1);
+        CountDownLatch releaseSubscriber = new CountDownLatch(1);
+        AtomicInteger cleanupExecutions = new AtomicInteger();
+        AtomicInteger subscriberExecutions = new AtomicInteger();
+        AtomicReference<Throwable> subscriberFailure = new AtomicReference<>();
+        OresFuture<Integer> producer = new OresFuture<>();
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                OresFuture<Void> task = context.runtime().startActorTask(
+                        new OresScheduler.CleanupAwareTask<Void>() {
+                            int stage;
+                            @Override public OresScheduler.Step<Void> resume(
+                                    OresScheduler.Resume resume) {
+                                if (stage++ == 0) {
+                                    awaitingProducer.countDown();
+                                    return OresScheduler.await(producer);
+                                }
+                                assertTrue(OresScheduler.cancellationCleanupTurn());
+                                assertInstanceOf(CancellationException.class,
+                                        resume.failure());
+                                cleanupExecutions.incrementAndGet();
+                                return OresScheduler.done(null);
+                            }
+                        });
+                task.whenCompleteRuntime((ignored, failure) -> {
+                    subscriberExecutions.incrementAndGet();
+                    subscriberEntered.countDown();
+                    try {
+                        if (!releaseSubscriber.await(5, TimeUnit.SECONDS)) {
+                            subscriberFailure.compareAndSet(null,
+                                    new AssertionError("terminal subscriber timed out"));
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        subscriberFailure.compareAndSet(null, interrupted);
+                    }
+                });
+            });
+            actor.send("start");
+            assertTrue(awaitingProducer.await(3, TimeUnit.SECONDS));
+            try {
+                assertTrue(actor.cancel());
+                assertTrue(subscriberEntered.await(3, TimeUnit.SECONDS),
+                        "terminal notification must be physically in flight");
+                assertFalse(actor.done().isDone(),
+                        "terminal Future settlement does not retire subscriber execution");
+                assertFalse(actor.awaitTermination(100, TimeUnit.MILLISECONDS));
+                assertEquals(1, cleanupExecutions.get(),
+                        "guest lexical cleanup must finish before terminal notification");
+            } finally {
+                releaseSubscriber.countDown();
+            }
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS),
+                    "actor DONE must join the terminal subscriber drain");
+            assertEquals(1, subscriberExecutions.get());
+            assertNull(subscriberFailure.get(),
+                    () -> String.valueOf(subscriberFailure.get()));
+            assertInstanceOf(ActorRuntime.ActorCancelledException.class,
+                    assertThrows(ExecutionException.class,
+                            () -> actor.done().get(3, TimeUnit.SECONDS)).getCause());
+        }
+    }
+
+    @Test
     void actorStopJoinsExistingFutureRevokerBeforePublishingDone()
             throws Exception {
         CountDownLatch admitted = new CountDownLatch(1);
