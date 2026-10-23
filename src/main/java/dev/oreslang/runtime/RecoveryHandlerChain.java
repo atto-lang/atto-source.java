@@ -136,7 +136,7 @@ final class RecoveryHandlerChain<T> {
     private final ExecutionContext.AllocationDomain ownerAllocationDomain;
     private final long ownerParentExecution;
     private final long ownerContinuation;
-    private final long ownerCodeEpoch;
+    private final CodeImageIdentity ownerCodeImage;
 
     private RecoveryHandlerChain(
             Handler<T>[] handlers,
@@ -145,7 +145,7 @@ final class RecoveryHandlerChain<T> {
             ExecutionContext.AllocationDomain ownerAllocationDomain,
             long ownerParentExecution,
             long ownerContinuation,
-            long ownerCodeEpoch) {
+            CodeImageIdentity ownerCodeImage) {
         this.handlers = handlers;
         this.effectMasks = effectMasks;
         this.ownerExecutionId = Objects.requireNonNull(ownerExecutionId, "ownerExecutionId");
@@ -153,15 +153,15 @@ final class RecoveryHandlerChain<T> {
                 Objects.requireNonNull(ownerAllocationDomain, "ownerAllocationDomain");
         this.ownerParentExecution = ownerParentExecution;
         this.ownerContinuation = ownerContinuation;
-        if (ownerCodeEpoch <= 0) {
-            throw new IllegalArgumentException("recovery code epoch must be positive");
+        this.ownerCodeImage = Objects.requireNonNull(ownerCodeImage, "ownerCodeImage");
+        if (!ownerCodeImage.runtimeAuthenticated()) {
+            throw new SecurityException("recovery chain requires a runtime-issued code image");
         }
-        this.ownerCodeEpoch = ownerCodeEpoch;
     }
 
     public static <T> Builder<T> builder(
-            ExecutionContext ownerExecution, long codeEpoch) {
-        return new Builder<>(ownerExecution, codeEpoch);
+            ExecutionContext ownerExecution, CodeImageIdentity codeImageIdentity) {
+        return new Builder<>(ownerExecution, codeImageIdentity);
     }
 
     public int size() { return handlers.length; }
@@ -181,12 +181,16 @@ final class RecoveryHandlerChain<T> {
             throw new SecurityException("recovery requires a compiler-authenticated guest failure");
         }
         pendingFailure.requireDispatchable();
+        if (!pendingFailure.codeImageActive()) {
+            pendingFailure.markTerminated();
+            return new Unhandled<>(pendingFailure);
+        }
         if (!pendingFailure.belongsTo(
                 ownerExecutionId,
                 ownerAllocationDomain,
                 ownerParentExecution,
                 ownerContinuation,
-                ownerCodeEpoch)) {
+                ownerCodeImage)) {
             // A valid envelope is not portable across logical Task/actor
             // invocations or actor generations. Preserve it unchanged for
             // outward propagation rather than invoking a foreign callback.
@@ -420,22 +424,24 @@ final class RecoveryHandlerChain<T> {
         private final ExecutionContext.AllocationDomain ownerAllocationDomain;
         private final long ownerParentExecution;
         private final long ownerContinuation;
-        private final long ownerCodeEpoch;
+        private final CodeImageIdentity ownerCodeImage;
         @SuppressWarnings("unchecked")
         private Handler<T>[] handlers = (Handler<T>[]) new Handler<?>[4];
         private byte[] effectMasks = new byte[4];
         private int size;
 
-        private Builder(ExecutionContext ownerExecution, long codeEpoch) {
+        private Builder(
+                ExecutionContext ownerExecution,
+                CodeImageIdentity codeImageIdentity) {
             Objects.requireNonNull(ownerExecution, "ownerExecution");
-            if (codeEpoch <= 0) {
-                throw new IllegalArgumentException("recovery code epoch must be positive");
+            this.ownerCodeImage = Objects.requireNonNull(codeImageIdentity, "codeImageIdentity");
+            if (!ownerCodeImage.isActive()) {
+                throw new IllegalStateException("cannot register recovery on retired code image");
             }
             this.ownerExecutionId = ownerExecution.id();
             this.ownerAllocationDomain = ownerExecution.allocationDomain();
             this.ownerParentExecution = ownerExecution.parentExecution();
             this.ownerContinuation = ownerExecution.continuation();
-            this.ownerCodeEpoch = codeEpoch;
         }
 
         public Builder<T> register(Handler<T> handler) { return add(BOTH, handler); }
@@ -466,7 +472,7 @@ final class RecoveryHandlerChain<T> {
                     ownerAllocationDomain,
                     ownerParentExecution,
                     ownerContinuation,
-                    ownerCodeEpoch);
+                    ownerCodeImage);
         }
     }
 }
