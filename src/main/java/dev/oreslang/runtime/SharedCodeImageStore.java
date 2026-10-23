@@ -72,12 +72,16 @@ public final class SharedCodeImageStore implements AutoCloseable {
                 }
                 return prior;
             }
-            CodeImage image = new CodeImage(
-                    codeUnitId,
-                    immutableProgram,
-                    CodeImageIdentity.issue(codeUnitId, codeImageSequence.incrementAndGet()));
-            images.put(codeUnitId, image);
-            return image;
+            CodeImageIdentity identity =
+                    CodeImageIdentity.issue(codeUnitId, codeImageSequence.incrementAndGet());
+            try {
+                CodeImage image = new CodeImage(codeUnitId, immutableProgram, identity);
+                images.put(codeUnitId, image);
+                return image;
+            } catch (RuntimeException | Error publicationFailure) {
+                identity.revoke();
+                throw publicationFailure;
+            }
         }
     }
 
