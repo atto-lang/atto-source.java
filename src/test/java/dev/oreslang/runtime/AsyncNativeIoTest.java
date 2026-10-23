@@ -189,6 +189,83 @@ class AsyncNativeIoTest {
         assertInstanceOf(IllegalStateException.class, settled.getCause());
     }
 
+    @Test void rejectedExecutorRetiresProvenNeverStartedIo()
+            throws Exception {
+        var executor = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>());
+        executor.shutdownNow();
+        var io = new AsyncNativeIo(1, executor);
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        try {
+            var operation = io.submit("never-started-worker", () -> {
+                calls.incrementAndGet();
+                return 1;
+            });
+            assertInstanceOf(RejectedExecutionException.class,
+                    assertThrows(ExecutionException.class,
+                            () -> operation.get(3, TimeUnit.SECONDS)).getCause());
+            assertEquals(0, calls.get(), "a rejected worker must not perform native I/O");
+            io.close();
+            assertNull(io.physicalShutdown().get(3, TimeUnit.SECONDS),
+                    "the never-started Future and receipt must retire fully");
+        } finally {
+            io.close();
+        }
+    }
+
+    @Test void executorThrowAfterActualWorkerStartCannotCancelRunningIo()
+            throws Exception {
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var running = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>()) {
+            @Override public void execute(Runnable command) {
+                super.execute(command);
+                try {
+                    if (!entered.await(3, TimeUnit.SECONDS)) {
+                        throw new AssertionError("worker did not start during test");
+                    }
+                } catch (InterruptedException failure) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(failure);
+                }
+                // Deliberately invalid executor behavior: it started the
+                // work but reported rejection. The operation phase CAS,
+                // not the exception, must decide physical ownership.
+                throw new RejectedExecutionException("worker already running");
+            }
+        };
+        var io = new AsyncNativeIo(1, running);
+        var exited = new CountDownLatch(1);
+        OresFuture<Integer> result = null;
+        try {
+            result = io.submit("ambiguous-running-loan", () -> {
+                entered.countDown();
+                try {
+                    while (release.getCount() != 0) {
+                        try { release.await(20, TimeUnit.MILLISECONDS); }
+                        catch (InterruptedException ignored) { /* uninterruptible */ }
+                    }
+                    return 17;
+                } finally {
+                    exited.countDown();
+                }
+            });
+            assertFalse(result.isDone(),
+                    "an invalid execute() rejection cannot forge a worker-exit receipt");
+            io.close();
+            assertFalse(result.isDone(), "STOP is not native loan retirement");
+            assertFalse(io.physicalShutdown().isDone());
+        } finally {
+            release.countDown();
+        }
+        assertTrue(exited.await(3, TimeUnit.SECONDS));
+        assertInstanceOf(IllegalStateException.class,
+                assertThrows(ExecutionException.class,
+                        () -> result.get(3, TimeUnit.SECONDS)).getCause());
+        assertNull(io.physicalShutdown().get(3, TimeUnit.SECONDS));
+    }
+
     @Test void discardedBeforeStartIsCancelledAndCannotRunGuestHostIo()
             throws Exception {
         var executor = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
