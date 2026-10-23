@@ -1,5 +1,6 @@
 package dev.oreslang.runtime;
 
+import java.io.IOException;
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
@@ -24,10 +25,27 @@ public final class OresVM implements AutoCloseable {
             Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors()));
     private static final int DEFAULT_QUEUE_CAPACITY = 65_536;
 
+    private static final ThreadLocal<Boolean> ON_NIO_WORKER = new ThreadLocal<>();
+
+    static boolean onNioWorker() {
+        return Boolean.TRUE.equals(ON_NIO_WORKER.get());
+    }
+
+    static void runAsNioWorker(Runnable work) {
+        Boolean previous = ON_NIO_WORKER.get();
+        ON_NIO_WORKER.set(Boolean.TRUE);
+        try { work.run(); }
+        finally {
+            if (previous == null) ON_NIO_WORKER.remove();
+            else ON_NIO_WORKER.set(previous);
+        }
+    }
+
     private enum StartupState { NEW, STARTING, STARTED, FAILED, CLOSED }
 
     private final ThreadPoolExecutor controlExecutor;
     private final OresScheduler rootScheduler;
+    private final NioReadinessGroup nioReadiness;
     private final AtomicBoolean closed = new AtomicBoolean();
     private volatile StartupState startupState = StartupState.NEW;
 
@@ -60,6 +78,11 @@ public final class OresVM implements AutoCloseable {
                 turnExecutor);
         try {
             startup();
+            this.nioReadiness = new NioReadinessGroup(4, 8192, 1024);
+        } catch (IOException ioFailure) {
+            rootScheduler.close();
+            controlExecutor.shutdownNow();
+            throw new IllegalStateException("unable to bootstrap VM NIO readiness domain", ioFailure);
         } catch (RuntimeException | Error failure) {
             rootScheduler.close();
             controlExecutor.shutdownNow();
