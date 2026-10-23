@@ -445,6 +445,17 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     /**
+     * Trusted runtime admission: attach the new child to the current tracked
+     * task's revocation and physical-retirement tree when one exists.
+     * Top-level host calls intentionally establish their own root authority.
+     * Never inherit an inline scheduler turn's stale cancellation token.
+     */
+    public <T> TaskHandle<T> startTrackedInCurrentTaskOrRoot(Task<T> task) {
+        TaskCancellation parent = TaskHandle.currentParentForChild();
+        return TaskHandle.start(this, task, parent);
+    }
+
+    /**
      * Create an explicit host/runtime Task scope. The caller must seal or
      * close it and await its getDone() barrier when physical quiescence matters.
      * Guest actor/tenant authority is not exposed by this staging API.
