@@ -149,6 +149,17 @@ final class GuestFailure {
                 && provenance.codeEpoch() == codeEpoch;
     }
 
+    synchronized void requireDispatchable() {
+        if (lifecycle != Lifecycle.ACTIVE) {
+            throw new IllegalStateException(
+                    "completed guest failure cannot be dispatched again: " + lifecycle);
+        }
+        if (dispatching) {
+            throw new IllegalStateException(
+                    "guest failure is already in an active recovery dispatch");
+        }
+    }
+
     synchronized boolean enterRecoveryChain(RecoveryHandlerChain<?> chain) {
         Objects.requireNonNull(chain, "chain");
         if (lifecycle != Lifecycle.ACTIVE) {
