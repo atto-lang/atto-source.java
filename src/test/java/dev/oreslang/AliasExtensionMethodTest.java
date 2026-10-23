@@ -161,6 +161,45 @@ final class AliasExtensionMethodTest {
         }
     }
 
+    @Test
+    void typeAliasExtensionNameIsNotInjectedIntoRawPrimitive() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                declare type Code = int;
+                define mtd to_string on Code(): string { return "code"; }
+                fnc stringify(Code code): string { return code.to_string(); }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                define type Code = int;
+                define mtd to_string on Code(): string { return "code"; }
+                fnc invalid(int raw): string { return raw.to_string(); }
+                """));
+    }
+
+    @Test
+    void duplicateExtensionSlotRejectsMixedDeclareDefineAliasSpelling() {
+        for (String typeSpelling : new String[]{"declare", "define"}) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(typeSpelling + """
+                         type Code = int;
+                         define mtd as_text on Code(): string { return "A"; }
+                         define mtd as_text on Code(): string { return "B"; }
+                         """));
+            assertTrue(error.getMessage().contains("arity"), error::getMessage);
+        }
+    }
+
+    @Test
+    void extensionMethodCannotBindToAnUnrelatedAliasEvenWithSameRepresentation() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        declare type Code = int;
+                        declare type Other = int;
+                        define mtd describe on Code(): string { return "Code"; }
+                        fnc wrong(Other other): string { return other.describe(); }
+                        """));
+        assertNotNull(error.getMessage());
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "alias-mtd.ores")
