@@ -55,6 +55,21 @@ public final class FuturePipelineTypingCheck {
                 != lifted.modules().get(0).declarations().get(2)) {
             throw new AssertionError("checked Future stage bound to the wrong declaration identity");
         }
+        // A forged rebinding for the same checked AST identity must fail:
+        // matching spelling and arity do not grant a second declaration authority.
+        Ast.Program impostor = Parser.parse("""
+                fnc save(int value): int { return value - 999; }
+                """);
+        Ast.FunctionDecl wrongSave = (Ast.FunctionDecl)
+                impostor.modules().getFirst().declarations().getFirst();
+        try {
+            Ast.CheckedPureFuturePipe.record(first, wrongSave);
+            throw new AssertionError("checked Future stage was rebound to an impostor declaration");
+        } catch (IllegalStateException expected) {
+            if (!expected.getMessage().contains("rebound"))
+                throw new AssertionError("wrong stage-rebinding diagnostic", expected);
+        }
+
         if (Ast.CheckedPureFuturePipe.lookup(
                 second.rewrite(second.callee(), second.typeArguments(),
                         second.typeArgumentsPresent(), second.arguments()))) {
@@ -81,6 +96,14 @@ public final class FuturePipelineTypingCheck {
                   return;
                 }
                 """, "pure int -> int stage");
+
+        // Scalar call-shaped producers do not incur speculative Future
+        // type checking or acquire a checked Future pipeline proof.
+        TypeChecker.check(Parser.parse("""
+                fnc source(): int { return 21; }
+                fnc save(int value): int { return value + 1; }
+                fnc main(): int { return source() |> save(); }
+                """));
 
         TypeChecker.check(Parser.parse("""
                 async fnc source(): int { return 21; }
