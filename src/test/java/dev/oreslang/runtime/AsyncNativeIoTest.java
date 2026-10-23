@@ -321,6 +321,35 @@ class AsyncNativeIoTest {
         assertNull(io.physicalShutdown().get(3, TimeUnit.SECONDS));
     }
 
+    @Test void failedLateRegistrationCloseQuarantinesContext()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var pending = io.submit("inflight", () -> {
+            entered.countDown();
+            while (release.getCount() != 0) {
+                try { release.await(20, TimeUnit.MILLISECONDS); }
+                catch (InterruptedException ignored) { /* native work */ }
+            }
+            return 1;
+        });
+        assertTrue(entered.await(3, TimeUnit.SECONDS));
+        var failure = new IOException("rejected native handle did not physically close");
+        try {
+            io.close();
+            assertSame(failure, assertThrows(IOException.class,
+                    () -> io.register(() -> { throw failure; })));
+            assertSame(failure, io.physicalShutdownFailure());
+            assertFalse(io.physicalShutdown().isDone());
+        } finally {
+            release.countDown();
+        }
+        assertThrows(ExecutionException.class, () -> pending.get(3, TimeUnit.SECONDS));
+        assertFalse(io.physicalShutdown().isDone(),
+                "failed late handle close must keep physical shutdown quarantined");
+    }
+
     @Test void failedHostCloseDoesNotSkipSiblingOrPublishCleanShutdown()
             throws Exception {
         var io = new AsyncNativeIo(1);
