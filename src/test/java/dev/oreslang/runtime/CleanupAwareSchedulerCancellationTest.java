@@ -159,7 +159,11 @@ final class CleanupAwareSchedulerCancellationTest {
                                 unwinding.countDown();
                                 return OresScheduler.await(cleanup);
                             }
-                            assertFalse(OresScheduler.cancellationCleanupTurn());
+                            // The initial terminal cancellation is injected only
+                            // once, but every later await resume remains within
+                            // the scheduler-authenticated cleanup authority.
+                            assertTrue(OresScheduler.cancellationCleanupTurn(),
+                                    "async defer resume must retain cleanup authority");
                             assertEquals(Integer.valueOf(8), resume.value());
                             return OresScheduler.done(8);
                         }
