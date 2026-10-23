@@ -570,7 +570,7 @@ public final class Parser {
             Ast.Visibility visibility,
             boolean isAbstract,
             boolean filePrivateScope) {
-        String name = consume(IDENT, "expected class name").lexeme();
+        String name = consumeTypeDeclarationName("expected class name");
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
@@ -847,7 +847,7 @@ public final class Parser {
 
     private Ast.ClassDecl parseActorClass(
             Ast.ActorKind actorKind, Ast.Visibility visibility, ActorPrefix prefix) {
-        String name = consume(IDENT, "expected actor name").lexeme();
+        String name = consumeTypeDeclarationName("expected actor name");
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
@@ -1034,7 +1034,7 @@ public final class Parser {
     private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility) { return parseInterface(visibility, false); }
 
     private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility, boolean moduleContract) {
-        String name = consume(IDENT, "expected interface name").lexeme();
+        String name = consumeTypeDeclarationName("expected interface name");
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         boolean braceStyle = match(LBRACE);
@@ -1334,6 +1334,19 @@ public final class Parser {
     }
 
 
+    /**
+     * '_' is a wildcard/inference hole, not a bindable user type identity.
+     * Keep the same admission boundary for all nominal/structural type names
+     * and for forward declarations to prevent accidental namespace aliases.
+     */
+    private String consumeTypeDeclarationName(String diagnostic) {
+        Token name = consume(IDENT, diagnostic);
+        if ("_".equals(name.lexeme())) {
+            throw error(name, "'_' cannot be used as a declared type name");
+        }
+        return name.lexeme();
+    }
+
     private ForwardType parseForwardType(List<Ast.Annotation> annotations, Modifiers before) {
         Token start = advance(); // contextual 'declare'; do not reserve it globally
         if (!annotations.isEmpty() || before.visibilitySeen || before.async || before.suspends
@@ -1351,7 +1364,7 @@ public final class Parser {
             throw error(peek(), "'declare' supports only type, trait or interface");
         }
         Token.Type kind = previous().type();
-        String name = consume(IDENT, "expected forward type name").lexeme();
+        String name = consumeTypeDeclarationName("expected forward type name");
         List<String> generics = parseGenericParameters();
         consume(SEMICOLON, "forward declaration must end with ';' and cannot supply a body");
         return new ForwardType(kind, name, after.visibility, List.copyOf(generics));
@@ -1428,7 +1441,7 @@ public final class Parser {
         // "alias" as their actual identifier rather than a new reserved word.
         boolean namedAlias = check(IDENT) && peek().lexeme().equals("alias") && checkNext(IDENT);
         if (namedAlias) advance();
-        String name = consume(IDENT, "expected type alias name").lexeme();
+        String name = consumeTypeDeclarationName("expected type alias name");
         List<String> generics = parseGenericParameters();
         if (namedAlias) {
             consume(AS, "expected 'as' after named type alias");
