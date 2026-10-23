@@ -603,6 +603,39 @@ public final class TaskOwnedLockLedgerTest {
     }
 
     @Test
+    void repeatedOrReentrantTaskRetirementUsesSamePhysicalReceipt() {
+        TaskOwnedLockLedger ledger = new TaskOwnedLockLedger();
+        java.util.concurrent.CompletableFuture<Void> physical =
+                new java.util.concurrent.CompletableFuture<>();
+        java.util.concurrent.atomic.AtomicInteger revokeCount =
+                new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicReference<java.util.concurrent.CompletableFuture<Void>>
+                nested = new java.util.concurrent.atomic.AtomicReference<>();
+        ledger.register(new TaskOwnedLockLedger.Lease() {
+            @Override
+            public void revokeAfterQuiescence() {
+                throw new AssertionError("async permit should not use legacy cleanup");
+            }
+            @Override
+            public java.util.concurrent.CompletionStage<Void> settleAfterQuiescence() {
+                revokeCount.incrementAndGet();
+                nested.set(ledger.retireAfterQuiescence());
+                return physical;
+            }
+        });
+        var first = ledger.retireAfterQuiescence();
+        var second = ledger.retireAfterQuiescence();
+        assertSame(first, second, "STOP must share one pending retirement receipt");
+        assertSame(first, nested.get(), "reentrant revoker must see original receipt");
+        assertEquals(1, revokeCount.get(), "permit revoked more than once");
+        assertFalse(first.isDone(), "DONE before physical handoff settled");
+        physical.complete(null);
+        first.join();
+        assertEquals(0, ledger.outstanding());
+        assertEquals(1, revokeCount.get());
+    }
+
+    @Test
     void ledgerRevocationRunsOutsideMonitorAndRetainsFailedPermit() {
         TaskOwnedLockLedger ledger = new TaskOwnedLockLedger();
         AtomicBoolean outsideMonitor = new AtomicBoolean();
