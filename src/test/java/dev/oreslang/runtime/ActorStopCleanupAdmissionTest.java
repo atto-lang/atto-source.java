@@ -450,6 +450,89 @@ final class ActorStopCleanupAdmissionTest {
     }
 
     @Test
+    void siblingMailboxesAreSealedBeforeAnyChildRevokerCanBlock()
+            throws Exception {
+        CountDownLatch allChildrenOwned = new CountDownLatch(2);
+        CountDownLatch firstRevokerEntered = new CountDownLatch(1);
+        CountDownLatch releaseRevokers = new CountDownLatch(1);
+        AtomicReference<java.util.List<ActorRuntime.ActorRef<String>>> children =
+                new AtomicReference<>();
+        AtomicReference<Throwable> stopFailure = new AtomicReference<>();
+        AtomicReference<Throwable> guestFailure = new AtomicReference<>();
+        AtomicInteger forbiddenMessages = new AtomicInteger();
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var parent = runtime.<String>spawnShared(() -> (message, context) -> {
+                ActorRuntime.BehaviorFactory<String> factory = ignored ->
+                        (childMessage, childContext) -> {
+                            if (!"own".equals(childMessage)) {
+                                forbiddenMessages.incrementAndGet();
+                                return;
+                            }
+                            OresFuture<Void> operation = new OresFuture<>(() -> {
+                                firstRevokerEntered.countDown();
+                                try {
+                                    if (!releaseRevokers.await(5, TimeUnit.SECONDS)) {
+                                        throw new IllegalStateException(
+                                                "test failed to release child revokers");
+                                    }
+                                } catch (InterruptedException interrupted) {
+                                    Thread.currentThread().interrupt();
+                                    throw new IllegalStateException(interrupted);
+                                }
+                            });
+                            if (!childContext.runtime().ownCurrentActorFuture(operation)) {
+                                guestFailure.compareAndSet(null,
+                                        new AssertionError("child Future admission failed"));
+                            }
+                            allChildrenOwned.countDown();
+                        };
+                var first = context.runtime().spawnShared(factory);
+                var second = context.runtime().spawnShared(factory);
+                children.set(java.util.List.of(first, second));
+                first.send("own");
+                second.send("own");
+            });
+            parent.send("spawn");
+            assertTrue(allChildrenOwned.await(3, TimeUnit.SECONDS),
+                    "both children must hold revocable resources before parent STOP");
+            Thread stopping = Thread.ofVirtual().start(() -> {
+                try {
+                    parent.cancel();
+                } catch (Throwable problem) {
+                    stopFailure.set(problem);
+                }
+            });
+            try {
+                assertTrue(firstRevokerEntered.await(3, TimeUnit.SECONDS),
+                        "one child must be blocked inside a synchronous revoker");
+                assertFalse(parent.done().isDone());
+                // The other child's full cancel() call has not necessarily
+                // begun yet. Admission fencing must not wait for it.
+                for (var child : children.get()) {
+                    RuntimeException rejected = assertThrows(RuntimeException.class,
+                            () -> child.send("should-not-enter"));
+                    assertTrue(rejected instanceof ActorRuntime.ActorSealedException
+                                    || rejected instanceof ActorRuntime.ActorTerminatedException,
+                            "STOP pre-fence must deny every sibling: " + rejected);
+                }
+                assertEquals(0, forbiddenMessages.get());
+            } finally {
+                releaseRevokers.countDown();
+            }
+            stopping.join(TimeUnit.SECONDS.toMillis(3));
+            assertFalse(stopping.isAlive());
+            assertNull(stopFailure.get(), () -> String.valueOf(stopFailure.get()));
+            assertNull(guestFailure.get(), () -> String.valueOf(guestFailure.get()));
+            assertTrue(parent.awaitTermination(3, TimeUnit.SECONDS));
+            for (var child : children.get()) {
+                assertTrue(child.awaitTermination(3, TimeUnit.SECONDS));
+            }
+            assertEquals(0, forbiddenMessages.get());
+        }
+    }
+
+    @Test
     void parentStopRequestsChildCancellationBeforeBlockedParentRevoker()
             throws Exception {
         CountDownLatch childCreated = new CountDownLatch(1);
