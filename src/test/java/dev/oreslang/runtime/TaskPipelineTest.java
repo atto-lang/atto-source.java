@@ -432,6 +432,67 @@ final class TaskPipelineTest {
     }
 
     @Test
+    void parentCancelAndBorrowedProducerSettlementRacesLeaveNoOrphanedTasks()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            for (int iteration = 0; iteration < 32; iteration++) {
+                OresFuture<Integer> upstream = new OresFuture<>();
+                AtomicInteger calls = new AtomicInteger();
+                AtomicReference<TaskPipeline.PipelineHandle<Integer>> child =
+                        new AtomicReference<>();
+                TaskHandle<Integer> parent = scheduler.startTracked(resume -> {
+                    if (resume.initial()) {
+                        TaskPipeline.PipelineHandle<Integer> pipeline =
+                                TaskPipeline.startInCurrentTaskOrRoot(scheduler,
+                                        upstream, List.of(value -> {
+                                            calls.incrementAndGet();
+                                            return ((Integer) value) + 1;
+                                        }));
+                        child.set(pipeline);
+                        return OresScheduler.await(pipeline.result());
+                    }
+                    if (resume.failure() != null) {
+                        if (resume.failure() instanceof Exception exception)
+                            throw exception;
+                        throw new IllegalStateException("unexpected failure",
+                                resume.failure());
+                    }
+                    return OresScheduler.done((Integer) resume.value());
+                });
+                awaitWaiter(upstream);
+                CountDownLatch go = new CountDownLatch(1);
+                AtomicReference<Throwable> producerFailure = new AtomicReference<>();
+                Thread producer = Thread.startVirtualThread(() -> {
+                    try {
+                        if (!go.await(5, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("producer gate timed out");
+                        }
+                        assertTrue(upstream.completeFromRuntime(41));
+                    } catch (Throwable failure) {
+                        producerFailure.set(failure);
+                    }
+                });
+                // Different scheduling interleavings win across repetitions.
+                go.countDown();
+                parent.result().cancel(false);
+                producer.join(5_000);
+                assertFalse(producer.isAlive());
+                assertNull(producerFailure.get(),
+                        () -> String.valueOf(producerFailure.get()));
+                assertNotNull(child.get());
+                assertTrue(parent.getDone().get(5, TimeUnit.SECONDS)
+                        instanceof TaskHandle.TaskOutcome<?>);
+                assertTrue(child.get().getDone().get(5, TimeUnit.SECONDS)
+                        instanceof TaskHandle.TaskOutcome<?>);
+                assertTrue(calls.get() <= 1, "pipeline stage ran twice");
+                assertFalse(upstream.isCancelled(),
+                        "parent cancellation must never revoke borrowed input");
+                waitForNoWaiter(upstream);
+            }
+        }
+    }
+
+    @Test
     void aTrackedRootMayStartPipelineWithoutAnExistingParentTask()
             throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
