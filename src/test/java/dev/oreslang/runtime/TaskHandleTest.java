@@ -37,6 +37,43 @@ public class TaskHandleTest {
         return (TaskCancellation) field.get(handle);
     }
 
+    @Test void sourceResultCallbacksMustDrainBeforeTaskRetirementIsCertified()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            CountDownLatch sourceEntered = new CountDownLatch(1);
+            CountDownLatch allowResult = new CountDownLatch(1);
+            CountDownLatch resultCallbackEntered = new CountDownLatch(1);
+            CountDownLatch releaseResultCallback = new CountDownLatch(1);
+            TaskHandle<Integer> task = scheduler.startTracked(resume -> {
+                sourceEntered.countDown();
+                awaitUninterruptibly(allowResult);
+                return OresScheduler.done(23);
+            });
+            assertTrue(sourceEntered.await(3, TimeUnit.SECONDS));
+            task.result().whenCompleteRuntime((value, failure) -> {
+                resultCallbackEntered.countDown();
+                awaitUninterruptibly(releaseResultCallback);
+            });
+            try {
+                allowResult.countDown();
+                assertTrue(resultCallbackEntered.await(3, TimeUnit.SECONDS));
+                assertTrue(task.result().isDone());
+                assertTrue(task.getDone().isDone(),
+                        "test must reach Task DONE before the source listener drains");
+                assertTrue(task.doneCallbacksDrained().toCompletableFuture().isDone());
+                assertFalse(task.terminalCallbacksDrained().toCompletableFuture().isDone(),
+                        "actor STOP must wait for source-result terminal subscribers too");
+            } finally {
+                allowResult.countDown();
+                releaseResultCallback.countDown();
+            }
+            assertEquals(new TaskHandle.Success<>(23),
+                    task.getDone().get(3, TimeUnit.SECONDS));
+            task.terminalCallbacksDrained().toCompletableFuture()
+                    .get(3, TimeUnit.SECONDS);
+        }
+    }
+
     @Test void taskTerminalCasIsNotPhysicalSubscriberDrain() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             CountDownLatch running = new CountDownLatch(1);
