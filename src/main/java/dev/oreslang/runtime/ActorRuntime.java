@@ -21,6 +21,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
@@ -2259,6 +2260,9 @@ public final class ActorRuntime implements AutoCloseable {
                 new OresFuture<>(() -> false, () -> { });
         private final OresFuture<Void> doneFuture =
                 new OresFuture<>(() -> false, () -> { });
+        /** Host-only physical lifecycle receipt; independent of the actors
+         * lookup map, which may unregister before the final Future drains. */
+        private final CountDownLatch terminated = new CountDownLatch(1);
         private volatile ActorOutputStream<Object> outputStream;
 
         private ActorRef(ActorId id, ActorKind kind, long generation) {
@@ -2342,10 +2346,9 @@ public final class ActorRuntime implements AutoCloseable {
                     "synchronously wait for actor termination");
             Objects.requireNonNull(unit);
             if (timeout < 0) throw new IllegalArgumentException("timeout must be non-negative");
-            ActorCell<?> cell = actors.get(id);
-            if (cell == null) return true;
-            cell.awaitFinalized(unit.toNanos(timeout));
-            return cell.finalized();
+            // Never infer successful termination from actors.remove(). Its
+            // membership transition can precede the final observer receipt.
+            return terminated.await(timeout, unit);
         }
 
         public void send(M message) {
@@ -7465,10 +7468,6 @@ public final class ActorRuntime implements AutoCloseable {
                 codeActorState = null;
                 unregisterActor(this);
                 if (parent != null) parent.childFinalized(this);
-                synchronized (lifecycleLock) {
-                    finalized = true;
-                    lifecycleLock.notifyAll();
-                }
                 Throwable terminal = ref.terminationCause.get();
                 if (!ref.readyFuture.isDone()) {
                     ref.readyFuture.failFromRuntime(
@@ -7479,6 +7478,13 @@ public final class ActorRuntime implements AutoCloseable {
                 if (terminal == null) ref.doneFuture.completeFromRuntime(null);
                 else ref.doneFuture.failFromRuntime(terminal);
                 finalizedFuture.completeFromRuntime(null);
+                // Only after observer notification and arena/lock cleanup
+                // may awaitTermination() report a complete actor incarnation.
+                synchronized (lifecycleLock) {
+                    finalized = true;
+                    lifecycleLock.notifyAll();
+                }
+                ref.terminated.countDown();
             } catch (Throwable failure) {
                 quarantineStopRetirement(failure);
             }
