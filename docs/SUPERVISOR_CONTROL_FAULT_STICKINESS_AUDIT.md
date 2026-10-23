@@ -27,6 +27,10 @@ of the aggregate `failed` bit.
 - Duplicate `CoordinatorFailed` is idempotent, not a second effect.
 - `RestartRequested` and `RestartCommitted` both reject an outstanding
   coordinator fault. A rejected restart cannot reset the fault.
+- New normal `ShutdownRequested` / `ShutdownWithChildEpochs` admissions
+  also reject lost CONTROL authority: emergency host cleanup proceeds
+  outside guest-hook execution instead. Already-admitted duplicate shutdown
+  observations remain idempotent.
 - The `State` invariant requires `coordinatorFailed => failed`.
 - `admissionsOpen()` and `restartPermitted()` are false if CONTROL
   authority is lost even when the stored phase is RUNNING.
