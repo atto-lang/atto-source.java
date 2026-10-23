@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import org.junit.jupiter.api.Test;
 import java.lang.reflect.Modifier;
 import java.net.URI;
+import java.io.OutputStream;
 import java.util.concurrent.CompletableFuture;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -19,6 +20,17 @@ final class ProxyOutboundContextAuthorityTest {
         assertFalse(Modifier.isPublic(method.getModifiers()));
         assertFalse(Modifier.isProtected(method.getModifiers()));
         assertEquals(CompletableFuture.class, method.getReturnType());
+    }
+
+    @Test
+    void bodyCopyHandoffIsAnOpaqueOresFutureNotARawHostResponse() throws Exception {
+        var method = AsyncNativeIo.class.getDeclaredMethod(
+                "copyProxyLoopback", OresContext.class, URI.class, String.class, OutputStream.class);
+        assertFalse(Modifier.isPublic(method.getModifiers()));
+        assertFalse(Modifier.isProtected(method.getModifiers()));
+        assertEquals(OresFuture.class, method.getReturnType());
+        assertFalse(Modifier.isPublic(ProxyBodyCopy.class.getModifiers()));
+        assertFalse(Modifier.isPublic(ProxyBodyCopy.Receipt.class.getModifiers()));
     }
 
     @Test
