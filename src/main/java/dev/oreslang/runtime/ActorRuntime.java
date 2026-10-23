@@ -7100,13 +7100,42 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        // The dedicated host close lane is not a guest actor pool and is
-        // terminated only after the actor retirement join. If a native close
-        // stalls, interrupt the lane and fail closed rather than falsely
-        // publishing successful runtime shutdown.
-        physicalCloseDispatcher.shutdown();
+        // An incomplete STOP MUST NOT close the host physical-notification
+        // lane or invalidate shared/actor-owned resources. Late native-worker
+        // receipts still need this lane to recheck STOP and unblock retries.
+        // The ActorCells stay strongly reachable from actors and their
+        // arena/loans are quarantined until a subsequent verified close.
         if (!stillRunning.isEmpty() || !dispatchersTerminated || interrupted) {
-            physicalCloseDispatcher.shutdownNow();
+            if (interrupted) {
+                for (ActorCell<?> cell : snapshot) {
+                    if (!cell.finalized() && !stillRunning.contains(cell.ref.id())) {
+                        stillRunning.add(cell.ref.id());
+                    }
+                }
+                Thread.currentThread().interrupt();
+            }
+            throw new IllegalStateException(
+                    "ActorRuntime close did not observe full actor termination/carrier exit: "
+                            + stillRunning.size() + " actor(s) still running, dispatchersTerminated="
+                            + dispatchersTerminated + "; physical shutdown quarantined");
+        }
+
+        // All ActorCells and guest dispatchers are physically quiescent. A
+        // host-only post-drain wake is not a native loan, but any accepted
+        // wake still needs to leave its executor before global teardown.
+        physicalCloseDispatcher.shutdown();
+        try {
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0 ||
+                    !physicalCloseDispatcher.awaitTermination(remaining, TimeUnit.NANOSECONDS)) {
+                throw new IllegalStateException(
+                        "ActorRuntime physical close notification lane still active; quarantined");
+            }
+        } catch (InterruptedException waitInterrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(
+                    "ActorRuntime physical close notification drain interrupted; quarantined",
+                    waitInterrupted);
         }
 
         for (ActorGroup group : List.copyOf(actorGroups.values())) group.closeFromRuntime();
@@ -7121,20 +7150,6 @@ public final class ActorRuntime implements AutoCloseable {
         sharedValues.clear();
         sharedMemoryBytes.set(0L);
 
-        if (interrupted) Thread.currentThread().interrupt();
-        if (!stillRunning.isEmpty() || !dispatchersTerminated || interrupted) {
-            if (interrupted) {
-                for (ActorCell<?> cell : snapshot) {
-                    if (!cell.finalized() && !stillRunning.contains(cell.ref.id())) {
-                        stillRunning.add(cell.ref.id());
-                    }
-                }
-            }
-            throw new IllegalStateException(
-                    "ActorRuntime close did not observe full actor termination/carrier exit: "
-                            + stillRunning.size() + " actor(s) still running, dispatchersTerminated="
-                            + dispatchersTerminated);
-        }
         actors.clear();
         actorCount.set(0);
     }
