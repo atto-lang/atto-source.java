@@ -4600,6 +4600,21 @@ public final class TypeChecker {
         if (!(source instanceof Ast.NameExpr) && !(source instanceof Ast.CallExpr)) {
             return null;
         }
+        if (source instanceof Ast.CallExpr candidate
+                && !Ast.CheckedPureFuturePipe.lookup(candidate)) {
+            // Do not speculatively retype arbitrary scalar function calls.
+            // Typing can update proof side tables, constructor state and
+            // suspension diagnostics; only known Future producers justify
+            // the additional pass before ordinary eager call checking.
+            if (candidate.origin() != Ast.CallOrigin.DIRECT
+                    || !(candidate.callee() instanceof Ast.NameExpr producerName)
+                    || env.lookup(producerName.name()) != null) return null;
+            Ast.FunctionDecl producer =
+                    findFunction(producerName.name(), candidate.arguments().size());
+            if (producer == null
+                    || (!producer.async()
+                            && !producer.returnType().name().equals("Future"))) return null;
+        }
         Type prior = typeOf(source, env, generics, self);
         if (!(prior instanceof Named pending) || !pending.name().equals("Future")
                 || pending.arguments().size() != 1) return null;
