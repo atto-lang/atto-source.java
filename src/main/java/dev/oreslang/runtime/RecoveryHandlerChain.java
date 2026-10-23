@@ -132,13 +132,20 @@ final class RecoveryHandlerChain<T> {
 
     private final Handler<T>[] handlers;
     private final byte[] effectMasks;
+    private final ExecutionContext.ExecutionId ownerExecutionId;
 
-    private RecoveryHandlerChain(Handler<T>[] handlers, byte[] effectMasks) {
+    private RecoveryHandlerChain(
+            Handler<T>[] handlers,
+            byte[] effectMasks,
+            ExecutionContext.ExecutionId ownerExecutionId) {
         this.handlers = handlers;
         this.effectMasks = effectMasks;
+        this.ownerExecutionId = Objects.requireNonNull(ownerExecutionId, "ownerExecutionId");
     }
 
-    public static <T> Builder<T> builder() { return new Builder<>(); }
+    public static <T> Builder<T> builder(ExecutionContext ownerExecution) {
+        return new Builder<>(ownerExecution);
+    }
 
     public int size() { return handlers.length; }
 
@@ -155,6 +162,11 @@ final class RecoveryHandlerChain<T> {
         Objects.requireNonNull(pendingFailure, "pendingFailure");
         if (!pendingFailure.compilerAuthenticated()) {
             throw new SecurityException("recovery requires a compiler-authenticated guest failure");
+        }
+        if (!pendingFailure.belongsTo(ownerExecutionId)) {
+            // A valid envelope is not portable across logical Task/actor
+            // invocations. Preserve it unchanged for outward propagation.
+            return new Unhandled<>(pendingFailure);
         }
         final FailureKind kind = pendingFailure.kind();
         final Throwable failure = pendingFailure.error();
@@ -176,6 +188,11 @@ final class RecoveryHandlerChain<T> {
             firstEligible--;
         }
         if (firstEligible < 0) {
+            return new Unhandled<>(pendingFailure);
+        }
+        // A failure may move outward to distinct lexical recovery chains, but
+        // an exhausted/rejected chain must not be replayed for a second pass.
+        if (!pendingFailure.enterRecoveryChain(this)) {
             return new Unhandled<>(pendingFailure);
         }
 
@@ -243,7 +260,10 @@ final class RecoveryHandlerChain<T> {
                 return new HandlerFailure<>(pendingFailure,
                         new IllegalStateException("recovery handler must resolve or delegate"));
             }
-            if (decision == Cursor.RESOLVED) return new Recovered<>(resolved);
+            if (decision == Cursor.RESOLVED) {
+                pendingFailure.markRecovered();
+                return new Recovered<>(resolved);
+            }
         }
         return new Unhandled<>(pendingFailure);
         } finally {
@@ -350,10 +370,16 @@ final class RecoveryHandlerChain<T> {
     }
 
     public static final class Builder<T> {
+        private final ExecutionContext.ExecutionId ownerExecutionId;
         @SuppressWarnings("unchecked")
         private Handler<T>[] handlers = (Handler<T>[]) new Handler<?>[4];
         private byte[] effectMasks = new byte[4];
         private int size;
+
+        private Builder(ExecutionContext ownerExecution) {
+            Objects.requireNonNull(ownerExecution, "ownerExecution");
+            this.ownerExecutionId = ownerExecution.id();
+        }
 
         public Builder<T> register(Handler<T> handler) { return add(BOTH, handler); }
         public Builder<T> onThrow(Handler<T> handler) { return add(THROW, handler); }
@@ -377,7 +403,9 @@ final class RecoveryHandlerChain<T> {
         /** Immutable snapshot. The caller enforces ownership of captured data. */
         public RecoveryHandlerChain<T> freeze() {
             return new RecoveryHandlerChain<>(
-                    Arrays.copyOf(handlers, size), Arrays.copyOf(effectMasks, size));
+                    Arrays.copyOf(handlers, size),
+                    Arrays.copyOf(effectMasks, size),
+                    ownerExecutionId);
         }
     }
 }
