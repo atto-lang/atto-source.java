@@ -213,6 +213,10 @@ public final class ProxyOutboundLoopback implements AutoCloseable {
         private final Runnable release;
         private final AtomicBoolean closed = new AtomicBoolean();
         private final AtomicBoolean consumed = new AtomicBoolean();
+        // A response can be closed while a downstream write is still blocked.
+        // Capacity belongs to the physical stream until its worker returns.
+        private final AtomicBoolean streamingActive = new AtomicBoolean();
+        private final AtomicBoolean closeFinished = new AtomicBoolean();
 
         private Response(int status, List<Map.Entry<String, String>> headers,
                          InputStream body, Runnable release) {
@@ -231,7 +235,8 @@ public final class ProxyOutboundLoopback implements AutoCloseable {
             Objects.requireNonNull(cancelled);
             if (!consumed.compareAndSet(false, true))
                 throw new IllegalStateException("body stream already consumed");
-            try (this) {
+            streamingActive.set(true);
+            try {
                 byte[] chunk = new byte[8192];
                 long total = 0;
                 while (true) {
@@ -244,13 +249,20 @@ public final class ProxyOutboundLoopback implements AutoCloseable {
                     target.write(chunk, 0, n);
                     total += n;
                 }
+            } finally {
+                streamingActive.set(false);
+                try { close(); }
+                finally { if (closeFinished.get()) release.run(); }
             }
         }
 
         @Override public void close() throws IOException {
             if (!closed.compareAndSet(false, true)) return;
             try { body.close(); }
-            finally { release.run(); }
+            finally {
+                closeFinished.set(true);
+                if (!streamingActive.get()) release.run();
+            }
         }
     }
 }
