@@ -23,7 +23,7 @@ final class ReachabilityManifestCurrentTest {
         TreeShaker.Result result =
                 OresCompiler.compileForBuild(source, BuildOptions.executable());
         ReachabilityManifest manifest =
-                ReachabilityManifest.from(result, BuildOptions.executable());
+                ReachabilityManifest.from(result);
 
         assertEquals(Set.of("__root__.main"), result.rootSymbols());
         assertEquals(expected, manifest.canonicalJson());
@@ -39,7 +39,7 @@ final class ReachabilityManifestCurrentTest {
                 """, BuildOptions.library(Map.of()));
 
         ReachabilityManifest manifest =
-                ReachabilityManifest.from(base, BuildOptions.library(Map.of()));
+                ReachabilityManifest.from(base);
 
         assertEquals(
                 base.rootSymbols().stream().sorted().toList(),
@@ -47,6 +47,22 @@ final class ReachabilityManifestCurrentTest {
         assertEquals(java.util.List.of("__root__.answer"), manifest.roots());
         assertTrue(manifest.retainedSymbols().contains("__root__.helper"));
         assertTrue(manifest.removedSymbols().contains("__root__.dead"));
+    }
+
+    @Test
+    void mismatchedBuildOptionsCannotRelabelManifest() {
+        TreeShaker.Result result = OresCompiler.compileForBuild(
+                "pub fnc answer(): int { return 42; }",
+                BuildOptions.library(Map.of()));
+
+        assertTrue(result.libraryBuild());
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> ReachabilityManifest.from(
+                        result, BuildOptions.executable()));
+        assertEquals(
+                "library",
+                ReachabilityManifest.from(result).buildKind());
     }
 
     @Test
