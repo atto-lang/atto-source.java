@@ -89,6 +89,49 @@ final class OresFutureHostWaiterCleanupTest {
     }
 
     @Test
+    void cancellationDrainReceiptWaitsForPhysicalRevoker()
+            throws Exception {
+        CountDownLatch revokerEntered = new CountDownLatch(1);
+        CountDownLatch releaseRevoker = new CountDownLatch(1);
+        var receipts = new java.util.concurrent.atomic.AtomicInteger();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        OresFuture<Integer> producer = new OresFuture<>(() -> {
+            revokerEntered.countDown();
+            try {
+                if (!releaseRevoker.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("revoker release timed out");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(interrupted);
+            }
+        });
+        producer.whenNotificationsDrainedRuntime(receipts::incrementAndGet);
+        Thread canceller = Thread.startVirtualThread(() -> {
+            try {
+                assertTrue(producer.cancel(false));
+            } catch (Throwable unexpected) {
+                failure.set(unexpected);
+            }
+        });
+        try {
+            assertTrue(revokerEntered.await(3, TimeUnit.SECONDS));
+            assertTrue(producer.isCancelled(), "terminal state is already visible");
+            assertEquals(0, receipts.get(),
+                    "physical revocation must precede notification drain");
+            producer.whenNotificationsDrainedRuntime(receipts::incrementAndGet);
+            assertEquals(0, receipts.get());
+        } finally {
+            releaseRevoker.countDown();
+        }
+        canceller.join(3_000);
+        assertFalse(canceller.isAlive());
+        assertNull(failure.get());
+        assertEquals(2, receipts.get(),
+                "both drain observers run once after revoker completion");
+    }
+
+    @Test
     void repeatedTimedOutGetsDoNotRetainWaitersOrCancelProducer() throws Exception {
         var producer = new OresFuture<Integer>();
         for (int i = 0; i < 512; i++) {
