@@ -267,6 +267,24 @@ public final class AsyncNativeIo implements AutoCloseable {
         return submit(operation, work, admitted, limit, actorReceipt);
     }
 
+    /**
+     * Trusted in-runtime admission for native drivers already holding
+     * their own permission-checked actor turn. This deliberately requires
+     * a live single-writer actor lease; a foreign/root host thread cannot
+     * manufacture a generation-owned I/O operation.
+     */
+    <T> OresFuture<T> submitCurrentActor(
+            ActorRuntime runtime, String operation, Callable<T> work) {
+        java.util.Objects.requireNonNull(runtime, "runtime");
+        if (!ActorRuntime.inActorExecution()
+                || ActorRuntime.currentActorRuntime() != runtime) {
+            throw new SecurityException("native I/O requires exact actor execution lease");
+        }
+        var receipt = runtime.registerCurrentActorPhysicalReceipt(
+                ActorPhysicalRetirementRegistry.Kind.NATIVE_IO_OPERATION);
+        return submit(operation, work, pending, capacity, receipt);
+    }
+
     <T> OresFuture<T> submitControl(String operation, Callable<T> work) {
         return submit(operation, work, controls, 16);
     }
