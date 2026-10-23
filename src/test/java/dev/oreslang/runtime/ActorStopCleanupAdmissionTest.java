@@ -450,6 +450,92 @@ final class ActorStopCleanupAdmissionTest {
     }
 
     @Test
+    void inFlightChildCannotSpawnGrandchildAfterParentStopPreFence()
+            throws Exception {
+        CountDownLatch revokerArmed = new CountDownLatch(1);
+        CountDownLatch spawnerEntered = new CountDownLatch(1);
+        CountDownLatch revokerEntered = new CountDownLatch(1);
+        CountDownLatch allowSpawner = new CountDownLatch(1);
+        CountDownLatch spawnerFinished = new CountDownLatch(1);
+        CountDownLatch releaseRevoker = new CountDownLatch(1);
+        AtomicReference<Throwable> spawnDenial = new AtomicReference<>();
+        AtomicReference<Throwable> stopFailure = new AtomicReference<>();
+        AtomicInteger forbiddenGrandchildren = new AtomicInteger();
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var parent = runtime.<String>spawnShared(() -> (message, context) -> {
+                var resourceChild = context.runtime().spawnShared(
+                        (ActorRuntime.BehaviorFactory<String>) childFactoryContext ->
+                                (childMessage, childContext) -> {
+                                    OresFuture<Void> resource = new OresFuture<>(() -> {
+                                        revokerEntered.countDown();
+                                        try {
+                                            if (!releaseRevoker.await(5, TimeUnit.SECONDS)) {
+                                                throw new IllegalStateException(
+                                                        "test revoker was not released");
+                                            }
+                                        } catch (InterruptedException interrupted) {
+                                            Thread.currentThread().interrupt();
+                                            throw new IllegalStateException(interrupted);
+                                        }
+                                    });
+                                    childContext.runtime().ownCurrentActorFuture(resource);
+                                    revokerArmed.countDown();
+                                });
+                var activeChild = context.runtime().spawnShared(
+                        (ActorRuntime.BehaviorFactory<String>) childFactoryContext ->
+                                (childMessage, childContext) -> {
+                                    spawnerEntered.countDown();
+                                    try {
+                                        if (!allowSpawner.await(5, TimeUnit.SECONDS)) {
+                                            throw new IllegalStateException(
+                                                    "test guest turn never resumed");
+                                        }
+                                        childContext.runtime().spawnShared(
+                                                (ActorRuntime.BehaviorFactory<String>) grandchildContext ->
+                                                        (grandchildMessage, grandchildActorContext) ->
+                                                                forbiddenGrandchildren.incrementAndGet());
+                                    } catch (Throwable denied) {
+                                        spawnDenial.set(denied);
+                                    } finally {
+                                        spawnerFinished.countDown();
+                                    }
+                                });
+                resourceChild.send("arm");
+                activeChild.send("attempt");
+            });
+            parent.send("start");
+            assertTrue(revokerArmed.await(3, TimeUnit.SECONDS));
+            assertTrue(spawnerEntered.await(3, TimeUnit.SECONDS));
+            Thread stopping = Thread.ofVirtual().start(() -> {
+                try {
+                    parent.cancel();
+                } catch (Throwable failure) {
+                    stopFailure.set(failure);
+                }
+            });
+            try {
+                assertTrue(revokerEntered.await(3, TimeUnit.SECONDS),
+                        "parent STOP must reach a blocking sibling revoker");
+                allowSpawner.countDown();
+                assertTrue(spawnerFinished.await(3, TimeUnit.SECONDS),
+                        "the already-running child must observe sealed spawn admission");
+                assertInstanceOf(CancellationException.class, spawnDenial.get(),
+                        "a pre-sealed child may not create an untracked grandchild");
+                assertEquals(0, forbiddenGrandchildren.get());
+            } finally {
+                allowSpawner.countDown();
+                releaseRevoker.countDown();
+            }
+            stopping.join(TimeUnit.SECONDS.toMillis(3));
+            assertFalse(stopping.isAlive());
+            assertNull(stopFailure.get(), () -> String.valueOf(stopFailure.get()));
+            assertTrue(parent.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(0, forbiddenGrandchildren.get());
+        }
+    }
+
+    @Test
     void siblingMailboxesAreSealedBeforeAnyChildRevokerCanBlock()
             throws Exception {
         CountDownLatch allChildrenOwned = new CountDownLatch(2);
