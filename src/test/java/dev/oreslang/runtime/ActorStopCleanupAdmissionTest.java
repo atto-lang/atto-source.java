@@ -34,6 +34,9 @@ final class ActorStopCleanupAdmissionTest {
         final CountDownLatch bothRevokersEntered = new CountDownLatch(2);
         final CountDownLatch releaseRevokers = new CountDownLatch(1);
         final CountDownLatch spawnerEntered = new CountDownLatch(1);
+        final CountDownLatch grandchildCreated = new CountDownLatch(1);
+        final AtomicReference<ActorRuntime.ActorRef<String>> grandchild =
+                new AtomicReference<>();
         final CountDownLatch allowSpawner = new CountDownLatch(1);
         final CountDownLatch spawnerFinished = new CountDownLatch(1);
         final AtomicInteger forbiddenMessages = new AtomicInteger();
@@ -77,6 +80,17 @@ final class ActorStopCleanupAdmissionTest {
             }
             fixture.childrenOwned.countDown();
             fixture.revokerArmed.countDown();
+        };
+    }
+
+    private static ActorRuntime.Behavior<String> stopFenceTreeOwnerChild(
+            ActorRuntime.ActorContext<String> ignored) {
+        return (message, context) -> {
+            StopFenceFixture fixture = stopFenceFixture(message);
+            var grandchild = context.runtime().spawnShared(
+                    ActorStopCleanupAdmissionTest::stopFenceResourceChild);
+            fixture.grandchild.set(grandchild);
+            fixture.grandchildCreated.countDown();
         };
     }
 
@@ -527,6 +541,75 @@ final class ActorStopCleanupAdmissionTest {
             assertInstanceOf(ActorRuntime.ActorCancelledException.class,
                     assertThrows(ExecutionException.class,
                             () -> parent.done().get(3, TimeUnit.SECONDS)).getCause());
+        }
+    }
+
+    @Test
+    void allGrandchildAdmissionsAreSealedBeforeAnyPhysicalStopDispatchRuns()
+            throws Exception {
+        String token = java.util.UUID.randomUUID().toString();
+        StopFenceFixture fixture = new StopFenceFixture();
+        STOP_FENCE_FIXTURES.put(token, fixture);
+        CountDownLatch releasePhysical = new CountDownLatch(1);
+        CountDownLatch directReady = new CountDownLatch(1);
+        AtomicReference<Throwable> workerFailure = new AtomicReference<>();
+        try {
+            // Deliberately pause worker START, not the caller's dispatch.
+            // This isolates the logical pre-seal phase from any physical STOP.
+            ActorRuntime.PhysicalStopDispatcher pausedWorkers = work -> {
+                Thread.ofVirtual().start(() -> {
+                    try {
+                        if (!releasePhysical.await(5, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException(
+                                    "test physical STOP workers never released");
+                        }
+                        work.run();
+                    } catch (Throwable failure) {
+                        workerFailure.compareAndSet(null, failure);
+                    }
+                });
+            };
+            try (ActorRuntime runtime = new ActorRuntime(
+                    IsolatePolicy.developer(),
+                    new ActorRuntime.DispatcherConfig(2, 4, 16, 64),
+                    ActorRuntime.TurnExecutor.direct(),
+                    ActorRuntime.ControlDispatcher.unavailable(),
+                    pausedWorkers)) {
+                var parent = runtime.<String>spawnShared(() -> (message, context) -> {
+                    var resource = context.runtime().spawnShared(
+                            ActorStopCleanupAdmissionTest::stopFenceResourceChild);
+                    var owner = context.runtime().spawnShared(
+                            ActorStopCleanupAdmissionTest::stopFenceTreeOwnerChild);
+                    resource.send(token + "#own");
+                    owner.send(token + "#create");
+                    directReady.countDown();
+                });
+                parent.send("start");
+                assertTrue(directReady.await(3, TimeUnit.SECONDS));
+                assertTrue(fixture.revokerArmed.await(3, TimeUnit.SECONDS));
+                assertTrue(fixture.grandchildCreated.await(3, TimeUnit.SECONDS));
+                ActorRuntime.ActorRef<String> grandchild = fixture.grandchild.get();
+                grandchild.ready().get(3, TimeUnit.SECONDS);
+                assertTrue(parent.cancel());
+                assertTrue(grandchild.isAlive(),
+                        "no physical child/descendant STOP has been executed");
+                RuntimeException denied = assertThrows(RuntimeException.class,
+                        () -> grandchild.send(token + "#forbidden"));
+                assertInstanceOf(ActorRuntime.ActorSealedException.class, denied,
+                        "logical subtree STOP must fence mail in every generation");
+                assertFalse(parent.done().isDone(),
+                        "queued physical child STOP receipts still own parent lifetime");
+                assertEquals(0, fixture.forbiddenMessages.get());
+                releasePhysical.countDown();
+                assertTrue(parent.awaitTermination(3, TimeUnit.SECONDS));
+                assertTrue(grandchild.awaitTermination(3, TimeUnit.SECONDS));
+                assertNull(workerFailure.get(),
+                        () -> String.valueOf(workerFailure.get()));
+            }
+        } finally {
+            releasePhysical.countDown();
+            fixture.releaseRevokers.countDown();
+            STOP_FENCE_FIXTURES.remove(token);
         }
     }
 
