@@ -304,6 +304,46 @@ final class ActorLockStopRetirementTest {
     }
 
     @Test
+    void parentStopWaitsUntilChildDoneSubscribersDrain() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch childDoneObserverEntered = new CountDownLatch(1);
+            CountDownLatch releaseChildObserver = new CountDownLatch(1);
+            AtomicReference<ActorRuntime.ActorRef<String>> child = new AtomicReference<>();
+            var parent = runtime.<String>spawnShared(() -> (message, context) -> {
+                var handle = runtime.<String>spawnChildShared(
+                        factoryContext -> (childMessage, childContext) ->
+                                childContext.self().stop());
+                child.set(handle.ref());
+                handle.ref().getDone().whenCompleteRuntime((ignored, failure) -> {
+                    childDoneObserverEntered.countDown();
+                    try {
+                        if (!releaseChildObserver.await(5, TimeUnit.SECONDS))
+                            throw new IllegalStateException("child done observer timeout");
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError(interrupted);
+                    }
+                });
+                handle.send("exit");
+                context.self().stop();
+            });
+            try {
+                parent.send("spawn");
+                assertTrue(childDoneObserverEntered.await(5, TimeUnit.SECONDS));
+                assertNotNull(child.get());
+                assertFalse(parent.getDone().isDone(),
+                        "parent reclaimed while child DONE callback was active");
+                assertFalse(parent.awaitTermination(20, TimeUnit.MILLISECONDS),
+                        "parent child-retirement barrier bypassed observer drain");
+            } finally {
+                releaseChildObserver.countDown();
+            }
+            assertTrue(child.get().awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(parent.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void registryRemovalCannotForgeTerminationWhileDoneSubscribersStillDrain()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
