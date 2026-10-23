@@ -317,3 +317,25 @@ dedicated cancellation-generation fencing and adversarial stress before
 releasing actors from quarantine. Source-level Java/LLVM cancellation parity,
 exact-head JDK25/GraalVM execution, and approved private CI mirroring remain
 blocking merge gates.
+
+## Full-tree admission sealing before physical workers
+
+Phase-one admission sealing now walks the *entire reachable descendant tree*,
+not only the parent's immediate children. The implementation uses an iterative
+identity-set walk. It snapshots each actor's children while holding only that
+child's own lifecycle lock, sets `sealing`, and releases the lock before
+visiting descendants. A racing spawn either linearizes before the snapshot and
+becomes reachable or observes its sealed parent and is rejected.
+
+The new `allGrandchildAdmissionsAreSealedBeforeAnyPhysicalStopDispatchRuns`
+regression holds every physical STOP worker behind a test gate while a child
+and grandchild are alive. Before releasing any worker, the grandchild's
+mailbox must reject newly sent guest messages, and parent DONE must remain
+blocked on outstanding physical STOP receipts. The test then releases both
+physical workers and the test resource revoker and joins the complete tree.
+The source and protocol changes remain subject to exact-head JVM/native
+execution and formal verification.
+
+This is a **safety** fence; it does not guarantee progress if a host teardown
+worker hangs or cannot obtain capacity. Physical loan receipts and bounded
+quarantine remain separate integration requirements.
