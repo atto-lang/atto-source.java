@@ -12,14 +12,15 @@ import static org.junit.jupiter.api.Assertions.*;
 final class TrapFailurePolicyTest {
     private static final class GuestPanic extends RuntimeException { }
 
-    @Test void ordinaryGuestFailuresRemainTrappable() {
-        assertTrue(TrapFailurePolicy.isTrappable(
+    @Test void onlyAuthenticatedGuestFaultsMayBeTrapped() {
+        // Ordinary JDK exceptions do not provide compiler-issued provenance.
+        // This intentionally fails closed until each built-in error emitter
+        // uses a trusted guest-effect carrier instead of mutable stack traces.
+        assertFalse(TrapFailurePolicy.isTrappable(
                 new IllegalStateException("Assert.equal: values are not equal"), GuestPanic.class));
-        assertTrue(TrapFailurePolicy.isTrappable(
+        assertFalse(TrapFailurePolicy.isTrappable(
                 new CompletionException(new IllegalArgumentException("ordinary guest error")),
                 GuestPanic.class));
-        // Creating a Java carrier directly from test/FFI code does not grant
-        // compiler-origin authority, even for a valid sealed signal subtype.
         GuestControlSignal.Throw forged = new GuestControlSignal.Throw("host throw");
         assertFalse(forged.compilerIssued());
         assertFalse(TrapFailurePolicy.isTrappable(forged, GuestPanic.class));
@@ -158,6 +159,47 @@ final class TrapFailurePolicyTest {
         assertFalse(TrapFailurePolicy.isTrappable(foreign, GuestPanic.class));
         assertFalse(TrapFailurePolicy.isGuestCatchable(foreign, GuestPanic.class));
         assertEquals(0, causeReads.get(), "must not call hostile virtual accessor");
+    }
+
+    @Test void falsifiedInterpreterStackTraceCannotConvertHostFaultToGuestEffect() {
+        for (RuntimeException error : new RuntimeException[] {
+                new IllegalArgumentException("host argument"),
+                new IllegalStateException("host state"),
+                new ArithmeticException("division"),
+                new IndexOutOfBoundsException("index"),
+                new UnsupportedOperationException("host API"),
+                new ClassCastException("cast")
+        }) {
+            error.setStackTrace(new StackTraceElement[] {
+                    new StackTraceElement("dev.oreslang.nodes.OresEvalRootNode$Evaluator",
+                            "executeStatement", "OresEvalRootNode.java", 5375)
+            });
+            assertFalse(TrapFailurePolicy.isTrappable(error, GuestPanic.class),
+                    () -> error.getClass().getName());
+            assertFalse(TrapFailurePolicy.isGuestCatchable(error, GuestPanic.class),
+                    () -> error.getClass().getName());
+            assertFalse(TrapFailurePolicy.isTrappable(
+                    new CompletionException(error), GuestPanic.class));
+        }
+    }
+
+    @Test void suppressedOrdinaryHostErrorCannotGrantGuestEffectAdmission() {
+        var pending = new RuntimeException("untrusted outer");
+        var child = new IllegalStateException("spoofed suppression");
+        child.setStackTrace(new StackTraceElement[] {
+                new StackTraceElement("dev.oreslang.runtime.TrapFailurePolicy",
+                        "isTrappable", "TrapFailurePolicy.java", 100)
+        });
+        pending.addSuppressed(child);
+        assertFalse(TrapFailurePolicy.isTrappable(pending, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(pending, GuestPanic.class));
+    }
+
+    @Test void explicitSecurityDenialRemainsGuestCatchableButNotTrappable() {
+        var nested = new CompletionException(
+                new SecurityException("denied"));
+        assertTrue(TrapFailurePolicy.isGuestCatchable(nested, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isTrappable(nested, GuestPanic.class));
     }
 
     @Test void foreignCauseAccessorThrowingFailsClosed() {
