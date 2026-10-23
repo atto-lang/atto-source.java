@@ -466,11 +466,16 @@ final class RecoveryHandlerChainTest {
         var invoked = new java.util.concurrent.atomic.AtomicInteger();
         var chain = RecoveryHandlerChain.<Integer>builder()
                 .register((e, c) -> { invoked.incrementAndGet(); c.resolve(3); }).freeze();
-        var outcome = assertInstanceOf(RecoveryHandlerChain.Unhandled.class,
-                chain.dispatch(RecoveryHandlerChain.FailureKind.THROW, pending));
-        assertSame(pending, outcome.error());
+        for (var kind : new RecoveryHandlerChain.FailureKind[] {
+                RecoveryHandlerChain.FailureKind.THROW,
+                RecoveryHandlerChain.FailureKind.RAISE }) {
+            var outcome = assertInstanceOf(RecoveryHandlerChain.Unhandled.class,
+                    chain.dispatch(kind, pending));
+            assertSame(pending, outcome.error());
+            assertEquals(kind, outcome.kind());
+        }
         assertEquals(0, invoked.get());
-        assertEquals(0, causeReads.get());
+        assertEquals(0, causeReads.get(), "untrusted nested virtual accessor must not run");
     }
 
     @Test void regularThrowableCauseTraversalStillAdmitsOrdinaryErrors() {
