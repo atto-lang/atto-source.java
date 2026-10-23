@@ -6,6 +6,8 @@ on:
   pull_request:
     paths:
       - ".github/workflows/task-mutex-retirement.yml"
+      - "scripts/ci/SurefireReceiptGuard.java"
+      - "scripts/ci/test-surefire-receipt-guard.sh"
       - "src/main/java/dev/oreslang/runtime/OresMutex.java"
       - "src/main/java/dev/oreslang/runtime/TaskOwnedLeases.java"
       - "src/main/java/dev/oreslang/runtime/TaskHandle.java"
