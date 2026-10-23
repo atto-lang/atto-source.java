@@ -64,6 +64,70 @@ final class ActorPhysicalRetirementRegistryTest {
         }
     }
 
+    @Test void verifiedNioCloseIsAlreadyVisibleToReentrantOwnerCallback()
+            throws Exception {
+        var closeCalls = new AtomicInteger();
+        var open = new java.util.concurrent.atomic.AtomicBoolean(true);
+        java.nio.channels.Channel underlying = new java.nio.channels.Channel() {
+            @Override public boolean isOpen() { return open.get(); }
+            @Override public void close() {
+                closeCalls.incrementAndGet();
+                open.set(false);
+            }
+        };
+        var registry = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 12, () -> { });
+        var receipt = registry.register(
+                ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE, false);
+        var observedClose = new java.util.concurrent.atomic.AtomicReference<
+                ActorPhysicalChannelLease>();
+        var entered = new AtomicInteger();
+        var lease = new ActorPhysicalChannelLease(underlying, receipt, target -> {
+            observedClose.set(target);
+            entered.incrementAndGet();
+            try {
+                // Owner bookkeeping is synchronous. When it calls back into
+                // close(), the real descriptor is already physically closed.
+                target.close();
+            } catch (java.io.IOException failure) {
+                throw new AssertionError("reentrant verified close failed", failure);
+            }
+        });
+        registry.seal();
+        lease.close();
+        lease.close();
+        assertSame(lease, observedClose.get());
+        assertEquals(1, entered.get(), "one close => one detach");
+        assertEquals(1, closeCalls.get(), "must not close underlying twice");
+        assertEquals(0, registry.snapshot().pending());
+        registry.retireVerified();
+    }
+
+    @Test void throwingNioDetachRetainsQuarantineEvenAfterPhysicalClose()
+            throws Exception {
+        var failure = new IllegalStateException(
+                "host handle-detach callback was unable to release ownership");
+        var open = new java.util.concurrent.atomic.AtomicBoolean(true);
+        java.nio.channels.Channel underlying = new java.nio.channels.Channel() {
+            @Override public boolean isOpen() { return open.get(); }
+            @Override public void close() { open.set(false); }
+        };
+        var registry = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 13, () -> { });
+        var receipt = registry.register(
+                ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE, false);
+        var lease = new ActorPhysicalChannelLease(underlying, receipt,
+                ignored -> { throw failure; });
+        registry.seal();
+        assertSame(failure, assertThrows(IllegalStateException.class, lease::close));
+        assertFalse(underlying.isOpen(), "physical close already occurred");
+        assertSame(failure, registry.snapshot().failure());
+        assertEquals(1, registry.snapshot().pending(),
+                "failed bookkeeping must not masquerade as actor retirement");
+        lease.close(); // a physically closed channel is not closed twice
+        assertThrows(IllegalStateException.class, registry::retireVerified);
+    }
+
     @Test void realNioPipeChannelMustActuallyCloseBeforeActorDone()
             throws Exception {
         var pipe = java.nio.channels.Pipe.open();
