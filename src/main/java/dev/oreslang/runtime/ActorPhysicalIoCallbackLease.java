@@ -31,7 +31,12 @@ final class ActorPhysicalIoCallbackLease<V, A> implements CompletionHandler<V, A
     @Override
     public void completed(V result, A attachment) {
         if (!claimed.compareAndSet(false, true)) {
-            throw new IllegalStateException("duplicate native I/O callback");
+            // Duplicate completion while the original delegate is running
+            // breaks native at-most-once ownership; quarantine the receipt.
+            // A later duplicate cannot undo a previously retired receipt.
+            var duplicate = new IllegalStateException("duplicate native I/O callback");
+            recordFailurePreservingCause(duplicate);
+            throw duplicate;
         }
         try {
             delegate.completed(result, attachment);
@@ -47,7 +52,12 @@ final class ActorPhysicalIoCallbackLease<V, A> implements CompletionHandler<V, A
     @Override
     public void failed(Throwable error, A attachment) {
         if (!claimed.compareAndSet(false, true)) {
-            throw new IllegalStateException("duplicate native I/O callback");
+            // Duplicate completion while the original delegate is running
+            // breaks native at-most-once ownership; quarantine the receipt.
+            // A later duplicate cannot undo a previously retired receipt.
+            var duplicate = new IllegalStateException("duplicate native I/O callback");
+            recordFailurePreservingCause(duplicate);
+            throw duplicate;
         }
         // A malformed driver callback cannot leave an unclassified ticket.
         if (error == null) {
