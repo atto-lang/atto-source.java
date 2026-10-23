@@ -367,12 +367,11 @@ The code epoch is intentionally only a **local generation fence** at this stage.
 capability. Until compiler/runtime integration unifies those into one canonical
 code-image identity, callers must scope the epoch to the same trusted code-unit
 domain and must not treat a bare numeric generation as globally unique. The
-recovery prototype does not claim cross-manager or cross-process code-image
-authentication yet. They do not yet add a hot-reload
-**code generation/epoch** to the recovery provenance. The existing
-`HotReloadManager.Generation.id()` is the natural source of that fence once
-recovery is integrated with live code replacement; until then, recovery remains
-disabled in guest source and no cross-generation compatibility is claimed.
+recovery prototype therefore prevents stale-vs-replacement handler admission
+inside one trusted epoch domain, but does not yet claim cross-manager or
+cross-process code-image authentication. Guest recovery remains disabled until
+the compiler/runtime supplies that canonical epoch and the rest of the unwind
+lowering.
 
 ## Host-cause accessor admission and public API containment (2026-10-23)
 
