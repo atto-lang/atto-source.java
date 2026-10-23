@@ -8,6 +8,7 @@ on:
       - 'src/main/java/dev/oreslang/runtime/NativeHttp.java'
       - 'src/test/java/dev/oreslang/runtime/ActorRollingGenerationRouteTest.java'
       - 'src/test/java/dev/oreslang/runtime/ActorRollingHttpSocketTest.java'
+      - 'src/test/java/dev/oreslang/runtime/NativeHttpRollingDispatcherIntegrationTest.java'
       - 'docs/ACTOR_ROLLING_GENERATION_CONFIG_V1.md'
       - '.github/workflows/actor-rolling-http-exact-head.yml'
   workflow_dispatch:
@@ -39,7 +40,7 @@ jobs:
           java-version: '25'
           distribution: 'graalvm'
       - name: Run actual Java/Graal targeted JUnit
-        run: mvn -B -ntp -Dtest=ActorRollingGenerationRouteTest,ActorRollingHttpSocketTest -DfailIfNoTests=true test
+        run: mvn -B -ntp -Dtest=ActorRollingGenerationRouteTest,ActorRollingHttpSocketTest,NativeHttpRollingDispatcherIntegrationTest -DfailIfNoTests=true test
       - name: Archive executed test receipts
         if: always()
         uses: actions/upload-artifact@v4
