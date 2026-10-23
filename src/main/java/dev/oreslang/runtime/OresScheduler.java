@@ -204,6 +204,11 @@ public final class OresScheduler implements AutoCloseable {
     /** Linearizes new task admission with scheduler shutdown. */
     private final Object taskAdmissionLock = new Object();
     private final AtomicBoolean closed = new AtomicBoolean();
+    /** Actor STOP seals task admission without closing the cleanup executor. */
+    private final AtomicBoolean actorStopSealed = new AtomicBoolean();
+    private final AtomicInteger retiringPhysicalCallbacks = new AtomicInteger();
+    private final AtomicReference<Throwable> physicalRetirementFailure = new AtomicReference<>();
+    private volatile Runnable actorStopQuiescenceListener;
     private final AtomicLong watchdogOverruns = new AtomicLong();
 
     /**
@@ -478,7 +483,7 @@ public final class OresScheduler implements AutoCloseable {
      */
     public TaskScope newTaskScope() {
         synchronized (taskAdmissionLock) {
-            ensureOpen();
+            ensureTaskAdmissionOpen();
             return new TaskScope(this);
         }
     }
@@ -513,10 +518,53 @@ public final class OresScheduler implements AutoCloseable {
      * not turn this into a successful heap retirement receipt.
      */
     public boolean hasIncompleteCleanup() {
+        if (physicalRetirementFailure.get() != null) return true;
         for (TaskRunner<?> runner : tasks) {
             if (runner.cleanupIncomplete.get()) return true;
         }
         return false;
+    }
+
+    /**
+     * The actor STOP barrier must cover both live tasks and physical
+     * quiescence callbacks, including callbacks blocked after set removal.
+     * This method is for runtime retirement only, not guest code.
+     */
+    boolean actorStopPhysicallyQuiescent() {
+        return tasks.isEmpty() && retiringPhysicalCallbacks.get() == 0;
+    }
+
+    /**
+     * Host CONTROL-only: close admission, request cancellation of all
+     * already-admitted tasks, but keep the mailbox-backed scheduler runnable
+     * for their lexical defer/finally/guard unwind. The actor must fence user
+     * messages and admit only this scheduler's existing commands.
+     *
+     * The callback can run on a producer or scheduler carrier: it must not
+     * execute guest code or reclaim actor memory without its physical gate.
+     */
+    void beginActorStopCleanup(Runnable onPhysicallyQuiescent) {
+        Objects.requireNonNull(onPhysicallyQuiescent, "onPhysicallyQuiescent");
+        Set<TaskRunner<?>> snapshot;
+        synchronized (taskAdmissionLock) {
+            if (!actorStopSealed.compareAndSet(false, true)) return;
+            actorStopQuiescenceListener = onPhysicallyQuiescent;
+            snapshot = Set.copyOf(tasks);
+        }
+        // Calling Future cancellation may run foreign subscriber code:
+        // never hold taskAdmissionLock or the actor lifecycle monitor.
+        for (TaskRunner<?> runner : snapshot) {
+            runner.completion.cancel(false);
+        }
+        notifyActorStopQuiescent();
+    }
+
+    private void notifyActorStopQuiescent() {
+        Runnable listener = actorStopQuiescenceListener;
+        if (listener != null && actorStopSealed.get()
+                && actorStopPhysicallyQuiescent()) {
+            listener.run();
+        }
     }
 
     /** Called only after the winning Future's terminal callbacks have drained. */
@@ -542,7 +590,7 @@ public final class OresScheduler implements AutoCloseable {
         TaskRunner<T> runner = new TaskRunner<>(task, onQuiescent,
                 deadlineFailure != null, onNotificationDrained);
         synchronized (taskAdmissionLock) {
-            ensureOpen();
+            ensureTaskAdmissionOpen();
             if (deadlineFailure != null) {
                 if (!WALL_DEADLINE_ADMISSIONS.tryAcquire()) {
                     throw new RejectedExecutionException(
@@ -650,6 +698,14 @@ public final class OresScheduler implements AutoCloseable {
                 }
             }
         });
+    }
+
+    private void ensureTaskAdmissionOpen() {
+        ensureOpen();
+        if (actorStopSealed.get()) {
+            throw new RejectedExecutionException(
+                    "OresScheduler " + name + " sealed for actor cleanup");
+        }
     }
 
     private void ensureOpen() {
@@ -1264,13 +1320,25 @@ public final class OresScheduler implements AutoCloseable {
                 // Keep the task observable in the scheduler's live set while a
                 // cancelled/failed guest turn is still physically executing.
                 // A terminal Future is not a carrier-exit witness.
+                // The live-set removal precedes the physical receipt callback.
+                // Account for that gap so actor STOP cannot reclaim an arena
+                // while its last callback is still releasing a lease/loan.
+                retiringPhysicalCallbacks.incrementAndGet();
                 tasks.remove(this);
                 cancelWallDeadline();
                 try {
                     onQuiescent.run();
+                } catch (RuntimeException | Error failure) {
+                    physicalRetirementFailure.compareAndSet(null, failure);
+                    throw failure;
                 } finally {
                     deadlineQuiescenceRetired.set(true);
-                    releaseDeadlineSlotIfRetired();
+                    try {
+                        releaseDeadlineSlotIfRetired();
+                    } finally {
+                        retiringPhysicalCallbacks.decrementAndGet();
+                        notifyActorStopQuiescent();
+                    }
                 }
             }
         }
