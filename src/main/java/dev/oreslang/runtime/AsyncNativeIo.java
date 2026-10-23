@@ -213,6 +213,14 @@ public final class AsyncNativeIo implements AutoCloseable {
                 resources.add(resource);
                 return;
             }
+            if (physicalShutdownPublished) {
+                // The context has already published a permanent host-only
+                // quiescence receipt. No new untracked close callback may
+                // begin under that old authority; the caller remains the
+                // owner of its never-admitted resource and must close it.
+                throw new IllegalStateException(
+                        "I/O context retired; caller must close unadmitted resource");
+            }
             // The resource never obtained an admission lease. A caller that
             // raced STOP must close its rejected native handle without
             // holding the context monitor (close may block or reenter).
