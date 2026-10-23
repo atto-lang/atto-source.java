@@ -328,3 +328,44 @@ bypass through native/JIT/AOT; unwind, defer and supervisor parity; and
 LLVM lowering. Java host `Throwable` subclasses with inherited accessors
 are still mutable and potentially subject to concurrent changes, so no
 immutable guest-provenance guarantee is claimed. Keep PR DRAFT.
+
+## Synchronous reentrant recovery guard (2026-10-23)
+
+A host recovery callback could previously invoke `dispatch` on its own
+`RecoveryHandlerChain`, including indirectly through a second chain.
+Despite iterative delegation **within** a chain, recursive **invocation**
+could grow the Java stack without a bound or re-enter the same handler.
+The host prototype now maintains an identity-based thread-local dispatch
+scope with a cap of 64 concurrently nested distinct chains. A repeated
+chain or over-depth request records an unmaskable-in-scope `DispatchAbort`
+host `Error`, preserving the original nested failure as its cause. Even if
+a Java callback catches and ignores the abort, the scope remains poisoned
+and will refuse to return a recovered result. The scope is removed on
+unwind, and every active one-shot cursor is invalidated. Independent,
+shallow nested chains remain valid.
+
+This is a synchronous **host prototype** safety fence, not a complete guest
+semantics implementation. Guest lowering must propagate a newly raised
+error **outward to eligible lexical handlers** rather than substitute an
+unconditional host fatal signal. The eventual actor implementation must
+track logical Task/actor identity across suspension, migration, and
+shutdown; thread-local identity alone is insufficient.
+
+Five new adversarial JUnit tests cover direct recursion, an A->B->A
+cycle, an intentionally swallowed abort, legitimate nesting, and 65
+nested distinct chains.
+
+**Executed exact-source-blob evidence:** private CI
+https://github.com/agent-pontifex-test/agent-pontifex-e2e-tests/actions/runs/39906864297
+tested Java source commit `db7a92b561ac0085d9dd120d499fa7e4bb9279b9`
+with exact mirrored blobs:
+- `RecoveryHandlerChain.java` `8f5473f74cd64644cb789be5646b7455b08cff66`
+- `RecoveryHandlerChainTest.java` `39f4370955086a1517ce64be73fc91f28951f0bb`
+
+The log reports OpenJDK 25.0.4.1, Java release 21 compilation,
+**33 tests passed, 0 errors/failures/skips, BUILD SUCCESS**.
+Only this isolated dispatcher/JUnit two-file slice was verified;
+full-tree Java, GraalVM AOT/hybrid, LLVM native, typed guest recovery
+semantics, actor-lane and supervisor parity remain **unverified**.
+The source org's preceding workflows failed before job steps.
+Keep PR DRAFT.
