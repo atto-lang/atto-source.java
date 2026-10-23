@@ -82,6 +82,31 @@ final class RecoveryHandlerChain<T> {
     private static final int BOTH = THROW | RAISE;
     public static final int MAX_HANDLERS = 1024;
     private static final int MAX_FAILURE_GRAPH_NODES = 64;
+    private static final int MAX_NESTED_DISPATCHES = 64;
+
+    /**
+     * Temporary synchronous host recursion fence. The guest runtime must
+     * eventually track authenticated logical Task/actor continuations, not
+     * carrier-thread identity, because guest tasks may suspend and migrate.
+     */
+    private static final ThreadLocal<DispatchScope> CURRENT_DISPATCH = new ThreadLocal<>();
+
+    private static final class DispatchScope {
+        private final IdentityHashMap<RecoveryHandlerChain<?>, Boolean> active =
+                new IdentityHashMap<>();
+        private DispatchAbort aborted;
+    }
+
+    /**
+     * Fail closed instead of re-entering a handler or consuming a newly raised
+     * failure. The original nested failure is kept as the cause. It is an Error
+     * so the ordinary RuntimeException callback catch cannot downgrade it.
+     */
+    private static final class DispatchAbort extends Error {
+        private DispatchAbort(String reason, Throwable pending) {
+            super(reason, pending, false, false);
+        }
+    }
 
     /**
      * The host Throwable graph is not an authenticated guest exception graph.
@@ -144,6 +169,22 @@ final class RecoveryHandlerChain<T> {
         if (firstEligible < 0) {
             return new Unhandled<>(kind, failure);
         }
+
+        DispatchScope scope = CURRENT_DISPATCH.get();
+        if (scope == null) {
+            scope = new DispatchScope();
+            CURRENT_DISPATCH.set(scope);
+        }
+        if (scope.aborted != null) {
+            throw scope.aborted;
+        }
+        if (scope.active.containsKey(this) || scope.active.size() >= MAX_NESTED_DISPATCHES) {
+            scope.aborted = new DispatchAbort(
+                    "reentrant or excessively nested recovery dispatch", failure);
+            throw scope.aborted;
+        }
+        scope.active.put(this, Boolean.TRUE);
+        try {
         // Host Throwable graphs are mutable and accessors may throw. A future
         // sealed guest-effect carrier is still required for trusted admission.
         if (untrustedOrTerminalGraph(failure)) {
@@ -161,6 +202,7 @@ final class RecoveryHandlerChain<T> {
                 try {
                     handlers[i].handle(failure, cursor);
                 } catch (RuntimeException callbackFailure) {
+                    if (scope.aborted != null) throw scope.aborted;
                     // Callback-supplied cancellation, security denial and
                     // shutdown signals must not masquerade as ordinary
                     // handler errors. Retain both error identities.
@@ -177,6 +219,9 @@ final class RecoveryHandlerChain<T> {
             } finally {
                 cursor.invalidate();
             }
+            // Even a handler that catches DispatchAbort and attempts to
+            // resolve/delegate must not turn a nested failure into success.
+            if (scope.aborted != null) throw scope.aborted;
             // A callback can mutate an arbitrary host Throwable while
             // delegating or resolving. Revalidate before either action becomes
             // observable, including before invoking the next handler.
@@ -191,6 +236,12 @@ final class RecoveryHandlerChain<T> {
             if (decision == Cursor.RESOLVED) return new Recovered<>(resolved);
         }
         return new Unhandled<>(kind, failure);
+        } finally {
+            scope.active.remove(this);
+            if (scope.active.isEmpty()) {
+                CURRENT_DISPATCH.remove();
+            }
+        }
     }
 
     /**
