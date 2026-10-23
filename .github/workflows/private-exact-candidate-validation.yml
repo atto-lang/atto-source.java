@@ -1,0 +1,275 @@
+name: Private exact-candidate Java/Native validation
+
+# Trusted workflow must be dispatched from independently approved source main.
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: "Independently approved immutable candidate commit in this repository"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# All three private-source validation workflows share one admission queue.
+# Never run two source candidates on the same class of disposable runner.
+concurrency:
+  group: private-oreslang-isolated-validation
+  cancel-in-progress: false
+
+jobs:
+  deny-unapproved:
+    if: ${{ github.repository != 'ores-truffle-oreslang/oreslang-source.java' || github.event.repository.id != 1400792274 || github.event.repository.private != true || github.ref != 'refs/heads/main' || github.ref_protected != true || vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER != 'true' || vars.ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA == '' || vars.ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA != github.sha || vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_SHA == '' || vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_SHA != inputs.candidate_sha || vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_TREE == '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Reject unapproved exact-commit or workflow admission
+        run: |
+          echo "::error::Private candidate validation denied; require reviewed exact workflow, commit and tree"
+          exit 1
+
+  validate-approved-candidate:
+    if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event.repository.id == 1400792274 && github.event.repository.private == true && github.ref == 'refs/heads/main' && github.ref_protected == true && vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER == 'true' && vars.ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA != '' && vars.ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA == github.sha && vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_SHA != '' && vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_SHA == inputs.candidate_sha && vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_TREE != '' }}
+    runs-on: [self-hosted, linux, x64, oreslang-private-ephemeral]
+    timeout-minutes: 180
+    env:
+      APPROVED_WORKFLOW_SHA: ${{ vars.ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA }}
+      APPROVED_CANDIDATE_SHA: ${{ vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_SHA }}
+      APPROVED_CANDIDATE_TREE: ${{ vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_TREE }}
+      REQUESTED_CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+    steps:
+      - name: Verify approvals before any candidate source checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = 'ores-truffle-oreslang/oreslang-source.java'
+          test "$GITHUB_REPOSITORY_ID" = '1400792274'
+          test "$GITHUB_REF" = 'refs/heads/main'
+          test "$GITHUB_REF_PROTECTED" = 'true'
+          test "$GITHUB_SHA" = "$APPROVED_WORKFLOW_SHA"
+          test "$REQUESTED_CANDIDATE_SHA" = "$APPROVED_CANDIDATE_SHA"
+          [[ "$APPROVED_WORKFLOW_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$APPROVED_CANDIDATE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$APPROVED_CANDIDATE_TREE" =~ ^[a-f0-9]{40}$ ]]
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          persist-credentials: false
+          fetch-depth: 1
+          clean: true
+      - name: Verify immutable candidate and clean checkout before tool setup
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse --verify HEAD)" = "$APPROVED_CANDIDATE_SHA"
+          test "$(git rev-parse --verify HEAD^{tree})" = "$APPROVED_CANDIDATE_TREE"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          echo "TRUSTED_WORKFLOW_COMMIT=$APPROVED_WORKFLOW_SHA"
+          echo "TESTED_CANDIDATE_COMMIT=$APPROVED_CANDIDATE_SHA"
+          echo "TESTED_CANDIDATE_TREE=$APPROVED_CANDIDATE_TREE"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          distribution: graalvm
+          java-version: '25'
+          version: '25.3'
+      - name: Verify GraalVM JDK 25 and Maven
+        run: |
+          set -euo pipefail
+          java --version
+          native-image --version
+          mvn --version
+      - name: Clear and attest focused Surefire report provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The candidate's source tree may contain prebuilt test-result XML.
+          # Never count a preexisting/symlinked report as proof of execution.
+          test ! -L target
+          test ! -L target/surefire-reports
+          if test -e target/surefire-reports && test ! -d target/surefire-reports; then
+            echo "::error::Invalid Surefire report directory"
+            exit 1
+          fi
+          rm -rf -- target/surefire-reports
+          test ! -e target/surefire-reports
+      - name: Focused permissions and scoped host interop regressions
+        run: mvn -B -ntp -Dores.runtime.carriers=native '-Dtest=DenoCliDefaultPermissionsTest,RuntimePermissionsNetworkAuditTest,RuntimePermissionsTest,RuntimePermissionsExplicitPolicyTest,IsolatePolicySerializationAuditTest,ScopedPermissionInteropTest,VerifiedTcpSocketTest,NativeSocketBoundaryTest' clean test
+      - name: Prove all eight security JUnit classes executed
+        shell: bash
+        run: |
+          set -euo pipefail
+          # This verifier is in the *trusted workflow*, not a script loaded
+          # from the untrusted candidate checkout.
+          python3 - <<'PY'
+          from pathlib import Path
+          from xml.etree import ElementTree
+
+          required = {
+              "dev.oreslang.launcher.DenoCliDefaultPermissionsTest",
+              "dev.oreslang.runtime.RuntimePermissionsNetworkAuditTest",
+              "dev.oreslang.runtime.RuntimePermissionsTest",
+              "dev.oreslang.runtime.RuntimePermissionsExplicitPolicyTest",
+              "dev.oreslang.runtime.IsolatePolicySerializationAuditTest",
+              "dev.oreslang.runtime.ScopedPermissionInteropTest",
+              "dev.oreslang.runtime.VerifiedTcpSocketTest",
+              "dev.oreslang.runtime.NativeSocketBoundaryTest",
+          }
+          executed = {name: 0 for name in required}
+          # This is a single-module Maven project. Never accept reports
+          # from candidate-controlled nested fixture directories.
+          report_dir = Path("target/surefire-reports")
+          if (not report_dir.is_dir() or report_dir.is_symlink()
+                  or report_dir.parent.is_symlink()):
+              raise SystemExit("Missing or symlinked Maven Surefire report directory")
+          # Ignore unrelated suites: each expected test class must have its
+          # own real Maven report, with matching suite and testcase identity.
+          # Never accept a forged testcase tucked inside an unrelated report.
+          for classname in sorted(required):
+              report = report_dir / f"TEST-{classname}.xml"
+              if report.is_symlink() or not report.is_file():
+                  raise SystemExit(f"Missing required Surefire report: {report}")
+              if not 0 < report.stat().st_size <= 16 * 1024 * 1024:
+                  raise SystemExit(f"Empty or oversized Surefire report: {report}")
+              root = ElementTree.parse(report).getroot()
+              if root.tag != "testsuite" or root.get("name") != classname:
+                  raise SystemExit(f"Invalid Surefire suite identity: {report}")
+              # Only direct Surefire testcase children count; an unrelated
+              # nested element must not smuggle fake test evidence.
+              cases = root.findall("testcase")
+              try:
+                  declared = int(root.get("tests", "-1"))
+              except ValueError:
+                  raise SystemExit(f"Invalid Surefire test count: {report}")
+              if declared < 1 or declared != len(cases):
+                  raise SystemExit(f"Surefire test count mismatch: {report}")
+              # A forged or partially written report can contradict its
+              # aggregate status. Validate the suite totals as well as each
+              # testcase, including rerun/flaky failure markers.
+              for attribute in ("failures", "errors", "skipped"):
+                  try:
+                      count = int(root.get(attribute, "-1"))
+                  except ValueError:
+                      raise SystemExit(f"Invalid Surefire {attribute}: {report}")
+                  if count != 0:
+                      raise SystemExit(f"Unsuccessful Surefire {attribute}: {report}")
+              for case in cases:
+                  if case.get("classname") != classname:
+                      raise SystemExit(f"Mismatched Surefire testcase: {report}")
+                  if any(case.find(tag) is not None for tag in
+                         ("failure", "error", "skipped", "flakyFailure",
+                          "flakyError", "rerunFailure", "rerunError")):
+                      raise SystemExit(f"Unsuccessful required test in {classname}")
+                  executed[classname] += 1
+          missing = sorted(name for name, count in executed.items() if count == 0)
+          if missing:
+              raise SystemExit("Required security test classes not executed: "
+                               + ", ".join(missing))
+          for name, count in sorted(executed.items()):
+              print(f"VERIFIED_SECURITY_JUNIT {name}: {count} executed")
+          PY
+      - name: Full Java 25 Maven candidate verification
+        # Clean again so focused six-class reports cannot masquerade as a
+        # complete full-suite verification run.
+        run: mvn -B -ntp -Dores.runtime.carriers=native -DskipTests=false -Dmaven.test.skip=false clean verify
+      - name: Prove full Maven suite executed beyond focused security classes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          from xml.etree import ElementTree
+
+          focused = {
+              "dev.oreslang.launcher.DenoCliDefaultPermissionsTest",
+              "dev.oreslang.runtime.RuntimePermissionsNetworkAuditTest",
+              "dev.oreslang.runtime.RuntimePermissionsTest",
+              "dev.oreslang.runtime.RuntimePermissionsExplicitPolicyTest",
+              "dev.oreslang.runtime.IsolatePolicySerializationAuditTest",
+              "dev.oreslang.runtime.ScopedPermissionInteropTest",
+              "dev.oreslang.runtime.VerifiedTcpSocketTest",
+              "dev.oreslang.runtime.NativeSocketBoundaryTest",
+          }
+          report_dir = Path("target/surefire-reports")
+          if (not report_dir.is_dir() or report_dir.is_symlink()
+                  or report_dir.parent.is_symlink()):
+              raise SystemExit("Full Maven suite has no trustworthy report directory")
+          reports = list(report_dir.glob("TEST-*.xml"))
+          if len(reports) <= len(focused):
+              raise SystemExit("Full Maven suite did not produce broader JUnit reports")
+          executed = set()
+          focused_seen = set()
+          for report in reports:
+              if report.is_symlink() or not report.is_file():
+                  raise SystemExit(f"Invalid full-suite report: {report}")
+              if not 0 < report.stat().st_size <= 16 * 1024 * 1024:
+                  raise SystemExit(f"Empty or oversized full-suite report: {report}")
+              classname = report.name[len("TEST-"):-len(".xml")]
+              root = ElementTree.parse(report).getroot()
+              if root.tag != "testsuite" or root.get("name") != classname:
+                  raise SystemExit(f"Mismatched full-suite identity: {report}")
+              cases = root.findall("testcase")
+              try:
+                  declared = int(root.get("tests", "-1"))
+                  totals = [int(root.get(k, "-1"))
+                            for k in ("failures", "errors", "skipped")]
+              except ValueError:
+                  raise SystemExit(f"Invalid full-suite JUnit totals: {report}")
+              if declared < 1 or declared != len(cases) or any(n != 0 for n in totals):
+                  raise SystemExit(f"Unsuccessful or inconsistent JUnit suite: {report}")
+              # A green Maven exit code is not sufficient evidence when a
+              # module/plugin can suppress failures or skip tests. Every
+              # report and testcase must pass, including flaky reruns.
+              for case in cases:
+                  if case.get("classname") != classname:
+                      raise SystemExit(f"Incorrect testcase identity: {report}")
+                  if any(case.find(k) is not None for k in
+                         ("failure", "error", "skipped", "flakyFailure",
+                          "flakyError", "rerunFailure", "rerunError")):
+                      raise SystemExit(f"Failed/skipped/flaky testcase in {report}")
+              executed.add(classname)
+              if classname in focused:
+                  focused_seen.add(classname)
+          if focused_seen != focused:
+              raise SystemExit("Full Maven verification omitted focused classes: "
+                               + ", ".join(sorted(focused - focused_seen)))
+          extra = executed - focused
+          if not extra:
+              raise SystemExit("No executable full-suite tests beyond security subset")
+          print(f"VERIFIED_FULL_JUNIT_CLASSES={len(executed)}")
+          print(f"VERIFIED_FULL_JUNIT_EXTRA_CLASSES={len(extra)}")
+          PY
+      - name: Native AOT candidate build and guest execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Pnative-aot -DskipTests clean package
+          timeout 180s ./target/ores-aot --mode=aot --platform=linux examples/together.ores
+      - name: Native hybrid candidate build and guest execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Pnative-hybrid -DskipTests clean package
+          timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux examples/together.ores
+      - name: Strict polyglot isolate candidate build and guest execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Pnative-isolate -DskipTests clean package
+          # Choose exactly one fresh regular shared library; reject absent,
+          # ambiguous or symlinked artifacts rather than picking arbitrarily.
+          test -d target && test ! -L target
+          libraries=()
+          for candidate in target/oresvm.so target/liboresvm.so; do
+            if test -e "$candidate" || test -L "$candidate"; then
+              if ! test -f "$candidate" || test -L "$candidate" || ! test -s "$candidate"; then
+                echo "::error::Reject invalid native isolate artifact: $candidate" >&2
+                exit 1
+              fi
+              libraries+=("$candidate")
+            fi
+          done
+          test "${#libraries[@]}" -eq 1
+          lib="${libraries[0]}"
+          echo "VERIFIED_ISOLATE_LIBRARY=$lib"
+          timeout 180s mvn -B -ntp "-Dpolyglot.engine.IsolateLibrary=$PWD/$lib" -DskipTests exec:java -Dexec.args="--strict-isolate --mode=hybrid --platform=linux examples/together.ores"
