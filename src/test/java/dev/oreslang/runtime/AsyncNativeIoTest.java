@@ -284,6 +284,55 @@ class AsyncNativeIoTest {
         }
     }
 
+    @Test void resourceCloseCallbackCannotRecursivelyCloseItsNativeContext()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        var closes = new java.util.concurrent.atomic.AtomicInteger();
+        try {
+            io.register(() -> {
+                closes.incrementAndGet();
+                IllegalStateException denied =
+                        assertThrows(IllegalStateException.class, io::close);
+                assertTrue(denied.getMessage().contains("cannot recursively close"));
+            });
+            io.close();
+            assertEquals(1, closes.get(),
+                    "a reentrant host callback cannot re-close the same resource");
+            io.close();
+            assertEquals(1, closes.get(), "a successful close is idempotent");
+        } finally {
+            io.close();
+        }
+    }
+
+    @Test void uncaughtResourceCloseReentryQuarantinesAndCanBeRetried()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        var closes = new java.util.concurrent.atomic.AtomicInteger();
+        var recurseOnce = new java.util.concurrent.atomic.AtomicBoolean(true);
+        try {
+            io.register(() -> {
+                closes.incrementAndGet();
+                if (recurseOnce.getAndSet(false)) io.close();
+            });
+            IllegalStateException incomplete =
+                    assertThrows(IllegalStateException.class, io::close);
+            assertTrue(incomplete.getMessage().contains("resource close failed"));
+            assertInstanceOf(IllegalStateException.class, incomplete.getCause());
+            assertTrue(incomplete.getCause().getMessage()
+                    .contains("cannot recursively close"));
+            assertEquals(1, closes.get(),
+                    "a failed reentrant close must retain, not recursively release, the resource");
+            io.close();
+            assertEquals(2, closes.get(),
+                    "the retained resource must be closed by the next verified sweep");
+            io.close();
+            assertEquals(2, closes.get(), "the retired resource must close exactly once");
+        } finally {
+            io.close();
+        }
+    }
+
     @Test void nativeCloseRejectsReentrantJoinFromItsOwnWorker()
             throws Exception {
         try (var io = new AsyncNativeIo(1)) {
