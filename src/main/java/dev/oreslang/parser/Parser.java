@@ -9,6 +9,12 @@ import static dev.oreslang.parser.Token.Type.*;
 
 public final class Parser {
     public static final String ROOT_MODULE = "__root__";
+    // Mirror compiler admission budgets at the parser boundary, before a
+    // hostile source can allocate an unbounded model AST.
+    private static final int MAX_MODEL_PARAMETERS = 64;
+    private static final int MAX_MODEL_OPERATIONS = 4096;
+    private static final int MAX_MODEL_STATIC_ARGS_PER_OPERATION = 32;
+    private static final int MAX_MODEL_STATIC_ARGS_TOTAL = 16384;
 
     public record SyntaxWarning(int line, int column, String message) { }
 
@@ -269,7 +275,12 @@ public final class Parser {
         consume(AS, "expected 'as' before model operation body");
 
         List<Ast.ModelOp> operations = new ArrayList<>();
+        int totalStaticArguments = 0;
         while (!check(END) && !check(EOF)) {
+            if (operations.size() >= MAX_MODEL_OPERATIONS) {
+                throw error(peek(), "MODEL_NODE_BUDGET: model exceeds "
+                        + MAX_MODEL_OPERATIONS + " operations");
+            }
             if (!check(IDENT)) {
                 throw error(peek(),
                         "MODEL_EFFECTFUL_BODY: model bodies admit only statically named operation calls");
@@ -278,6 +289,11 @@ public final class Parser {
             consume(LPAREN,
                     "MODEL_NON_LAYER_EXPRESSION: expected '(' after model operation '" + operation + "'");
             List<Ast.Expr> arguments = parseModelArgumentsUntil(RPAREN);
+            totalStaticArguments += arguments.size();
+            if (totalStaticArguments > MAX_MODEL_STATIC_ARGS_TOTAL) {
+                throw error(peek(), "MODEL_STATIC_ARG_BUDGET: model exceeds "
+                        + MAX_MODEL_STATIC_ARGS_TOTAL + " total static arguments");
+            }
             consume(RPAREN, "expected ')' after model operation arguments");
             match(SEMICOLON);
             operations.add(new Ast.ModelOp(operation, arguments));
@@ -295,6 +311,10 @@ public final class Parser {
         java.util.Set<String> names = new java.util.LinkedHashSet<>();
         boolean seenDefault = false;
         do {
+            if (parameters.size() >= MAX_MODEL_PARAMETERS) {
+                throw error(peek(), "MODEL_CONFIG_BUDGET: model exceeds "
+                        + MAX_MODEL_PARAMETERS + " configuration parameters");
+            }
             String name;
             Ast.TypeRef type;
             if (check(IDENT) && checkNext(COLON)) {
@@ -3902,8 +3922,13 @@ public final class Parser {
     private List<Ast.Expr> parseModelArgumentsUntil(Token.Type terminator) {
         if (check(terminator)) return List.of();
         List<Ast.Expr> args = new ArrayList<>();
-        do args.add(parseModelExpression("model operation static argument"));
-        while (match(COMMA));
+        do {
+            if (args.size() >= MAX_MODEL_STATIC_ARGS_PER_OPERATION) {
+                throw error(peek(), "MODEL_STATIC_ARG_BUDGET: model operation exceeds "
+                        + MAX_MODEL_STATIC_ARGS_PER_OPERATION + " static arguments");
+            }
+            args.add(parseModelExpression("model operation static argument"));
+        } while (match(COMMA));
         return args;
     }
 
