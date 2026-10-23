@@ -37,8 +37,18 @@ final class ActorPhysicalChannelLease implements AutoCloseable {
         this.channel = Objects.requireNonNull(channel, "channel");
         this.receipt = Objects.requireNonNull(receipt, "receipt");
         this.onClosed = Objects.requireNonNull(onClosed, "onClosed");
-        if (!channel.isOpen()) {
-            receipt.failPhysicalRelease(new IllegalStateException(
+        // The driver has already registered the receipt at this point.
+        // A host Channel implementation may throw on a second isOpen() probe;
+        // never strand an untracked ticket without a quarantine diagnostic.
+        final boolean open;
+        try {
+            open = channel.isOpen();
+        } catch (RuntimeException | Error probeFailure) {
+            recordFailedPhysicalRelease(probeFailure);
+            throw probeFailure;
+        }
+        if (!open) {
+            recordFailedPhysicalRelease(new IllegalStateException(
                     "physical Channel was closed before registry handoff"));
             throw new IllegalArgumentException("physical Channel must be open");
         }
@@ -62,8 +72,33 @@ final class ActorPhysicalChannelLease implements AutoCloseable {
                 }
             });
         } catch (RuntimeException | Error rejected) {
-            receipt.failPhysicalRelease(rejected);
+            // STOP must still attempt every other lease, revoke pending Futures
+            // and cancel descendants. A broken retirement observer has already
+            // been recorded as sticky failure by the registry and must not
+            // abort this teardown sweep.
+            recordFailedPhysicalRelease(rejected);
+            rethrowFatal(rejected);
         }
+    }
+
+    /**
+     * The registry latches the physical failure *before* notifying the owner.
+     * If that notification itself throws, preserve it as a suppressed
+     * diagnostic without aborting sibling cleanup. VM-fatal errors propagate.
+     */
+    private void recordFailedPhysicalRelease(Throwable original) {
+        try {
+            receipt.failPhysicalRelease(original);
+        } catch (RuntimeException | Error notifierFailure) {
+            if (notifierFailure != original) original.addSuppressed(notifierFailure);
+            rethrowFatal(notifierFailure);
+        }
+    }
+
+    private static void rethrowFatal(Throwable failure) {
+        if (failure instanceof VirtualMachineError fatal) throw fatal;
+        if (failure instanceof ThreadDeath fatal) throw fatal;
+        if (failure instanceof LinkageError fatal) throw fatal;
     }
 
     /** The receipt only settles after actual Channel.close() and !isOpen(). */
@@ -100,7 +135,7 @@ final class ActorPhysicalChannelLease implements AutoCloseable {
             closed = true;
         } catch (IOException | RuntimeException | Error failure) {
             closeFailure = failure;
-            receipt.failPhysicalRelease(failure);
+            recordFailedPhysicalRelease(failure);
             throw failure;
         } finally {
             closingThread = null;
