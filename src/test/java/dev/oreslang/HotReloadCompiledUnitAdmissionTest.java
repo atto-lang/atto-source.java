@@ -95,4 +95,19 @@ final class HotReloadCompiledUnitAdmissionTest {
             assertEquals(0, manager.liveGenerations());
         }
     }
+
+    @Test
+    void rejectsActualImportsEvenWhenCallerSuppliesAnEmptyDependencySet() {
+        var base = fixture();
+        String source = "import fnc {b_value} from \"./b.ores\";\\n"
+                + "pub routine main(): void { return; }";
+        var forged = counterfeit(base, source, digest(source), Set.of());
+
+        try (var manager = new HotReloadManager(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            assertThrows(SecurityException.class, () -> manager.load(forged));
+            assertNull(manager.active());
+            assertEquals(0, manager.liveGenerations());
+        }
+    }
 }
