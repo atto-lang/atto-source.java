@@ -121,6 +121,49 @@ final class ActorPhysicalRetirementRegistryTest {
         }
     }
 
+    @Test void failedNativeIoTerminalCallbackQuarantinesActualActorIncarnation()
+            throws Exception {
+        // This test intentionally leaves a broken actor unretired.
+        var executor = new java.util.concurrent.ThreadPoolExecutor(1, 1, 0L,
+                TimeUnit.MILLISECONDS, new java.util.concurrent.LinkedBlockingQueue<>());
+        var io = new AsyncNativeIo(1, executor);
+        var runtime = new ActorRuntime();
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var admitted = new CountDownLatch(1);
+        var listenerFailure = new IllegalStateException("native notifier loan failed");
+        var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+            var work = io.submitCurrentActor(context.runtime(), "native-notifier", () -> {
+                entered.countDown();
+                while (release.getCount() != 0) {
+                    try { release.await(20, TimeUnit.MILLISECONDS); }
+                    catch (InterruptedException ignored) { /* native borrower */ }
+                }
+                return 5;
+            });
+            work.whenCompleteRuntime((value, failure) -> { throw listenerFailure; });
+            admitted.countDown();
+        });
+        try {
+            actor.send("start");
+            assertTrue(admitted.await(3, TimeUnit.SECONDS));
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            assertTrue(actor.cancel());
+            io.close();
+        } finally {
+            release.countDown();
+        }
+        assertTrue(executor.awaitTermination(3, TimeUnit.SECONDS));
+        assertSame(listenerFailure, io.physicalShutdownFailure());
+        assertSame(listenerFailure, actor.physicalRetirementFailure().orElseThrow());
+        assertFalse(actor.done().isDone(),
+                "host notifier failure must quarantine the actor's physical arena");
+        assertEquals(Integer.valueOf(1), actor.pendingPhysicalRetirementsByKind()
+                .get("NATIVE_IO_OPERATION"));
+        assertThrows(IllegalStateException.class, runtime::close,
+                "runtime cannot free the actor after failed native notifier drain");
+    }
+
     @Test void queuedNeverStartedNativeIoReleasesOnlyItsOwnActorTicket()
             throws Exception {
         var executor = new java.util.concurrent.ThreadPoolExecutor(1, 1, 0L,
