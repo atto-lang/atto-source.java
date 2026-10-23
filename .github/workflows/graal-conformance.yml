@@ -16,6 +16,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+      - name: Validate source parity launcher fail-closed CLI admissions
+        run: bash tests/java_source_parity_launcher_admission.sh
       - name: Test AI smoke evidence admission (no compiler claims)
         run: python3 scripts/test_ai_conformance_smoke.py
       - name: Schema validator
