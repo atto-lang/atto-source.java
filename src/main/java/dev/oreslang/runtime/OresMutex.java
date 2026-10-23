@@ -36,7 +36,7 @@ public final class OresMutex {
         return task == null ? ActorRuntime.currentExecutionDomain() : task;
     }
 
-    /** Tracked Task permits outrank actor-incarnation ownership. */
+    /** Tracked Task permits outrank direct actor-incarnation ownership. */
     private static TaskOwnedLockLedger currentPermitLedger() {
         TaskOwnedLockLedger task = TaskHandle.currentLockLedger();
         return task != null ? task : ActorRuntime.currentActorLockLedger();
@@ -155,7 +155,15 @@ public final class OresMutex {
             Shared.executeNotification(() -> {
                 boolean published = false;
                 try {
-                    published = completeFromRuntime(guard);
+                    // Task revocation can release the granted guard while
+                    // this notification is queued. Never publish a stale
+                    // capability to an already-retired logical Task.
+                    if (guard.released()) {
+                        failFromRuntime(new java.util.concurrent.CancellationException(
+                                "lock owner retired before async grant publication"));
+                    } else {
+                        published = completeFromRuntime(guard);
+                    }
                 } finally {
                     try {
                         if (!published) rejected.run();
@@ -1092,41 +1100,40 @@ public final class OresMutex {
 
             if (waitFailure != null) {
                 releaseDomain(ownerDomain);
-                try {
-                    future.failFromRuntime(waitFailure);
-                } finally {
-                    waiter.physicalSettlement.complete(null);
-                }
+                future.failHandoffOnNotifier(waitFailure,
+                        () -> waiter.physicalSettlement.complete(null));
             } else if (poisonedNow) {
                 releaseDomain(ownerDomain);
-                try {
-                    future.failFromRuntime(new PoisonedMutexException());
-                } finally {
-                    waiter.physicalSettlement.complete(null);
-                }
+                future.failHandoffOnNotifier(new PoisonedMutexException(),
+                        () -> waiter.physicalSettlement.complete(null));
             } else if (acquired) {
-                markOwner(ownerDomain);
+                try {
+                    markOwner(ownerDomain);
+                } catch (RuntimeException | Error ownershipFailure) {
+                    // Permit ownership cannot be proven. Keep its physical
+                    // permit quarantined and fail the Task's private receipt.
+                    waiter.physicalSettlement.completeExceptionally(ownershipFailure);
+                    future.failHandoffOnNotifier(ownershipFailure, () -> { });
+                    return future;
+                }
                 final SharedGuard guard;
                 try {
                     guard = new SharedGuard(ownerDomain, enforceOwnerDomain, ledger);
                 } catch (RuntimeException | Error failedRegistration) {
                     clearOwner(ownerDomain);
                     releaseDomain(ownerDomain);
-                    try {
-                        releasePermitOrHandoff();
-                        future.failFromRuntime(failedRegistration);
-                    } finally {
-                        waiter.physicalSettlement.complete(null);
-                    }
+                    releasePermitOrHandoff();
+                    future.failHandoffOnNotifier(failedRegistration,
+                            () -> waiter.physicalSettlement.complete(null));
                     return future;
                 }
-                boolean published = false;
-                try {
-                    published = future.completeFromRuntime(guard);
-                } finally {
-                    if (!published) guard.releaseFromRuntime();
-                    waiter.physicalSettlement.complete(null);
-                }
+                // An immediately available mutex must be just as safe as a
+                // queued grant: never execute a non-Async Future callback
+                // inline on the actor or scheduler carrier.
+                future.completeHandoffOnNotifier(
+                        guard,
+                        () -> guard.releaseFromRuntime(),
+                        () -> waiter.physicalSettlement.complete(null));
             }
 
             return future;
