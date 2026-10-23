@@ -3,7 +3,7 @@ package dev.oreslang.runtime;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
-import java.util.HashMap;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -50,7 +50,8 @@ public final class AsyncNativeIo implements AutoCloseable {
     private final Map<AutoCloseable, ResourceLeaseState> resourceLoans =
             new IdentityHashMap<>();
     /** Counts entire I/O operations from admission through callback drain. */
-    private final Map<ActorRuntime.ActorId, Integer> actorOperations = new HashMap<>();
+    private final ConcurrentHashMap<ActorRuntime.ActorId, Integer> actorOperations =
+            new ConcurrentHashMap<>();
     private volatile Consumer<ActorRuntime.ActorId> actorLoanRetired = ignored -> { };
     private final AtomicLong nextResourceGeneration = new AtomicLong();
     private final AtomicLong nextLoanGeneration = new AtomicLong();
@@ -146,7 +147,10 @@ public final class AsyncNativeIo implements AutoCloseable {
                 state.generation, nextLoanGeneration.incrementAndGet(), actorId));
     }
 
-    synchronized int outstandingActorOperations(ActorRuntime.ActorId id) {
+    int outstandingActorOperations(ActorRuntime.ActorId id) {
+        // Called under ActorCell.lifecycleLock. NEVER acquire the AsyncNativeIo
+        // monitor here: rejected Futures can deliver host callbacks while the
+        // AsyncNativeIo monitor is held by the admitting actor.
         return actorOperations.getOrDefault(Objects.requireNonNull(id), 0);
     }
 
@@ -160,18 +164,22 @@ public final class AsyncNativeIo implements AutoCloseable {
 
     private ActorRuntime.ActorId decrementActorOperationLocked(ActorRuntime.ActorId id) {
         if (id == null) return null;
-        Integer count = actorOperations.get(id);
-        if (count == null || count <= 0) {
-            recordIncomplete(new IllegalStateException(
-                    "actor native I/O operation receipt underflow"));
-            return null;
-        }
-        if (count == 1) {
-            actorOperations.remove(id);
-            return id;
-        }
-        actorOperations.put(id, count - 1);
-        return null;
+        AtomicBoolean finalLoan = new AtomicBoolean();
+        AtomicBoolean underflow = new AtomicBoolean();
+        actorOperations.compute(id, (ignored, count) -> {
+            if (count == null || count <= 0) {
+                underflow.set(true);
+                return null;
+            }
+            if (count == 1) {
+                finalLoan.set(true);
+                return null;
+            }
+            return count - 1;
+        });
+        if (underflow.get()) recordIncomplete(new IllegalStateException(
+                "actor native I/O operation receipt underflow"));
+        return finalLoan.get() ? id : null;
     }
 
     private void notifyActorRetirement(ActorRuntime.ActorId id) {
