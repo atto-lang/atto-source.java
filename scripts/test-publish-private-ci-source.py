@@ -14,6 +14,8 @@ pub = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pub)
 ORIGINAL_VERIFY_PROTECTED_ORIGIN = pub.verify_protected_origin
 ORIGINAL_VERIFY_EXACT_SOURCE_TREE = pub.verified_exact_source_tree
+ORIGINAL_REQUIRE_PREFLIGHT = pub.require_preflight
+ORIGINAL_REQUIRE_RESOLVED = pub.require_resolved_blocking_incidents
 A, B, C, D, E = ("a"*40, "b"*40, "c"*40, "d"*40, "e"*40)
 
 
@@ -26,13 +28,18 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.source.mkdir()
         (self.root / ".github").mkdir()
         self.approval = self.root / ".github" / "private-ci-approved-repositories.txt"
-        self.approval.write_text("trusted/ci\n")
+        self.approval.write_text("trusted/ci 246810\n")
         (self.source / "hello.ores").write_text("pub fnc main(): int { return 42; }\n")
         self.route_calls = []
         self.visibility = ["private"] * 100
         self.preflight = patch.object(pub, "require_preflight")
         self.preflight.start()
         self.addCleanup(self.preflight.stop)
+        # Other publisher tests exercise the downstream write path. The real
+        # incident API predicate is tested separately with identity fixtures.
+        self.incident_guard = patch.object(pub, "require_resolved_blocking_incidents")
+        self.incident_mock = self.incident_guard.start()
+        self.addCleanup(self.incident_guard.stop)
         # Existing isolated transfer/FS tests model the downstream publisher;
         # protected-source provenance gets independent real-guard tests below.
         self.origin_guard = patch.object(pub, "verify_protected_origin")
@@ -42,13 +49,170 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         # source Git-tree verifier is tested separately against mocked origin.
         self.source_tree_guard = patch.object(
             pub, "verified_exact_source_tree", return_value=D)
-        self.source_tree_guard.start()
+        self.source_tree_mock = self.source_tree_guard.start()
         self.addCleanup(self.source_tree_guard.stop)
+
+    def incident_api(self, states=None, repository_id=None, issue_ids=None):
+        states = states or {
+            22: ("closed", "completed"),
+            77: ("closed", "completed"),
+            127: ("closed", "completed"),
+        }
+        repository_id = (
+            pub.BLOCKING_INCIDENT_REPOSITORY_ID
+            if repository_id is None else repository_id
+        )
+        issue_ids = dict(pub.BLOCKING_INCIDENT_IDS if issue_ids is None else issue_ids)
+        def api(route, method="GET", payload=None):
+            if route == "repos/" + pub.BLOCKING_INCIDENT_REPO:
+                return {
+                    "id": repository_id,
+                    "full_name": pub.BLOCKING_INCIDENT_REPO,
+                    "private": True,
+                    "visibility": "private",
+                    "archived": False,
+                    "disabled": False,
+                    "fork": False,
+                }
+            prefix = "repos/" + pub.BLOCKING_INCIDENT_REPO + "/issues/"
+            if route.startswith(prefix):
+                number = int(route[len(prefix):])
+                state, reason = states[number]
+                repository_url = (
+                    "https://api.github.com/repos/"
+                    + pub.BLOCKING_INCIDENT_REPO
+                )
+                return {
+                    "id": issue_ids[number],
+                    "number": number,
+                    "repository_url": repository_url,
+                    "url": repository_url + "/issues/" + str(number),
+                    "html_url": (
+                        "https://github.com/"
+                        + pub.BLOCKING_INCIDENT_REPO
+                        + "/issues/"
+                        + str(number)
+                    ),
+                    "state": state,
+                    "state_reason": reason,
+                }
+            raise AssertionError((method, route))
+        return api
+
+    def test_blocking_p0_incidents_accept_only_completed_closure(self):
+        with patch.object(pub, "gh_api", side_effect=self.incident_api()):
+            ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_open_issue(self):
+        states = {
+            22: ("closed", "completed"),
+            77: ("open", None),
+        }
+        with patch.object(pub, "gh_api", side_effect=self.incident_api(states)):
+            with self.assertRaisesRegex(pub.Denied, "#77 remains unresolved"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_open_issue_127(self):
+        states = {
+            22: ("closed", "completed"),
+            77: ("closed", "completed"),
+            127: ("open", None),
+        }
+        with patch.object(pub, "gh_api", side_effect=self.incident_api(states)):
+            with self.assertRaisesRegex(pub.Denied, "#127 remains unresolved"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_not_planned_closure(self):
+        states = {
+            22: ("closed", "not_planned"),
+            77: ("closed", "completed"),
+        }
+        with patch.object(pub, "gh_api", side_effect=self.incident_api(states)):
+            with self.assertRaisesRegex(pub.Denied, "#22 remains unresolved"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_issue_identity_drift(self):
+        ids = dict(pub.BLOCKING_INCIDENT_IDS)
+        ids[22] += 1
+        with patch.object(
+            pub, "gh_api",
+            side_effect=self.incident_api(issue_ids=ids),
+        ):
+            with self.assertRaisesRegex(pub.Denied, "incident identity"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_issue_127_identity_drift(self):
+        ids = dict(pub.BLOCKING_INCIDENT_IDS)
+        ids[127] += 1
+        with patch.object(
+            pub, "gh_api",
+            side_effect=self.incident_api(issue_ids=ids),
+        ):
+            with self.assertRaisesRegex(pub.Denied, "incident identity"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_repository_identity_drift(self):
+        with patch.object(
+            pub, "gh_api",
+            side_effect=self.incident_api(
+                repository_id=pub.BLOCKING_INCIDENT_REPOSITORY_ID + 1
+            ),
+        ):
+            with self.assertRaisesRegex(pub.Denied, "repository identity/state"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_quarantined_incident_carrier_rejected_before_incident_or_local_guard(self):
+        with (
+            patch.object(pub, "require_resolved_blocking_incidents") as incidents,
+            patch.object(pub.subprocess, "run") as run,
+            patch.object(pub, "gh_api") as api,
+        ):
+            with self.assertRaisesRegex(pub.Denied, "quarantined"):
+                ORIGINAL_REQUIRE_PREFLIGHT("zed-pkg-test/java-app", self.root)
+            incidents.assert_not_called()
+            run.assert_not_called()
+            api.assert_not_called()
+
+    def test_preflight_checks_blocking_incidents_before_local_guard(self):
+        with (
+            patch.object(
+                pub, "require_resolved_blocking_incidents",
+                side_effect=pub.Denied("blocking incident"),
+            ),
+            patch.object(pub.subprocess, "run") as run,
+        ):
+            with self.assertRaisesRegex(pub.Denied, "blocking incident"):
+                ORIGINAL_REQUIRE_PREFLIGHT("trusted/ci", self.root)
+            run.assert_not_called()
+
+    def test_descriptor_safety_flags_require_distinct_positive_integers(self):
+        with (
+            patch.object(pub.os, "O_DIRECTORY", 1, create=True),
+            patch.object(pub.os, "O_NOFOLLOW", 2, create=True),
+            patch.object(pub.os, "O_NONBLOCK", 4, create=True),
+        ):
+            self.assertTrue(pub.safe_descriptor_flags_available())
+
+        invalid = (
+            (0, 2, 4),
+            (1, 1, 4),
+            (1, 2, 3),
+            ("1", 2, 4),
+            (True, 2, 4),
+        )
+        for directory, nofollow, nonblock in invalid:
+            with self.subTest(flags=(directory, nofollow, nonblock)):
+                with (
+                    patch.object(pub.os, "O_DIRECTORY", directory, create=True),
+                    patch.object(pub.os, "O_NOFOLLOW", nofollow, create=True),
+                    patch.object(pub.os, "O_NONBLOCK", nonblock, create=True),
+                ):
+                    self.assertFalse(pub.safe_descriptor_flags_available())
 
     def fake_api(self, route, method="GET", payload=None):
         self.route_calls.append((method, route, payload))
         if route == "repos/trusted/ci":
-            return dict(full_name="trusted/ci", visibility=self.visibility.pop(0),
+            return dict(id=246810, full_name="trusted/ci", visibility=self.visibility.pop(0),
                         private=True, default_branch="main")
         if route == "repos/trusted/ci/git/blobs":
             raw = base64.b64decode(payload["content"])
@@ -71,15 +235,42 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root, A)
 
-    def verified_origin_api(self, protected=True, policy=b"trusted/ci\n",
+    def test_reopened_p0_blocks_legacy_write_before_git_object_creation(self):
+        self.incident_mock.side_effect = pub.Denied(
+            "blocking P0 incident #77 remains unresolved"
+        )
+        with self.assertRaisesRegex(pub.Denied, "#77 remains unresolved"):
+            self.publish()
+        self.incident_mock.assert_called_once_with()
+        self.assertFalse(
+            any(method == "POST" for method, _, _ in self.route_calls)
+        )
+
+    def verified_origin_api(self, protected=True, policy=b"trusted/ci 246810\n",
                             codeowners=True, stale=True, admins=True,
                             approvals=1, force=False, deletions=False,
-                            bypasses=None):
+                            bypasses=None, strict_checks=True, contexts=None,
+                            named_checks=None, source_id=None, codeowners_file=None):
         routes = []
+        if contexts is None:
+            contexts = ["private-ci-gate"]
+        if named_checks is None:
+            named_checks = []
+        if source_id is None:
+            source_id = pub.SOURCE_REPOSITORY_ID
+        if codeowners_file is None:
+            codeowners_file = (
+                "# Terminal private-export ownership rules\n"
+                + "\n".join(
+                    path + " @ORESoftware"
+                    for path in pub.SECURITY_CODEOWNER_PATHS
+                )
+                + "\n"
+            ).encode("utf-8")
         def fake(route, method="GET", payload=None):
             routes.append(route)
             if route == "repos/"+pub.SOURCE_REPO:
-                return {"full_name": pub.SOURCE_REPO, "private": True}
+                return {"id": source_id, "full_name": pub.SOURCE_REPO, "private": True}
             if route == "repos/"+pub.SOURCE_REPO+"/branches/main":
                 return {"name": "main", "protected": protected,
                         "commit": {"sha": A}}
@@ -90,6 +281,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 if bypasses is not None:
                     reviews["bypass_pull_request_allowances"] = bypasses
                 return {"required_pull_request_reviews": reviews,
+                        "required_status_checks": {
+                            "strict": strict_checks,
+                            "contexts": list(contexts),
+                            "checks": list(named_checks),
+                        },
                         "enforce_admins": {"enabled": admins},
                         "allow_force_pushes": {"enabled": force},
                         "allow_deletions": {"enabled": deletions}}
@@ -98,8 +294,91 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 return {"path": pub.POLICY_PATH, "type": "file",
                         "encoding": "base64",
                         "content": base64.b64encode(policy).decode("ascii")}
+            if route == ("repos/"+pub.SOURCE_REPO+"/contents/"
+                         +pub.CODEOWNERS_PATH+"?ref="+A):
+                return {"path": pub.CODEOWNERS_PATH, "type": "file",
+                        "encoding": "base64",
+                        "content": base64.b64encode(codeowners_file).decode("ascii")}
             return self.fake_api(route, method, payload)
         return fake, routes
+
+    def test_origin_verification_returns_the_authenticated_main_commit(self):
+        api, _ = self.verified_origin_api(protected=True)
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
+        with patch.object(pub, "gh_api", side_effect=api):
+            self.assertEqual(
+                ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest),
+                A,
+            )
+
+    def test_origin_rejects_source_repository_id_replacement(self):
+        api, _ = self.verified_origin_api(
+            source_id=pub.SOURCE_REPOSITORY_ID + 1
+        )
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
+        with patch.object(pub, "gh_api", side_effect=api):
+            with self.assertRaisesRegex(pub.Denied, "identity and privacy"):
+                ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
+
+    def test_origin_requires_strict_nonempty_required_status_checks(self):
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
+        for options in (
+            {"strict_checks": False},
+            {"contexts": [], "named_checks": []},
+            {"contexts": [""]},
+            {"contexts": [], "named_checks": [{"context": ""}]},
+        ):
+            with self.subTest(options=options):
+                api, _ = self.verified_origin_api(**options)
+                with patch.object(pub, "gh_api", side_effect=api):
+                    with self.assertRaisesRegex(pub.Denied, "strict required CI"):
+                        ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
+
+    def test_origin_rejects_author_codeowner_instead_of_independent_security_owner(self):
+        bad = (
+            "\n".join(path + " @the1mills"
+                      for path in pub.SECURITY_CODEOWNER_PATHS)
+            + "\n"
+        ).encode("utf-8")
+        api, _ = self.verified_origin_api(codeowners_file=bad)
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
+        with patch.object(pub, "gh_api", side_effect=api):
+            with self.assertRaisesRegex(pub.Denied, "independent security owner"):
+                ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
+
+    def test_origin_rejects_nonterminal_security_codeowners(self):
+        valid = (
+            "\n".join(path + " @ORESoftware"
+                      for path in pub.SECURITY_CODEOWNER_PATHS)
+            + "\n/scripts/ @the1mills\n"
+        ).encode("utf-8")
+        api, _ = self.verified_origin_api(codeowners_file=valid)
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
+        with patch.object(pub, "gh_api", side_effect=api):
+            with self.assertRaisesRegex(pub.Denied, "terminal"):
+                ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
+
+    def test_policy_approval_returns_reviewed_numeric_repository_id(self):
+        digest, repository_id = pub.checked_policy_approval(
+            self.root, "trusted/ci"
+        )
+        self.assertEqual(
+            digest, hashlib.sha256(b"trusted/ci 246810\n").digest()
+        )
+        self.assertEqual(repository_id, 246810)
+
+    def test_repository_id_substitution_rejected_before_private_write(self):
+        original = self.fake_api
+        def replaced(route, method="GET", payload=None):
+            result = original(route, method, payload)
+            if route == "repos/trusted/ci":
+                result = dict(result, id=246811)
+            return result
+        with patch.object(pub, "gh_api", side_effect=replaced):
+            with self.assertRaisesRegex(pub.Denied, "numeric repository ID"):
+                pub.publish("trusted/ci", self.source,
+                            "ci/oreslang-test", self.root, A)
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
     def test_origin_main_must_be_protected_before_export(self):
         api, routes = self.verified_origin_api(protected=False)
@@ -274,7 +553,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def test_publisher_rejects_mismatched_uploaded_tree_before_branch(self):
         # GitHub returns a different tree SHA even though blobs matched.
-        self.source_tree_guard.return_value = C
+        self.source_tree_mock.return_value = C
         with self.assertRaisesRegex(pub.Denied, "uploaded source tree differs"):
             self.publish()
         self.assertNotIn("repos/trusted/ci/git/refs",
@@ -462,7 +741,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def test_policy_symlink_swap_between_check_and_read_rejected(self):
         outside = self.root / "outside-approved-policy"
-        outside.write_text("trusted/ci\n")
+        outside.write_text("trusted/ci 246810\n")
         self.approval.write_text("# no approval\n")
         original_read = Path.read_bytes
         def malicious_read(path):
@@ -483,7 +762,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def test_policy_parent_directory_swap_rejected(self):
         outside = self.root / "external-approved-dir"
         outside.mkdir()
-        (outside / "private-ci-approved-repositories.txt").write_text("trusted/ci\n")
+        (outside / "private-ci-approved-repositories.txt").write_text("trusted/ci 246810\n")
         self.approval.write_text("# no approval\n")
         original_open = pub.os.open
         replaced = [False]
@@ -572,7 +851,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         import os
         import threading
         outside = self.root / "outside-policy"
-        outside.write_text("trusted/ci\n")
+        outside.write_text("trusted/ci 246810\n")
         self.approval.write_text("# no approval\n")
         stop = threading.Event()
         def attacker():
@@ -655,3 +934,4 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
