@@ -41,6 +41,31 @@ final class AliasExtensionMethodTest {
     }
 
     @Test
+    void typedAliasLocalCarriesExtensionButShadowingDoesNot() throws Exception {
+        assertEquals("12", run("""
+                declare type Code = int;
+                define mtd double on Code(): int { return self + self; }
+                pub fnc main(): void {
+                  val code: Code = 6;
+                  stdio.stdout.write(code.double());
+                  return;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                declare type Code = int;
+                define mtd double on Code(): int { return self + self; }
+                fnc invalid(Code value): int {
+                  if true then
+                    val value: int = 1;
+                    return value.double();
+                  else
+                    return 0;
+                  fi
+                }
+                """));
+    }
+
+    @Test
     void doesNotAttachCodeExtensionsToUnderlyingInt() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
