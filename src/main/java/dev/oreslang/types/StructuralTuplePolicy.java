@@ -57,7 +57,8 @@ public final class StructuralTuplePolicy {
         if (type instanceof Types.Tuple tuple) {
             // Nested FixedArray/FixedList values need their own alias and
             // ownership proof. They are not positional tuple views.
-            if (tuple.kind() != TupleKind.TUPLE || tuple.elements().size() > MAX_ARITY) {
+            if (tuple.kind() != TupleKind.TUPLE || tuple.elements().size() < 2
+                    || tuple.elements().size() > MAX_ARITY) {
                 return false;
             }
             for (Type element : tuple.elements()) if (!certifiedSlotType(element, depth + 1)) return false;
@@ -118,42 +119,133 @@ public final class StructuralTuplePolicy {
     }
 
     /**
-     * Returns a *conservative* assignability proof. General coercion is never
-     * used to supply a structural readonly projected tuple slot.
+     * Materialization modes for a checked, finite, positional projection.
+     * These are lowering instructions, NOT runtime values: the emitter must
+     * evaluate the source tuple exactly once, then materialize slots in order.
      */
-    public static boolean admits(Shape expected, Type actual) {
+    public enum Materialization {
+        KEEP_VALUE,
+        WRAP_SOME,
+        KEEP_OPTION,
+        SYNTHESIZE_NONE
+    }
+
+    /**
+     * A single visible output slot, with its source provenance. A sourceIndex
+     * of -1 is reserved for omitted optional trailing slots, never an alias
+     * of an actual source position.
+     */
+    public record ProjectedSlot(
+            int visibleIndex, int sourceIndex, Type outputType,
+            Materialization materialization) {
+        public ProjectedSlot {
+            if (visibleIndex < 0 || sourceIndex < -1) {
+                throw new IllegalArgumentException("invalid tuple projection index");
+            }
+            Objects.requireNonNull(outputType, "output type");
+            Objects.requireNonNull(materialization, "materialization");
+            if ((materialization == Materialization.SYNTHESIZE_NONE)
+                    != (sourceIndex == -1)) {
+                throw new IllegalArgumentException("only an absent optional slot may have no source");
+            }
+        }
+    }
+
+    /**
+     * Compiler-owned, immutable projection proof. Hidden source slots are
+     * deliberately absent from the visible slot table. There is no accessor
+     * from this plan to a hidden element; runtime views must enforce the same
+     * visible width rather than exposing the original tuple for indexing.
+     *
+     * This object proves only static slot compatibility. It does not grant
+     * permission to return, capture, suspend, send, or store a readonly view.
+     */
+    public static final class ProjectionPlan {
+        private final int sourceArity;
+        private final int hiddenTailWidth;
+        private final List<ProjectedSlot> visibleSlots;
+
+        private ProjectionPlan(int sourceArity, int hiddenTailWidth,
+                               List<ProjectedSlot> visibleSlots) {
+            this.sourceArity = sourceArity;
+            this.hiddenTailWidth = hiddenTailWidth;
+            this.visibleSlots = List.copyOf(visibleSlots);
+        }
+
+        public int sourceArity() { return sourceArity; }
+        public int visibleWidth() { return visibleSlots.size(); }
+        public int hiddenTailWidth() { return hiddenTailWidth; }
+        public List<ProjectedSlot> visibleSlots() { return visibleSlots; }
+        public ProjectedSlot visibleSlot(int index) { return visibleSlots.get(index); }
+    }
+
+    /**
+     * Produce an explicit, immutable plan suitable for later checked lowering.
+     * Optional omission produces None; a supplied T produces Some(T); a
+     * supplied Option<T> remains an Option<T>. In particular, null is NOT an
+     * omission sentinel. Neither host reflection nor numeric coercion appears
+     * in this proof. A rejected view yields Optional.empty().
+     */
+    public static java.util.Optional<ProjectionPlan> projection(Shape expected, Type actual) {
         Objects.requireNonNull(expected, "expected");
-        if (!(actual instanceof Tuple source) || source.kind() != TupleKind.TUPLE) return false;
+        if (!(actual instanceof Tuple source) || source.kind() != TupleKind.TUPLE) {
+            return java.util.Optional.empty();
+        }
         int count = source.elements().size();
-        if (count > MAX_ARITY) return false;
-        if (count < expected.required()) return false;
-        if (!expected.structural() && count > expected.slots().size()) return false;
-        int declaredPresent = Math.min(count, expected.slots().size());
-        for (int i = 0; i < declaredPresent; i++) {
+        int width = expected.slots().size();
+        // A 0/1-element product is grouping/unit syntax, not a tuple source.
+        if (count < 2 || count > MAX_ARITY || count < expected.required()
+                || (!expected.structural() && count > width)) {
+            return java.util.Optional.empty();
+        }
+
+        List<ProjectedSlot> projected = new ArrayList<>(width);
+        for (int i = 0; i < width; i++) {
+            Slot expectedSlot = expected.slots().get(i);
+            Type output = expectedSlot.omittable()
+                    ? new Named("Option", List.of(expectedSlot.type()))
+                    : expectedSlot.type();
+            if (i >= count) {
+                if (!expectedSlot.omittable()) return java.util.Optional.empty();
+                projected.add(new ProjectedSlot(
+                        i, -1, output, Materialization.SYNTHESIZE_NONE));
+                continue;
+            }
+
             Type supplied = source.elements().get(i);
-            Slot slot = expected.slots().get(i);
-            if (!certifiedSlotType(supplied)) return false;
-            if (supplied.equals(slot.type())) continue;
-            // The optional *slot* may be represented by T or Option<T>.
-            // Whether Option<T> can be observed requires the later ABI/view
-            // lowering, not merely this compile-time proof.
-            if (slot.omittable()
+            if (!certifiedSlotType(supplied)) return java.util.Optional.empty();
+            if (supplied.equals(expectedSlot.type())) {
+                projected.add(new ProjectedSlot(i, i, output,
+                        expectedSlot.omittable()
+                                ? Materialization.WRAP_SOME
+                                : Materialization.KEEP_VALUE));
+                continue;
+            }
+            if (expectedSlot.omittable()
                     && supplied instanceof Named option
                     && option.name().equals("Option")
                     && option.arguments().size() == 1
-                    && option.arguments().getFirst().equals(slot.type())) {
+                    && option.arguments().getFirst().equals(expectedSlot.type())) {
+                projected.add(new ProjectedSlot(i, i, output, Materialization.KEEP_OPTION));
                 continue;
             }
-            return false;
+            return java.util.Optional.empty();
         }
-        // Structural width views may hide positions but may never launder
-        // unsupported owned/borrowed values through the extra tail. Until a
-        // checked readonly ABI projection exists, require every source slot
-        // (including invisible extras) to satisfy the closed-slot proof.
-        for (int i = declaredPresent; i < count; i++) {
-            if (!certifiedSlotType(source.elements().get(i))) return false;
+
+        // An explicitly structural projection can hide only proven closed,
+        // readonly-safe positions. Hidden indexes never appear in the plan.
+        for (int i = width; i < count; i++) {
+            if (!certifiedSlotType(source.elements().get(i))) {
+                return java.util.Optional.empty();
+            }
         }
-        return true;
+        return java.util.Optional.of(
+                new ProjectionPlan(count, Math.max(0, count - width), projected));
+    }
+
+    /** Conservative boolean facade for callers not yet using a typed plan. */
+    public static boolean admits(Shape expected, Type actual) {
+        return projection(expected, actual).isPresent();
     }
 
     public record Candidate(String id, int arity, Shape tupleParameter) {
@@ -194,7 +286,8 @@ public final class StructuralTuplePolicy {
         if (!(source instanceof Tuple tuple) || tuple.kind() != TupleKind.TUPLE) {
             throw new IllegalArgumentException("spread needs a statically typed finite tuple");
         }
-        if (candidates.size() > MAX_FAMILY || tuple.elements().size() > MAX_ARITY) {
+        if (candidates.size() > MAX_FAMILY || tuple.elements().size() < 2
+                || tuple.elements().size() > MAX_ARITY) {
             throw new IllegalArgumentException("tuple overload proof exceeds bounded family/arity limits");
         }
         Set<Integer> usedArities = new HashSet<>();
