@@ -81,9 +81,15 @@ public final class ProxyBodyCopyCheck {
             if (beforeClose.get(5, TimeUnit.SECONDS).bytesTransferred()!=3 || closeGate.closes.get()!=1)
                 throw new AssertionError("close-before-success violated");
             var pending = new CompletableFuture<ProxyBodyCopy.Source>();
-            var cancelled = ProxyBodyCopy.start(() -> pending, new ByteArrayOutputStream(), executor);
+            var acquisitionEntered = new CountDownLatch(1);
+            var cancelled = ProxyBodyCopy.start(() -> {
+                acquisitionEntered.countDown();
+                return pending;
+            }, new ByteArrayOutputStream(), executor);
+            if (!acquisitionEntered.await(5, TimeUnit.SECONDS))
+                throw new AssertionError("acquisition did not start on worker");
             if (!cancelled.cancel(true) || !pending.isCancelled())
-                throw new AssertionError("pending acquisition not canceled");
+                throw new AssertionError("started request not canceled");
             // Rejection is before HTTP start: the acquisition supplier must
             // never run, and no emergency cleanup thread should be created.
             var acquired = new AtomicInteger();
