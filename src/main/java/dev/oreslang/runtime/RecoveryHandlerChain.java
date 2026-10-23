@@ -19,11 +19,10 @@ import java.util.concurrent.TimeoutException;
  * unwinding, or actor supervision.
  *
  * <p>Only a trusted VM/compiler path may classify a failure as THROW or RAISE.
- * Never construct an admitted kind from guest strings or an arbitrary host
- * Throwable. This helper does not mint classification authority: the source
- * interpreter still needs a sealed guest-effect carrier. Fatal/cancellation
- * indicators in bounded host cause/suppressed graphs bypass handlers even
- * when a caller accidentally supplies THROW or RAISE.
+ * Dispatch accepts only a compiler-authenticated {@link GuestFailure}; there
+ * is no raw kind/Throwable admission path. The envelope carries immutable
+ * logical execution/source provenance while the wrapped host Throwable remains
+ * an untrusted prototype payload whose mutable graph is revalidated defensively.
  */
 final class RecoveryHandlerChain<T> {
     public enum FailureKind { THROW, RAISE, PANIC, CANCELLATION, HOST_FATAL }
@@ -32,21 +31,25 @@ final class RecoveryHandlerChain<T> {
 
     public record Recovered<T>(T value) implements Outcome<T> { }
 
-    public record Unhandled<T>(FailureKind kind, Throwable error) implements Outcome<T> {
+    public record Unhandled<T>(GuestFailure pendingFailure) implements Outcome<T> {
         public Unhandled {
-            Objects.requireNonNull(kind);
-            Objects.requireNonNull(error);
+            Objects.requireNonNull(pendingFailure);
         }
+        public FailureKind kind() { return pendingFailure.kind(); }
+        public Throwable error() { return pendingFailure.error(); }
+        public GuestFailure.Provenance provenance() { return pendingFailure.provenance(); }
     }
 
     /** A callback's host failure cannot silently replace an in-flight raise. */
-    public record HandlerFailure<T>(FailureKind pendingKind, Throwable pendingError,
+    public record HandlerFailure<T>(GuestFailure pendingFailure,
                                     RuntimeException callbackError) implements Outcome<T> {
         public HandlerFailure {
-            Objects.requireNonNull(pendingKind);
-            Objects.requireNonNull(pendingError);
+            Objects.requireNonNull(pendingFailure);
             Objects.requireNonNull(callbackError);
         }
+        public FailureKind pendingKind() { return pendingFailure.kind(); }
+        public Throwable pendingError() { return pendingFailure.error(); }
+        public GuestFailure.Provenance provenance() { return pendingFailure.provenance(); }
     }
 
     /**
@@ -55,13 +58,15 @@ final class RecoveryHandlerChain<T> {
      * for supervisor diagnostics while the host cancellation/fatal signal
      * takes precedence. Runtime Error subclasses still escape directly.
      */
-    public record TerminalCallbackFailure<T>(FailureKind pendingKind, Throwable pendingError,
+    public record TerminalCallbackFailure<T>(GuestFailure pendingFailure,
                                              RuntimeException terminalError) implements Outcome<T> {
         public TerminalCallbackFailure {
-            Objects.requireNonNull(pendingKind);
-            Objects.requireNonNull(pendingError);
+            Objects.requireNonNull(pendingFailure);
             Objects.requireNonNull(terminalError);
         }
+        public FailureKind pendingKind() { return pendingFailure.kind(); }
+        public Throwable pendingError() { return pendingFailure.error(); }
+        public GuestFailure.Provenance provenance() { return pendingFailure.provenance(); }
     }
 
     @FunctionalInterface
@@ -143,21 +148,25 @@ final class RecoveryHandlerChain<T> {
      * or Java stack growth is used. A distinct one-shot continuation is minted
      * for each visited handler, invalidated even when its handler throws.
      */
-    // Package-private: source execution must enter via a future trusted,
-    // compiler-owned guest-effect admission bridge, not a guest/FFI method.
-    Outcome<T> dispatch(FailureKind kind, Throwable failure) {
-        Objects.requireNonNull(kind, "kind");
-        Objects.requireNonNull(failure, "failure");
+    // Package-private: source execution enters only with a VM/compiler-minted
+    // immutable GuestFailure envelope. There is intentionally no raw
+    // (FailureKind, Throwable) dispatch overload.
+    Outcome<T> dispatch(GuestFailure pendingFailure) {
+        Objects.requireNonNull(pendingFailure, "pendingFailure");
+        if (!pendingFailure.compilerAuthenticated()) {
+            throw new SecurityException("recovery requires a compiler-authenticated guest failure");
+        }
+        final FailureKind kind = pendingFailure.kind();
+        final Throwable failure = pendingFailure.error();
         final int mask = switch (kind) {
             case THROW -> THROW;
             case RAISE -> RAISE;
             case PANIC, CANCELLATION, HOST_FATAL -> 0;
         };
-        // Kind and underlying host cause must both be eligible: never allow a
-        // mislabeled THROW/RAISE to downgrade terminal cancellation, security
-        // denial, a native/VM fatal error or an excessively complex causal graph.
+        // GuestFailure issuance admits only THROW/RAISE. Keep this terminal
+        // branch as defense in depth if the envelope contract evolves.
         if (mask == 0 || handlers.length == 0) {
-            return new Unhandled<>(kind, failure);
+            return new Unhandled<>(pendingFailure);
         }
         // Find the first eligible callback before doing a possibly expensive
         // cause-graph preflight; a type-mismatched recovery chain must not
@@ -167,7 +176,7 @@ final class RecoveryHandlerChain<T> {
             firstEligible--;
         }
         if (firstEligible < 0) {
-            return new Unhandled<>(kind, failure);
+            return new Unhandled<>(pendingFailure);
         }
 
         DispatchScope scope = CURRENT_DISPATCH.get();
@@ -188,7 +197,7 @@ final class RecoveryHandlerChain<T> {
         // Host Throwable graphs are mutable and accessors may throw. A future
         // sealed guest-effect carrier is still required for trusted admission.
         if (untrustedOrTerminalGraph(failure)) {
-            return new Unhandled<>(kind, failure);
+            return new Unhandled<>(pendingFailure);
         }
 
         for (int i = firstEligible; i >= 0; i--) {
@@ -207,12 +216,12 @@ final class RecoveryHandlerChain<T> {
                     // shutdown signals must not masquerade as ordinary
                     // handler errors. Retain both error identities.
                     if (untrustedOrTerminalGraph(callbackFailure)) {
-                        return new TerminalCallbackFailure<>(kind, failure, callbackFailure);
+                        return new TerminalCallbackFailure<>(pendingFailure, callbackFailure);
                     }
                     if (untrustedOrTerminalGraph(failure)) {
-                        return new Unhandled<>(kind, failure);
+                        return new Unhandled<>(pendingFailure);
                     }
-                    return new HandlerFailure<>(kind, failure, callbackFailure);
+                    return new HandlerFailure<>(pendingFailure, callbackFailure);
                 }
                 decision = cursor.state;
                 resolved = cursor.value;
@@ -226,16 +235,16 @@ final class RecoveryHandlerChain<T> {
             // delegating or resolving. Revalidate before either action becomes
             // observable, including before invoking the next handler.
             if (untrustedOrTerminalGraph(failure)) {
-                return new Unhandled<>(kind, failure);
+                return new Unhandled<>(pendingFailure);
             }
             if (decision == Cursor.OPEN) {
                 // Fail closed while preserving the pending original error.
-                return new HandlerFailure<>(kind, failure,
+                return new HandlerFailure<>(pendingFailure,
                         new IllegalStateException("recovery handler must resolve or delegate"));
             }
             if (decision == Cursor.RESOLVED) return new Recovered<>(resolved);
         }
-        return new Unhandled<>(kind, failure);
+        return new Unhandled<>(pendingFailure);
         } finally {
             scope.active.remove(this);
             if (scope.active.isEmpty()) {
@@ -245,11 +254,11 @@ final class RecoveryHandlerChain<T> {
     }
 
     /**
-     * Conservative preflight for this host-only prototype. This is NOT a
-     * substitute for compiler-minted GuestEffect provenance: unrecognized host
-     * Throwable types must never be admitted as guest source errors later.
-     * Bounds also prevent hostile cyclic or huge cause graphs from becoming
-     * an unbounded preflight denial-of-service.
+     * Conservative payload preflight for this host-only prototype. GuestFailure
+     * now authenticates the effect kind and immutable logical provenance, but
+     * the wrapped Java Throwable graph remains mutable/untrusted. Bounds prevent
+     * hostile cyclic or huge cause graphs from becoming an unbounded preflight
+     * denial-of-service.
      */
     private static boolean untrustedOrTerminalGraph(Throwable failure) {
         try {
