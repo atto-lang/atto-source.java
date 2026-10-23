@@ -7126,8 +7126,9 @@ public final class ActorRuntime implements AutoCloseable {
         physicalCloseDispatcher.shutdown();
         try {
             long remaining = deadline - System.nanoTime();
-            if (remaining <= 0 ||
-                    !physicalCloseDispatcher.awaitTermination(remaining, TimeUnit.NANOSECONDS)) {
+            if (!physicalCloseDispatcher.isTerminated()
+                    && !physicalCloseDispatcher.awaitTermination(
+                            Math.max(0L, remaining), TimeUnit.NANOSECONDS)) {
                 throw new IllegalStateException(
                         "ActorRuntime physical close notification lane still active; quarantined");
             }
@@ -7768,10 +7769,13 @@ public final class ActorRuntime implements AutoCloseable {
                                 ? new ActorTerminatedException(ref.id(), kind, null)
                                 : terminal);
             }
-            if (terminal == null) ref.doneFuture.completeFromRuntime(null);
-            else ref.doneFuture.failFromRuntime(terminal);
+            // All teardown and internal finalization observers must drain
+            // BEFORE publishing externally visible ActorRef.done(). A failing
+            // finalization observer must never be discovered only after DONE.
             finalizedFuture.completeFromRuntime(null);
             lifecycleLock.notifyAll();
+            if (terminal == null) ref.doneFuture.completeFromRuntime(null);
+            else ref.doneFuture.failFromRuntime(terminal);
         }
 
         private void sourceTaskCleanupQuiesced() {
