@@ -7230,6 +7230,10 @@ public final class ActorRuntime implements AutoCloseable {
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
         /** Host-only physical loan/handle receipts, owned by this incarnation. */
         private final ActorPhysicalRetirementRegistry physicalRetirement;
+        /** Verified NIO leases awaiting close. Admission and STOP snapshot take
+         * lifecycleLock; a successful close detaches before its receipt settles. */
+        private final Set<ActorPhysicalChannelLease> physicalChannelLeases =
+                ConcurrentHashMap.newKeySet();
         /** Bounded async-close Future receipts admitted only by cleanup Tasks. */
         private int pendingCleanupFutures;
         /**
