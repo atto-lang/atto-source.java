@@ -426,7 +426,7 @@ class AsyncNativeIoTest {
                 assertFalse(io.physicalShutdown().isDone());
             } finally {
                 allowCallbackExit.countDown();
-                if (!socket.isClosed()) socket.shutdownInput();
+                if (!socket.isClosed() && !socket.isInputShutdown()) socket.shutdownInput();
             }
             assertInstanceOf(IllegalStateException.class,
                     assertThrows(ExecutionException.class,
