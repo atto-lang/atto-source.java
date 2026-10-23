@@ -481,9 +481,10 @@ final class ActorStopCleanupAdmissionTest {
                                     throw new IllegalStateException(interrupted);
                                 }
                             });
-                            if (!childContext.runtime().ownCurrentActorFuture(operation)) {
+                            childContext.runtime().ownCurrentActorFuture(operation);
+                            if (operation.isCancelled()) {
                                 guestFailure.compareAndSet(null,
-                                        new AssertionError("child Future admission failed"));
+                                        new AssertionError("child Future was rejected during admission"));
                             }
                             allChildrenOwned.countDown();
                         };
