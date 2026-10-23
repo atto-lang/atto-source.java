@@ -1020,6 +1020,8 @@ final class ActorPhysicalRetirementRegistryTest {
         assertSame(failure, assertThrows(IllegalStateException.class,
                 receipt::completeAfterPhysicalRelease));
         assertEquals(2, notifications.get());
+        assertEquals(0, registry.snapshot().inFlightNotifications(),
+                "throwing final notifier must release its fence exactly once");
         assertSame(failure, registry.snapshot().failure());
         assertFalse(registry.snapshot().retired());
         assertThrows(IllegalStateException.class, registry::retireVerified,
