@@ -308,6 +308,50 @@ final class CleanupAwareSchedulerCancellationTest {
         }
     }
 
+    @Test void wallDeadlineWithoutCancellationInjectionQuarantinesSuspendedSource()
+            throws Exception {
+        OresFuture<Integer> producer = new OresFuture<>();
+        CountDownLatch started = new CountDownLatch(1);
+        AtomicInteger cleanQuiescence = new AtomicInteger();
+        IllegalStateException deadlineFailure = new IllegalStateException("wall deadline");
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> work = scheduler.startWithWallDeadline(
+                    new OresScheduler.CleanupAwareTask<Integer>() {
+                        @Override public OresScheduler.Step<Integer> resume(
+                                OresScheduler.Resume resume) {
+                            if (!resume.initial()) {
+                                fail("deadline must not resurrect suspended guest source");
+                            }
+                            started.countDown();
+                            return OresScheduler.await(producer);
+                        }
+                    },
+                    cleanQuiescence::incrementAndGet,
+                    TimeUnit.SECONDS.toNanos(2),
+                    deadlineFailure);
+            assertTrue(started.await(3, TimeUnit.SECONDS));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
+            while (producer.pendingRuntimeWaiterCount() == 0
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+            assertEquals(1, producer.pendingRuntimeWaiterCount());
+
+            ExecutionException terminal = assertThrows(
+                    ExecutionException.class, () -> work.get(5, TimeUnit.SECONDS));
+            assertInstanceOf(OresScheduler.CleanupIncompleteError.class,
+                    terminal.getCause(), "deadline cannot stand in for lexical unwind");
+            assertSame(deadlineFailure, terminal.getCause().getCause());
+            assertFalse(work.isCancelled());
+            assertEquals(0, cleanQuiescence.get(),
+                    "aborted lexical frames cannot receive a clean retirement");
+            assertTrue(scheduler.hasIncompleteCleanup(),
+                    "caller must retain/quarantine resource ownership");
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+            assertFalse(producer.isCancelled(), "borrowed producer remains independent");
+        }
+    }
+
     @Test void ordinaryNonCleanupFutureRetainsImmediateCancellation() throws Exception {
         OresFuture<Integer> producer = new OresFuture<>();
         CountDownLatch waiting = new CountDownLatch(1);
