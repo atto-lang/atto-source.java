@@ -185,6 +185,61 @@ final class ActorProxyRequestSlabTest {
     }
 
     @Test
+    void foreignActorCannotSettleOwnersReceipt() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch ready = new CountDownLatch(1);
+            CountDownLatch checked = new CountDownLatch(1);
+            AtomicReference<ActorProxyRequestSlab> shared = new AtomicReference<>();
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            java.util.concurrent.atomic.AtomicLong receipt =
+                    new java.util.concurrent.atomic.AtomicLong();
+            java.util.concurrent.atomic.AtomicLong request =
+                    new java.util.concurrent.atomic.AtomicLong();
+            ActorRuntime.ActorRef<Integer> a = runtime.spawnSharedTrusted(context ->
+                    (message, turn) -> {
+                        try {
+                            if (message == 1) {
+                                ActorProxyRequestSlab slab = new ActorProxyRequestSlab(
+                                        ActorProxyRequestSlab.Layout.SOA, 1, 1);
+                                request.set(slab.admit(1, 0, 0));
+                                receipt.set(slab.pin(request.get()));
+                                shared.set(slab);
+                                ready.countDown();
+                            } else {
+                                ActorProxyRequestSlab slab = shared.get();
+                                assertTrue(slab.retire(request.get()));
+                                assertTrue(slab.settle(slab.identity(), request.get(), receipt.get()));
+                                slab.close();
+                                checked.countDown();
+                            }
+                        } catch (Throwable t) { failure.set(t); checked.countDown(); }
+                    });
+            a.send(1);
+            assertTrue(ready.await(5, TimeUnit.SECONDS));
+            ActorRuntime.ActorRef<Integer> b = runtime.spawnSharedTrusted(context ->
+                    (message, turn) -> {
+                        try {
+                            ActorProxyRequestSlab slab = shared.get();
+                            assertThrows(SecurityException.class, () -> slab.pin(request.get()));
+                            assertThrows(SecurityException.class,
+                                    () -> slab.settle(1L, request.get(), receipt.get()));
+                        } catch (Throwable t) { failure.set(t); }
+                        finally { checked.countDown(); }
+                    });
+            b.send(1);
+            assertTrue(checked.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            a.send(2);
+            a.drain().get(5, TimeUnit.SECONDS);
+            assertNull(failure.get());
+            a.stop();
+            b.stop();
+            assertTrue(a.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(b.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void externalHostCannotAllocateActorOwnedSlab() {
         assertThrows(SecurityException.class, () ->
                 new ActorProxyRequestSlab(ActorProxyRequestSlab.Layout.SOA, 4, 1));
