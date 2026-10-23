@@ -274,10 +274,18 @@ public final class SupervisorShutdownTree {
                 escalate(deadline);
             }, nanos, TimeUnit.NANOSECONDS);
         } catch (RuntimeException rejected) {
-            // Failure to install the deadline is a CONTROL infrastructure
-            // fault. Publish it before completing the synchronous observer,
-            // exactly as the scheduled deadline path publishes its status.
-            // Do not declare any actor/arena physically reclaimed.
+            // A previously completed (idempotent) shutdown needs no new
+            // watchdog. Its outcome must not be poisoned by a subsequently
+            // rejected timer registration.
+            if (actual.isDone()) {
+                actual.whenCompleteRuntime((ignored, failure) -> {
+                    if (failure == null) bounded.completeFromRuntime(null);
+                    else bounded.failFromRuntime(failure);
+                });
+                return bounded;
+            }
+            // Failure to monitor an active shutdown is an infrastructure
+            // fault. Publish it before notifying synchronous observers.
             markCoordinatorFailed();
             bounded.failFromRuntime(rejected);
             escalate(rejected);
