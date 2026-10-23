@@ -259,6 +259,29 @@ public final class Ast {
         }
     }
 
+    /** Immutable, category-distinct declarations; effects are may-sets, not handlers. */
+    public record EffectSpec(List<TypeRef> throwsTypes, List<TypeRef> raisesTypes,
+                             List<TypeRef> panicsTypes) {
+        public EffectSpec {
+            throwsTypes = List.copyOf(throwsTypes);
+            raisesTypes = List.copyOf(raisesTypes);
+            panicsTypes = List.copyOf(panicsTypes);
+            if (new HashSet<>(throwsTypes).size() != throwsTypes.size()
+                    || new HashSet<>(raisesTypes).size() != raisesTypes.size()
+                    || new HashSet<>(panicsTypes).size() != panicsTypes.size()) {
+                throw new IllegalArgumentException("duplicate declared checked effect type");
+            }
+        }
+
+        public static EffectSpec none() {
+            return new EffectSpec(List.of(), List.of(), List.of());
+        }
+
+        public boolean isEmpty() {
+            return throwsTypes.isEmpty() && raisesTypes.isEmpty() && panicsTypes.isEmpty();
+        }
+    }
+
     public record FunctionDecl(
             String name,
             CallableKind kind,
@@ -275,7 +298,20 @@ public final class Ast {
             TypeRef returnType,
             List<Annotation> annotations,
             List<Stmt> body,
-            List<GenericParameter> genericSpecs) implements Decl {
+            List<GenericParameter> genericSpecs,
+            EffectSpec effects) implements Decl {
+        /** Keep the existing generic-default-aware AST constructor ABI. */
+        public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
+                            boolean suspends, boolean generator, boolean structural,
+                            boolean nonLexical, boolean trapped, ActorKind actorKind,
+                            List<String> genericParameters, List<Param> parameters,
+                            TypeRef returnType, List<Annotation> annotations,
+                            List<Stmt> body, List<GenericParameter> genericSpecs) {
+            this(name, kind, visibility, async, suspends, generator, structural,
+                    nonLexical, trapped, actorKind, genericParameters, parameters,
+                    returnType, annotations, body, genericSpecs, EffectSpec.none());
+        }
+
         /** Preserve the pre-default FunctionDecl constructor ABI. */
         public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
                             boolean suspends, boolean generator, boolean structural,
@@ -311,6 +347,7 @@ public final class Ast {
             parameters = List.copyOf(parameters);
             annotations = List.copyOf(annotations);
             body = List.copyOf(body);
+            java.util.Objects.requireNonNull(effects, "function checked effects");
         }
 
         public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
@@ -361,6 +398,27 @@ public final class Ast {
         }
     }
 
+    /** Connection-oriented actors have two distinct admission dimensions. */
+    public enum ActorTransport { GENERIC, HTTP, TCP, WEBSOCKET }
+
+    /**
+     * Declarative admission limits are VM policy, NOT mutable actor fields.
+     * The legacy actor scheduler currently implements precisely (1,1).
+     */
+    public record ActorConcurrency(
+            ActorTransport transport, int requestConcurrency, int messageConcurrency) {
+        public ActorConcurrency {
+            java.util.Objects.requireNonNull(transport, "actor transport");
+            if (requestConcurrency < 1 || messageConcurrency < 1) {
+                throw new IllegalArgumentException(
+                        "actor concurrency limits must be positive");
+            }
+        }
+        public static ActorConcurrency serial(ActorTransport transport) {
+            return new ActorConcurrency(transport, 1, 1);
+        }
+    }
+
     public record ClassDecl(
             String name,
             Visibility visibility,
@@ -371,13 +429,28 @@ public final class Ast {
             List<TypeRef> interfaces,
             List<FieldDecl> fields,
             ConstructorDecl constructor,
-            List<MethodDecl> methods) implements Decl {
+            List<MethodDecl> methods,
+            ActorConcurrency actorConcurrency) implements Decl {
         public ClassDecl {
+            actorConcurrency = java.util.Objects.requireNonNull(actorConcurrency);
+            if (actorKind == ActorKind.NONE && actorConcurrency.transport() != ActorTransport.GENERIC)
+                throw new IllegalArgumentException("ordinary classes cannot carry actor transport policy");
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+        }
+
+        /** Compatibility constructor for all existing AST/JIT compiler clients. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods,
+                    ActorConcurrency.serial(ActorTransport.GENERIC));
         }
 
         /** Compatibility constructor for pre-constructor AST producers. */
@@ -424,10 +497,18 @@ public final class Ast {
             boolean structural,
             List<String> genericParameters,
             List<Param> parameters,
-            TypeRef returnType) implements InterfaceMember {
+            TypeRef returnType,
+            EffectSpec effects) implements InterfaceMember {
         public InterfaceFunctionDecl {
             genericParameters = List.copyOf(genericParameters);
             parameters = List.copyOf(parameters);
+            java.util.Objects.requireNonNull(effects, "interface checked effects");
+        }
+
+        public InterfaceFunctionDecl(String name, boolean structural,
+                                     List<String> genericParameters,
+                                     List<Param> parameters, TypeRef returnType) {
+            this(name, structural, genericParameters, parameters, returnType, EffectSpec.none());
         }
 
         /** Compatibility constructor for nominal interface callable contracts. */
@@ -505,7 +586,20 @@ public final class Ast {
             List<Param> parameters,
             TypeRef returnType,
             List<Annotation> annotations,
-            List<Stmt> body) {
+            List<Stmt> body,
+            EffectSpec effects) {
+        /** Existing methods retain empty effects until declared by source. */
+        public MethodDecl(String name, Visibility visibility, boolean isStatic,
+                          boolean isAbstract, boolean async, boolean suspends,
+                          boolean structural, TypeRef explicitReceiverType,
+                          List<String> genericParameters, List<Param> parameters,
+                          TypeRef returnType, List<Annotation> annotations,
+                          List<Stmt> body) {
+            this(name, visibility, isStatic, isAbstract, async, suspends, structural,
+                    explicitReceiverType, genericParameters, parameters,
+                    returnType, annotations, body, EffectSpec.none());
+        }
+
         /** Preserve all existing AST construction sites without an explicit effect. */
         public MethodDecl(String name, Visibility visibility, boolean isStatic,
                           boolean isAbstract, boolean async, boolean structural,
@@ -521,6 +615,7 @@ public final class Ast {
             parameters = List.copyOf(parameters);
             annotations = List.copyOf(annotations);
             body = List.copyOf(body);
+            java.util.Objects.requireNonNull(effects, "method checked effects");
         }
 
         /** Compatibility constructor for methods that do not use declaration-level structural matching. */
@@ -574,7 +669,7 @@ public final class Ast {
     public enum BindingKind { CONST, VAL, LET }
 
     public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
-            BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
+            BlockStmt, UsingBorrowStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
             ForOfStmt, ForOfDestructureStmt, ForStmt, DoWhileStmt, LoopStmt, SelectStmt { }
 
     /**
@@ -664,6 +759,23 @@ public final class Ast {
 
     public record BlockStmt(List<Stmt> body) implements Stmt {
         public BlockStmt { body = List.copyOf(body); }
+    }
+    /**
+     * Scoped transport/resource loan syntax. Keeping it as a distinct AST node
+     * prevents a generic call/block rewrite from accidentally extending a
+     * borrow lifetime across returns, exceptions or suspension.
+     *
+     * The execution and ownership admission gates remain CLOSED until
+     * authenticated transport handles, loan fencing, and unwind cleanup are
+     * implemented across all applicable backends.
+     */
+    public record UsingBorrowStmt(Expr resource, String binding, List<Stmt> body) implements Stmt {
+        public UsingBorrowStmt {
+            if (resource == null || binding == null || binding.isBlank() || body == null) {
+                throw new IllegalArgumentException("using borrowed scope needs resource, alias and body");
+            }
+            body = List.copyOf(body);
+        }
     }
     public record BreakStmt() implements Stmt { }
     public record ContinueStmt() implements Stmt { }

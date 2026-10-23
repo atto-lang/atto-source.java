@@ -53,6 +53,13 @@ public final class OresSymbol {
 
     public static String normalizeAndValidate(String input) {
         Objects.requireNonNull(input, "Symbol name");
+        // Canonical NFC composition cannot compress an arbitrarily large
+        // UTF-16 input into a <=256-byte Symbol name. Guard the raw input
+        // before invoking Normalizer, which otherwise allocates and scans
+        // caller-supplied strings of unbounded size.
+        if (input.length() > 1_024) {
+            throw new IllegalArgumentException("Symbol source name exceeds normalization budget");
+        }
         String value = Normalizer.normalize(input, Normalizer.Form.NFC);
         if (value.isEmpty() || value.getBytes(StandardCharsets.UTF_8).length > 256) {
             throw new IllegalArgumentException("Symbol name requires 1..256 UTF-8 bytes");
@@ -66,12 +73,16 @@ public final class OresSymbol {
                 }
             }
             int codepoint = value.codePointAt(i);
+            int category = Character.getType(codepoint);
             if (codepoint < 0x20 || (codepoint >= 0x7f && codepoint <= 0x9f)
-                    || Character.getType(codepoint) == Character.FORMAT
+                    || category == Character.FORMAT
+                    || category == Character.LINE_SEPARATOR
+                    || category == Character.PARAGRAPH_SEPARATOR
                     || codepoint == 0x061c || codepoint == 0x200e || codepoint == 0x200f
                     || (codepoint >= 0x202a && codepoint <= 0x202e)
                     || (codepoint >= 0x2066 && codepoint <= 0x2069)) {
-                throw new IllegalArgumentException("control or bidi character in Symbol");
+                throw new IllegalArgumentException(
+                        "control, line-separator, or bidi character in Symbol");
             }
             i += Character.charCount(codepoint);
         }

@@ -1940,7 +1940,9 @@ public final class OwnershipChecker {
                 || member.member().equals("is_ok") || member.member().equals("is_err");
         boolean extracting = member.member().equals("unwrap") || member.member().equals("unwrap_safe")
                 || member.member().equals("unwrap_all") || member.member().equals("flatten")
-                || member.member().equals("expect") || member.member().equals("unwrap_or");
+                || member.member().equals("expect") || member.member().equals("unwrap_or")
+                || member.member().equals("unwrap_or_else")
+                || member.member().equals("or_else") || member.member().equals("ok_or");
         if (!query && !extracting) return null;
         // A nested call has no reliably resolved result type in this checker
         // until TypeChecker supplies its typed IR. Do not inspect it here and
@@ -2049,6 +2051,20 @@ public final class OwnershipChecker {
         }
 
         Ast.TypeRef okType = option ? receiverType.arguments().getFirst() : receiverType.arguments().get(0);
+        // The first ergonomic API slice deliberately admits only Copy values.
+        // Affine payloads and error values require branch-sensitive closure
+        // ownership/drop proofs before lazy callbacks may carry them.
+        // Result.or_else predates Option.or_else and is an affine-consuming
+        // Result combinator, not a Copy-only Option fallback. In particular
+        // Result<Box,E>.or_else must not be silently rejected or checked twice.
+        boolean newCopyOnlyFallback = member.member().equals("unwrap_or_else")
+                || member.member().equals("ok_or")
+                || (option && member.member().equals("or_else"));
+        if (newCopyOnlyFallback && (!isCopyType(okType)
+                || (result && !isCopyType(receiverType.arguments().get(1))))) {
+            throw error(member.member()
+                    + " requires Copy Option/Result payloads until affine fallback ownership is proven");
+        }
         if (okType.isBorrow()) {
             throw error(member.member()
                     + " cannot extract a borrow from an owned Option/Result until explicit lifetime parameters are supported");
@@ -2074,11 +2090,32 @@ public final class OwnershipChecker {
         if (member.member().equals("unwrap_or") && containsMutexGuardType(okType)) {
             throw error("unwrap_or cannot eagerly discard a MutexGuard fallback; use explicit branching so every guard is released");
         }
+        Ast.TypeRef okOrErrorType = null;
         for (Ast.Expr argument : arguments) {
             ValueInfo arg = checkExpr(argument, scope, true);
             if (containsMutexGuardType(arg.type) && !member.member().equals("unwrap_or")) {
                 throw error(member.member() + " argument cannot contain MutexGuard");
             }
+            if (member.member().equals("ok_or")) {
+                if (arg.type == null || arg.type.isBorrow() || !isCopyType(arg.type)) {
+                    throw error("Option.ok_or eager error must be a concrete owned Copy value");
+                }
+                okOrErrorType = arg.type;
+            }
+        }
+        if (member.member().equals("ok_or")) {
+            if (!option || okOrErrorType == null) {
+                throw error("Option.ok_or requires one eager error value");
+            }
+            Ast.TypeRef resultType = new Ast.TypeRef(
+                    "Result", List.of(okType, okOrErrorType), false);
+            return new ValueInfo(resultType, kindOfType(resultType), null);
+        }
+        if (member.member().equals("or_else")) {
+            // Both Option.or_else and Result.or_else keep the sum carrier.
+            // Never return null after checking/consuming the receiver: the
+            // ordinary member-call path would evaluate and consume it again.
+            return new ValueInfo(receiverType, kindOfType(receiverType), null);
         }
 
         if (member.member().equals("unwrap_safe")) {
