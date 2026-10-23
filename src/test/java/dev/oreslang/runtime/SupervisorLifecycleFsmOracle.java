@@ -40,6 +40,10 @@ public final class SupervisorLifecycleFsmOracle {
 
     private static void focused() {
         var s = SupervisorLifecycleFsm.State.initial();
+        var controlFailed = apply(s, new SupervisorLifecycleFsm.CoordinatorFailed(1));
+        check(!controlFailed.admissionsOpen() && !controlFailed.restartPermitted(),
+                "CONTROL failure left active admission/restart gates open");
+        mustReject(controlFailed, new SupervisorLifecycleFsm.RestartRequested(1));
         mustReject(s, new SupervisorLifecycleFsm.RestartCommitted(1));
         mustReject(s, new SupervisorLifecycleFsm.ActorsFinished(1, false));
         mustReject(s, new SupervisorLifecycleFsm.PhysicalRelease(1));
