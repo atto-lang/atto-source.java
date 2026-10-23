@@ -227,3 +227,42 @@ for bounded STOP progress, along with native I/O/FFI loan receipts. All tests
 remain unexecuted on the exact source head until authorized runners are
 available; successful source-free canaries in unrelated organizations do not
 authorize a private-source mirror.
+
+## Fail-closed sibling admission pre-fence
+
+Parent STOP formerly invoked each direct child's full `cancel()` in a serial
+loop. A synchronous cancellation hook on child A can block before child B's
+STOP begins. During that window B previously continued admitting new user mail
+(and could spawn new grandchildren from an already-running guest turn).
+
+The parent now snapshots children while sealing itself, then under **each
+child's independent lifecycle lock** sets `child.sealing = true` for all
+non-finalized direct children **before** invoking any child's full cancellation.
+This does not hold the parent lock while taking a child lock and does not call
+Future listeners under those locks. The ordinary send admission checks the
+sealing bit both before and after message preparation. Structured child spawn
+now also rejects `parent.sealing`, preventing post-fence grandchildren.
+An existing graceful-stop seal also denies new child spawns.
+
+Deterministic regressions in `ActorStopCleanupAdmissionTest`:
+
+- `siblingMailboxesAreSealedBeforeAnyChildRevokerCanBlock` arms two
+  independently revocable child operations, blocks the first STOP revoker,
+  then requires both sibling mailboxes to reject new messages. No
+  post-fence message may reach either child.
+- `inFlightChildCannotSpawnGrandchildAfterParentStopPreFence` holds an
+  executing child turn and a different child's STOP revoker, then resumes
+  the first child's attempted spawn. Spawn must fail with cancellation and
+  no new grandchild may be created.
+
+This is an **admission safety fence**, NOT synchronous or parallel physical
+STOP completion. Already-running child turns and previously admitted work
+remain subject to normal cancellation checkpoints. A blocked revoker can
+still delay the next sibling's full teardown. Proper nonblocking CONTROL
+cancellation fan-out needs a separately reviewed design and physical receipt
+accounting; it should not put blocking hooks on the zero-thread CONTROL
+coordinator. No extra threads or worker pools were added by this patch.
+
+These tests are staged but cannot be called passing without an executed
+JDK25 exact-head workflow. The protected source-repo private carrier allowlist
+remains empty; private source has not been exported to any candidate test org.
