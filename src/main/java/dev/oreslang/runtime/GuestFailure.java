@@ -69,6 +69,7 @@ final class GuestFailure {
     private final Set<RecoveryHandlerChain<?>> visitedChains =
             Collections.newSetFromMap(new IdentityHashMap<>());
     private Lifecycle lifecycle = Lifecycle.ACTIVE;
+    private boolean dispatching;
 
     private GuestFailure(
             RecoveryHandlerChain.FailureKind kind,
@@ -145,6 +146,10 @@ final class GuestFailure {
             throw new IllegalStateException(
                     "completed guest failure cannot be dispatched again: " + lifecycle);
         }
+        if (dispatching) {
+            throw new IllegalStateException(
+                    "guest failure is already in an active recovery dispatch");
+        }
         if (!visitedChains.add(chain)) return false;
         if (visitedChains.size() > MAX_RECOVERY_CHAIN_VISITS) {
             lifecycle = Lifecycle.TERMINATED;
@@ -152,7 +157,16 @@ final class GuestFailure {
             throw new IllegalStateException(
                     "recovery chain visit quota exceeded");
         }
+        dispatching = true;
         return true;
+    }
+
+    synchronized void leaveRecoveryChain() {
+        if (lifecycle != Lifecycle.ACTIVE || !dispatching) {
+            throw new IllegalStateException(
+                    "guest failure has no active recoverable dispatch");
+        }
+        dispatching = false;
     }
 
     synchronized void markRecovered() {
@@ -169,6 +183,7 @@ final class GuestFailure {
                     "guest failure already completed: " + lifecycle);
         }
         lifecycle = terminal;
+        dispatching = false;
         visitedChains.clear();
     }
 }
