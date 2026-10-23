@@ -191,3 +191,39 @@ Likewise, notification-drain receipts alone do not prove asynchronous native
 I/O, FFI, DMA or kernel handle closure. Full supervisor loan joins, independent
 nonblocking CONTROL cancellation fan-out, bounded stalled-cleanup diagnostics,
 and Java/LLVM source-level conformance remain mandatory release gates.
+
+## Drain observer STOP ordering and physical notification receipts
+
+Further source review identified an ordering hazard in `ActorCell.terminateTree`:
+although child STOP requests and parent-owned resource cancellation had been
+prioritized, the implementation still failed each pending public `drain()`
+observer **before** those operations. `OresFuture.failFromRuntime` runs
+subscribers synchronously, and a blocked host subscriber could therefore stop
+child cancellation and source lexical cleanup from even being requested.
+
+This draft now:
+
+1. Detaches public drain observers and reserves one
+   `pendingStopDrainNotifications` receipt per observer under `lifecycleLock`.
+2. Seals the mailboxes, requests STOP for all children, registers and joins
+   existing owned-Future drains, and requests SourceTask cancellation before
+   delivering public drain failure.
+3. Registers `whenNotificationsDrainedRuntime` on each pending drain Future
+   before terminal settlement; every receipt must drain before `finalizeStopLocked`
+   can reclaim the arena or publish DONE.
+4. Marks an observer registration failure, underflow, or terminal-publication
+   failure as incomplete cleanup; no false success or arena reclamation.
+5. Adds deterministic JUnit regression
+   `blockedDrainSubscriberCannotDelayChildCancellationOrGuestStop` in
+   `ActorStopCleanupAdmissionTest`. It holds an in-flight mailbox message,
+   blocks a drain subscriber after STOP, checks the child can terminate,
+   then releases the guest turn **while leaving the subscriber blocked**
+   and confirms parent DONE remains pending.
+
+**Limitations**: this reordering does not make host callbacks nonblocking.
+One hostile subscriber can still delay *later* drain-observer notifications and
+the original caller's return. Stronger independent CONTROL fan-out is required
+for bounded STOP progress, along with native I/O/FFI loan receipts. All tests
+remain unexecuted on the exact source head until authorized runners are
+available; successful source-free canaries in unrelated organizations do not
+authorize a private-source mirror.
