@@ -1175,6 +1175,16 @@ public final class Ast {
         }
 
         public static void copy(CallExpr source, CallExpr target) {
+            // A checked dispatch is an authorization on an exact receiver
+            // binding and member slot. AST rewrites that substitute either
+            // must lose this authorization and be re-typechecked.
+            if (!(source.callee() instanceof MemberExpr original)
+                    || !(target.callee() instanceof MemberExpr rewritten)
+                    || !original.member().equals(rewritten.member())
+                    || original.receiver() != rewritten.receiver()
+                    || source.arguments().size() != target.arguments().size()) {
+                return;
+            }
             String resolved = lookup(source);
             if (resolved != null) record(target, resolved);
         }
