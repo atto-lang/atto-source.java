@@ -118,4 +118,60 @@ final class TupleV2ProjectionPlanTest {
                 Types.Primitive.INT,
                 new Types.Named("Option", List.of(Types.Primitive.STRING)))).isEmpty());
     }
+    @Test
+    void structuralLifetimeTagSurvivesAnEqualWidthProjection() {
+        var input = tuple(Types.Primitive.INT, Types.Primitive.STRING,
+                Types.Primitive.BOOL);
+        var structural = StructuralTuplePolicy.projection(shape(true), input).orElseThrow();
+        var exact = StructuralTuplePolicy.projection(shape(false), input).orElseThrow();
+        assertEquals(0, structural.hiddenTailWidth());
+        assertEquals(0, exact.hiddenTailWidth());
+        assertEquals(StructuralTuplePolicy.ProjectionKind.READONLY_NONESCAPING_VIEW,
+                structural.kind());
+        assertTrue(structural.requiresNonescapingOwnershipCheck());
+        assertEquals(StructuralTuplePolicy.ProjectionKind.EXACT_TUPLE_VALUE,
+                exact.kind());
+        assertFalse(exact.requiresNonescapingOwnershipCheck());
+
+        // Optional omission does not turn a structural borrow/view into
+        // a freely escaping exact value.
+        var omitted = StructuralTuplePolicy.projection(shape(true),
+                tuple(Types.Primitive.INT, Types.Primitive.STRING)).orElseThrow();
+        assertTrue(omitted.requiresNonescapingOwnershipCheck());
+    }
+
+    @Test
+    void recursiveDagProofIsBoundedByTotalNodesNotOnlyDepth() {
+        Types.Type small = Types.Primitive.INT;
+        for (int i = 0; i < 8; i++) {
+            small = new Types.Tuple(List.of(small, small));
+        }
+        final Types.Type moderate = small;
+        assertDoesNotThrow(() -> new Slot(moderate, false));
+
+        // This is only 26 allocated record nodes, but naively recursively
+        // visiting both repeated children would take over 67 million visits.
+        Types.Type expanded = Types.Primitive.INT;
+        for (int i = 0; i < 26; i++) {
+            expanded = new Types.Tuple(List.of(expanded, expanded));
+        }
+        final Types.Type adversarial = expanded;
+        assertThrows(IllegalArgumentException.class, () -> new Slot(adversarial, false));
+    }
+
+    @Test
+    void tupleArityLimitsApplyToSourceAndDeclaredShapes() {
+        var sixtyFour = java.util.Collections.nCopies(64, Types.Primitive.INT);
+        var sixtyFive = java.util.Collections.nCopies(65, Types.Primitive.INT);
+        var allRequired = new Shape(
+                sixtyFour.stream().map(t -> new Slot(t, false)).toList(), false);
+        assertEquals(64, StructuralTuplePolicy.projection(
+                allRequired, new Types.Tuple(sixtyFour)).orElseThrow().visibleWidth());
+        assertTrue(StructuralTuplePolicy.projection(
+                allRequired, new Types.Tuple(sixtyFive)).isEmpty());
+        assertThrows(IllegalArgumentException.class,
+                () -> new Shape(sixtyFive.stream()
+                        .map(t -> new Slot(t, false)).toList(), false));
+    }
+
 }
