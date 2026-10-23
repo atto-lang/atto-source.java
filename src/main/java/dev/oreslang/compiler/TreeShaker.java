@@ -53,47 +53,6 @@ public final class TreeShaker {
             semanticSymbols = Set.copyOf(semanticSymbols);
         }
 
-        public Result(
-                Ast.Program program,
-                Set<String> retainedSymbols,
-                Set<String> removedSymbols,
-                Map<String, Object> compileTimeConstants,
-                Set<String> rootSymbols,
-                boolean libraryBuild) {
-            this(
-                    program,
-                    retainedSymbols,
-                    removedSymbols,
-                    compileTimeConstants,
-                    rootSymbols,
-                    libraryBuild,
-                    union(retainedSymbols, removedSymbols));
-        }
-
-        public Result(
-                Ast.Program program,
-                Set<String> retainedSymbols,
-                Set<String> removedSymbols,
-                Map<String, Object> compileTimeConstants,
-                Set<String> rootSymbols) {
-            this(
-                    program,
-                    retainedSymbols,
-                    removedSymbols,
-                    compileTimeConstants,
-                    rootSymbols,
-                    false,
-                    union(retainedSymbols, removedSymbols));
-        }
-
-        private static Set<String> union(
-                Set<String> retained,
-                Set<String> removed) {
-            LinkedHashSet<String> all = new LinkedHashSet<>(retained);
-            all.addAll(removed);
-            return Set.copyOf(all);
-        }
-
         public boolean retained(String symbol) {
             return retainedSymbols.contains(symbol);
         }
