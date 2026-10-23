@@ -8,6 +8,7 @@ on:
       - 'src/test/java/dev/oreslang/runtime/SupervisorLifecycleFsmOracle.java'
       - 'src/test/java/dev/oreslang/runtime/SupervisorLifecycleFsmIntegrationTest.java'
       - 'src/test/java/dev/oreslang/runtime/ActorDefaultChildScopeTest.java'
+      - 'src/test/java/dev/oreslang/runtime/SupervisorShutdownDeadlineFenceTest.java'
       - '.github/workflows/supervisor-fsm-formal.yml'
   workflow_dispatch:
 permissions:
@@ -27,7 +28,7 @@ jobs:
       - name: Supervisor runtime regression tests
         run: >-
           mvn -B -Dmaven.compiler.release=25
-          -Dtest=SupervisorLifecycleFsmIntegrationTest,SupervisorShutdownTreeTest,ActorDefaultChildScopeTest test
+          -Dtest=SupervisorLifecycleFsmIntegrationTest,SupervisorShutdownTreeTest,ActorDefaultChildScopeTest,SupervisorShutdownDeadlineFenceTest test
   reducer-and-tlc:
     runs-on: ubuntu-latest
     timeout-minutes: 12
