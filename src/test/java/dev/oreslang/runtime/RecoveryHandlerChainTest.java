@@ -725,6 +725,59 @@ final class RecoveryHandlerChainTest {
         assertThrows(IllegalStateException.class, () -> fallback.dispatch(failure));
     }
 
+    @Test void sameFailureCannotDispatchConcurrentlyAcrossDistinctChains() throws Exception {
+        GuestFailure failure = signal(
+                RecoveryHandlerChain.FailureKind.RAISE,
+                new Exception("single unwind"));
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var firstResult = new java.util.concurrent.atomic.AtomicReference<
+                RecoveryHandlerChain.Outcome<Integer>>();
+        var firstError = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+
+        var first = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
+                .onRaise((e, next) -> {
+                    entered.countDown();
+                    try {
+                        if (!release.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("test release timeout");
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException("interrupted", interrupted);
+                    }
+                    next.next();
+                })
+                .freeze();
+        var second = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
+                .onRaise((e, next) -> next.resolve(77))
+                .freeze();
+
+        Thread worker = new Thread(() -> {
+            try {
+                firstResult.set(first.dispatch(failure));
+            } catch (Throwable error) {
+                firstError.set(error);
+            }
+        });
+        worker.start();
+        assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+        IllegalStateException concurrent = assertThrows(
+                IllegalStateException.class, () -> second.dispatch(failure));
+        assertTrue(concurrent.getMessage().contains("already in an active recovery dispatch"));
+
+        release.countDown();
+        worker.join(5000);
+        assertFalse(worker.isAlive());
+        assertNull(firstError.get());
+        assertInstanceOf(RecoveryHandlerChain.Unhandled.class, firstResult.get());
+
+        assertEquals(
+                new RecoveryHandlerChain.Recovered<>(77),
+                second.dispatch(failure),
+                "sequential outward propagation must remain legal after the first chain exits");
+    }
+
     @Test void recoveryChainVisitRetentionIsBounded() {
         GuestFailure failure = signal(
                 RecoveryHandlerChain.FailureKind.RAISE,
