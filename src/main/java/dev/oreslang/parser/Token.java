@@ -26,3 +26,4 @@ public record Token(Type type, String lexeme, int line, int column) {
         EOF
     }
 }
+

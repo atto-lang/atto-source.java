@@ -3583,8 +3583,10 @@ public final class Parser {
     }
 
     /**
-     * Value pipelines are ordinary, eager calls. The leading value is
-     * evaluated once as the first argument. Namespace combinators
+     * Value pipelines currently execute as eager calls, but retain their
+     * syntax provenance for future typed lifting. Do not infer a pipeline
+     * from an ordinary stage(Future) call. The leading value is evaluated
+     * once as the first argument. Namespace combinators
      * (Option.map, Result.map_err, etc.) lower to receiver members so that
      * the normal sum-type checker and ownership rules apply unchanged.
      */
@@ -3608,18 +3610,19 @@ public final class Parser {
                         && (namespace.name().equals("Option") || namespace.name().equals("Result"))) {
                     value = new Ast.CallExpr(new Ast.MemberExpr(value, member.member()),
                             call.typeArguments(), call.typeArgumentsPresent(),
-                            call.arguments());
+                            call.arguments(), Ast.CallOrigin.VALUE_PIPE_RECEIVER);
                 } else if (isPipelineCallable(call.callee())) {
                     List<Ast.Expr> args = new ArrayList<>();
                     args.add(value);
                     args.addAll(call.arguments());
                     value = new Ast.CallExpr(call.callee(), call.typeArguments(),
-                            call.typeArgumentsPresent(), args);
+                            call.typeArgumentsPresent(), args, Ast.CallOrigin.VALUE_PIPE_ARGUMENT);
                 } else {
                     throw error(operator, "pipeline stage must call a named function or Option/Result combinator");
                 }
             } else if (isPipelineCallable(stage)) {
-                value = new Ast.CallExpr(stage, List.of(value));
+                value = new Ast.CallExpr(stage, List.of(), false, List.of(value),
+                        Ast.CallOrigin.VALUE_PIPE_ARGUMENT);
             } else {
                 throw error(operator, "pipeline stage must be a named callable");
             }
@@ -4748,3 +4751,4 @@ public final class Parser {
 
     private record Modifiers(Ast.Visibility visibility, boolean visibilitySeen, boolean async, boolean suspends, boolean generator, boolean structural, boolean nonLexical, boolean trapped, boolean isStatic, boolean isAbstract, boolean shared, boolean untrusted) { }
 }
+
