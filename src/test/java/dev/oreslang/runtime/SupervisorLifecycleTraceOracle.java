@@ -82,6 +82,32 @@ public final class SupervisorLifecycleTraceOracle {
         reject(() -> SupervisorLifecycleTrace.verifyComplete(small.snapshot()),
                 "overflow must never be presented as full verification");
 
+        // An individually valid parent reducer transition cannot certify
+        // child completion while that child's onStopped hook is still open.
+        var premature = new SupervisorLifecycleTrace.Journal(16);
+        var pRoot = SupervisorLifecycleFsm.State.initial();
+        var pChild = SupervisorLifecycleFsm.State.initial();
+        pRoot = record(premature, 1, pRoot,
+                new SupervisorLifecycleFsm.ShutdownRequested(1, Set.of(2L)));
+        pRoot = record(premature, 1, pRoot,
+                new SupervisorLifecycleFsm.BeforeHookFinished(1, false));
+        pChild = record(premature, 2, pChild,
+                new SupervisorLifecycleFsm.ShutdownRequested(1, Set.of()));
+        pChild = record(premature, 2, pChild,
+                new SupervisorLifecycleFsm.BeforeHookFinished(1, false));
+        pChild = record(premature, 2, pChild,
+                new SupervisorLifecycleFsm.ActorsFinished(1, false));
+        pRoot = record(premature, 1, pRoot,
+                new SupervisorLifecycleFsm.ChildFinished(1, 2L, false));
+        pChild = record(premature, 2, pChild,
+                new SupervisorLifecycleFsm.AfterHookFinished(1, false));
+        pRoot = record(premature, 1, pRoot,
+                new SupervisorLifecycleFsm.ActorsFinished(1, false));
+        pRoot = record(premature, 1, pRoot,
+                new SupervisorLifecycleFsm.AfterHookFinished(1, false));
+        reject(() -> SupervisorLifecycleTrace.verifyComplete(premature.snapshot()),
+                "premature child acknowledgement accepted by tree trace checker");
+
         var fence = new SupervisorChildGenerationFence(Map.of(2L, 4L));
         fence.requireReceipt(2L, 4L, 4L);
         reject(() -> fence.requireReceipt(2L, 3L, 4L),
@@ -103,8 +129,8 @@ public final class SupervisorLifecycleTraceOracle {
                 new SupervisorLifecycleFsm.ShutdownRequested(1, Set.of())),
                 "conflicting frozen topology");
 
-        System.out.println("PASS: 9 real reducer trace steps, tamper/gap/overflow checks, "
-                + "stale and foreign child-generation denial");
+        System.out.println("PASS: 9 real reducer trace steps, tamper/gap/overflow, "
+                + "cross-node ordering and stale child-generation denial");
     }
 
     private static SupervisorLifecycleFsm.State record(
