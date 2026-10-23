@@ -4,6 +4,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.URI;
+import java.net.Proxy;
+import java.net.ProxySelector;
+import java.net.SocketAddress;
 import java.net.http.HttpClient;
 import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
@@ -32,7 +35,8 @@ public final class ProxyOutboundLoopback {
     private static final Pattern HEADER_NAME = Pattern.compile("[!#$%&'*+.^_`|~0-9A-Za-z-]+");
     private static final Set<String> HOP = Set.of("connection", "keep-alive",
             "proxy-connection", "transfer-encoding", "te", "trailer", "upgrade",
-            "content-length", "proxy-authenticate", "proxy-authorization");
+            "content-length", "proxy-authenticate", "proxy-authorization",
+            "host", "http2-settings");
     private final Semaphore capacity;
     private final HttpClient client;
 
@@ -44,6 +48,11 @@ public final class ProxyOutboundLoopback {
                 .connectTimeout(Duration.ofSeconds(3))
                 .followRedirects(HttpClient.Redirect.NEVER)
                 .version(HttpClient.Version.HTTP_1_1)
+                .proxy(new ProxySelector() {
+                    @Override public List<Proxy> select(URI ignored) { return List.of(Proxy.NO_PROXY); }
+                    @Override public void connectFailed(URI ignored, SocketAddress address,
+                                                        IOException failure) { }
+                })
                 .build();
     }
 
