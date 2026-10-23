@@ -149,6 +149,7 @@ public final class TypeChecker {
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
+        checker.validateTypeOnlyNamesBeforeCollection(program);
         checker.collect(program);
         checker.validate(program);
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
@@ -177,6 +178,7 @@ public final class TypeChecker {
         program = AnnotationExpander.expand(program);
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
+        checker.validateTypeOnlyNamesBeforeCollection(program);
         checker.collect(program);
         for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
             String name = entry.getKey();
@@ -269,6 +271,16 @@ public final class TypeChecker {
         }
     }
 
+    /** Validate overlapping nominal declarations before collect() flattens
+     * trait and interface nodes into the shared lookup map. Otherwise the
+     * first generic duplicate-interface error masks cross-kind collisions,
+     * and linked-class checking can admit inconsistent catalog metadata. */
+    private void validateTypeOnlyNamesBeforeCollection(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            validateTypeOnlyNamespace(module);
+        }
+    }
+
     private void collect(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
@@ -343,7 +355,6 @@ public final class TypeChecker {
             String previousModule = currentLexicalModule;
             currentLexicalModule = module.name();
             try {
-                validateTypeOnlyNamespace(module);
                 validateModelTypeNamespace(module);
                 validateModuleValueNamespace(module);
                 checkModuleAdherence(module);
