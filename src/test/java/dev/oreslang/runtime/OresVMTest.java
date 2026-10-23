@@ -8,6 +8,46 @@ import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
 final class OresVMTest {
+
+    @Test
+    void blockedPhysicalStopDoesNotStarveVmControlAndShutdownRevokesAdmission()
+            throws Exception {
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var stopped = new java.util.concurrent.CountDownLatch(1);
+        var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        OresVM vm = OresVM.create(Runnable::run);
+        try {
+            vm.executePhysicalStop(() -> {
+                entered.countDown();
+                try {
+                    if (!release.await(5, TimeUnit.SECONDS)) {
+                        failure.set(new AssertionError("test physical STOP never released"));
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    failure.set(interrupted);
+                } finally {
+                    stopped.countDown();
+                }
+            });
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            assertEquals(73, vm.rootScheduler()
+                    .startSync(() -> 73).get(3, TimeUnit.SECONDS),
+                    "blocked resource teardown must not occupy CONTROL");
+        } finally {
+            release.countDown();
+            assertTrue(stopped.await(3, TimeUnit.SECONDS));
+            vm.close();
+        }
+        org.junit.jupiter.api.Assertions.assertNull(failure.get(),
+                () -> String.valueOf(failure.get()));
+        org.junit.jupiter.api.Assertions.assertThrows(
+                java.util.concurrent.RejectedExecutionException.class,
+                () -> vm.executePhysicalStop(() -> { }),
+                "a closed VM must not admit another physical STOP");
+    }
+
     @Test
     void rootGuestAdmissionCanStayOnCallerAcrossPendingAwait() throws Exception {
         var turns = new java.util.concurrent.LinkedBlockingQueue<Runnable>();
