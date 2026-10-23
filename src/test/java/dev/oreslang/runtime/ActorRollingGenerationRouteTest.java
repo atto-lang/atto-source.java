@@ -77,6 +77,9 @@ final class ActorRollingGenerationRouteTest {
             try (var ref = route.acquire()) { assertSame(old, ref.target()); }
             assertTrue(route.publishReady(1L, next));
             assertFalse(route.publishReady(1L, new Object()));
+            assertThrows(IllegalArgumentException.class,
+                    () -> route.publishReady(2L, old),
+                    "cannot resurrect a retained draining physical actor");
             assertEquals(2L, route.snapshot().activeEpoch());
         }
     }
@@ -92,6 +95,7 @@ final class ActorRollingGenerationRouteTest {
                     () -> route.publishReady(2L, new Object()));
             assertEquals(2L, route.snapshot().activeEpoch());
             held.close();
+            assertThrows(IllegalStateException.class, held::target);
             assertTrue(route.admissionsDrained(1L));
             assertTrue(route.acknowledgePhysicallyRetired(1L));
             assertFalse(route.acknowledgePhysicallyRetired(1L));
