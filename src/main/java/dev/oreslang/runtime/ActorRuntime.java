@@ -7490,6 +7490,8 @@ public final class ActorRuntime implements AutoCloseable {
             }
             finalized = true;
             sourceScheduler = null;
+            // Cleanup admission never outlives this actor incarnation.
+            sourceTaskMailbox.close();
             drainMailboxReservations();
             staticSelectCursors.clear();
             codeActorState = null;
