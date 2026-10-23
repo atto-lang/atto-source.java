@@ -129,6 +129,13 @@ public final class NativeHttpRollingDispatcher implements AutoCloseable {
      */
     public boolean acknowledgePhysicallyRetired(long epoch) {
         requireSupervisor();
+        NativeHttp.Handler retiring = routes.drainingTarget(epoch);
+        if (retiring == null) return routes.acknowledgePhysicallyRetired(epoch);
+        if (!routes.admissionsDrained(epoch))
+            throw new IllegalStateException("HTTP generation still has admitted exchanges");
+        // The supervisor must have separately verified Task/FFI/I/O/code
+        // quiescence; all actor done receipts alone are not enough.
+        retiring.releaseRetiredPoolAfterProof();
         return routes.acknowledgePhysicallyRetired(epoch);
     }
 
