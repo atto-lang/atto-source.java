@@ -357,21 +357,27 @@ source lowering should statically bound lexical unwind metadata where practical.
 
 These checks use logical execution identity, not carrier-thread identity, and
 therefore remain valid across carrier migration. Recovery registrations and
-failure envelopes also carry a positive code epoch; an envelope minted under an
-older epoch is returned unhandled by a chain registered under a newer epoch, so
-hot reload cannot accidentally run stale failures through replacement handlers.
+failure envelopes now carry the same opaque runtime-issued `CodeImageIdentity`.
+Authentication uses object identity, not `codeUnitId` strings or numeric
+generation equality, so two independent hot-reload managers may both allocate
+generation `1` without their recovery capabilities colliding.
 
-The code epoch is intentionally only a **local generation fence** at this stage.
-`HotReloadManager.Generation.id()` is manager-local, while
-`SharedCodeImageStore.CodeImage` is a separate opaque process-local code-image
-capability. Until compiler/runtime integration unifies those into one canonical
-code-image identity, callers must scope the epoch to the same trusted code-unit
-domain and must not treat a bare numeric generation as globally unique. The
-recovery prototype therefore prevents stale-vs-replacement handler admission
-inside one trusted epoch domain, but does not yet claim cross-manager or
-cross-process code-image authentication. Guest recovery remains disabled until
-the compiler/runtime supplies that canonical epoch and the rest of the unwind
-lowering.
+`HotReloadManager.Generation` and `SharedCodeImageStore.CodeImage` now both
+use this canonical identity type. Retirement/close revokes the identity before
+tearing down executable context/store state, preventing future recovery
+admission. A failure presented to a replacement code image remains unhandled and
+unconsumed, allowing its still-live old generation to drain and handle it once.
+After the old image is revoked, matching recovery admission fails closed and the
+pending failure capability is sealed.
+
+This is still a host-prototype lifetime fence, not complete hot-reload
+quiescence. An already-entered synchronous callback is allowed to finish if the
+identity is revoked concurrently. Production generation retirement must
+therefore wait for authenticated Task/actor/code-generation pins and physical
+quiescence before destroying executable code, continuation frames or actor
+state. Cross-process identity transport is intentionally unsupported: a
+`CodeImageIdentity` is a process/runtime capability, not a serializable wire
+identifier.
 
 ## Host-cause accessor admission and public API containment (2026-10-23)
 
