@@ -26,6 +26,10 @@ public final class StructuralTuplePolicy {
     // overload selector; no source input can trigger unbounded shape work.
     private static final int MAX_ARITY = 64;
     private static final int MAX_FAMILY = 128;
+    // A depth limit alone does not bound DAG-shaped types: a tuple that
+    // references the preceding tuple twice can require 2^depth visits.
+    // Count every node examination and reject oversized proofs.
+    private static final int MAX_PROOF_NODES = 4096;
 
     /**
      * Unresolved, borrowed, executable, and actor-like types cannot provide
@@ -33,11 +37,12 @@ public final class StructuralTuplePolicy {
      * intentionally stricter than ordinary tuple assignability.
      */
     private static boolean certifiedSlotType(Type type) {
-        return certifiedSlotType(type, 0);
+        // Budget is per proof, not shared between threads or compiler passes.
+        return certifiedSlotType(type, 0, new int[]{MAX_PROOF_NODES});
     }
 
-    private static boolean certifiedSlotType(Type type, int depth) {
-        if (depth > MAX_ARITY) return false;
+    private static boolean certifiedSlotType(Type type, int depth, int[] remaining) {
+        if (depth > MAX_ARITY || remaining[0]-- <= 0) return false;
         if (type == null || type == Types.Unknown.INSTANCE
                 || type instanceof Types.Borrow
                 || type instanceof Types.Generic
@@ -52,7 +57,7 @@ public final class StructuralTuplePolicy {
             if (!named.name().equals("Option") || named.arguments().size() != 1) {
                 return false;
             }
-            return certifiedSlotType(named.arguments().getFirst(), depth + 1);
+            return certifiedSlotType(named.arguments().getFirst(), depth + 1, remaining);
         }
         if (type instanceof Types.Tuple tuple) {
             // Nested FixedArray/FixedList values need their own alias and
@@ -61,13 +66,13 @@ public final class StructuralTuplePolicy {
                     || tuple.elements().size() > MAX_ARITY) {
                 return false;
             }
-            for (Type element : tuple.elements()) if (!certifiedSlotType(element, depth + 1)) return false;
+            for (Type element : tuple.elements()) if (!certifiedSlotType(element, depth + 1, remaining)) return false;
             return true;
         }
         if (type instanceof Types.Union union) {
             if (union.options().size() > MAX_ARITY) return false;
             for (Type alternative : union.options()) {
-                if (!certifiedSlotType(alternative, depth + 1)) return false;
+                if (!certifiedSlotType(alternative, depth + 1, remaining)) return false;
             }
             return true;
         }
@@ -131,6 +136,17 @@ public final class StructuralTuplePolicy {
     }
 
     /**
+     * Lifetime and capability information survives even when a readonly
+     * structural view hides no positions. Equality of source and visible
+     * arity is NOT permission to escape across return, task, await or actor
+     * boundaries. Ownership/escape analysis must consume this tag.
+     */
+    public enum ProjectionKind {
+        EXACT_TUPLE_VALUE,
+        READONLY_NONESCAPING_VIEW
+    }
+
+    /**
      * A single visible output slot, with its source provenance. A sourceIndex
      * of -1 is reserved for omitted optional trailing slots, never an alias
      * of an actual source position.
@@ -182,18 +198,38 @@ public final class StructuralTuplePolicy {
     public static final class ProjectionPlan {
         private final int sourceArity;
         private final int hiddenTailWidth;
+        private final ProjectionKind kind;
         private final List<ProjectedSlot> visibleSlots;
 
         private ProjectionPlan(int sourceArity, int hiddenTailWidth,
-                               List<ProjectedSlot> visibleSlots) {
+                               ProjectionKind kind, List<ProjectedSlot> visibleSlots) {
             this.sourceArity = sourceArity;
             this.hiddenTailWidth = hiddenTailWidth;
+            this.kind = Objects.requireNonNull(kind, "projection kind");
             this.visibleSlots = List.copyOf(visibleSlots);
+            if (sourceArity < 2 || sourceArity > MAX_ARITY
+                    || visibleSlots.size() < 2 || visibleSlots.size() > MAX_ARITY
+                    || hiddenTailWidth != Math.max(0, sourceArity - visibleSlots.size())
+                    || (hiddenTailWidth > 0 && kind != ProjectionKind.READONLY_NONESCAPING_VIEW)) {
+                throw new IllegalArgumentException("inconsistent tuple projection bounds");
+            }
+            for (int i = 0; i < visibleSlots.size(); i++) {
+                ProjectedSlot slot = visibleSlots.get(i);
+                if (slot.visibleIndex() != i
+                        || (slot.sourceIndex() != i && slot.sourceIndex() != -1)
+                        || (slot.sourceIndex() >= sourceArity)) {
+                    throw new IllegalArgumentException("tuple projection provenance is not positional");
+                }
+            }
         }
 
         public int sourceArity() { return sourceArity; }
         public int visibleWidth() { return visibleSlots.size(); }
         public int hiddenTailWidth() { return hiddenTailWidth; }
+        public ProjectionKind kind() { return kind; }
+        public boolean requiresNonescapingOwnershipCheck() {
+            return kind == ProjectionKind.READONLY_NONESCAPING_VIEW;
+        }
         public List<ProjectedSlot> visibleSlots() { return visibleSlots; }
         public ProjectedSlot visibleSlot(int index) { return visibleSlots.get(index); }
     }
@@ -258,8 +294,12 @@ public final class StructuralTuplePolicy {
                 return java.util.Optional.empty();
             }
         }
-        return java.util.Optional.of(
-                new ProjectionPlan(count, Math.max(0, count - width), projected));
+        return java.util.Optional.of(new ProjectionPlan(
+                count, Math.max(0, count - width),
+                expected.structural()
+                        ? ProjectionKind.READONLY_NONESCAPING_VIEW
+                        : ProjectionKind.EXACT_TUPLE_VALUE,
+                projected));
     }
 
     /** Conservative boolean facade for callers not yet using a typed plan. */
