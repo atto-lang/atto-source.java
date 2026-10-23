@@ -368,6 +368,77 @@ final class ActorStopCleanupAdmissionTest {
     }
 
     @Test
+    void blockedDrainSubscriberCannotDelayChildCancellationOrGuestStop()
+            throws Exception {
+        // Pending drain() observers must be notified only AFTER structured
+        // children and source cancellation have been requested. A synchronous
+        // observer can block forever; it cannot hold up child STOP admission.
+        CountDownLatch childAdmitted = new CountDownLatch(1);
+        CountDownLatch releaseParentTurn = new CountDownLatch(1);
+        CountDownLatch drainSubscriberEntered = new CountDownLatch(1);
+        CountDownLatch releaseDrainSubscriber = new CountDownLatch(1);
+        AtomicReference<ActorRuntime.ActorRef<String>> childRef = new AtomicReference<>();
+        AtomicReference<Throwable> stopFailure = new AtomicReference<>();
+        AtomicReference<Throwable> observerFailure = new AtomicReference<>();
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var parent = runtime.<String>spawnShared(() -> (message, context) -> {
+                var child = context.runtime().<String>spawnShared(() ->
+                        (childMessage, childContext) -> { });
+                childRef.set(child);
+                childAdmitted.countDown();
+                if (!releaseParentTurn.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("parent turn did not release");
+                }
+            });
+            parent.send("hold");
+            assertTrue(childAdmitted.await(3, TimeUnit.SECONDS));
+            OresFuture<Void> observer = parent.drain();
+            assertFalse(observer.isDone(), "mailbox turn is deliberately in flight");
+            observer.whenCompleteRuntime((ignored, failure) -> {
+                try {
+                    assertNotNull(failure, "STOP must fail an incomplete mailbox drain");
+                    drainSubscriberEntered.countDown();
+                    if (!releaseDrainSubscriber.await(5, TimeUnit.SECONDS)) {
+                        observerFailure.set(new AssertionError(
+                                "drain observer was never released"));
+                    }
+                } catch (Throwable problem) {
+                    observerFailure.compareAndSet(null, problem);
+                    drainSubscriberEntered.countDown();
+                }
+            });
+            Thread stopper = Thread.ofVirtual().start(() -> {
+                try {
+                    parent.cancel();
+                } catch (Throwable failure) {
+                    stopFailure.set(failure);
+                }
+            });
+            try {
+                assertTrue(drainSubscriberEntered.await(3, TimeUnit.SECONDS),
+                        "STOP must publish the failed drain");
+                assertTrue(childRef.get().awaitTermination(3, TimeUnit.SECONDS),
+                        "child STOP must be requested before a drain observer blocks");
+                assertFalse(parent.done().isDone(),
+                        "observer physical drain and parent active turn remain joined");
+                assertFalse(parent.awaitTermination(100, TimeUnit.MILLISECONDS));
+            } finally {
+                releaseDrainSubscriber.countDown();
+                releaseParentTurn.countDown();
+            }
+            stopper.join(TimeUnit.SECONDS.toMillis(3));
+            assertFalse(stopper.isAlive());
+            assertNull(stopFailure.get(), () -> String.valueOf(stopFailure.get()));
+            assertNull(observerFailure.get(), () -> String.valueOf(observerFailure.get()));
+            assertTrue(parent.awaitTermination(3, TimeUnit.SECONDS));
+            assertInstanceOf(ActorRuntime.ActorCancelledException.class,
+                    assertThrows(ExecutionException.class,
+                            () -> parent.done().get(3, TimeUnit.SECONDS)).getCause());
+        }
+    }
+
+    @Test
     void parentStopRequestsChildCancellationBeforeBlockedParentRevoker()
             throws Exception {
         CountDownLatch childCreated = new CountDownLatch(1);
