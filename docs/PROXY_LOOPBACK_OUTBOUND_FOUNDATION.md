@@ -80,3 +80,15 @@ Local evidence for these exact file bytes, from the isolated audit: **30/30** te
 **GitHub Actions:** exact branch-head job failed before any execution steps, so the CI result is neither a compiler failure nor a pass. The source `main` private-source transfer destination allowlist remains empty. No private-source cross-organization mirror is approved or attempted. Refer to [issue #1501](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/1501).
 
 The integration remains draft until the context-owned `AsyncNativeIo` bridge, actor-local and resource-scoped network permissions, host I/O worker isolation, verified tests and general-egress destination pinning are implemented and reviewed.
+
+## Context-owned loopback admission bridge (2026-10-23)
+
+The trusted Java runtime now has a narrow package-private `AsyncNativeIo.requestProxyLoopback(OresContext, URI, String)` entry point. The caller's `OresContext` must own the exact `AsyncNativeIo` instance (preventing cross-context permission laundering). Before creating or using the outbound transport, the entry point performs full canonical loopback URI/method validation and synchronously calls `context.requirePermission(NET, "127.0.0.1:<port>", "proxy.loopback.request")`. The existing `requirePermission` evaluates both current actor/isolate NETWORK authority and the scoped `RuntimePermissions.NET` allow/deny rules. A failed permission check never creates or dispatches a request.
+
+The transport is lazy, bounded by the context's existing I/O capacity (up to 128), and registered under the existing `AsyncNativeIo` resource set. Closing the owning I/O context cancels the HTTP requests, closes retained responses, and terminates the client pool. No guest method, reflection handle or `ActorRef` is added; this method remains trusted package-private host code.
+
+`ProxyOutboundContextAuthorityTest` adds JUnit regression contracts for entry-point visibility, canonical GET/HEAD loopback authority admission, rejection of unsafe authority/path forms, and explicit scoped NET grants with deny precedence.
+
+**Verification distinction:** These context integration additions have not yet passed full Java/Graal Maven/JUnit, JDK25 AOT or actual Oreslang guest execution because source-org Actions jobs are failing before any test steps. Earlier standalone JDK21 socket proof establishes only the outbound transport behavior, not this new context integration. No cross-organization mirroring of private source has been performed; the independently approved carrier allowlist is still empty (see #1501).
+
+Remaining gates: real `OresContext`/actor guest integration tests, safe `OresFuture` response ownership and body-I/O scheduling on reactor workers, transport-level preallocation header limits, non-loopback egress with pinned addresses and TLS, and secure CONNECT.
