@@ -23,10 +23,16 @@ public final class OresVM implements AutoCloseable {
     private static final int DEFAULT_CONTROL_PARALLELISM =
             Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors()));
     private static final int DEFAULT_QUEUE_CAPACITY = 65_536;
+    // Resource revokers may block. They must never occupy the CONTROL pool.
+    // One bounded, VM-owned executor serves all actors and supervisors.
+    private static final int DEFAULT_PHYSICAL_STOP_PARALLELISM =
+            Math.max(2, Math.min(8, Runtime.getRuntime().availableProcessors()));
+    private static final int DEFAULT_PHYSICAL_STOP_QUEUE_CAPACITY = 16_384;
 
     private enum StartupState { NEW, STARTING, STARTED, FAILED, CLOSED }
 
     private final ThreadPoolExecutor controlExecutor;
+    private final ThreadPoolExecutor physicalStopExecutor;
     private final OresScheduler rootScheduler;
     private final AtomicBoolean closed = new AtomicBoolean();
     private volatile StartupState startupState = StartupState.NEW;
@@ -53,6 +59,28 @@ public final class OresVM implements AutoCloseable {
                 factory,
                 new ThreadPoolExecutor.AbortPolicy());
 
+        int physicalParallelism = Integer.getInteger(
+                "ores.runtime.physical-stop.parallelism",
+                DEFAULT_PHYSICAL_STOP_PARALLELISM);
+        int physicalQueue = Integer.getInteger(
+                "ores.runtime.physical-stop.queue-capacity",
+                DEFAULT_PHYSICAL_STOP_QUEUE_CAPACITY);
+        if (physicalParallelism <= 0 || physicalParallelism > 128
+                || physicalQueue <= 0 || physicalQueue > 65_536) {
+            controlExecutor.shutdownNow();
+            throw new IllegalArgumentException(
+                    "invalid bounded OresVM physical STOP executor configuration");
+        }
+        ThreadFactory physicalFactory = Thread.ofVirtual()
+                .name("ores-physical-stop-", 0)
+                .factory();
+        this.physicalStopExecutor = new ThreadPoolExecutor(
+                physicalParallelism, physicalParallelism, 0L,
+                TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(physicalQueue),
+                physicalFactory,
+                new ThreadPoolExecutor.AbortPolicy());
+
         this.rootScheduler = OresScheduler.runtimeOwned(
                 "ores-root-scheduler",
                 rootAdmission == null ? controlParallelism : 1,
@@ -63,6 +91,7 @@ public final class OresVM implements AutoCloseable {
         } catch (RuntimeException | Error failure) {
             rootScheduler.close();
             controlExecutor.shutdownNow();
+            physicalStopExecutor.shutdownNow();
             throw failure;
         }
     }
@@ -152,6 +181,22 @@ public final class OresVM implements AutoCloseable {
         });
     }
 
+    /**
+     * Only physical lifecycle teardown is admitted here. In contrast to
+     * executeControl, tasks can block on native/I/O revokers without starving
+     * the VM's zero-guest CONTROL admission lane. Work is bounded and no
+     * executor is created per actor. Rejected submissions are reported to
+     * ActorRuntime, which keeps its fail-closed retirement barrier.
+     */
+    void executePhysicalStop(Runnable work) {
+        Objects.requireNonNull(work, "work");
+        if (!started()) {
+            throw new RejectedExecutionException(
+                    "Oreslang VM physical STOP executor is not available");
+        }
+        physicalStopExecutor.execute(work);
+    }
+
     public boolean isRootSchedulerCurrent() {
         return OresScheduler.current() == rootScheduler;
     }
@@ -175,11 +220,20 @@ public final class OresVM implements AutoCloseable {
             try {
                 rootScheduler.close();
             } finally {
+                // ActorRuntime has already requested structured closure. A
+                // failed close may leave an actor quarantined; never assume a
+                // dropped queued STOP task is a physical retirement receipt.
+                physicalStopExecutor.shutdownNow();
                 controlExecutor.shutdownNow();
                 try {
-                    if (!controlExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                    boolean physicalDone =
+                            physicalStopExecutor.awaitTermination(5, TimeUnit.SECONDS);
+                    boolean controlDone =
+                            controlExecutor.awaitTermination(5, TimeUnit.SECONDS);
+                    if (!controlDone || !physicalDone) {
                         throw new IllegalStateException(
-                                "Oreslang CONTROL scheduler carriers did not terminate");
+                                "Oreslang VM carrier teardown incomplete: control="
+                                        + controlDone + ", physicalStop=" + physicalDone);
                     }
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
