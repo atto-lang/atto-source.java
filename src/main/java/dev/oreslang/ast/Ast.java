@@ -1078,7 +1078,7 @@ public final class Ast {
 
         private static final java.lang.ref.ReferenceQueue<CallExpr> CLEARED =
                 new java.lang.ref.ReferenceQueue<>();
-        private static final java.util.Map<IdentityKey, Boolean> CHECKED =
+        private static final java.util.Map<IdentityKey, FunctionDecl> CHECKED =
                 new java.util.HashMap<>();
 
         private static final class IdentityKey extends java.lang.ref.WeakReference<CallExpr> {
@@ -1101,20 +1101,36 @@ public final class Ast {
             while ((collected = CLEARED.poll()) != null) CHECKED.remove(collected);
         }
 
-        /** Called only after the narrow stage has passed static type and purity checks. */
-        public static synchronized void record(CallExpr call) {
+        /**
+         * Called only after stage typing and purity admission. The declaration
+         * identity is frozen so runtime never resolves an authorized name into
+         * a different overload, module or callable after checking.
+         */
+        public static synchronized void record(CallExpr call, FunctionDecl target) {
+            java.util.Objects.requireNonNull(target, "checked Future stage declaration");
             if (call == null || call.origin() != CallOrigin.VALUE_PIPE_ARGUMENT
-                    || call.arguments().size() != 1 || !(call.callee() instanceof NameExpr)) {
-                throw new IllegalArgumentException("checked Future stage requires a unary value-pipe call");
+                    || call.arguments().size() != 1
+                    || !(call.callee() instanceof NameExpr name)
+                    || !name.name().equals(target.name())
+                    || target.parameters().size() != 1) {
+                throw new IllegalArgumentException("checked Future stage requires a matching unary declaration");
             }
             expunge();
-            CHECKED.put(new IdentityKey(call, CLEARED), Boolean.TRUE);
+            IdentityKey key = new IdentityKey(call, CLEARED);
+            FunctionDecl prior = CHECKED.putIfAbsent(key, target);
+            if (prior != null && prior != target) {
+                throw new IllegalStateException("Future pipeline stage rebound after type checking");
+            }
+        }
+
+        public static synchronized FunctionDecl target(CallExpr call) {
+            java.util.Objects.requireNonNull(call, "checked Future call");
+            expunge();
+            return CHECKED.get(new IdentityKey(call, null));
         }
 
         public static synchronized boolean lookup(CallExpr call) {
-            java.util.Objects.requireNonNull(call, "checked Future call");
-            expunge();
-            return CHECKED.containsKey(new IdentityKey(call, null));
+            return target(call) != null;
         }
     }
 
