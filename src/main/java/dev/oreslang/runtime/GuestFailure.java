@@ -125,9 +125,17 @@ final class GuestFailure {
         return issuerSeal == COMPILER_ISSUER;
     }
 
-    boolean belongsTo(ExecutionContext.ExecutionId executionId) {
-        return provenance.executionId().equals(
-                Objects.requireNonNull(executionId, "executionId"));
+    boolean belongsTo(
+            ExecutionContext.ExecutionId executionId,
+            ExecutionContext.AllocationDomain allocationDomain,
+            long parentExecution,
+            long continuation) {
+        Objects.requireNonNull(executionId, "executionId");
+        Objects.requireNonNull(allocationDomain, "allocationDomain");
+        return provenance.executionId().equals(executionId)
+                && provenance.allocationDomain().equals(allocationDomain)
+                && provenance.parentExecution() == parentExecution
+                && provenance.continuation() == continuation;
     }
 
     synchronized boolean enterRecoveryChain(RecoveryHandlerChain<?> chain) {
