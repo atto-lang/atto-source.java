@@ -48,21 +48,21 @@ final class ActorProxyRequestSlabTest {
                                     assertEquals(2, slab.pending(a));
                                     assertThrows(IllegalStateException.class, () -> slab.pin(a));
                                     assertEquals(0L, slab.admit(9, 6, 13));
-                                    assertTrue(slab.settle(second));
-                                    assertFalse(slab.settle(second));
+                                    assertTrue(slab.settle(slab.identity(), a, second));
+                                    assertFalse(slab.settle(slab.identity(), a, second));
                                     assertEquals(3, slab.live());
-                                    assertTrue(slab.settle(first));
+                                    assertTrue(slab.settle(slab.identity(), a, first));
                                     assertEquals(2, slab.live());
                                     long reused = slab.admit(9, 6, 13);
                                     assertNotEquals(a, reused);
                                     assertEquals(13, slab.route(reused));
                                     assertFalse(slab.retire(a));
-                                    assertFalse(slab.settle(first));
+                                    assertFalse(slab.settle(slab.identity(), a, first));
                                     assertThrows(IllegalStateException.class, () -> slab.route(a));
-                                    assertFalse(slab.settle((first & 0xffffffffL) | (99L << 32)));
+                                    assertFalse(slab.settle(slab.identity(), a, (first & 0xffffffffL) | (99L << 32)));
                                     assertTrue(slab.retire(b));
                                     assertEquals(3, slab.live());
-                                    assertTrue(slab.settle(other));
+                                    assertTrue(slab.settle(slab.identity(), b, other));
                                     assertTrue(slab.retire(c));
                                     assertTrue(slab.retire(reused));
                                     assertEquals(0, slab.live());
@@ -107,13 +107,13 @@ final class ActorProxyRequestSlabTest {
                             assertTrue(slab.retire(request));
                             assertThrows(IllegalStateException.class, slab::close);
                             for (int i = receipts.length - 1; i >= 1; i--) {
-                                assertTrue(slab.settle(receipts[i]));
-                                assertFalse(slab.settle(receipts[i]));
+                                assertTrue(slab.settle(slab.identity(), request, receipts[i]));
+                                assertFalse(slab.settle(slab.identity(), request, receipts[i]));
                                 assertEquals(1, slab.live());
                             }
-                            assertTrue(slab.settle(receipts[0]));
+                            assertTrue(slab.settle(slab.identity(), request, receipts[0]));
                             assertEquals(0, slab.live());
-                            assertFalse(slab.settle(receipts[0]));
+                            assertFalse(slab.settle(slab.identity(), request, receipts[0]));
                             slab.close();
                         } catch (Throwable problem) {
                             failure.set(problem);
@@ -141,7 +141,7 @@ final class ActorProxyRequestSlabTest {
                 return (message, turn) -> {
                     long req = slab.admit(11, 5, 6);
                     long pin = slab.pin(req);
-                    if (!slab.retire(req) || slab.live() != 1 || !slab.settle(pin)
+                    if (!slab.retire(req) || slab.live() != 1 || !slab.settle(slab.identity(), req, pin)
                             || slab.live() != 0) {
                         throw new AssertionError("private request retirement failed");
                     }
@@ -188,8 +188,8 @@ final class ActorProxyRequestSlabTest {
                                             pins[slot] = slab.pin(handles[slot]);
                                         }
                                         if (pins[slot] != 0L && random.nextInt(3) == 0) {
-                                            assertTrue(slab.settle(pins[slot]));
-                                            assertFalse(slab.settle(pins[slot]));
+                                            assertTrue(slab.settle(slab.identity(), handles[slot], pins[slot]));
+                                            assertFalse(slab.settle(slab.identity(), handles[slot], pins[slot]));
                                             pins[slot] = 0L;
                                         }
                                         if (pins[slot] == 0L && random.nextInt(4) == 0) {
@@ -198,7 +198,7 @@ final class ActorProxyRequestSlabTest {
                                         }
                                     }
                                     for (int slot = 0; slot < capacity; slot++) {
-                                        if (pins[slot] != 0L) assertTrue(slab.settle(pins[slot]));
+                                        if (pins[slot] != 0L) assertTrue(slab.settle(slab.identity(), handles[slot], pins[slot]));
                                         if (handles[slot] != 0L) assertTrue(slab.retire(handles[slot]));
                                     }
                                     assertEquals(0, slab.live(), "no slot leaks after stress");
@@ -216,6 +216,52 @@ final class ActorProxyRequestSlabTest {
                 actor.stop();
                 assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
             }
+        }
+    }
+
+    @Test
+    void sameRawClaimCannotSettleDifferentSlabOrRequest() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch finished = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            ActorRuntime.ActorRef<Integer> actor = runtime.spawnSharedTrusted(
+                    factory -> (message, turn) -> {
+                        try {
+                            ActorProxyRequestSlab a =
+                                    new ActorProxyRequestSlab(ActorProxyRequestSlab.Layout.SOA, 1, 1);
+                            ActorProxyRequestSlab b =
+                                    new ActorProxyRequestSlab(ActorProxyRequestSlab.Layout.AOSOA, 1, 32);
+                            assertNotEquals(a.identity(), b.identity());
+                            long aTicket = a.admit(5, 10, 1);
+                            long bTicket = b.admit(6, 20, 2);
+                            long aClaim = a.pin(aTicket);
+                            long bClaim = b.pin(bTicket);
+                            assertEquals(aClaim, bClaim, "same raw receipt in different slabs");
+                            assertTrue(a.retire(aTicket));
+                            assertTrue(b.retire(bTicket));
+                            assertFalse(b.settle(a.identity(), aTicket, aClaim));
+                            assertFalse(a.settle(b.identity(), bTicket, bClaim));
+                            assertEquals(1, a.live());
+                            assertEquals(1, b.live());
+                            assertTrue(a.settle(a.identity(), aTicket, aClaim));
+                            assertFalse(a.settle(a.identity(), aTicket, aClaim));
+                            assertTrue(b.settle(b.identity(), bTicket, bClaim));
+                            assertFalse(b.settle(b.identity(), bTicket, bClaim));
+                            assertEquals(0, a.live());
+                            assertEquals(0, b.live());
+                            a.close();
+                            b.close();
+                        } catch (Throwable problem) {
+                            failure.set(problem);
+                        } finally {
+                            finished.countDown();
+                        }
+                    });
+            actor.send(1);
+            assertTrue(finished.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get(), "cross-slab receipt collision must fail closed");
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
         }
     }
 
