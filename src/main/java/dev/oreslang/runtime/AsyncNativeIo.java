@@ -1,5 +1,6 @@
 package dev.oreslang.runtime;
 
+import java.io.OutputStream;
 import java.net.URI;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
@@ -66,6 +67,36 @@ public final class AsyncNativeIo implements AutoCloseable {
         }
         // request() is nonblocking. Never join its Future on an actor carrier.
         return transport.request(target, method);
+    }
+
+    /**
+     * Trusted-only, typed Ores Future handoff for one streamed response.
+     * Scope NET permission is checked before this operation enters the worker
+     * queue. The sink MUST be host-owned; guest/actor closures are forbidden
+     * on native-I/O workers. Neither the raw response nor the worker executor
+     * is exposed as a sendable Oreslang value.
+     */
+    OresFuture<ProxyBodyCopy.Receipt> copyProxyLoopback(
+            OresContext context, URI target, String method, OutputStream hostSink) {
+        Objects.requireNonNull(hostSink, "hostSink");
+        CompletableFuture<ProxyOutboundLoopback.Response> opened =
+                requestProxyLoopback(context, target, method);
+        CompletableFuture<ProxyBodyCopy.Receipt> copied =
+                ProxyBodyCopy.start(opened, hostSink, workers);
+        OresFuture<ProxyBodyCopy.Receipt> ores = OresFuture.from(copied);
+        synchronized (this) {
+            if (closed) {
+                copied.cancel(true);
+                return ores;
+            }
+            // Physical outbound admission remains held by the transport until
+            // the copy worker exits even if OresFuture cancellation wins.
+            if (!copied.isDone()) pending.add(ores);
+        }
+        copied.whenComplete((value, error) -> {
+            synchronized (this) { pending.remove(ores); }
+        });
+        return ores;
     }
 
     public <T> OresFuture<T> submit(OresContext context,
