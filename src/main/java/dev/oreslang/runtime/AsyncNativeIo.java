@@ -144,6 +144,15 @@ public final class AsyncNativeIo implements AutoCloseable {
                 } else {
                     result.completeFromRuntime(value);
                 }
+                // OresFuture intentionally isolates a throwing runtime
+                // waiter from its siblings. Native shutdown is stricter:
+                // an observed host cleanup notifier failure cannot produce
+                // a clean actor or context physical-retirement receipt.
+                Throwable subscriberFailure = result.runtimeNotificationFailure();
+                if (subscriberFailure != null) {
+                    notificationFailure = subscriberFailure;
+                    recordPhysicalShutdownFailure(subscriberFailure);
+                }
                 if (failure instanceof VirtualMachineError fatal) throw fatal;
                 if (failure instanceof ThreadDeath fatal) throw fatal;
                 if (failure instanceof LinkageError fatal) throw fatal;
