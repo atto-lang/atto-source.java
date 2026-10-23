@@ -73,6 +73,40 @@ final class SupervisorLifecycleFsmIntegrationTest {
         }
     }
 
+    private static final class RejectingWatchdog
+            extends java.util.concurrent.ScheduledThreadPoolExecutor {
+        RejectingWatchdog() { super(1); }
+        @Override public java.util.concurrent.ScheduledFuture<?> schedule(
+                Runnable command, long delay, TimeUnit unit) {
+            throw new java.util.concurrent.RejectedExecutionException(
+                    "synthetic watchdog scheduling rejection");
+        }
+    }
+
+    @Test
+    void watchdogSubmissionFailureIsVisibleBeforeBoundedObserverCompletes() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             var control = Executors.newSingleThreadExecutor();
+             var watchdog = new RejectingWatchdog()) {
+            var tree = new SupervisorShutdownTree(runtime, control);
+            var root = tree.setRoot("root", runtime.createActorGroup(),
+                    new SupervisorShutdownTree.Hooks() {});
+            var bounded = tree.shutdown(SupervisorShutdownTree.Reason.REQUESTED,
+                    java.time.Duration.ofSeconds(1), watchdog);
+            var visible = new java.util.concurrent.atomic.AtomicBoolean();
+            bounded.whenCompleteRuntime((unused, failure) ->
+                    visible.set(failure != null && tree.status().hasFailures()));
+            assertTrue(visible.get(),
+                    "watchdog rejection callback saw an unfailed supervisor");
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> bounded.get(5, TimeUnit.SECONDS));
+            assertTrue(tree.status().hasFailures());
+            assertFalse(tree.status().hasDeadlineOverruns(),
+                    "watchdog scheduling rejection is not a real elapsed deadline");
+            assertFalse(root.lifecycle().cleanlyReclaimed());
+        }
+    }
+
     @Test
     void timeoutCallbackObservesPublishedDeadlineStatus() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime();
