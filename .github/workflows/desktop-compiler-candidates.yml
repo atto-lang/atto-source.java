@@ -63,7 +63,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: ores-truffle-oreslang/oreslang-cli
-          ref: a498bf14057b545f40f323435764f7a7447b5a42
+          ref: 6f406e3a535abcdc8ec41ec9705668c03434fc32
           path: cli
           persist-credentials: false
       - name: Setup Rust
@@ -99,7 +99,7 @@ jobs:
             platform = "${{ matrix.platform }}"
             binary = $compiler
             frontend_binary = $cliBinary
-            frontend_commit = "a498bf14057b545f40f323435764f7a7447b5a42"
+            frontend_commit = "6f406e3a535abcdc8ec41ec9705668c03434fc32"
             frontend_sha256 = (Get-FileHash "stage/$cliBinary" -Algorithm SHA256).Hash.ToLowerInvariant()
             binary_sha256 = $hash
           } | ConvertTo-Json
