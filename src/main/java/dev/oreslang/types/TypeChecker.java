@@ -34,6 +34,84 @@ import java.util.Set;
 
 /** Static semantic pass run before Oreslang code is lowered/executed. */
 public final class TypeChecker {
+    /**
+     * Compiler-issued, identity-bound authorization for the initial pure
+     * Future value-pipe lowering. Only this static type checker can write the
+     * table. Runtime/ownership consumers receive read-only lookup access.
+     *
+     * In particular, a host caller may construct an AST or function declaration
+     * but may not grant a new pipeline execution proof through public APIs.
+     */
+    public static final class CheckedPureFuturePipe {
+        private CheckedPureFuturePipe() { }
+
+        private static final java.lang.ref.ReferenceQueue<Ast.CallExpr> CLEARED =
+                new java.lang.ref.ReferenceQueue<>();
+        private static final java.util.Map<IdentityKey, Ast.FunctionDecl> CHECKED =
+                new java.util.HashMap<>();
+
+        private static final class IdentityKey
+                extends java.lang.ref.WeakReference<Ast.CallExpr> {
+            private final int hash;
+
+            private IdentityKey(
+                    Ast.CallExpr call,
+                    java.lang.ref.ReferenceQueue<Ast.CallExpr> queue) {
+                super(call, queue);
+                hash = System.identityHashCode(call);
+            }
+
+            @Override public int hashCode() { return hash; }
+
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof IdentityKey key)) return false;
+                Ast.CallExpr call = get();
+                return call != null && call == key.get();
+            }
+        }
+
+        private static void expunge() {
+            java.lang.ref.Reference<? extends Ast.CallExpr> cleared;
+            while ((cleared = CLEARED.poll()) != null) CHECKED.remove(cleared);
+        }
+
+        /**
+         * Private issuance: called from the enclosing TypeChecker only after
+         * it has checked the input type, effects, lexical owner and pure body.
+         */
+        private static synchronized void record(
+                Ast.CallExpr call, Ast.FunctionDecl target) {
+            java.util.Objects.requireNonNull(target, "checked Future stage declaration");
+            if (call == null
+                    || call.origin() != Ast.CallOrigin.VALUE_PIPE_ARGUMENT
+                    || call.arguments().size() != 1
+                    || !(call.callee() instanceof Ast.NameExpr name)
+                    || !name.name().equals(target.name())
+                    || target.parameters().size() != 1) {
+                throw new IllegalArgumentException(
+                        "checked Future stage requires a matching unary declaration");
+            }
+            expunge();
+            IdentityKey key = new IdentityKey(call, CLEARED);
+            Ast.FunctionDecl prior = CHECKED.putIfAbsent(key, target);
+            if (prior != null && prior != target) {
+                throw new IllegalStateException(
+                        "Future pipeline stage rebound after type checking");
+            }
+        }
+
+        /** Missing proofs, including fresh/rebuilt ASTs, fail closed. */
+        public static synchronized Ast.FunctionDecl target(Ast.CallExpr call) {
+            java.util.Objects.requireNonNull(call, "checked Future call");
+            expunge();
+            return CHECKED.get(new IdentityKey(call, null));
+        }
+
+        public static synchronized boolean lookup(Ast.CallExpr call) {
+            return target(call) != null;
+        }
+    }
     // Keep the stage-one default-type allowlist consistent with concrete
     // compiler-known scalar and nominal constructors. Do not allocate it per
     // recursive validation node or admit arbitrary unresolved nominal names.
@@ -4601,7 +4679,7 @@ public final class TypeChecker {
             return null;
         }
         if (source instanceof Ast.CallExpr candidate
-                && !Ast.CheckedPureFuturePipe.lookup(candidate)) {
+                && !CheckedPureFuturePipe.lookup(candidate)) {
             // Do not speculatively retype arbitrary scalar function calls.
             // Typing can update proof side tables, constructor state and
             // suspension diagnostics; only known Future producers justify
@@ -4663,7 +4741,7 @@ public final class TypeChecker {
         // This proof is attached only after the entire stage is checked.
         // Rewrites deliberately lose it, so the evaluator cannot execute a
         // type-checked stage body with a substituted callee or argument.
-        Ast.CheckedPureFuturePipe.record(call, stage);
+        CheckedPureFuturePipe.record(call, stage);
         return new Named("Future", List.of(output));
     }
 
