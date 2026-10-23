@@ -321,6 +321,18 @@ class AsyncNativeIoTest {
         assertNull(io.physicalShutdown().get(3, TimeUnit.SECONDS));
     }
 
+    @Test void retiredContextCannotInitiateNewNativeCloseCallbacks()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        io.close();
+        assertNull(io.physicalShutdown().get(3, TimeUnit.SECONDS));
+        var attemptedClose = new java.util.concurrent.atomic.AtomicInteger();
+        assertThrows(IllegalStateException.class,
+                () -> io.register(attemptedClose::incrementAndGet));
+        assertEquals(0, attemptedClose.get(),
+                "fully retired context has no authority to run new close callback");
+    }
+
     @Test void failedLateRegistrationCloseQuarantinesContext()
             throws Exception {
         var io = new AsyncNativeIo(1);
