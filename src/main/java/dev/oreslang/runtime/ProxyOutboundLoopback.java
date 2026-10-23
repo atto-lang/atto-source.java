@@ -158,7 +158,7 @@ public final class ProxyOutboundLoopback implements AutoCloseable {
         client.shutdownNow();
     }
 
-    private static void validateTarget(URI target, String method) {
+    static void validateTarget(URI target, String method) {
         Objects.requireNonNull(target, "target");
         if (!("GET".equals(method) || "HEAD".equals(method)))
             throw new IllegalArgumentException("loopback harness only supports GET or HEAD");
