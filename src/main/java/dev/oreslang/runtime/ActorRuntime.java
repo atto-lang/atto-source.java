@@ -1691,6 +1691,47 @@ public final class ActorRuntime implements AutoCloseable {
                 ActorOwnedGuestState state,
                 ActorInboxMail<Object> mail,
                 ActorContext<Object> context) throws Exception;
+
+        /**
+         * Opaque compiler/runtime ownership domain. Same-process SHARED
+         * checkpoint migration may only compose executors from the same
+         * domain unless a stronger cross-context transport proves otherwise.
+         */
+        default Object actorUpgradeDomain() {
+            throw new UnsupportedOperationException(
+                    "actor executor does not expose a hot-upgrade domain");
+        }
+
+        default String actorCodeSha256(String actorTypeName) {
+            throw new UnsupportedOperationException(
+                    "actor executor does not support hot-upgrade code receipts");
+        }
+
+        default String actorStateSchemaSha256(String actorTypeName) {
+            throw new UnsupportedOperationException(
+                    "actor executor does not support hot-upgrade state schemas");
+        }
+
+        default String actorMessageAbiSha256(String actorTypeName) {
+            throw new UnsupportedOperationException(
+                    "actor executor does not support hot-upgrade message ABI receipts");
+        }
+
+        default byte[] snapshotActorState(
+                String actorTypeName,
+                ActorOwnedGuestState state,
+                ActorContext<Object> context) {
+            throw new UnsupportedOperationException(
+                    "actor executor does not support state snapshot");
+        }
+
+        default ActorOwnedGuestState restoreActorState(
+                String actorTypeName,
+                byte[] snapshot,
+                ActorContext<Object> context) {
+            throw new UnsupportedOperationException(
+                    "actor executor does not support state restore");
+        }
     }
 
     public interface ActorContext<M> {
