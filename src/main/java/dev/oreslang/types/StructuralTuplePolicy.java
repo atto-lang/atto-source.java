@@ -328,6 +328,32 @@ public final class StructuralTuplePolicy {
     }
 
     /**
+     * An immutable, compiler-authored overload resolution. Pack lowering
+     * consumes the exact projection verified during selection, rather than
+     * repeating a potentially divergent shape lookup later.
+     *
+     * Runtime execution and ownership checks are deliberately NOT granted
+     * by this token. Only checked lowering may consume this static result.
+     */
+    public static final class ResolvedSpread {
+        private final Selection selection;
+        private final ProjectionPlan packingProjection;
+
+        private ResolvedSpread(Selection selection, ProjectionPlan packingProjection) {
+            this.selection = Objects.requireNonNull(selection, "spread selection");
+            if (selection.pack() != (packingProjection != null)) {
+                throw new IllegalArgumentException("spread packing proof disagrees with selected call");
+            }
+            this.packingProjection = packingProjection;
+        }
+
+        public Selection selection() { return selection; }
+        public java.util.Optional<ProjectionPlan> packingProjection() {
+            return java.util.Optional.ofNullable(packingProjection);
+        }
+    }
+
+    /**
      * Resolve a single explicitly spread *statically typed finite tuple*.
      * A matching ordinary expanded-arity callable always shadows the packing
      * fallback, regardless of its parameter types. An eventual type mismatch
@@ -335,6 +361,12 @@ public final class StructuralTuplePolicy {
      * Nominal-enum same-arity families require a separate compiler proof.
      */
     public static Selection selectExplicitTupleSpread(List<Candidate> family, Type source) {
+        // Compatibility facade: new emitter integrations must use the proof
+        // bearing ResolvedSpread rather than reconstruct the pack projection.
+        return resolveExplicitTupleSpread(family, source).selection();
+    }
+
+    public static ResolvedSpread resolveExplicitTupleSpread(List<Candidate> family, Type source) {
         Objects.requireNonNull(family, "family");
         if (family.size() > MAX_FAMILY) {
             throw new IllegalArgumentException("tuple overload family exceeds 128 candidates");
@@ -363,19 +395,23 @@ public final class StructuralTuplePolicy {
         }
         for (Candidate candidate : candidates) {
             if (candidate.arity() == tuple.elements().size()) {
-                return new Selection(candidate.id(), false);
+                return new ResolvedSpread(new Selection(candidate.id(), false), null);
             }
         }
-        List<Candidate> eligible = new ArrayList<>();
+        List<ResolvedSpread> eligible = new ArrayList<>();
         for (Candidate candidate : candidates) {
-            if (candidate.tupleParameter() != null
-                    && admits(candidate.tupleParameter(), source)) eligible.add(candidate);
+            if (candidate.tupleParameter() == null) continue;
+            var plan = projection(candidate.tupleParameter(), source);
+            if (plan.isPresent()) {
+                eligible.add(new ResolvedSpread(
+                        new Selection(candidate.id(), true), plan.get()));
+            }
         }
         if (eligible.size() != 1) {
             throw new IllegalArgumentException(eligible.isEmpty()
                     ? "no callable accepts explicit tuple spread"
                     : "ambiguous tuple packing cannot use runtime shape dispatch");
         }
-        return new Selection(eligible.getFirst().id(), true);
+        return eligible.getFirst();
     }
 }
