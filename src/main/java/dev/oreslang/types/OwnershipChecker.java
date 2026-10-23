@@ -1451,7 +1451,7 @@ public final class OwnershipChecker {
                 }
             }
         }
-        if (Ast.CheckedPureFuturePipe.lookup(call)) {
+        if (TypeChecker.CheckedPureFuturePipe.lookup(call)) {
             // Compiler-proven pure scalar stages observe, but never take,
             // the upstream Future. Its task owns only its continuation and
             // must not cancel the borrowed producer on pipeline cancellation.
