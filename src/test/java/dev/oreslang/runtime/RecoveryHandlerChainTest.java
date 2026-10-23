@@ -419,10 +419,16 @@ final class RecoveryHandlerChainTest {
                     }
                     c.resolve(8);
                 }).freeze();
-        Error abort = assertThrows(Error.class,
-                () -> holder[0].dispatch(signal(RecoveryHandlerChain.FailureKind.THROW,
-                        new Exception("outer"))));
+        GuestFailure outer = signal(
+                RecoveryHandlerChain.FailureKind.THROW,
+                new Exception("outer"));
+        Error abort = assertThrows(Error.class, () -> holder[0].dispatch(outer));
         assertEquals("inner", abort.getCause().getMessage());
+
+        var fallback = RecoveryHandlerChain.<Integer>builder(TEST_EXECUTION)
+                .onThrow((e, next) -> next.resolve(9))
+                .freeze();
+        assertThrows(IllegalStateException.class, () -> fallback.dispatch(outer));
     }
 
     @Test void distinctNestedRecoveryChainsArePermitted() {
