@@ -478,6 +478,26 @@ resolution, which remain future work. The linker must reject an `import
 trait` selector applied to an interface and vice versa. Duplicate
 trait/interface/type-alias names in one module are rejected.
 
+A type may be promised before its completed definition:
+
+```ores
+declare type Code;
+
+fnc identity(Code value): Code { return value; }
+
+define type Code = int;
+```
+
+`declare type Code;` is **compiler-only** metadata, not an incomplete
+runtime value, unknown type or constructor. A promise is valid only if exactly
+one `define type Code = ...;` (or complete `declare type Code = ...;`)
+exists in the **same lexical module**. Its public/private visibility must
+match. Duplicate promises, missing completions, incompatible declaration kinds,
+and alias cycles fail before type collection and execution; a definition
+in another module cannot complete the promise. Generic forward promises are
+not admitted in this v1 spelling, and `declare trait`/`declare interface`
+still require their complete contract bodies.
+
 `define model` is different: it introduces a **nominal type and a separately
 owned executable model instance**. In the first executable Java/GraalVM
 profile, a model statically composes verified, synchronous, pure scalar
