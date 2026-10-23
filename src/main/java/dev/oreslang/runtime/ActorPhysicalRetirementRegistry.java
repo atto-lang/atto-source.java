@@ -21,7 +21,7 @@ final class ActorPhysicalRetirementRegistry {
     static final int MAX_OUTSTANDING = 4_096;
 
     enum Kind {
-        MUTEX_HANDOFF, TCP_HTTP_HANDLE, FFI_LOAN, ASYNC_ITERATOR,
+        MUTEX_HANDOFF, TCP_HTTP_HANDLE, NATIVE_IO_OPERATION, FFI_LOAN, ASYNC_ITERATOR,
         SHARED_BLOB_LEASE, OTHER
     }
 
