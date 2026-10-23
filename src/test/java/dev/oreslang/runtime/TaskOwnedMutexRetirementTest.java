@@ -249,6 +249,75 @@ public class TaskOwnedMutexRetirementTest {
     }
 
     @Test
+    void publishedGrantRetirementWaitsForGrantCarrierBeforePoisoning() throws Exception {
+        var shared = OresMutex.shared(new int[] { 42 });
+        var original = shared.lock();
+        var queued = new CountDownLatch(1);
+        var subscriberEntered = new CountDownLatch(1);
+        var releaseSubscriber = new CountDownLatch(1);
+        var pending = new AtomicReference<CompletableFuture<OresMutex.Guard<int[]>>>();
+        var releaserFailure = new AtomicReference<Throwable>();
+        var never = new OresFuture<Integer>();
+
+        try (var scheduler = new OresScheduler(1)) {
+            TaskHandle<Integer> task = scheduler.startTracked(resume -> {
+                pending.set(shared.lockAsync());
+                queued.countDown();
+                return OresScheduler.await(never);
+            });
+            assertTrue(queued.await(3, TimeUnit.SECONDS));
+            pending.get().whenComplete((guard, failure) -> {
+                if (failure != null) return;
+                subscriberEntered.countDown();
+                try {
+                    if (!releaseSubscriber.await(10, TimeUnit.SECONDS)) {
+                        throw new AssertionError("published observer did not resume");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                }
+            });
+            var granting = Thread.ofPlatform().start(() -> {
+                try {
+                    original.release();
+                } catch (Throwable failure) {
+                    releaserFailure.set(failure);
+                }
+            });
+            try {
+                assertTrue(subscriberEntered.await(3, TimeUnit.SECONDS));
+                assertTrue(OresMutex.Shared.isPublishedAsyncGrant(pending.get()));
+                var delivered = pending.get().getNow(null);
+                assertNotNull(delivered);
+                assertTrue(task.cancel("published-but-not-yet-settled grant"));
+                // No cleanup may revoke the permit while a synchronous
+                // publication subscriber still runs on this carrier.
+                assertFalse(task.getDone().isDone());
+                assertFalse(task.cleanupFailures().isDone());
+                assertFalse(delivered.released());
+                assertFalse(shared.isPoisoned());
+            } finally {
+                releaseSubscriber.countDown();
+                granting.join(4000);
+            }
+            assertFalse(granting.isAlive());
+            assertNull(releaserFailure.get());
+            assertInstanceOf(TaskHandle.Cancelled.class,
+                    task.getDone().get(4, TimeUnit.SECONDS));
+            assertTrue(task.cleanupFailures().get(3, TimeUnit.SECONDS).isEmpty());
+            assertTrue(shared.isPoisoned(), "published abandoned guard must poison");
+            assertTrue(pending.get().getNow(null).released());
+            shared.recover(value -> { value[0] = 42; return null; });
+            var next = shared.tryLock().orElseThrow();
+            next.release();
+        } finally {
+            releaseSubscriber.countDown();
+            if (!original.released()) original.release();
+        }
+    }
+
+    @Test
     void concurrentAsyncHandoffAndTaskRetirementNeverPoisonsAnUnpublishedGrant()
             throws Exception {
         // Two carrier threads race Future publication against Task shutdown.
