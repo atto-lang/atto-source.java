@@ -88,6 +88,19 @@ public final class TaskHandle<T> {
                 && context.token().isCancelled();
     }
 
+    /**
+     * Trusted-runtime child admission authority for the currently executing
+     * tracked task. The logical domain comparison prevents an inline nested
+     * scheduler dispatch from inheriting an unrelated parent's token.
+     * This is never exposed to guest code as a cancellation capability.
+     */
+    static TaskCancellation currentParentForChild() {
+        CancellationContext context = CURRENT_CANCELLATION.get();
+        return context != null
+                && context.taskDomain() == OresScheduler.currentTaskDomain()
+                ? context.token() : null;
+    }
+
     /** Compiler/host safepoint only: never call while holding guest locks. */
     static void checkCurrentCancellationCheckpoint() {
         if (!currentCancellationRequested()) return;
