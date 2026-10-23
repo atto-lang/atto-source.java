@@ -587,6 +587,18 @@ final class RecoveryHandlerChainTest {
         assertEquals(TEST_CODE_EPOCH, outcome.provenance().codeEpoch());
         assertEquals(0, invoked.get(),
                 "stale-generation failure must never enter a reloaded handler");
+
+        var drainingOldGeneration = RecoveryHandlerChain.<Integer>builder(
+                        TEST_EXECUTION, TEST_CODE_EPOCH)
+                .onRaise((e, next) -> next.resolve(56))
+                .freeze();
+        assertEquals(
+                new RecoveryHandlerChain.Recovered<>(56),
+                drainingOldGeneration.dispatch(stale),
+                "wrong-generation rejection must not consume an old generation's failure");
+        assertThrows(IllegalStateException.class,
+                () -> drainingOldGeneration.dispatch(stale),
+                "successful old-generation recovery must remain one-shot");
     }
 
     @Test void codeEpochMustBePositiveAtBothMintAndRegistration() {
