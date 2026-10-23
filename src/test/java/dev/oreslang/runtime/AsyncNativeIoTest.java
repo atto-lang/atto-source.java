@@ -388,6 +388,125 @@ class AsyncNativeIoTest {
                 "uncertain resource close is not a physical-retirement proof");
     }
 
+    @Test void stagedNativeReleaseWaitsForPhysicalWorkerAndCloseCallback()
+            throws Exception {
+        var executor = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>());
+        var io = new AsyncNativeIo(1, executor);
+        var entered = new CountDownLatch(1);
+        var letWorkerExit = new CountDownLatch(1);
+        var stopRequested = new CountDownLatch(1);
+        var releaseEntered = new CountDownLatch(1);
+        var letReleaseExit = new CountDownLatch(1);
+        var finalCloseCount = new java.util.concurrent.atomic.AtomicInteger();
+        io.register(new AsyncNativeIo.StopThenRelease() {
+            @Override public void requestStop() {
+                stopRequested.countDown();
+            }
+            @Override public void close() throws Exception {
+                finalCloseCount.incrementAndGet();
+                releaseEntered.countDown();
+                if (!letReleaseExit.await(5, TimeUnit.SECONDS)) {
+                    throw new IOException("test final release deadline");
+                }
+            }
+        });
+        var operation = io.submit("uninterruptible-pinned-buffer", () -> {
+            entered.countDown();
+            while (letWorkerExit.getCount() != 0) {
+                try { letWorkerExit.await(20, TimeUnit.MILLISECONDS); }
+                catch (InterruptedException ignored) { /* native owner still active */ }
+            }
+            return 7;
+        });
+        try {
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            io.close();
+            assertTrue(stopRequested.await(3, TimeUnit.SECONDS));
+            assertEquals(0, finalCloseCount.get(),
+                    "STOP is a cancellation request, not memory reclamation");
+            assertFalse(io.physicalShutdown().isDone());
+            letWorkerExit.countDown();
+            assertInstanceOf(IllegalStateException.class,
+                    assertThrows(ExecutionException.class,
+                            () -> operation.get(3, TimeUnit.SECONDS)).getCause());
+            assertTrue(releaseEntered.await(3, TimeUnit.SECONDS));
+            assertEquals(1, finalCloseCount.get());
+            assertFalse(io.physicalShutdown().isDone(),
+                    "the final host release callback must exit before receipt");
+        } finally {
+            letWorkerExit.countDown();
+            letReleaseExit.countDown();
+        }
+        assertNull(io.physicalShutdown().get(3, TimeUnit.SECONDS));
+        assertEquals(1, finalCloseCount.get(),
+                "a staged release must execute exactly once");
+    }
+
+    @Test void stagedReleaseCannotOvertakeBlockedTerminalSubscriber()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        var workerEntered = new CountDownLatch(1);
+        var finishWork = new CountDownLatch(1);
+        var callbackEntered = new CountDownLatch(1);
+        var allowCallbackExit = new CountDownLatch(1);
+        var releaseCount = new java.util.concurrent.atomic.AtomicInteger();
+        var stopRequested = new CountDownLatch(1);
+        io.register(new AsyncNativeIo.StopThenRelease() {
+            @Override public void requestStop() { stopRequested.countDown(); }
+            @Override public void close() { releaseCount.incrementAndGet(); }
+        });
+        var future = io.submit("held-terminal-native-listener", () -> {
+            workerEntered.countDown();
+            while (finishWork.getCount() != 0) {
+                try { finishWork.await(20, TimeUnit.MILLISECONDS); }
+                catch (InterruptedException ignored) { /* simulated native wait */ }
+            }
+            return 3;
+        });
+        future.whenCompleteRuntime((v, f) -> {
+            callbackEntered.countDown();
+            while (allowCallbackExit.getCount() != 0) {
+                try { allowCallbackExit.await(20, TimeUnit.MILLISECONDS); }
+                catch (InterruptedException ignored) { /* retained callback loan */ }
+            }
+        });
+        try {
+            assertTrue(workerEntered.await(3, TimeUnit.SECONDS));
+            io.close();
+            assertTrue(stopRequested.await(3, TimeUnit.SECONDS));
+            finishWork.countDown();
+            assertTrue(callbackEntered.await(3, TimeUnit.SECONDS));
+            assertEquals(0, releaseCount.get(),
+                    "isDone alone cannot permit native final release");
+            assertFalse(io.physicalShutdown().isDone());
+        } finally {
+            finishWork.countDown();
+            allowCallbackExit.countDown();
+        }
+        assertNull(io.physicalShutdown().get(3, TimeUnit.SECONDS));
+        assertEquals(1, releaseCount.get());
+    }
+
+    @Test void failedStagedStopStillAttemptsFinalCloseAndQuarantines()
+            throws Exception {
+        var io = new AsyncNativeIo(1);
+        var requestFailure = new IOException("stop failed before native quiescence");
+        var finalCloses = new java.util.concurrent.atomic.AtomicInteger();
+        io.register(new AsyncNativeIo.StopThenRelease() {
+            @Override public void requestStop() throws IOException {
+                throw requestFailure;
+            }
+            @Override public void close() { finalCloses.incrementAndGet(); }
+        });
+        io.close();
+        assertEquals(1, finalCloses.get(),
+                "failed cancellation must not skip eventual safe physical release");
+        assertSame(requestFailure, io.physicalShutdownFailure());
+        assertFalse(io.physicalShutdown().isDone(),
+                "even a successful final close cannot erase a failed stop request");
+    }
+
     @Test void coreNumericLoggingDoesNotChangeIoFailuresOrLeakGuestExceptionText() throws Exception {
         CoreLog.configure(CoreLog.Level.OFF);
         CoreLog.configure(CoreLog.Level.WARN);
