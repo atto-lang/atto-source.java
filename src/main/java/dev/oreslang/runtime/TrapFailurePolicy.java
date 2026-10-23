@@ -60,6 +60,7 @@ public final class TrapFailurePolicy {
         Deque<Throwable> pending = new ArrayDeque<>();
         Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
         pending.add(failure);
+        try {
         while (!pending.isEmpty()) {
             Throwable current = pending.removeFirst();
             if (!seen.add(current)) return false;
@@ -83,8 +84,18 @@ public final class TrapFailurePolicy {
             if (!explicitGuestCatch && current instanceof SecurityException) {
                 return false;
             }
-            if (current.getCause() != null) pending.addLast(current.getCause());
-            for (Throwable suppressed : current.getSuppressed()) pending.addLast(suppressed);
+            // Do not invoke an overridden foreign accessor: it can alternate
+            // between a guest-looking cause and concealed terminal control.
+            if (!STANDARD_CAUSE.get(current.getClass())) return false;
+            Throwable cause = current.getCause();
+            if (cause != null) {
+                if (pending.size() + seen.size() >= MAX_FAILURE_NODES) return false;
+                pending.addLast(cause);
+            }
+            for (Throwable suppressed : current.getSuppressed()) {
+                if (pending.size() + seen.size() >= MAX_FAILURE_NODES) return false;
+                pending.addLast(suppressed);
+            }
         }
 
         // Classification follows the primary cause chain only. A suppressed
@@ -98,6 +109,9 @@ public final class TrapFailurePolicy {
             if (isMappedGuestFailure(current)) return true;
         }
         return false;
+        } catch (RuntimeException malformedHostGraph) {
+            return false;
+        }
     }
 
     /**
