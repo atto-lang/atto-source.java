@@ -174,7 +174,7 @@ TypeOK ==
     /\ timedOut \in BOOLEAN
     /\ rejectedReceipt \in BOOLEAN
 
-NoAckBeforePhysicalChildStop ==
+NoAckBeforeChildStop ==
     childAck => (childPhase = "Stopped" /\ childFenced /\
                  pinnedEpoch = childEpoch /\ pinnedEpoch > 0)
 
@@ -194,7 +194,7 @@ AcceptedGenerationIsImmutable ==
         => pinnedEpoch = childEpoch
 
 Safety ==
-    TypeOK /\ NoAckBeforePhysicalChildStop /\
+    TypeOK /\ NoAckBeforeChildStop /\
     NoPrematureParentStop /\ NoUnfencedPublishedEpoch /\
     NoRestartAfterChildFence /\ AcceptedGenerationIsImmutable
 
