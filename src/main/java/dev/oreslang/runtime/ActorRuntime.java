@@ -497,6 +497,9 @@ public final class ActorRuntime implements AutoCloseable {
     private final ControlDispatcher controlDispatcher;
     private final PhysicalStopDispatcher physicalStopDispatcher;
     private volatile Consumer<Object> actorExitHook = ignored -> { };
+    /** Physical native I/O operation/loan gate for the actor incarnation. */
+    private volatile java.util.function.Predicate<ActorId> nativeIoLoanRetired =
+            ignored -> true;
 
     /**
      * Host/isolate boundary hook. Returning true means the execution domain
@@ -794,6 +797,27 @@ public final class ActorRuntime implements AutoCloseable {
         requireSupervisorContext("install actor exit hook");
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         this.actorExitHook = Objects.requireNonNull(actorExitHook, "actorExitHook");
+    }
+
+    /**
+     * Install before admitting actors. This gate executes BEFORE the actor
+     * memory slice closes (unlike the best-effort actorExitHook).
+     */
+    public void setNativeIoLoanRetirementGate(
+            java.util.function.Predicate<ActorId> gate) {
+        requireSupervisorContext("install native I/O retirement gate");
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        nativeIoLoanRetired = Objects.requireNonNull(gate);
+    }
+
+    /** Wake an already-stopping actor when its final native loan retires. */
+    void onNativeIoLoanRetired(ActorId id) {
+        ActorCell<?> cell = actors.get(Objects.requireNonNull(id));
+        if (cell == null) return;
+        synchronized (cell.lifecycleLock) {
+            if (cell.stopped.get() && !cell.finalized) cell.finalizeStopLocked();
+            cell.lifecycleLock.notifyAll();
+        }
     }
 
     /**
@@ -7576,6 +7600,20 @@ public final class ActorRuntime implements AutoCloseable {
                     || activeUntrustedTimedAdmissions != 0)) {
                 // Both guest execution and untrusted terminal notification
                 // drains must retire before actor arena release.
+                return;
+            }
+            // Native I/O operations admitted by this incarnation can outlive
+            // a canceled guest task or Future terminal CAS. Never free the
+            // private arena until those *physical* worker and callback loans
+            // retire. A failed gate quarantines rather than guessing success.
+            try {
+                if (!nativeIoLoanRetired.test(ref.id())) return;
+            } catch (RuntimeException | Error gateFailure) {
+                sourceStopCleanupAborted = true;
+                ref.terminationCause.compareAndSet(null,
+                        new OresScheduler.CleanupIncompleteError(
+                                "actor native I/O physical loan gate failed",
+                                gateFailure));
                 return;
             }
             if (scheduler != null) {
