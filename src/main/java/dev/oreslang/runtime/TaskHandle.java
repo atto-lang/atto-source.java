@@ -329,8 +329,17 @@ public final class TaskHandle<T> {
         if (!handle.result.compareAndSet(null, source)) {
             throw new IllegalStateException("TaskHandle result bound more than once");
         }
-        source.whenCompleteRuntime((value, failure) ->
-                handle.onSettled(source, value, failure));
+        source.whenCompleteRuntime((value, failure) -> {
+            // A consumer can cancel the exposed result Future without calling
+            // TaskHandle.cancel(). That must also revoke this task's children;
+            // otherwise getDone() could await orphaned descendants forever.
+            // The token is idempotent if cancellation already came through
+            // TaskHandle.cancel() or an owning parent TaskScope.
+            if (source.isCancelled()) {
+                handle.cancellation.cancel("task result cancelled");
+            }
+            handle.onSettled(source, value, failure);
+        });
         // Cancellation can win before bind, after bind, or during subscriber
         // registration. The second check makes the early request observable.
         if (handle.cancellation.isCancelled()) handle.cancelResultIfBound();
