@@ -387,6 +387,45 @@ final class ActorPhysicalRetirementRegistryTest {
         assertEquals(1, registry.snapshot().pending());
     }
 
+    @Test void channelRegistrationRacingWithStopDoesNotLeakNativeDescriptor()
+            throws Exception {
+        for (int i = 0; i < 8; i++) {
+            var pipe = java.nio.channels.Pipe.open();
+            try (var runtime = new ActorRuntime()) {
+                var actor = runtime.<String>spawnShared(() -> (message, context) -> { });
+                var barrier = new CountDownLatch(1);
+                var lease = new AtomicReference<ActorPhysicalChannelLease>();
+                var error = new AtomicReference<Throwable>();
+                Thread driver = Thread.ofVirtual().start(() -> {
+                    try {
+                        barrier.await();
+                        lease.set(runtime.registerActorPhysicalChannelFromDriver(
+                                actor, pipe.source(),
+                                ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE));
+                    } catch (Throwable failure) {
+                        error.set(failure);
+                    }
+                });
+                barrier.countDown();
+                actor.cancel();
+                driver.join(3_000);
+                assertFalse(driver.isAlive());
+                if (lease.get() == null) {
+                    assertInstanceOf(ActorRuntime.ActorTerminatedException.class,
+                            error.get());
+                    pipe.source().close();
+                } else {
+                    assertNull(error.get());
+                }
+                assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+                assertFalse(pipe.source().isOpen());
+            } finally {
+                pipe.source().close();
+                pipe.sink().close();
+            }
+        }
+    }
+
     @Test void hostDriverCanPreRegisterButCannotRegisterAfterStop() throws Exception {
         try (var runtime = new ActorRuntime();
              var foreignRuntime = new ActorRuntime()) {
