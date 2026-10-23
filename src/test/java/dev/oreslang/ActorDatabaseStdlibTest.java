@@ -42,8 +42,8 @@ final class ActorDatabaseStdlibTest {
                 6
                 true
                 true
-                1
                 2
+                6
                 """, run("""
                 import * as pool from "std/db_pool";
                 pub routine main(): void {
@@ -57,8 +57,8 @@ final class ActorDatabaseStdlibTest {
                   stdio.println(budget.bytes_in_flight());
                   stdio.println(budget.release(4));
                   stdio.println(budget.try_acquire(4));
-                  stdio.println(budget.active() - 1);
-                  stdio.println(budget.bytes_in_flight() - 4);
+                  stdio.println(budget.active());
+                  stdio.println(budget.bytes_in_flight());
                   return;
                 }
                 """));
