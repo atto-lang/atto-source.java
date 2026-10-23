@@ -452,6 +452,10 @@ public final class OresScheduler implements AutoCloseable {
      */
     public <T> TaskHandle<T> startTrackedInCurrentTaskOrRoot(Task<T> task) {
         TaskCancellation parent = TaskHandle.currentParentForChild();
+        if (parent != null && OresScheduler.current() != this) {
+            throw new IllegalStateException(
+                    "implicit child Task admission cannot cross scheduler domains");
+        }
         return TaskHandle.start(this, task, parent);
     }
 
