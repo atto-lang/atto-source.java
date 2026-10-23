@@ -32,6 +32,28 @@ final class SupervisorShutdownDeadlineFenceTest {
     }
 
     @Test
+    void unadmittedActorCompletionIsNotAShutdownReceipt() {
+        var active = SupervisorLifecycleFsm.State.initial();
+        assertThrows(IllegalStateException.class, () ->
+                SupervisorLifecycleFsm.reduce(active,
+                        new SupervisorLifecycleFsm.ActorsFinished(active.epoch(), false)));
+        assertThrows(IllegalStateException.class, () ->
+                SupervisorLifecycleFsm.reduce(active,
+                        new SupervisorLifecycleFsm.PhysicalRelease(active.epoch())));
+        assertFalse(active.actorsDone());
+        assertFalse(active.physicalReleased());
+
+        // An actor that retired *after* shutdown was admitted may still
+        // finish before the pre-hook; retaining that receipt is intentional.
+        var admitted = SupervisorLifecycleFsm.reduce(active,
+                new SupervisorLifecycleFsm.ShutdownRequested(active.epoch(), Set.of()));
+        var retired = SupervisorLifecycleFsm.reduce(admitted,
+                new SupervisorLifecycleFsm.ActorsFinished(active.epoch(), false));
+        assertTrue(retired.actorsDone());
+        assertEquals(SupervisorLifecycleFsm.Phase.BEFORE_HOOK, retired.phase());
+    }
+
+    @Test
     void admittedShutdownTracksDeadlineWithoutForgingTermination() {
         var initial = SupervisorLifecycleFsm.State.initial();
         var shuttingDown = SupervisorLifecycleFsm.reduce(initial,
