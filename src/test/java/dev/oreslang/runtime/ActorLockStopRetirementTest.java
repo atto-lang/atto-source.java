@@ -459,6 +459,54 @@ final class ActorLockStopRetirementTest {
     }
 
     @Test
+    void failedHostRetirementStageQuarantinesStoppedActor()
+            throws Exception {
+        ActorRuntime runtime = new ActorRuntime();
+        CountDownLatch stopRequested = new CountDownLatch(1);
+        CountDownLatch releaseCarrier = new CountDownLatch(1);
+        try {
+            var ref = runtime.<String>spawnShared(() -> (message, context) -> {
+                context.self().stop();
+                stopRequested.countDown();
+                try {
+                    if (!releaseCarrier.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("host fault injection timed out");
+                    }
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(error);
+                }
+            });
+            ref.send("stop");
+            assertTrue(stopRequested.await(5, TimeUnit.SECONDS));
+
+            // Simulate an exception in a host finalization continuation while
+            // STOP is fenced but its physical carrier is still unwinding.
+            // The wrapper must retain a permanent quarantine root, not let
+            // its virtual-thread exception silently disappear.
+            Field actors = ActorRuntime.class.getDeclaredField("actors");
+            actors.setAccessible(true);
+            Object cell = ((Map<?, ?>) actors.get(runtime)).get(ref.id());
+            assertNotNull(cell);
+            var stage = cell.getClass().getDeclaredMethod(
+                    "scheduleHostRetirement", String.class, Runnable.class);
+            stage.setAccessible(true);
+            stage.invoke(cell, "ores-test-retirement-fault-", (Runnable) () -> {
+                throw new IllegalStateException("injected host stage failed");
+            });
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (ref.failure().isEmpty() && System.nanoTime() < deadline) {
+                Thread.sleep(2);
+            }
+            assertTrue(ref.failure().isPresent(),
+                    "uncaught host stage failure disappeared");
+        } finally {
+            releaseCarrier.countDown();
+            assertThrows(IllegalStateException.class, runtime::close);
+        }
+    }
+
+    @Test
     void asynchronousPhysicalLockReceiptFailureQuarantinesSupervisorRestart()
             throws Exception {
         ActorRuntime runtime = new ActorRuntime();
