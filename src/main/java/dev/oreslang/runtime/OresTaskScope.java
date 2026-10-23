@@ -516,13 +516,9 @@ public final class OresTaskScope implements AutoCloseable {
                 new ArrayList<>();
         final boolean wonRoot;
         synchronized (treeAdmissionGate) {
-            // Another cancellation may have sealed this whole subtree and
-            // may still be revoking its producers. The shared revocation gate
-            // makes that owner finish first. A duplicate must not claim or
-            // deliver any of the first walk's pending notifications.
-            synchronized (gate) {
-                if (cancelled) return false;
-            }
+            // Deliberately rewalk a previously sealed scope. A failed
+            // admission observer can seal its scope without visiting siblings;
+            // only the producer CAS makes repeated revocation idempotent.
             pending.add(this);
             while (!pending.isEmpty()) {
                 OresTaskScope scope = pending.removeLast();
