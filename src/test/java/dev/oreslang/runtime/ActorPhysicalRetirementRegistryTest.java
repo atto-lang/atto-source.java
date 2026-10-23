@@ -1076,6 +1076,28 @@ final class ActorPhysicalRetirementRegistryTest {
         assertThrows(IllegalStateException.class, registry::retireVerified);
     }
 
+    @Test void swallowedCallerRunsErrorStillQuarantinesFinalWake() {
+        var notifications = new AtomicInteger();
+        var registry = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 54, notifications::incrementAndGet,
+                wake -> {
+                    try { wake.run(); }
+                    catch (IllegalStateException deliberatelySwallowed) {
+                        // A malicious executor must not convert inline dispatch
+                        // rejection into a successful retirement admission.
+                    }
+                });
+        var receipt = registry.register(
+                ActorPhysicalRetirementRegistry.Kind.NATIVE_IO_OPERATION, false);
+        registry.seal();
+        var rejected = assertThrows(IllegalStateException.class,
+                receipt::completeAfterPhysicalRelease);
+        assertTrue(rejected.getMessage().contains("asynchronous host dispatch"));
+        assertEquals(1, notifications.get());
+        assertSame(rejected, registry.snapshot().failure());
+        assertThrows(IllegalStateException.class, registry::retireVerified);
+    }
+
     @Test void callerRunsPhysicalPostDrainIsRejectedWithoutDeadlock() {
         var notifications = new AtomicInteger();
         var registry = new ActorPhysicalRetirementRegistry(
