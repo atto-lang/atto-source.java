@@ -4559,6 +4559,11 @@ public final class OresEvalRootNode extends RootNode {
                 Env env,
                 SourceValueCont continuation) {
             if (Ast.CheckedPureFuturePipe.lookup(call)) {
+                if (ActorRuntime.inActorExecution()) {
+                    continuation.accept(task, null, new IllegalStateException(
+                            "source Future pipeline actor affinity has not been proven"));
+                    return;
+                }
                 evalSuspendableExpr(task, pureFuturePipeInput(call), env,
                         (t, source, failure) -> {
                             if (failure != null) {
@@ -7037,6 +7042,10 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.CallExpr call) {
                 if (Ast.CheckedPureFuturePipe.lookup(call)) {
+                    if (ActorRuntime.inActorExecution()) {
+                        throw new IllegalStateException(
+                                "source Future pipeline actor affinity has not been proven");
+                    }
                     Object source = eval(pureFuturePipeInput(call), env);
                     return startPureFuturePipe(call, source);
                 }
