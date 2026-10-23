@@ -1093,6 +1093,57 @@ final class ActorPhysicalRetirementRegistryTest {
         assertTrue(registry.snapshot().retired());
     }
 
+    @Test void actualActorDoneWaitsForQueuedHostPhysicalWake()
+            throws Exception {
+        var runtime = new ActorRuntime();
+        var releaseLane = new CountDownLatch(1);
+        var allLaneWorkers = new CountDownLatch(8);
+        var ticket = new AtomicReference<ActorPhysicalRetirementRegistry.Receipt>();
+        var admitted = new CountDownLatch(1);
+        try {
+            // Test-only lane saturation, via reflection: no guest/runtime
+            // production accessor for the trusted native-close executor.
+            var field = ActorRuntime.class.getDeclaredField("physicalCloseDispatcher");
+            field.setAccessible(true);
+            var lane = (java.util.concurrent.ThreadPoolExecutor) field.get(runtime);
+            for (int i = 0; i < 8; i++) {
+                lane.execute(() -> {
+                    allLaneWorkers.countDown();
+                    while (releaseLane.getCount() != 0) {
+                        try { releaseLane.await(20, TimeUnit.MILLISECONDS); }
+                        catch (InterruptedException ignored) { /* test holds host lane */ }
+                    }
+                });
+            }
+            assertTrue(allLaneWorkers.await(3, TimeUnit.SECONDS));
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                ticket.set(context.runtime().registerCurrentActorPhysicalReceipt(
+                        ActorPhysicalRetirementRegistry.Kind.FFI_LOAN));
+                admitted.countDown();
+            });
+            actor.send("begin");
+            assertTrue(admitted.await(3, TimeUnit.SECONDS));
+            assertTrue(actor.cancel());
+            assertFalse(actor.done().isDone());
+            assertTrue(ticket.get().completeAfterPhysicalRelease(),
+                    "native ticket is physically released but host wake is queued");
+            assertTrue(actor.pendingPhysicalRetirementsByKind().isEmpty(),
+                    "the ticket itself must be removed after physical release");
+            assertFalse(actor.done().isDone(),
+                    "last ticket removal alone cannot publish DONE");
+            assertFalse(actor.awaitTermination(100, TimeUnit.MILLISECONDS),
+                    "queued host-only STOP wake must run before actor retirement");
+            releaseLane.countDown();
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(actor.done().isDone());
+            assertTrue(actor.physicalRetirementFailure().isEmpty());
+        } finally {
+            releaseLane.countDown();
+            if (ticket.get() != null) ticket.get().completeAfterPhysicalRelease();
+            try { runtime.close(); } catch (IllegalStateException ignored) { }
+        }
+    }
+
     @Test void rejectedPostDrainWakeCannotRaceConcurrentStopRetirement()
             throws Exception {
         var enteredDispatch = new CountDownLatch(1);
