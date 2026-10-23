@@ -63,30 +63,31 @@ public final class AsyncNativeIo implements AutoCloseable {
             workers.execute(() -> {
                 CorePerf.end(CorePerf.ASYNC_IO_QUEUE, queued);
                 long workPerf = CorePerf.start();
-                T value;
+                T value = null;
+                Throwable workFailure = null;
                 try {
                     value = work.call();
                 } catch (Throwable failure) {
-                    CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_FAILED, 1L);
-                    synchronized (this) { admitted.remove(result); }
-                    SourceBoundaryTrace.record(failure, "native:io", operation, "I/O");
-                    result.failFromRuntime(failure);
-                    if (failure instanceof VirtualMachineError fatal) throw fatal;
-                    if (failure instanceof ThreadDeath fatal) throw fatal;
-                    if (failure instanceof LinkageError fatal) throw fatal;
-                    return;
+                    workFailure = failure;
                 } finally {
+                    // The host operation has physically returned, including
+                    // its I/O accounting finalizer. No terminal Future is
+                    // published while that cleanup boundary remains active.
                     CorePerf.end(CorePerf.ASYNC_IO_WORK, workPerf);
                 }
-                // Reaching this point proves the host Callable physically
-                // returned. A context close must never publish a terminal
-                // Future while the same worker may still own native loans.
                 final boolean closedAtRetirement;
                 synchronized (this) {
                     admitted.remove(result);
                     closedAtRetirement = closed;
                 }
-                if (closedAtRetirement) {
+                if (workFailure != null) {
+                    CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_FAILED, 1L);
+                    SourceBoundaryTrace.record(workFailure, "native:io", operation, "I/O");
+                    result.failFromRuntime(workFailure);
+                    if (workFailure instanceof VirtualMachineError fatal) throw fatal;
+                    if (workFailure instanceof ThreadDeath fatal) throw fatal;
+                    if (workFailure instanceof LinkageError fatal) throw fatal;
+                } else if (closedAtRetirement) {
                     result.failFromRuntime(new IllegalStateException(
                             "I/O context closed after physical operation exit"));
                 } else {
