@@ -15,6 +15,7 @@ on:
       - "src/main/java/dev/oreslang/runtime/OresVM.java"
       - "src/main/java/dev/oreslang/runtime/OresContext.java"
       - "src/main/java/dev/oreslang/runtime/AsyncNativeIo.java"
+      - "src/main/java/dev/oreslang/runtime/NativeIo.java"
       - "src/test/java/dev/oreslang/runtime/ActorStopCleanupAdmissionTest.java"
       - "src/test/java/dev/oreslang/runtime/OresFutureCallbackTest.java"
       - "src/test/java/dev/oreslang/runtime/OresVMTest.java"
