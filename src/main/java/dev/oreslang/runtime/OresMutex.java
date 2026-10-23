@@ -689,6 +689,12 @@ public final class OresMutex {
                 physicalSettlement.complete(null);
             }
 
+            private void failHandoff(Throwable failure) {
+                // If a carrier aborts during a physical grant transition,
+                // success cannot be proven. Quarantine through Task cleanup.
+                physicalSettlement.completeExceptionally(failure);
+            }
+
             private synchronized void bindFuture(GuardFuture<T> future) {
                 this.future = future;
             }
@@ -911,6 +917,11 @@ public final class OresMutex {
                     }
                     if (reclaimed) continue;
                     return;
+                } catch (RuntimeException | Error handoffFailure) {
+                    if (waiter.taskRequest != null) {
+                        waiter.taskRequest.failHandoff(handoffFailure);
+                    }
+                    throw handoffFailure;
                 } finally {
                     if (waiter.taskRequest != null) {
                         waiter.taskRequest.finishHandoff();
@@ -1127,6 +1138,7 @@ public final class OresMutex {
                         }
                     }
                 } catch (RuntimeException | Error failure) {
+                    if (taskRequest != null) taskRequest.failHandoff(failure);
                     releaseDomain(ownerDomain);
                     releasePermitOrHandoff();
                     future.failFromRuntime(failure);
