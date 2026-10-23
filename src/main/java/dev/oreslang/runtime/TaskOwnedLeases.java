@@ -121,6 +121,7 @@ public final class TaskOwnedLeases {
         private final ArrayList<Throwable> earlyFailures = new ArrayList<>();
         private long suppressedEarlyFailures;
         private boolean retired;
+        private CompletableFuture<List<Throwable>> retirementResult;
 
         Lease register(TransferableRelease token) {
             return register(token, token);
@@ -186,9 +187,14 @@ public final class TaskOwnedLeases {
             final ArrayList<Entry> reversed;
             final ArrayList<Throwable> errors;
             final ArrayList<CompletableFuture<Void>> pending;
+            final CompletableFuture<List<Throwable>> receipt;
             synchronized (lock) {
-                if (retired) throw new IllegalStateException("task leases retired twice");
+                // Repeated observation joins the original retirement, rather
+                // than fabricating an empty successful cleanup while pending.
+                if (retired) return retirementResult;
                 retired = true;
+                receipt = new CompletableFuture<>();
+                retirementResult = receipt;
                 reversed = new ArrayList<>(active);
                 Collections.reverse(reversed);
                 active.clear();
@@ -213,20 +219,24 @@ public final class TaskOwnedLeases {
                     errors.add(failed);
                 }
             }
-            if (pending.isEmpty()) return CompletableFuture.completedFuture(List.copyOf(errors));
+            if (pending.isEmpty()) {
+                receipt.complete(List.copyOf(errors));
+                return receipt;
+            }
             CompletableFuture<?>[] all = pending.toArray(new CompletableFuture<?>[0]);
-            return CompletableFuture.allOf(all).handle((ignored, failure) -> {
-                for (CompletableFuture<Void> receipt : pending) {
+            CompletableFuture.allOf(all).whenComplete((ignored, failure) -> {
+                for (CompletableFuture<Void> pendingReceipt : pending) {
                     try {
-                        receipt.join(); // allOf has already joined every receipt
+                        pendingReceipt.join(); // allOf has already joined every receipt
                     } catch (CompletionException failed) {
                         errors.add(failed.getCause() == null ? failed : failed.getCause());
                     } catch (java.util.concurrent.CancellationException cancelled) {
                         errors.add(cancelled);
                     }
                 }
-                return List.copyOf(errors);
+                receipt.complete(List.copyOf(errors));
             });
+            return receipt;
         }
 
         private static final class Entry implements Lease {
