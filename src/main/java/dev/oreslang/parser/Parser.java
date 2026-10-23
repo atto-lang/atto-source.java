@@ -21,6 +21,7 @@ public final class Parser {
     private final List<Token> tokens;
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
+    private boolean maxActorThreadsEnumDeclared;
     private boolean suppressRefinementOperators;
     // A match guard's outer '->' delimits an arm, not a lambda that happens
     // to follow a parenthesized guard expression.
@@ -112,17 +113,24 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                if (match(ENUM)) {
+                    if (!annotations.isEmpty())
+                        throw error(previous(), "built-in MaxActorThreads enum cannot have annotations");
+                    validateOnlyVisibilityModifiers(modifiers, "built-in MaxActorThreads enum");
+                    parseBuiltInMaxActorThreadsEnum();
+                    continue;
+                }
                 ActorPrefix actorPrefix = parseActorPrefix();
                 if (match(ACTOR, ISOACTOR)) {
                     rootDeclarations.add(parseDefinedActorClass(previous(), modifiers, annotations, actorPrefix));
                     continue;
                 }
-                if (modifiers.shared) {
-                    throw error(previous(), "'shared' must modify an actor declaration; use 'shared actor <Name>'");
+                if (modifiers.shared || modifiers.supervisor) {
+                    throw error(previous(), "'shared'/'supervisor' must modify an actor declaration");
                 }
                 if (match(MODULE)) {
                     if (modifiers.visibilitySeen || modifiers.async || modifiers.suspends || modifiers.suspends || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
-                            || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
+                            || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted || modifiers.supervisor) {
                         throw error(previous(), "modules do not accept declaration modifiers");
                     }
                     rejectCallableStructuralAnnotation(annotations, "module declarations");
@@ -262,7 +270,18 @@ public final class Parser {
         // Keep the pre-"as" spelling accepted while existing source migrates.
         match(AS);
         List<Ast.Decl> declarations = new ArrayList<>();
-        while (!check(END) && !check(EOF)) declarations.add(parseModuleMember());
+        while (!check(END) && !check(EOF)) {
+            // The frozen source-level actor scheduling enum can appear inside
+            // a module, but is a language-owned type, not a generated class.
+            // Ordinary enums remain unsupported until typed enum AST lowering.
+            if (check(DEFINE) && checkNext(ENUM)) {
+                advance();
+                advance();
+                parseBuiltInMaxActorThreadsEnum();
+                continue;
+            }
+            declarations.add(parseModuleMember());
+        }
         consume(END, "expected 'end' to close module " + name);
         return new Ast.ModuleDecl(name, annotations, contracts, declarations);
     }
@@ -318,8 +337,8 @@ public final class Parser {
             if (match(ACTOR, ISOACTOR)) {
                 return parseDefinedActorClass(previous(), modifiers, annotations, actorPrefix);
             }
-            if (modifiers.shared || modifiers.untrusted) {
-                throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
+            if (modifiers.shared || modifiers.untrusted || modifiers.supervisor) {
+                throw error(previous(), "'shared'/'untrusted'/'supervisor' must modify an actor declaration");
             }
             if (match(CONTRACT)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
@@ -373,11 +392,17 @@ public final class Parser {
             }
             if (match(FNC)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                if (modifiers.supervisor) {
+                    throw error(previous(), "'supervisor' applies to actor class declarations, not actor fnc");
+                }
                 Ast.ActorKind actorKind = resolveActorKind(actorToken, isolated, modifiers);
                 return parseFunction(annotations, modifiers, Ast.CallableKind.FNC, actorKind);
             }
             if (match(ROUTINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                if (modifiers.supervisor) {
+                    throw error(previous(), "'supervisor' applies to actor class declarations, not actor routine");
+                }
                 Ast.ActorKind actorKind = resolveActorKind(actorToken, isolated, modifiers);
                 return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE, actorKind);
             }
@@ -388,8 +413,8 @@ public final class Parser {
                 throw error(actorToken, "actor class declarations accept only visibility and actor-kind modifiers");
             }
             rejectCallableStructuralAnnotation(annotations, "actor class declarations");
-            rejectDiscardedDeclarationAnnotations(annotations, "actor class declarations");
-            return parseActorClass(actorKind, modifiers.visibility);
+            Ast.MaxActorThreads maxThreads = actorMaxThreads(annotations);
+            return parseActorClass(actorKind, modifiers.visibility, maxThreads, modifiers.supervisor);
         }
         if (match(FNC)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
@@ -397,11 +422,14 @@ public final class Parser {
                 Token actorToken = previous();
                 boolean isolated = actorToken.type() == ISOACTOR;
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                if (modifiers.supervisor) {
+                    throw error(previous(), "'supervisor' applies to actor class declarations, not actor fnc");
+                }
                 Ast.ActorKind actorKind = resolveActorKind(actorToken, isolated, modifiers);
                 return parseFunction(annotations, modifiers, Ast.CallableKind.FNC, actorKind);
             }
-            if (modifiers.shared || modifiers.untrusted) {
-                throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
+            if (modifiers.shared || modifiers.untrusted || modifiers.supervisor) {
+                throw error(previous(), "'shared'/'untrusted'/'supervisor' must modify an actor declaration");
             }
             return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
         }
@@ -411,11 +439,14 @@ public final class Parser {
                 Token actorToken = previous();
                 boolean isolated = actorToken.type() == ISOACTOR;
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                if (modifiers.supervisor) {
+                    throw error(previous(), "'supervisor' applies to actor class declarations, not actor routine");
+                }
                 Ast.ActorKind actorKind = resolveActorKind(actorToken, isolated, modifiers);
                 return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE, actorKind);
             }
-            if (modifiers.shared || modifiers.untrusted) {
-                throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
+            if (modifiers.shared || modifiers.untrusted || modifiers.supervisor) {
+                throw error(previous(), "'shared'/'untrusted'/'supervisor' must modify an actor declaration");
             }
             return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
         }
@@ -656,7 +687,7 @@ public final class Parser {
 
     private void validateClassModifiers(Modifiers modifiers) {
         if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
-                || modifiers.isStatic || modifiers.shared || modifiers.untrusted) {
+                || modifiers.isStatic || modifiers.shared || modifiers.untrusted || modifiers.supervisor) {
             throw error(previous(),
                     "classes accept only private/pub visibility and abstract; callable/actor modifiers are not permitted");
         }
@@ -664,21 +695,21 @@ public final class Parser {
 
     private void validateClassFieldModifiers(Modifiers modifiers) {
         if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
-                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
+                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted || modifiers.supervisor) {
             throw error(peek(), "class fields accept only private/pub visibility modifiers");
         }
     }
 
     private void validateOnlyVisibilityModifiers(Modifiers modifiers, String context) {
         if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical
-                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
+                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted || modifiers.supervisor) {
             throw error(previous(), context + " accept only private/pub visibility modifiers");
         }
     }
 
     private void validateInterfaceCallableModifiers(Modifiers modifiers) {
         if (modifiers.visibilitySeen || modifiers.async || modifiers.generator || modifiers.nonLexical || modifiers.trapped
-                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
+                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted || modifiers.supervisor) {
             throw error(previous(),
                     "interface callable signatures currently accept only the structural callable modifier");
         }
@@ -687,7 +718,7 @@ public final class Parser {
     private void validateNoModifiers(Modifiers modifiers, String context) {
         if (modifiers.visibilitySeen || modifiers.async || modifiers.generator || modifiers.structural
                 || modifiers.nonLexical || modifiers.trapped || modifiers.isStatic || modifiers.isAbstract
-                || modifiers.shared || modifiers.untrusted) {
+                || modifiers.shared || modifiers.untrusted || modifiers.supervisor) {
             throw error(previous(), context + " do not accept declaration modifiers");
         }
     }
@@ -701,6 +732,38 @@ public final class Parser {
      * allocation primitive. Actor construction/spawn must still be lowered by
      * the runtime before source programs may instantiate actor classes.
      */
+    /**
+     * Temporary source spelling for the language-owned actor thread tier.
+     * This is NOT a generic enum compiler. It validates the precise frozen
+     * built-in declaration and never permits user code to redefine the
+     * three scheduling constants. Runtime opt-in above LOW stays fail-closed.
+     */
+    private void parseBuiltInMaxActorThreadsEnum() {
+        if (maxActorThreadsEnumDeclared)
+            throw error(previous(), "duplicate built-in MaxActorThreads enum declaration");
+        String name = consume(IDENT, "expected MaxActorThreads enum name").lexeme();
+        if (!name.equals("MaxActorThreads"))
+            throw error(previous(), "general enum lowering is unsupported; only built-in MaxActorThreads is available");
+        consume(AS, "MaxActorThreads enum requires 'as'");
+        for (Ast.MaxActorThreads tier : Ast.MaxActorThreads.values()) {
+            String member = consume(IDENT, "expected MaxActorThreads." + tier.name()).lexeme();
+            if (!member.equals(tier.name()))
+                throw error(previous(), "built-in MaxActorThreads requires "
+                        + tier.name() + " in canonical order");
+            String type = consume(IDENT, "MaxActorThreads." + tier.name() + " requires int").lexeme();
+            if (!type.equals("int"))
+                throw error(previous(), "MaxActorThreads." + tier.name() + " must have int backing type");
+            consume(EQUAL, "expected '=' after MaxActorThreads." + tier.name() + " int");
+            String number = consume(INT, "expected canonical numeric value for "
+                    + tier.name()).lexeme();
+            if (!number.equals(Integer.toString(tier.value())))
+                throw error(previous(), "MaxActorThreads." + tier.name() + " must equal " + tier.value());
+            match(SEMICOLON);
+        }
+        consume(END, "expected 'end' after MaxActorThreads.HIGH");
+        maxActorThreadsEnumDeclared = true;
+    }
+
     private record ActorPrefix(Ast.ActorTransport transport, boolean serial) {
         private static final ActorPrefix DEFAULT =
                 new ActorPrefix(Ast.ActorTransport.GENERIC, false);
@@ -758,8 +821,9 @@ public final class Parser {
                     "actor class declarations accept only visibility and actor-kind modifiers");
         }
         rejectCallableStructuralAnnotation(annotations, "actor class declarations");
-        rejectDiscardedDeclarationAnnotations(annotations, "actor class declarations");
-        return parseActorClass(kind, modifiers.visibility, prefix);
+        Ast.MaxActorThreads maxThreads = actorMaxThreads(annotations);
+        return parseActorClass(
+                kind, modifiers.visibility, prefix, maxThreads, modifiers.supervisor);
     }
 
     private boolean matchContextualIdentifier(String lexeme) {
@@ -785,11 +849,20 @@ public final class Parser {
     }
 
     private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility) {
-        return parseActorClass(actorKind, visibility, ActorPrefix.DEFAULT);
+        return parseActorClass(
+                actorKind, visibility, ActorPrefix.DEFAULT,
+                Ast.MaxActorThreads.LOW, false);
     }
 
     private Ast.ClassDecl parseActorClass(
             Ast.ActorKind actorKind, Ast.Visibility visibility, ActorPrefix prefix) {
+        return parseActorClass(
+                actorKind, visibility, prefix, Ast.MaxActorThreads.LOW, false);
+    }
+
+    private Ast.ClassDecl parseActorClass(
+            Ast.ActorKind actorKind, Ast.Visibility visibility, ActorPrefix prefix,
+            Ast.MaxActorThreads maxThreads, boolean supervisor) {
         String name = consume(IDENT, "expected actor name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
@@ -815,7 +888,7 @@ public final class Parser {
                     throw error(peek(), "requestConcurrency/messageConcurrency require an http/tcp/websocket actor");
                 if (!annotations.isEmpty() || mods.visibilitySeen || mods.async
                         || mods.generator || mods.isStatic || mods.isAbstract
-                        || mods.shared || mods.untrusted || mods.structural
+                        || mods.shared || mods.untrusted || mods.supervisor || mods.structural
                         || mods.nonLexical || mods.trapped)
                     throw error(peek(), "actor concurrency declarations cannot use modifiers or annotations");
                 advance(); // int is a contextual type name
@@ -881,18 +954,17 @@ public final class Parser {
             if (mods.isStatic && !explicitFnc) {
                 consume(FNC, "static actor functions must be declared with 'static fnc'");
             }
-            // Do not silently admit methods that look like checked supervisor
-            // handlers before typed exhaustiveness and CONTROL dispatch exist.
-            if (check(IDENT) && (peek().lexeme().equals("on_throw")
-                    || peek().lexeme().equals("on_throws")
-                    || peek().lexeme().equals("on_raise")
-                    || peek().lexeme().equals("on_panic")
+            if (check(IDENT) && (peek().lexeme().equals("on_throws")
                     || peek().lexeme().equals("on_recover"))) {
-                throw error(peek(), "actor supervision on_* handlers require "
-                        + "compiler-enforced exhaustiveness and CONTROL dispatch; "
-                        + "source handlers are not yet enabled");
+                throw error(peek(), "unsupported actor supervision pseudo-handler '"
+                        + peek().lexeme() + "'; use on_throw, on_raise, or on_panic");
             }
-            methods.add(parseMethod(annotations, mods));
+            Ast.MethodDecl method = parseMethod(annotations, mods);
+            if (isSupervisorHandlerName(method.name()) && !supervisor) {
+                throw error(previous(),
+                        "on_throw/on_raise/on_panic are reserved for 'supervisor actor' declarations");
+            }
+            methods.add(method);
         }
 
         consume(terminator, braceStyle
@@ -901,9 +973,57 @@ public final class Parser {
         if (prefix.serial() && (requestConcurrency != 1 || messageConcurrency != 1)) {
             throw error(previous(), "serial actors require requestConcurrency = 1 and messageConcurrency = 1");
         }
+        validateSupervisorHandlers(name, supervisor, methods);
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods,
-                new Ast.ActorConcurrency(prefix.transport(), requestConcurrency, messageConcurrency));
+                new Ast.ActorConcurrency(prefix.transport(), requestConcurrency, messageConcurrency),
+                maxThreads, supervisor);
+    }
+
+    private static boolean isSupervisorHandlerName(String name) {
+        return name.equals("on_throw") || name.equals("on_raise") || name.equals("on_panic");
+    }
+
+    private void validateSupervisorHandlers(
+            String actorName,
+            boolean supervisor,
+            List<Ast.MethodDecl> methods) {
+        java.util.Map<String, Ast.MethodDecl> handlers = new java.util.LinkedHashMap<>();
+        for (Ast.MethodDecl method : methods) {
+            if (!isSupervisorHandlerName(method.name())) continue;
+            if (handlers.putIfAbsent(method.name(), method) != null) {
+                throw error(previous(), "duplicate supervisor CONTROL handler " + method.name());
+            }
+            boolean valid = method.visibility() == Ast.Visibility.PRIVATE
+                    && !method.isStatic()
+                    && !method.isAbstract()
+                    && !method.async()
+                    && !method.suspends()
+                    && !method.structural()
+                    && method.genericParameters().isEmpty()
+                    && method.parameters().size() == 1
+                    && method.parameters().getFirst().type() != null
+                    && method.parameters().getFirst().type().name().equals("ChildFailure")
+                    && method.parameters().getFirst().type().arguments().isEmpty()
+                    && method.returnType() != null
+                    && method.returnType().name().equals("void")
+                    && method.returnType().arguments().isEmpty();
+            if (!valid) {
+                throw error(previous(),
+                        "supervisor handler " + method.name()
+                                + " must be private synchronous "
+                                + method.name() + "(ChildFailure failure): void");
+            }
+        }
+        if (!supervisor) return;
+        for (String required : java.util.List.of("on_throw", "on_raise", "on_panic")) {
+            if (!handlers.containsKey(required)) {
+                throw error(previous(),
+                        "supervisor actor '" + actorName
+                                + "' must exhaustively define " + required
+                                + "(ChildFailure failure): void");
+            }
+        }
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {
@@ -1257,6 +1377,7 @@ public final class Parser {
         boolean isAbstract = false;
         boolean shared = false;
         boolean untrusted = false;
+        boolean supervisor = false;
         boolean visibilitySeen = false;
         boolean asyncSeen = false;
         boolean suspendsSeen = false;
@@ -1268,6 +1389,7 @@ public final class Parser {
         boolean abstractSeen = false;
         boolean sharedSeen = false;
         boolean untrustedSeen = false;
+        boolean supervisorSeen = false;
 
         while (true) {
             // These spellings are recognized but deliberately unavailable
@@ -1339,12 +1461,16 @@ public final class Parser {
                 if (untrustedSeen) throw error(previous(), "duplicate 'untrusted' modifier");
                 untrustedSeen = true;
                 untrusted = true;
+            } else if (matchContextualIdentifier("supervisor")) {
+                if (supervisorSeen) throw error(previous(), "duplicate 'supervisor' modifier");
+                supervisorSeen = true;
+                supervisor = true;
             } else {
                 break;
             }
         }
         if (async && suspends) throw error(previous(), "'async suspends' is redundant; choose one");
-        return new Modifiers(visibility, visibilitySeen, async, suspends, generator, structural, nonLexical, trapped, isStatic, isAbstract, shared, untrusted);
+        return new Modifiers(visibility, visibilitySeen, async, suspends, generator, structural, nonLexical, trapped, isStatic, isAbstract, shared, untrusted, supervisor);
     }
 
     private Modifiers mergeModifiers(Modifiers before, Modifiers after) {
@@ -1363,6 +1489,7 @@ public final class Parser {
         if (before.isAbstract && after.isAbstract) throw error(previous(), "duplicate 'abstract' modifier");
         if (before.shared && after.shared) throw error(previous(), "duplicate 'shared' modifier");
         if (before.untrusted && after.untrusted) throw error(previous(), "duplicate 'untrusted' modifier");
+        if (before.supervisor && after.supervisor) throw error(previous(), "duplicate 'supervisor' modifier");
 
         return new Modifiers(
                 after.visibilitySeen ? after.visibility : before.visibility,
@@ -1376,7 +1503,8 @@ public final class Parser {
                 before.isStatic || after.isStatic,
                 before.isAbstract || after.isAbstract,
                 before.shared || after.shared,
-                before.untrusted || after.untrusted);
+                before.untrusted || after.untrusted,
+                before.supervisor || after.supervisor);
     }
 
     private Ast.TypeRef parseReturnType(List<Ast.Annotation> annotations) {
@@ -1821,12 +1949,20 @@ public final class Parser {
 
     private Ast.Stmt parseStatement() {
         rejectUnsupportedAcceleratorSyntax();
-        // Keep these distinct from ordinary calls/identifiers. Exception
-        // effect checking, typed recovery and actor CONTROL delivery have
-        // not yet been lowered in the Java/Graal production compiler.
-        if (check(THROW) || check(RAISE) || check(PANIC) || check(RECOVER)) {
-            throw error(peek(), "typed exceptional effect '" + peek().lexeme()
-                    + "' requires checked exception and supervision lowering; source effect is not yet enabled");
+        if (match(THROW, RAISE, PANIC)) {
+            Token effect = previous();
+            Ast.Expr value = parseExpression();
+            consumeStatementTerminator("typed exceptional effect should end with ';'");
+            Ast.TerminalEffectKind kind = switch (effect.type()) {
+                case THROW -> Ast.TerminalEffectKind.THROW;
+                case RAISE -> Ast.TerminalEffectKind.RAISE;
+                case PANIC -> Ast.TerminalEffectKind.PANIC;
+                default -> throw new AssertionError(effect.type());
+            };
+            return new Ast.TerminalEffectStmt(kind, value);
+        }
+        if (check(RECOVER)) {
+            throw error(peek(), "typed recover requires checked deferred-recovery lowering; source recover is not yet enabled");
         }
         // The value-producing static select expression is not lowered yet.
         // Preserve historical statement sources until expression migration
@@ -4095,6 +4231,44 @@ public final class Parser {
     }
 
     /**
+     * Source actor physical concurrency is a static compiler policy, not a
+     * mutable runtime hint. The parser retains its typed value in ClassDecl.
+     * While per-turn Truffle Context isolation and state loans are incomplete,
+     * fail closed for MEDIUM/HIGH rather than silently executing unsafely.
+     */
+    private Ast.MaxActorThreads actorMaxThreads(List<Ast.Annotation> annotations) {
+        Ast.MaxActorThreads result = Ast.MaxActorThreads.LOW;
+        boolean seen = false;
+        for (Ast.Annotation annotation : annotations) {
+            if (!annotation.name().equals("ActorMaxThreads")) {
+                throw error(previous(), "@" + annotation.name()
+                        + " on actor class declarations is not implemented");
+            }
+            if (seen) throw error(previous(), "duplicate @ActorMaxThreads on actor declaration");
+            seen = true;
+            if (annotation.arguments().size() != 1)
+                throw error(previous(), "@ActorMaxThreads requires exactly one MaxActorThreads enum value");
+            Ast.TypeRef value = annotation.arguments().getFirst();
+            if (!value.arguments().isEmpty() || value.inferArguments()
+                    || !value.name().startsWith("MaxActorThreads.")) {
+                throw error(previous(), "@ActorMaxThreads expects MaxActorThreads.LOW, .MEDIUM or .HIGH");
+            }
+            String member = value.name().substring("MaxActorThreads.".length());
+            try {
+                result = Ast.MaxActorThreads.valueOf(member);
+            } catch (IllegalArgumentException invalid) {
+                throw error(previous(), "unknown MaxActorThreads enum member: " + member);
+            }
+            if (result != Ast.MaxActorThreads.LOW) {
+                throw error(previous(), "@ActorMaxThreads(MaxActorThreads." + member
+                        + ") requires compiler-proven per-turn actor state isolation;"
+                        + " parallel actor execution is not yet enabled");
+            }
+        }
+        return result;
+    }
+
+    /**
      * Fail closed until these declaration nodes preserve typed annotation metadata.
      * Silently dropping metadata can bypass compile-time macro, ABI and safety contracts.
      * Module, function, method and field annotations have AST storage and are unaffected.
@@ -4410,5 +4584,5 @@ public final class Parser {
         return new IllegalArgumentException("Oreslang parse error at " + token.line() + ":" + token.column() + ": " + message);
     }
 
-    private record Modifiers(Ast.Visibility visibility, boolean visibilitySeen, boolean async, boolean suspends, boolean generator, boolean structural, boolean nonLexical, boolean trapped, boolean isStatic, boolean isAbstract, boolean shared, boolean untrusted) { }
+    private record Modifiers(Ast.Visibility visibility, boolean visibilitySeen, boolean async, boolean suspends, boolean generator, boolean structural, boolean nonLexical, boolean trapped, boolean isStatic, boolean isAbstract, boolean shared, boolean untrusted, boolean supervisor) { }
 }
