@@ -482,6 +482,8 @@ public final class ActorRuntime implements AutoCloseable {
             new java.util.HashMap<>();
     private final AtomicInteger actorCount = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
+    /** Distinct from admission sealing: dispatcher stop must still occur later. */
+    private final AtomicBoolean dispatchersShutdown = new AtomicBoolean();
     private final AtomicLong privateMemoryBytes = new AtomicLong();
     private final AtomicLong sharedMemoryBytes = new AtomicLong();
     private final Object memoryBudgetLock = new Object();
@@ -6976,20 +6978,40 @@ public final class ActorRuntime implements AutoCloseable {
                 || value instanceof ActorGroupId;
     }
 
+    /**
+     * Phase one of context shutdown. Reject actor creation, new messages and
+     * child spawns without executing cancellation callbacks or waiting for
+     * worker/guest cleanup. Every live ActorCell is pre-sealed before I/O
+     * transport wakeup begins. Subsequent close() still owns carrier teardown.
+     */
+    void sealShutdownAdmission() {
+        requireSupervisorContext("seal ActorRuntime admission");
+        final List<ActorCell<?>> snapshot;
+        synchronized (runtimeLifecycleLock) {
+            closed.set(true);
+            snapshot = List.copyOf(actors.values());
+        }
+        for (ActorCell<?> cell : snapshot) {
+            synchronized (cell.lifecycleLock) {
+                if (!cell.finalized) cell.sealing = true;
+            }
+        }
+    }
+
     @Override
     public void close() {
         requireSupervisorContext("close an ActorRuntime");
+        sealShutdownAdmission();
 
-        final boolean firstClose;
-        final List<ActorCell<?>> snapshot;
-        synchronized (runtimeLifecycleLock) {
-            firstClose = closed.compareAndSet(false, true);
-            snapshot = List.copyOf(actors.values());
-        }
+        final List<ActorCell<?>> snapshot = List.copyOf(actors.values());
         for (ActorCell<?> cell : snapshot) cell.stop();
-        if (firstClose && physicalTurnGate != null) physicalTurnGate.close();
+        // Distinct from closed CAS: admission may have been sealed before
+        // the physical STOP and dispatcher shutdown sequence began.
+        final boolean firstDispatcherShutdown =
+                dispatchersShutdown.compareAndSet(false, true);
+        if (firstDispatcherShutdown && physicalTurnGate != null) physicalTurnGate.close();
 
-        if (firstClose) {
+        if (firstDispatcherShutdown) {
             // Stop executor carriers so queued work is rejected/removed and
             // blocked host-side executor operations can wake. This interrupt is
             // backend shutdown mechanics only; it is never an actor
@@ -7041,18 +7063,6 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        for (ActorGroup group : List.copyOf(actorGroups.values())) group.closeFromRuntime();
-        actorGroups.clear();
-        for (ActorOutputStream<?> stream : List.copyOf(actorOutputStreams)) {
-            stream.closeAndDrainFromRuntime();
-        }
-        actorOutputStreams.clear();
-        for (SyncCell<?> cell : List.copyOf(syncCells)) cell.invalidateFromRuntime();
-        syncCells.clear();
-        for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
-        sharedValues.clear();
-        sharedMemoryBytes.set(0L);
-
         if (interrupted) Thread.currentThread().interrupt();
         if (!stillRunning.isEmpty() || !dispatchersTerminated || interrupted) {
             if (interrupted) {
@@ -7067,6 +7077,19 @@ public final class ActorRuntime implements AutoCloseable {
                             + stillRunning.size() + " actor(s) still running, dispatchersTerminated="
                             + dispatchersTerminated);
         }
+        // Only after physical actor and carrier retirement may we invalidate
+        // shared/actor-group registries or erase their resource ownership.
+        for (ActorGroup group : List.copyOf(actorGroups.values())) group.closeFromRuntime();
+        actorGroups.clear();
+        for (ActorOutputStream<?> stream : List.copyOf(actorOutputStreams)) {
+            stream.closeAndDrainFromRuntime();
+        }
+        actorOutputStreams.clear();
+        for (SyncCell<?> cell : List.copyOf(syncCells)) cell.invalidateFromRuntime();
+        syncCells.clear();
+        for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
+        sharedValues.clear();
+        sharedMemoryBytes.set(0L);
         actors.clear();
         actorCount.set(0);
     }
