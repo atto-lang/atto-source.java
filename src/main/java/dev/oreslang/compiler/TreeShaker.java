@@ -45,6 +45,12 @@ public final class TreeShaker {
             boolean libraryBuild,
             Set<String> semanticSymbols) {
         public Result {
+            if (program == null || retainedSymbols == null ||
+                    removedSymbols == null || compileTimeConstants == null ||
+                    rootSymbols == null || semanticSymbols == null) {
+                throw new IllegalArgumentException(
+                        "tree-shaker result fields cannot be null");
+            }
             retainedSymbols = Set.copyOf(retainedSymbols);
             removedSymbols = Set.copyOf(removedSymbols);
             compileTimeConstants = Collections.unmodifiableMap(
