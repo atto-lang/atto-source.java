@@ -2404,6 +2404,17 @@ public final class ActorRuntime implements AutoCloseable {
             return Optional.ofNullable(cell.physicalRetirement.snapshot().failure());
         }
 
+        /** Read-only host diagnostic, not a release or supervisor authority.
+         * These counters are per-incarnation and retain failed loan tickets. */
+        public Map<String, Integer> pendingPhysicalRetirementsByKind() {
+            ActorCell<?> cell = actors.get(id);
+            if (cell == null || cell.ref != this) return Map.of();
+            Map<String, Integer> counts = new LinkedHashMap<>();
+            cell.physicalRetirement.snapshot().byKind().forEach(
+                    (kind, count) -> counts.put(kind.name(), count));
+            return Map.copyOf(counts);
+        }
+
         /**
          * Actor initialization barrier. Accessing ready starts an unstarted
          * actor on its own dispatcher, even if no first message was sent.
