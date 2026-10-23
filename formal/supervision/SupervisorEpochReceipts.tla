@@ -42,6 +42,7 @@ StartFence ==
 \* A restart reservation can happen before the child fence.
 RequestRestart ==
     /\ childPhase = "Running"
+    /\ ~failed
     /\ ~childFenced
     /\ childEpoch < MaxEpoch
     /\ childPhase' = "Restarting"
@@ -50,6 +51,7 @@ RequestRestart ==
 
 CommitRestart ==
     /\ childPhase = "Restarting"
+    /\ ~failed
     /\ ~childFenced
     /\ childEpoch < MaxEpoch
     /\ childEpoch' = childEpoch + 1
