@@ -102,7 +102,8 @@ final class SourceCompiledSharedHotReloadV2Test {
                 view.executor().actorCodeSha256(view.actorTypeName()),
                 view.executor().actorStateSchemaSha256(view.actorTypeName()),
                 view.executor().actorMessageAbiSha256(view.actorTypeName()),
-                "0".repeat(64));
+                view.capabilitySha256(),
+                ActorUpgradeEpochGate.CodeMode.GRAAL_JIT);
     }
 
     @Test
