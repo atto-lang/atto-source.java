@@ -240,23 +240,26 @@ class AsyncNativeIoTest {
         var io = new AsyncNativeIo(1);
         var callbackEntered = new CountDownLatch(1);
         var releaseCallback = new CountDownLatch(1);
+        var permitWorkExit = new CountDownLatch(1);
         var started = new CountDownLatch(1);
         var work = io.submit("callback-ownership", () -> {
             started.countDown();
+            permitWorkExit.await();
             return 5;
         });
         assertTrue(started.await(3, TimeUnit.SECONDS));
         work.whenCompleteRuntime((value, failure) -> {
             callbackEntered.countDown();
-            try {
-                if (!releaseCallback.await(5, TimeUnit.SECONDS)) {
-                    throw new IllegalStateException("terminal callback timed out");
+            while (releaseCallback.getCount() != 0) {
+                try {
+                    releaseCallback.await(30, TimeUnit.MILLISECONDS);
+                } catch (InterruptedException ignored) {
+                    // Physical host subscriber deliberately ignores STOP
+                    // interruption until the test releases its native loan.
                 }
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                throw new IllegalStateException(interrupted);
             }
         });
+        permitWorkExit.countDown();
         try {
             assertTrue(callbackEntered.await(3, TimeUnit.SECONDS));
             io.close();
