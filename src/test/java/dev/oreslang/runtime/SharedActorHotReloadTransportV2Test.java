@@ -119,25 +119,32 @@ final class SharedActorHotReloadTransportV2Test {
     @Test
     void completionCoordinatorCannotRunLogicalSettlementOnActorCarrier()
             throws Exception {
-        CountDownLatch handled = new CountDownLatch(1);
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
 
         try (ActorRuntime runtime = new ActorRuntime()) {
-            var physical = runtime.<byte[]>spawnShared(() -> (message, context) ->
-                    handled.countDown());
+            var physical = runtime.<byte[]>spawnShared(() -> (message, context) -> {
+                entered.countDown();
+                if (!release.await(5, TimeUnit.SECONDS)) {
+                    throw new AssertionError("physical actor release timed out");
+                }
+            });
             physical.getReady().get(5, TimeUnit.SECONDS);
 
             try (var gate = new ActorUpgradeEpochGate(7002, image('a'));
                  var mailbox = new LogicalActorProxyMailboxV1(4, 64, 128);
                  var authority = new ActorRoutePublicationV1<>(
                          gate, mailbox, state(1), physical)) {
-                // Deliberately hostile/direct executor. If the physical Future
-                // completes on an actor carrier, the transport must quarantine
-                // instead of acquiring logical publication locks there.
+                // Deliberately hostile/direct executor. Hold the actor until
+                // pumpOne() has installed its Future callback, then release it:
+                // completion is now guaranteed to originate on the actor
+                // carrier and the direct executor would otherwise run inline.
                 var transport = new SharedActorHotReloadTransportV2(
                         runtime, Runnable::run, authority);
                 transport.admit(new byte[] {9});
                 assertTrue(transport.pumpOne());
-                assertTrue(handled.await(5, TimeUnit.SECONDS));
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                release.countDown();
 
                 awaitTrue(() -> authority.quarantineCause() != null,
                         "inline actor-carrier completion was not quarantined");
@@ -150,6 +157,8 @@ final class SharedActorHotReloadTransportV2Test {
                 physical.stop();
                 physical.getDone().get(5, TimeUnit.SECONDS);
             }
+        } finally {
+            release.countDown();
         }
     }
 }
