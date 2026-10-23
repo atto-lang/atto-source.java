@@ -848,9 +848,14 @@ public final class OresMutex {
                 if (poisoned.get()) {
                     endWait(claimed.ownerDomain);
                     releaseDomain(claimed.ownerDomain);
-                    claimed.future.failHandoffOnNotifier(
-                            new PoisonedMutexException(),
-                            () -> claimed.physicalSettlement.complete(null));
+                    try {
+                        claimed.future.failHandoffOnNotifier(
+                                new PoisonedMutexException(),
+                                () -> claimed.physicalSettlement.complete(null));
+                    } catch (RuntimeException | Error notifierFailure) {
+                        claimed.physicalSettlement.completeExceptionally(notifierFailure);
+                        throw notifierFailure;
+                    }
                     continue;
                 }
 
@@ -866,18 +871,31 @@ public final class OresMutex {
                 } catch (RuntimeException | Error failedRegistration) {
                     clearOwner(claimed.ownerDomain);
                     releaseDomain(claimed.ownerDomain);
-                    claimed.future.failHandoffOnNotifier(
-                            failedRegistration,
-                            () -> claimed.physicalSettlement.complete(null));
+                    try {
+                        claimed.future.failHandoffOnNotifier(
+                                failedRegistration,
+                                () -> claimed.physicalSettlement.complete(null));
+                    } catch (RuntimeException | Error notifierFailure) {
+                        claimed.physicalSettlement.completeExceptionally(notifierFailure);
+                        throw notifierFailure;
+                    }
                     continue;
                 }
-                claimed.future.completeHandoffOnNotifier(
-                        guard,
-                        // A cancelling Task may win while publication is
-                        // queued. Reject the abandoned guard and arrange a
-                        // fresh physical permit handoff on the host notifier.
-                        () -> guard.releaseFromRuntime(),
-                        () -> claimed.physicalSettlement.complete(null));
+                try {
+                    claimed.future.completeHandoffOnNotifier(
+                            guard,
+                            // A cancelling Task may win while publication is
+                            // queued. Reject the abandoned guard and arrange a
+                            // fresh physical permit handoff on the host notifier.
+                            () -> guard.releaseFromRuntime(),
+                            () -> claimed.physicalSettlement.complete(null));
+                } catch (RuntimeException | Error notifierFailure) {
+                    // Do not manufacture a successful Task retirement while
+                    // an unpublished guard still physically owns the mutex.
+                    // Supervisor recovery must quarantine the failed grant.
+                    claimed.physicalSettlement.completeExceptionally(notifierFailure);
+                    throw notifierFailure;
+                }
                 return;
             }
         }
