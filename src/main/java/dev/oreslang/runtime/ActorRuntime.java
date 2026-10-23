@@ -5355,6 +5355,173 @@ public final class ActorRuntime implements AutoCloseable {
         return sendInternal(ref, message, true);
     }
 
+    /**
+     * Host/CONTROL-only reversible physical freeze for one SHARED source actor.
+     * New user mail is rejected immediately; previously accepted mail continues
+     * to completion. snapshot(...) then executes the compiler-private state
+     * serializer as a fresh actor continuation after the exact drain barrier.
+     */
+    final class SourceActorUpgradeFreeze implements AutoCloseable {
+        private final ActorCell<Object> cell;
+        private final OresFuture<Void> drained;
+        private boolean consumed;
+        private boolean snapshotTaken;
+
+        private SourceActorUpgradeFreeze(
+                ActorCell<Object> cell,
+                OresFuture<Void> drained) {
+            this.cell = cell;
+            this.drained = drained;
+        }
+
+        ActorRef<Object> physicalRef() {
+            return cell.ref;
+        }
+
+        boolean drained() {
+            return drained.isDone() && !drained.isCompletedExceptionally();
+        }
+
+        byte[] snapshot(long timeout, TimeUnit unit)
+                throws InterruptedException, TimeoutException {
+            requireBlockingHostContext("snapshot a source actor for hot upgrade");
+            Objects.requireNonNull(unit, "timeout unit");
+            if (timeout < 0)
+                throw new IllegalArgumentException("timeout must be non-negative");
+
+            final long budget = unit.toNanos(timeout);
+            final long started = System.nanoTime();
+            synchronized (this) {
+                requireActive();
+                if (snapshotTaken)
+                    throw new IllegalStateException(
+                            "source actor upgrade snapshot already taken");
+                snapshotTaken = true;
+            }
+
+            try {
+                drained.get(timeout, unit);
+            } catch (ExecutionException failure) {
+                throw new IllegalStateException(
+                        "source actor failed before upgrade checkpoint drained",
+                        OresFuture.unwrap(failure));
+            }
+
+            long remaining = budget - Math.max(0L, System.nanoTime() - started);
+            if (remaining <= 0)
+                throw new TimeoutException("source actor checkpoint drain timed out");
+
+            var snapshot = new AtomicReference<byte[]>();
+            var failure = new AtomicReference<Throwable>();
+            var finished = new java.util.concurrent.CountDownLatch(1);
+            boolean admitted = enqueueContinuation(cell.ref.id(), () -> {
+                try {
+                    snapshot.set(cell.snapshotSourceActorForUpgradeOnCarrier());
+                } catch (Throwable checkpointFailure) {
+                    failure.set(checkpointFailure);
+                } finally {
+                    finished.countDown();
+                }
+            });
+            if (!admitted) {
+                throw new IllegalStateException(
+                        "source actor checkpoint continuation was not admitted");
+            }
+
+            if (!finished.await(remaining, TimeUnit.NANOSECONDS)) {
+                throw new TimeoutException(
+                        "source actor checkpoint continuation timed out");
+            }
+            Throwable checkpointFailure = failure.get();
+            if (checkpointFailure != null) {
+                if (checkpointFailure instanceof RuntimeException runtime)
+                    throw runtime;
+                if (checkpointFailure instanceof Error error) throw error;
+                throw new IllegalStateException(
+                        "source actor checkpoint failed", checkpointFailure);
+            }
+            byte[] bytes = snapshot.get();
+            if (bytes == null)
+                throw new IllegalStateException(
+                        "source actor checkpoint produced no bytes");
+            return bytes.clone();
+        }
+
+        /**
+         * Preserve the physical ingress fence after logical publication.
+         * The owner must then stop/retire this old physical incarnation; close()
+         * can no longer reopen it.
+         */
+        synchronized void commitForRetirement() {
+            requireActive();
+            consumed = true;
+        }
+
+        private void requireActive() {
+            if (consumed)
+                throw new IllegalStateException(
+                        "source actor upgrade freeze is already consumed");
+            synchronized (cell.lifecycleLock) {
+                if (cell.stopped.get() || cell.finalized
+                        || !cell.sourceUpgradeFrozen) {
+                    throw new IllegalStateException(
+                            "source actor upgrade freeze lost physical authority");
+                }
+            }
+        }
+
+        /** Roll back the reversible ingress fence. */
+        @Override
+        public synchronized void close() {
+            if (consumed) return;
+            synchronized (cell.lifecycleLock) {
+                if (!cell.stopped.get() && !cell.finalized) {
+                    if (!cell.sourceUpgradeFrozen) {
+                        consumed = true;
+                        throw new IllegalStateException(
+                                "source actor upgrade freeze authority lost");
+                    }
+                    cell.sourceUpgradeFrozen = false;
+                    cell.lifecycleLock.notifyAll();
+                }
+            }
+            consumed = true;
+            cell.schedule();
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    SourceActorUpgradeFreeze beginSharedSourceActorUpgrade(
+            ActorRef<Object> ref) {
+        requireBlockingHostContext("begin a source actor hot upgrade");
+        Objects.requireNonNull(ref, "source actor ref");
+        if (!ref.ownedBy(this))
+            throw new ActorInvalidReferenceException(
+                    "ActorRef belongs to a different ActorRuntime");
+        ActorCell<Object> cell = (ActorCell<Object>) actors.get(ref.id());
+        if (cell == null || cell.stopped.get()) throw terminated(ref);
+
+        synchronized (cell.lifecycleLock) {
+            if (cell.stopped.get() || cell.finalized) throw terminated(ref);
+            if (cell.kind != ActorKind.SHARED)
+                throw new SecurityException(
+                        "v2 source checkpoint currently supports SHARED actors only");
+            if (cell.codeExecutor == null || cell.codeActorState == null)
+                throw new IllegalStateException(
+                        "hot-upgrade target is not a ready source actor");
+            if (cell.sealing || cell.sourceUpgradeFrozen)
+                throw new ActorSealedException(ref.id());
+            cell.sourceUpgradeFrozen = true;
+            try {
+                return new SourceActorUpgradeFreeze(
+                        cell, cell.drainAcceptedMessages(true));
+            } catch (RuntimeException | Error failure) {
+                cell.sourceUpgradeFrozen = false;
+                throw failure;
+            }
+        }
+    }
+
     @SuppressWarnings("unchecked")
     private <M> OresFuture<Void> sendInternal(
             ActorRef<M> ref, M message, boolean observeCompletion) {
@@ -5372,7 +5539,8 @@ public final class ActorRuntime implements AutoCloseable {
         if (cell == null || cell.stopped.get()) throw terminated(ref);
         synchronized (cell.lifecycleLock) {
             if (cell.stopped.get() || cell.finalized) throw terminated(ref);
-            if (cell.sealing) throw new ActorSealedException(ref.id());
+            if (cell.sealing || cell.sourceUpgradeFrozen)
+                throw new ActorSealedException(ref.id());
             if (!cell.reserveMailboxSlot()) {
                 throw new ActorMailboxFullException(ref.id());
             }
@@ -5451,7 +5619,7 @@ public final class ActorRuntime implements AutoCloseable {
                     if (cell.stopped.get() || cell.finalized) {
                         throw terminated(ref);
                     }
-                    if (cell.sealing) {
+                    if (cell.sealing || cell.sourceUpgradeFrozen) {
                         throw new ActorSealedException(ref.id());
                     }
                     if (cell.forceKillFenced) {
@@ -7131,6 +7299,11 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicBoolean stopped = new AtomicBoolean();
         /** Set under lifecycleLock by gracefulStop; no further user admissions. */
         private boolean sealing;
+        /**
+         * Reversible source hot-upgrade ingress fence. Unlike sealing, this is
+         * not a stop request: rollback may reopen the same physical actor.
+         */
+        private boolean sourceUpgradeFrozen;
         // Lifetime-affine structured owner: never transferred before physical
         // finalization, even if the original group closes during cancellation.
         private final AtomicReference<ActorGroupId> managedByGroup = new AtomicReference<>();
@@ -7384,6 +7557,70 @@ public final class ActorRuntime implements AutoCloseable {
                     // gracefulStop owns one reserved observer outside both quotas.
                 }
             }
+        }
+
+        private byte[] snapshotSourceActorForUpgradeOnCarrier() {
+            if (currentActor.get() != this
+                    || !ActorRuntime.isActorCarrierThread()) {
+                throw new SecurityException(
+                        "source actor checkpoint must execute on its actor carrier");
+            }
+
+            final ActorCodeExecutor executor;
+            final ActorOwnedGuestState state;
+            final String actorType;
+            synchronized (lifecycleLock) {
+                if (stopped.get() || finalized || !sourceUpgradeFrozen)
+                    throw new IllegalStateException(
+                            "source actor checkpoint lost upgrade freeze");
+                if (activeTurns != 1
+                        || carrierOwnerThread != Thread.currentThread()) {
+                    throw new IllegalStateException(
+                            "source actor checkpoint lacks single-writer turn");
+                }
+                if (sourceReceiveSuspended || activeMail != null) {
+                    throw new IllegalStateException(
+                            "source actor checkpoint cannot run with active user mail");
+                }
+                if (lastProcessedUserMessageSequence
+                        != nextUserMessageSequence - 1L) {
+                    throw new IllegalStateException(
+                            "source actor checkpoint attempted before mailbox drain");
+                }
+                executor = Objects.requireNonNull(
+                        codeExecutor, "source actor executor");
+                state = Objects.requireNonNull(
+                        codeActorState, "source actor state");
+                actorType = Objects.requireNonNull(
+                        codeActorType, "source actor type");
+            }
+
+            @SuppressWarnings("unchecked")
+            ActorContext<Object> checkpointContext =
+                    (ActorContext<Object>) (ActorContext<?>) new ActorContext<M>() {
+                        @Override public ActorRef<M> self() { return ref; }
+                        @Override public ActorRuntime runtime() { return ActorRuntime.this; }
+                        @Override public IsolatePolicy policy() { return policy; }
+                        @Override public ActorKind kind() { return kind; }
+                        @Override public Optional<ActorMemorySlice> privateMemory() {
+                            return Optional.ofNullable(memorySlice);
+                        }
+                        @Override public Optional<ActorInboxMail<M>> currentMail() {
+                            return Optional.empty();
+                        }
+                        @Override public Optional<SharedCodeImageStore.CodeImage> codeImage() {
+                            return Optional.ofNullable(codeImage);
+                        }
+                    };
+
+            byte[] bytes = Objects.requireNonNull(
+                    executor.snapshotActorState(
+                            actorType, state, checkpointContext),
+                    "source actor checkpoint returned null");
+            if (bytes.length > 1_048_576)
+                throw new IllegalStateException(
+                        "source actor checkpoint exceeds 1 MiB runtime bound");
+            return bytes.clone();
         }
 
         private boolean hasQueuedWork() {
