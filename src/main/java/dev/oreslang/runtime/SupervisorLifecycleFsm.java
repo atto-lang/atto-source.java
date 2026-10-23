@@ -61,9 +61,13 @@ public final class SupervisorLifecycleFsm {
             Set<Long> expectedChildren,
             Set<Long> completedChildren,
             Set<Long> reclaimedChildren,
+            Set<Long> failedChildren,
             boolean preHookDone,
             boolean actorsDone,
             boolean postHookDone,
+            boolean preHookFailed,
+            boolean actorsFailed,
+            boolean postHookFailed,
             boolean physicalReleased,
             boolean failed,
             boolean deadlineExpired) {
@@ -72,12 +76,25 @@ public final class SupervisorLifecycleFsm {
             expectedChildren = Set.copyOf(expectedChildren);
             completedChildren = Set.copyOf(completedChildren);
             reclaimedChildren = Set.copyOf(reclaimedChildren);
+            failedChildren = Set.copyOf(failedChildren);
             if (epoch < 1 || revision < 0) throw new IllegalArgumentException("negative identity");
             if (!expectedChildren.containsAll(completedChildren)) {
                 throw new IllegalArgumentException("completion not in frozen child set");
             }
             if (!completedChildren.containsAll(reclaimedChildren)) {
                 throw new IllegalArgumentException("physical child ack before child logical completion");
+            }
+            if (!completedChildren.containsAll(failedChildren)) {
+                throw new IllegalArgumentException("failed child missing completion receipt");
+            }
+            if ((preHookFailed && !preHookDone)
+                    || (actorsFailed && !actorsDone)
+                    || (postHookFailed && !postHookDone)) {
+                throw new IllegalArgumentException("failure without matching completed receipt");
+            }
+            if (!failed && (preHookFailed || actorsFailed || postHookFailed
+                    || !failedChildren.isEmpty())) {
+                throw new IllegalArgumentException("aggregate failure must be sticky");
             }
             if (physicalReleased && !actorsDone) {
                 throw new IllegalArgumentException("physical release before actor retirement");
@@ -94,7 +111,8 @@ public final class SupervisorLifecycleFsm {
         }
         public static State initial() {
             return new State(Phase.RUNNING, 1L, 0L, Set.of(), Set.of(), Set.of(),
-                    false, false, false, false, false, false);
+                    Set.of(), false, false, false, false, false, false,
+                    false, false, false);
         }
         public boolean admissionsOpen() { return phase == Phase.RUNNING; }
         public boolean restartPermitted() { return phase == Phase.RUNNING; }
@@ -124,6 +142,10 @@ public final class SupervisorLifecycleFsm {
         Set<Long> expected = s.expectedChildren();
         Set<Long> done = s.completedChildren();
         Set<Long> reclaimed = s.reclaimedChildren();
+        Set<Long> failedChildren = s.failedChildren();
+        boolean preFailed = s.preHookFailed();
+        boolean actorFailed = s.actorsFailed();
+        boolean postFailed = s.postHookFailed();
         boolean pre = s.preHookDone();
         boolean actors = s.actorsDone();
         boolean post = s.postHookDone();
@@ -145,30 +167,49 @@ public final class SupervisorLifecycleFsm {
             expected = Set.of();
             done = Set.of();
             reclaimed = Set.of();
+            failedChildren = Set.of();
             pre = actors = post = released = failed = timedOut = false;
+            preFailed = actorFailed = postFailed = false;
         } else if (e instanceof ShutdownRequested request) {
             if (p != Phase.RUNNING && p != Phase.RESTARTING) {
-                // An already admitted shutdown is idempotent; never mutate
-                // frozen child identity or the original shutdown reason.
+                // Idempotence requires the SAME frozen child identities.
+                // A conflicting request would otherwise hide an orphaned
+                // child after a concurrent topology modification.
+                require(expected.equals(request.children()),
+                        "conflicting shutdown child set for frozen epoch");
                 return s;
             }
             expected = request.children();
             done = Set.of();
             reclaimed = Set.of();
+            failedChildren = Set.of();
             next = Phase.BEFORE_HOOK;
         } else if (e instanceof BeforeHookFinished result) {
-            if (pre) return s;
+            if (pre) {
+                require(preFailed == result.failed(), "conflicting pre-hook completion receipt");
+                return s;
+            }
             require(p == Phase.BEFORE_HOOK, "pre-hook completed out of order");
             pre = true;
+            preFailed = result.failed();
             failed |= result.failed();
             next = expected.isEmpty() ? Phase.WAIT_ACTORS : Phase.WAIT_CHILDREN;
         } else if (e instanceof ChildFinished child) {
             require(expected.contains(child.childId()), "unknown or unowned child receipt");
-            if (done.contains(child.childId())) return s;
+            if (done.contains(child.childId())) {
+                require(failedChildren.contains(child.childId()) == child.failed(),
+                        "conflicting child completion receipt");
+                return s;
+            }
             require(p == Phase.WAIT_CHILDREN, "child completion before pre-hook");
             HashSet<Long> updated = new HashSet<>(done);
             updated.add(child.childId());
             done = Set.copyOf(updated);
+            if (child.failed()) {
+                HashSet<Long> failures = new HashSet<>(failedChildren);
+                failures.add(child.childId());
+                failedChildren = Set.copyOf(failures);
+            }
             failed |= child.failed();
             if (done.size() == expected.size()) next = Phase.WAIT_ACTORS;
         } else if (e instanceof ChildReclaimed child) {
@@ -182,10 +223,14 @@ public final class SupervisorLifecycleFsm {
                 next = Phase.RECLAIMED;
             }
         } else if (e instanceof ActorsFinished result) {
-            if (actors) return s;
+            if (actors) {
+                require(actorFailed == result.failed(), "conflicting actor completion receipt");
+                return s;
+            }
             // Receipts can arrive while the tree is being fenced, but must
             // always belong to the current epoch.
             actors = true;
+            actorFailed = result.failed();
             failed |= result.failed();
             if (p == Phase.WAIT_ACTORS) next = Phase.AFTER_HOOK;
         } else if (e instanceof PhysicalRelease) {
@@ -194,9 +239,13 @@ public final class SupervisorLifecycleFsm {
             released = true;
             if (p == Phase.STOPPED && reclaimed.equals(expected)) next = Phase.RECLAIMED;
         } else if (e instanceof AfterHookFinished result) {
-            if (post) return s;
+            if (post) {
+                require(postFailed == result.failed(), "conflicting post-hook completion receipt");
+                return s;
+            }
             require(p == Phase.AFTER_HOOK, "post-hook completed before children and actors");
             post = true;
+            postFailed = result.failed();
             failed |= result.failed();
             next = released && reclaimed.equals(expected) ? Phase.RECLAIMED : Phase.STOPPED;
         } else if (e instanceof CoordinatorFailed) {
@@ -218,7 +267,12 @@ public final class SupervisorLifecycleFsm {
 
         if (s.epoch() == epoch && next == p && expected.equals(s.expectedChildren())
                 && done.equals(s.completedChildren())
-                && reclaimed.equals(s.reclaimedChildren()) && pre == s.preHookDone()
+                && reclaimed.equals(s.reclaimedChildren())
+                && failedChildren.equals(s.failedChildren())
+                && preFailed == s.preHookFailed()
+                && actorFailed == s.actorsFailed()
+                && postFailed == s.postHookFailed()
+                && pre == s.preHookDone()
                 && actors == s.actorsDone() && post == s.postHookDone()
                 && released == s.physicalReleased() && failed == s.failed()
                 && timedOut == s.deadlineExpired()) return s;
@@ -227,7 +281,9 @@ public final class SupervisorLifecycleFsm {
             throw new IllegalStateException("supervisor transition revision overflow");
         }
         return new State(next, epoch, s.revision() + 1,
-                expected, done, reclaimed, pre, actors, post, released, failed, timedOut);
+                expected, done, reclaimed, failedChildren,
+                pre, actors, post, preFailed, actorFailed, postFailed,
+                released, failed, timedOut);
     }
 
     private static void require(boolean condition, String error) {
