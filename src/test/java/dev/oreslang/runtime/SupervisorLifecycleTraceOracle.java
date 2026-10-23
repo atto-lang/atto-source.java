@@ -108,6 +108,26 @@ public final class SupervisorLifecycleTraceOracle {
         reject(() -> SupervisorLifecycleTrace.verifyComplete(premature.snapshot()),
                 "premature child acknowledgement accepted by tree trace checker");
 
+        var doubleParent = new SupervisorLifecycleTrace.Journal(8);
+        var p1 = SupervisorLifecycleFsm.State.initial();
+        var p2 = SupervisorLifecycleFsm.State.initial();
+        p1 = record(doubleParent, 1, p1,
+                new SupervisorLifecycleFsm.ShutdownRequested(1, Set.of(3L)));
+        p2 = record(doubleParent, 2, p2,
+                new SupervisorLifecycleFsm.ShutdownRequested(1, Set.of(3L)));
+        reject(() -> SupervisorLifecycleTrace.verifyComplete(doubleParent.snapshot()),
+                "child cannot belong to two parents");
+
+        var cycle = new SupervisorLifecycleTrace.Journal(8);
+        var c1 = SupervisorLifecycleFsm.State.initial();
+        var c2 = SupervisorLifecycleFsm.State.initial();
+        c1 = record(cycle, 1, c1,
+                new SupervisorLifecycleFsm.ShutdownRequested(1, Set.of(2L)));
+        c2 = record(cycle, 2, c2,
+                new SupervisorLifecycleFsm.ShutdownRequested(1, Set.of(1L)));
+        reject(() -> SupervisorLifecycleTrace.verifyComplete(cycle.snapshot()),
+                "cyclic supervisor tree cannot verify");
+
         var fence = new SupervisorChildGenerationFence(Map.of(2L, 4L));
         fence.requireReceipt(2L, 4L, 4L);
         reject(() -> fence.requireReceipt(2L, 3L, 4L),
