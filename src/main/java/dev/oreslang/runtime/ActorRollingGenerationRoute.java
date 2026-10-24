@@ -146,17 +146,18 @@ public final class ActorRollingGenerationRoute<T> implements AutoCloseable {
     }
 
     /**
-     * Called only by the trusted CONTROL retirement owner AFTER independently
-     * proving all other physical actor/IO/code lifetimes are quiescent.
-     * This method never closes target resources itself.
+     * Fail closed until an authenticated generation/actor-specific retirement
+     * receipt can be issued by physical Task, callback, native I/O, FFI,
+     * arena and code-image lifetime authorities. Neither traffic completion
+     * nor an actor's observer Future is such a receipt.
+     *
+     * <p>Do NOT remove the old generation from the registry based on a
+     * CONTROL caller's assertion alone; this is an ABA/use-after-free risk.</p>
      */
+    @Deprecated(forRemoval = true)
     public synchronized boolean acknowledgePhysicallyRetired(long epoch) {
-        Generation g = generations.get(epoch);
-        if (g == null) return false;
-        if (g.phase != Phase.DRAINING || g.liveAdmissions != 0)
-            throw new IllegalStateException("generation still active or has admitted work");
-        generations.remove(epoch);
-        return true;
+        throw new IllegalStateException(
+                "physical-retirement certificate unavailable: generation retained");
     }
 
     public synchronized List<Long> drainingEpochs() {
