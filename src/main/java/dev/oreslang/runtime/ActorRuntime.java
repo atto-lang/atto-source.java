@@ -5559,49 +5559,62 @@ public final class ActorRuntime implements AutoCloseable {
             return OresFuture.failed(new ActorSendWouldDeadlockException(ref.id()));
         }
 
-        // Snapshot ownership at call time. A producer must not mutate an object
-        // graph after requesting an async send and thereby change what is
-        // eventually admitted.
-        validateMessageGraph(message);
-        if (cell.kind == ActorKind.UNTRUSTED) {
-            rejectUntrustedInboundCapabilities(message, new IdentityHashMap<>(), 0);
-        }
-        requireMutexTransport(cell, message, new IdentityHashMap<>(), 0);
-        requireOwnedActorRefs(message, new IdentityHashMap<>(), 0);
-        long runtimeRemaining = Math.max(0L, policyCeiling.maxHeapBytes() - actorMemoryBytes());
-        if (cell.kind == ActorKind.SHARED) {
-            requireOwnedSharedHandles(message, new IdentityHashMap<>(), 0);
-            long actorRemaining = Math.max(
-                    0L, cell.policy.maxHeapBytes() - cell.sharedMailboxBytes.get());
-            long allowed = Math.min(actorRemaining, runtimeRemaining);
-            try {
-                estimateSharedTransportBytes(message, new IdentityHashMap<>(), 0, allowed);
-            } catch (IllegalStateException tooLarge) {
-                return OresFuture.failed(new IllegalStateException(
-                        "shared actor mailbox memory limit exceeded for " + ref.id()
-                                + ": " + tooLarge.getMessage(),
-                        tooLarge));
-            }
-        } else {
-            long actorRemaining = cell.memorySlice.remainingBytes();
-            try {
-                estimatePrivateTransportBytes(
-                        message, new IdentityHashMap<>(), 0, actorRemaining);
-                estimatePrivateTransportBytes(
-                        message, new IdentityHashMap<>(), 0, runtimeRemaining);
-            } catch (IllegalStateException tooLarge) {
-                return OresFuture.failed(new IllegalStateException(
-                        "private actor mailbox memory limit exceeded for " + ref.id()
-                                + ": " + tooLarge.getMessage(),
-                        tooLarge));
-            }
-        }
-
+        // Bound the entire pre-publication cohort before any potentially
+        // expensive graph validation/estimation or transport copy. Otherwise
+        // arbitrarily many callers could consume CPU traversing large graphs
+        // before the advertised producer-admission cap took effect.
         final ActorCell<M>.AsyncSendAdmissionLoan sendLoan;
         try {
             sendLoan = cell.acquireAsyncSendAdmissionLoan();
         } catch (Throwable failure) {
             return OresFuture.failed(failure);
+        }
+
+        // Snapshot ownership at call time. A producer must not mutate an object
+        // graph after requesting an async send and thereby change what is
+        // eventually admitted.
+        try {
+            validateMessageGraph(message);
+            if (cell.kind == ActorKind.UNTRUSTED) {
+                rejectUntrustedInboundCapabilities(message, new IdentityHashMap<>(), 0);
+            }
+            requireMutexTransport(cell, message, new IdentityHashMap<>(), 0);
+            requireOwnedActorRefs(message, new IdentityHashMap<>(), 0);
+            long runtimeRemaining =
+                    Math.max(0L, policyCeiling.maxHeapBytes() - actorMemoryBytes());
+            if (cell.kind == ActorKind.SHARED) {
+                requireOwnedSharedHandles(message, new IdentityHashMap<>(), 0);
+                long actorRemaining = Math.max(
+                        0L, cell.policy.maxHeapBytes() - cell.sharedMailboxBytes.get());
+                long allowed = Math.min(actorRemaining, runtimeRemaining);
+                try {
+                    estimateSharedTransportBytes(
+                            message, new IdentityHashMap<>(), 0, allowed);
+                } catch (IllegalStateException tooLarge) {
+                    sendLoan.close();
+                    return OresFuture.failed(new IllegalStateException(
+                            "shared actor mailbox memory limit exceeded for " + ref.id()
+                                    + ": " + tooLarge.getMessage(),
+                            tooLarge));
+                }
+            } else {
+                long actorRemaining = cell.memorySlice.remainingBytes();
+                try {
+                    estimatePrivateTransportBytes(
+                            message, new IdentityHashMap<>(), 0, actorRemaining);
+                    estimatePrivateTransportBytes(
+                            message, new IdentityHashMap<>(), 0, runtimeRemaining);
+                } catch (IllegalStateException tooLarge) {
+                    sendLoan.close();
+                    return OresFuture.failed(new IllegalStateException(
+                            "private actor mailbox memory limit exceeded for " + ref.id()
+                                    + ": " + tooLarge.getMessage(),
+                            tooLarge));
+                }
+            }
+        } catch (RuntimeException | Error failure) {
+            sendLoan.close();
+            throw failure;
         }
 
         final Object prepared;
