@@ -815,31 +815,29 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
-        private void executeActorStartup(
-                OresObject object,
-                Ast.MethodDecl startup) {
-            Env env =
-                    new Env(
-                            null,
-                            false,
-                            declaringClass(startup),
-                            object);
+        private void executeActorStartup(OresObject object, Ast.MethodDecl startup) {
+            executeActorLifecycleMethod(object, startup, "on_start");
+        }
+
+        private void executeActorLifecycleMethod(
+                OresObject object, Ast.MethodDecl method, String hook) {
+            Env env = new Env(null, false, declaringClass(method), object);
             env.define("self", object, Ast.BindingKind.VAL);
-            bindCallableArguments(env, startup.parameters(), List.of(), "actor on_start");
+            bindCallableArguments(env, method.parameters(), List.of(), "actor " + hook);
             try {
-                executeBlock(startup.body(), env);
+                executeBlock(method.body(), env);
             } catch (ReturnSignal signal) {
                 if (signal.value != null) {
                     throw new IllegalStateException(
-                            "actor on_start cannot return a value");
+                            "actor " + hook + " cannot return a value");
                 }
             } catch (TailCallSignal signal) {
                 throw new IllegalStateException(
-                        "actor on_start cannot tail-call across the startup initialization boundary",
+                        "actor " + hook + " cannot tail-call across a lifecycle boundary",
                         signal);
             } catch (BreakSignal | ContinueSignal signal) {
                 throw new IllegalStateException(
-                        "loop control cannot cross actor on_start",
+                        "loop control cannot cross actor " + hook,
                         signal);
             }
         }
