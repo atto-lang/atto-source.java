@@ -618,6 +618,48 @@ final class ErrorPatternGuardPurityTest {
     }
 
     @Test
+    void mixedComplexFloatEqualityCannotAllocateInsideErrorGuard() {
+        String invalid = SOURCE + """
+                fnc classify(Error error, complex left, float right): int {
+                  match error over
+                    on Error e when left == right -> { return 1; }
+                    on Error other -> { return 0; }
+                  end
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(invalid)));
+        assertTrue(failure.getMessage().contains("bounded equality"), failure.getMessage());
+    }
+
+    @Test
+    void homogeneousComplexEqualityRemainsAdmittedInsideErrorGuard() {
+        String valid = SOURCE + """
+                fnc classify(Error error, complex left, complex right): int {
+                  match error over
+                    on Error e when left == right -> { return 1; }
+                    on Error other -> { return 0; }
+                  end
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(valid)));
+    }
+
+    @Test
+    void ordinaryMatchRetainsMixedComplexFloatEquality() {
+        String valid = SOURCE + """
+                fnc classify(bool enabled, complex left, float right): int {
+                  match enabled over
+                    on true when left == right -> { return 1; }
+                    on _ -> { return 0; }
+                  end
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(valid)));
+    }
+
+    @Test
     void guardDivisionCannotSmuggleAnExceptionalArithmeticOperation() {
         String bad = SOURCE + """
                 fnc classify(Error error, int divisor): int {
