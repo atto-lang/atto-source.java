@@ -20,6 +20,96 @@ import static org.junit.jupiter.api.Assertions.*;
 final class InlineSelfReceiverArityTest {
 
     @Test
+    void exactEmptyVoidMethodSyntaxKeepsSelfOutOfArity() {
+        // The exact source spellings are both legal instance methods of arity 0.
+        String source = """
+                define class X1 as
+
+                   foo():void {}
+
+                end
+
+                define class X2 as
+
+                   foo(self):void {}
+
+                end
+                """;
+        Ast.Program parsed = assertDoesNotThrow(() -> Parser.parse(source));
+        assertEquals(2, parsed.modules().getFirst().declarations().size());
+        Ast.ClassDecl x1 = assertInstanceOf(Ast.ClassDecl.class,
+                parsed.modules().getFirst().declarations().get(0));
+        Ast.ClassDecl x2 = assertInstanceOf(Ast.ClassDecl.class,
+                parsed.modules().getFirst().declarations().get(1));
+        Ast.MethodDecl implicit = x1.methods().getFirst();
+        Ast.MethodDecl explicit = x2.methods().getFirst();
+
+        assertNull(implicit.explicitReceiverType());
+        assertEquals("self", explicit.explicitReceiverType().name());
+        assertTrue(implicit.parameters().isEmpty());
+        assertTrue(explicit.parameters().isEmpty());
+        assertEquals(0, implicit.arity());
+        assertEquals(0, explicit.arity());
+        assertEquals(CallableSelector.instance("foo", 0), CallableSelector.of(implicit));
+        assertEquals(CallableSelector.of(implicit), CallableSelector.of(explicit));
+        assertDoesNotThrow(() -> TypeChecker.check(parsed));
+    }
+
+    @Test
+    void implicitAndExplicitEmptyVoidMethodsCannotDuplicateTheSameSlot() {
+        for (String declarations : new String[] {
+                "foo():void {} foo(self):void {}",
+                "foo(self):void {} foo():void {}"
+        }) {
+            IllegalArgumentException collision = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(
+                            "define class X as " + declarations + " end")));
+            assertTrue(collision.getMessage().contains("already has arity"),
+                    collision::getMessage);
+        }
+
+        // Different caller-visible arities still overload, independent of receiver spelling.
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class X as
+                  foo():void {}
+                  foo(self, int x):void {}
+                  foo(int x, int y):void {}
+                end
+                """)));
+    }
+
+    @Test
+    void exactEmptyVoidReceiversDispatchWithoutCallSiteSelf() throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, """
+                define module m
+                  pub define class X1 as
+                    pub foo():void {}
+                  end
+                  pub define class X2 as
+                    pub foo(self):void {}
+                  end
+                end
+                pub routine main(): void {
+                  val first = new m.X1();
+                  val second = new m.X2();
+                  first.foo();
+                  second.foo();
+                  stdio.stdout.write("ok");
+                }
+                """, "explicit-self-zero-arity.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+        assertEquals("ok", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void methodAstRejectsReceiverLeakageIntoCallerVisibleParameters() {
         IllegalArgumentException leaked = assertThrows(
                 IllegalArgumentException.class,
