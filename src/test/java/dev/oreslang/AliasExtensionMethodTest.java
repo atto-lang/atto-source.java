@@ -88,6 +88,54 @@ final class AliasExtensionMethodTest {
     }
 
     @Test
+    void checkedExtensionAuthorizationCannotSurviveArgumentSubstitution() {
+        Ast.NameExpr receiver = new Ast.NameExpr("code");
+        Ast.Expr checkedArgument = new Ast.LiteralExpr(2);
+        Ast.CallExpr checked = new Ast.CallExpr(
+                new Ast.MemberExpr(receiver, "plus"),
+                java.util.List.of(checkedArgument));
+        Ast.CheckedExtensionCall.record(checked, "$mtd$Code$plus");
+
+        Ast.CallExpr preserved = new Ast.CallExpr(
+                new Ast.MemberExpr(receiver, "plus"),
+                java.util.List.of(checkedArgument));
+        Ast.copyCheckedMetadata(checked, preserved);
+        assertEquals("$mtd$Code$plus", Ast.CheckedExtensionCall.lookup(preserved));
+
+        Ast.CallExpr substituted = new Ast.CallExpr(
+                new Ast.MemberExpr(receiver, "plus"),
+                java.util.List.of(new Ast.LiteralExpr(2)));
+        Ast.copyCheckedMetadata(checked, substituted);
+        assertNull(Ast.CheckedExtensionCall.lookup(substituted),
+                "equal-value but distinct argument AST cannot inherit checked dispatch");
+
+        Ast.CallExpr changedReceiver = new Ast.CallExpr(
+                new Ast.MemberExpr(new Ast.NameExpr("code"), "plus"),
+                java.util.List.of(checkedArgument));
+        Ast.copyCheckedMetadata(checked, changedReceiver);
+        assertNull(Ast.CheckedExtensionCall.lookup(changedReceiver),
+                "replacement receiver must never inherit alias method authority");
+    }
+
+    @Test
+    void checkedMethodWithArgumentsSurvivesBuildRewriting() throws Exception {
+        String source = """
+                declare type Code = int;
+                define mtd plus on Code(int offset): int { return self + offset; }
+                pub fnc main(): void {
+                  val code: Code = 3;
+                  stdio.stdout.write(code.plus(5));
+                  return;
+                }
+                """;
+        assertEquals("8", run(source));
+        var result = OresCompiler.compileForBuild(
+                source, dev.oreslang.compiler.BuildOptions.executable(java.util.Map.of()));
+        assertTrue(result.retained(Parser.ROOT_MODULE + ".$mtd$Code$plus"),
+                "optimizer must retain the statically checked method with arguments");
+    }
+
+    @Test
     void typedAliasLocalCarriesExtensionButShadowingDoesNot() throws Exception {
         assertEquals("12", run("""
                 declare type Code = int;
