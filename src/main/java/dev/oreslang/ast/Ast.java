@@ -1182,8 +1182,16 @@ public final class Ast {
                     || !(target.callee() instanceof MemberExpr rewritten)
                     || !original.member().equals(rewritten.member())
                     || original.receiver() != rewritten.receiver()
+                    || source.typeArgumentsPresent() != target.typeArgumentsPresent()
+                    || !source.typeArguments().equals(target.typeArguments())
                     || source.arguments().size() != target.arguments().size()) {
                 return;
+            }
+            // The authorization was checked against exact argument AST nodes.
+            // Replacing an argument with another expression of the same arity
+            // does not preserve its type/effects or ownership evidence.
+            for (int i = 0; i < source.arguments().size(); i++) {
+                if (source.arguments().get(i) != target.arguments().get(i)) return;
             }
             String resolved = lookup(source);
             if (resolved != null) record(target, resolved);
