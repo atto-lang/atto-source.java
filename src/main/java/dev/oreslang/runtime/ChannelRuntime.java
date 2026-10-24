@@ -226,7 +226,8 @@ public final class ChannelRuntime {
                     AdmissionDomainClosedException failure =
                             closedFailureLocked();
                     completions.add(() ->
-                            selection.future.failFromRuntime(failure));
+                            selection.publishAfterAttachment(
+                                    () -> selection.future.failFromRuntime(failure)));
                 }
             } finally {
                 COORDINATOR.unlock();
