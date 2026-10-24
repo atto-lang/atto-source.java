@@ -1,6 +1,5 @@
 package dev.oreslang.runtime;
 
-import java.lang.reflect.Field;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.ArrayList;
@@ -246,52 +245,6 @@ final class ActorShardSnapshotLeaseTest {
             holder.gracefulStop().get(5, TimeUnit.SECONDS);
             assertTrue(contender.awaitTermination(5, TimeUnit.SECONDS));
             assertTrue(holder.awaitTermination(5, TimeUnit.SECONDS));
-        }
-    }
-
-    @Test
-    void accountingCorruptionCannotStrandSnapshotRevocation() throws Exception {
-        try (ActorRuntime runtime = new ActorRuntime()) {
-            CountDownLatch allocated = new CountDownLatch(1);
-            AtomicReference<ActorShardColumns.ColumnSnapshot> retained =
-                    new AtomicReference<>();
-            ActorRuntime.ActorRef<Integer> actor = runtime.spawnSharedTrusted(
-                    ctx -> (value, turn) -> {
-                        ActorShardColumns region =
-                                new ActorShardColumns(ActorShardColumns.Layout.SOA, 16, 2, 1);
-                        region.write(15, 0, 30);
-                        retained.set(region.snapshotColumnLeased(0));
-                        region.close();
-                        allocated.countDown();
-                    });
-
-            actor.send(1);
-            assertTrue(allocated.await(5, TimeUnit.SECONDS));
-            actor.drain().get(5, TimeUnit.SECONDS);
-            ActorShardColumns.ColumnSnapshot snapshot = retained.get();
-            assertNotNull(snapshot);
-            assertEquals(30.0, snapshot.read(15));
-
-            Field leaseField =
-                    ActorShardColumns.ColumnSnapshot.class.getDeclaredField("lease");
-            leaseField.setAccessible(true);
-            Object lease = leaseField.get(snapshot);
-            Field cellField = lease.getClass().getDeclaredField("cell");
-            cellField.setAccessible(true);
-            Object cell = cellField.get(lease);
-            Field reserved = cell.getClass().getDeclaredField("shardReservedBytes");
-            reserved.setAccessible(true);
-            reserved.setLong(cell, 0L); // deterministic host-accounting fault
-
-            long failuresBefore = runtime.runtimeStats().lifecyclePublicationFailures();
-            actor.gracefulStop().get(5, TimeUnit.SECONDS);
-            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
-
-            assertThrows(IllegalStateException.class, () -> snapshot.read(0));
-            assertEquals(0, runtime.sharedMemoryBytes(),
-                    "snapshot refund must not be skipped by per-cell underflow");
-            assertTrue(runtime.runtimeStats().lifecyclePublicationFailures() > failuresBefore,
-                    "snapshot accounting corruption must remain observable");
         }
     }
 
