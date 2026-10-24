@@ -306,6 +306,52 @@ class AdaptiveCarrierExecutorTest {
         }
     }
 
+    @Test void failingCompletionCapacityHookDoesNotRetireCarrier() throws Exception {
+        var hookFailures = new AtomicInteger();
+        var firstCarrier = new java.util.concurrent.atomic.AtomicReference<Thread>();
+        var secondCarrier = new java.util.concurrent.atomic.AtomicReference<Thread>();
+        var firstRan = new CountDownLatch(1);
+        var secondRan = new CountDownLatch(1);
+        var created = new AtomicInteger();
+
+        var factory = (java.util.concurrent.ThreadFactory) task -> {
+            Thread thread = Thread.ofPlatform().daemon(true)
+                    .name("adaptive-hook-failure-" + created.incrementAndGet())
+                    .unstarted(task);
+            thread.setUncaughtExceptionHandler((ignored, failure) -> hookFailures.incrementAndGet());
+            return thread;
+        };
+
+        try (var workers = new AdaptiveCarrierExecutor(1, 1, 8, factory)) {
+            assertEquals(1, workers.prestartAllCoreThreads());
+            workers.onTaskCompleted(() -> {
+                throw new IllegalStateException("synthetic NIO retry-hook failure");
+            });
+
+            workers.execute(() -> {
+                firstCarrier.set(Thread.currentThread());
+                firstRan.countDown();
+            });
+            assertTrue(firstRan.await(2, TimeUnit.SECONDS));
+
+            workers.execute(() -> {
+                secondCarrier.set(Thread.currentThread());
+                secondRan.countDown();
+            });
+            assertTrue(secondRan.await(2, TimeUnit.SECONDS));
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (hookFailures.get() < 1 && System.nanoTime() < deadline)
+                Thread.onSpinWait();
+
+            assertTrue(hookFailures.get() >= 1);
+            assertSame(firstCarrier.get(), secondCarrier.get(),
+                    "runtime completion-hook failure must not retire the permit-owning worker");
+            assertEquals(1, created.get(),
+                    "contained hook failure must not create a replacement carrier");
+        }
+    }
+
     @Test void rejectsInvalidLimits() {
         var factory = (java.util.concurrent.ThreadFactory) task -> new Thread(task);
         assertThrows(IllegalArgumentException.class, () -> new AdaptiveCarrierExecutor(-1, 5, 1, factory));
