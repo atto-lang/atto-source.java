@@ -673,6 +673,11 @@ public final class ChannelRuntime {
             return cases;
         }
 
+        /** Runtime/interop admission proof; domain identity is capability identity. */
+        public boolean belongsTo(AdmissionDomain domain) {
+            return admissionDomain == Objects.requireNonNull(domain, "domain");
+        }
+
         public OresFuture<SelectResult> selectAsync() {
             return selectAsync(SelectPolicy.FAIR);
         }
