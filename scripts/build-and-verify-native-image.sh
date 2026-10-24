@@ -103,6 +103,30 @@ if [ "$callables_output" != '120:9:13' ]; then
 fi
 printf '%s\n' "$callables_output"
 
+# Validate the linked actor-isolation admission boundary inside the *native*
+# executable as well. Positive shared/private declarations must typecheck,
+# while private actors must not launder SharedMutex/share_readonly authority
+# through imported types, helpers, or callbacks.
+actor_check_output="$(
+  unset JAVA_HOME CLASSPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS
+  "$executable" --check examples/shared-private-actor-isolation.ores
+)"
+if [ -n "$actor_check_output" ]; then
+  echo "native actor --check unexpectedly emitted guest output" >&2
+  exit 1
+fi
+if [ ! -f examples/private-actor-sharing-invalid.ores ]; then
+  echo "missing private actor capability-invalid fixture" >&2
+  exit 1
+fi
+if (
+  unset JAVA_HOME CLASSPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS
+  "$executable" --check examples/private-actor-sharing-invalid.ores
+) >/dev/null 2>&1; then
+  echo "native linked admission accepted private actor sharing violations" >&2
+  exit 1
+fi
+
 (
   unset JAVA_HOME CLASSPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS
   "$executable" "--mode=$mode" examples/together.ores
