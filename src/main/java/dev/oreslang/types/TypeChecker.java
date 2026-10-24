@@ -2814,6 +2814,17 @@ public final class TypeChecker {
                         Ast.CheckedExtensionCall.record(call, functionName);
                         return result;
                     }
+                    if (hasFunctionFamily(functionName)) {
+                        throw new IllegalArgumentException(
+                                "EXTENSION_ARITY_MISMATCH: method '" + extension.member()
+                                        + "' exists for receiver alias '" + alias
+                                        + "' but not at explicit arity " + argumentCount);
+                    }
+                    if (extensionMethodNames.contains(extension.member())) {
+                        throw new IllegalArgumentException(
+                                "EXTENSION_RECEIVER_MISMATCH: method '" + extension.member()
+                                        + "' is not defined for receiver alias '" + alias + "'");
+                    }
                 }
             }
             if (isBuiltinStdoutCall(call, "log", env)) {
