@@ -963,9 +963,17 @@ public final class TreeShaker {
                         && sourceMember.receiver() instanceof Ast.NameExpr
                         ? call.callee()
                         : rewriteExpression(call.callee(), module, locals);
+                // Checked extension argument nodes carry type/effect/ownership
+                // evidence. Do not rewrite them and then silently copy that
+                // authorization onto a different expression of the same arity.
+                // A future optimizer may transform these only after rechecking.
                 List<Ast.Expr> arguments = new ArrayList<>();
-                for (Ast.Expr argument : call.arguments()) {
-                    arguments.add(rewriteExpression(argument, module, locals));
+                if (checkedExtension != null) {
+                    arguments.addAll(call.arguments());
+                } else {
+                    for (Ast.Expr argument : call.arguments()) {
+                        arguments.add(rewriteExpression(argument, module, locals));
+                    }
                 }
                 Ast.CallExpr rewritten = new Ast.CallExpr(
                         callee,
