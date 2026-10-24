@@ -64,7 +64,7 @@ public final class ActorRuntime implements AutoCloseable {
     private static final long MAILMAN_MAX_BATCH_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
     private static final int INTERNAL_CONTINUATION_SLOTS = 1_024;
     /** Bound suspended producer registrations so backpressure cannot become an unbounded waiter queue. */
-    private static final int MAX_PENDING_ASYNC_SENDS = 1_024;
+    private static final int MAX_PENDING_ASYNC_SENDS = 256;
     /** A single UNTRUSTED actor cannot monopolize all global timed slots. */
     private static final int UNTRUSTED_TIMED_SOURCE_ADMISSION_SLOTS = 32;
     private static final long UNTRUSTED_FUEL_PER_MILLI = 256L;
@@ -871,7 +871,6 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<?> cell = actors.get(ref.id());
         return cell != null
                 && cell.mailbox instanceof ChannelRuntime.Channel<?>
-                && cell.mailboxAdmissionWaiters instanceof ChannelRuntime.Channel<?>
                 && cell.continuationMailbox instanceof ChannelRuntime.Channel<?>;
     }
 
@@ -5363,16 +5362,19 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<?> cell = actors.get(ref.id());
         if (cell == null) return ref.done();
         final OresFuture<Void> barrier;
+        final ActorSealedException sealedFailure = new ActorSealedException(ref.id());
+        final List<ActorCell<?>.MailboxAdmissionWaiter> rejectedAsyncSends;
         synchronized (cell.lifecycleLock) {
             if (cell.stopped.get() || cell.finalized || cell.sealing) return ref.done();
             cell.sealing = true;
+            // Fence pending/unborn producers before taking the drain target.
+            // They were never admitted and are not part of that watermark.
+            rejectedAsyncSends = cell.sealAsyncSendAdmission(sealedFailure);
             // Reserve a single shutdown waiter even when public observers hit
             // their per-actor quota. Repeated gracefulStop calls reuse ref.done().
             barrier = cell.drainAcceptedMessages(true);
         }
-        // Pending producers were never admitted and therefore are not part of
-        // the drain watermark. Seal and fail them outside lifecycleLock.
-        cell.mailboxAdmissionWaiters.close(new ActorSealedException(ref.id()));
+        cell.failDetachedAsyncSendWaiters(rejectedAsyncSends, sealedFailure);
         barrier.whenCompleteRuntime((ignored, failure) -> {
             if (failure == null) cell.stop();
         });
@@ -5619,7 +5621,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         final OresFuture<Boolean> slot;
         try {
-            slot = cell.mailboxAdmissionWaiters.readAsync();
+            slot = cell.reserveOrAwaitMailboxSlot();
         } catch (Throwable registrationFailure) {
             releaseOnce.run();
             return OresFuture.failed(registrationFailure);
@@ -5645,15 +5647,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (slotFailure != null) {
                 if (!state.compareAndSet(WAITING, TERMINAL)) return;
                 releaseOnce.run();
-                Throwable failure = OresFuture.unwrap(slotFailure);
-                if (failure instanceof ChannelRuntime.ChannelBackpressureException) {
-                    failure = new ActorSendBackpressureException(
-                            ref.id(), cell.maxPendingAsyncSends);
-                } else if (failure instanceof ChannelRuntime.ChannelClosedException
-                        && failure.getCause() != null) {
-                    failure = failure.getCause();
-                }
-                result.failFromRuntime(failure);
+                result.failFromRuntime(OresFuture.unwrap(slotFailure));
                 return;
             }
 
@@ -7337,12 +7331,17 @@ public final class ActorRuntime implements AutoCloseable {
         /** Mailbox transport for ordinary user messages. */
         private final ChannelRuntime.Channel<MessageEnvelope> mailbox;
         /**
-         * Zero-buffer admission handoff. A released user-mail slot rendezvous
-         * directly with one bounded pending producer; no spare permit is ever
-         * buffered, so this cannot become a second mailbox.
+         * Bounded producer registrations for awaitable USER-mail admission.
+         * This is scheduler state, not a second message queue: entries contain
+         * only admission Futures and never payloads. Registration, cancellation
+         * and slot transfer linearize under mailboxAccountingLock; Future
+         * publication always occurs after that lock is released.
          */
-        private final ChannelRuntime.Channel<Boolean> mailboxAdmissionWaiters;
+        private final ArrayDeque<MailboxAdmissionWaiter> pendingAsyncSends =
+                new ArrayDeque<>();
         private final int maxPendingAsyncSends;
+        private boolean asyncSendAdmissionSealed;
+        private Throwable asyncSendAdmissionFailure;
         private final ChannelRuntime.Channel<ActorOutputEnvelope> outputChannel;
         private final ActorOutputStream<Object> outputStream;
         private final ActorMemorySlice memorySlice;
@@ -7448,8 +7447,6 @@ public final class ActorRuntime implements AutoCloseable {
             this.mailbox = new ChannelRuntime.Channel<>(policy.maxMailboxMessages());
             this.maxPendingAsyncSends = Math.max(
                     1, Math.min(MAX_PENDING_ASYNC_SENDS, policy.maxMailboxMessages()));
-            this.mailboxAdmissionWaiters = new ChannelRuntime.Channel<>(
-                    0, maxPendingAsyncSends);
             this.outputChannel = new ChannelRuntime.Channel<>(
                     Math.max(1, policy.maxMailboxMessages()));
             this.outputStream = new ActorOutputStream<>(
@@ -7492,10 +7489,99 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        private final class MailboxAdmissionWaiter {
+            private static final int WAITING = 0;
+            private static final int TRANSFERRED = 1;
+            private static final int CANCELLED = 2;
+            private final AtomicInteger state = new AtomicInteger(WAITING);
+            private final OresFuture<Boolean> future;
+
+            private MailboxAdmissionWaiter() {
+                future = new OresFuture<>(
+                        () -> cancelAsyncSendWaiter(this),
+                        () -> { });
+            }
+        }
+
         /**
-         * Commit a slot already transferred by mailboxAdmissionWaiters. The
-         * released slot deliberately stayed counted while the rendezvous ran,
-         * so the new producer does not increment accounting a second time.
+         * Reserve a free USER slot or atomically join the bounded producer
+         * waiter set. Sharing mailboxAccountingLock with releaseMailboxSlot()
+         * closes the classic lost-wakeup window between "full" and "wait".
+         */
+        private OresFuture<Boolean> reserveOrAwaitMailboxSlot() {
+            synchronized (mailboxAccountingLock) {
+                if (asyncSendAdmissionSealed || stopped.get()) {
+                    Throwable failure = asyncSendAdmissionFailure;
+                    return OresFuture.failed(failure == null ? terminated(ref) : failure);
+                }
+                if (queuedUserMessages < policy.maxMailboxMessages()
+                        && queuedMessages < mailboxCapacityWithControlHeadroom()) {
+                    queuedUserMessages++;
+                    queuedMessages++;
+                    return OresFuture.completed(Boolean.TRUE);
+                }
+                if (pendingAsyncSends.size() >= maxPendingAsyncSends) {
+                    return OresFuture.failed(
+                            new ActorSendBackpressureException(ref.id(), maxPendingAsyncSends));
+                }
+                MailboxAdmissionWaiter waiter = new MailboxAdmissionWaiter();
+                pendingAsyncSends.addLast(waiter);
+                return waiter.future;
+            }
+        }
+
+        private boolean cancelAsyncSendWaiter(MailboxAdmissionWaiter waiter) {
+            synchronized (mailboxAccountingLock) {
+                if (!waiter.state.compareAndSet(
+                        MailboxAdmissionWaiter.WAITING,
+                        MailboxAdmissionWaiter.CANCELLED)) {
+                    return false;
+                }
+                if (!pendingAsyncSends.remove(waiter)) {
+                    throw new IllegalStateException(
+                            "actor async-send waiter disappeared before cancellation for "
+                                    + ref.id());
+                }
+                return true;
+            }
+        }
+
+        /**
+         * Fence future async-send registrations and detach all not-yet-
+         * transferred waiters. Caller publishes failures after lifecycle and
+         * accounting locks have both been released.
+         */
+        private List<MailboxAdmissionWaiter> sealAsyncSendAdmission(Throwable failure) {
+            Objects.requireNonNull(failure, "failure");
+            synchronized (mailboxAccountingLock) {
+                asyncSendAdmissionSealed = true;
+                if (asyncSendAdmissionFailure == null) asyncSendAdmissionFailure = failure;
+                if (pendingAsyncSends.isEmpty()) return List.of();
+                ArrayList<MailboxAdmissionWaiter> detached =
+                        new ArrayList<>(pendingAsyncSends.size());
+                while (!pendingAsyncSends.isEmpty()) {
+                    MailboxAdmissionWaiter waiter = pendingAsyncSends.removeFirst();
+                    if (waiter.state.compareAndSet(
+                            MailboxAdmissionWaiter.WAITING,
+                            MailboxAdmissionWaiter.CANCELLED)) {
+                        detached.add(waiter);
+                    }
+                }
+                return List.copyOf(detached);
+            }
+        }
+
+        private void failDetachedAsyncSendWaiters(
+                List<MailboxAdmissionWaiter> waiters,
+                Throwable failure) {
+            for (MailboxAdmissionWaiter waiter : waiters) {
+                waiter.future.failFromRuntime(failure);
+            }
+        }
+
+        /**
+         * A transferred slot remained counted while the old envelope left the
+         * queue. Validate that the producer owns that accounting before publish.
          */
         private void validateTransferredMailboxSlot() {
             synchronized (mailboxAccountingLock) {
@@ -7518,50 +7604,52 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        private void decrementMailboxSlot(boolean continuation) {
-            synchronized (mailboxAccountingLock) {
-                // Validate every counter before changing any of them: a failed
-                // invariant must not partially release another lane's capacity.
-                if (queuedMessages <= 0
-                        || queuedMessages != queuedUserMessages + queuedContinuations) {
-                    throw new IllegalStateException(
-                            "actor mailbox accounting invariant violation for " + ref.id());
-                }
-                if (continuation && queuedContinuations <= 0) {
-                    throw new IllegalStateException(
-                            "actor continuation accounting underflow for " + ref.id());
-                }
-                if (!continuation && queuedUserMessages <= 0) {
-                    throw new IllegalStateException(
-                            "actor user-mailbox accounting underflow for " + ref.id());
-                }
-                queuedMessages--;
-                if (continuation) queuedContinuations--;
-                else queuedUserMessages--;
+        private MailboxAdmissionWaiter releaseMailboxSlotLocked(boolean continuation) {
+            // Validate every counter before changing any of them: a failed
+            // invariant must not partially release another lane's capacity.
+            if (queuedMessages <= 0
+                    || queuedMessages != queuedUserMessages + queuedContinuations) {
+                throw new IllegalStateException(
+                        "actor mailbox accounting invariant violation for " + ref.id());
             }
+            if (continuation && queuedContinuations <= 0) {
+                throw new IllegalStateException(
+                        "actor continuation accounting underflow for " + ref.id());
+            }
+            if (!continuation && queuedUserMessages <= 0) {
+                throw new IllegalStateException(
+                        "actor user-mailbox accounting underflow for " + ref.id());
+            }
+
+            if (!continuation && !asyncSendAdmissionSealed && !stopped.get()) {
+                while (!pendingAsyncSends.isEmpty()) {
+                    MailboxAdmissionWaiter waiter = pendingAsyncSends.removeFirst();
+                    if (waiter.state.compareAndSet(
+                            MailboxAdmissionWaiter.WAITING,
+                            MailboxAdmissionWaiter.TRANSFERRED)) {
+                        // Keep the USER slot counted. Ownership moves directly
+                        // from the dequeued envelope to this producer.
+                        return waiter;
+                    }
+                }
+            }
+
+            queuedMessages--;
+            if (continuation) queuedContinuations--;
+            else queuedUserMessages--;
+            return null;
         }
 
         private void releaseMailboxSlot(boolean continuation) {
-            if (continuation) {
-                decrementMailboxSlot(true);
-                return;
+            MailboxAdmissionWaiter transferred;
+            synchronized (mailboxAccountingLock) {
+                transferred = releaseMailboxSlotLocked(continuation);
             }
-
-            // Keep the released USER slot counted while handing it directly to
-            // one suspended producer. This prevents a racing synchronous sender
-            // from stealing capacity between wakeup and commit.
-            if (!stopped.get() && !mailboxAdmissionWaiters.isClosed()) {
-                try {
-                    if (mailboxAdmissionWaiters.tryWrite(Boolean.TRUE)) {
-                        return;
-                    }
-                } catch (ChannelRuntime.ChannelClosedException closedAdmission) {
-                    if (!stopped.get() && !mailboxAdmissionWaiters.isClosed()) {
-                        throw closedAdmission;
-                    }
-                }
+            // Future publication can synchronously invoke runtime plumbing.
+            // Never do it while mailboxAccountingLock is held.
+            if (transferred != null) {
+                transferred.future.completeFromRuntime(Boolean.TRUE);
             }
-            decrementMailboxSlot(false);
         }
 
         private OresFuture<Void> drainAcceptedMessages() {
@@ -8440,6 +8528,8 @@ public final class ActorRuntime implements AutoCloseable {
             List<OresFuture<?>> pending;
             boolean scheduleTeardown;
             List<DrainWaiter> failedDrainWaiters;
+            List<MailboxAdmissionWaiter> failedAsyncSendWaiters;
+            Throwable asyncSendFailure;
             synchronized (lifecycleLock) {
                 if (finalized) return;
                 if (recordCause && cause != null) {
@@ -8457,6 +8547,8 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 stopped.set(true);
                 sealing = true;
+                asyncSendFailure = cause == null ? terminated(ref) : cause;
+                failedAsyncSendWaiters = sealAsyncSendAdmission(asyncSendFailure);
                 // Detach pending observers under the actor monitor. Settling an
                 // OresFuture invokes runtime callbacks inline, so never settle
                 // one while holding lifecycleLock.
@@ -8474,10 +8566,10 @@ public final class ActorRuntime implements AutoCloseable {
                         && activeTurns == 0 && !scheduled.get();
                 lifecycleLock.notifyAll();
             }
-            // Closing the rendezvous channel can synchronously settle producer
-            // Futures. Do it only after lifecycleLock is released.
-            mailboxAdmissionWaiters.close(
-                    cause == null ? terminated(ref) : cause);
+            // Runtime Future callbacks can take other actor/lifecycle locks.
+            // Publish pending-producer failure only after lifecycleLock and
+            // mailboxAccountingLock have both been released.
+            failDetachedAsyncSendWaiters(failedAsyncSendWaiters, asyncSendFailure);
             if (scheduleTeardown) schedule();
 
             // Runtime Future callbacks can take other actor/lifecycle locks.
