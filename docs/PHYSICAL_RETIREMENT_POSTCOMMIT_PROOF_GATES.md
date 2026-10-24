@@ -1,6 +1,6 @@
 # Physical-retirement postcommit proof gates (draft, issue #1944)
 
-This document is intentionally a **blocking audit**, not a claim that actor native release is production-safe. It accompanies two deliberately-red JUnit regressions on top of Java draft #1953 (which is stacked on #1945 / #1940).
+This document is a **blocking proof-gate audit**. The two original red counterexamples now have production fixes on this branch, but merge still requires an executing exact-head JUnit/native verification result.
 
 ## Independently verified source-level counterexamples
 
@@ -22,7 +22,7 @@ These are separate gates: fixing A does **not** fix B.
 
 ## Evidence policy and execution
 
-The new `ActorPhysicalRetirementPostcommitProofTest` intentionally contains two **red** regression cases on the inspected #1953 source. They have not executed as JDK25 JUnit tests. The accompanying source-free Rust oracle is available separately to exercise abstract safety with two outstanding obligations, notification interleavings and admission/commit faults. It is not compiler refinement proof.
+The `ActorPhysicalRetirementPostcommitProofTest` now encodes the repaired contracts. A focused JDK 21 harness matching the project's Java release has executed the staged-retirement and provider-exit state machines successfully, including early/duplicate witness failure cases. This is not a substitute for the repository's exact-head JUnit suite, GraalVM Native Image, LLVM parity, or model checking.
 
 Acceptance requires a green exact-head JDK25 Maven/JUnit run, actual native-image and LLVM parity checks, and an independently executed Rust oracle/TLA+ state check. A GitHub Actions failed job with `steps=[]` is an observed no-step failure, not a test failure. Do not merge this branch merely because the PR appears mergeable.
 
