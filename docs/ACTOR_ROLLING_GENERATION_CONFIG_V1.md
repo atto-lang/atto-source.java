@@ -70,7 +70,7 @@ try (var dispatch = new NativeHttpRollingDispatcher(listener, 1001, g1, 4)) {
 
 The constructor rejects unpooled/unready initial handlers and foreign-context handlers; promotion warms all new actor workers and rejects unhealthy/stale/foreign candidates. Unpublished candidates receive stop/cancel requests; the terminal cleanup proof is still separate. Multiple concurrent candidate warmups are bounded to 8 and the route's own live-generation cap is enforced. A rejected candidate is never automatically promoted. A fatal dispatcher/listener error invokes explicit shutdown and is not promised to be interruption-free.
 
-**Current limits:** this path handles same-context, config-versioned `NativeHttp.Handler` pools. It does *not* yet support cross-`OresContext` executable hot-code cutovers, guest-callable `reload` commands, WebSocket/TCP/HTTP2 migration, per-worker physical retirement receipts, or typed ABI/capability migration. The server's existing `Exchange.completion()` is a **transport completion marker**, not proof of all Task/FFI/native/actor code being physically quiescent. `acknowledgePhysicallyRetired` is trusted host bookkeeping only and must not be called to free a pool without an independently verified terminal witness.
+**Current limits:** this path handles same-context, config-versioned `NativeHttp.Handler` pools. It does *not* yet support cross-`OresContext` executable hot-code cutovers, guest-callable `reload` commands, WebSocket/TCP/HTTP2 migration, per-worker physical retirement receipts, or typed ABI/capability migration. The server's existing `Exchange.completion()` is a **transport completion marker**, not proof of all Task/FFI/native/actor code being physically quiescent. `NativeHttpRollingDispatcher.acknowledgePhysicallyRetired` now **always throws** and retains the old generation until real physical-lifetime registries can issue an authenticated, epoch-bound retirement receipt. This is deliberate quarantine, not a memory-reclamation implementation.
 
 `ActorRollingHttpSocketTest` is the first real loopback HTTP socket + `ActorRuntime` SHARED-actor acceptance fixture: a G1 request is deliberately held, a G2 request completes over the **same** listener/port/PID, and G1 later finishes. It tests the routing hypothesis, not the full `NativeHttpRollingDispatcher` guest path; that integration fixture remains a release blocker.
 
@@ -82,7 +82,7 @@ The existing source `NativeHttpTest` uses Oreslang-compiled `http.listen` and `h
 2. Wait for `dispatch.admissionsDrained(oldEpoch)` (all G1 HTTP exchanges have reached their transport terminal marker).
 3. Call `dispatch.requestDrainAfterAdmissions(oldEpoch)`. This sends nonparking `gracefulStop()` to G1 pooled actors; repeated calls retry incomplete stop signaling. This *does not* close the permanent listener or G2.
 4. Wait until **each** G1 actor `get_done()` is successful, and independently verify physical Tasks, native I/O, FFI, arena, code-image leases and callbacks have retired. Failed actor exits are **not** certified as clean.
-5. Only the trusted supervisor may call `dispatch.acknowledgePhysicallyRetired(oldEpoch)`. It validates zero route pins and successful actor terminal futures, removes the pool's strong registry reference and the old route entry. The API does not yet require an unforgeable physical proof token, so production callers must not rely on it as a self-sufficient safety certificate.
+5. **Do not attempt physical retirement yet.** `dispatch.acknowledgePhysicallyRetired(oldEpoch)` is intentionally disabled and throws even if actor termination and transport drain have succeeded. Keep the old generation quarantined until a separate authenticated receipt is implemented for all physical loan kinds. This also means the bounded live-generation cap eventually prevents additional reloads rather than risking unsafe reclamation.
 
 A failed/unpublished candidate has its pool fenced and cancelled; its registry reference is removed without altering the serving route. This is cancellation, **not** proof of immediate memory reclamation. Future production integration must consume authenticated retirement receipts and replace the caller-attested bookkeeping API.
 
@@ -106,3 +106,27 @@ The transferred `Exchange` is revocable: host CONTROL abort uses `abortFromRolli
 `NativeHttp` rejects new worker startup after close and refuses promotion of candidate worker pools with existing in-flight exchanges.
 
 **Verification caveat:** as of this change, this new full NativeHttp test is committed and included in the exact-head workflow but **has not been executed**. Prior standalone host routing smoke/stress is not proof of this path, and the separate full Oreslang guest-source hot reload and physical Task/FFI/code quiescence proofs remain release blockers.
+
+## Supervisor transaction (current implementation)
+
+`NativeHttpRollingReloadCoordinator` is a host CONTROL-only policy gate, not a new guest capability. `Config` copies all settings into immutable strings, validates service ID/revision/input limits, and requires a monotonically increasing revision with the same service identity. The host supplies explicit ABI/capability/config validation and a trusted candidate factory. Invalid validation never invokes the factory. The coordinator limits simultaneous in-flight reloads to eight; a stale route epoch returns `STALE` without constructing a candidate.
+
+```java
+var config1 = new NativeHttpRollingReloadCoordinator.Config(
+    "proxy", 1L, Map.of("upstream", "10.0.0.1:9000"));
+try (var tx = new NativeHttpRollingReloadCoordinator(
+        dispatch, config1,
+        (previous, next) -> validateProxyAbiCapabilitiesAndListener(next),
+        next -> http.handler(compileValidatedConfig(next), "Proxy",
+            ActorRuntime.ActorKind.SHARED).pooled(4))) {
+    var updated = new NativeHttpRollingReloadCoordinator.Config(
+        "proxy", 2L, Map.of("upstream", "10.0.0.2:9000"));
+    var outcome = tx.reload(1L, updated).get(10, TimeUnit.SECONDS);
+    assert outcome.status() == NativeHttpRollingReloadCoordinator.Status.PUBLISHED;
+    // The old actor generation is still draining, not physically reclaimed.
+}
+```
+
+The `promoteAfterWarmup` entrypoint is now package-private runtime integration plumbing, not a general public host API; the coordinator is the validated entrypoint. Explicit `close()` shuts down the owned listener and is **not** part of routine reload. Same-context Java-code handlers are supported in this slice; executable code-image exchange, Oreslang supervisor syntax and full LLVM parity remain separate work.
+
+`NativeHttpRollingDispatcherIntegrationTest` now also includes configured transaction success/failure, a deliberately failing candidate ready barrier, invalid-input preflight, stale revision rejection, repeated G1→G2→G3 reload on one port/PID, and a concurrent candidate publication race. These checks are present in source but have not been confirmed to execute in GitHub Actions: existing exact-head jobs fail **with zero executed steps**. Do not claim a passing Maven/Graal test run.
