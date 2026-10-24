@@ -47,8 +47,16 @@ int main(int argc, char **argv) {
     if (getenv("MOCK_BAD_PROGRAM_STATUS")) return 13;
     if (argc >= 3 && strcmp(argv[1], "--check") == 0) {
         if (access(argv[2], F_OK) != 0) return 9;
-        if (strstr(argv[2], "private-actor-sharing-invalid.ores") != NULL)
-            return getenv("MOCK_ACCEPT_INVALID_PRIVATE_ACTOR") ? 0 : 1;
+        if (strstr(argv[2], "private-actor-sharing-invalid.ores") != NULL) {
+            if (getenv("MOCK_ACCEPT_INVALID_PRIVATE_ACTOR")) return 0;
+            if (getenv("MOCK_WRONG_ACTOR_REJECTION"))
+                fputs("Oreslang parse error at 1:1: unexpected token\\n", stderr);
+            else if (getenv("MOCK_WRONG_ACTOR_CAPABILITY"))
+                fputs("Oreslang isolate denies capability NETWORK required by actor\\n", stderr);
+            else
+                fputs("Oreslang isolate denies capability SHARED_MEMORY required by SharedMutex<T>\\n", stderr);
+            return 1;
+        }
         if (strstr(argv[2], "shared-private-actor-isolation.ores") != NULL) {
             if (getenv("MOCK_REJECT_VALID_ACTOR")) return 1;
             if (getenv("MOCK_ACTOR_CHECK_EXECUTES_GUEST")) puts("actor guest output");
@@ -214,6 +222,8 @@ assert_case 'silent callables guest execution' failure aot compressed32 MOCK_SIL
 assert_case 'incorrect lexical closure result' failure aot compressed32 MOCK_BAD_CALLABLES=1
 assert_case 'private actor capability violation admitted' failure aot compressed32 MOCK_ACCEPT_INVALID_PRIVATE_ACTOR=1
 assert_case 'valid shared/private actor rejected' failure aot compressed32 MOCK_REJECT_VALID_ACTOR=1
+assert_case 'actor rejected for unrelated parse error' failure aot compressed32 MOCK_WRONG_ACTOR_REJECTION=1
+assert_case 'actor rejected for unrelated network capability' failure aot compressed32 MOCK_WRONG_ACTOR_CAPABILITY=1
 assert_case 'actor check-only emitted guest output' failure aot compressed32 MOCK_ACTOR_CHECK_EXECUTES_GUEST=1
 assert_case 'silent fake image without guest-core output' failure aot compressed32 MOCK_EMPTY_CORE_OUTPUT=1
 assert_case 'wrong native core numeric result' failure aot compressed32 MOCK_BAD_CORE_OUTPUT=1
