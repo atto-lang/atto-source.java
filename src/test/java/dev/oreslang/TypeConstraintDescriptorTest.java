@@ -86,6 +86,21 @@ final class TypeConstraintDescriptorTest {
     }
 
     @Test
+    void explicitNamespaceParticipatesInQualifiedDescriptorIdentity() {
+        var checked = TypeChecker.checkTypesWithDiagnostics(Parser.parse("""
+                namespace acme;
+                define module api as
+                  declare type Code = int with min 0 and max 5;
+                end
+                """));
+        TypeConstraintDescriptors.Descriptor descriptor =
+                checked.constraintDescriptors().find("acme.api.Code");
+        assertNotNull(descriptor);
+        assertEquals("acme.api.Code", descriptor.qualifiedTypeName());
+        assertNull(checked.constraintDescriptors().find("api.Code"));
+    }
+
+    @Test
     void rejectsMalformedDuplicateEmptyAndOverflowingRanges() {
         for (String source : new String[]{
                 "declare type Code = int with min 2 and min 3;",
