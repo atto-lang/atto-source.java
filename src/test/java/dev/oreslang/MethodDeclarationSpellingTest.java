@@ -362,4 +362,32 @@ final class MethodDeclarationSpellingTest {
         assertEquals("mtd", klass.methods().get(4).name());
     }
 
+    @Test
+    void semicolonFreeFieldsAcceptKeywordNamedAndSymbolMarkedMethodsOnlyOnNewLines() {
+        Ast.ClassDecl klass = assertInstanceOf(Ast.ClassDecl.class,
+                Parser.parse("""
+                        define class Boundaries as
+                            final int count = 1
+                            mtd select(): int { return 2; }
+                            final int other = 3
+                            method do() -> int ::
+                                return 4;
+                            end
+                            final int another = 5
+                            mtd [Symbol.iterator](): int { return 6; }
+                        end
+                        """).modules().getFirst().declarations().getFirst());
+        assertEquals(3, klass.fields().size());
+        assertEquals(3, klass.methods().size());
+        assertEquals("select", klass.methods().get(0).name());
+        assertEquals("do", klass.methods().get(1).name());
+        assertEquals("Symbol.iterator", klass.methods().get(2).name());
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define class Wrong as
+                    final int count = 1 mtd select(): int { return 2; }
+                end
+                """));
+    }
+
 }
