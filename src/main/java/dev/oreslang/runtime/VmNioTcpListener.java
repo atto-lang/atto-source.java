@@ -35,6 +35,25 @@ public final class VmNioTcpListener implements AutoCloseable {
     static VmNioTcpListener loopback(NioReadinessGroup readiness, int port,
                                      int backlog, int maxConnections,
                                      int maxPending) throws IOException {
+        return loopbackImpl(readiness, port, backlog, maxConnections, maxPending, false);
+    }
+
+    /**
+     * An independent listening socket for a trusted worker. Every participant
+     * in a same-port group must opt in before bind. This host primitive does
+     * NOT grant an Oreslang actor authority to receive or share this handle.
+     */
+    static VmNioTcpListener loopbackReusePort(NioReadinessGroup readiness,
+                                              int port, int backlog,
+                                              int maxConnections, int maxPending)
+            throws IOException {
+        return loopbackImpl(readiness, port, backlog, maxConnections, maxPending, true);
+    }
+
+    private static VmNioTcpListener loopbackImpl(NioReadinessGroup readiness,
+                                                  int port, int backlog,
+                                                  int maxConnections, int maxPending,
+                                                  boolean reusePort) throws IOException {
         Objects.requireNonNull(readiness, "readiness");
         if (port < 0 || port > 65535 || backlog < 1 || maxConnections < 1
                 || maxConnections > 65536 || maxPending < 1 || maxPending > 65536)
@@ -42,6 +61,13 @@ public final class VmNioTcpListener implements AutoCloseable {
         ServerSocketChannel server = ServerSocketChannel.open();
         try {
             server.configureBlocking(false);
+            if (reusePort) {
+                // Do not fall back to shared supervisor dispatch when this
+                // platform cannot bind independent per-worker sockets.
+                if (!server.supportedOptions().contains(java.net.StandardSocketOptions.SO_REUSEPORT))
+                    throw new UnsupportedOperationException("SO_REUSEPORT unavailable");
+                server.setOption(java.net.StandardSocketOptions.SO_REUSEPORT, true);
+            }
             // The source facade explicitly accepts "127.0.0.1", not a
             // platform-dependent IPv4/IPv6 loopback address.
             server.bind(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), port), backlog);
