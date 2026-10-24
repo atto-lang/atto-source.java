@@ -105,9 +105,12 @@ evidence only**. Never reuse it as the source-carrying production workflow.
 ## Exact native test plan to execute *after* approval
 
 All selected commands should use a reviewed offline runner environment and
-immutable checkout. The existing source smoke script runs Maven without
-`-o`; either add a tested explicit offline mode or use a separately
-reviewed offline Maven test runner with equivalent binary/guest assertions.
+immutable checkout. PR #1976's smoke script now supports `ORES_NATIVE_IMAGE_OFFLINE=1`, which
+passes `-o` to Maven and fails closed on invalid flag values. **21 tests passed
+locally against the exact committed script/test Git blob versions**, including
+two offline success configurations and invalid-mode denial. A future carrier
+must still prove a source-free verified dependency cache, effective egress
+restriction and hardened sandbox; a Maven offline flag alone is insufficient.
 
 - Baseline: `mvn -B -ntp -o -Dores.runtime.carriers=native verify`.
 - Native AOT compressed32: build `native-aot`, confirm `--no-fallback`,
