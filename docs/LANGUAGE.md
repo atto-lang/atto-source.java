@@ -494,6 +494,48 @@ Oreslang does not treat either spelling as an opaque forward declaration.
 Definitions must contain the full target after `=`. Two complete definitions
 of the same name, regardless of spelling, produce a duplicate type error.
 
+### Named type extension methods (`mtd`)
+
+Oreslang supports a bounded static extension-method spelling:
+
+```ores
+declare type Code = int;
+
+define mtd plus on Code(int offset): int {
+  return self + offset;
+}
+
+fnc add_offset(Code code): int {
+  return code.plus(5);
+}
+```
+
+The identical type definition `define type Code = int;` gives the **same**
+method lookup. The parser lowers `mtd` to a checked receiver-explicit
+callable with `self: Code`; receiver method lookup uses the lexical
+**named alias binding**, not the underlying integer runtime class.
+Consequently, `code.plus(5)` can resolve while `raw.plus(5)` on an
+unannotated `int` cannot. Methods are only admitted for aliases declared
+in the same module; imported third-party extension methods, generic method
+receivers and runtime method dictionaries are not part of this v1 profile.
+
+A checked extension call is bound to its exact receiver and argument AST
+identities. Tree shaking must retain the verified callable target and must
+not copy authorization after rewriting an argument to an unchecked AST.
+Extension calls use ordinary function effect and ownership rules; they
+do not automatically validate or promote integer input.
+
+**Zorde and `with` refinements are a separate integration contract, not
+a built-in implementation implied by `mtd`.** Future `Code = int with
+min 0 and max 5` values must be constructed/converted through
+compiler-checked validation; simply assigning an arbitrary `int` to an
+alias or applying an extension method cannot be a validation bypass.
+Zorde should consume the compiler's normalized constraint metadata,
+including parameterized limits, and only advertise a validated `Code`
+after enforcing those constraints. Java/GraalVM and LLVM must use the
+same proof and import semantics before native or cross-package support
+is claimed.
+
 `define model` is different: it introduces a **nominal type and a separately
 owned executable model instance**. In the first executable Java/GraalVM
 profile, a model statically composes verified, synchronous, pure scalar
