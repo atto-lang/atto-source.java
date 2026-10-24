@@ -6280,6 +6280,10 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         where + " requires Channel<T>; got " + value);
             }
+            if (!channel.belongsTo(context.channelAdmissionDomain())) {
+                throw new SecurityException(
+                        where + " rejected Channel<T> from another admission domain");
+            }
             return (ChannelRuntime.Channel<Object>) channel;
         }
 
