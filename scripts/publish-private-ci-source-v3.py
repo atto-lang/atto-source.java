@@ -560,17 +560,31 @@ def checked_destination(repository, contract):
     return repo, base_tree, plan_bytes
 
 
-def verify_source_pr(source_pr, source_commit):
+def require_live_private_source():
+    """Recheck private source identity/state before EACH private source write.
+
+    Destination rechecks alone are insufficient: the source repository could
+    be made public, renamed/recreated or disabled after initial PR admission.
+    The origin's immutable numeric ID and strict metadata booleans must remain
+    valid at the same source-bearing write boundary.
+    """
     origin = legacy.gh_api(f"repos/{legacy.SOURCE_REPO}")
-    repo_id = origin.get("id")
-    if (origin.get("full_name") != legacy.SOURCE_REPO
-            or repo_id != SOURCE_REPOSITORY_ID
+    if (type(origin) is not dict
+            or type(origin.get("id")) is not int
+            or origin.get("id") != SOURCE_REPOSITORY_ID
+            or origin.get("full_name") != legacy.SOURCE_REPO
             or origin.get("private") is not True
             or origin.get("visibility") != "private"
             or origin.get("archived") is not False
             or origin.get("disabled") is not False
             or origin.get("fork") is not False):
         raise Denied("source repository identity/state invalid")
+    return origin
+
+
+def verify_source_pr(source_pr, source_commit):
+    origin = require_live_private_source()
+    repo_id = origin["id"]
     pr = legacy.gh_api(f"repos/{legacy.SOURCE_REPO}/pulls/{source_pr}")
     head = pr.get("head")
     base = pr.get("base")
@@ -709,6 +723,9 @@ def authorize_write(root, repository, approved_policy, contract):
             or repo.get("fork") is not False
             or repo.get("default_branch") != "main"):
         raise Denied("carrier identity/state changed during transfer")
+    # Both source AND destination identity/privacy must still be valid
+    # immediately before every blob/tree/commit/ref GitHub API write.
+    require_live_private_source()
 
 
 def _gh_ref_request(repository, ref_name, method):
