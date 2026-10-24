@@ -12,7 +12,7 @@ command -v file >/dev/null 2>&1 || { echo "file utility required" >&2; exit 2; }
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 mkdir -p "$tmp/bin" "$tmp/graal/bin" "$tmp/work/examples"
-for name in callables together native-core-library native-testing; do
+for name in callables together native-core-library native-testing shared-private-actor-isolation private-actor-sharing-invalid; do
   echo '// placeholder: not Oreslang source' > "$tmp/work/examples/$name.ores"
 done
 
@@ -47,6 +47,13 @@ int main(int argc, char **argv) {
     if (getenv("MOCK_BAD_PROGRAM_STATUS")) return 13;
     if (argc >= 3 && strcmp(argv[1], "--check") == 0) {
         if (access(argv[2], F_OK) != 0) return 9;
+        if (strstr(argv[2], "private-actor-sharing-invalid.ores") != NULL)
+            return getenv("MOCK_ACCEPT_INVALID_PRIVATE_ACTOR") ? 0 : 1;
+        if (strstr(argv[2], "shared-private-actor-isolation.ores") != NULL) {
+            if (getenv("MOCK_REJECT_VALID_ACTOR")) return 1;
+            if (getenv("MOCK_ACTOR_CHECK_EXECUTES_GUEST")) puts("actor guest output");
+            return 0;
+        }
         if (getenv("MOCK_CHECK_EXECUTES_GUEST")) puts("120:9:13");
         return 0;
     }
@@ -205,6 +212,9 @@ assert_case 'source execution failure' failure aot compressed32 MOCK_BAD_PROGRAM
 assert_case 'check-only mistakenly executes guest' failure aot compressed32 MOCK_CHECK_EXECUTES_GUEST=1
 assert_case 'silent callables guest execution' failure aot compressed32 MOCK_SILENT_CALLABLES=1
 assert_case 'incorrect lexical closure result' failure aot compressed32 MOCK_BAD_CALLABLES=1
+assert_case 'private actor capability violation admitted' failure aot compressed32 MOCK_ACCEPT_INVALID_PRIVATE_ACTOR=1
+assert_case 'valid shared/private actor rejected' failure aot compressed32 MOCK_REJECT_VALID_ACTOR=1
+assert_case 'actor check-only emitted guest output' failure aot compressed32 MOCK_ACTOR_CHECK_EXECUTES_GUEST=1
 assert_case 'silent fake image without guest-core output' failure aot compressed32 MOCK_EMPTY_CORE_OUTPUT=1
 assert_case 'wrong native core numeric result' failure aot compressed32 MOCK_BAD_CORE_OUTPUT=1
 assert_case 'silent fake image without guest-test output' failure aot compressed32 MOCK_EMPTY_TEST_OUTPUT=1
