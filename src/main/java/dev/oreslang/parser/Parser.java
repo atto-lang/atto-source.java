@@ -1244,7 +1244,8 @@ public final class Parser {
             throw error(previous(), "extension receiver must be a simple named type alias");
         }
         if (method.equals("init") || method.equals("main") || method.contains("$")) {
-            throw error(previous(), "extension method cannot use a reserved lifecycle or entrypoint name");
+            throw error(previous(),
+                    "EXTENSION_RESERVED_NAME: extension method cannot use a reserved lifecycle or entrypoint name");
         }
         consume(LPAREN, "expected '(' after extension receiver");
         List<Ast.Param> explicitParams = parseParametersUntil(RPAREN);
