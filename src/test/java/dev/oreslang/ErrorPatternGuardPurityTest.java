@@ -442,6 +442,81 @@ final class ErrorPatternGuardPurityTest {
     }
 
     @Test
+    void stringOrderingCannotScanUnboundedTextInErrorGuard() {
+        String invalid = SOURCE + """
+                fnc classify(Error error, string left, string right): int {
+                  match error over
+                    on Error e when left < right -> { return 1; }
+                    on Error other -> { return 0; }
+                  end
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(invalid)));
+        assertTrue(failure.getMessage().contains("bounded equality/type checks"), failure.getMessage());
+    }
+
+    @Test
+    void decimalOrderingCannotRunInErrorValueGuard() {
+        String invalid = SOURCE + """
+                fnc classify(Error error, decimal left, decimal right): int {
+                  return match error over {
+                    on Error e when left >= right { return 1; }
+                    on Error other { return 0; }
+                  };
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(invalid)));
+        assertTrue(failure.getMessage().contains("bounded equality/type checks"), failure.getMessage());
+    }
+
+    @Test
+    void broadAnyGuardBeforeErrorArmCannotCompareStrings() {
+        String invalid = SOURCE + """
+                fnc classify(Any unknown, string left, string right): int {
+                  match unknown over
+                    on _ when left > right -> { return 2; }
+                    on Error err -> { return 1; }
+                    on _ -> { return 0; }
+                  end
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(invalid)));
+        assertTrue(failure.getMessage().contains("bounded equality/type checks"), failure.getMessage());
+    }
+
+    @Test
+    void floatOrderingRemainsAdmittedInsideErrorGuard() {
+        String valid = SOURCE + """
+                fnc classify(Error error, float left, float right): int {
+                  match error over
+                    on Error e when left < right -> { return 1; }
+                    on Error other -> { return 0; }
+                  end
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(valid)));
+    }
+
+    @Test
+    void nonErrorStringOrderingRetainsExistingSemantics() {
+        String valid = SOURCE + """
+                fnc classify(bool enabled, string left, string right): int {
+                  match enabled over
+                    on true when left < right -> { return 1; }
+                    on _ -> { return 0; }
+                  end
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(valid)));
+    }
+
+    @Test
     void guardDivisionCannotSmuggleAnExceptionalArithmeticOperation() {
         String bad = SOURCE + """
                 fnc classify(Error error, int divisor): int {
