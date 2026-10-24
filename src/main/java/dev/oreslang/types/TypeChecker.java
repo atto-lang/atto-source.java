@@ -6117,6 +6117,13 @@ public final class TypeChecker {
         if (value instanceof Union union) {
             return union.options().stream().allMatch(this::boundedErrorGuardEqualityType);
         }
+        // Instance 'self' is receiver-polymorphic at type checking time but
+        // remains a guest class reference at runtime. Check the underlying
+        // nominal carrier rather than erroneously rejecting identity
+        // comparisons on Error class instances and their subclasses.
+        if (value instanceof SelfType receiver) {
+            return boundedErrorGuardEqualityType(receiver.bound());
+        }
         if (value == Primitive.BOOL || value == Primitive.FLOAT
                 || value == Primitive.COMPLEX || value instanceof Types.BoolLiteral) {
             return true;
