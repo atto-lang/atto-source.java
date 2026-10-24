@@ -217,3 +217,36 @@ and `bigint`, so preserving old `attempts > 0` guards does **not** prove
 hard-real-time bounded integer ordering. Tracked in #1994. Any zero-step
 Actions failure is an infrastructure admission failure, never a compiler
 verdict. No source was moved into an unapproved cross-organization carrier.
+
+## October 24 — optional-cast and mixed-Complex allocation audit
+
+Inspection of `OresEvalRootNode` established that **optional casts allocate**
+a new `OptionValue` on the synchronous evaluator path (and also in the
+suspendable implementation). Previous error guard syntax validation allowed
+`Ast.CastExpr(OPTIONAL)`; nested `(candidate as? Error) is type Option<Error>`
+could therefore allocate while satisfying a pure-looking type predicate.
+`pureMatchGuardExpr` now rejects **all** casts within Error-domain guards.
+Direct nominal `is type` remains admitted; non-Error match semantics are
+unchanged.
+
+In addition, evaluator `valueEquals` converts numeric operands to
+`Complex` via `asComplex`, which allocates `new Complex` when passed a
+`Number`. The new pairwise checker allows homogeneous Complex equality but
+rejects mixed Complex/non-Complex (including unions with an uncertain
+Complex alternative) for Error-domain guards. Homogeneous bool and class
+identity checks remain admitted.
+
+The dedicated JUnit class contains **42 unique @Test methods** (six new
+cast/complex regression tests). These tests are committed, not executed.
+The portable 100-case matching corpus was independently reconstructed
+from the Java test generator and matched the platform manifest **100/100**
+for `id`, source, expected result and diagnostic, without executing
+any compiler backend.
+
+**Remaining allocation boundary:** `oresTypeMatches` allocates
+`LinkedHashSet` ancestry/interface traversal state for nominal class
+and interface predicates; unlike syntax purity, per-dispatch allocation-free
+matching has **not** been proven. See [#1999](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/1999).
+Integer/bigint ordering cost remains unproven under #1994.
+No private-source cross-org transfer is authorized while #1501 is open
+and the protected source allowlist has no approved destination.
