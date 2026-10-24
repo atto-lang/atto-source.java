@@ -8706,6 +8706,21 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void drainMailboxReservations() {
+            // Terminal draining runs under lifecycleLock in both callers. It
+            // must never discover a producer waiter here: releaseMailboxSlot()
+            // publishes transferred-credit Futures synchronously after its
+            // accounting lock, which would otherwise expose callbacks while
+            // lifecycleLock is still held.
+            synchronized (mailboxAccountingLock) {
+                if (!stopped.get()
+                        || !asyncSendAdmissionSealed
+                        || !pendingAsyncSends.isEmpty()
+                        || activeAsyncSendAdmissions != 0) {
+                    throw new IllegalStateException(
+                            "terminal mailbox drain began before async-send quiescence for "
+                                    + ref.id());
+                }
+            }
             synchronized (lifecycleLock) {
                 while (continuationMailbox.drainOne(continuation -> {
                     releaseMailboxSlot(true);
