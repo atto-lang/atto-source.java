@@ -17,6 +17,34 @@ import org.junit.jupiter.api.Timeout;
  */
 @Timeout(20)
 final class ActorPhysicalRetirementRegistryTest {
+    @Test void failingInternalFinalizationSubscriberNeverPublishesSuccessfulDone()
+            throws Exception {
+        var listenerFailure = new IllegalStateException(
+                "trusted finalization notifier failed");
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> { });
+            var actorsField = ActorRuntime.class.getDeclaredField("actors");
+            actorsField.setAccessible(true);
+            var active = (java.util.Map<?, ?>) actorsField.get(runtime);
+            Object cell = active.get(actor.id());
+            assertNotNull(cell);
+            var finalizedField = cell.getClass().getDeclaredField("finalizedFuture");
+            finalizedField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            var finalized = (OresFuture<Void>) finalizedField.get(cell);
+            finalized.whenCompleteRuntime((ignored, failure) -> {
+                throw listenerFailure;
+            });
+            assertTrue(actor.cancel());
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            var doneFailure = assertThrows(ExecutionException.class,
+                    () -> actor.done().get(3, TimeUnit.SECONDS)).getCause();
+            assertInstanceOf(OresScheduler.CleanupIncompleteError.class, doneFailure);
+            assertSame(listenerFailure, doneFailure.getCause(),
+                    "an isolated runtime listener failure cannot become clean DONE");
+        }
+    }
+
     @Test void actorMapRemovalCannotPretendDoneWhileFinalizedObserverIsBlocked()
             throws Exception {
         var observerEntered = new CountDownLatch(1);
