@@ -292,6 +292,23 @@ final class NativeHttpRollingDispatcherIntegrationTest {
                     assertEquals(NativeHttpRollingReloadCoordinator.Status.STALE, stale.status());
                     assertEquals(2, candidateCount.get(),
                             "stale epoch should fail before candidate allocation");
+                    // A stale request must refund its bounded staging permit.
+                    // Ten retries exceed the eight-candidate admission cap.
+                    for (int attempt = 0; attempt < 10; attempt++) {
+                        assertEquals(NativeHttpRollingReloadCoordinator.Status.STALE,
+                                coordinator.reload(1,
+                                    new NativeHttpRollingReloadCoordinator.Config(
+                                            "proxy", 3, java.util.Map.of("version", "STALE")))
+                                    .get(8, TimeUnit.SECONDS).status());
+                    }
+                    assertThrows(ExecutionException.class,
+                            () -> coordinator.reload(2,
+                                    new NativeHttpRollingReloadCoordinator.Config(
+                                            "different_service", 3,
+                                            java.util.Map.of("version", "FORBIDDEN")))
+                                    .get(8, TimeUnit.SECONDS));
+                    assertEquals(2, candidateCount.get(),
+                            "invalid service identity must not construct candidate pools");
 
                     var g3 = new NativeHttpRollingReloadCoordinator.Config(
                             "proxy", 3, java.util.Map.of("version", "G3"));
