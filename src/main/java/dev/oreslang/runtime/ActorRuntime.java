@@ -7805,9 +7805,22 @@ public final class ActorRuntime implements AutoCloseable {
             // BEFORE publishing externally visible ActorRef.done(). A failing
             // finalization observer must never be discovered only after DONE.
             finalizedFuture.completeFromRuntime(null);
+            // Internal finalizedFuture subscribers can execute inline and
+            // OresFuture isolates their exceptions. Do not silently promote
+            // such a host-side notifier failure into a successful actor DONE.
+            // The notification is already terminal here, so its observed
+            // failure is stable before the externally visible DONE settles.
+            Throwable finalizationListenerFailure = finalizedFuture.runtimeNotificationFailure();
+            if (finalizationListenerFailure != null) {
+                ref.terminationCause.compareAndSet(null,
+                        new OresScheduler.CleanupIncompleteError(
+                                "actor finalization notification failed",
+                                finalizationListenerFailure));
+            }
             lifecycleLock.notifyAll();
-            if (terminal == null) ref.doneFuture.completeFromRuntime(null);
-            else ref.doneFuture.failFromRuntime(terminal);
+            Throwable doneTerminal = ref.terminationCause.get();
+            if (doneTerminal == null) ref.doneFuture.completeFromRuntime(null);
+            else ref.doneFuture.failFromRuntime(doneTerminal);
         }
 
         private void sourceTaskCleanupQuiesced() {
