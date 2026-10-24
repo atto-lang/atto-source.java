@@ -82,7 +82,7 @@ public final class TypeConstraintDescriptors {
                 if (!(declaration instanceof Ast.TypeAliasDecl alias) || !alias.constrained()) {
                     continue;
                 }
-                Descriptor descriptor = compileAlias(module, alias);
+                Descriptor descriptor = compileAlias(program.namespace(), module, alias);
                 if (result.putIfAbsent(descriptor.qualifiedTypeName(), descriptor) != null) {
                     throw new IllegalArgumentException(
                             "duplicate constrained type descriptor '"
@@ -93,7 +93,8 @@ public final class TypeConstraintDescriptors {
         return new Catalog(result);
     }
 
-    private static Descriptor compileAlias(Ast.ModuleDecl module, Ast.TypeAliasDecl alias) {
+    private static Descriptor compileAlias(
+            String namespace, Ast.ModuleDecl module, Ast.TypeAliasDecl alias) {
         if (!alias.genericParameters().isEmpty()) {
             throw new IllegalArgumentException(
                     "CONSTRAINT_GENERIC_UNSUPPORTED: constrained alias '" + alias.name()
@@ -146,9 +147,12 @@ public final class TypeConstraintDescriptors {
             throw new IllegalArgumentException("constrained alias has no predicates");
         }
 
-        String qualifiedName = module.name().equals(Parser.ROOT_MODULE)
+        String localName = module.name().equals(Parser.ROOT_MODULE)
                 ? alias.name()
                 : module.name() + "." + alias.name();
+        String qualifiedName = namespace == null || namespace.isBlank()
+                ? localName
+                : namespace + "." + localName;
         String canonical = canonicalForm(qualifiedName, predicates);
         return new Descriptor(
                 SCHEMA_VERSION,
