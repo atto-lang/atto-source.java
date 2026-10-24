@@ -530,7 +530,8 @@ class PrivateCiV3Test(unittest.TestCase):
         ):
             with self.assertRaisesRegex(v3.Denied, "identity/state"):
                 v3.authorize_write(
-                    Path("."), "trusted/ci", POLICY, carrier)
+                    Path("."), "trusted/ci", POLICY, carrier,
+                    PROTECTED, 1482, "4" * 40, v3.SOURCE_REPOSITORY_ID)
 
     def test_authorize_write_rejects_reviewed_repository_id_change(self):
         carrier = contract()
@@ -545,7 +546,8 @@ class PrivateCiV3Test(unittest.TestCase):
         ):
             with self.assertRaisesRegex(v3.Denied, "repository identity changed"):
                 v3.authorize_write(
-                    Path("."), "trusted/ci", POLICY, carrier)
+                    Path("."), "trusted/ci", POLICY, carrier,
+                    PROTECTED, 1482, "4" * 40, v3.SOURCE_REPOSITORY_ID)
             checked_repo.assert_not_called()
 
     def test_authorize_write_rejects_reopened_incident_before_api_or_blob(self):
@@ -560,7 +562,9 @@ class PrivateCiV3Test(unittest.TestCase):
             patch.object(v3.legacy, "checked_repo") as repo,
         ):
             with self.assertRaisesRegex(v3.Denied, "#77 remains unresolved"):
-                v3.authorize_write(Path("."), "trusted/ci", POLICY, carrier)
+                v3.authorize_write(
+                    Path("."), "trusted/ci", POLICY, carrier,
+                    PROTECTED, 1482, "4" * 40, v3.SOURCE_REPOSITORY_ID)
             incident_gate.assert_called_once_with()
             policy.assert_not_called()
             repo.assert_not_called()
@@ -577,10 +581,158 @@ class PrivateCiV3Test(unittest.TestCase):
             patch.object(v3.legacy, "checked_repo") as repo,
         ):
             with self.assertRaisesRegex(v3.Denied, "#127 remains unresolved"):
-                v3.authorize_write(Path("."), "trusted/ci", POLICY, carrier)
+                v3.authorize_write(
+                    Path("."), "trusted/ci", POLICY, carrier,
+                    PROTECTED, 1482, "4" * 40, v3.SOURCE_REPOSITORY_ID)
             incident_gate.assert_called_once_with()
             policy.assert_not_called()
             repo.assert_not_called()
+
+    def test_authorize_write_rejects_source_governance_revocation(self):
+        carrier = contract()
+        eligible = {
+            "id": carrier["repository_id"],
+            "full_name": "trusted/ci",
+            "private": True,
+            "visibility": "private",
+            "archived": False,
+            "disabled": False,
+            "fork": False,
+            "default_branch": "main",
+        }
+        with (
+            patch.object(v3.legacy, "require_resolved_blocking_incidents"),
+            patch.object(
+                v3.legacy, "checked_policy_approval",
+                return_value=(POLICY, carrier["repository_id"]),
+            ),
+            patch.object(v3.legacy, "checked_repo", return_value=eligible),
+            patch.object(
+                v3, "authorized_main_sha", return_value="9" * 40
+            ) as source_authority,
+            patch.object(v3, "verify_source_pr") as source_pr,
+            patch.object(v3.legacy, "gh_api") as api,
+        ):
+            with self.assertRaisesRegex(
+                    v3.Denied, "source governance authority changed"):
+                v3.authorize_write(
+                    Path("."), "trusted/ci", POLICY, carrier,
+                    PROTECTED, 1482, "4" * 40, v3.SOURCE_REPOSITORY_ID)
+            source_authority.assert_called_once_with(
+                "trusted/ci", POLICY, carrier["repository_id"])
+            source_pr.assert_not_called()
+            api.assert_not_called()
+
+    def test_authorize_write_rejects_source_pr_head_move(self):
+        carrier = contract()
+        eligible = {
+            "id": carrier["repository_id"],
+            "full_name": "trusted/ci",
+            "private": True,
+            "visibility": "private",
+            "archived": False,
+            "disabled": False,
+            "fork": False,
+            "default_branch": "main",
+        }
+        with (
+            patch.object(v3.legacy, "require_resolved_blocking_incidents"),
+            patch.object(
+                v3.legacy, "checked_policy_approval",
+                return_value=(POLICY, carrier["repository_id"]),
+            ),
+            patch.object(v3.legacy, "checked_repo", return_value=eligible),
+            patch.object(v3, "authorized_main_sha", return_value=PROTECTED),
+            patch.object(
+                v3, "verify_source_pr",
+                return_value=v3.SOURCE_REPOSITORY_ID + 1,
+            ) as source_pr,
+            patch.object(v3.legacy, "gh_api") as api,
+        ):
+            with self.assertRaisesRegex(
+                    v3.Denied, "source PR head/repository changed"):
+                v3.authorize_write(
+                    Path("."), "trusted/ci", POLICY, carrier,
+                    PROTECTED, 1482, "4" * 40, v3.SOURCE_REPOSITORY_ID)
+            source_pr.assert_called_once_with(1482, "4" * 40)
+            api.assert_not_called()
+
+    def test_authorize_write_rejects_carrier_main_advance(self):
+        carrier = contract()
+        eligible = {
+            "id": carrier["repository_id"],
+            "full_name": "trusted/ci",
+            "private": True,
+            "visibility": "private",
+            "archived": False,
+            "disabled": False,
+            "fork": False,
+            "default_branch": "main",
+        }
+        with (
+            patch.object(v3.legacy, "require_resolved_blocking_incidents"),
+            patch.object(
+                v3.legacy, "checked_policy_approval",
+                return_value=(POLICY, carrier["repository_id"]),
+            ),
+            patch.object(v3.legacy, "checked_repo", return_value=eligible),
+            patch.object(v3, "authorized_main_sha", return_value=PROTECTED),
+            patch.object(
+                v3, "verify_source_pr",
+                return_value=v3.SOURCE_REPOSITORY_ID,
+            ),
+            patch.object(
+                v3.legacy, "gh_api",
+                return_value={"object": {"sha": "8" * 40}},
+            ) as api,
+        ):
+            with self.assertRaisesRegex(
+                    v3.Denied, "carrier main advanced"):
+                v3.authorize_write(
+                    Path("."), "trusted/ci", POLICY, carrier,
+                    PROTECTED, 1482, "4" * 40, v3.SOURCE_REPOSITORY_ID)
+            api.assert_called_once_with("repos/trusted/ci/git/ref/heads/main")
+
+    def test_authorize_write_accepts_only_all_live_fences(self):
+        carrier = contract()
+        eligible = {
+            "id": carrier["repository_id"],
+            "full_name": "trusted/ci",
+            "private": True,
+            "visibility": "private",
+            "archived": False,
+            "disabled": False,
+            "fork": False,
+            "default_branch": "main",
+        }
+        with (
+            patch.object(v3.legacy, "require_resolved_blocking_incidents") as incidents,
+            patch.object(
+                v3.legacy, "checked_policy_approval",
+                return_value=(POLICY, carrier["repository_id"]),
+            ) as policy,
+            patch.object(v3.legacy, "checked_repo", return_value=eligible) as repo,
+            patch.object(v3, "authorized_main_sha", return_value=PROTECTED) as authority,
+            patch.object(
+                v3, "verify_source_pr",
+                return_value=v3.SOURCE_REPOSITORY_ID,
+            ) as source_pr,
+            patch.object(
+                v3.legacy, "gh_api",
+                return_value={"object": {"sha": BASE}},
+            ) as api,
+        ):
+            v3.authorize_write(
+                Path("."), "trusted/ci", POLICY, carrier,
+                PROTECTED, 1482, "4" * 40, v3.SOURCE_REPOSITORY_ID)
+
+        incidents.assert_called_once_with()
+        policy.assert_called_once_with(Path("."), "trusted/ci")
+        repo.assert_called_once_with("trusted/ci", carrier["repository_id"])
+        authority.assert_called_once_with(
+            "trusted/ci", POLICY, carrier["repository_id"])
+        source_pr.assert_called_once_with(1482, "4" * 40)
+        api.assert_called_once_with("repos/trusted/ci/git/ref/heads/main")
 
     def test_publish_rejects_contract_repository_id_not_in_reviewed_allowlist(self):
         carrier = contract()
