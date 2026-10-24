@@ -223,7 +223,15 @@ assert_case 'incorrect lexical closure result' failure aot compressed32 MOCK_BAD
 assert_case 'private actor capability violation admitted' failure aot compressed32 MOCK_ACCEPT_INVALID_PRIVATE_ACTOR=1
 assert_case 'valid shared/private actor rejected' failure aot compressed32 MOCK_REJECT_VALID_ACTOR=1
 assert_case 'actor rejected for unrelated parse error' failure aot compressed32 MOCK_WRONG_ACTOR_REJECTION=1
+grep -Fx 'private actor negative fixture failed without a capability-denial diagnostic' "$tmp/stderr" >/dev/null || {
+  echo 'FAILED: unrelated parse error was not rejected at the actor capability gate' >&2
+  exit 1
+}
 assert_case 'actor rejected for unrelated network capability' failure aot compressed32 MOCK_WRONG_ACTOR_CAPABILITY=1
+grep -Fx 'private actor negative fixture failed without a capability-denial diagnostic' "$tmp/stderr" >/dev/null || {
+  echo 'FAILED: unrelated network capability was not rejected at the actor capability gate' >&2
+  exit 1
+}
 assert_case 'actor check-only emitted guest output' failure aot compressed32 MOCK_ACTOR_CHECK_EXECUTES_GUEST=1
 assert_case 'silent fake image without guest-core output' failure aot compressed32 MOCK_EMPTY_CORE_OUTPUT=1
 assert_case 'wrong native core numeric result' failure aot compressed32 MOCK_BAD_CORE_OUTPUT=1
