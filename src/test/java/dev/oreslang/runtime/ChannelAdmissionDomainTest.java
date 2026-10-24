@@ -129,6 +129,33 @@ final class ChannelAdmissionDomainTest {
     }
 
     @Test
+    void domainCloseRacingFutureAttachmentDetachesBeforePublishingFailure() throws Exception {
+        var domain = new ChannelRuntime.AdmissionDomain("attach-close", 4, 8);
+        var producer = new OresFuture<Integer>();
+        var set = new ChannelRuntime.SelectSet(
+                List.of(ChannelRuntime.await(producer)),
+                domain);
+
+        OresFuture<ChannelRuntime.SelectResult> selected =
+                set.selectAsyncForTesting(
+                        ChannelRuntime.SelectPolicy.PRIORITY,
+                        ignored -> { },
+                        () -> domain.close(
+                                new IllegalStateException("close during attachment")));
+
+        ExecutionException failure = assertThrows(
+                ExecutionException.class,
+                () -> selected.get(1, TimeUnit.SECONDS));
+        assertInstanceOf(
+                ChannelRuntime.AdmissionDomainClosedException.class,
+                failure.getCause());
+        assertEquals(0, producer.pendingRuntimeWaiterCount(),
+                "domain close must not leave a late Future listener attached");
+        assertEquals(0, domain.pendingSelections());
+        assertEquals(0, domain.pendingArms());
+    }
+
+    @Test
     void futureOnlySelectCanBeChargedToExplicitDomain() throws Exception {
         var domain = new ChannelRuntime.AdmissionDomain("future-only", 1, 8);
         OresFuture<Integer> producerA = new OresFuture<>();
