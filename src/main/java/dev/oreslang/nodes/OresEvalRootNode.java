@@ -6115,7 +6115,8 @@ public final class OresEvalRootNode extends RootNode {
             }
             return new ChannelRuntime.SelectSet(
                     cases,
-                    staticSelectTicket(selected));
+                    staticSelectTicket(selected),
+                    context.channelAdmissionDomain());
         }
 
         private long staticSelectTicket(Ast.SelectStmt selected) {
@@ -6279,20 +6280,32 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         where + " requires Channel<T>; got " + value);
             }
+            if (!channel.belongsTo(context.channelAdmissionDomain())) {
+                throw new SecurityException(
+                        where + " rejected Channel<T> from another admission domain");
+            }
             return (ChannelRuntime.Channel<Object>) channel;
         }
 
         private ChannelRuntime.SelectSet asSelectSet(Object value) {
-            if (value instanceof ChannelRuntime.SelectSet set) return set;
+            if (value instanceof ChannelRuntime.SelectSet set) {
+                if (!set.belongsTo(context.channelAdmissionDomain())) {
+                    throw new SecurityException(
+                            "dynamic select rejected SelectSet from another admission domain");
+                }
+                return set;
+            }
 
             ArrayList<ChannelRuntime.SelectCase> cases = new ArrayList<>();
             if (value instanceof List<?> list) {
                 for (Object item : list) cases.add(requireSelectCase(item));
-                return new ChannelRuntime.SelectSet(cases);
+                return new ChannelRuntime.SelectSet(
+                        cases, context.channelAdmissionDomain());
             }
             if (value instanceof Map<?, ?> map) {
                 for (Object item : map.values()) cases.add(requireSelectCase(item));
-                return new ChannelRuntime.SelectSet(cases);
+                return new ChannelRuntime.SelectSet(
+                        cases, context.channelAdmissionDomain());
             }
             throw new IllegalArgumentException(
                     "dynamic select requires SelectSet or list/map of SelectCase values");
@@ -6749,8 +6762,8 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
-                if (name.name().equals("Channel")) return new ChannelFactory();
-                if (name.name().equals("SelectCase")) return new SelectCaseFactory();
+                if (name.name().equals("Channel")) return new ChannelFactory(context);
+                if (name.name().equals("SelectCase")) return new SelectCaseFactory(context);
                 if (name.name().equals("SelectSet")) return new SelectSetFactory(this);
                 if (name.name().equals("Future")) return FutureFactory.INSTANCE;
                 if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
@@ -7538,6 +7551,10 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
             if (receiver instanceof ChannelRuntime.Channel<?> channel) {
+                if (!channel.belongsTo(context.channelAdmissionDomain())) {
+                    throw new SecurityException(
+                            "Channel member access crossed OresContext admission domain");
+                }
                 return switch (name) {
                     case "close" -> (Invokable) args -> {
                         requireZero(args, "Channel.close");
@@ -10230,23 +10247,28 @@ public final class OresEvalRootNode extends RootNode {
     private record HostObjectFacade(Object value) {
         @Override public String toString() { return String.valueOf(value); }
     }
-    private static final class ChannelFactory {
+    private record ChannelFactory(OresContext context) {
         private Object create(List<Object> args) {
             requireOne(args, "Channel.new<T>");
             if (!(args.getFirst() instanceof Number number)) {
                 throw new IllegalArgumentException("Channel.new<T> capacity must be an integer");
             }
             int capacity = Math.toIntExact(number.longValue());
-            return new ChannelRuntime.Channel<>(capacity);
+            return new ChannelRuntime.Channel<>(
+                    capacity, context.channelAdmissionDomain());
         }
     }
 
-    private static final class SelectCaseFactory {
+    private record SelectCaseFactory(OresContext context) {
         @SuppressWarnings({"rawtypes", "unchecked"})
         private Object read(List<Object> args) {
             requireOne(args, "SelectCase.read");
             if (!(args.getFirst() instanceof ChannelRuntime.Channel<?> channel)) {
                 throw new IllegalArgumentException("SelectCase.read expects Channel<T>");
+            }
+            if (!channel.belongsTo(context.channelAdmissionDomain())) {
+                throw new SecurityException(
+                        "SelectCase.read rejected Channel<T> from another admission domain");
             }
             return ChannelRuntime.read((ChannelRuntime.Channel) channel);
         }
@@ -10256,6 +10278,10 @@ public final class OresEvalRootNode extends RootNode {
             requireTwo(args, "SelectCase.write");
             if (!(args.getFirst() instanceof ChannelRuntime.Channel<?> channel)) {
                 throw new IllegalArgumentException("SelectCase.write expects Channel<T> as first argument");
+            }
+            if (!channel.belongsTo(context.channelAdmissionDomain())) {
+                throw new SecurityException(
+                        "SelectCase.write rejected Channel<T> from another admission domain");
             }
             return ChannelRuntime.write(
                     (ChannelRuntime.Channel) channel,
