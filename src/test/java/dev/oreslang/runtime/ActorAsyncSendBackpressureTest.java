@@ -182,6 +182,50 @@ final class ActorAsyncSendBackpressureTest {
     }
 
     @Test
+    void pendingSendHoldsPhysicalAdmissionLoanUntilItIsRetired() throws Exception {
+        CountDownLatch firstEntered = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<Integer>spawnShared(oneMessagePolicy(), () -> (message, context) -> {
+                if (message == 1) {
+                    firstEntered.countDown();
+                    if (!releaseFirst.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("held actor turn timed out");
+                    }
+                }
+            });
+            ref.send(1);
+            assertTrue(firstEntered.await(5, TimeUnit.SECONDS));
+            ref.send(2);
+
+            OresFuture<Void> pending = ref.sendAsync(3);
+            assertFalse(pending.isDone());
+
+            var actorsField = ActorRuntime.class.getDeclaredField("actors");
+            actorsField.setAccessible(true);
+            var actors = (java.util.Map<?, ?>) actorsField.get(runtime);
+            Object cell = actors.get(ref.id());
+            assertNotNull(cell);
+            var loanField = cell.getClass().getDeclaredField("activeAsyncSendAdmissions");
+            loanField.setAccessible(true);
+            assertEquals(1, loanField.getInt(cell),
+                    "pending payload/credit must fence physical actor finalization");
+
+            assertTrue(pending.cancel(false));
+            assertEquals(0, loanField.getInt(cell),
+                    "cancellation before transfer must retire the physical admission loan");
+
+            releaseFirst.countDown();
+            ref.drain().get(5, TimeUnit.SECONDS);
+            ref.stop();
+            ref.getDone().get(5, TimeUnit.SECONDS);
+        } finally {
+            releaseFirst.countDown();
+        }
+    }
+
+    @Test
     void releaseRacingWaiterRegistrationCannotLoseTheWakeup() throws Exception {
         for (int round = 0; round < 32; round++) {
             CountDownLatch firstEntered = new CountDownLatch(1);
