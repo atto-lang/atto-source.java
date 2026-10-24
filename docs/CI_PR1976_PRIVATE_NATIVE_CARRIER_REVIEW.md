@@ -106,11 +106,11 @@ evidence only**. Never reuse it as the source-carrying production workflow.
 
 All selected commands should use a reviewed offline runner environment and
 immutable checkout. PR #1976's smoke script now supports `ORES_NATIVE_IMAGE_OFFLINE=1`, which
-passes `-o` to Maven and fails closed on invalid flag values. **30 tests passed
+passes `-o` to Maven and fails closed on invalid flag values. **36 tests passed
 locally against the exact committed script/test Git blob versions**, including
 two offline success configurations, invalid-mode denial, and new
 fail-closed checks for duplicate summaries, unexpected guest FAIL/PASS
-records, and missing PASS/SKIP results. The current 30-case suite also rejects
+records, and missing PASS/SKIP results. The current 36-case suite also rejects
 replacing one expected test with a duplicated PASS, an unexpected SKIP ID,
 and duplicate expected PASS/SKIP identities. This is native mock verification,
 not current Oreslang GraalVM build evidence. A future carrier
@@ -149,10 +149,14 @@ Actions, or merge PR #1976 based on synthetic evidence alone.**
 
 ## Further local verification (2026-10-24)
 
-The exact checked-in source-side build gate Git blob `6493dd743a5e8e55b8c4d57d12be6cf6d11f6134` and regression test Git blob `1e23a810c0c010d95e5c34d74366caa688ac1b78` both match the bytes exercised locally. All **30/30** native mock contract cases passed, and both shell scripts passed `sh -n`. This is a source-free runner-gate contract proof, not an exact-current-source GraalVM build.
+The exact checked-in source-side build gate Git blob `6493dd743a5e8e55b8c4d57d12be6cf6d11f6134` and regression test Git blob `1e23a810c0c010d95e5c34d74366caa688ac1b78` both match the bytes exercised locally. All **36/36** native mock contract cases passed, and both shell scripts passed `sh -n`. This is a source-free runner-gate contract proof, not an exact-current-source GraalVM build.
 
 [Exact-source CI run 40112643693](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/40112643693) failed before any job executed a step (test, AOT, AOT reference64, hybrid and isolate all zero steps). Never report this as a compiler failure or successful build. The actual platform-conformance P0 issue IDs #22, #77 and #127 remain open; no private source transfer is permitted.
 
 ## 2026-10-24 source PR numeric identity security review
 
 [Draft hardening PR #1993](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/1993) adds per-write live source-private state checks and binds **both** the source PR head and base repositories by immutable numeric repository ID `1400792274`, not just repo slug. It also denies malformed/missing repository/PR metadata and changed source privacy or identity between source-bearing writes. Six focused isolated test groups passed locally; the full V3 regression suite has **not** run in GitHub Actions because source-side preflight [run 40113480252](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/40113480252) and source-free negative suite [run 40113480261](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/40113480261) executed zero job steps. This is further security hardening, **not** closure of #962 or authorization to export private source.
+
+## 2026-10-24 native actor admission and check/execute split
+
+PR #1976 now requires the native `--check examples/callables.ores` path to admit without guest output and the native execution path to produce exact `120:9:13`. The same build gate checks valid shared/private actor declarations and rejects the checked-in private-actor SharedMutex/read-only sharing authority-laundering fixture. The local `sh -n` and compiled native C-mock regression suite passed **36/36** cases. Exact Git blobs: shell gate `77044ae023309270b7f7d61d012dbc2f3af6cebf` and test suite `d15f74f46bd3b5fe643e8c4f7c6161aec0c27737`. [Exact-commit source CI run 40114707376](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/40114707376) still failed with zero executed steps in all five jobs. This is not actual Oreslang guest-runtime validation, and the destination approval list remains empty.
