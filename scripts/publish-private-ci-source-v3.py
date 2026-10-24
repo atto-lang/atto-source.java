@@ -62,6 +62,12 @@ CONTROL_PLANE_PATHS = (
     "scripts/publish-private-ci-source-v3.py",
 )
 MAX_CONTROL_PLANE_FILE = 512 * 1024
+# Bound each Git-tree write by serialized JSON size and entry count. Valid
+# UTF-8 source is sent as inline tree content so one authorized API write can
+# create many blobs atomically; non-UTF-8 or oversized entries fall back to
+# individually attested base64 blob writes.
+MAX_TREE_BATCH_JSON_BYTES = 1024 * 1024
+MAX_TREE_BATCH_ENTRIES = 128
 
 
 def valid_sha(value, label="invalid SHA"):
@@ -678,6 +684,79 @@ def manifest(files):
     return rows, hashlib.sha256(canonical_bytes(rows)).hexdigest()
 
 
+def upload_source_tree(repository, files, expected_source_tree, auth):
+    """Create an exact source tree with a small number of authorized writes."""
+    expected_source_tree = valid_sha(
+        expected_source_tree, "expected source tree SHA invalid"
+    )
+    current_tree = None
+    pending = []
+    pending_json_bytes = 0
+
+    def flush():
+        nonlocal current_tree, pending, pending_json_bytes
+        if not pending:
+            return
+        payload = {"tree": pending}
+        if current_tree is not None:
+            payload["base_tree"] = current_tree
+        auth()
+        created = legacy.gh_api(
+            f"repos/{repository}/git/trees", method="POST", payload=payload
+        )
+        current_tree = valid_sha(
+            created.get("sha"), "uploaded source tree SHA invalid"
+        )
+        pending = []
+        pending_json_bytes = 0
+
+    def uploaded_blob_entry(rel, data, mode):
+        auth()
+        blob = legacy.gh_api(
+            f"repos/{repository}/git/blobs", method="POST",
+            payload={
+                "content": base64.b64encode(data).decode("ascii"),
+                "encoding": "base64",
+            },
+        )
+        uploaded = valid_sha(blob.get("sha"), "uploaded blob SHA invalid")
+        if uploaded != git_blob_sha(data):
+            raise Denied("uploaded blob digest differs from exact source")
+        return {
+            "path": rel, "mode": mode, "type": "blob", "sha": uploaded
+        }
+
+    for rel, data, mode in files:
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            entry = uploaded_blob_entry(rel, data, mode)
+        else:
+            inline = {
+                "path": rel, "mode": mode, "type": "blob", "content": text
+            }
+            inline_size = len(json.dumps(inline).encode("utf-8")) + 2
+            if inline_size > MAX_TREE_BATCH_JSON_BYTES:
+                entry = uploaded_blob_entry(rel, data, mode)
+            else:
+                entry = inline
+
+        entry_size = len(json.dumps(entry).encode("utf-8")) + 2
+        if pending and (
+                len(pending) >= MAX_TREE_BATCH_ENTRIES
+                or pending_json_bytes + entry_size > MAX_TREE_BATCH_JSON_BYTES):
+            flush()
+        pending.append(entry)
+        pending_json_bytes += entry_size
+
+    flush()
+    if current_tree is None:
+        raise Denied("source mirror contains no files")
+    if current_tree != expected_source_tree:
+        raise Denied("uploaded source tree differs from pinned PR tree")
+    return current_tree
+
+
 def authorize_write(
         root, repository, approved_policy, contract,
         authority_sha, source_pr, source_commit, source_repo_id):
@@ -848,33 +927,9 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
             authority_sha, source_pr, source_commit, source_repo_id,
         )
 
-    elements = []
-    for rel, data, mode in files:
-        auth()
-        blob = legacy.gh_api(
-            f"repos/{repository}/git/blobs", method="POST",
-            payload={
-                "content": base64.b64encode(data).decode("ascii"),
-                "encoding": "base64",
-            },
-        )
-        uploaded = valid_sha(blob.get("sha"), "uploaded blob SHA invalid")
-        if uploaded != git_blob_sha(data):
-            raise Denied("uploaded blob digest differs from exact source")
-        elements.append({
-            "path": rel, "mode": mode, "type": "blob", "sha": uploaded
-        })
-
-    auth()
-    isolated = legacy.gh_api(
-        f"repos/{repository}/git/trees", method="POST",
-        payload={"tree": elements},
+    isolated_sha = upload_source_tree(
+        repository, files, source_tree, auth
     )
-    isolated_sha = valid_sha(
-        isolated.get("sha"), "uploaded source tree SHA invalid"
-    )
-    if isolated_sha != source_tree:
-        raise Denied("uploaded source tree differs from pinned PR tree")
 
     now = now or dt.datetime.now(dt.timezone.utc)
     if now.tzinfo is None or now.utcoffset() is None:
