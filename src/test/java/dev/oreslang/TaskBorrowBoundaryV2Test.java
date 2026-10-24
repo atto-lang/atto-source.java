@@ -465,6 +465,61 @@ final class TaskBorrowBoundaryV2Test {
     }
 
     @Test
+    void nominalClassesCannotImpersonateCopySendBuiltinScalars()
+            throws Exception {
+        var parsed = Parser.parse("pub fnc main(): void { return; }");
+        var rcInt = new dev.oreslang.ast.Ast.TypeRef(
+                "Rc", java.util.List.of(
+                        dev.oreslang.ast.Ast.TypeRef.simple("int")), false);
+        var fakeField = new dev.oreslang.ast.Ast.FieldDecl(
+                "payload", dev.oreslang.ast.Ast.Visibility.PUBLIC,
+                dev.oreslang.ast.Ast.BindingKind.LET,
+                rcInt, java.util.List.of(), null);
+        var modules = new java.util.ArrayList<dev.oreslang.ast.Ast.ModuleDecl>();
+        for (var module : parsed.modules()) {
+            var declarations =
+                    new java.util.ArrayList<dev.oreslang.ast.Ast.Decl>(
+                            module.declarations());
+            for (String builtinName : java.util.List.of(
+                    "ActorId", "ActorKind", "Symbol", "String")) {
+                declarations.add(new dev.oreslang.ast.Ast.ClassDecl(
+                        builtinName, dev.oreslang.ast.Ast.Visibility.PUBLIC,
+                        false, dev.oreslang.ast.Ast.ActorKind.NONE,
+                        java.util.List.of(), java.util.List.of(),
+                        java.util.List.of(), java.util.List.of(fakeField),
+                        null, java.util.List.of()));
+            }
+            modules.add(new dev.oreslang.ast.Ast.ModuleDecl(
+                    module.name(), module.annotations(),
+                    module.contracts(), declarations));
+        }
+        var program = new dev.oreslang.ast.Ast.Program(
+                parsed.namespace(), parsed.imports(), modules);
+        var constructor = OwnershipChecker.class.getDeclaredConstructor(
+                dev.oreslang.ast.Ast.Program.class, java.util.Map.class);
+        constructor.setAccessible(true);
+        var checker = constructor.newInstance(program, java.util.Map.of());
+        var copy = OwnershipChecker.class.getDeclaredMethod(
+                "isCopyType", dev.oreslang.ast.Ast.TypeRef.class);
+        copy.setAccessible(true);
+        var send = OwnershipChecker.class.getDeclaredMethod(
+                "forbiddenTaskCapability", dev.oreslang.ast.Ast.TypeRef.class);
+        send.setAccessible(true);
+        for (String name : java.util.List.of(
+                "ActorId", "ActorKind", "Symbol", "String")) {
+            var claimedBuiltin = dev.oreslang.ast.Ast.TypeRef.simple(name);
+            assertFalse((Boolean) copy.invoke(checker, claimedBuiltin),
+                    "a same-named user class must not inherit Copy: " + name);
+            assertTrue((Boolean) send.invoke(checker, claimedBuiltin),
+                    "a same-named user class must not inherit Send: " + name);
+        }
+        assertTrue((Boolean) copy.invoke(
+                checker, dev.oreslang.ast.Ast.TypeRef.simple("int")));
+        assertFalse((Boolean) send.invoke(
+                checker, dev.oreslang.ast.Ast.TypeRef.simple("int")));
+    }
+
+    @Test
     void malformedScalarAndEmptyUnionDoNotCreateOwnershipAuthority()
             throws Exception {
         var program = Parser.parse("pub fnc main(): void { return; }");
