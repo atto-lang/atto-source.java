@@ -77,9 +77,15 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
         }
 
         RejectedExecutionException last = null;
+        try {
+            executeOnLane(best, notification, true);
+            return;
+        } catch (RejectedExecutionException rejected) {
+            last = rejected;
+        }
         for (int offset = 0; offset < count; ++offset) {
-            int candidate = offset == 0 ? best : (start + offset - 1) % count;
-            if (offset != 0 && candidate == best) continue;
+            int candidate = (start + offset) % count;
+            if (candidate == best) continue;
             if (verifiedWarmHostLoad(lanes.get(candidate), reactor) < 0) continue;
             try {
                 executeOnLane(candidate, notification, true);
