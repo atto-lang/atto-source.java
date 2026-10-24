@@ -2,9 +2,12 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.TypeConstraintDescriptors;
+import dev.oreslang.compiler.IncrementalCompiler;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
+
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -111,6 +114,27 @@ final class TypeConstraintDescriptorTest {
                     source);
             assertTrue(error.getMessage().startsWith("CONSTRAINT_"), error::getMessage);
         }
+    }
+
+    @Test
+    void publicConstraintDomainParticipatesInIncrementalAbi() {
+        String declared = new IncrementalCompiler()
+                .compile(Map.of("types.ores",
+                        "declare pub type Code = int with max 5 and min 0;"))
+                .units().get("types.ores").abiDigest();
+        String defined = new IncrementalCompiler()
+                .compile(Map.of("types.ores",
+                        "define pub type Code = int with min 0 and max 5;"))
+                .units().get("types.ores").abiDigest();
+        String widened = new IncrementalCompiler()
+                .compile(Map.of("types.ores",
+                        "declare pub type Code = int with min 0 and max 6;"))
+                .units().get("types.ores").abiDigest();
+
+        assertEquals(declared, defined,
+                "source introducer and predicate order must not alter public ABI");
+        assertNotEquals(declared, widened,
+                "changing the accepted constraint domain must invalidate public ABI");
     }
 
     @Test
