@@ -123,6 +123,21 @@ public final class NativeHttpRollingDispatcher implements AutoCloseable {
     }
 
     /**
+     * Called by the trusted transaction owner when a candidate was created
+     * but rejected BEFORE the dispatcher accepted it for warming. Never
+     * cancel a pool which is already serving or being staged elsewhere.
+     */
+    void discardRejectedCandidate(NativeHttp.Handler candidate) {
+        requireSupervisor();
+        Objects.requireNonNull(candidate, "candidate");
+        if (candidate.ownerHttp() != listener.ownerHttp()) return;
+        synchronized (staged) {
+            if (staged.contains(candidate) || routes.containsTarget(candidate)) return;
+            candidate.stopUnpublishedPool();
+        }
+    }
+
+    /**
      * Close admission already happened at route promotion. Only once the
      * old exchange count is zero may the supervisor ask old actors to stop;
      * Task/FFI/I/O and code lifetimes still require independent proof.
