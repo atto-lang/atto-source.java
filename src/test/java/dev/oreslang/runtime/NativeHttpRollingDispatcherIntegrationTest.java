@@ -336,4 +336,51 @@ final class NativeHttpRollingDispatcherIntegrationTest {
                         "proxy", 1, java.util.Map.of("key", "contains" + (char) 0 + "NUL")));
     }
 
+    @Test
+    void competingValidatedReloadsPublishExactlyOneSuccessor() throws Exception {
+        try (SharedCodeImageStore images = new SharedCodeImageStore();
+             ActorRuntime actors = new ActorRuntime(IsolatePolicy.developer());
+             NativeHttp http = new NativeHttp(actors);
+             HttpClient client = HttpClient.newHttpClient()) {
+            var image = images.publish("rolling/concurrent.ores",
+                    Parser.parse("pub routine main(): void { return; }"));
+            var ref = new AtomicReference<>(http);
+            var g1 = http.handler(new VersionCode(image, ref, "G1", false, false),
+                    "RollingWorker", ActorRuntime.ActorKind.SHARED).pooled(1);
+            g1.warmup().get(8, TimeUnit.SECONDS);
+            var server = http.listen("127.0.0.1", 0, 16, 1024, 30_000);
+            try (var rolling = new NativeHttpRollingDispatcher(server, 10002L, g1, 3)) {
+                rolling.start();
+                var initial = new NativeHttpRollingReloadCoordinator.Config(
+                        "proxy", 1, java.util.Map.of("version", "G1"));
+                try (var coordinator = new NativeHttpRollingReloadCoordinator(
+                        rolling, initial, (before, next) -> { },
+                        next -> http.handler(new VersionCode(image, ref,
+                                        next.settings().get("version"), false, false),
+                                "RollingWorker", ActorRuntime.ActorKind.SHARED).pooled(1))) {
+                    var first = coordinator.reload(1L,
+                            new NativeHttpRollingReloadCoordinator.Config(
+                                    "proxy", 2, java.util.Map.of("version", "G2A")));
+                    var competing = coordinator.reload(1L,
+                            new NativeHttpRollingReloadCoordinator.Config(
+                                    "proxy", 3, java.util.Map.of("version", "G2B")));
+                    var a = first.get(8, TimeUnit.SECONDS);
+                    var b = competing.get(8, TimeUnit.SECONDS);
+                    long successes = java.util.stream.Stream.of(a, b).filter(
+                            value -> value.status() ==
+                                    NativeHttpRollingReloadCoordinator.Status.PUBLISHED).count();
+                    assertEquals(1, successes, "exactly one epoch compare-and-swap must win");
+                    assertEquals(2L, rolling.snapshot().activeEpoch());
+                    assertEquals(2L, coordinator.published().epoch());
+                    var winner = a.status() ==
+                            NativeHttpRollingReloadCoordinator.Status.PUBLISHED ? a : b;
+                    assertEquals(winner.config().settings().get("version"),
+                            client.send(request(server.port()),
+                                    HttpResponse.BodyHandlers.ofString()).body());
+                    assertNull(rolling.failure());
+                }
+            }
+        }
+    }
+
 }
