@@ -57,8 +57,11 @@ final class ActorRollingGenerationRouteTest {
                 // Transport also must join any I/O callbacks before this CONTROL receipt.
                 acceptedOld.close();
                 assertTrue(route.admissionsDrained(1L));
-                assertTrue(route.acknowledgePhysicallyRetired(1L));
-                assertEquals(1, route.snapshot().liveGenerations());
+                assertThrows(IllegalStateException.class,
+                        () -> route.acknowledgePhysicallyRetired(1L),
+                        "traffic and actor terminal state do not prove physical quiescence");
+                assertEquals(2, route.snapshot().liveGenerations(),
+                        "old generation remains quarantined");
                 newActor.stop();
                 newActor.getDone().get(5, TimeUnit.SECONDS);
             }
@@ -97,10 +100,13 @@ final class ActorRollingGenerationRouteTest {
             held.close();
             assertThrows(IllegalStateException.class, held::target);
             assertTrue(route.admissionsDrained(1L));
-            assertTrue(route.acknowledgePhysicallyRetired(1L));
-            assertFalse(route.acknowledgePhysicallyRetired(1L));
-            assertTrue(route.publishReady(2L, new Object()));
-            assertEquals(3L, route.snapshot().activeEpoch());
+            assertThrows(IllegalStateException.class,
+                    () -> route.acknowledgePhysicallyRetired(1L));
+            assertEquals(2, route.snapshot().liveGenerations());
+            assertThrows(IllegalStateException.class,
+                    () -> route.publishReady(2L, new Object()),
+                    "safe boundedness beats unverified physical release");
+            assertEquals(2L, route.snapshot().activeEpoch());
         }
     }
 
@@ -146,6 +152,8 @@ final class ActorRollingGenerationRouteTest {
                 () -> route.acknowledgePhysicallyRetired(1L));
         ref.close(); ref.close();
         assertTrue(route.admissionsDrained(1L));
-        assertTrue(route.acknowledgePhysicallyRetired(1L));
+        assertThrows(IllegalStateException.class,
+                () -> route.acknowledgePhysicallyRetired(1L),
+                "shutdown never manufactures physical retirement proof");
     }
 }
