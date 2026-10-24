@@ -60,11 +60,14 @@ final class NumericSeparatorLexicalParityTest {
     void signedI64BoundariesAreExactInIntegerExpressions() {
         parses("9_223_372_036_854_775_807");
         parses("-9_223_372_036_854_775_808");
+        parses("-0_9223372036854775808");
+        parses("0_9223372036854775807");
         parses("0_0_0");
         for (String invalid : new String[] {
                 "9_223_372_036_854_775_808",
                 "+9_223_372_036_854_775_808",
-                "-9_223_372_036_854_775_809"
+                "-9_223_372_036_854_775_809",
+                "-0_9223372036854775809"
         }) {
             String source = "pub fnc main(): int { return " + invalid + "; }";
             IllegalArgumentException denied = assertThrows(
