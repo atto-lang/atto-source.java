@@ -215,6 +215,18 @@ final class AliasExtensionMethodTest {
     }
 
     @Test
+    void explicitSelfShadowUsesStableDiagnostic() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        declare type Code = int;
+                        define mtd bad on Code(int self): int { return self; }
+                        """));
+        assertTrue(error.getMessage().contains(
+                        goldenContract().getProperty("extension.diagnostic.self_shadow")),
+                error::getMessage);
+    }
+
+    @Test
     void typeAliasExtensionNameIsNotInjectedIntoRawPrimitive() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 declare type Code = int;
@@ -237,7 +249,9 @@ final class AliasExtensionMethodTest {
                          define mtd as_text on Code(): string { return "A"; }
                          define mtd as_text on Code(): string { return "B"; }
                          """));
-            assertTrue(error.getMessage().contains("arity"), error::getMessage);
+            assertTrue(error.getMessage().contains(
+                            goldenContract().getProperty("extension.diagnostic.duplicate")),
+                    error::getMessage);
         }
     }
 
