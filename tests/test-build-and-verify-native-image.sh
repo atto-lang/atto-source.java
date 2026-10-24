@@ -12,7 +12,7 @@ command -v file >/dev/null 2>&1 || { echo "file utility required" >&2; exit 2; }
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 mkdir -p "$tmp/bin" "$tmp/graal/bin" "$tmp/work/examples"
-for name in callables together native-core-library native-testing native-channel-select-smoke shared-private-actor-isolation private-actor-sharing-invalid; do
+for name in callables together native-core-library native-testing native-channel-select-smoke native-future-select-smoke strict-root-await shared-private-actor-isolation private-actor-sharing-invalid; do
   echo '// placeholder: not Oreslang source' > "$tmp/work/examples/$name.ores"
 done
 
@@ -95,6 +95,18 @@ int main(int argc, char **argv) {
                 if (getenv("MOCK_WRONG_CHANNEL_WINNER")) puts("wrong:9:7");
                 else if (getenv("MOCK_LOST_CHANNEL_MESSAGE")) puts("first:7:");
                 else puts("first:7:9");
+            }
+        }
+        if (strstr(argv[2], "native-future-select-smoke.ores") != NULL) {
+            if (!getenv("MOCK_EMPTY_FUTURE_OUTPUT")) {
+                if (getenv("MOCK_WRONG_FUTURE_OUTPUT")) puts("channel:0");
+                else puts("future:4");
+            }
+        }
+        if (strstr(argv[2], "strict-root-await.ores") != NULL) {
+            if (!getenv("MOCK_EMPTY_AWAIT_OUTPUT")) {
+                if (getenv("MOCK_WRONG_AWAIT_OUTPUT")) puts("41");
+                else puts("42");
             }
         }
         if (strstr(argv[2], "native-core-library.ores") != NULL) {
@@ -254,6 +266,10 @@ assert_case() {
         expected_diagnostic='native Oreslang core-library output differs from expected value' ;;
       'silent native channel execution'|'wrong native channel select winner'|'lost unselected native channel message')
         expected_diagnostic='native channel/select result differs from expected first-winner and retained-message output' ;;
+      'silent native Future/select execution'|'incorrect native Future/select result')
+        expected_diagnostic='native Future/select output differs from expected result' ;;
+      'silent native root-await execution'|'incorrect native root-await result')
+        expected_diagnostic='native root-await result differs from expected value' ;;
       'silent fake image without guest-test output'|'guest test reports failures'|\
       'valid summary without actual PASS/SKIP records'|'duplicate valid summary'|\
       'valid plus conflicting summary'|'valid summary alongside FAIL event'|\
@@ -339,6 +355,10 @@ assert_case 'wrong native core numeric result' failure aot compressed32 MOCK_BAD
 assert_case 'silent native channel execution' failure aot compressed32 MOCK_EMPTY_CHANNEL_OUTPUT=1
 assert_case 'wrong native channel select winner' failure aot compressed32 MOCK_WRONG_CHANNEL_WINNER=1
 assert_case 'lost unselected native channel message' failure aot compressed32 MOCK_LOST_CHANNEL_MESSAGE=1
+assert_case 'silent native Future/select execution' failure aot compressed32 MOCK_EMPTY_FUTURE_OUTPUT=1
+assert_case 'incorrect native Future/select result' failure aot compressed32 MOCK_WRONG_FUTURE_OUTPUT=1
+assert_case 'silent native root-await execution' failure aot compressed32 MOCK_EMPTY_AWAIT_OUTPUT=1
+assert_case 'incorrect native root-await result' failure aot compressed32 MOCK_WRONG_AWAIT_OUTPUT=1
 assert_case 'silent fake image without guest-test output' failure aot compressed32 MOCK_EMPTY_TEST_OUTPUT=1
 assert_case 'guest test reports failures' failure aot compressed32 MOCK_BAD_TEST_SUMMARY=1
 assert_case 'valid summary without actual PASS/SKIP records' failure aot compressed32 MOCK_MISSING_TEST_EVENTS=1
