@@ -3872,7 +3872,16 @@ public final class OwnershipChecker {
                 "ActorRef", "Future", "Channel", "SharedMutex",
                 "Option", "Result", "IteratorResult",
                 "Array", "List", "Vector", "Slice",
-                "FixedArray", "FixedList").contains(name)) return none;
+                "FixedArray", "FixedList",
+                "i8", "i16", "i32", "i64",
+                "u8", "u16", "u32", "u64",
+                "int", "uint", "bigint",
+                "f32", "f64", "float", "decimal",
+                "complex64", "complex128", "complex",
+                "bool", "Bool", "string", "String",
+                "Symbol", "$builtin$Symbol",
+                "ActorId", "ActorKind",
+                "OptionUnwrapError").contains(name)) return none;
 
         if (switch (name) {
             case "i8", "i16", "i32", "i64",
@@ -4448,10 +4457,10 @@ public final class OwnershipChecker {
         if (hasLocalTypeAliasNamed(type.name())) return false;
         // Same spelling is not enough to bestow a runtime wrapper's Copy
         // semantics on a locally declared nominal class.
-        if (findClass(type.name()) != null
-                && java.util.Set.of("ActorRef", "Channel", "SharedMutex",
-                        "Option", "Result", "SelectCase", "SelectSet")
-                        .contains(type.name())) return false;
+        // A locally declared class is never certified as a builtin Copy
+        // scalar by sharing its name (including ActorId, Symbol and String).
+        // Ordinary user classes remain move-only by default.
+        if (findClass(type.name()) != null) return false;
         return switch (type.name()) {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
