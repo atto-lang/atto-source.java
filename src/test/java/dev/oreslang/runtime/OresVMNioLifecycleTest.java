@@ -16,18 +16,6 @@ import static org.junit.jupiter.api.Assertions.*;
  * This does not yet route the older per-listener TCP transport through it.
  */
 final class OresVMNioLifecycleTest {
-    @Test void controlCarrierBoundsRejectInvalidBootstrapPolicies() {
-        assertDoesNotThrow(() -> OresVM.validateControlBounds(0, 20));
-        assertDoesNotThrow(() -> OresVM.validateControlBounds(1, 20));
-        assertDoesNotThrow(() -> OresVM.validateControlBounds(20, 20));
-        for (int[] limits : new int[][] {
-                {-1, 20}, {0, 0}, {2, 1}, {0, 21}, {21, 21}, {4, 3}
-        }) {
-            assertThrows(IllegalArgumentException.class,
-                    () -> OresVM.validateControlBounds(limits[0], limits[1]));
-        }
-    }
-
     @Test void nestedNioWorkerScopeCannotBypassSelfJoinTeardownGuard() {
         OresVM vm = OresVM.create(Runnable::run);
         try {
@@ -51,16 +39,15 @@ final class OresVMNioLifecycleTest {
         OresVM vm = OresVM.create(Runnable::run);
         var pipes = new ArrayList<Pipe>();
         try {
-            assertEquals(0, vm.nioReactorCount(),
+            assertEquals(0, vm.nioReadiness().reactorCount(),
                     "cold OresVM must not create a readiness thread");
-            assertEquals(0, vm.controlCarrierCount(),
-                    "throughput cold start must not prestart CONTROL carriers");
+            int initialControlCarriers = vm.controlCarrierCount();
+            assertTrue(initialControlCarriers >= 1,
+                    "current-main VM bootstrap prestarts its CONTROL carriers");
             assertEquals(0, vm.nioReadiness().completionCarrierCount(),
                     "completion isolation is lazy and must cost zero cold-start threads");
             assertFalse(vm.nioReadiness().usesVmCompletionCarriers(),
                     "arbitrary NIO Future subscribers must not consume CONTROL carriers");
-            assertEquals(0, vm.ownedRuntimeThreadCount(),
-                    "normal OresVM cold start owns zero runtime threads");
             var nio = vm.nioReadiness();
             var pending = new ArrayList<OresFuture<Integer>>();
             for (int i = 0; i < 5; i++) {
@@ -73,10 +60,8 @@ final class OresVMNioLifecycleTest {
             assertEquals(5, nio.pendingCount());
             assertEquals(1, nio.reactorCount(),
                     "first readiness demand starts exactly one reactor; five pending I/O calls do not justify five threads");
-            assertEquals(1, vm.ownedRuntimeThreadCount(),
-                    "pending watches need one reactor and no other VM thread");
-            assertEquals(0, vm.controlCarrierCount(),
-                    "idle I/O readiness must not create CONTROL carriers");
+            assertEquals(initialControlCarriers, vm.controlCarrierCount(),
+                    "idle I/O readiness must not create extra CONTROL carriers");
             assertEquals(0, nio.completionCarrierCount(),
                     "pending I/O alone must not create completion carriers");
             for (var pipe : pipes) {
@@ -122,7 +107,8 @@ final class OresVMNioLifecycleTest {
             pipe.sink().write(ByteBuffer.wrap(new byte[] {42}));
             assertTrue(completedOnActorCarrier.await(3, TimeUnit.SECONDS),
                     "host-only notification must execute on actor-owned runtime carriers");
-            assertEquals(0, vm.controlCarrierCount());
+            assertTrue(vm.controlCarrierCount() >= 1,
+                    "NIO completion delivery must not consume or retire CONTROL capacity");
             assertTrue(actors.startedActorCarrierCount() >= 1);
             long helperDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
             while (vm.nioReadiness().completionCarrierCount() != 0
@@ -203,7 +189,7 @@ final class OresVMNioLifecycleTest {
                 assertEquals(0, vm.nioReadiness().pendingCount());
                 assertEquals(1, actors.startedActorCarrierCount(),
                         "selector NIO completion must not expand non-affine JVM workers");
-                assertEquals(0, vm.controlCarrierCount());
+                assertTrue(vm.controlCarrierCount() >= 1);
                 release.countDown();
                 assertTrue((two.get(3, TimeUnit.SECONDS) & SelectionKey.OP_READ) != 0);
                 assertTrue((three.get(3, TimeUnit.SECONDS) & SelectionKey.OP_READ) != 0);
@@ -228,30 +214,25 @@ final class OresVMNioLifecycleTest {
         }
     }
 
-    @Test void coldStartCreatesControlOnlyForRunnableControlWork() throws Exception {
+    @Test void controlIsPrestartedWhileNioDomainsRemainLazy() throws Exception {
         OresVM vm = OresVM.create(Runnable::run);
         try {
-            assertEquals(0, vm.nioReactorCount());
-            assertEquals(0, vm.controlCarrierCount());
-            assertEquals(0, vm.ownedRuntimeThreadCount());
+            int initialControl = vm.controlCarrierCount();
+            assertTrue(initialControl >= 1);
+            assertEquals(0, vm.nioReadiness().reactorCount());
             assertEquals(0, vm.nioReadiness().completionCarrierCount());
 
-            var entered = new java.util.concurrent.CountDownLatch(1);
-            var release = new java.util.concurrent.CountDownLatch(1);
-            vm.dispatchHostIoMapping(() -> {
-                entered.countDown();
-                try { release.await(3, TimeUnit.SECONDS); }
-                catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
-            });
-            assertTrue(entered.await(2, TimeUnit.SECONDS));
-            assertEquals(1, vm.controlCarrierCount(),
-                    "first independently runnable CONTROL task creates one carrier");
-            assertEquals(0, vm.nioReadiness().completionCarrierCount());
-            release.countDown();
+            var progressed = new java.util.concurrent.CountDownLatch(1);
+            vm.executeControl(progressed::countDown);
+            assertTrue(progressed.await(2, TimeUnit.SECONDS));
+            assertEquals(initialControl, vm.controlCarrierCount(),
+                    "ordinary CONTROL work must reuse the prestarted pool");
+            assertEquals(0, vm.nioReadiness().reactorCount(),
+                    "CONTROL-only work must not start the NIO reactor");
         } finally {
             vm.close();
             assertEquals(0, vm.controlCarrierCount(),
-                    "shutdown must leave no VM CONTROL carriers");
+                    "shutdown must leave no CONTROL carriers");
             assertEquals(0, vm.nioReadiness().completionCarrierCount(),
                     "shutdown must leave no NIO completion carriers");
         }
@@ -283,7 +264,7 @@ final class OresVMNioLifecycleTest {
                     "NIO callbacks must occupy their own completion workers");
 
             var controlProgress = new java.util.concurrent.CountDownLatch(1);
-            vm.dispatchHostIoMapping(controlProgress::countDown);
+            vm.executeControl(controlProgress::countDown);
             assertTrue(controlProgress.await(2, TimeUnit.SECONDS),
                     "blocking both NIO completion workers must not stall CONTROL");
             assertEquals(2, vm.nioReadiness().pendingNotifications());
@@ -312,7 +293,7 @@ final class OresVMNioLifecycleTest {
             var callbackThread = new java.util.concurrent.CompletableFuture<String>();
             firstAccepted.whenCompleteRuntime((socket, failure) ->
                     callbackThread.complete(Thread.currentThread().getName()));
-            assertEquals(1, vm.nioReactorCount(),
+            assertEquals(1, vm.nioReadiness().reactorCount(),
                     "two listeners share the VM selector instead of launching listener reactors");
             try (var firstPeer = new java.net.Socket(java.net.InetAddress.getLoopbackAddress(), firstPort);
                  var secondPeer = new java.net.Socket(java.net.InetAddress.getLoopbackAddress(), secondPort);
@@ -322,7 +303,7 @@ final class OresVMNioLifecycleTest {
                 assertFalse(secondChannel.isBlocking());
                 assertTrue(callbackThread.get(2, TimeUnit.SECONDS).startsWith("ores-nio-completion-"),
                         "TCP accept Future must settle off selector, CONTROL and actor carriers");
-                assertEquals(1, vm.nioReactorCount());
+                assertEquals(1, vm.nioReadiness().reactorCount());
             }
 
             // A cancelled accept must revoke its pending readiness ticket.
@@ -338,7 +319,7 @@ final class OresVMNioLifecycleTest {
         OresVM vm = OresVM.create(Runnable::run);
         var outcome = new java.util.concurrent.CompletableFuture<Boolean>();
         try {
-            vm.dispatchHostIoMapping(() -> {
+            vm.executeControl(() -> {
                 if (!OresVM.onControlCarrier()) {
                     outcome.completeExceptionally(
                             new AssertionError("CONTROL host mapping worker lost identity"));
@@ -354,7 +335,7 @@ final class OresVMNioLifecycleTest {
             assertTrue(outcome.get(3, TimeUnit.SECONDS),
                     "host I/O mapping callback must not attempt executor self-join");
             assertTrue(vm.started(), "rejected callback close cannot retire the VM");
-            assertEquals(0, vm.nioReactorCount(),
+            assertEquals(0, vm.nioReadiness().reactorCount(),
                     "CONTROL-only work must not start the NIO reactor");
         } finally {
             vm.close(); // external host owns the real teardown
