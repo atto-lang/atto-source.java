@@ -39,6 +39,11 @@ public final class OresContext implements AutoCloseable {
     public NativeHttp http() { return http; }
 
     private final UUID contextId = UUID.randomUUID();
+    private final ChannelRuntime.AdmissionDomain channelAdmissionDomain =
+            new ChannelRuntime.AdmissionDomain(
+                    "ores-context-" + contextId,
+                    ChannelRuntime.DEFAULT_MAX_PENDING_SELECTS,
+                    ChannelRuntime.DEFAULT_MAX_PENDING_SELECT_ARMS);
     private final AtomicLong schedulerSafepoints = new AtomicLong();
     private final AtomicLong sourceLoopCooperates = new AtomicLong();
     private final IsolatePolicy isolatePolicy;
@@ -142,6 +147,9 @@ public final class OresContext implements AutoCloseable {
     public PrintWriter output() { return output; }
     public OresVM vm() { return vm; }
     public ActorRuntime actors() { return actors; }
+    public ChannelRuntime.AdmissionDomain channelAdmissionDomain() {
+        return channelAdmissionDomain;
+    }
     public AsyncRuntime asyncRuntime() { return asyncRuntime; }
     public RuntimeGarbageCollector garbageCollector() { return garbageCollector; }
     public UUID contextId() { return contextId; }
@@ -432,9 +440,16 @@ public final class OresContext implements AutoCloseable {
         http.close();
         RuntimeException failure = null;
         try {
+            channelAdmissionDomain.close(
+                    new IllegalStateException("OresContext is closing"));
+        } catch (RuntimeException channelFailure) {
+            failure = channelFailure;
+        }
+        try {
             asyncRuntime.close();
         } catch (RuntimeException asyncFailure) {
-            failure = asyncFailure;
+            if (failure == null) failure = asyncFailure;
+            else failure.addSuppressed(asyncFailure);
         }
         try {
             actors.close();
