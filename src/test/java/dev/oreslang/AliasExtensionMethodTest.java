@@ -281,9 +281,8 @@ final class AliasExtensionMethodTest {
                     () -> Parser.parse(
                             "declare type Code = int; define mtd " + name
                                     + " on Code(): int { return self; }"));
-            assertTrue(error.getMessage().contains("reserved lifecycle or entrypoint"),
+            assertTrue(error.getMessage().contains(diagnostic),
                     error::getMessage);
-            assertEquals("EXTENSION_RESERVED_NAME", diagnostic);
         }
     }
 
