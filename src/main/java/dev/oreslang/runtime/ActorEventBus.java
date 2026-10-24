@@ -717,7 +717,8 @@ public final class ActorEventBus implements AutoCloseable {
                 int capacity) {
             this.topic = topic;
             this.subscriber = subscriber;
-            this.channel = new ChannelRuntime.Channel<>(capacity);
+            this.channel = new ChannelRuntime.Channel<>(
+                    capacity, runtime.channelAdmissionDomain());
             this.pendingReadLimit = ActorRuntime.currentActorPolicy().maxMailboxMessages();
             long bounded = Math.max((long) capacity + 1L, (long) capacity * 2L);
             this.reliableOutstandingLimit = (int) Math.min(Integer.MAX_VALUE, bounded);
