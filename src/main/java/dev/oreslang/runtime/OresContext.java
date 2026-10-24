@@ -86,7 +86,7 @@ public final class OresContext implements AutoCloseable {
         if (!"127.0.0.1".equals(host))
             throw new SecurityException("experimental nonblocking TCP only binds loopback");
         requirePermission(RuntimePermissions.Permission.NET, host + ":" + port,
-                "network.listen_nonblocking");
+                reusePort ? "network.listen_reuseport" : "network.listen_nonblocking");
         synchronized (nioLifecycle) {
             if (nioContextClosed)
                 throw new IllegalStateException("cannot create TCP listener in closed context");
