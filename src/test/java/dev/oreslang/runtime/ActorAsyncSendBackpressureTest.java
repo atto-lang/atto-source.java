@@ -15,14 +15,18 @@ import static org.junit.jupiter.api.Assertions.*;
 
 @Timeout(20)
 final class ActorAsyncSendBackpressureTest {
-    private static IsolatePolicy oneMessagePolicy() {
+    private static IsolatePolicy mailboxPolicy(int messages) {
         IsolatePolicy base = IsolatePolicy.developer();
         return new IsolatePolicy(
                 base.capabilities(),
                 base.maxHeapBytes(),
-                1,
+                messages,
                 base.maxWallTime(),
                 base.adversarial());
+    }
+
+    private static IsolatePolicy oneMessagePolicy() {
+        return mailboxPolicy(1);
     }
 
     @Test
@@ -121,11 +125,17 @@ final class ActorAsyncSendBackpressureTest {
             assertTrue(firstEntered.await(5, TimeUnit.SECONDS));
             ref.send(2);
 
-            // maxMailboxMessages=1 also caps the retained async-producer cohort at one.
-            OresFuture<Void> firstWaiter = ref.sendAsync(3);
-            assertFalse(firstWaiter.isDone());
+            // Producer registration is deliberately independent of queue depth.
+            // The one-message mailbox can still retain a finite cohort of
+            // suspended producers, but never more than the runtime cap.
+            List<OresFuture<Void>> waiters = new ArrayList<>();
+            for (int i = 0; i < 256; i++) {
+                OresFuture<Void> waiter = ref.sendAsync(3 + i);
+                assertFalse(waiter.isDone(), "waiter " + i + " should remain bounded/pending");
+                waiters.add(waiter);
+            }
 
-            OresFuture<Void> overflow = ref.sendAsync(4);
+            OresFuture<Void> overflow = ref.sendAsync(10_000);
             ExecutionException failed = assertThrows(
                     ExecutionException.class,
                     () -> overflow.get(5, TimeUnit.SECONDS));
@@ -134,7 +144,9 @@ final class ActorAsyncSendBackpressureTest {
                     ActorRuntime.SendError.Reason.RESOURCE_EXHAUSTED,
                     ((ActorRuntime.ActorSendBackpressureException) failed.getCause()).reason());
 
-            assertTrue(firstWaiter.cancel(false));
+            for (OresFuture<Void> waiter : waiters) {
+                assertTrue(waiter.cancel(false));
+            }
             releaseFirst.countDown();
             ref.drain().get(5, TimeUnit.SECONDS);
             ref.stop();
@@ -176,6 +188,50 @@ final class ActorAsyncSendBackpressureTest {
             releaseFirst.countDown();
             done.get(5, TimeUnit.SECONDS);
             assertFalse(ref.isAlive());
+        } finally {
+            releaseFirst.countDown();
+        }
+    }
+
+    @Test
+    void multiplePendingProducersReceiveCreditsInRegistrationOrder() throws Exception {
+        CountDownLatch firstEntered = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        List<Integer> processed = Collections.synchronizedList(new ArrayList<>());
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<Integer>spawnShared(mailboxPolicy(3), () -> (message, context) -> {
+                if (message == 1) {
+                    firstEntered.countDown();
+                    if (!releaseFirst.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("held actor turn timed out");
+                    }
+                }
+                processed.add(message);
+            });
+
+            ref.send(1);
+            assertTrue(firstEntered.await(5, TimeUnit.SECONDS));
+            ref.send(2);
+            ref.send(3);
+            ref.send(4); // three queued USER credits are now full
+
+            OresFuture<Void> fifth = ref.sendAsync(5);
+            OresFuture<Void> sixth = ref.sendAsync(6);
+            OresFuture<Void> seventh = ref.sendAsync(7);
+            assertFalse(fifth.isDone());
+            assertFalse(sixth.isDone());
+            assertFalse(seventh.isDone());
+
+            releaseFirst.countDown();
+            fifth.get(5, TimeUnit.SECONDS);
+            sixth.get(5, TimeUnit.SECONDS);
+            seventh.get(5, TimeUnit.SECONDS);
+            ref.drain().get(5, TimeUnit.SECONDS);
+
+            assertEquals(List.of(1, 2, 3, 4, 5, 6, 7), processed);
+            ref.stop();
+            ref.getDone().get(5, TimeUnit.SECONDS);
         } finally {
             releaseFirst.countDown();
         }
