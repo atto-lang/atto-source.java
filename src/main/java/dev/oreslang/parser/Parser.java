@@ -4632,7 +4632,15 @@ public final class Parser {
     // 'mtd'). Keep a member literally named method(...) or mtd(...) legal.
     private boolean matchExplicitMethodMarker() {
         if (!isContextualIdentifier("method") && !isContextualIdentifier("mtd")) return false;
-        if (!checkNext(IDENT) && !checkNext(LBRACKET) && !checkNext(STATIC)) return false;
+        // Permit the same callable names after a marker as bare methods, e.g.
+        // mtd select(), mtd do(), mtd mtd(), and [Symbol.iterator]().
+        // Otherwise adding an optional marker would change admissible names.
+        Token.Type nextType = current + 1 < tokens.size()
+                ? tokens.get(current + 1).type() : EOF;
+        if (nextType != IDENT && nextType != LBRACKET && nextType != STATIC
+                && !isReservedCallableName(nextType)
+                && !isContextualStatementCallableName(nextType)
+                && nextType != TRUE && nextType != FALSE) return false;
         advance();
         return true;
     }
