@@ -678,22 +678,21 @@ def manifest(files):
     return rows, hashlib.sha256(canonical_bytes(rows)).hexdigest()
 
 
-def authorize_write(root, repository, approved_policy, contract):
-    """Per-write fail-closed guard: incident closure, policy and carrier identity.
+def authorize_write(
+        root, repository, approved_policy, contract,
+        authority_sha, source_pr, source_commit, source_repo_id):
+    """Revalidate every mutable authorization fence before a private Git write.
 
-    Protected-source main and the full immutable carrier contract are checked
-    before reading source bytes and again before refs are attached. Repeating
-    those multi-endpoint reads for every blob would multiply API traffic by
-    the file count without adding integrity: the reviewed source commit and
-    pinned destination base SHA are immutable. Privacy and repository identity
-    are the state that can change between individual writes, so those are
-    rechecked immediately before every write. P0 incident status can also
-    change after preflight, so recheck it before EVERY source-bearing write
-    rather than relying on a single initial closure observation.
+    A successful preflight is not a lease. P0 state, independent source
+    governance, the exact source PR head, destination approval, repository
+    identity and the reviewed carrier base can all change while a multi-object
+    Git snapshot is being published. Recheck all of them before EVERY
+    source-bearing blob/tree/commit/ref write so revocation stops the transfer
+    before the next private object crosses the repository boundary.
     """
-    # The incidents may be reopened after initial preflight. Never upload
-    # another Git blob/tree/ref while either P0 remains unresolved.
+    # Incident closure is live authorization, not a one-time observation.
     legacy.require_resolved_blocking_incidents()
+
     current_policy, current_repository_id = legacy.checked_policy_approval(
         root, repository
     )
@@ -702,6 +701,7 @@ def authorize_write(root, repository, approved_policy, contract):
         raise Denied(
             "private CI destination approval or repository identity changed during transfer"
         )
+
     repo = legacy.checked_repo(repository, contract["repository_id"])
     if (repo.get("id") != contract["repository_id"]
             or repo.get("archived") is not False
@@ -709,6 +709,28 @@ def authorize_write(root, repository, approved_policy, contract):
             or repo.get("fork") is not False
             or repo.get("default_branch") != "main"):
         raise Denied("carrier identity/state changed during transfer")
+
+    # Re-attest the independent source-governance authority itself. This catches
+    # protection/review revocation even when the reviewed policy bytes and
+    # destination repository ID have not changed.
+    if authorized_main_sha(
+            repository, approved_policy, contract["repository_id"]) != authority_sha:
+        raise Denied("source governance authority changed during transfer")
+
+    # Exact-head qualification must stay exact for the entire export, not only
+    # at preflight and immediately before the executable authorization ref.
+    if verify_source_pr(source_pr, source_commit) != source_repo_id:
+        raise Denied("source PR head/repository changed during transfer")
+
+    # The workflow/test-plan bytes are pinned inside contract["base_sha"].
+    # Re-reading the carrier main ref is sufficient to reject destination-ledger
+    # advancement before the next private object is written.
+    base_ref = legacy.gh_api(f"repos/{repository}/git/ref/heads/main")
+    live_base = valid_sha(
+        base_ref.get("object", {}).get("sha"), "carrier main ref invalid"
+    )
+    if live_base != contract["base_sha"]:
+        raise Denied("carrier main advanced beyond reviewed protected base")
 
 
 def _gh_ref_request(repository, ref_name, method):
@@ -821,7 +843,10 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     branch = "ci/oreslang-" + source_tree
 
     def auth():
-        authorize_write(trusted_root, repository, approved_policy, contract)
+        authorize_write(
+            trusted_root, repository, approved_policy, contract,
+            authority_sha, source_pr, source_commit, source_repo_id,
+        )
 
     elements = []
     for rel, data, mode in files:
