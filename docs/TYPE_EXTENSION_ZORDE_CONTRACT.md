@@ -49,9 +49,20 @@ records the stable qualified type name and `i64` representation, and computes
 a SHA-256 compatibility fingerprint over the canonical descriptor.
 
 Zorde should consume this catalog directly rather than parsing or
-reinterpreting source `with` clauses. The descriptor is intentionally a data
-contract only: there is still no `Zorde.parse` adapter, checked conversion,
-or runtime provenance bridge in this PR.
+reinterpreting source `with` clauses. The compiler now also has a narrow
+`ConstraintValidationBridge` substrate: it accepts only a descriptor from
+the compiler-owned catalog, evaluates every v1 predicate, reports the
+descriptor-owned deterministic error ID on failure, and records successful
+evidence in a weak identity side table keyed by the exact AST expression.
+There is intentionally no raw "set proof" API and generic AST metadata copying
+does not transfer this evidence.
+
+This is **not yet guest checked-conversion syntax or runtime admission**.
+`CONSTRAINT_VALIDATION_BRIDGE_REQUIRED` remains in the normal value-type
+resolution path until every construction/import/serialization/extension route
+is integrated and exact-head tests execute real steps. Descriptor and catalog
+constructors now reject schema/representation/identity/fingerprint drift so a
+stale descriptor cannot be treated as current validation evidence.
 
 **Security invariant:** constrained aliases cannot enter a runtime value path
 yet. Type checking fails with `CONSTRAINT_VALIDATION_BRIDGE_REQUIRED` rather
