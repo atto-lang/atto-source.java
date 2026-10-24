@@ -9,7 +9,11 @@ import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
+import java.util.Properties;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class AliasExtensionMethodTest {
@@ -246,7 +250,8 @@ final class AliasExtensionMethodTest {
                         define mtd describe on Code(): string { return "Code"; }
                         fnc wrong(Other other): string { return other.describe(); }
                         """));
-        assertTrue(error.getMessage().contains("EXTENSION_RECEIVER_MISMATCH"),
+        assertTrue(error.getMessage().contains(
+                        goldenContract().getProperty("extension.diagnostic.receiver")),
                 error::getMessage);
     }
 
@@ -258,8 +263,40 @@ final class AliasExtensionMethodTest {
                         define mtd plus on Code(int delta): int { return self + delta; }
                         fnc wrong(Code code): int { return code.plus(); }
                         """));
-        assertTrue(error.getMessage().contains("EXTENSION_ARITY_MISMATCH"),
+        assertTrue(error.getMessage().contains(
+                        goldenContract().getProperty("extension.diagnostic.arity")),
                 error::getMessage);
+    }
+
+    @Test
+    void sharedGoldenContractPinsExtensionSurface() {
+        Properties golden = goldenContract();
+        assertEquals("ores.alias-extension-constraint.v1", golden.getProperty("schema"));
+        assertEquals("name+explicit-arity",
+                golden.getProperty("extension.overload_identity"));
+        assertEquals("init,main", golden.getProperty("extension.reserved_names"));
+        String diagnostic = golden.getProperty("extension.diagnostic.reserved");
+        for (String name : golden.getProperty("extension.reserved_names").split(",")) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(
+                            "declare type Code = int; define mtd " + name
+                                    + " on Code(): int { return self; }"));
+            assertTrue(error.getMessage().contains("reserved lifecycle or entrypoint"),
+                    error::getMessage);
+            assertEquals("EXTENSION_RESERVED_NAME", diagnostic);
+        }
+    }
+
+    private static Properties goldenContract() {
+        Properties result = new Properties();
+        Path path = Path.of(
+                "contracts", "v1", "type-alias-extension-constraint-v1.properties");
+        try (var reader = Files.newBufferedReader(path)) {
+            result.load(reader);
+        } catch (IOException error) {
+            throw new AssertionError("cannot load shared alias/extension golden contract", error);
+        }
+        return result;
     }
 
     private static String run(String program) throws Exception {
