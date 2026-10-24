@@ -619,14 +619,38 @@ public final class Ast {
         }
     }
 
+    /** First compiler-owned constrained-alias predicate slice. */
+    public enum TypeConstraintKind { MIN_INCLUSIVE, MAX_INCLUSIVE }
+
+    public record TypeConstraint(TypeConstraintKind kind, long value) {
+        public TypeConstraint {
+            if (kind == null) throw new IllegalArgumentException("type constraint kind cannot be null");
+        }
+    }
+
     public record TypeAliasDecl(
-            String name, Visibility visibility, List<String> genericParameters, TypeRef target) implements Decl {
-        public TypeAliasDecl { genericParameters = List.copyOf(genericParameters); }
+            String name,
+            Visibility visibility,
+            List<String> genericParameters,
+            TypeRef target,
+            List<TypeConstraint> constraints) implements Decl {
+        public TypeAliasDecl {
+            genericParameters = List.copyOf(genericParameters);
+            constraints = List.copyOf(constraints);
+        }
+
+        /** Compatibility constructor for unconstrained aliases. */
+        public TypeAliasDecl(
+                String name, Visibility visibility, List<String> genericParameters, TypeRef target) {
+            this(name, visibility, genericParameters, target, List.of());
+        }
 
         /** Existing AST producers without an explicit visibility are private by default. */
         public TypeAliasDecl(String name, List<String> genericParameters, TypeRef target) {
-            this(name, Visibility.PRIVATE, genericParameters, target);
+            this(name, Visibility.PRIVATE, genericParameters, target, List.of());
         }
+
+        public boolean constrained() { return !constraints.isEmpty(); }
     }
 
     public enum BindingKind { CONST, VAL, LET }
