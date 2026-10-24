@@ -5,14 +5,16 @@ package dev.oreslang.runtime;
  *
  * <p>This enforcement slice partitions the configured total among one reserved
  * CONTROL slot, three isolated actor execution domains, and a bounded
- * lifecycle-observer host domain. Together those runtime-owned execution
- * carriers cannot exceed this ceiling, even with native affinity lanes.
+ * lifecycle/bootstrap host domain. Together those runtime-owned execution
+ * carriers cannot exceed this ceiling in the explicitly supported
+ * JVM/non-affine topology.
  *
  * <p>The configured partition supplies conservative preferred capacities, while
  * the VM-wide permit coordinator protects one reserve per execution domain and
  * allows JVM non-affine execution domains to borrow otherwise idle permits.
- * Affine/native actor pools remain conservative until their carrier lifecycle
- * can acknowledge individual retirement safely. Reactor threads and explicit
+ * Configured global budgeting fails closed for affine/native actor topologies
+ * until their carrier lifecycle can acknowledge individual retirement safely.
+ * Reactor threads and explicit
  * user-owned OresScheduler(N) threads remain separate resources and are reported
  * independently; they are not actor/CONTROL/lifecycle execution carriers.
  */
@@ -22,16 +24,16 @@ record OresCarrierBudget(
         int privateMaximum,
         int sharedMaximum,
         int untrustedMaximum,
-        int lifecycleObserverMaximum) {
+        int lifecycleMaximum) {
 
     static final String PROPERTY = "ores.runtime.carriers.global.max";
 
     OresCarrierBudget {
         if (maximum < 5 || maximum > 256 || controlReserve != 1
                 || privateMaximum < 1 || sharedMaximum < 1 || untrustedMaximum < 1
-                || lifecycleObserverMaximum < 1 || lifecycleObserverMaximum > 4
+                || lifecycleMaximum < 1 || lifecycleMaximum > 4
                 || (long) controlReserve + privateMaximum + sharedMaximum
-                        + untrustedMaximum + lifecycleObserverMaximum > maximum) {
+                        + untrustedMaximum + lifecycleMaximum > maximum) {
             throw new IllegalArgumentException("invalid OresVM global carrier budget");
         }
     }
@@ -39,7 +41,7 @@ record OresCarrierBudget(
     /** Null means the legacy per-domain configuration remains active.
      * A present but malformed property must fail closed, not silently disable
      * the budget. A five-thread minimum guarantees CONTROL headroom, one
-     * isolated slot for each actor domain, and one lifecycle-observer slot.
+     * isolated slot for each actor domain, and one lifecycle/bootstrap slot.
      */
     static OresCarrierBudget configured() {
         String raw = System.getProperty(PROPERTY);
@@ -58,17 +60,17 @@ record OresCarrierBudget(
             throw new IllegalArgumentException(PROPERTY + " must be 5..256");
 
         // Preserve equal actor-domain isolation. The 1..3 remainder becomes
-        // lifecycle-observer capacity, so every configured permit is assigned
-        // without allowing observer threads to escape the advertised ceiling.
+        // lifecycle/bootstrap capacity, so every configured permit is assigned
+        // without allowing lifecycle/bootstrap workers to escape the advertised ceiling.
         int perDomain = (maximum - 2) / 3;
-        int lifecycleObservers = maximum - 1 - (3 * perDomain);
+        int lifecycleCapacity = maximum - 1 - (3 * perDomain);
         return new OresCarrierBudget(
-                maximum, 1, perDomain, perDomain, perDomain, lifecycleObservers);
+                maximum, 1, perDomain, perDomain, perDomain, lifecycleCapacity);
     }
 
     int allocatedCeiling() {
         return controlReserve + privateMaximum + sharedMaximum
-                + untrustedMaximum + lifecycleObserverMaximum;
+                + untrustedMaximum + lifecycleMaximum;
     }
 
     /**
