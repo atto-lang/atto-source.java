@@ -7002,8 +7002,26 @@ public final class ActorRuntime implements AutoCloseable {
                 || executor instanceof ActorAffinityDispatcher lanes && lanes.nativeCarriers();
     }
 
-    private static ExecutorService newActorDispatcher(int parallelism, int capacity, String prefix) {
+    private static ExecutorService newActorDispatcher(
+            int parallelism,
+            int capacity,
+            String prefix,
+            OresCarrierBudget carrierBudget,
+            OresCarrierPermitPool carrierPermitPool,
+            OresCarrierPermitPool.Domain permitDomain) {
         String mode = System.getProperty("ores.actor.affinity", "lane").trim();
+        if (carrierBudget != null) {
+            if (!mode.equals("none")) {
+                throw new IllegalStateException(
+                        "global carrier budget requires non-affine actor dispatch");
+            }
+            ThreadFactory factory = carrierPermitPool.threadFactory(permitDomain, prefix);
+            return new AdaptiveCarrierExecutor(
+                    parallelism,
+                    carrierBudget.borrowingMaximumPerDomain(),
+                    capacity,
+                    factory);
+        }
         if (mode.equals("none")) return newDispatcher(parallelism, capacity, prefix);
         if (!mode.equals("lane") && !mode.equals("cpu")) {
             throw new IllegalArgumentException("ores.actor.affinity must be lane, cpu, or none");
