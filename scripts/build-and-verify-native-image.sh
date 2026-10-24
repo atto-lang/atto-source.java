@@ -161,6 +161,19 @@ if [ "$core_output" != "$expected_core_output" ]; then
 fi
 printf '%s\n' "$core_output"
 
+# Native channel selection must preserve ordered buffered reads and return
+# the unselected message. A wrong select winner or a lost second message
+# cannot be certified by a zero guest exit status.
+channel_output="$(
+  unset JAVA_HOME CLASSPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS
+  "$executable" "--mode=$mode" examples/native-channel-select-smoke.ores
+)"
+if [ "$channel_output" != 'first:7:9' ]; then
+  echo "native channel/select result differs from expected first-winner and retained-message output" >&2
+  exit 1
+fi
+printf '%s\n' "$channel_output"
+
 # A native image that merely exits zero without executing guest code is NOT
 # sufficient evidence. Require the real Oreslang test framework's known output.
 # Capture the command first (no pipeline that could hide its exit status).
