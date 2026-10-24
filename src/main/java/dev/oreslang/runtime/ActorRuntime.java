@@ -624,6 +624,20 @@ public final class ActorRuntime implements AutoCloseable {
         return channelAdmissionDomain;
     }
 
+    /**
+     * Source Channels created during an actor turn are actor-local capabilities
+     * and therefore receive an actor-local retained-select budget.
+     */
+    ChannelRuntime.AdmissionDomain currentSourceChannelAdmissionDomain() {
+        requireCallerRuntimeAffinity("resolve source Channel admission domain");
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null) {
+            throw new IllegalStateException(
+                    "actor source Channel domain is only available during an actor turn");
+        }
+        return cell.sourceChannelAdmissionDomain;
+    }
+
     /** Total overrun detections, including notices dropped from the bounded queue. */
     public long watchdogOverruns() {
         requireSupervisorContext("inspect actor watchdog overruns");
@@ -7424,6 +7438,14 @@ public final class ActorRuntime implements AutoCloseable {
                 new IdentityHashMap<>();
         /** Settles only after the actor has fully crossed its TurnExecutor boundary. */
         private final OresFuture<Void> finalizedFuture = new OresFuture<>();
+        /**
+         * Actor-local source Channel/select quota. Raw Channel capabilities
+         * cannot cross actor mailboxes, so one actor must not consume another
+         * actor's normal retained-select budget.
+         */
+        private final ChannelRuntime.AdmissionDomain sourceChannelAdmissionDomain;
+        /** Guarded by lifecycleLock; physical finalization waits for this fence. */
+        private boolean sourceChannelAdmissionClosed;
         /** Mailbox transport for ordinary user messages. */
         private final ChannelRuntime.Channel<MessageEnvelope> mailbox;
         /**
@@ -7541,6 +7563,11 @@ public final class ActorRuntime implements AutoCloseable {
             this.codeExecutor = codeExecutor;
             this.codeActorType = codeActorType;
             this.parent = parent;
+            this.sourceChannelAdmissionDomain =
+                    new ChannelRuntime.AdmissionDomain(
+                            "actor-" + ref.id().value(),
+                            ChannelRuntime.DEFAULT_MAX_PENDING_SELECTS,
+                            ChannelRuntime.DEFAULT_MAX_PENDING_SELECT_ARMS);
             this.continuationMailbox = new ChannelRuntime.Channel<>(
                     INTERNAL_CONTINUATION_SLOTS, channelAdmissionDomain);
             // USER mail and runtime continuations are physically distinct
@@ -7940,6 +7967,7 @@ public final class ActorRuntime implements AutoCloseable {
                     gracefulTeardownPending = false;
                     lifecycleLock.notifyAll();
                 }
+                closeSourceChannelAdmissionDomain(ref.terminationCause.get());
             }
         }
 
@@ -7985,6 +8013,31 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        /**
+         * Fence actor-local source Channel/select registrations outside
+         * lifecycleLock. Future settlement can re-enter runtime code.
+         */
+        private void closeSourceChannelAdmissionDomain(Throwable cause) {
+            RuntimeException closeFailure = null;
+            try {
+                sourceChannelAdmissionDomain.close(
+                        cause == null ? terminated(ref) : cause);
+            } catch (RuntimeException failure) {
+                closeFailure = failure;
+            }
+
+            synchronized (lifecycleLock) {
+                if (!sourceChannelAdmissionClosed) {
+                    sourceChannelAdmissionClosed = true;
+                    if (closeFailure != null) {
+                        recordFinalizationFailure(closeFailure);
+                    }
+                }
+                if (stopped.get()) finalizeStopLocked();
+                lifecycleLock.notifyAll();
+            }
+        }
+
         private void finalizeStopLocked() {
             // External termination is not observable until the dispatcher has
             // fully crossed back out of the TurnExecutor boundary. For
@@ -7994,6 +8047,7 @@ public final class ActorRuntime implements AutoCloseable {
                     || scheduled.get()
                     || carrierActive
                     || activeAsyncSendAdmissions != 0
+                    || !sourceChannelAdmissionClosed
                     || gracefulTeardownPending
                     || !children.isEmpty()) return;
             finalized = true;
@@ -8673,6 +8727,7 @@ public final class ActorRuntime implements AutoCloseable {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
             boolean scheduleTeardown;
+            boolean closeSourceChannelDomainNow;
             List<DrainWaiter> failedDrainWaiters;
             Runnable failAsyncSendWaiters;
             synchronized (lifecycleLock) {
@@ -8709,6 +8764,7 @@ public final class ActorRuntime implements AutoCloseable {
                 finalizeStopLocked();
                 scheduleTeardown = gracefulTeardownPending
                         && activeTurns == 0 && !scheduled.get();
+                closeSourceChannelDomainNow = !gracefulTeardownPending;
                 lifecycleLock.notifyAll();
             }
             // Runtime Future callbacks can take other actor/lifecycle locks.
@@ -8716,6 +8772,9 @@ public final class ActorRuntime implements AutoCloseable {
             // mailboxAccountingLock have both been released.
             failAsyncSendWaiters.run();
             if (scheduleTeardown) schedule();
+            if (closeSourceChannelDomainNow) {
+                closeSourceChannelAdmissionDomain(cause);
+            }
 
             // Runtime Future callbacks can take other actor/lifecycle locks.
             // Publish failure only after teardown has released lifecycleLock.
