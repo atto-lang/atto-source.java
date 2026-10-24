@@ -220,4 +220,96 @@ final class MethodDeclarationSpellingTest {
         assertEquals("suspend", klass.methods().getFirst().name());
         assertFalse(klass.methods().getFirst().suspends());
     }
+
+    @Test
+    void bareAndExplicitMtdSupportBothClassMethodBodyStyles() {
+        Ast.Program program = Parser.parse("""
+                define class X1 as
+                    foo(): void {}
+                end
+                define class X2 as
+                    foo() -> void ::
+                    end
+                end
+                define class X3 as
+                    mtd foo(): void {}
+                end
+                define class X4 as
+                    mtd foo() -> void ::
+                    end
+                end
+                """);
+        assertEquals(4, program.modules().getFirst().declarations().size());
+        for (Ast.Decl declaration : program.modules().getFirst().declarations()) {
+            Ast.ClassDecl klass = assertInstanceOf(Ast.ClassDecl.class, declaration);
+            assertEquals(1, klass.methods().size());
+            Ast.MethodDecl method = klass.methods().getFirst();
+            assertEquals("foo", method.name());
+            assertEquals(0, method.arity());
+            assertFalse(method.isStatic());
+            assertEquals("void", method.returnType().name());
+            assertTrue(method.body().isEmpty());
+        }
+        assertDoesNotThrow(() -> TypeChecker.check(program));
+    }
+
+    @Test
+    void mtdAndBareMethodsRetainIdenticalReceiverAndAritySemantics() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Counter as
+                    mtd read(): int { return 1; }
+                    mtd read(self, int n) -> int ::
+                        return n;
+                    end
+                    read(int n, int extra): int { return n + extra; }
+                end
+                """)));
+        for (String pair : new String[] {
+                "foo(): void {} mtd foo() -> void :: end",
+                "foo(self): void {} mtd foo() -> void :: end",
+                "mtd foo(self, int n): void {} foo(int n): void {}"
+        }) {
+            assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(
+                    Parser.parse("define class Clash as " + pair + " end")));
+        }
+    }
+
+    @Test
+    void mtdIsContextualAndSupportsActorMethodsWithoutChangingStaticFnc() {
+        Ast.Program program = Parser.parse("""
+                define actor Worker as
+                    mtd run() -> void ::
+                    end
+                    mtd(): void {}
+                    method(): void {}
+                    static fnc utility(): void {}
+                end
+                """);
+        Ast.ClassDecl actor = assertInstanceOf(Ast.ClassDecl.class,
+                program.modules().getFirst().declarations().getFirst());
+        assertEquals(4, actor.methods().size());
+        assertEquals("run", actor.methods().get(0).name());
+        assertEquals("mtd", actor.methods().get(1).name());
+        assertEquals("method", actor.methods().get(2).name());
+        assertTrue(actor.methods().get(3).isStatic());
+    }
+
+    @Test
+    void methodBodySeparatorsAndInvalidMarkerCombinationsFailClosed() {
+        for (String declaration : new String[] {
+                "foo(): void :: end",
+                "mtd foo(): void :: end",
+                "mtd fnc foo(): void {}",
+                "fnc mtd foo(): void {}",
+                "static mtd foo(): void {}",
+                "mtd static foo(): void {}",
+                "mtd foo() -> void :: return;",
+                "mtd foo() -> void :: end end"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse("define class Bad as " + declaration + " end"),
+                    declaration);
+        }
+    }
+
 }
