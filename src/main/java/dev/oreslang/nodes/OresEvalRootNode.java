@@ -6757,7 +6757,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
                 if (name.name().equals("Channel")) return new ChannelFactory(context);
-                if (name.name().equals("SelectCase")) return new SelectCaseFactory();
+                if (name.name().equals("SelectCase")) return new SelectCaseFactory(context);
                 if (name.name().equals("SelectSet")) return new SelectSetFactory(this);
                 if (name.name().equals("Future")) return FutureFactory.INSTANCE;
                 if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
@@ -10253,12 +10253,16 @@ public final class OresEvalRootNode extends RootNode {
         }
     }
 
-    private static final class SelectCaseFactory {
+    private record SelectCaseFactory(OresContext context) {
         @SuppressWarnings({"rawtypes", "unchecked"})
         private Object read(List<Object> args) {
             requireOne(args, "SelectCase.read");
             if (!(args.getFirst() instanceof ChannelRuntime.Channel<?> channel)) {
                 throw new IllegalArgumentException("SelectCase.read expects Channel<T>");
+            }
+            if (!channel.belongsTo(context.channelAdmissionDomain())) {
+                throw new SecurityException(
+                        "SelectCase.read rejected Channel<T> from another admission domain");
             }
             return ChannelRuntime.read((ChannelRuntime.Channel) channel);
         }
@@ -10268,6 +10272,10 @@ public final class OresEvalRootNode extends RootNode {
             requireTwo(args, "SelectCase.write");
             if (!(args.getFirst() instanceof ChannelRuntime.Channel<?> channel)) {
                 throw new IllegalArgumentException("SelectCase.write expects Channel<T> as first argument");
+            }
+            if (!channel.belongsTo(context.channelAdmissionDomain())) {
+                throw new SecurityException(
+                        "SelectCase.write rejected Channel<T> from another admission domain");
             }
             return ChannelRuntime.write(
                     (ChannelRuntime.Channel) channel,
