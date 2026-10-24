@@ -163,3 +163,33 @@ changes; its error-specific guard block, whole-arm checking, bounded
 comparison/type tests and 22 regression methods are retained. This is
 source reconciliation only, **not** a Maven test pass. The source-org Actions
 and private CI destination authorization remain independent blockers.
+
+## October 24 follow-up — fail-closed equality type admission
+
+Code audit found that `boundedErrorGuardEqualityType` previously returned
+`true` for any resolved Type not in a short denylist. In particular,
+`List<int>` resolves as `Types.ListType`, not `Named("List")`;
+list equality therefore escaped the intended recursive-comparison gate.
+String equality can traverse arbitrary-length strings, and decimal/bigint
+equality can perform arbitrary-precision conversions. The resolver
+currently maps both `bigint` and `int` to `Primitive.INT`.
+
+The checker now *allowlists* bounded equality carriers instead: boolean,
+float/complex fixed-size scalars, guest nominal class reference identity,
+and designated symbol/actor identity tokens. Resolved `ListType`, strings,
+decimals, integer/bigint-erased equality, maps, Option/Result, records,
+tuples, functions, unknowns and future Type variants are denied in
+Error-domain guards. General non-Error matching retains existing semantics.
+The regression class has **28 committed tests**, including new integer,
+bigint, string and decimal rejections plus allowed nominal/bool equality.
+
+**Known limit:** Oreslang's current `Primitive.INT` type erases the
+machine-integer/bigint distinction. Relational `<`, `<=`, `>`, `>=`
+guards still admit integer values for compatibility; full fixed-cost
+real-time certification of these operations requires a distinct bigint
+type or runtime budget. This change only claims the conservative equality
+admission gate, not a hard real-time guarantee for all guard expressions.
+
+These changes have **not** been executed through Maven/JUnit. Source-org
+workflow failures before any steps are not test verdicts, and private
+cross-org source publication remains blocked pending approved governance.
