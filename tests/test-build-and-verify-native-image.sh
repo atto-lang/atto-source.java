@@ -84,6 +84,8 @@ int main(int argc, char **argv) {
     if (argc >= 3 && (strcmp(argv[1], "--mode=aot") == 0
             || strcmp(argv[1], "--mode=hybrid") == 0)) {
         if (access(argv[2], F_OK) != 0) return 9;
+        if (getenv("MOCK_GUEST_STDERR") && strstr(argv[2], "callables.ores") != NULL)
+            fputs("Oreslang runtime unexpectedly wrote stderr\n", stderr);
         if (strstr(argv[2], "callables.ores") != NULL) {
             if (!getenv("MOCK_SILENT_CALLABLES")) {
                 if (getenv("MOCK_BAD_CALLABLES")) puts("120:9:12");
@@ -253,6 +255,8 @@ assert_case() {
         expected_diagnostic='native --check unexpectedly emitted diagnostics or guest output' ;;
       'silent callables guest execution'|'incorrect lexical closure result')
         expected_diagnostic='native callables guest output differs from expected value' ;;
+      'guest stderr despite correct stdout')
+        expected_diagnostic='native guest unexpectedly emitted stderr diagnostics' ;;
       'private actor capability violation admitted')
         expected_diagnostic='expected private actor capability denial with CLI status 1, got 0' ;;
       'private actor denial uses wrong CLI exit status')
@@ -331,6 +335,7 @@ grep -Fx 'native --check unexpectedly emitted diagnostics or guest output' "$tmp
 }
 assert_case 'silent callables guest execution' failure aot compressed32 MOCK_SILENT_CALLABLES=1
 assert_case 'incorrect lexical closure result' failure aot compressed32 MOCK_BAD_CALLABLES=1
+assert_case 'guest stderr despite correct stdout' failure aot compressed32 MOCK_GUEST_STDERR=1
 assert_case 'private actor capability violation admitted' failure aot compressed32 MOCK_ACCEPT_INVALID_PRIVATE_ACTOR=1
 assert_case 'private actor denial uses wrong CLI exit status' failure aot compressed32 MOCK_BAD_DENIAL_STATUS=1
 assert_case 'valid shared/private actor rejected' failure aot compressed32 MOCK_REJECT_VALID_ACTOR=1
