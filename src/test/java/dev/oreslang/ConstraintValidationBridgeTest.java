@@ -123,6 +123,32 @@ final class ConstraintValidationBridgeTest {
     }
 
     @Test
+    void importCompatibilityRequiresExactSchemaAndFingerprint() {
+        TypeConstraintDescriptors.Catalog catalog = catalog();
+        TypeConstraintDescriptors.Descriptor descriptor = catalog.find("Code");
+
+        assertSame(descriptor, catalog.requireCompatible(
+                "Code", descriptor.schemaId(), descriptor.fingerprint()));
+
+        IllegalArgumentException schema = assertThrows(
+                IllegalArgumentException.class,
+                () -> catalog.requireCompatible(
+                        "Code", "ores.type-constraint.v2", descriptor.fingerprint()));
+        assertTrue(schema.getMessage().startsWith("CONSTRAINT_IMPORT_SCHEMA_MISMATCH"));
+
+        IllegalArgumentException fingerprint = assertThrows(
+                IllegalArgumentException.class,
+                () -> catalog.requireCompatible(
+                        "Code", descriptor.schemaId(), "0".repeat(64)));
+        assertTrue(fingerprint.getMessage().startsWith(
+                "CONSTRAINT_IMPORT_FINGERPRINT_MISMATCH"));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> catalog.requireCompatible(
+                        "Missing", descriptor.schemaId(), descriptor.fingerprint()));
+    }
+
+    @Test
     void existingRuntimeFenceRemainsUntilCheckedConversionIsIntegrated() {
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class,
