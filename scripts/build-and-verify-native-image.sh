@@ -193,16 +193,22 @@ if ! printf '%s\n' "$test_output" | awk -F '|' -v expected="$expected_summary" '
 fi
 
 # A native executable must never silently switch on JVM JIT at runtime.
-set +e
-(
+jit_status=0
+jit_output="$(
   unset JAVA_HOME CLASSPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS
-  "$executable" --mode=jit --check examples/callables.ores
-) >/dev/null 2>&1
-status="$?"
-set -e
-if [ "$status" -ne 2 ]; then
-  echo "expected --mode=jit to be rejected with CLI status 2, got $status" >&2
+  "$executable" --mode=jit --check examples/callables.ores 2>&1
+)" || jit_status=$?
+if [ "$jit_status" -ne 2 ]; then
+  echo "expected --mode=jit to be rejected with CLI status 2, got $jit_status" >&2
   exit 1
 fi
+case "$mode" in
+  aot) expected_jit_reason="This executable was built AOT-only; --mode=jit cannot enable runtime compilation." ;;
+  hybrid) expected_jit_reason="Native hybrid executables accept --mode=hybrid or --mode=aot, not JVM --mode=jit" ;;
+esac
+case "$jit_output" in
+  *"$expected_jit_reason"*) ;;
+  *) echo "native executable refused JIT without the required build-mode diagnostic" >&2; exit 1 ;;
+esac
 
 echo "verified GraalVM Native Image: $executable ($mode, $refs)"
