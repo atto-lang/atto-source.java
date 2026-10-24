@@ -53,19 +53,16 @@ The host-only proof here intentionally does not replace Java #1960/#1967, LLVM #
 
 The first bridge to the existing `NativeHttp.Server` is now `NativeHttpRollingDispatcher`, a trusted host CONTROL object. It owns the server's exclusive accept lane, not a second socket. The single virtual-thread CONTROL executor takes one accept at a time, atomically acquires the active `ActorRollingGenerationRoute<NativeHttp.Handler>` target and its lease, registers `Exchange.completion()`, then invokes the exact pooled handler. The target remains pinned for the exchange's lifetime. Normal G1 -> G2 promotion does not call `Server.shutdown()`, `Server.close()`, or rebind.
 
-Sample **host-side** flow after source/config admission, never guest authority:
+Host setup (before creating the validated coordinator described below):
 
 ```java
 NativeHttp.Server listener = http.listen("127.0.0.1", port, 128, 1_048_576, 30_000);
 NativeHttp.Handler g1 = http.handler(v1Code, "Proxy", ActorRuntime.ActorKind.SHARED).pooled(4);
-g1.warmup().get(10, TimeUnit.SECONDS); // actual actor get_ready() barriers
-try (var dispatch = new NativeHttpRollingDispatcher(listener, 1001, g1, 4)) {
-    dispatch.start();
-    NativeHttp.Handler g2 = http.handler(v2Code, "Proxy", ActorRuntime.ActorKind.SHARED).pooled(4);
-    boolean published = dispatch.promoteAfterWarmup(1, g2).get(10, TimeUnit.SECONDS);
-    // The same listener is still bound; new requests route to g2.
-    // G1 is still draining: do not stop its actors or reclaim its code here.
-}
+g1.warmup().get(10, TimeUnit.SECONDS); // real actor get_ready() barriers
+var dispatch = new NativeHttpRollingDispatcher(listener, 1001, g1, 4);
+dispatch.start();
+// Create NativeHttpRollingReloadCoordinator for validated G2 publication.
+// Close the coordinator/dispatcher only on explicit service shutdown.
 ```
 
 The constructor rejects unpooled/unready initial handlers and foreign-context handlers; promotion warms all new actor workers and rejects unhealthy/stale/foreign candidates. Unpublished candidates receive stop/cancel requests; the terminal cleanup proof is still separate. Multiple concurrent candidate warmups are bounded to 8 and the route's own live-generation cap is enforced. A rejected candidate is never automatically promoted. A fatal dispatcher/listener error invokes explicit shutdown and is not promised to be interruption-free.
