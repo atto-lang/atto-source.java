@@ -317,7 +317,7 @@ final class MethodDeclarationSpellingTest {
     void mtdStartsAfterSemicolonFreeFieldsAndOwnsItsEnd() {
         Ast.Program program = Parser.parse("""
                 define class Store as
-                    final count: int = 1
+                    final int count = 1
                     mtd read() -> int ::
                         if true then
                             return 1;
