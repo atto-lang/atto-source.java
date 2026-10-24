@@ -330,7 +330,19 @@ public final class IncrementalCompiler {
             if (alias.visibility() != Ast.Visibility.PUBLIC) return;
             abi.append("pub type ").append(alias.name());
             appendGenerics(abi, alias.genericParameters());
-            abi.append('=').append(typeRef(alias.target())).append('\n');
+            abi.append('=').append(typeRef(alias.target()));
+            if (alias.constrained()) {
+                // Public constraint metadata is source ABI: downstream validators
+                // must invalidate when the accepted domain changes.
+                alias.constraints().stream()
+                        .sorted(java.util.Comparator.comparingInt(
+                                constraint -> constraint.kind().ordinal()))
+                        .forEach(constraint -> abi.append("|constraint:")
+                                .append(constraint.kind())
+                                .append('=')
+                                .append(constraint.value()));
+            }
+            abi.append('\n');
             return;
         }
         if (decl instanceof Ast.FieldDecl field && field.visibility() == Ast.Visibility.PUBLIC) {
