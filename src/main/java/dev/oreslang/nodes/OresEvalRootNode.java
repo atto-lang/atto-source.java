@@ -14,10 +14,13 @@ import dev.oreslang.runtime.ProcessExitSignal;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.NativeIo;
+import dev.oreslang.runtime.NativeNioFutureReactor;
+import dev.oreslang.runtime.VmNioTcpListener;
 import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.HttpResponseDraft;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.ActorFailure;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
@@ -306,6 +309,16 @@ public final class OresEvalRootNode extends RootNode {
                 for (Ast.Decl decl : module.declarations()) {
                     if (decl instanceof Ast.FunctionDecl fn) indexFunction(module.name(), fn);
                     else if (decl instanceof Ast.ClassDecl klass) {
+                        // The public AST can be constructed without Parser.
+                        // Never let an unchecked HIGH/MEDIUM enum reach guest
+                        // actor scheduling as if its physical limit were LOW.
+                        if (klass.actorKind() != Ast.ActorKind.NONE
+                                && klass.maxActorThreads() != Ast.MaxActorThreads.LOW) {
+                            throw new IllegalArgumentException(
+                                    "actor " + klass.name() + " requests "
+                                    + klass.maxActorThreads().value()
+                                    + " physical turns but per-turn state isolation is not enabled");
+                        }
                         index(classes, ambiguousClasses, module.name(), klass.name(), klass);
                         classModules.put(klass, module.name());
                         for (Ast.MethodDecl method : klass.methods()) methodOwners.put(method, klass);
@@ -574,6 +587,10 @@ public final class OresEvalRootNode extends RootNode {
                         eval(field.initializer(), initializerEnv));
             }
 
+            if (klass.supervisor()) {
+                installSourceSupervisorHandlers(klass, object, actorContext);
+            }
+
             Ast.MethodDecl startup =
                     findMethod(
                             klass,
@@ -597,6 +614,7 @@ public final class OresEvalRootNode extends RootNode {
 
             return new SourceActorState(
                     actorContext.self().id(),
+                    actorContext.self().generation(),
                     actorTypeName,
                     object);
         }
@@ -613,6 +631,7 @@ public final class OresEvalRootNode extends RootNode {
                             : null;
             if (state == null
                     || !state.ownerActorId().equals(actorContext.self().id())
+                    || state.ownerGeneration() != actorContext.self().generation()
                     || !state.actorTypeName().equals(actorTypeName)
                     || !mail.recipient().equals(actorContext.self().id())) {
                 throw new SecurityException(
@@ -720,6 +739,80 @@ public final class OresEvalRootNode extends RootNode {
                                 + "' is not an actor");
             }
             return klass;
+        }
+
+        private static boolean isSupervisorControlHandlerName(String name) {
+            return name.equals("on_throw")
+                    || name.equals("on_raise")
+                    || name.equals("on_panic");
+        }
+
+        private void installSourceSupervisorHandlers(
+                Ast.ClassDecl klass,
+                OresObject object,
+                ActorRuntime.ActorContext<Object> actorContext) {
+            java.util.Map<String, Ast.MethodDecl> handlers = new LinkedHashMap<>();
+            for (String name : List.of("on_throw", "on_raise", "on_panic")) {
+                Ast.MethodDecl method =
+                        findMethod(klass, CallableSelector.instance(name, 1));
+                if (method == null) {
+                    throw new IllegalStateException(
+                            "supervisor actor '" + klass.name()
+                                    + "' is missing checked CONTROL handler " + name);
+                }
+                if (methodContainsPotentialSuspension(method)) {
+                    throw new IllegalStateException(
+                            "supervisor CONTROL handler " + klass.name() + "." + name
+                                    + " cannot suspend; CONTROL turns must remain single-flight");
+                }
+                handlers.put(name, method);
+            }
+
+            actorContext.installSupervisorControlHandler(
+                    new ActorRuntime.SupervisorControlHandler() {
+                        @Override
+                        public ActorRuntime.SupervisorControlDirective onThrow(
+                                ActorRuntime.SupervisorControlContext control,
+                                ActorRuntime.SupervisorControlEvent event) {
+                            return invokeSourceSupervisorControl(
+                                    object, handlers.get("on_throw"), event);
+                        }
+
+                        @Override
+                        public ActorRuntime.SupervisorControlDirective onRaise(
+                                ActorRuntime.SupervisorControlContext control,
+                                ActorRuntime.SupervisorControlEvent event) {
+                            return invokeSourceSupervisorControl(
+                                    object, handlers.get("on_raise"), event);
+                        }
+
+                        @Override
+                        public ActorRuntime.SupervisorControlDirective onPanic(
+                                ActorRuntime.SupervisorControlContext control,
+                                ActorRuntime.SupervisorControlEvent event) {
+                            return invokeSourceSupervisorControl(
+                                    object, handlers.get("on_panic"), event);
+                        }
+                    },
+                    null);
+        }
+
+        private ActorRuntime.SupervisorControlDirective invokeSourceSupervisorControl(
+                OresObject object,
+                Ast.MethodDecl handler,
+                ActorRuntime.SupervisorControlEvent event) {
+            SourceChildFailure failure = new SourceChildFailure(event);
+            try {
+                Object result = invoke(methodInvocation(object, handler, List.of(failure)));
+                if (result != null) {
+                    throw new IllegalStateException(
+                            "supervisor CONTROL handler must return void: "
+                                    + object.klass.name() + "." + handler.name());
+                }
+                return failure.directiveOrRetain();
+            } finally {
+                failure.revoke();
+            }
         }
 
         private void executeActorStartup(OresObject object, Ast.MethodDecl startup) {
@@ -4763,6 +4856,10 @@ public final class OresEvalRootNode extends RootNode {
                             List.of());
                 }
 
+                if (isSupervisorControlHandlerName(member.member())) {
+                    throw new SecurityException(
+                            "supervisor CONTROL handlers are not ordinary actor methods");
+                }
                 Ast.MethodDecl method =
                         object.owner.findMethod(
                                 object.klass,
@@ -5449,7 +5546,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private boolean isTrappableFailure(RuntimeException failure) {
             return dev.oreslang.runtime.TrapFailurePolicy.isTrappable(
-                    failure, OresPanic.class);
+                    failure, ActorFailure.Panic.class);
         }
 
         // Cleanup may add suppressed diagnostics but must not replace a
@@ -5468,7 +5565,7 @@ public final class OresEvalRootNode extends RootNode {
         // Fatal panic and scheduler cancellation remain uncatchable.
         private boolean isGuestCatchableFailure(Throwable failure) {
             return dev.oreslang.runtime.TrapFailurePolicy.isGuestCatchable(
-                    failure, OresPanic.class);
+                    failure, ActorFailure.Panic.class);
         }
 
         private Object callFunctionBodyUnchecked(Ast.FunctionDecl fn, List<?> args) {
@@ -5729,6 +5826,19 @@ public final class OresEvalRootNode extends RootNode {
                         env,
                         inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
             }
+            if (stmt instanceof Ast.TerminalEffectStmt effect) {
+                Object raw = eval(effect.value(), env);
+                if (!(raw instanceof String message)) {
+                    throw new IllegalArgumentException(
+                            effect.kind().name().toLowerCase(java.util.Locale.ROOT)
+                                    + " currently requires a string failure value");
+                }
+                throw switch (effect.kind()) {
+                    case THROW -> new ActorFailure.Thrown(message);
+                    case RAISE -> new ActorFailure.Raised(message);
+                    case PANIC -> new ActorFailure.Panic(message);
+                };
+            }
             if (stmt instanceof Ast.YieldStmt yielded) {
                 if (env.hasLiveMutexGuards()) {
                     throw new IllegalStateException("cannot yield while holding a live MutexGuard");
@@ -5889,7 +5999,7 @@ public final class OresEvalRootNode extends RootNode {
                     try { executeBlock(tried.body(), env, true); }
                     catch (TailCallSignal signal) { throw signal; }
                     catch (ReturnSignal | BreakSignal | ContinueSignal signal) { throw signal; }
-                    catch (OresPanic panic) { throw panic; }
+                    catch (ActorFailure.Panic panic) { throw panic; }
                     catch (RuntimeException failure) {
                         // Guest catch may recover explicit denials and other ordinary
                         // errors, but must never consume panic or scheduler control.
@@ -6468,6 +6578,10 @@ public final class OresEvalRootNode extends RootNode {
                                 List.of());
                     }
 
+                    if (isSupervisorControlHandlerName(methodCall.member())) {
+                        throw new SecurityException(
+                                "supervisor CONTROL handlers are not ordinary actor methods");
+                    }
                     Ast.MethodDecl method = object.owner.findMethod(
                             object.klass, CallableSelector.instance(methodCall.member(), args.size()));
                     if (method != null) {
@@ -6535,6 +6649,10 @@ public final class OresEvalRootNode extends RootNode {
                         && !methodCall.member().equals("release")
                         && !methodCall.member().equals("is_released")
                         && guard.value() instanceof OresObject object) {
+                    if (isSupervisorControlHandlerName(methodCall.member())) {
+                        throw new SecurityException(
+                                "supervisor CONTROL handlers are not ordinary actor methods");
+                    }
                     Ast.MethodDecl method = object.owner.findMethod(
                             object.klass, CallableSelector.instance(methodCall.member(), args.size()));
                     if (method != null) {
@@ -7169,6 +7287,9 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name, Env env) {
+            if (receiver instanceof SourceChildFailure failure) {
+                return failure.member(name);
+            }
             if (receiver instanceof String text) {
                 if (name.equals("split_literal")) {
                     return (Invokable) args -> {
@@ -7297,6 +7418,19 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof NetworkFacade network) {
                 return switch (name) {
+                    case "listen_nonblocking" -> (Invokable) args -> {
+                        if (args.size() != 5)
+                            throw new IllegalArgumentException("network.listen_nonblocking(host, port, backlog, max_connections, max_pending)");
+                        String host = requireString(args.get(0), "host");
+                        for (int i = 1; i < 5; i++)
+                            if (!(args.get(i) instanceof Number))
+                                throw new IllegalArgumentException("nonblocking TCP limits must be integers");
+                        return context.listenNioLoopback(host,
+                                ((Number) args.get(1)).intValue(),
+                                ((Number) args.get(2)).intValue(),
+                                ((Number) args.get(3)).intValue(),
+                                ((Number) args.get(4)).intValue());
+                    };
                     case "connect" -> (Invokable) network::connect;
                     case "connect_async" -> (Invokable) args -> {
                         requireTwo(args, "network.connect_async");
@@ -7307,6 +7441,104 @@ public final class OresEvalRootNode extends RootNode {
                                 "network.connect_async", () -> network.connect(values));
                     };
                     default -> throw new IllegalArgumentException("unknown network member " + name);
+                };
+            }
+            if (receiver instanceof VmNioTcpListener listener) {
+                if (ActorRuntime.inActorExecution())
+                    throw new SecurityException("TCP listener authority is supervisor-only");
+                context.requireNioOwner(listener, "net.listener." + name);
+                return switch (name) {
+                    case "port" -> (long) listener.localPort();
+                    case "accept_async" -> (Invokable) args -> {
+                        requireZero(args, "NioTcpListener.accept_async");
+                        if (ActorRuntime.inActorExecution())
+                            throw new SecurityException("TCP listener acceptance belongs to the supervisor");
+                        context.requireNioOwner(listener, "net.accept");
+                        return listener.acceptAsync();
+                    };
+                    case "close_async" -> (Invokable) args -> {
+                        requireZero(args, "NioTcpListener.close_async");
+                        context.requireNioOwner(listener, "net.close");
+                        return listener.closeAsync();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown nonblocking TCP listener member " + name);
+                };
+            }
+            if (receiver instanceof VmNioTcpListener.Connection connection) {
+                if (ActorRuntime.inActorExecution())
+                    throw new SecurityException("TCP connection ownership transfer to actor is not implemented");
+                context.requireNioOwner(connection, "net.connection." + name);
+                return switch (name) {
+                    case "read_bytes_async" -> (Invokable) args -> {
+                        requireOne(args, "NioTcpConnection.read_bytes_async");
+                        if (!(args.getFirst() instanceof Number maximum))
+                            throw new IllegalArgumentException("read size must be an integer");
+                        context.requireNioOwner(connection, "net.read");
+                        return connection.readBytesAsync(maximum.intValue());
+                    };
+                    case "write_bytes_async" -> (Invokable) args -> {
+                        requireOne(args, "NioTcpConnection.write_bytes_async");
+                        if (!(args.getFirst() instanceof java.util.List<?> bytes))
+                            throw new IllegalArgumentException("write bytes must be Array<int>");
+                        context.requireNioOwner(connection, "net.write");
+                        return connection.writeBytesAsync(bytes);
+                    };
+                    case "close_async" -> (Invokable) args -> {
+                        requireZero(args, "NioTcpConnection.close_async");
+                        context.requireNioOwner(connection, "net.close");
+                        return connection.closeAsync();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown nonblocking TCP connection member " + name);
+                };
+            }
+            if (receiver instanceof NativeNioFutureReactor listener) {
+                if (ActorRuntime.inActorExecution())
+                    throw new SecurityException("TCP listener authority is supervisor-only");
+                context.requireNioOwner(listener, "net.listener." + name);
+                return switch (name) {
+                    case "port" -> (long) listener.localPort();
+                    case "accept_async" -> (Invokable) args -> {
+                        requireZero(args, "NioTcpListener.accept_async");
+                        if (ActorRuntime.inActorExecution())
+                            throw new SecurityException("TCP listener acceptance belongs to the supervisor");
+                        context.requireNioOwner(listener, "net.accept");
+                        return listener.acceptAsync();
+                    };
+                    case "close_async" -> (Invokable) args -> {
+                        requireZero(args, "NioTcpListener.close_async");
+                        context.requireNioOwner(listener, "net.close");
+                        return listener.closeAsync();
+                    };
+                    default -> throw new IllegalArgumentException("unknown nonblocking TCP listener member " + name);
+                };
+            }
+            if (receiver instanceof NativeNioFutureReactor.Connection connection) {
+                if (ActorRuntime.inActorExecution())
+                    throw new SecurityException("TCP connection ownership transfer to actor is not implemented");
+                context.requireNioOwner(connection, "net.connection." + name);
+                return switch (name) {
+                    case "read_bytes_async" -> (Invokable) args -> {
+                        requireOne(args, "NioTcpConnection.read_bytes_async");
+                        if (!(args.getFirst() instanceof Number maximum))
+                            throw new IllegalArgumentException("read size must be an integer");
+                        context.requireNioOwner(connection, "net.read");
+                        return connection.readBytesAsync(maximum.intValue());
+                    };
+                    case "write_bytes_async" -> (Invokable) args -> {
+                        requireOne(args, "NioTcpConnection.write_bytes_async");
+                        if (!(args.getFirst() instanceof java.util.List<?> bytes))
+                            throw new IllegalArgumentException("write bytes must be Array<int>");
+                        context.requireNioOwner(connection, "net.write");
+                        return connection.writeBytesAsync(bytes);
+                    };
+                    case "close_async" -> (Invokable) args -> {
+                        requireZero(args, "NioTcpConnection.close_async");
+                        context.requireNioOwner(connection, "net.close");
+                        return connection.closeAsync();
+                    };
+                    default -> throw new IllegalArgumentException("unknown nonblocking TCP connection member " + name);
                 };
             }
             if (receiver instanceof NativeIo.TcpConnection socket) {
@@ -7776,6 +8008,10 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("unknown static member " + klass.klass().name() + "." + name);
             }
             if (receiver instanceof OresObject object) {
+                if (isSupervisorControlHandlerName(name)) {
+                    throw new SecurityException(
+                            "supervisor CONTROL handlers cannot be extracted or invoked as method values");
+                }
                 if (object.fields.containsKey(name)) {
                     OwnedField ownedField = object.owner.findField(
                             object.klass, name, new LinkedHashSet<>());
@@ -7967,7 +8203,7 @@ public final class OresEvalRootNode extends RootNode {
                 case "is_none" -> (Invokable) args -> { requireZero(args, "Option.is_none"); return !option.present(); };
                 case "unwrap" -> (Invokable) args -> {
                     requireZero(args, "Option.unwrap");
-                    if (!option.present()) throw new OresPanic("called Option::unwrap() on a None value");
+                    if (!option.present()) throw new ActorFailure.Panic("called Option::unwrap() on a None value");
                     return option.value();
                 };
                 case "unwrap_all" -> (Invokable) args -> {
@@ -7992,7 +8228,7 @@ public final class OresEvalRootNode extends RootNode {
                 };
                 case "expect" -> (Invokable) args -> {
                     String message = requireStringArg(args, "Option.expect");
-                    if (!option.present()) throw new OresPanic(message);
+                    if (!option.present()) throw new ActorFailure.Panic(message);
                     return option.value();
                 };
                 case "unwrap_or" -> (Invokable) args -> {
@@ -8070,7 +8306,7 @@ public final class OresEvalRootNode extends RootNode {
                 case "unwrap" -> (Invokable) args -> {
                     requireZero(args, "Result.unwrap");
                     if (!result.ok()) {
-                        throw new OresPanic("called Result::unwrap() on an Err value: " + display(result.value()));
+                        throw new ActorFailure.Panic("called Result::unwrap() on an Err value: " + display(result.value()));
                     }
                     return result.value();
                 };
@@ -8080,7 +8316,7 @@ public final class OresEvalRootNode extends RootNode {
                 };
                 case "expect" -> (Invokable) args -> {
                     String message = requireStringArg(args, "Result.expect");
-                    if (!result.ok()) throw new OresPanic(message + ": " + display(result.value()));
+                    if (!result.ok()) throw new ActorFailure.Panic(message + ": " + display(result.value()));
                     return result.value();
                 };
                 case "unwrap_or" -> (Invokable) args -> {
@@ -8185,6 +8421,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation prepareBoundMethodInvocation(OresObject receiver, String name, List<Object> args, Ast.ClassDecl accessClass) {
+            if (isSupervisorControlHandlerName(name)) {
+                throw new SecurityException(
+                        "supervisor CONTROL handlers cannot be called through bound method values");
+            }
             CallableSelector selector = CallableSelector.instance(name, args.size());
             Ast.MethodDecl method = findMethod(receiver.klass, selector);
             if (method == null) throw new IllegalArgumentException("no method " + receiver.klass.name() + "." + name + " with arity " + args.size());
@@ -9172,6 +9412,7 @@ public final class OresEvalRootNode extends RootNode {
             if (name.equals("Generator") || name.equals("Iterator")) return value instanceof GeneratorRuntime.Generator<?>;
             if (name.equals("AsyncGenerator") || name.equals("AsyncIterator")) return value instanceof GeneratorRuntime.AsyncGenerator<?>;
             if (name.equals("IteratorResult")) return value instanceof GeneratorRuntime.Step<?>;
+            if (name.equals("ChildFailure")) return value instanceof SourceChildFailure;
 
             if (value instanceof OresObject object) {
                 Ast.ClassDecl targetClass = findClass(name);
@@ -9193,6 +9434,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private String oresRuntimeTypeName(Object value) {
+            if (value instanceof SourceChildFailure) return "ChildFailure";
             if (value instanceof OresObject object) return object.klass.name();
             if (value instanceof OptionValue) return "Option";
             if (value instanceof ResultValue) return "Result";
@@ -10064,13 +10306,87 @@ public final class OresEvalRootNode extends RootNode {
         @Override public String toString() { return CycleSafeDisplay.render(this); }
     }
 
+    private static final class SourceChildFailure {
+        private final ActorRuntime.SupervisorControlEvent event;
+        private ActorRuntime.SupervisorControlDirective directive;
+        private boolean active = true;
+
+        private SourceChildFailure(ActorRuntime.SupervisorControlEvent event) {
+            this.event = Objects.requireNonNull(event, "event");
+        }
+
+        private Object member(String name) {
+            requireActive();
+            return switch (name) {
+                case "actor_id" -> event.actorId().toString();
+                case "generation" -> event.generation();
+                case "kind" -> event.failureKind().name().toLowerCase(java.util.Locale.ROOT);
+                case "failure_type" -> event.failureType();
+                case "parent_generation" -> event.parentGeneration();
+                case "restart" -> (Invokable) args -> {
+                    requireZero(args, "ChildFailure.restart");
+                    choose(ActorRuntime.SupervisorControlDirective.RESTART);
+                    return null;
+                };
+                case "acknowledge" -> (Invokable) args -> {
+                    requireZero(args, "ChildFailure.acknowledge");
+                    choose(ActorRuntime.SupervisorControlDirective.ACKNOWLEDGE);
+                    return null;
+                };
+                case "retain" -> (Invokable) args -> {
+                    requireZero(args, "ChildFailure.retain");
+                    choose(ActorRuntime.SupervisorControlDirective.RETAIN);
+                    return null;
+                };
+                case "escalate" -> (Invokable) args -> {
+                    requireZero(args, "ChildFailure.escalate");
+                    choose(ActorRuntime.SupervisorControlDirective.ESCALATE);
+                    return null;
+                };
+                default -> throw new IllegalArgumentException(
+                        "unknown ChildFailure member " + name);
+            };
+        }
+
+        private void choose(ActorRuntime.SupervisorControlDirective selected) {
+            requireActive();
+            Objects.requireNonNull(selected, "selected");
+            if (directive != null) {
+                throw new IllegalStateException(
+                        "ChildFailure supervisor directive already selected: " + directive);
+            }
+            directive = selected;
+        }
+
+        private ActorRuntime.SupervisorControlDirective directiveOrRetain() {
+            requireActive();
+            return directive == null
+                    ? ActorRuntime.SupervisorControlDirective.RETAIN
+                    : directive;
+        }
+
+        private void revoke() { active = false; }
+
+        private void requireActive() {
+            if (!active) {
+                throw new SecurityException(
+                        "ChildFailure capability expired after supervisor CONTROL turn");
+            }
+        }
+    }
+
     private record SourceActorState(
             ActorRuntime.ActorId ownerActorId,
+            long ownerGeneration,
             String actorTypeName,
             OresObject object)
             implements ActorRuntime.ActorOwnedGuestState {
         private SourceActorState {
             Objects.requireNonNull(ownerActorId, "ownerActorId");
+            if (ownerGeneration <= 0) {
+                throw new IllegalArgumentException(
+                        "source actor owner generation must be positive");
+            }
             if (actorTypeName == null || actorTypeName.isBlank()) {
                 throw new IllegalArgumentException(
                         "source actor type name cannot be blank");
@@ -10386,9 +10702,6 @@ public final class OresEvalRootNode extends RootNode {
     }
     private record OptionUnwrapError(String reason) {
         @Override public String toString(){return "OptionUnwrapError(" + reason + ")";}
-    }
-    private static final class OresPanic extends RuntimeException {
-        private OresPanic(String message) { super(message, null, true, false); }
     }
     private static final class OresCastError extends RuntimeException {
         private OresCastError(String message) { super(message, null, false, false); }
