@@ -39,6 +39,11 @@ public final class OresContext implements AutoCloseable {
     public NativeHttp http() { return http; }
 
     private final UUID contextId = UUID.randomUUID();
+    private final ChannelRuntime.AdmissionDomain channelAdmissionDomain =
+            new ChannelRuntime.AdmissionDomain(
+                    "ores-context-" + contextId,
+                    ChannelRuntime.DEFAULT_MAX_PENDING_SELECTS,
+                    ChannelRuntime.DEFAULT_MAX_PENDING_SELECT_ARMS);
     private final AtomicLong schedulerSafepoints = new AtomicLong();
     private final AtomicLong sourceLoopCooperates = new AtomicLong();
     private final IsolatePolicy isolatePolicy;
@@ -62,8 +67,14 @@ public final class OresContext implements AutoCloseable {
         requireCapability(IsolatePolicy.Capability.JAVA_INTEROP, "Java runtime handle conversion");
         if (env.isHostObject(value)) {
             Object host = env.asHostObject(value);
-            if (host instanceof ChannelRuntime.Channel<?>
-                    || host instanceof OresFuture<?>
+            if (host instanceof ChannelRuntime.Channel<?> channel) {
+                if (!channel.belongsTo(channelAdmissionDomain())) {
+                    throw new SecurityException(
+                            "host Channel belongs to another OresContext admission domain");
+                }
+                return channel;
+            }
+            if (host instanceof OresFuture<?>
                     || host instanceof CompletionStage<?>) {
                 return host;
             }
@@ -142,6 +153,20 @@ public final class OresContext implements AutoCloseable {
     public PrintWriter output() { return output; }
     public OresVM vm() { return vm; }
     public ActorRuntime actors() { return actors; }
+
+    /**
+     * Effective source Channel/select admission domain. Root/context work uses
+     * the context budget; actor turns use the owning actor's isolated budget.
+     */
+    public ChannelRuntime.AdmissionDomain channelAdmissionDomain() {
+        ActorRuntime current = ActorRuntime.currentActorRuntime();
+        if (current == null) return channelAdmissionDomain;
+        if (current != actors) {
+            throw new SecurityException(
+                    "source Channel admission crossed OresContext ActorRuntime ownership");
+        }
+        return actors.currentSourceChannelAdmissionDomain();
+    }
     public AsyncRuntime asyncRuntime() { return asyncRuntime; }
     public RuntimeGarbageCollector garbageCollector() { return garbageCollector; }
     public UUID contextId() { return contextId; }
@@ -428,13 +453,35 @@ public final class OresContext implements AutoCloseable {
 
     @Override
     public void close() {
-        nativeIo.close();
-        http.close();
         RuntimeException failure = null;
+
+        // Fence new guest Channel/select admissions first. Pending selections
+        // must not survive just because an unrelated I/O subsystem throws while
+        // the context is tearing down.
+        try {
+            channelAdmissionDomain.close(
+                    new IllegalStateException("OresContext is closing"));
+        } catch (RuntimeException channelFailure) {
+            failure = channelFailure;
+        }
+
+        try {
+            nativeIo.close();
+        } catch (RuntimeException nativeIoFailure) {
+            if (failure == null) failure = nativeIoFailure;
+            else failure.addSuppressed(nativeIoFailure);
+        }
+        try {
+            http.close();
+        } catch (RuntimeException httpFailure) {
+            if (failure == null) failure = httpFailure;
+            else failure.addSuppressed(httpFailure);
+        }
         try {
             asyncRuntime.close();
         } catch (RuntimeException asyncFailure) {
-            failure = asyncFailure;
+            if (failure == null) failure = asyncFailure;
+            else failure.addSuppressed(asyncFailure);
         }
         try {
             actors.close();
@@ -447,15 +494,27 @@ public final class OresContext implements AutoCloseable {
         } catch (RuntimeException vmFailure) {
             if (failure == null) failure = vmFailure;
             else failure.addSuppressed(vmFailure);
-        } finally {
+        }
+
+        try {
             synchronized (this) {
                 linkedCodeUnits.clear();
                 linkedImportResolutions.clear();
                 sharedCodeImages.close();
             }
+        } catch (RuntimeException codeImageFailure) {
+            if (failure == null) failure = codeImageFailure;
+            else failure.addSuppressed(codeImageFailure);
+        }
+        try {
             garbageCollector.close();
+        } catch (RuntimeException gcFailure) {
+            if (failure == null) failure = gcFailure;
+            else failure.addSuppressed(gcFailure);
+        } finally {
             output.flush();
         }
+
         if (failure != null) throw failure;
     }
 }
