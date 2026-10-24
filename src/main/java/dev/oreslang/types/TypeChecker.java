@@ -318,7 +318,7 @@ public final class TypeChecker {
                 "Box", "Arc", "Weak", "Rc", "RefCell", "Mutex", "RwLock",
                 "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult",
                 "Object", "List", "Option", "Result", "Future",
-                "HttpServer", "HttpExchange", "HttpHandler", "HttpResponse", "TcpConnection", "NioTcpListener", "NioTcpConnection",
+                "HttpServer", "HttpExchange", "HttpHandler", "HttpResponse", "TcpConnection",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind", "ActorStream", "StreamOperator",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "void",
@@ -1115,14 +1115,6 @@ public final class TypeChecker {
         }
     }
     private void checkClass(String module, Ast.ClassDecl klass) {
-        // Never rely on parser-only admission. ASTs can also be constructed by
-        // tooling, deserialization or future compiler transforms.
-        if (klass.maxActorThreads() != Ast.MaxActorThreads.LOW) {
-            throw new IllegalArgumentException(
-                    "@ActorMaxThreads requires per-turn state isolation and"
-                    + " authenticated runtime leases before "
-                    + klass.maxActorThreads().value() + " physical actor turns can execute");
-        }
         Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
         lexicalClassOrigin = klass;
         try {
@@ -1482,50 +1474,7 @@ public final class TypeChecker {
             }
         }
 
-        Set<String> supervisorControlHandlers = new LinkedHashSet<>();
         for (Ast.MethodDecl method : klass.methods()) {
-            boolean supervisorControlHook = klass.actorKind() != Ast.ActorKind.NONE
-                    && Set.of("on_throw", "on_raise", "on_panic").contains(method.name());
-            if (supervisorControlHook) {
-                if (!klass.supervisor()) {
-                    throw new IllegalArgumentException(
-                            "actor '" + klass.name()
-                                    + "' must be declared supervisor actor to define "
-                                    + method.name());
-                }
-                if (!supervisorControlHandlers.add(method.name())) {
-                    throw new IllegalArgumentException(
-                            "duplicate supervisor CONTROL handler "
-                                    + klass.name() + "." + method.name());
-                }
-                boolean exactChildFailure =
-                        method.parameters().size() == 1
-                                && method.parameters().getFirst().type() != null
-                                && !method.parameters().getFirst().type().isBorrow()
-                                && method.parameters().getFirst().type().name().equals("ChildFailure")
-                                && method.parameters().getFirst().type().arguments().isEmpty();
-                boolean exactVoid =
-                        method.returnType() != null
-                                && method.returnType().name().equals("void")
-                                && method.returnType().arguments().isEmpty();
-                if (method.visibility() == Ast.Visibility.PUBLIC
-                        || method.isStatic()
-                        || method.isAbstract()
-                        || method.async()
-                        || method.suspends()
-                        || method.structural()
-                        || !method.genericParameters().isEmpty()
-                        || !exactChildFailure
-                        || !exactVoid) {
-                    throw new IllegalArgumentException(
-                            "supervisor CONTROL handler '" + klass.name() + "."
-                                    + method.name()
-                                    + "' must be private synchronous "
-                                    + method.name()
-                                    + "(ChildFailure failure): void");
-                }
-            }
-
             if (klass.actorKind() != Ast.ActorKind.NONE
                     && !method.isStatic()
                     && (method.name().equals("send")
@@ -1660,19 +1609,7 @@ public final class TypeChecker {
             if (!method.isStatic()) env.define("self", callableSelf, Ast.BindingKind.VAL);
             List<Type> methodArgumentTypes = new ArrayList<>(method.parameters().size());
             for (Ast.Param param : method.parameters()) {
-                Type parameterType;
-                if (supervisorControlHook
-                        && param.type() != null
-                        && param.type().name().equals("ChildFailure")) {
-                    parameterType = new Named("ChildFailure", List.of());
-                } else {
-                    if (param.type() != null && param.type().name().equals("ChildFailure")) {
-                        throw new IllegalArgumentException(
-                                "ChildFailure is a privileged supervisor CONTROL capability "
-                                        + "and may only appear as the checked handler parameter");
-                    }
-                    parameterType = resolveParam(param, generics, callableSelf);
-                }
+                Type parameterType = resolveParam(param, generics, callableSelf);
                 methodArgumentTypes.add(parameterType);
                 if (param.structural() && klass.actorKind() != Ast.ActorKind.NONE) {
                     throw new IllegalArgumentException(
@@ -1707,12 +1644,6 @@ public final class TypeChecker {
                 env.define(param.name(), parameterType, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
             defineImplicitArguments(env, methodArgumentTypes);
-            if (method.returnType() != null
-                    && method.returnType().name().equals("ChildFailure")) {
-                throw new IllegalArgumentException(
-                        "ChildFailure is a revocable supervisor CONTROL capability "
-                                + "and cannot be returned or stored as a callable result");
-            }
             Type returns = resolve(method.returnType(), generics, callableSelf);
             if (actorStartupHook && returns != Primitive.VOID) {
                 throw new IllegalArgumentException(
@@ -1747,18 +1678,6 @@ public final class TypeChecker {
             if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
                 String label = method.isStatic() ? "static function" : "method";
                 throw new IllegalArgumentException("non-void " + label + " '" + module + "." + klass.name() + "." + method.name() + "' must explicitly return on every path");
-            }
-        }
-
-        if (klass.supervisor()) {
-            Set<String> requiredSupervisorHandlers =
-                    Set.of("on_throw", "on_raise", "on_panic");
-            if (!supervisorControlHandlers.equals(requiredSupervisorHandlers)) {
-                Set<String> missing = new LinkedHashSet<>(requiredSupervisorHandlers);
-                missing.removeAll(supervisorControlHandlers);
-                throw new IllegalArgumentException(
-                        "supervisor actor '" + klass.name()
-                                + "' is missing checked CONTROL handlers " + missing);
             }
         }
 
@@ -2186,15 +2105,6 @@ public final class TypeChecker {
                     : typeOfAgainstExpected(ret.value(), expectedReturn, env, generics, self);
             requireReadonlyCapabilityPreserved(actual, expectedReturn, "return value");
             requireAssignable(actual, expectedReturn, "return value");
-            return;
-        }
-        if (stmt instanceof Ast.TerminalEffectStmt effect) {
-            Type diagnostic = typeOf(effect.value(), env, generics, self);
-            requireAssignable(
-                    diagnostic,
-                    Primitive.STRING,
-                    effect.kind().name().toLowerCase(java.util.Locale.ROOT)
-                            + " diagnostic");
             return;
         }
         if (stmt instanceof Ast.YieldStmt yielded) {
@@ -3341,32 +3251,6 @@ public final class TypeChecker {
                     return Primitive.VOID;
                 }
 
-                if (receiver instanceof Named childFailure
-                        && childFailure.name().equals("ChildFailure")) {
-                    if (call.typeArgumentsPresent()) {
-                        throw new IllegalArgumentException(
-                                "ChildFailure CONTROL decisions do not accept type arguments");
-                    }
-                    return switch (member.member()) {
-                        case "restart", "acknowledge", "retain", "escalate" -> {
-                            if (!call.arguments().isEmpty()) {
-                                throw new IllegalArgumentException(
-                                        "ChildFailure." + member.member()
-                                                + " expects no arguments");
-                            }
-                            yield Primitive.VOID;
-                        }
-                        case "actor_id", "generation", "kind",
-                                "failure_type", "parent_generation" ->
-                                throw new IllegalArgumentException(
-                                        "ChildFailure." + member.member()
-                                                + " is a property and is not callable");
-                        default -> throw new IllegalArgumentException(
-                                "unknown ChildFailure callable member '"
-                                        + member.member() + "'");
-                    };
-                }
-
                 if (receiver instanceof Named actorRef
                         && actorRef.name().equals("ActorRef")) {
                     Ast.ClassDecl actorClass = actorClassForRef(actorRef);
@@ -3923,27 +3807,12 @@ public final class TypeChecker {
                             "unknown Channel member '" + member.member() + "'");
                 };
             }
-            if (sumReceiver instanceof Named named && named.name().equals("NioTcpListener")
-                    && member.member().equals("port")) return Primitive.INT;
             Type ioMember = builtinIoMember(sumReceiver, member.member());
             if (ioMember != null) return ioMember;
             Type httpMember = builtinHttpMember(sumReceiver, member.member());
             if (httpMember != null) return httpMember;
             Type futureMember = builtinFutureMember(sumReceiver, member.member());
             if (futureMember != null) return futureMember;
-            if (sumReceiver instanceof Named childFailure
-                    && childFailure.name().equals("ChildFailure")) {
-                return switch (member.member()) {
-                    case "actor_id", "kind", "failure_type" -> Primitive.STRING;
-                    case "generation", "parent_generation" -> Primitive.INT;
-                    case "restart", "acknowledge", "retain", "escalate" ->
-                            throw new IllegalArgumentException(
-                                    "ChildFailure." + member.member()
-                                            + " is direct-call-only; invoke it with ()");
-                    default -> throw new IllegalArgumentException(
-                            "unknown ChildFailure member '" + member.member() + "'");
-                };
-            }
             if (sumReceiver instanceof Named actorRef
                     && actorRef.name().equals("ActorRef")) {
                 actorClassForRef(actorRef);
@@ -5604,34 +5473,8 @@ public final class TypeChecker {
                 }
             }
             case "network", "net" -> {
-                if (name.equals("listen_nonblocking")) {
-                    return new Function(List.of(Primitive.STRING, Primitive.INT, Primitive.INT,
-                            Primitive.INT, Primitive.INT), new Named("NioTcpListener", List.of()));
-                }
                 if (!name.equals("connect_async")) return null;
                 result = new Named("TcpConnection", List.of()); parameters = List.of(Primitive.STRING, Primitive.INT);
-            }
-            case "NioTcpListener" -> {
-                switch (name) {
-                    case "accept_async" -> {
-                        result = new Named("NioTcpConnection", List.of());
-                        parameters = List.of();
-                    }
-                    case "close_async" -> { result = Primitive.VOID; parameters = List.of(); }
-                    default -> { return null; }
-                }
-            }
-            case "NioTcpConnection" -> {
-                switch (name) {
-                    case "read_bytes_async" -> {
-                        result = new ListType(Primitive.INT); parameters = List.of(Primitive.INT);
-                    }
-                    case "write_bytes_async" -> {
-                        result = Primitive.INT; parameters = List.of(new ListType(Primitive.INT));
-                    }
-                    case "close_async" -> { result = Primitive.VOID; parameters = List.of(); }
-                    default -> { return null; }
-                }
             }
             case "TcpConnection" -> {
                 switch (name) {
@@ -8521,8 +8364,6 @@ public final class TypeChecker {
                 rejectStaticClassGenericReferences(destructure.initializer(), classGenerics, klass, method);
             } else if (statement instanceof Ast.ReturnStmt returned) {
                 rejectStaticClassGenericReferences(returned.value(), classGenerics, klass, method);
-            } else if (statement instanceof Ast.TerminalEffectStmt effect) {
-                rejectStaticClassGenericReferences(effect.value(), classGenerics, klass, method);
             } else if (statement instanceof Ast.YieldStmt yielded) {
                 rejectStaticClassGenericReferences(yielded.value(), classGenerics, klass, method);
             } else if (statement instanceof Ast.ExprStmt expression) {
@@ -10028,8 +9869,7 @@ public final class TypeChecker {
 
     private boolean definitelyReturns(List<Ast.Stmt> body) {
         for (Ast.Stmt stmt : body) {
-            if (stmt instanceof Ast.ReturnStmt
-                    || stmt instanceof Ast.TerminalEffectStmt) return true;
+            if (stmt instanceof Ast.ReturnStmt) return true;
             if (stmt instanceof Ast.BlockStmt block && definitelyReturns(block.body())) return true;
             if (stmt instanceof Ast.LoopStmt loop && !containsBreakForCurrentLoop(loop.body())) return true;
             if (stmt instanceof Ast.IfStmt conditional) {
