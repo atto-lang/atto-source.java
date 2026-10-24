@@ -218,6 +218,72 @@ assert_case() {
     cat "$tmp/stdout" "$tmp/stderr" >&2
     exit 1
   fi
+  if [ "$expected" = failure ]; then
+    # Negative cases must fail for their INTENDED reason. A missing native
+    # binary, an unrelated Maven error or a premature parse failure must not
+    # make a later capability/JIT/channel assertion look proven.
+    expected_status=1
+    expected_diagnostic=
+    case "$name" in
+      'invalid offline mode denied') expected_status=2; expected_diagnostic='ORES_NATIVE_IMAGE_OFFLINE must be 0 or 1' ;;
+      'invalid mode') expected_status=2; expected_diagnostic='invalid image mode: invalid' ;;
+      'invalid refs') expected_status=2; expected_diagnostic='invalid reference mode: invalid' ;;
+      'Maven failure') expected_status=19 ;;
+      'script wrapper rather than native binary') expected_diagnostic='artifact is not an OS-native executable' ;;
+      'wrong baked reference mode'|'wrong baked image mode'|'extra build-info lines')
+        expected_diagnostic='native build-info does not match canonical' ;;
+      'source execution failure') expected_status=13 ;;
+      'check-only mistakenly executes guest') expected_diagnostic='native --check unexpectedly emitted guest output' ;;
+      'silent callables guest execution'|'incorrect lexical closure result')
+        expected_diagnostic='native callables guest output differs from expected value' ;;
+      'private actor capability violation admitted')
+        expected_diagnostic='native linked admission accepted private actor sharing violations' ;;
+      'private actor denial uses wrong CLI exit status')
+        expected_diagnostic='expected private actor capability denial with CLI status 1, got 2' ;;
+      'valid shared/private actor rejected') : ;;
+      'actor rejected for unrelated parse error'|'actor rejected for unrelated network capability')
+        expected_diagnostic='private actor negative fixture failed without a capability-denial diagnostic' ;;
+      'actor check-only emitted guest output')
+        expected_diagnostic='native actor --check unexpectedly emitted guest output' ;;
+      'silent fake image without guest-core output'|'wrong native core numeric result')
+        expected_diagnostic='native Oreslang core-library output differs from expected value' ;;
+      'silent native channel execution'|'wrong native channel select winner'|'lost unselected native channel message')
+        expected_diagnostic='native channel/select result differs from expected first-winner and retained-message output' ;;
+      'silent fake image without guest-test output'|'guest test reports failures'|
+      'valid summary without actual PASS/SKIP records'|'duplicate valid summary'|
+      'valid plus conflicting summary'|'valid summary alongside FAIL event'|
+      'valid summary alongside excess PASS event'|'duplicated PASS replacing missing PASS'|
+      'duplicate arithmetic PASS identity'|'wrong SKIP test identity'|'duplicate SKIP identity')
+        expected_diagnostic='native executable did not produce the exact unique PASS/SKIP guest tests and summary' ;;
+      'unrelated CLI error impersonates AOT JIT rejection'|
+      'wrong AOT JIT refusal reason'|'wrong hybrid JIT refusal reason')
+        expected_diagnostic='native executable refused JIT without the required build-mode diagnostic' ;;
+      'native image accepting JVM JIT')
+        expected_diagnostic='expected --mode=jit to be rejected with CLI status 2, got 0' ;;
+      'unexpected JIT refusal exit status')
+        expected_diagnostic='expected --mode=jit to be rejected with CLI status 2, got 1' ;;
+      *) echo "FAILED: unclassified negative test: $name" >&2; exit 1 ;;
+    esac
+    if [ "$result" -ne "$expected_status" ]; then
+      echo "FAILED: $name returned $result instead of expected failure status $expected_status" >&2
+      cat "$tmp/stdout" "$tmp/stderr" >&2
+      exit 1
+    fi
+    if [ -n "$expected_diagnostic" ]; then
+      if ! grep -F "$expected_diagnostic" "$tmp/stderr" >/dev/null; then
+        echo "FAILED: $name did not reach its intended rejection stage" >&2
+        cat "$tmp/stdout" "$tmp/stderr" >&2
+        exit 1
+      fi
+    elif [ "$name" = 'valid shared/private actor rejected' ]; then
+      # This mock returns status 1 directly, without a diagnostic. It must at
+      # least have passed the earlier native build, manifest and callables run.
+      if ! grep -Fx '120:9:13' "$tmp/stdout" >/dev/null || [ -s "$tmp/stderr" ]; then
+        echo "FAILED: actor rejection occurred before linked actor admission" >&2
+        exit 1
+      fi
+    fi
+  fi
   echo "PASS (mocked): $name"
 }
 
