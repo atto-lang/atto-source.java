@@ -3831,6 +3831,9 @@ public final class OwnershipChecker {
         }
 
         if (type.isUnion() || type.isTupleType()) {
+            // A compiler-made union always has members. A synthetic,
+            // zero-member union must not derive Send by vacuous truth.
+            if (type.isUnion() && type.arguments().isEmpty()) return none;
             boolean send = true;
             boolean sync = true;
             boolean share = true;
@@ -4439,7 +4442,8 @@ public final class OwnershipChecker {
 
     private boolean isCopyType(Ast.TypeRef type) {
         if (type == null || type.isBorrow()) return false;
-        if (type.isUnion()) return type.arguments().stream().allMatch(this::isCopyType);
+        if (type.isUnion()) return !type.arguments().isEmpty()
+                && type.arguments().stream().allMatch(this::isCopyType);
         if (type.isTupleType()) return type.arguments().stream().allMatch(this::isCopyType);
         if (hasLocalTypeAliasNamed(type.name())) return false;
         // Same spelling is not enough to bestow a runtime wrapper's Copy
@@ -4452,7 +4456,8 @@ public final class OwnershipChecker {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
                     "bool","Bool","string","String","void",
-                    "SelectCase","SelectSet","OptionUnwrapError" -> true;
+                    "SelectCase","SelectSet","OptionUnwrapError"
+                    -> type.arguments().isEmpty();
             case "SharedMutex", "Channel" -> type.arguments().size() == 1;
             case "ActorRef" -> isVerifiedActorReference(type);
             case "Option" -> type.arguments().size() == 1 && isCopyType(type.arguments().getFirst());
