@@ -5652,31 +5652,27 @@ public final class ActorRuntime implements AutoCloseable {
         AtomicInteger state = new AtomicInteger(WAITING);
 
         AtomicBoolean slotCancellationInProgress = new AtomicBoolean();
+        Object cancellationLinearizationLock = new Object();
         OresFuture<Void> result = new OresFuture<>(
                 () -> {
-                    // The waiter/credit state is authoritative. Do not mark the
-                    // wrapper cancelled first: credit may already have moved to
-                    // this producer even though its Future callback has not run.
-                    if (state.get() != WAITING) return false;
-                    slotCancellationInProgress.set(true);
-                    final boolean waiterWithdrawn;
-                    try {
-                        waiterWithdrawn = slot.cancel(false);
-                    } finally {
-                        slotCancellationInProgress.set(false);
+                    synchronized (cancellationLinearizationLock) {
+                        if (state.get() != WAITING) return false;
+                        slotCancellationInProgress.set(true);
+                        final boolean waiterWithdrawn;
+                        try {
+                            waiterWithdrawn = slot.cancel(false);
+                        } finally {
+                            slotCancellationInProgress.set(false);
+                        }
+                        if (!waiterWithdrawn) return false;
+                        if (!state.compareAndSet(WAITING, TERMINAL)) {
+                            throw new IllegalStateException(
+                                    "async-send cancellation withdrew waiter after wrapper state advanced");
+                        }
+                        releaseOnce.run();
+                        sendLoan.close();
+                        return true;
                     }
-                    if (!waiterWithdrawn) {
-                        // Transfer, failure or another terminal settlement won.
-                        // Its callback owns payload/credit/loan retirement.
-                        return false;
-                    }
-                    if (!state.compareAndSet(WAITING, TERMINAL)) {
-                        throw new IllegalStateException(
-                                "async-send cancellation withdrew waiter after wrapper state advanced");
-                    }
-                    releaseOnce.run();
-                    sendLoan.close();
-                    return true;
                 },
                 () -> { });
 
