@@ -203,7 +203,8 @@ final class AliasExtensionMethodTest {
         for (String source : new String[]{
                 "declare type Code = int; define mtd bad on Code<int>(): int { return self; }",
                 "declare type Code = int; define mtd bad on Code(self: int): int { return self; }",
-                "declare type Code = int; define mtd init on Code(): int { return self; }"
+                "declare type Code = int; define mtd init on Code(): int { return self; }",
+                "declare type Code = int; define mtd main on Code(): int { return self; }"
         }) {
             assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
         }
@@ -245,7 +246,20 @@ final class AliasExtensionMethodTest {
                         define mtd describe on Code(): string { return "Code"; }
                         fnc wrong(Other other): string { return other.describe(); }
                         """));
-        assertNotNull(error.getMessage());
+        assertTrue(error.getMessage().contains("EXTENSION_RECEIVER_MISMATCH"),
+                error::getMessage);
+    }
+
+    @Test
+    void wrongExtensionArityUsesStableDiagnostic() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        declare type Code = int;
+                        define mtd plus on Code(int delta): int { return self + delta; }
+                        fnc wrong(Code code): int { return code.plus(); }
+                        """));
+        assertTrue(error.getMessage().contains("EXTENSION_ARITY_MISMATCH"),
+                error::getMessage);
     }
 
     private static String run(String program) throws Exception {
