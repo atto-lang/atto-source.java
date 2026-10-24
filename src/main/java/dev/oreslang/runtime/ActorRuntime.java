@@ -636,6 +636,22 @@ public final class ActorRuntime implements AutoCloseable {
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
     public int maxActors() { return dispatcherConfig.maxActors(); }
 
+    int startedActorCarrierCount() {
+        return startedCarrierCount(privateDispatcher)
+                + startedCarrierCount(sharedDispatcher)
+                + startedCarrierCount(untrustedDispatcher);
+    }
+
+    private static int startedCarrierCount(ExecutorService executor) {
+        if (executor instanceof NativeCarrierExecutor nativePool)
+            return nativePool.getStartedCarrierCount();
+        if (executor instanceof ActorAffinityDispatcher lanes)
+            return lanes.startedCarrierCount();
+        if (executor instanceof ThreadPoolExecutor pool)
+            return pool.getPoolSize();
+        return 0;
+    }
+
     void bindNioCompletionCapacityHook(Runnable hook) {
         Objects.requireNonNull(hook, "hook");
         if (closed.get()) throw new IllegalStateException("actor runtime closed");
