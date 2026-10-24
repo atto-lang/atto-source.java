@@ -106,9 +106,12 @@ evidence only**. Never reuse it as the source-carrying production workflow.
 
 All selected commands should use a reviewed offline runner environment and
 immutable checkout. PR #1976's smoke script now supports `ORES_NATIVE_IMAGE_OFFLINE=1`, which
-passes `-o` to Maven and fails closed on invalid flag values. **21 tests passed
+passes `-o` to Maven and fails closed on invalid flag values. **26 tests passed
 locally against the exact committed script/test Git blob versions**, including
-two offline success configurations and invalid-mode denial. A future carrier
+two offline success configurations, invalid-mode denial, and new
+fail-closed checks for duplicate summaries, unexpected guest FAIL/PASS
+records, and missing PASS/SKIP results. This is native mock verification,
+not current Oreslang GraalVM build evidence. A future carrier
 must still prove a source-free verified dependency cache, effective egress
 restriction and hardened sandbox; a Maven offline flag alone is insufficient.
 
