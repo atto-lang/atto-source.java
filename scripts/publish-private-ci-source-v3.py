@@ -586,6 +586,8 @@ def verify_source_pr(source_pr, source_commit):
     origin = require_live_private_source()
     repo_id = origin["id"]
     pr = legacy.gh_api(f"repos/{legacy.SOURCE_REPO}/pulls/{source_pr}")
+    if type(pr) is not dict:
+        raise Denied("source PR metadata response is invalid")
     head = pr.get("head")
     base = pr.get("base")
     # A matching slug is not sufficient: bind BOTH sides of the PR to the
