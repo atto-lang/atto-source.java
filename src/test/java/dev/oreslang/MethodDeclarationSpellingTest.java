@@ -349,7 +349,7 @@ final class MethodDeclarationSpellingTest {
                     mtd generic<T>(T value) -> T ::
                         return value;
                     end
-                    method mtd(): int { return 4; }
+                    method mtd(int value): int { return value; }
                 end
                 """);
         Ast.ClassDecl klass = assertInstanceOf(Ast.ClassDecl.class,
