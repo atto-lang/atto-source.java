@@ -33,7 +33,16 @@ if ! command -v mvn >/dev/null 2>&1; then
 fi
 
 "$JAVA_HOME/bin/native-image" --version
-mvn -B -ntp -DskipTests "-P$profile" clean package
+
+# Carrier CI prepares and verifies dependencies in an isolated, source-free
+# step. When requested, prohibit Maven network dependency resolution while
+# processing the private Oreslang checkout. Reject misspelled mode values.
+case "${ORES_NATIVE_IMAGE_OFFLINE:-0}" in
+  0) set -- ;;
+  1) set -- -o ;;
+  *) echo "ORES_NATIVE_IMAGE_OFFLINE must be 0 or 1" >&2; exit 2 ;;
+esac
+mvn -B -ntp "$@" -DskipTests "-P$profile" clean package
 
 executable="./target/$binary"
 if [ ! -s "$executable" ] || [ ! -x "$executable" ]; then
