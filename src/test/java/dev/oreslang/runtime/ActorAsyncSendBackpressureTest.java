@@ -1,0 +1,181 @@
+package dev.oreslang.runtime;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+@Timeout(20)
+final class ActorAsyncSendBackpressureTest {
+    private static IsolatePolicy oneMessagePolicy() {
+        IsolatePolicy base = IsolatePolicy.developer();
+        return new IsolatePolicy(
+                base.capabilities(),
+                base.maxHeapBytes(),
+                1,
+                base.maxWallTime(),
+                base.adversarial());
+    }
+
+    @Test
+    void fullMailboxSuspendsProducerUntilARealSlotIsTransferred() throws Exception {
+        CountDownLatch firstEntered = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        List<Integer> processed = Collections.synchronizedList(new ArrayList<>());
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<Integer>spawnShared(oneMessagePolicy(), () -> (message, context) -> {
+                if (message == 1) {
+                    firstEntered.countDown();
+                    if (!releaseFirst.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("held actor turn timed out");
+                    }
+                }
+                processed.add(message);
+            });
+
+            ref.send(1);
+            assertTrue(firstEntered.await(5, TimeUnit.SECONDS));
+            ref.send(2); // exactly fills the one-message USER queue
+
+            OresFuture<Void> third = ref.sendAsync(3);
+            assertFalse(third.isDone(), "full mailbox must retain a bounded waiter, not fake admission");
+            assertThrows(ActorRuntime.ActorMailboxFullException.class, () -> ref.send(4));
+
+            releaseFirst.countDown();
+            third.get(5, TimeUnit.SECONDS);
+            ref.drain().get(5, TimeUnit.SECONDS);
+
+            assertEquals(List.of(1, 2, 3), processed);
+            ref.stop();
+            ref.getDone().get(5, TimeUnit.SECONDS);
+        } finally {
+            releaseFirst.countDown();
+        }
+    }
+
+    @Test
+    void cancellationDetachesPendingProducerAndReturnsNoPhantomMail() throws Exception {
+        CountDownLatch firstEntered = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        List<Integer> processed = Collections.synchronizedList(new ArrayList<>());
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<Integer>spawnShared(oneMessagePolicy(), () -> (message, context) -> {
+                if (message == 1) {
+                    firstEntered.countDown();
+                    if (!releaseFirst.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("held actor turn timed out");
+                    }
+                }
+                processed.add(message);
+            });
+
+            ref.send(1);
+            assertTrue(firstEntered.await(5, TimeUnit.SECONDS));
+            ref.send(2);
+            OresFuture<Void> cancelled = ref.sendAsync(3);
+            assertFalse(cancelled.isDone());
+            assertTrue(cancelled.cancel(false));
+
+            releaseFirst.countDown();
+            ref.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(List.of(1, 2), processed);
+
+            // Cancellation must not leak the slot or retained payload budget.
+            ref.send(4);
+            ref.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(List.of(1, 2, 4), processed);
+
+            ref.stop();
+            ref.getDone().get(5, TimeUnit.SECONDS);
+        } finally {
+            releaseFirst.countDown();
+        }
+    }
+
+    @Test
+    void pendingProducerRegistrationsAreBoundedIndependentlyOfMailboxDepth() throws Exception {
+        CountDownLatch firstEntered = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<Integer>spawnShared(oneMessagePolicy(), () -> (message, context) -> {
+                if (message == 1) {
+                    firstEntered.countDown();
+                    if (!releaseFirst.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("held actor turn timed out");
+                    }
+                }
+            });
+
+            ref.send(1);
+            assertTrue(firstEntered.await(5, TimeUnit.SECONDS));
+            ref.send(2);
+
+            // maxMailboxMessages=1 also caps the retained async-producer cohort at one.
+            OresFuture<Void> firstWaiter = ref.sendAsync(3);
+            assertFalse(firstWaiter.isDone());
+
+            OresFuture<Void> overflow = ref.sendAsync(4);
+            ExecutionException failed = assertThrows(
+                    ExecutionException.class,
+                    () -> overflow.get(5, TimeUnit.SECONDS));
+            assertInstanceOf(ActorRuntime.ActorSendBackpressureException.class, failed.getCause());
+            assertEquals(
+                    ActorRuntime.SendError.Reason.RESOURCE_EXHAUSTED,
+                    ((ActorRuntime.ActorSendBackpressureException) failed.getCause()).reason());
+
+            assertTrue(firstWaiter.cancel(false));
+            releaseFirst.countDown();
+            ref.drain().get(5, TimeUnit.SECONDS);
+            ref.stop();
+            ref.getDone().get(5, TimeUnit.SECONDS);
+        } finally {
+            releaseFirst.countDown();
+        }
+    }
+
+    @Test
+    void serialActorCannotAwaitCapacityThatOnlyItsOwnTurnCanRelease() throws Exception {
+        CountDownLatch diagnosed = new CountDownLatch(1);
+        AtomicReference<Throwable> unexpected = new AtomicReference<>();
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<Integer>spawnShared(oneMessagePolicy(), () -> (message, context) -> {
+                if (message != 1) return;
+
+                context.self().send(2); // fill the only queued USER slot
+                OresFuture<Void> impossible = context.self().sendAsync(3);
+                try {
+                    impossible.get(0, TimeUnit.NANOSECONDS);
+                    unexpected.set(new AssertionError("self-send unexpectedly admitted"));
+                } catch (ExecutionException failure) {
+                    if (!(failure.getCause()
+                            instanceof ActorRuntime.ActorSendWouldDeadlockException deadlock)) {
+                        unexpected.set(failure);
+                    } else if (deadlock.reason()
+                            != ActorRuntime.SendError.Reason.WOULD_DEADLOCK) {
+                        unexpected.set(new AssertionError("wrong deadlock reason"));
+                    }
+                }
+                diagnosed.countDown();
+            });
+
+            ref.send(1);
+            assertTrue(diagnosed.await(5, TimeUnit.SECONDS));
+            assertNull(unexpected.get());
+            ref.drain().get(5, TimeUnit.SECONDS);
+            ref.stop();
+            ref.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+}
