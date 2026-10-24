@@ -75,8 +75,21 @@ fi
   unset JAVA_HOME CLASSPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS
   "$executable" --check examples/callables.ores
   "$executable" "--mode=$mode" examples/together.ores
-  "$executable" "--mode=$mode" examples/native-core-library.ores
 )
+
+# Verify exact Oreslang semantics and packaged stdlib resolution, not merely
+# a successful process exit. This output is from the checked-in native core
+# library fixture (also observed in the previously successful AOT CI run).
+core_output="$(
+  unset JAVA_HOME CLASSPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS
+  "$executable" "--mode=$mode" examples/native-core-library.ores
+)"
+expected_core_output='9007199254740992|-999999999999999999|10'
+if [ "$core_output" != "$expected_core_output" ]; then
+  echo "native Oreslang core-library output differs from expected value" >&2
+  exit 1
+fi
+printf '%s\n' "$core_output"
 
 # A native image that merely exits zero without executing guest code is NOT
 # sufficient evidence. Require the real Oreslang test framework's known output.
