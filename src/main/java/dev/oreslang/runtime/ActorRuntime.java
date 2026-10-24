@@ -7544,9 +7544,13 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (lifecycleLock) {
                 if (stopped.get() || finalized) throw terminated(ref);
                 if (sealing) throw new ActorSealedException(ref.id());
-                if (activeAsyncSendAdmissions == Integer.MAX_VALUE) {
-                    throw new IllegalStateException(
-                            "actor async-send admission loan count exhausted for " + ref.id());
+                // Bound the entire pre-publication cohort, not only waiters
+                // which have already reached pendingAsyncSends. Otherwise a
+                // burst of concurrent producers could all freeze/copy payloads
+                // before the waiter cap was observed.
+                if (activeAsyncSendAdmissions >= maxPendingAsyncSends) {
+                    throw new ActorSendBackpressureException(
+                            ref.id(), maxPendingAsyncSends);
                 }
                 ++activeAsyncSendAdmissions;
                 return new AsyncSendAdmissionLoan();
