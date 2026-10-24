@@ -571,6 +571,53 @@ final class ErrorPatternGuardPurityTest {
     }
 
     @Test
+    void optionalCastNestedInsideNominalTestCannotAllocateDuringErrorDispatch() {
+        String invalid = SOURCE + """
+                fnc classify(Error error, Error candidate): int {
+                  match error over
+                    on Error e when (candidate as? Error) is type Option<Error> -> { return 1; }
+                    on Error other -> { return 0; }
+                  end
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(invalid)));
+        assertTrue(failure.getMessage().contains("match guard must be pure/read-only"),
+                failure.getMessage());
+    }
+
+    @Test
+    void errorValueGuardAlsoRejectsNestedAllocatingOptionalCast() {
+        String invalid = SOURCE + """
+                fnc classify(Error error, Error candidate): int {
+                  return match error over {
+                    on Error e when (candidate as? Error) is type Option<Error> { return 1; }
+                    on Error other { return 0; }
+                  };
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(invalid)));
+        assertTrue(failure.getMessage().contains("match guard must be pure/read-only"),
+                failure.getMessage());
+    }
+
+    @Test
+    void ordinaryMatchStillAllowsOptionalCastNestedInGuardTypeTest() {
+        String valid = SOURCE + """
+                fnc classify(bool selected, Error candidate): int {
+                  match selected over
+                    on true when (candidate as? Error) is type Option<Error> -> { return 1; }
+                    on _ -> { return 0; }
+                  end
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(valid)));
+    }
+
+    @Test
     void guardDivisionCannotSmuggleAnExceptionalArithmeticOperation() {
         String bad = SOURCE + """
                 fnc classify(Error error, int divisor): int {
