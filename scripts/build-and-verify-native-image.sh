@@ -78,6 +78,31 @@ if [ "$info" != "$expected" ]; then
   exit 1
 fi
 
+# Native guest smokes must have clean stderr as well as the expected stdout.
+# A zero exit plus correct stdout must not hide a runtime diagnostic on stderr.
+# The file is isolated per invocation; it is removed when the verifier exits.
+guest_stderr="$(mktemp)"
+trap 'rm -f "$guest_stderr"' 0
+run_clean_guest() {
+  : > "$guest_stderr"
+  guest_output="$(
+    unset JAVA_HOME CLASSPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS
+    "$executable" "$@" 2>"$guest_stderr"
+  )" || {
+    guest_status=$?
+    if [ -s "$guest_stderr" ]; then
+      cat "$guest_stderr" >&2
+    fi
+    return "$guest_status"
+  }
+  if [ -s "$guest_stderr" ]; then
+    echo 'native guest unexpectedly emitted stderr diagnostics' >&2
+    cat "$guest_stderr" >&2
+    return 1
+  fi
+  printf '%s\n' "$guest_output"
+}
+
 # Exercise a REAL .ores file and packaged stdlib with Java build environment
 # variables removed. Only a successful native build plus execution passes.
 # Admission must NEVER execute the guest entry point. The same callables
@@ -94,10 +119,7 @@ fi
 
 # Running the checked source must execute its main routine. In addition to
 # the stdlib test below, verify factorial, lexical and nlexical closures.
-callables_output="$(
-  unset JAVA_HOME CLASSPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS
-  "$executable" "--mode=$mode" examples/callables.ores
-)"
+callables_output="$(run_clean_guest "--mode=$mode" examples/callables.ores)"
 if [ "$callables_output" != '120:9:13' ]; then
   echo "native callables guest output differs from expected value" >&2
   exit 1
@@ -143,18 +165,12 @@ case "$invalid_actor_diagnostic" in
     ;;
 esac
 
-(
-  unset JAVA_HOME CLASSPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS
-  "$executable" "--mode=$mode" examples/together.ores
-)
+run_clean_guest "--mode=$mode" examples/together.ores
 
 # Verify exact Oreslang semantics and packaged stdlib resolution, not merely
 # a successful process exit. This output is from the checked-in native core
 # library fixture (also observed in the previously successful AOT CI run).
-core_output="$(
-  unset JAVA_HOME CLASSPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS
-  "$executable" "--mode=$mode" examples/native-core-library.ores
-)"
+core_output="$(run_clean_guest "--mode=$mode" examples/native-core-library.ores)"
 expected_core_output='9007199254740992|-999999999999999999|10'
 if [ "$core_output" != "$expected_core_output" ]; then
   echo "native Oreslang core-library output differs from expected value" >&2
@@ -165,10 +181,7 @@ printf '%s\n' "$core_output"
 # Native channel selection must preserve ordered buffered reads and return
 # the unselected message. A wrong select winner or a lost second message
 # cannot be certified by a zero guest exit status.
-channel_output="$(
-  unset JAVA_HOME CLASSPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS
-  "$executable" "--mode=$mode" examples/native-channel-select-smoke.ores
-)"
+channel_output="$(run_clean_guest "--mode=$mode" examples/native-channel-select-smoke.ores)"
 if [ "$channel_output" != 'first:7:9' ]; then
   echo "native channel/select result differs from expected first-winner and retained-message output" >&2
   exit 1
@@ -177,10 +190,7 @@ printf '%s\n' "$channel_output"
 
 # Verify that select wakes for completed Future<T> when the channel is
 # intentionally empty. Do not mistake silent completion for async progress.
-future_output="$(
-  unset JAVA_HOME CLASSPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS
-  "$executable" "--mode=$mode" examples/native-future-select-smoke.ores
-)"
+future_output="$(run_clean_guest "--mode=$mode" examples/native-future-select-smoke.ores)"
 if [ "$future_output" != 'future:4' ]; then
   echo "native Future/select output differs from expected result" >&2
   exit 1
@@ -189,10 +199,7 @@ printf '%s\n' "$future_output"
 
 # Root await must actually resume and return the typed result under both
 # Native Image AOT and hybrid, not merely pass linked syntax checking.
-await_output="$(
-  unset JAVA_HOME CLASSPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS
-  "$executable" "--mode=$mode" examples/strict-root-await.ores
-)"
+await_output="$(run_clean_guest "--mode=$mode" examples/strict-root-await.ores)"
 if [ "$await_output" != '42' ]; then
   echo "native root-await result differs from expected value" >&2
   exit 1
@@ -202,10 +209,7 @@ printf '%s\n' "$await_output"
 # A native image that merely exits zero without executing guest code is NOT
 # sufficient evidence. Require the real Oreslang test framework's known output.
 # Capture the command first (no pipeline that could hide its exit status).
-test_output="$(
-  unset JAVA_HOME CLASSPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS
-  "$executable" "--mode=$mode" examples/native-testing.ores
-)"
+test_output="$(run_clean_guest "--mode=$mode" examples/native-testing.ores)"
 printf '%s\n' "$test_output"
 expected_summary='ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0'
 # Require each exact guest test identity once; counts alone can be forged by
