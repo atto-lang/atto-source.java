@@ -4332,6 +4332,10 @@ public final class TypeChecker {
                         "value match cannot produce an explicit borrowed result until loan escape is proven");
             }
             Type result = declaredResult;
+            // An earlier wildcard arm may run on Error before a later Error arm.
+            boolean restrictErrorGuards = errorPatternDomain(subject)
+                    || valueMatch.arms().stream().anyMatch(arm ->
+                            errorPatternTarget(arm.pattern(), generics, self));
             List<Ast.MatchArm> proofArms = new ArrayList<>();
             Map<Env.Binding, Set<String>> before = env.initializationSnapshot();
             try {
@@ -4340,6 +4344,9 @@ public final class TypeChecker {
                     Env armEnv = new Env(env);
                     checkPattern(arm.pattern(), subject, armEnv, generics, self);
                     if (arm.guard() != null) {
+                        if (restrictErrorGuards) {
+                            requirePureMatchGuard(arm.guard(), armEnv, generics, self);
+                        }
                         requireAssignable(
                                 typeOfCondition(arm.guard(), armEnv, generics, self),
                                 Primitive.BOOL,
@@ -6038,6 +6045,175 @@ public final class TypeChecker {
         }
     }
 
+    private boolean errorPatternDomain(Type subject) {
+        if (subject instanceof Union union) {
+            return union.options().stream().anyMatch(this::errorPatternDomain);
+        }
+        if (!(subject instanceof Named named)) return false;
+        if (named.name().equals("Option") || named.name().equals("Result")) {
+            return named.arguments().stream().anyMatch(this::errorPatternDomain);
+        }
+        Ast.ClassDecl klass = findClass(named.name());
+        return klass != null && errorClassAncestry(klass, new LinkedHashSet<>());
+    }
+
+    private boolean errorPatternTarget(Ast.Pattern pattern, Set<String> generics, Type self) {
+        // The scrutinee may be a broad union/Any, while an individual arm
+        // explicitly tests Error. Do not permit an effectful guard merely
+        // because the original subject was not statically named Error.
+        if (pattern instanceof Ast.TypePattern typed) {
+            Ast.TypeRef ref = typed.type().isComplement()
+                    ? typed.type().complementedType() : typed.type();
+            return errorPatternDomain(deref(resolve(ref, generics, self)));
+        }
+        if (pattern instanceof Ast.ConstructorPattern ctor) {
+            return ctor.arguments().stream().anyMatch(p -> errorPatternTarget(p, generics, self));
+        }
+        if (pattern instanceof Ast.TuplePattern tuple) {
+            return tuple.elements().stream().anyMatch(p -> errorPatternTarget(p, generics, self));
+        }
+        return false;
+    }
+
+    private boolean errorClassAncestry(Ast.ClassDecl klass, Set<String> seen) {
+        if (!seen.add(qualifiedClassName(klass))) return false;
+        if (klass.name().equals("Error")) return true;
+        for (Ast.TypeRef parent : klass.parents()) {
+            Ast.ClassDecl ancestor = findClass(parent.name());
+            if (ancestor != null && errorClassAncestry(ancestor, seen)) return true;
+        }
+        return false;
+    }
+
+    private void requirePureMatchGuard(
+            Ast.Expr guard, Env env, Set<String> generics, Type self) {
+        if (!pureMatchGuardExpr(guard)) {
+            throw new IllegalArgumentException(
+                    "match guard must be pure/read-only, non-suspending and effect-free; "
+                            + "calls, assignments and runtime operations are not allowed");
+        }
+        // Equality over Option/Result/collections/records/tuples recursively
+        // traverses values in the evaluator. Syntax-only purity is not a
+        // sufficient bound for error dispatch or supervisor-facing guards.
+        if (!boundedErrorGuardComparisons(guard, env, generics, self)) {
+            throw new IllegalArgumentException(
+                    "match guard must be pure/read-only with bounded equality/type checks; "
+                            + "recursive aggregates, structural runtime tests and unknown domains are not allowed");
+        }
+    }
+
+    private boolean boundedErrorGuardEqualityType(Type type) {
+        Type value = deref(type);
+        if (value == Unknown.INSTANCE || value instanceof Generic
+                || value instanceof Record || value instanceof Tuple) return false;
+        if (value instanceof Union union) {
+            return union.options().stream().allMatch(this::boundedErrorGuardEqualityType);
+        }
+        if (value instanceof Named named) {
+            return !Set.of("Any", "Option", "Result", "IteratorResult",
+                    "Array", "List", "Map", "Set", "Dictionary", "Vector")
+                    .contains(named.name());
+        }
+        return true;
+    }
+
+    private boolean boundedErrorGuardRuntimeType(Ast.TypeRef target) {
+        // Nominal type tags are bounded observations. In contrast,
+        // oresTypeMatches recursively examines structural records/tuples.
+        // Reject aliases here until a type-resolution proof certifies that
+        // their underlying runtime predicate is bounded as well.
+        if (target.isComplement()) {
+            return boundedErrorGuardRuntimeType(target.complementedType());
+        }
+        if (target.isRecordType() || target.isTupleType()) return false;
+        if (target.isUnion()) {
+            return target.arguments().stream().allMatch(this::boundedErrorGuardRuntimeType);
+        }
+        return findTypeAlias(target.name()) == null;
+    }
+
+    private boolean boundedErrorGuardComparisons(
+            Ast.Expr expr, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.BinaryExpr binary) {
+            // Match typeOfCondition's short-circuit binding semantics.
+            // A type/pattern test on the LHS may introduce a readonly
+            // name that is used by the RHS comparison.
+            if (binary.operator().equals("&&")) {
+                if (!boundedErrorGuardComparisons(binary.left(), env, generics, self)) return false;
+                Env rightEnv = new Env(env);
+                defineConditionBindings(binary.left(), rightEnv, env, generics, self);
+                return boundedErrorGuardComparisons(binary.right(), rightEnv, generics, self);
+            }
+            if (Set.of("==", "!=", "eq", "neq").contains(binary.operator())
+                    && (!boundedErrorGuardEqualityType(typeOf(binary.left(), env, generics, self))
+                        || !boundedErrorGuardEqualityType(typeOf(binary.right(), env, generics, self)))) {
+                return false;
+            }
+            return boundedErrorGuardComparisons(binary.left(), env, generics, self)
+                    && boundedErrorGuardComparisons(binary.right(), env, generics, self);
+        }
+        if (expr instanceof Ast.UnaryExpr unary) {
+            return boundedErrorGuardComparisons(unary.operand(), env, generics, self);
+        }
+        if (expr instanceof Ast.ConditionalExpr conditional) {
+            return boundedErrorGuardComparisons(conditional.condition(), env, generics, self)
+                    && boundedErrorGuardComparisons(conditional.whenTrue(), env, generics, self)
+                    && boundedErrorGuardComparisons(conditional.whenFalse(), env, generics, self);
+        }
+        if (expr instanceof Ast.TypeTestExpr test) {
+            return boundedErrorGuardRuntimeType(test.targetType())
+                    && boundedErrorGuardComparisons(test.value(), env, generics, self);
+        }
+        if (expr instanceof Ast.PatternTestExpr) {
+            // Already rejected by pureMatchGuardExpr: do not silently
+            // widen this predicate in a future checker refactor.
+            return false;
+        }
+        if (expr instanceof Ast.CastExpr cast) {
+            return boundedErrorGuardRuntimeType(cast.targetType())
+                    && boundedErrorGuardComparisons(cast.value(), env, generics, self);
+        }
+        return true;
+    }
+
+    private boolean pureMatchGuardExpr(Ast.Expr expr) {
+        if (expr instanceof Ast.LiteralExpr || expr instanceof Ast.NameExpr) return true;
+        if (expr instanceof Ast.UnaryExpr unary) {
+            return Set.of("!", "not").contains(unary.operator())
+                    && pureMatchGuardExpr(unary.operand());
+        }
+        if (expr instanceof Ast.BinaryExpr binary) {
+            return Set.of("&&", "||", "and", "or", "==", "!=", "eq", "neq",
+                            "<", "<=", ">", ">=").contains(binary.operator())
+                    && pureMatchGuardExpr(binary.left())
+                    && pureMatchGuardExpr(binary.right());
+        }
+        if (expr instanceof Ast.ConditionalExpr conditional) {
+            return pureMatchGuardExpr(conditional.condition())
+                    && pureMatchGuardExpr(conditional.whenTrue())
+                    && pureMatchGuardExpr(conditional.whenFalse());
+        }
+        if (expr instanceof Ast.TypeTestExpr test) {
+            return pureMatchGuardExpr(test.value());
+        }
+        if (expr instanceof Ast.PatternTestExpr) {
+            // Unlike a nominal type test, 'matches Pattern' invokes
+            // recursive patternMatches at runtime (including tuple,
+            // Option/Result and structural field traversal). It is not
+            // a bounded scalar observation for ordered Error guards.
+            // Ordinary non-Error guards retain pattern-test support.
+            return false;
+        }
+        if (expr instanceof Ast.CastExpr cast) {
+            return cast.mode() == Ast.CastMode.OPTIONAL
+                    && pureMatchGuardExpr(cast.value());
+        }
+        // Explicit deny-by-default: CallExpr, MemberExpr, AssignExpr,
+        // RuntimeCallExpr, IndexExpr, NewExpr, AwaitExpr, TrapExpr, channel
+        // operations, match expressions, lambdas and every future AST node.
+        return false;
+    }
+
     private void checkMatch(
             Ast.MatchStmt matched,
             Type subject,
@@ -6046,6 +6222,10 @@ public final class TypeChecker {
             Type expectedReturn,
             Type self) {
         List<Ast.MatchArm> arms = matched.arms();
+        // A catch-all guard on Any can execute before a later Error arm.
+        boolean restrictErrorGuards = errorPatternDomain(subject)
+                || arms.stream().anyMatch(arm ->
+                        errorPatternTarget(arm.pattern(), generics, self));
         for (int i = 0; i < arms.size(); i++) {
             Ast.MatchArm arm = arms.get(i);
 
@@ -6066,6 +6246,9 @@ public final class TypeChecker {
             Env armEnv = new Env(env);
             checkPattern(arm.pattern(), subject, armEnv, generics, self);
             if (arm.guard() != null) {
+                if (restrictErrorGuards) {
+                    requirePureMatchGuard(arm.guard(), armEnv, generics, self);
+                }
                 requireAssignable(typeOfCondition(arm.guard(), armEnv, generics, self), Primitive.BOOL, "match guard");
             }
             checkBlock(arm.body(), armEnv, generics, expectedReturn, self);
