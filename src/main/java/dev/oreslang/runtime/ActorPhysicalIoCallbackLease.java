@@ -65,6 +65,7 @@ final class ActorPhysicalIoCallbackLease<V, A> implements CompletionHandler<V, A
             // breaks native at-most-once ownership; quarantine the receipt.
             // A later duplicate cannot undo a previously retired receipt.
             var duplicate = new IllegalStateException("duplicate native I/O callback");
+            failed.set(true);
             recordFailurePreservingCause(duplicate);
             throw duplicate;
         }
