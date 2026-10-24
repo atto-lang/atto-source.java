@@ -60,10 +60,24 @@ int main(int argc, char **argv) {
         }
         if (strstr(argv[2], "native-testing.ores") != NULL) {
             if (!getenv("MOCK_EMPTY_TEST_OUTPUT")) {
+                if (!getenv("MOCK_MISSING_TEST_EVENTS")) {
+                    puts("ORES_TEST|PASS|core/arithmetic/adds|");
+                    puts("ORES_TEST|PASS|core/float/tolerance|");
+                    puts("ORES_TEST|PASS|core/property/square|");
+                    puts("ORES_TEST|SKIP|core/future/parallel-runner|not yet supported");
+                }
+                if (getenv("MOCK_EXTRA_TEST_PASS"))
+                    puts("ORES_TEST|PASS|core/extra/false-positive|");
+                if (getenv("MOCK_EXTRA_TEST_FAIL"))
+                    puts("ORES_TEST|FAIL|core/failure|unexpected failure");
                 if (getenv("MOCK_BAD_TEST_SUMMARY"))
                     puts("ORES_TEST|SUMMARY|total=4|passed=0|failed=4|skipped=0|filtered=0");
                 else
                     puts("ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0");
+                if (getenv("MOCK_DUPLICATE_TEST_SUMMARY"))
+                    puts("ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0");
+                if (getenv("MOCK_CONFLICTING_TEST_SUMMARY"))
+                    puts("ORES_TEST|SUMMARY|total=4|passed=0|failed=4|skipped=0|filtered=0");
             }
         }
         return 0;
@@ -173,6 +187,11 @@ assert_case 'silent fake image without guest-core output' failure aot compressed
 assert_case 'wrong native core numeric result' failure aot compressed32 MOCK_BAD_CORE_OUTPUT=1
 assert_case 'silent fake image without guest-test output' failure aot compressed32 MOCK_EMPTY_TEST_OUTPUT=1
 assert_case 'guest test reports failures' failure aot compressed32 MOCK_BAD_TEST_SUMMARY=1
+assert_case 'valid summary without actual PASS/SKIP records' failure aot compressed32 MOCK_MISSING_TEST_EVENTS=1
+assert_case 'duplicate valid summary' failure aot compressed32 MOCK_DUPLICATE_TEST_SUMMARY=1
+assert_case 'valid plus conflicting summary' failure aot compressed32 MOCK_CONFLICTING_TEST_SUMMARY=1
+assert_case 'valid summary alongside FAIL event' failure aot compressed32 MOCK_EXTRA_TEST_FAIL=1
+assert_case 'valid summary alongside excess PASS event' failure aot compressed32 MOCK_EXTRA_TEST_PASS=1
 assert_case 'native image accepting JVM JIT' failure aot compressed32 MOCK_JIT_STATUS=0
 assert_case 'unexpected JIT refusal exit status' failure aot compressed32 MOCK_JIT_STATUS=1
 
