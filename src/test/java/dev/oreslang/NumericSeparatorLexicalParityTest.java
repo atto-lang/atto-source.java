@@ -44,7 +44,7 @@ final class NumericSeparatorLexicalParityTest {
     @Test
     void malformedIntegerSeparatorsAreRejectedBeforeAnyParserContext() {
         for (String invalid : new String[] {
-                "1_", "1__2", "1___2", "1_+2", "1_ 2", "1_a", "12_i"
+                "1_", "1__2", "1___2", "1_+2", "1_-2", "1_ 2", "1_a", "12_i"
         }) {
             rejectsAtLexer(invalid, "integer");
         }
@@ -57,14 +57,34 @@ final class NumericSeparatorLexicalParityTest {
     }
 
     @Test
-    void actorConfigurationCannotNormalizeMalformedIntegerSeparators() {
-        for (String invalid : new String[] { "1_", "1__0", "1_ 0", "1_+2" }) {
-            String source = "define http actor Service as "
-                    + "int requestConcurrency = " + invalid + "; end";
+    void signedI64BoundariesAreExactInIntegerExpressions() {
+        parses("9_223_372_036_854_775_807");
+        parses("-9_223_372_036_854_775_808");
+        parses("0_0_0");
+        for (String invalid : new String[] {
+                "9_223_372_036_854_775_808",
+                "+9_223_372_036_854_775_808",
+                "-9_223_372_036_854_775_809"
+        }) {
+            String source = "pub fnc main(): int { return " + invalid + "; }";
             IllegalArgumentException denied = assertThrows(
                     IllegalArgumentException.class, () -> Parser.parse(source), source);
-            assertTrue(denied.getMessage().contains("malformed integer separator"),
+            assertTrue(denied.getMessage().contains("integer literal overflows signed 64-bit"),
                     denied::getMessage);
+        }
+    }
+
+    @Test
+    void actorConfigurationCannotNormalizeMalformedIntegerSeparators() {
+        for (String field : new String[] { "requestConcurrency", "messageConcurrency" }) {
+            for (String invalid : new String[] { "1_", "1__0", "1___0", "1_-2", "1_ 0", "1_+2" }) {
+                String source = "define http actor Service as "
+                        + "int " + field + " = " + invalid + "; end";
+                IllegalArgumentException denied = assertThrows(
+                        IllegalArgumentException.class, () -> Parser.parse(source), source);
+                assertTrue(denied.getMessage().contains("malformed integer separator"),
+                        denied::getMessage);
+            }
         }
         assertDoesNotThrow(() -> Parser.parse(
                 "define http actor Service as "
