@@ -14,9 +14,9 @@ import org.junit.jupiter.api.Timeout;
 /**
  * Regression gates for issue #1944 / draft #1953.
  *
- * These are deliberately RED proof obligations against the current stacked
- * draft; do not merge until the implementation makes them pass. A Future
- * terminal state is not native-driver exit evidence.
+ * Regression proof obligations for postcommit retirement and native-provider
+ * exit. A Future terminal state or CompletionHandler return is not
+ * native-driver exit evidence.
  */
 @Timeout(20)
 final class ActorPhysicalRetirementPostcommitProofTest {
@@ -40,9 +40,8 @@ final class ActorPhysicalRetirementPostcommitProofTest {
         assertSame(postcommitFailure, assertThrows(IllegalStateException.class,
                 receipt::completeAfterPhysicalRelease));
         assertSame(postcommitFailure, registry.snapshot().failure());
-        // Currently fails: registry.retired() became true before the failure
-        // was latched. Requires prepare/commit separation or a provably
-        // nonthrowing terminal publication boundary.
+        // retireVerified() is staged while the finalization handoff runs.
+        // A later failure must discard that staged commit and quarantine.
         assertFalse(registry.snapshot().retired(),
                 "a failed finalizer must not succeed in reclaiming the actor");
     }
@@ -70,27 +69,29 @@ final class ActorPhysicalRetirementPostcommitProofTest {
                     throw new AssertionError("provider driver did not finish");
                 }
                 // The native provider is still holding its stack / native
-                // callback loan until this outer invocation returns.
+                // callback loan until this outer invocation exits. The
+                // trusted driver emits its separate physical-exit witness only
+                // after the delegated CompletionHandler invocation is over.
+                callback.providerExited();
             } catch (Throwable failure) {
                 threadFailure.set(failure);
             }
         });
         try {
             assertTrue(callbackReturned.await(3, TimeUnit.SECONDS));
-            // Currently fails: the Java CompletionHandler wrapper has no
-            // trusted witness for the enclosing provider invocation's exit.
+            // Delegate return alone is not the provider-exit witness.
             assertFalse(actor.done().isDone(),
                     "delegate return cannot certify the provider callback lifetime");
         } finally {
             allowProviderExit.countDown();
             provider.join(3_000);
             assertFalse(provider.isAlive());
-            // This scenario intentionally demonstrates a missing driver
-            // witness; no external source or runner is involved.
         }
         if (threadFailure.get() != null) {
             throw new AssertionError("provider callback failed", threadFailure.get());
         }
+        assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS),
+                "driver exit witness should release the final physical receipt");
         runtime.close();
     }
 }
