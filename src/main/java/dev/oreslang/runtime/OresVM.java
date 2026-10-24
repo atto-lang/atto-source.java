@@ -1,5 +1,6 @@
 package dev.oreslang.runtime;
 
+import java.io.IOException;
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
@@ -24,10 +25,34 @@ public final class OresVM implements AutoCloseable {
             Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors()));
     private static final int DEFAULT_QUEUE_CAPACITY = 65_536;
 
+    private static final ThreadLocal<Boolean> ON_CONTROL_CARRIER = new ThreadLocal<>();
+    private static final ThreadLocal<Boolean> ON_NIO_WORKER = new ThreadLocal<>();
+
+    static boolean onControlCarrier() {
+        return Boolean.TRUE.equals(ON_CONTROL_CARRIER.get());
+    }
+
+    static boolean onNioWorker() {
+        return Boolean.TRUE.equals(ON_NIO_WORKER.get());
+    }
+
+    static void runAsNioWorker(Runnable work) {
+        Boolean previous = ON_NIO_WORKER.get();
+        ON_NIO_WORKER.set(Boolean.TRUE);
+        try { work.run(); }
+        finally {
+            if (previous == null) ON_NIO_WORKER.remove();
+            else ON_NIO_WORKER.set(previous);
+        }
+    }
+
     private enum StartupState { NEW, STARTING, STARTED, FAILED, CLOSED }
 
+    private final OresCarrierBudget carrierBudget;
+    private final OresCarrierPermitPool carrierPermitPool;
     private final ThreadPoolExecutor controlExecutor;
     private final OresScheduler rootScheduler;
+    private final NioReadinessGroup nioReadiness;
     private final AtomicBoolean closed = new AtomicBoolean();
     private volatile StartupState startupState = StartupState.NEW;
 
@@ -38,28 +63,85 @@ public final class OresVM implements AutoCloseable {
             throw new IllegalArgumentException("control parallelism must be positive");
         }
 
-        AtomicInteger carrierId = new AtomicInteger();
-        ThreadFactory factory = runnable -> Thread.ofPlatform()
-                .daemon(true)
-                .name("ores-control-plane-" + carrierId.getAndIncrement())
-                .unstarted(runnable);
+        this.carrierBudget = OresCarrierBudget.configured();
+        if (carrierBudget != null
+                && !OresCarrierBudget.explicitWorkConservingJvmTopology()) {
+            throw new IllegalStateException(
+                    OresCarrierBudget.PROPERTY
+                            + " currently requires -Dores.runtime.carriers=java "
+                            + "and -Dores.actor.affinity=none so every runtime "
+                            + "execution carrier is governed by the shared permit pool");
+        }
+        this.carrierPermitPool = carrierBudget == null
+                ? null : new OresCarrierPermitPool(carrierBudget.maximum());
 
-        this.controlExecutor = new ThreadPoolExecutor(
-                controlParallelism,
-                controlParallelism,
-                0L,
-                TimeUnit.MILLISECONDS,
-                new ArrayBlockingQueue<>(DEFAULT_QUEUE_CAPACITY),
-                factory,
-                new ThreadPoolExecutor.AbortPolicy());
+        int effectiveControlParallelism = controlParallelism;
+        if (carrierBudget != null) {
+            String explicitControl = System.getProperty("ores.runtime.control.parallelism");
+            if (explicitControl != null
+                    && controlParallelism != carrierBudget.controlReserve()) {
+                throw new IllegalArgumentException(
+                        "global carrier budget reserves exactly "
+                                + carrierBudget.controlReserve()
+                                + " CONTROL carrier; ores.runtime.control.parallelism="
+                                + controlParallelism + " is incompatible");
+            }
+            effectiveControlParallelism = carrierBudget.controlReserve();
+        }
+
+        AtomicInteger carrierId = new AtomicInteger();
+        ThreadFactory factory = carrierPermitPool == null
+                ? runnable -> Thread.ofPlatform()
+                        .daemon(true)
+                        .name("ores-control-plane-" + carrierId.getAndIncrement())
+                        .unstarted(() -> {
+                            ON_CONTROL_CARRIER.set(Boolean.TRUE);
+                            try { runnable.run(); }
+                            finally { ON_CONTROL_CARRIER.remove(); }
+                        })
+                : carrierPermitPool.threadFactory(
+                        OresCarrierPermitPool.Domain.CONTROL,
+                        "ores-control-plane-",
+                        runnable -> () -> {
+                            ON_CONTROL_CARRIER.set(Boolean.TRUE);
+                            try { runnable.run(); }
+                            finally { ON_CONTROL_CARRIER.remove(); }
+                        });
+
+        this.controlExecutor = carrierPermitPool == null
+                ? new ThreadPoolExecutor(
+                        effectiveControlParallelism,
+                        effectiveControlParallelism,
+                        0L,
+                        TimeUnit.MILLISECONDS,
+                        new ArrayBlockingQueue<>(DEFAULT_QUEUE_CAPACITY),
+                        factory,
+                        new ThreadPoolExecutor.AbortPolicy())
+                : new AdaptiveCarrierExecutor(
+                        effectiveControlParallelism,
+                        effectiveControlParallelism,
+                        DEFAULT_QUEUE_CAPACITY,
+                        factory);
 
         this.rootScheduler = OresScheduler.runtimeOwned(
                 "ores-root-scheduler",
-                rootAdmission == null ? controlParallelism : 1,
+                rootAdmission == null ? effectiveControlParallelism : 1,
                 rootAdmission == null ? controlExecutor : rootAdmission,
                 turnExecutor);
         try {
             startup();
+            ThreadFactory nioBootstrapFactory = carrierPermitPool == null
+                    ? null
+                    : carrierPermitPool.threadFactory(
+                            OresCarrierPermitPool.Domain.LIFECYCLE,
+                            "ores-nio-completion-",
+                            runnable -> () -> OresVM.runAsNioWorker(runnable));
+            this.nioReadiness = new NioReadinessGroup(
+                    4, 8192, 1024, null, nioBootstrapFactory);
+        } catch (IOException ioFailure) {
+            rootScheduler.close();
+            controlExecutor.shutdownNow();
+            throw new IllegalStateException("unable to bootstrap VM NIO readiness domain", ioFailure);
         } catch (RuntimeException | Error failure) {
             rootScheduler.close();
             controlExecutor.shutdownNow();
@@ -124,6 +206,24 @@ public final class OresVM implements AutoCloseable {
         return controlExecutor.getPoolSize();
     }
 
+    OresCarrierBudget carrierBudget() { return carrierBudget; }
+    OresCarrierPermitPool carrierPermitPool() { return carrierPermitPool; }
+    OresCarrierPermitPool.Snapshot carrierPermitSnapshot() {
+        return carrierPermitPool == null ? null : carrierPermitPool.snapshot();
+    }
+
+    NioReadinessGroup nioReadiness() {
+        if (!started()) {
+            throw new IllegalStateException(
+                    "Oreslang VM NIO readiness was requested before startup");
+        }
+        return nioReadiness;
+    }
+
+    int nioReactorCount() {
+        return nioReadiness.reactorCount();
+    }
+
     public OresScheduler rootScheduler() {
         if (!started()) {
             throw new IllegalStateException(
@@ -164,6 +264,8 @@ public final class OresVM implements AutoCloseable {
         // An ordinary actor/Mailman must likewise delegate blocking VM teardown
         // to its supervising host after its turn finishes.
         if (OresScheduler.current() != null
+                || onControlCarrier()
+                || onNioWorker()
                 || ActorRuntime.inActorExecution()
                 || ActorRuntime.inActorGroupMailmanExecution()) {
             throw new IllegalStateException(
@@ -172,22 +274,48 @@ public final class OresVM implements AutoCloseable {
         synchronized (this) {
             if (!closed.compareAndSet(false, true)) return;
             startupState = StartupState.CLOSED;
+            RuntimeException failure = null;
+
+            try {
+                nioReadiness.close();
+                if (!nioReadiness.awaitStopped(5, TimeUnit.SECONDS)) {
+                    failure = new IllegalStateException(
+                            "Oreslang NIO readiness domain did not terminate");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                failure = new IllegalStateException(
+                        "interrupted while closing Oreslang NIO readiness domain",
+                        interrupted);
+            } catch (RuntimeException nioFailure) {
+                failure = nioFailure;
+            }
+
             try {
                 rootScheduler.close();
+            } catch (RuntimeException schedulerFailure) {
+                if (failure == null) failure = schedulerFailure;
+                else failure.addSuppressed(schedulerFailure);
             } finally {
                 controlExecutor.shutdownNow();
                 try {
                     if (!controlExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
-                        throw new IllegalStateException(
+                        RuntimeException controlFailure = new IllegalStateException(
                                 "Oreslang CONTROL scheduler carriers did not terminate");
+                        if (failure == null) failure = controlFailure;
+                        else failure.addSuppressed(controlFailure);
                     }
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
-                    throw new IllegalStateException(
+                    RuntimeException controlFailure = new IllegalStateException(
                             "interrupted while closing Oreslang CONTROL scheduler",
                             interrupted);
+                    if (failure == null) failure = controlFailure;
+                    else failure.addSuppressed(controlFailure);
                 }
             }
+
+            if (failure != null) throw failure;
         }
     }
 }
