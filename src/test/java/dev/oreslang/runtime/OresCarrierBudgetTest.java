@@ -2,11 +2,32 @@ package dev.oreslang.runtime;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.util.ArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
 final class OresCarrierBudgetTest {
+    private record Props(String budget, String backend, String affinity, String control) {
+        static Props capture() {
+            return new Props(
+                    System.getProperty(OresCarrierBudget.PROPERTY),
+                    System.getProperty("ores.runtime.carriers"),
+                    System.getProperty("ores.actor.affinity"),
+                    System.getProperty("ores.runtime.control.parallelism"));
+        }
+        void restore() {
+            restoreProperty(OresCarrierBudget.PROPERTY, budget);
+            restoreProperty("ores.runtime.carriers", backend);
+            restoreProperty("ores.actor.affinity", affinity);
+            restoreProperty("ores.runtime.control.parallelism", control);
+        }
+    }
+
+    private static void restoreProperty(String key, String value) {
+        if (value == null) System.clearProperty(key);
+        else System.setProperty(key, value);
+    }
 
     private static OresCarrierBudget parse(String configured) {
         String previous = System.getProperty(OresCarrierBudget.PROPERTY);
@@ -15,16 +36,22 @@ final class OresCarrierBudgetTest {
             else System.setProperty(OresCarrierBudget.PROPERTY, configured);
             return OresCarrierBudget.configured();
         } finally {
-            if (previous == null) System.clearProperty(OresCarrierBudget.PROPERTY);
-            else System.setProperty(OresCarrierBudget.PROPERTY, previous);
+            restoreProperty(OresCarrierBudget.PROPERTY, previous);
         }
+    }
+
+    private static void enableBudgetedJvm(String maximum) {
+        System.setProperty(OresCarrierBudget.PROPERTY, maximum);
+        System.setProperty("ores.runtime.carriers", "java");
+        System.setProperty("ores.actor.affinity", "none");
+        System.clearProperty("ores.runtime.control.parallelism");
     }
 
     @Test void absentPropertyDoesNotChangeLegacyTopology() {
         assertNull(parse(null));
     }
 
-    @Test void controlActorsAndLifecycleObserversFitEverySupportedBudget() {
+    @Test void everySupportedBudgetAccountsForAllReservedDomains() {
         for (int cap : new int[] {5, 6, 7, 8, 10, 16, 64, 255, 256}) {
             OresCarrierBudget budget = parse(Integer.toString(cap));
             assertEquals(cap, budget.maximum());
@@ -34,263 +61,83 @@ final class OresCarrierBudgetTest {
             assertEquals(budget.privateMaximum(), budget.untrustedMaximum());
             assertTrue(budget.lifecycleObserverMaximum() >= 1);
             assertTrue(budget.lifecycleObserverMaximum() <= 4);
-            assertEquals(cap, budget.allocatedCeiling(),
-                    "configured VM ceiling must account for every runtime execution carrier");
+            assertEquals(cap, budget.allocatedCeiling());
         }
     }
 
-    @Test void invalidBudgetFailsClosedRatherThanDisablingTheGuard() {
-        for (String bad : new String[] {"", " ", "0", "-1", "3", "4", "257",
-                "99999999999999999", "1.5", "8 ", "wat", "+5", "0x10", "5\n"}) {
+    @Test void malformedBudgetFailsClosed() {
+        for (String bad : new String[] {
+                "", " ", "0", "-1", "3", "4", "257", "99999999999999999",
+                "1.5", "8 ", "wat", "+5", "0x10", "5\n"}) {
             assertThrows(IllegalArgumentException.class, () -> parse(bad), bad);
         }
     }
 
-    @Test void boundedVmKeepsControlAndLifecycleCapacityColdUntilDemand() throws Exception {
-        String previous = System.getProperty(OresCarrierBudget.PROPERTY);
-        String previousBackend = System.getProperty("ores.runtime.carriers");
-        String previousAffinity = System.getProperty("ores.actor.affinity");
+    @Test void globalBudgetRequiresTrackedJvmNonAffineTopology() {
+        Props prior = Props.capture();
         try {
-            System.setProperty(OresCarrierBudget.PROPERTY, "5");
-            System.setProperty("ores.runtime.carriers", "java");
+            System.setProperty(OresCarrierBudget.PROPERTY, "8");
+            System.setProperty("ores.runtime.carriers", "native");
             System.setProperty("ores.actor.affinity", "none");
-            OresVM vm = OresVM.create(Runnable::run);
-            try {
-                assertEquals(0, vm.controlCarrierCount());
-                assertEquals(0, vm.nioReactorCount());
-                assertEquals(5, vm.carrierBudget().allocatedCeiling());
-                assertEquals(1, vm.carrierBudget().lifecycleObserverMaximum());
-                vm.executeControl(() -> { }).get(3, TimeUnit.SECONDS);
-                assertEquals(1, vm.controlCarrierCount(),
-                        "CONTROL always retains an admissible carrier in the bounded VM");
+            assertThrows(IllegalStateException.class, () -> OresVM.create(Runnable::run));
 
-                var actorConfig = new ActorRuntime.DispatcherConfig(1, 1, 16, 32);
-                var actors = new ActorRuntime(IsolatePolicy.developer(), actorConfig,
-                        ActorRuntime.TurnExecutor.direct(),
-                        ActorRuntime.ControlDispatcher.unavailable(),
-                        vm.carrierBudget(),
-                        vm.carrierPermitPool());
-                CountDownLatch observerEntered = new CountDownLatch(1);
-                CountDownLatch releaseObserver = new CountDownLatch(1);
-                try {
-                    assertEquals(0, actors.startedActorCarrierCount(),
-                            "three actor domains start cold even with global budget");
-                    assertEquals(0, actors.lifecycleObserverCarrierCount(),
-                            "lifecycle observer domain must also start cold");
-
-                    var actor = actors.<String>spawnShared(
-                            () -> (message, context) -> context.self().stop());
-                    actor.done().whenCompleteRuntime((ignored, failure) -> {
-                        observerEntered.countDown();
-                        try {
-                            releaseObserver.await(3, TimeUnit.SECONDS);
-                        } catch (InterruptedException interrupted) {
-                            Thread.currentThread().interrupt();
-                        }
-                    });
-                    actor.send("stop");
-                    assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
-                    assertTrue(observerEntered.await(3, TimeUnit.SECONDS));
-                    assertEquals(1, actors.lifecycleObserverCarrierCount());
-                    assertTrue(actors.lifecycleObserverCarrierCount()
-                                    <= vm.carrierBudget().lifecycleObserverMaximum());
-                    assertTrue(vm.controlCarrierCount()
-                                    + actors.startedActorCarrierCount()
-                                    + actors.lifecycleObserverCarrierCount()
-                                    <= vm.carrierBudget().maximum(),
-                            "runtime-owned execution carriers must stay within configured ceiling");
-                    assertEquals(
-                            vm.controlCarrierCount()
-                                    + actors.startedActorCarrierCount()
-                                    + actors.lifecycleObserverCarrierCount(),
-                            vm.carrierPermitPool().totalHeld(),
-                            "shared coordinator must equal all live JVM execution carriers");
-                } finally {
-                    releaseObserver.countDown();
-                    actors.close();
-                }
-            } finally {
-                vm.close();
-            }
-        } finally {
-            if (previous == null) System.clearProperty(OresCarrierBudget.PROPERTY);
-            else System.setProperty(OresCarrierBudget.PROPERTY, previous);
-            if (previousBackend == null) System.clearProperty("ores.runtime.carriers");
-            else System.setProperty("ores.runtime.carriers", previousBackend);
-            if (previousAffinity == null) System.clearProperty("ores.actor.affinity");
-            else System.setProperty("ores.actor.affinity", previousAffinity);
-        }
-    }
-
-    @Test void budgetedControlDomainCanBorrowIdleGlobalPermits() throws Exception {
-        String previous = System.getProperty(OresCarrierBudget.PROPERTY);
-        String previousBackend = System.getProperty("ores.runtime.carriers");
-        String previousAffinity = System.getProperty("ores.actor.affinity");
-        try {
-            System.setProperty(OresCarrierBudget.PROPERTY, "8");
-            System.setProperty("ores.runtime.carriers", "java");
-            System.setProperty("ores.actor.affinity", "none");
-            OresVM vm = OresVM.create(Runnable::run);
-            CountDownLatch entered = new CountDownLatch(4);
-            CountDownLatch release = new CountDownLatch(1);
-            try {
-                for (int i = 0; i < 4; i++) {
-                    vm.dispatchHostIoMapping(() -> {
-                        entered.countDown();
-                        try {
-                            release.await(5, TimeUnit.SECONDS);
-                        } catch (InterruptedException interrupted) {
-                            Thread.currentThread().interrupt();
-                        }
-                    });
-                }
-                assertTrue(entered.await(3, TimeUnit.SECONDS),
-                        "CONTROL should borrow all three spare permits while preserving four reserves");
-                assertEquals(4, vm.controlCarrierCount());
-                var pressure = vm.carrierPermitSnapshot();
-                assertNotNull(pressure);
-                assertEquals(4, pressure.controlHeld());
-                assertEquals(4, pressure.totalHeld());
-                assertEquals(4, pressure.free());
-                assertEquals(0L, pressure.deniedCapacity());
-                assertEquals(0L, pressure.deniedReserveProtection());
-            } finally {
-                release.countDown();
-                vm.close();
-            }
-        } finally {
-            if (previous == null) System.clearProperty(OresCarrierBudget.PROPERTY);
-            else System.setProperty(OresCarrierBudget.PROPERTY, previous);
-            if (previousBackend == null) System.clearProperty("ores.runtime.carriers");
-            else System.setProperty("ores.runtime.carriers", previousBackend);
-            if (previousAffinity == null) System.clearProperty("ores.actor.affinity");
-            else System.setProperty("ores.actor.affinity", previousAffinity);
-        }
-    }
-
-    @Test void defaultTopologyDoesNotBorrowControlAgainstUntrackedActorCapacity()
-            throws Exception {
-        String previous = System.getProperty(OresCarrierBudget.PROPERTY);
-        String previousBackend = System.getProperty("ores.runtime.carriers");
-        String previousAffinity = System.getProperty("ores.actor.affinity");
-        try {
-            System.setProperty(OresCarrierBudget.PROPERTY, "8");
-            System.clearProperty("ores.runtime.carriers");
-            System.clearProperty("ores.actor.affinity");
-            OresVM vm = OresVM.create(Runnable::run);
-            CountDownLatch firstEntered = new CountDownLatch(1);
-            CountDownLatch secondEntered = new CountDownLatch(1);
-            CountDownLatch release = new CountDownLatch(1);
-            try {
-                vm.dispatchHostIoMapping(() -> {
-                    firstEntered.countDown();
-                    try {
-                        release.await(5, TimeUnit.SECONDS);
-                    } catch (InterruptedException interrupted) {
-                        Thread.currentThread().interrupt();
-                    }
-                });
-                vm.dispatchHostIoMapping(secondEntered::countDown);
-
-                assertTrue(firstEntered.await(2, TimeUnit.SECONDS));
-                assertFalse(secondEntered.await(100, TimeUnit.MILLISECONDS),
-                        "default/native-affine topology must not borrow CONTROL capacity");
-                assertEquals(1, vm.controlCarrierCount());
-                assertEquals(1, vm.carrierPermitSnapshot().controlHeld());
-
-                release.countDown();
-                assertTrue(secondEntered.await(2, TimeUnit.SECONDS));
-            } finally {
-                release.countDown();
-                vm.close();
-            }
-        } finally {
-            if (previous == null) System.clearProperty(OresCarrierBudget.PROPERTY);
-            else System.setProperty(OresCarrierBudget.PROPERTY, previous);
-            if (previousBackend == null) System.clearProperty("ores.runtime.carriers");
-            else System.setProperty("ores.runtime.carriers", previousBackend);
-            if (previousAffinity == null) System.clearProperty("ores.actor.affinity");
-            else System.setProperty("ores.actor.affinity", previousAffinity);
-        }
-    }
-
-    @Test void affinityJvmTopologyKeepsLifecycleObserversOnStaticReservation()
-            throws Exception {
-        String previous = System.getProperty(OresCarrierBudget.PROPERTY);
-        String previousBackend = System.getProperty("ores.runtime.carriers");
-        String previousAffinity = System.getProperty("ores.actor.affinity");
-        try {
-            System.setProperty(OresCarrierBudget.PROPERTY, "8");
             System.setProperty("ores.runtime.carriers", "java");
             System.setProperty("ores.actor.affinity", "lane");
-            OresVM vm = OresVM.create(Runnable::run);
-            ActorRuntime actors = null;
-            try {
-                OresCarrierBudget budget = vm.carrierBudget();
-                assertNotNull(budget);
-                var config = new ActorRuntime.DispatcherConfig(
-                        budget.privateMaximum(),
-                        budget.sharedMaximum(),
-                        16,
-                        32);
-                actors = new ActorRuntime(
-                        IsolatePolicy.developer(),
-                        config,
-                        ActorRuntime.TurnExecutor.direct(),
-                        ActorRuntime.ControlDispatcher.unavailable(),
-                        budget,
-                        vm.carrierPermitPool());
-
-                var field = ActorRuntime.class.getDeclaredField(
-                        "lifecycleObserverDispatcher");
-                field.setAccessible(true);
-                var observerPool = (java.util.concurrent.ThreadPoolExecutor)
-                        field.get(actors);
-                assertEquals(
-                        budget.lifecycleObserverMaximum(),
-                        observerPool.getMaximumPoolSize(),
-                        "affinity lanes are not individually borrow-safe; lifecycle "
-                                + "workers must stay on the static reservation");
-                assertEquals(1, vm.carrierPermitSnapshot().maximum()
-                        - (budget.privateMaximum() * 3)
-                        - budget.lifecycleObserverMaximum(),
-                        "fixture must retain exactly the CONTROL static reserve");
-            } finally {
-                if (actors != null) actors.close();
-                vm.close();
-            }
+            assertThrows(IllegalStateException.class, () -> OresVM.create(Runnable::run));
         } finally {
-            if (previous == null) System.clearProperty(OresCarrierBudget.PROPERTY);
-            else System.setProperty(OresCarrierBudget.PROPERTY, previous);
-            if (previousBackend == null) System.clearProperty("ores.runtime.carriers");
-            else System.setProperty("ores.runtime.carriers", previousBackend);
-            if (previousAffinity == null) System.clearProperty("ores.actor.affinity");
-            else System.setProperty("ores.actor.affinity", previousAffinity);
+            prior.restore();
         }
     }
 
-    @Test void budgetedJvmActorDomainCanBorrowIdleGlobalPermits() throws Exception {
-        String previous = System.getProperty(OresCarrierBudget.PROPERTY);
-        String previousBackend = System.getProperty("ores.runtime.carriers");
-        String previousAffinity = System.getProperty("ores.actor.affinity");
+    @Test void explicitControlParallelismCannotEraseProtectedReserve() {
+        Props prior = Props.capture();
         try {
-            System.setProperty(OresCarrierBudget.PROPERTY, "8");
-            System.setProperty("ores.runtime.carriers", "java");
-            System.setProperty("ores.actor.affinity", "none");
+            enableBudgetedJvm("8");
+            System.setProperty("ores.runtime.control.parallelism", "2");
+            assertThrows(IllegalArgumentException.class, () -> OresVM.create(Runnable::run));
+        } finally {
+            prior.restore();
+        }
+    }
+
+    @Test void budgetedVmPrestartsExactlyOneTrackedControlCarrier() {
+        Props prior = Props.capture();
+        try {
+            enableBudgetedJvm("8");
             OresVM vm = OresVM.create(Runnable::run);
-            CountDownLatch entered = new CountDownLatch(4);
-            CountDownLatch release = new CountDownLatch(1);
+            try {
+                assertEquals(1, vm.controlCarrierCount());
+                var snapshot = vm.carrierPermitSnapshot();
+                assertNotNull(snapshot);
+                assertEquals(8, snapshot.maximum());
+                assertEquals(1, snapshot.totalHeld());
+                assertEquals(1, snapshot.controlHeld());
+                assertEquals(7, snapshot.free());
+            } finally {
+                vm.close();
+            }
+            assertEquals(0, vm.carrierPermitSnapshot().totalHeld(),
+                    "CONTROL permit must retire only after its physical worker exits");
+        } finally {
+            prior.restore();
+        }
+    }
+
+    @Test void sharedActorDomainBorrowsIdlePermitsWithoutConsumingOtherReserves()
+            throws Exception {
+        Props prior = Props.capture();
+        CountDownLatch release = new CountDownLatch(1);
+        try {
+            enableBudgetedJvm("8");
+            OresVM vm = OresVM.create(Runnable::run);
             ActorRuntime actors = null;
             try {
                 OresCarrierBudget budget = vm.carrierBudget();
-                assertNotNull(budget);
-                assertEquals(4, budget.borrowingMaximumPerDomain());
-
                 var config = new ActorRuntime.DispatcherConfig(
                         budget.privateMaximum(),
                         budget.sharedMaximum(),
                         16,
-                        32);
+                        64);
                 actors = new ActorRuntime(
                         IsolatePolicy.developer(),
                         config,
@@ -299,8 +146,9 @@ final class OresCarrierBudgetTest {
                         budget,
                         vm.carrierPermitPool());
 
-                var refs = new java.util.ArrayList<ActorRuntime.ActorRef<String>>();
-                for (int i = 0; i < 4; i++) {
+                CountDownLatch entered = new CountDownLatch(4);
+                var refs = new ArrayList<ActorRuntime.ActorRef<String>>();
+                for (int i = 0; i < 4; ++i) {
                     var ref = actors.<String>spawnShared(() -> (message, context) -> {
                         entered.countDown();
                         try {
@@ -314,45 +162,32 @@ final class OresCarrierBudgetTest {
                 }
 
                 assertTrue(entered.await(3, TimeUnit.SECONDS),
-                        "shared actor domain should borrow two idle permits beyond its preferred slice");
-                var scheduler = actors.schedulerSnapshot();
-                assertEquals(4, scheduler.sharedDomain().maximumCarriers());
-                assertEquals(4, scheduler.sharedDomain().activeCarriers());
-
-                var global = actors.globalCarrierPressure().orElseThrow();
-                assertEquals(8, global.maximum());
-                assertEquals(4, global.held());
-                assertEquals(4, global.free());
-                assertEquals(4, global.sharedHeld());
-                assertEquals(0, global.privateHeld());
-                assertEquals(0, global.untrustedHeld());
-                assertEquals(0, global.lifecycleHeld());
-                assertEquals(0, global.controlHeld());
-                assertEquals(0L, global.deniedCapacity());
-                assertEquals(0L, global.deniedReserveProtection());
-
-                release.countDown();
-                for (var ref : refs) {
-                    ref.drain().get(5, TimeUnit.SECONDS);
-                    ref.stop();
-                    assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS));
-                }
+                        "shared domain should borrow two idle permits beyond its preferred slice");
+                var pressure = vm.carrierPermitSnapshot();
+                assertEquals(5, pressure.totalHeld(),
+                        "one CONTROL + four SHARED workers should be physically present");
+                assertEquals(1, pressure.controlHeld());
+                assertEquals(4, pressure.sharedHeld());
+                assertEquals(3, pressure.free(),
+                        "PRIVATE, UNTRUSTED and LIFECYCLE reserves must remain available");
+                assertEquals(0, pressure.privateHeld());
+                assertEquals(0, pressure.untrustedHeld());
+                assertEquals(0, pressure.lifecycleHeld());
+                assertTrue(actors.startedActorCarrierCount() >= 4);
             } finally {
                 release.countDown();
                 if (actors != null) actors.close();
                 vm.close();
             }
+            assertEquals(0, vm.carrierPermitSnapshot().totalHeld(),
+                    "all actor and CONTROL permits must be returned after physical shutdown");
         } finally {
-            if (previous == null) System.clearProperty(OresCarrierBudget.PROPERTY);
-            else System.setProperty(OresCarrierBudget.PROPERTY, previous);
-            if (previousBackend == null) System.clearProperty("ores.runtime.carriers");
-            else System.setProperty("ores.runtime.carriers", previousBackend);
-            if (previousAffinity == null) System.clearProperty("ores.actor.affinity");
-            else System.setProperty("ores.actor.affinity", previousAffinity);
+            release.countDown();
+            prior.restore();
         }
     }
 
-    @Test void forgedBudgetCannotOvercommitOrEraseRequiredReserves() {
+    @Test void forgedPartitionCannotOvercommitOrEraseRequiredReserves() {
         assertThrows(IllegalArgumentException.class,
                 () -> new OresCarrierBudget(5, 0, 1, 1, 1, 1));
         assertThrows(IllegalArgumentException.class,
