@@ -75,6 +75,69 @@ final class ActorAsyncSendAdmissionRaceTest {
     }
 
     @Test
+    void stopAfterCreditTransferKeepsDoneFencedUntilAdmissionLoanReturns() throws Exception {
+        CountDownLatch firstEntered = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        CountDownLatch transferReached = new CountDownLatch(1);
+        CountDownLatch releaseTransfer = new CountDownLatch(1);
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<Integer>spawnShared(
+                    oneMessagePolicy(),
+                    () -> (message, context) -> {
+                        if (message == 1) {
+                            firstEntered.countDown();
+                            if (!releaseFirst.await(5, TimeUnit.SECONDS)) {
+                                throw new AssertionError("held actor turn timed out");
+                            }
+                        }
+                    });
+
+            ref.send(1);
+            assertTrue(firstEntered.await(5, TimeUnit.SECONDS));
+            ref.send(2);
+
+            runtime.asyncSendCreditTransferHookForTesting = () -> {
+                transferReached.countDown();
+                try {
+                    if (!releaseTransfer.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("transferred-credit hook timed out");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError("transferred-credit hook interrupted", interrupted);
+                }
+            };
+
+            OresFuture<Void> pending = ref.sendAsync(3);
+            assertFalse(pending.isDone());
+
+            releaseFirst.countDown();
+            assertTrue(transferReached.await(5, TimeUnit.SECONDS),
+                    "pending producer must own a transferred mailbox credit");
+
+            ref.stop();
+            assertFalse(ref.getDone().isDone(),
+                    "actor DONE must remain fenced while transferred admission loan is live");
+
+            releaseTransfer.countDown();
+
+            Exception failure = assertThrows(
+                    Exception.class,
+                    () -> pending.get(5, TimeUnit.SECONDS));
+            assertTrue(
+                    failure.getCause() instanceof ActorRuntime.ActorTerminatedException
+                            || failure.getCause() instanceof IllegalStateException,
+                    "transferred producer must not report successful admission after stop");
+            ref.getDone().get(5, TimeUnit.SECONDS);
+            assertFalse(ref.isAlive());
+        } finally {
+            releaseFirst.countDown();
+            releaseTransfer.countDown();
+        }
+    }
+
+    @Test
     void concurrentCancellationHasExactlyOneWithdrawalWinner() throws Exception {
         CountDownLatch firstEntered = new CountDownLatch(1);
         CountDownLatch releaseFirst = new CountDownLatch(1);
