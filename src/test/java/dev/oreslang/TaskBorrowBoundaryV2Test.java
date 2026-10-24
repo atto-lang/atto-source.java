@@ -417,6 +417,54 @@ final class TaskBorrowBoundaryV2Test {
     }
 
     @Test
+    void futureVoidRequiresExactUnshadowedEmptyPayload() throws Exception {
+        var program = Parser.parse("pub fnc main(): void { return; }");
+        var constructor = OwnershipChecker.class.getDeclaredConstructor(
+                dev.oreslang.ast.Ast.Program.class, java.util.Map.class);
+        constructor.setAccessible(true);
+        var gate = OwnershipChecker.class.getDeclaredMethod(
+                "forbiddenTaskCapability", dev.oreslang.ast.Ast.TypeRef.class);
+        gate.setAccessible(true);
+        var checker = constructor.newInstance(program, java.util.Map.of());
+
+        var exactVoid = dev.oreslang.ast.Ast.TypeRef.simple("void");
+        var valid = new dev.oreslang.ast.Ast.TypeRef(
+                "Future", java.util.List.of(exactVoid), false);
+        assertFalse((Boolean) gate.invoke(checker, valid),
+                "Future<void> is an allowed empty-result affine handle");
+
+        var untrustedPayload = new dev.oreslang.ast.Ast.TypeRef(
+                "void", java.util.List.of(
+                        new dev.oreslang.ast.Ast.TypeRef("Rc",
+                                java.util.List.of(
+                                        dev.oreslang.ast.Ast.TypeRef.simple("int")),
+                                false)), false);
+        var malformed = new dev.oreslang.ast.Ast.TypeRef(
+                "Future", java.util.List.of(untrustedPayload), false);
+        assertTrue((Boolean) gate.invoke(checker, malformed),
+                "void with nested generic payload is not an empty result");
+
+        java.util.List<dev.oreslang.ast.Ast.ModuleDecl> modules =
+                new java.util.ArrayList<>();
+        for (var module : program.modules()) {
+            java.util.List<dev.oreslang.ast.Ast.Decl> declarations =
+                    new java.util.ArrayList<>(module.declarations());
+            declarations.add(new dev.oreslang.ast.Ast.TypeAliasDecl(
+                    "void", dev.oreslang.ast.Ast.Visibility.PRIVATE,
+                    java.util.List.of(), exactVoid));
+            modules.add(new dev.oreslang.ast.Ast.ModuleDecl(
+                    module.name(), module.annotations(),
+                    module.contracts(), declarations));
+        }
+        var aliased = new dev.oreslang.ast.Ast.Program(
+                program.namespace(), program.imports(), modules);
+        var aliasChecker = constructor.newInstance(
+                aliased, java.util.Map.of());
+        assertTrue((Boolean) gate.invoke(aliasChecker, valid),
+                "a shadowed void name must not bypass Task Send checking");
+    }
+
+    @Test
     void recursiveNominalGenericCaptureCannotHideNestedNonSendAuthority() throws Exception {
         // A declaration-identity-only recursion short-circuit is unsound:
         // Recursive<T> can recur as Recursive<Rc<T>> with stronger restrictions.
