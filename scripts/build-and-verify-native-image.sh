@@ -109,8 +109,22 @@ test_output="$(
 )"
 printf '%s\n' "$test_output"
 expected_summary='ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0'
-if ! printf '%s\n' "$test_output" | grep -Fx "$expected_summary" >/dev/null; then
-  echo "native executable failed real Oreslang test-summary proof" >&2
+# Reject decoy summaries, extra FAIL records and missing PASS/SKIP events.
+# The checked-in native-testing.ores suite contains three passing cases and
+# one intentionally skipped case. A summary alone is insufficient evidence.
+if ! printf '%s\n' "$test_output" | awk -v expected="$expected_summary" '
+  /^ORES_TEST\|/ {
+    if ($0 == expected) { summaries++; next }
+    if ($0 ~ /^ORES_TEST\|SUMMARY\|/) { bad=1; next }
+    if ($0 ~ /^ORES_TEST\|PASS\|/) { passes++; next }
+    if ($0 ~ /^ORES_TEST\|SKIP\|/) { skips++; next }
+    bad=1
+  }
+  END {
+    if (bad || summaries != 1 || passes != 3 || skips != 1) exit 1
+  }
+'; then
+  echo "native executable did not produce exactly three PASS, one SKIP and one matching summary" >&2
   exit 1
 fi
 
