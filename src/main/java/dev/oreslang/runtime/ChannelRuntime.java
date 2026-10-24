@@ -34,18 +34,40 @@ public final class ChannelRuntime {
     private ChannelRuntime() { }
 
     /** A finite default prevents an idle producer from retaining unbounded select waiters. */
-    public static final int DEFAULT_MAX_PENDING_REGISTRATIONS = 4096;
+    public static final int DEFAULT_MAX_PENDING_REGISTRATIONS = 4_096;
+    /** Default per execution-domain pending selection budget. */
+    public static final int DEFAULT_MAX_PENDING_SELECTS = 4_096;
+    /** Default per execution-domain retained select-arm budget. */
+    public static final int DEFAULT_MAX_PENDING_SELECT_ARMS = 4_096;
     /** Bound dynamic select fan-in before allocating waiter registrations. */
     public static final int MAX_SELECT_CASES = 256;
 
     private static final ReentrantLock COORDINATOR = new ReentrantLock(true);
     private static final Set<SelectRegistration> ACTIVE = new LinkedHashSet<>();
-    /** Global cap on pending selections, independent of per-channel arm limits. */
-    private static final int MAX_PENDING_SELECTS = 4_096;
-    static final int MAX_PENDING_SELECT_ARM_REGISTRATIONS = 4_096;
-    /** Global retained descriptor count. Only accessed under COORDINATOR. */
+    /**
+     * Process emergency ceilings are deliberately larger than one domain's
+     * normal allowance. A single context cannot consume another context's
+     * quota, while aggregate misuse still has a finite hard stop.
+     */
+    private static final int MAX_PROCESS_PENDING_SELECTS = 16_384;
+    static final int MAX_PROCESS_PENDING_SELECT_ARM_REGISTRATIONS = 65_536;
+    /**
+     * Compatibility/test name for the normal host-domain arm allowance.
+     * The process emergency ceiling is intentionally larger.
+     */
+    static final int MAX_PENDING_SELECT_ARM_REGISTRATIONS =
+            DEFAULT_MAX_PENDING_SELECT_ARMS;
+    /** Process retained descriptor count. Only accessed under COORDINATOR. */
     private static int activeArmRegistrations;
     private static long nextTicket;
+
+    /** Backward-compatible host/default domain for Channels not attached to an OresContext. */
+    private static final AdmissionDomain HOST_DEFAULT_DOMAIN =
+            new AdmissionDomain(
+                    "host-default",
+                    DEFAULT_MAX_PENDING_SELECTS,
+                    DEFAULT_MAX_PENDING_SELECT_ARMS,
+                    false);
 
     public enum SelectPolicy {
         /** Deterministic rotating fairness on a reusable SelectSet. */
@@ -95,6 +117,139 @@ public final class ChannelRuntime {
         }
     }
 
+    public static final class AdmissionDomainClosedException
+            extends IllegalStateException {
+        public AdmissionDomainClosedException(String message) {
+            super(message);
+        }
+    }
+
+    /**
+     * Runtime/context-owned admission budget for Channel/select registrations.
+     *
+     * <p>The reference JVM still uses one atomic coordinator for cross-channel
+     * winner semantics, but retained registrations are charged to a domain
+     * before the larger process emergency ceiling. Closing a domain fails its
+     * still-pending selections without affecting unrelated domains.</p>
+     */
+    public static final class AdmissionDomain implements AutoCloseable {
+        private final String name;
+        private final int maxPendingSelections;
+        private final int maxPendingArms;
+        private final boolean closeable;
+        /** Guarded by COORDINATOR. */
+        private final Set<SelectRegistration> activeSelections =
+                new LinkedHashSet<>();
+        /** Guarded by COORDINATOR. */
+        private int activeArmRegistrations;
+        /** Guarded by COORDINATOR. */
+        private boolean closed;
+        /** Guarded by COORDINATOR. */
+        private Throwable closeCause;
+
+        public AdmissionDomain(
+                String name,
+                int maxPendingSelections,
+                int maxPendingArms) {
+            this(name, maxPendingSelections, maxPendingArms, true);
+        }
+
+        private AdmissionDomain(
+                String name,
+                int maxPendingSelections,
+                int maxPendingArms,
+                boolean closeable) {
+            if (name == null || name.isBlank()) {
+                throw new IllegalArgumentException(
+                        "channel admission domain name cannot be blank");
+            }
+            if (maxPendingSelections < 1) {
+                throw new IllegalArgumentException(
+                        "channel admission domain select quota must be positive");
+            }
+            if (maxPendingArms < 1) {
+                throw new IllegalArgumentException(
+                        "channel admission domain arm quota must be positive");
+            }
+            this.name = name;
+            this.maxPendingSelections = maxPendingSelections;
+            this.maxPendingArms = maxPendingArms;
+            this.closeable = closeable;
+        }
+
+        public String name() { return name; }
+        public int maxPendingSelections() { return maxPendingSelections; }
+        public int maxPendingArms() { return maxPendingArms; }
+
+        public boolean isClosed() {
+            COORDINATOR.lock();
+            try {
+                return closed;
+            } finally {
+                COORDINATOR.unlock();
+            }
+        }
+
+        public int pendingSelections() {
+            COORDINATOR.lock();
+            try {
+                return activeSelections.size();
+            } finally {
+                COORDINATOR.unlock();
+            }
+        }
+
+        public int pendingArms() {
+            COORDINATOR.lock();
+            try {
+                return activeArmRegistrations;
+            } finally {
+                COORDINATOR.unlock();
+            }
+        }
+
+        @Override
+        public void close() {
+            close(null);
+        }
+
+        public void close(Throwable cause) {
+            if (!closeable) {
+                throw new UnsupportedOperationException(
+                        "the host-default Channel admission domain is process-owned");
+            }
+            ArrayList<Runnable> completions = new ArrayList<>();
+            COORDINATOR.lock();
+            try {
+                if (closed) return;
+                closed = true;
+                closeCause = cause;
+                for (SelectRegistration selection :
+                        List.copyOf(activeSelections)) {
+                    if (selection.decided) continue;
+                    selection.decided = true;
+                    unregisterLocked(selection, completions);
+                    AdmissionDomainClosedException failure =
+                            closedFailureLocked();
+                    completions.add(() ->
+                            selection.publishAfterAttachment(
+                                    () -> selection.future.failFromRuntime(failure)));
+                }
+            } finally {
+                COORDINATOR.unlock();
+            }
+            runCompletions(completions);
+        }
+
+        private AdmissionDomainClosedException closedFailureLocked() {
+            AdmissionDomainClosedException failure =
+                    new AdmissionDomainClosedException(
+                            "channel admission domain is closed: " + name);
+            if (closeCause != null) failure.initCause(closeCause);
+            return failure;
+        }
+    }
+
     /**
      * Bounded MPMC channel. Capacity zero is a rendezvous channel.
      *
@@ -104,13 +259,18 @@ public final class ChannelRuntime {
     public static final class Channel<T> implements AutoCloseable {
         private final int capacity;
         private final int maxPendingRegistrations;
+        private final AdmissionDomain admissionDomain;
         private final java.util.ArrayDeque<T> buffer = new java.util.ArrayDeque<>();
         private final ArrayList<CaseRegistration> registrations = new ArrayList<>();
         private boolean closed;
         private Throwable closeCause;
 
         public Channel(int capacity) {
-            this(capacity, DEFAULT_MAX_PENDING_REGISTRATIONS);
+            this(capacity, DEFAULT_MAX_PENDING_REGISTRATIONS, HOST_DEFAULT_DOMAIN);
+        }
+
+        public Channel(int capacity, AdmissionDomain admissionDomain) {
+            this(capacity, DEFAULT_MAX_PENDING_REGISTRATIONS, admissionDomain);
         }
 
         /**
@@ -119,6 +279,13 @@ public final class ChannelRuntime {
          * it is admitted atomically across every participating channel.
          */
         public Channel(int capacity, int maxPendingRegistrations) {
+            this(capacity, maxPendingRegistrations, HOST_DEFAULT_DOMAIN);
+        }
+
+        public Channel(
+                int capacity,
+                int maxPendingRegistrations,
+                AdmissionDomain admissionDomain) {
             if (capacity < 0) {
                 throw new IllegalArgumentException(
                         "channel capacity cannot be negative");
@@ -129,6 +296,8 @@ public final class ChannelRuntime {
             }
             this.capacity = capacity;
             this.maxPendingRegistrations = maxPendingRegistrations;
+            this.admissionDomain =
+                    Objects.requireNonNull(admissionDomain, "admissionDomain");
         }
 
         public int capacity() {
@@ -137,6 +306,11 @@ public final class ChannelRuntime {
 
         public int maxPendingRegistrations() {
             return maxPendingRegistrations;
+        }
+
+        /** Runtime/interop admission proof; domain identity is capability identity. */
+        public boolean belongsTo(AdmissionDomain domain) {
+            return admissionDomain == Objects.requireNonNull(domain, "domain");
         }
 
         public int pendingRegistrations() {
@@ -356,9 +530,16 @@ public final class ChannelRuntime {
     public static final class SelectSet {
         private final List<SelectCase> cases;
         private final AtomicLong fairCursor;
+        private final AdmissionDomain admissionDomain;
 
         public SelectSet(Collection<? extends SelectCase> cases) {
-            this(cases, 0L);
+            this(cases, 0L, null);
+        }
+
+        public SelectSet(
+                Collection<? extends SelectCase> cases,
+                AdmissionDomain admissionDomain) {
+            this(cases, 0L, admissionDomain);
         }
 
         /**
@@ -369,7 +550,14 @@ public final class ChannelRuntime {
         public SelectSet(
                 Collection<? extends SelectCase> cases,
                 long initialFairCursor) {
-            this(cases, new AtomicLong(initialFairCursor));
+            this(cases, initialFairCursor, null);
+        }
+
+        public SelectSet(
+                Collection<? extends SelectCase> cases,
+                long initialFairCursor,
+                AdmissionDomain admissionDomain) {
+            this(cases, new AtomicLong(initialFairCursor), admissionDomain);
         }
 
         // Dynamic plan generations share a cursor only with their immutable snapshot.
@@ -377,6 +565,13 @@ public final class ChannelRuntime {
         private SelectSet(
                 Collection<? extends SelectCase> cases,
                 AtomicLong sharedFairCursor) {
+            this(cases, sharedFairCursor, null);
+        }
+
+        private SelectSet(
+                Collection<? extends SelectCase> cases,
+                AtomicLong sharedFairCursor,
+                AdmissionDomain explicitDomain) {
             Objects.requireNonNull(cases, "cases");
             this.fairCursor = Objects.requireNonNull(sharedFairCursor, "sharedFairCursor");
             if (cases.isEmpty()) {
@@ -388,6 +583,8 @@ public final class ChannelRuntime {
                         "select case count exceeds maximum " + MAX_SELECT_CASES);
             }
             this.cases = List.copyOf(cases);
+            this.admissionDomain = resolveAdmissionDomain(
+                    this.cases, explicitDomain);
             long defaults = this.cases.stream()
                     .filter(DefaultCase.class::isInstance)
                     .count();
@@ -395,6 +592,28 @@ public final class ChannelRuntime {
                 throw new IllegalArgumentException(
                         "select permits at most one default case");
             }
+        }
+
+        private static AdmissionDomain resolveAdmissionDomain(
+                List<SelectCase> cases,
+                AdmissionDomain explicitDomain) {
+            AdmissionDomain resolved = explicitDomain;
+            for (SelectCase selectCase : cases) {
+                AdmissionDomain candidate = null;
+                if (selectCase instanceof ReadCase<?> read) {
+                    candidate = read.channel().admissionDomain;
+                } else if (selectCase instanceof WriteCase<?> write) {
+                    candidate = write.channel().admissionDomain;
+                }
+                if (candidate == null) continue;
+                if (resolved == null) {
+                    resolved = candidate;
+                } else if (resolved != candidate) {
+                    throw new SelectAdmissionException(
+                            "select cannot mix Channel admission domains");
+                }
+            }
+            return resolved == null ? HOST_DEFAULT_DOMAIN : resolved;
         }
 
         public static SelectSet of(SelectCase... cases) {
@@ -452,6 +671,11 @@ public final class ChannelRuntime {
 
         public List<SelectCase> cases() {
             return cases;
+        }
+
+        /** Runtime/interop admission proof; domain identity is capability identity. */
+        public boolean belongsTo(AdmissionDomain domain) {
+            return admissionDomain == Objects.requireNonNull(domain, "domain");
         }
 
         public OresFuture<SelectResult> selectAsync() {
@@ -860,11 +1084,18 @@ public final class ChannelRuntime {
             ArrayList<Runnable> completions = new ArrayList<>();
             COORDINATOR.lock();
             try {
-                // Even when the retained-waiter quota is full, a ready
-                // rendezvous or immediate probe must be able to make progress.
-                // A transient registration is held only while under the lock.
-                registerLocked(this);
-                pumpLocked(completions);
+                if (set.admissionDomain.closed) {
+                    decided = true;
+                    AdmissionDomainClosedException failure =
+                            set.admissionDomain.closedFailureLocked();
+                    completions.add(() -> future.failFromRuntime(failure));
+                } else {
+                    // Even when a retained-waiter quota is full, a ready
+                    // rendezvous or immediate probe must be able to make progress.
+                    // A transient registration is held only while under the lock.
+                    registerLocked(this);
+                    pumpLocked(completions);
+                }
 
                 if (!decided && defaultIndex >= 0) {
                     commitSingleLocked(
@@ -885,21 +1116,46 @@ public final class ChannelRuntime {
                                     "channel pending registration budget exhausted")));
                 }
 
-                if (!decided && !immediateOnly && activeArmRegistrations > MAX_PENDING_SELECT_ARM_REGISTRATIONS) {
+                if (!decided && !immediateOnly
+                        && set.admissionDomain.activeArmRegistrations
+                                > set.admissionDomain.maxPendingArms) {
                     // Ready operations have already been given a chance to commit.
                     decided = true;
                     unregisterLocked(this, completions);
                     completions.add(() -> future.failFromRuntime(
                             new SelectAdmissionException(
-                                    "pending select arm registration quota exceeded")));
+                                    "pending select arm quota exceeded for domain "
+                                            + set.admissionDomain.name)));
                 }
 
-                if (!decided && !immediateOnly && ACTIVE.size() > MAX_PENDING_SELECTS) {
+                if (!decided && !immediateOnly
+                        && set.admissionDomain.activeSelections.size()
+                                > set.admissionDomain.maxPendingSelections) {
                     decided = true;
                     unregisterLocked(this, completions);
                     completions.add(() -> future.failFromRuntime(
                             new SelectAdmissionException(
-                                    "pending select registration quota exceeded")));
+                                    "pending select quota exceeded for domain "
+                                            + set.admissionDomain.name)));
+                }
+
+                if (!decided && !immediateOnly
+                        && activeArmRegistrations
+                                > MAX_PROCESS_PENDING_SELECT_ARM_REGISTRATIONS) {
+                    decided = true;
+                    unregisterLocked(this, completions);
+                    completions.add(() -> future.failFromRuntime(
+                            new SelectAdmissionException(
+                                    "process pending select arm emergency quota exceeded")));
+                }
+
+                if (!decided && !immediateOnly
+                        && ACTIVE.size() > MAX_PROCESS_PENDING_SELECTS) {
+                    decided = true;
+                    unregisterLocked(this, completions);
+                    completions.add(() -> future.failFromRuntime(
+                            new SelectAdmissionException(
+                                    "process pending select emergency quota exceeded")));
                 }
 
                 if (!decided && immediateOnly) {
@@ -1060,6 +1316,7 @@ public final class ChannelRuntime {
         selection.order = selection.set.initialOrder(selection.policy);
         selection.registered = true;
         ACTIVE.add(selection);
+        selection.set.admissionDomain.activeSelections.add(selection);
 
         for (int index : selection.order) {
             SelectCase selectCase = selection.set.cases.get(index);
@@ -1070,6 +1327,7 @@ public final class ChannelRuntime {
             selection.registrations.add(registration);
             selection.registeredByIndex[index] = registration;
             activeArmRegistrations++;
+            selection.set.admissionDomain.activeArmRegistrations++;
             if (selectCase instanceof ReadCase<?> || selectCase instanceof WriteCase<?>) {
                 channelOf(selectCase).registrations.add(registration);
             }
@@ -1081,10 +1339,18 @@ public final class ChannelRuntime {
         if (!selection.registered) return;
         selection.registered = false;
         ACTIVE.remove(selection);
-        if (activeArmRegistrations < selection.registrations.size()) {
+        if (!selection.set.admissionDomain.activeSelections.remove(selection)) {
+            throw new IllegalStateException(
+                    "select admission domain registration accounting underflow");
+        }
+        if (activeArmRegistrations < selection.registrations.size()
+                || selection.set.admissionDomain.activeArmRegistrations
+                        < selection.registrations.size()) {
             throw new IllegalStateException("select arm registration accounting underflow");
         }
         activeArmRegistrations -= selection.registrations.size();
+        selection.set.admissionDomain.activeArmRegistrations -=
+                selection.registrations.size();
         for (CaseRegistration registration :
                 List.copyOf(selection.registrations)) {
             selection.registeredByIndex[registration.index] = null;
