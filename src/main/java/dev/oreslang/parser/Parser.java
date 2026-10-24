@@ -816,6 +816,39 @@ public final class Parser {
         return new ActorPrefix(transport, serial);
     }
 
+    /** Validate the frozen language-owned physical-turn tier declaration. */
+    private void parseBuiltInMaxActorThreadsEnum() {
+        if (maxActorThreadsEnumDeclared)
+            throw error(previous(), "duplicate built-in MaxActorThreads enum declaration");
+        String name = consume(IDENT, "expected MaxActorThreads enum name").lexeme();
+        if (!name.equals("MaxActorThreads"))
+            throw error(previous(),
+                    "general enum lowering is unsupported; only built-in MaxActorThreads is available");
+        consume(AS, "MaxActorThreads enum requires 'as'");
+        for (Ast.MaxActorThreads tier : Ast.MaxActorThreads.values()) {
+            String member = consume(
+                    IDENT, "expected MaxActorThreads." + tier.name()).lexeme();
+            if (!member.equals(tier.name()))
+                throw error(previous(),
+                        "built-in MaxActorThreads requires " + tier.name()
+                                + " in canonical order");
+            String type = consume(
+                    IDENT, "MaxActorThreads." + tier.name() + " requires int").lexeme();
+            if (!type.equals("int"))
+                throw error(previous(),
+                        "MaxActorThreads." + tier.name() + " must have int backing type");
+            consume(EQUAL, "expected '=' after MaxActorThreads." + tier.name() + " int");
+            String number = consume(
+                    INT, "expected canonical numeric value for " + tier.name()).lexeme();
+            if (!number.replace("_", "").equals(Integer.toString(tier.value())))
+                throw error(previous(),
+                        "MaxActorThreads." + tier.name() + " must equal " + tier.value());
+            match(SEMICOLON);
+        }
+        consume(END, "expected 'end' after MaxActorThreads.HIGH");
+        maxActorThreadsEnumDeclared = true;
+    }
+
     private Ast.ClassDecl parseDefinedActorClass(
             Token actorToken,
             Modifiers modifiers,
@@ -831,8 +864,8 @@ public final class Parser {
                     "actor class declarations accept only visibility and actor-kind modifiers");
         }
         rejectCallableStructuralAnnotation(annotations, "actor class declarations");
-        rejectDiscardedDeclarationAnnotations(annotations, "actor class declarations");
-        return parseActorClass(kind, modifiers.visibility, prefix);
+        Ast.MaxActorThreads maxThreads = actorMaxThreads(annotations);
+        return parseActorClass(kind, modifiers.visibility, prefix, maxThreads);
     }
 
     private boolean matchContextualIdentifier(String lexeme) {
@@ -858,11 +891,20 @@ public final class Parser {
     }
 
     private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility) {
-        return parseActorClass(actorKind, visibility, ActorPrefix.DEFAULT);
+        return parseActorClass(
+                actorKind, visibility, ActorPrefix.DEFAULT, Ast.MaxActorThreads.LOW);
     }
 
     private Ast.ClassDecl parseActorClass(
             Ast.ActorKind actorKind, Ast.Visibility visibility, ActorPrefix prefix) {
+        return parseActorClass(actorKind, visibility, prefix, Ast.MaxActorThreads.LOW);
+    }
+
+    private Ast.ClassDecl parseActorClass(
+            Ast.ActorKind actorKind,
+            Ast.Visibility visibility,
+            ActorPrefix prefix,
+            Ast.MaxActorThreads maxThreads) {
         String name = consume(IDENT, "expected actor name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
@@ -1016,7 +1058,9 @@ public final class Parser {
         }
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods,
-                new Ast.ActorConcurrency(prefix.transport(), requestConcurrency, messageConcurrency));
+                new Ast.ActorConcurrency(
+                        prefix.transport(), requestConcurrency, messageConcurrency),
+                maxThreads);
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {
