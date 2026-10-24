@@ -6046,6 +6046,13 @@ public final class TypeChecker {
     }
 
     private boolean errorPatternDomain(Type subject) {
+        // Class instance methods type 'self' as SelfType<owner>, not Named.
+        // A catch-all guard on self can execute on Error even when no arm
+        // names Error explicitly. Preserve the same Error restriction for
+        // receiver-polymorphic class methods and their descendants.
+        if (subject instanceof SelfType receiver) {
+            return errorPatternDomain(receiver.bound());
+        }
         if (subject instanceof Union union) {
             return union.options().stream().anyMatch(this::errorPatternDomain);
         }
