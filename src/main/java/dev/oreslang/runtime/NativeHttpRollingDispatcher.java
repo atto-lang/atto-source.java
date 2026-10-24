@@ -137,20 +137,24 @@ public final class NativeHttpRollingDispatcher implements AutoCloseable {
     }
 
     /**
-     * Trusted retirement bookkeeping only. The caller must independently
-     * verify every physical worker/Task/I/O/arena/code loan has retired.
-     * This intentionally does not automatically stop the old worker pool.
+     * DISABLED UNTIL PHYSICAL QUIESCENCE EVIDENCE EXISTS.
+     *
+     * Exchange completion and ActorRef.done() cannot prove that callbacks,
+     * suspended Task frames, FFI loans, native I/O, or code-image consumers
+     * have released the old physical generation. The old implementation
+     * accepted a caller's unverified assertion and could drop the last host
+     * registry reference. Fail CLOSED: keep the draining route and pool
+     * retained rather than risk use-after-free.
+     *
+     * A later integration must replace this API with a one-shot receipt
+     * validated against this exact epoch and target under the route lock;
+     * the receipt must come from the actual physical lifetime authority.
      */
+    @Deprecated(forRemoval = true)
     public boolean acknowledgePhysicallyRetired(long epoch) {
         requireSupervisor();
-        NativeHttp.Handler retiring = routes.drainingTarget(epoch);
-        if (retiring == null) return routes.acknowledgePhysicallyRetired(epoch);
-        if (!routes.admissionsDrained(epoch))
-            throw new IllegalStateException("HTTP generation still has admitted exchanges");
-        // The supervisor must have separately verified Task/FFI/I/O/code
-        // quiescence; all actor done receipts alone are not enough.
-        retiring.releaseRetiredPoolAfterProof();
-        return routes.acknowledgePhysicallyRetired(epoch);
+        throw new IllegalStateException(
+                "physical-retirement proof unavailable: generation retained/quarantined");
     }
 
     private void acceptOne() {
