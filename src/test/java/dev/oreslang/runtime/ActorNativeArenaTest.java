@@ -887,10 +887,12 @@ final class ActorNativeArenaTest {
     }
 
     @Test
-    void suspendedPhysicalActorLaneDeniesNativeStateAndAllocationButPreservesBytes() {
+    void injectedOwnerGateRejectsOffTurnNativeStateWithoutMutation() {
         AtomicBoolean admitted = new AtomicBoolean(true);
         AtomicLong charged = new AtomicLong();
         Object uninitialized = new Object();
+        // Simulated owner-gate denial. True runtime suspension and scheduling
+        // still require separate guest/ActorRuntime execution evidence.
         try (ActorNativeArena arena = new ActorNativeArena(16 * 1024,
                 () -> {
                     if (!admitted.get()) {
