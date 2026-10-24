@@ -5478,7 +5478,7 @@ public final class TypeChecker {
                 }
             }
             case "network", "net" -> {
-                if (name.equals("listen_nonblocking")) {
+                if (name.equals("listen_nonblocking") || name.equals("listen_reuseport")) {
                     return new Function(List.of(Primitive.STRING, Primitive.INT, Primitive.INT,
                             Primitive.INT, Primitive.INT), new Named("NioTcpListener", List.of()));
                 }
