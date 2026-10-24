@@ -72,9 +72,13 @@ int main(int argc, char **argv) {
         if (strstr(argv[2], "shared-private-actor-isolation.ores") != NULL) {
             if (getenv("MOCK_REJECT_VALID_ACTOR")) return 1;
             if (getenv("MOCK_ACTOR_CHECK_EXECUTES_GUEST")) puts("actor guest output");
+            if (getenv("MOCK_ACTOR_CHECK_STDERR"))
+                fputs("unexpected actor admission diagnostic\n", stderr);
             return 0;
         }
         if (getenv("MOCK_CHECK_EXECUTES_GUEST")) puts("120:9:13");
+        if (getenv("MOCK_CHECK_STDERR"))
+            fputs("unexpected source admission diagnostic\n", stderr);
         return 0;
     }
     if (argc >= 3 && (strcmp(argv[1], "--mode=aot") == 0
@@ -233,7 +237,8 @@ assert_case() {
       'wrong baked reference mode'|'wrong baked image mode'|'extra build-info lines')
         expected_diagnostic='native build-info does not match canonical' ;;
       'source execution failure') expected_status=13 ;;
-      'check-only mistakenly executes guest') expected_diagnostic='native --check unexpectedly emitted guest output' ;;
+      'check-only mistakenly executes guest'|'check-only reports stderr diagnostic with zero exit')
+        expected_diagnostic='native --check unexpectedly emitted diagnostics or guest output' ;;
       'silent callables guest execution'|'incorrect lexical closure result')
         expected_diagnostic='native callables guest output differs from expected value' ;;
       'private actor capability violation admitted')
@@ -243,8 +248,8 @@ assert_case() {
       'valid shared/private actor rejected') : ;;
       'actor rejected for unrelated parse error'|'actor rejected for unrelated network capability')
         expected_diagnostic='private actor negative fixture failed without a capability-denial diagnostic' ;;
-      'actor check-only emitted guest output')
-        expected_diagnostic='native actor --check unexpectedly emitted guest output' ;;
+      'actor check-only emitted guest output'|'actor check-only reports stderr diagnostic with zero exit')
+        expected_diagnostic='native actor --check unexpectedly emitted diagnostics or guest output' ;;
       'silent fake image without guest-core output'|'wrong native core numeric result')
         expected_diagnostic='native Oreslang core-library output differs from expected value' ;;
       'silent native channel execution'|'wrong native channel select winner'|'lost unselected native channel message')
@@ -303,6 +308,11 @@ assert_case 'wrong baked image mode' failure aot compressed32 MOCK_EMBEDDED_MODE
 assert_case 'extra build-info lines' failure aot compressed32 MOCK_EXTRA_BUILD_INFO=1
 assert_case 'source execution failure' failure aot compressed32 MOCK_BAD_PROGRAM_STATUS=1
 assert_case 'check-only mistakenly executes guest' failure aot compressed32 MOCK_CHECK_EXECUTES_GUEST=1
+assert_case 'check-only reports stderr diagnostic with zero exit' failure aot compressed32 MOCK_CHECK_STDERR=1
+grep -Fx 'native --check unexpectedly emitted diagnostics or guest output' "$tmp/stderr" >/dev/null || {
+  echo 'FAILED: check-only stderr diagnostic did not reach the output gate' >&2
+  exit 1
+}
 assert_case 'silent callables guest execution' failure aot compressed32 MOCK_SILENT_CALLABLES=1
 assert_case 'incorrect lexical closure result' failure aot compressed32 MOCK_BAD_CALLABLES=1
 assert_case 'private actor capability violation admitted' failure aot compressed32 MOCK_ACCEPT_INVALID_PRIVATE_ACTOR=1
@@ -319,6 +329,11 @@ grep -Fx 'private actor negative fixture failed without a capability-denial diag
   exit 1
 }
 assert_case 'actor check-only emitted guest output' failure aot compressed32 MOCK_ACTOR_CHECK_EXECUTES_GUEST=1
+assert_case 'actor check-only reports stderr diagnostic with zero exit' failure aot compressed32 MOCK_ACTOR_CHECK_STDERR=1
+grep -Fx 'native actor --check unexpectedly emitted diagnostics or guest output' "$tmp/stderr" >/dev/null || {
+  echo 'FAILED: actor check stderr diagnostic did not reach the output gate' >&2
+  exit 1
+}
 assert_case 'silent fake image without guest-core output' failure aot compressed32 MOCK_EMPTY_CORE_OUTPUT=1
 assert_case 'wrong native core numeric result' failure aot compressed32 MOCK_BAD_CORE_OUTPUT=1
 assert_case 'silent native channel execution' failure aot compressed32 MOCK_EMPTY_CHANNEL_OUTPUT=1
