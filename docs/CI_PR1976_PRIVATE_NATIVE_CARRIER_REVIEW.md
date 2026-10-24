@@ -106,7 +106,7 @@ evidence only**. Never reuse it as the source-carrying production workflow.
 
 All selected commands should use a reviewed offline runner environment and
 immutable checkout. PR #1976's smoke script now supports `ORES_NATIVE_IMAGE_OFFLINE=1`, which
-passes `-o` to Maven and fails closed on invalid flag values. **36 tests passed
+passes `-o` to Maven and fails closed on invalid flag values. **36 tests passed (prior head)
 locally against the exact committed script/test Git blob versions**, including
 two offline success configurations, invalid-mode denial, and new
 fail-closed checks for duplicate summaries, unexpected guest FAIL/PASS
@@ -149,7 +149,7 @@ Actions, or merge PR #1976 based on synthetic evidence alone.**
 
 ## Further local verification (2026-10-24)
 
-The exact checked-in source-side build gate Git blob `6493dd743a5e8e55b8c4d57d12be6cf6d11f6134` and regression test Git blob `1e23a810c0c010d95e5c34d74366caa688ac1b78` both match the bytes exercised locally. All **36/36** native mock contract cases passed, and both shell scripts passed `sh -n`. This is a source-free runner-gate contract proof, not an exact-current-source GraalVM build.
+The exact checked-in source-side build gate Git blob `6493dd743a5e8e55b8c4d57d12be6cf6d11f6134` and regression test Git blob `1e23a810c0c010d95e5c34d74366caa688ac1b78` both match the bytes exercised locally. All **36/36 (prior head)** native mock contract cases passed, and both shell scripts passed `sh -n`. This is a source-free runner-gate contract proof, not an exact-current-source GraalVM build.
 
 [Exact-source CI run 40112643693](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/40112643693) failed before any job executed a step (test, AOT, AOT reference64, hybrid and isolate all zero steps). Never report this as a compiler failure or successful build. The actual platform-conformance P0 issue IDs #22, #77 and #127 remain open; no private source transfer is permitted.
 
@@ -159,4 +159,10 @@ The exact checked-in source-side build gate Git blob `6493dd743a5e8e55b8c4d57d12
 
 ## 2026-10-24 native actor admission and check/execute split
 
-PR #1976 now requires the native `--check examples/callables.ores` path to admit without guest output and the native execution path to produce exact `120:9:13`. The same build gate checks valid shared/private actor declarations and rejects the checked-in private-actor SharedMutex/read-only sharing authority-laundering fixture. The local `sh -n` and compiled native C-mock regression suite passed **36/36** cases. Exact Git blobs: shell gate `77044ae023309270b7f7d61d012dbc2f3af6cebf` and test suite `d15f74f46bd3b5fe643e8c4f7c6161aec0c27737`. [Exact-commit source CI run 40114707376](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/40114707376) still failed with zero executed steps in all five jobs. This is not actual Oreslang guest-runtime validation, and the destination approval list remains empty.
+PR #1976 now requires the native `--check examples/callables.ores` path to admit without guest output and the native execution path to produce exact `120:9:13`. The same build gate checks valid shared/private actor declarations and rejects the checked-in private-actor SharedMutex/read-only sharing authority-laundering fixture. The local `sh -n` and compiled native C-mock regression suite passed **36/36 (prior head)** cases. Exact Git blobs: shell gate `77044ae023309270b7f7d61d012dbc2f3af6cebf` and test suite `d15f74f46bd3b5fe643e8c4f7c6161aec0c27737`. [Exact-commit source CI run 40114707376](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/40114707376) still failed with zero executed steps in all five jobs. This is not actual Oreslang guest-runtime validation, and the destination approval list remains empty.
+
+## 2026-10-24 native actor-denial exact-reason safeguard
+
+The latest [Native Image PR #1976](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/1976) fixes a false-positive in the negative private-actor admission smoke. An arbitrary nonzero CLI return is not evidence of enforcing private actor isolation: the native executable must reject `private-actor-sharing-invalid.ores` with exactly **CLI status 1** plus `Oreslang isolate denies capability SHARED_MEMORY` or `ACTOR_SHARE_READONLY`. Unexpected syntax errors, unrelated `NETWORK` denials, false admission, missing fixtures and wrong exit statuses cause failure. Two negative mock scenarios also check the gate's exact rejection reason.
+
+Source-free mock suite now lists **39 cases**, but the *full updated suite has not been executed* in this turn. Eight focused local shell/C-mock scenarios and syntax checks passed. Latest committed source Git blobs: gate `3cefe3f8d2106629a6e370669c6e5f0cfca965f1`, test suite `c06f2151ac04ab119b82be1c7a3412e3d5e7286d`. [CI run 40128694431](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/40128694431) failed with **zero executed steps in all five jobs**. The carrier's security approval, incident disposition and independent review requirements remain in force. No private source was exported.
