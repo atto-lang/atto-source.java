@@ -6115,7 +6115,8 @@ public final class OresEvalRootNode extends RootNode {
             }
             return new ChannelRuntime.SelectSet(
                     cases,
-                    staticSelectTicket(selected));
+                    staticSelectTicket(selected),
+                    context.channelAdmissionDomain());
         }
 
         private long staticSelectTicket(Ast.SelectStmt selected) {
@@ -6288,11 +6289,13 @@ public final class OresEvalRootNode extends RootNode {
             ArrayList<ChannelRuntime.SelectCase> cases = new ArrayList<>();
             if (value instanceof List<?> list) {
                 for (Object item : list) cases.add(requireSelectCase(item));
-                return new ChannelRuntime.SelectSet(cases);
+                return new ChannelRuntime.SelectSet(
+                        cases, context.channelAdmissionDomain());
             }
             if (value instanceof Map<?, ?> map) {
                 for (Object item : map.values()) cases.add(requireSelectCase(item));
-                return new ChannelRuntime.SelectSet(cases);
+                return new ChannelRuntime.SelectSet(
+                        cases, context.channelAdmissionDomain());
             }
             throw new IllegalArgumentException(
                     "dynamic select requires SelectSet or list/map of SelectCase values");
@@ -6749,7 +6752,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
-                if (name.name().equals("Channel")) return new ChannelFactory();
+                if (name.name().equals("Channel")) return new ChannelFactory(context);
                 if (name.name().equals("SelectCase")) return new SelectCaseFactory();
                 if (name.name().equals("SelectSet")) return new SelectSetFactory(this);
                 if (name.name().equals("Future")) return FutureFactory.INSTANCE;
@@ -10230,14 +10233,15 @@ public final class OresEvalRootNode extends RootNode {
     private record HostObjectFacade(Object value) {
         @Override public String toString() { return String.valueOf(value); }
     }
-    private static final class ChannelFactory {
+    private record ChannelFactory(OresContext context) {
         private Object create(List<Object> args) {
             requireOne(args, "Channel.new<T>");
             if (!(args.getFirst() instanceof Number number)) {
                 throw new IllegalArgumentException("Channel.new<T> capacity must be an integer");
             }
             int capacity = Math.toIntExact(number.longValue());
-            return new ChannelRuntime.Channel<>(capacity);
+            return new ChannelRuntime.Channel<>(
+                    capacity, context.channelAdmissionDomain());
         }
     }
 
