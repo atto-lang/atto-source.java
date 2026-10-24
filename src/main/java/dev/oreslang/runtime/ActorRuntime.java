@@ -7354,8 +7354,10 @@ public final class ActorRuntime implements AutoCloseable {
         private final ChannelRuntime.Channel<MessageEnvelope> mailbox;
         /**
          * Bounded producer registrations for awaitable USER-mail admission.
-         * This is scheduler state, not a second message queue: entries contain
-         * only admission Futures and never payloads. Registration, cancellation
+         * This is scheduler state, not a second dispatchable message queue:
+         * entries are admission Futures, while their producer continuation may
+         * retain a prepared payload only under the explicit target-side byte
+         * reservation and AsyncSendAdmissionLoan. Registration, cancellation
          * and slot transfer linearize under mailboxAccountingLock; Future
          * publication always occurs after that lock is released.
          */
