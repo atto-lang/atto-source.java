@@ -49,21 +49,83 @@ public final class TypeConstraintDescriptors {
             String fingerprint) {
         public Descriptor {
             if (schemaVersion != SCHEMA_VERSION) {
-                throw new IllegalArgumentException("unsupported constraint descriptor schema");
+                throw new IllegalArgumentException("CONSTRAINT_SCHEMA_VERSION_MISMATCH");
             }
             if (!SCHEMA_ID.equals(schemaId)) {
-                throw new IllegalArgumentException("invalid constraint descriptor schema id");
+                throw new IllegalArgumentException("CONSTRAINT_SCHEMA_ID_MISMATCH");
             }
             Objects.requireNonNull(qualifiedTypeName, "qualified type name");
-            Objects.requireNonNull(representation, "constraint representation");
+            if (qualifiedTypeName.isBlank()) {
+                throw new IllegalArgumentException("CONSTRAINT_QUALIFIED_NAME_REQUIRED");
+            }
+            if (!REPRESENTATION_I64.equals(representation)) {
+                throw new IllegalArgumentException("CONSTRAINT_REPRESENTATION_MISMATCH");
+            }
             predicates = List.copyOf(predicates);
+            if (predicates.isEmpty()) {
+                throw new IllegalArgumentException("CONSTRAINT_PREDICATE_REQUIRED");
+            }
+            if (!validationRequired) {
+                throw new IllegalArgumentException("CONSTRAINT_VALIDATION_REQUIRED");
+            }
+
+            Long minimum = null;
+            Long maximum = null;
+            int previousOrder = -1;
+            for (Predicate predicate : predicates) {
+                int order;
+                if (predicate.id().equals("min_inclusive_i64")
+                        && predicate.operator().equals(">=")
+                        && predicate.errorId().equals("ORES_CONSTRAINT_MIN_INCLUSIVE_I64")) {
+                    if (minimum != null) {
+                        throw new IllegalArgumentException("CONSTRAINT_DUPLICATE_MIN");
+                    }
+                    minimum = predicate.operand();
+                    order = 0;
+                } else if (predicate.id().equals("max_inclusive_i64")
+                        && predicate.operator().equals("<=")
+                        && predicate.errorId().equals("ORES_CONSTRAINT_MAX_INCLUSIVE_I64")) {
+                    if (maximum != null) {
+                        throw new IllegalArgumentException("CONSTRAINT_DUPLICATE_MAX");
+                    }
+                    maximum = predicate.operand();
+                    order = 1;
+                } else {
+                    throw new IllegalArgumentException("CONSTRAINT_PREDICATE_UNSUPPORTED");
+                }
+                if (order < previousOrder) {
+                    throw new IllegalArgumentException("CONSTRAINT_PREDICATE_ORDER_MISMATCH");
+                }
+                previousOrder = order;
+            }
+            if (minimum != null && maximum != null && minimum > maximum) {
+                throw new IllegalArgumentException("CONSTRAINT_EMPTY_RANGE");
+            }
+
             Objects.requireNonNull(fingerprint, "constraint descriptor fingerprint");
+            String expected = sha256(canonicalForm(qualifiedTypeName, predicates));
+            if (!expected.equals(fingerprint)) {
+                throw new IllegalArgumentException("CONSTRAINT_FINGERPRINT_MISMATCH");
+            }
         }
     }
 
     public record Catalog(Map<String, Descriptor> descriptors) {
         public Catalog {
-            descriptors = Collections.unmodifiableMap(new LinkedHashMap<>(descriptors));
+            Objects.requireNonNull(descriptors, "constraint descriptor catalog");
+            LinkedHashMap<String, Descriptor> checked = new LinkedHashMap<>();
+            for (Map.Entry<String, Descriptor> entry : descriptors.entrySet()) {
+                String name = Objects.requireNonNull(entry.getKey(), "constraint descriptor key");
+                Descriptor descriptor = Objects.requireNonNull(
+                        entry.getValue(), "constraint descriptor value");
+                if (!name.equals(descriptor.qualifiedTypeName())) {
+                    throw new IllegalArgumentException("CONSTRAINT_CATALOG_IDENTITY_MISMATCH");
+                }
+                if (checked.putIfAbsent(name, descriptor) != null) {
+                    throw new IllegalArgumentException("CONSTRAINT_CATALOG_DUPLICATE");
+                }
+            }
+            descriptors = Collections.unmodifiableMap(checked);
         }
 
         public static Catalog empty() { return new Catalog(Map.of()); }
