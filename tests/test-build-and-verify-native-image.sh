@@ -62,9 +62,19 @@ int main(int argc, char **argv) {
             if (!getenv("MOCK_EMPTY_TEST_OUTPUT")) {
                 if (!getenv("MOCK_MISSING_TEST_EVENTS")) {
                     puts("ORES_TEST|PASS|core/arithmetic/adds|");
-                    puts("ORES_TEST|PASS|core/float/tolerance|");
+                    if (getenv("MOCK_REPLACE_FLOAT_WITH_ARITHMETIC_PASS"))
+                        puts("ORES_TEST|PASS|core/arithmetic/adds|");
+                    else
+                        puts("ORES_TEST|PASS|core/float/tolerance|");
                     puts("ORES_TEST|PASS|core/property/square|");
-                    puts("ORES_TEST|SKIP|core/future/parallel-runner|not yet supported");
+                    if (getenv("MOCK_WRONG_SKIP_ID"))
+                        puts("ORES_TEST|SKIP|core/future/unrelated|not supported");
+                    else
+                        puts("ORES_TEST|SKIP|core/future/parallel-runner|not yet supported");
+                    if (getenv("MOCK_DUPLICATE_TEST_PASS_ID"))
+                        puts("ORES_TEST|PASS|core/arithmetic/adds|");
+                    if (getenv("MOCK_DUPLICATE_TEST_SKIP_ID"))
+                        puts("ORES_TEST|SKIP|core/future/parallel-runner|not yet supported");
                 }
                 if (getenv("MOCK_EXTRA_TEST_PASS"))
                     puts("ORES_TEST|PASS|core/extra/false-positive|");
@@ -192,6 +202,10 @@ assert_case 'duplicate valid summary' failure aot compressed32 MOCK_DUPLICATE_TE
 assert_case 'valid plus conflicting summary' failure aot compressed32 MOCK_CONFLICTING_TEST_SUMMARY=1
 assert_case 'valid summary alongside FAIL event' failure aot compressed32 MOCK_EXTRA_TEST_FAIL=1
 assert_case 'valid summary alongside excess PASS event' failure aot compressed32 MOCK_EXTRA_TEST_PASS=1
+assert_case 'duplicated PASS replacing missing PASS' failure aot compressed32 MOCK_REPLACE_FLOAT_WITH_ARITHMETIC_PASS=1
+assert_case 'duplicate arithmetic PASS identity' failure aot compressed32 MOCK_DUPLICATE_TEST_PASS_ID=1
+assert_case 'wrong SKIP test identity' failure aot compressed32 MOCK_WRONG_SKIP_ID=1
+assert_case 'duplicate SKIP identity' failure aot compressed32 MOCK_DUPLICATE_TEST_SKIP_ID=1
 assert_case 'native image accepting JVM JIT' failure aot compressed32 MOCK_JIT_STATUS=0
 assert_case 'unexpected JIT refusal exit status' failure aot compressed32 MOCK_JIT_STATUS=1
 
