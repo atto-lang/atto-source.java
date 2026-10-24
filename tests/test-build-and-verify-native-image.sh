@@ -260,8 +260,20 @@ assert_case 'duplicate arithmetic PASS identity' failure aot compressed32 MOCK_D
 assert_case 'wrong SKIP test identity' failure aot compressed32 MOCK_WRONG_SKIP_ID=1
 assert_case 'duplicate SKIP identity' failure aot compressed32 MOCK_DUPLICATE_TEST_SKIP_ID=1
 assert_case 'unrelated CLI error impersonates AOT JIT rejection' failure aot compressed32 MOCK_JIT_UNRELATED_USAGE_ERROR=1
+grep -Fx 'native executable refused JIT without the required build-mode diagnostic' "$tmp/stderr" >/dev/null || {
+  echo 'FAILED: JIT-related negative case did not reach the mode-specific refusal check' >&2
+  exit 1
+}
 assert_case 'wrong AOT JIT refusal reason' failure aot compressed32 MOCK_JIT_WRONG_MODE_REASON=1
+grep -Fx 'native executable refused JIT without the required build-mode diagnostic' "$tmp/stderr" >/dev/null || {
+  echo 'FAILED: JIT-related negative case did not reach the mode-specific refusal check' >&2
+  exit 1
+}
 assert_case 'wrong hybrid JIT refusal reason' failure hybrid compressed32 MOCK_EMBEDDED_MODE=hybrid MOCK_JIT_WRONG_MODE_REASON=1
+grep -Fx 'native executable refused JIT without the required build-mode diagnostic' "$tmp/stderr" >/dev/null || {
+  echo 'FAILED: JIT-related negative case did not reach the mode-specific refusal check' >&2
+  exit 1
+}
 assert_case 'native image accepting JVM JIT' failure aot compressed32 MOCK_JIT_STATUS=0
 assert_case 'unexpected JIT refusal exit status' failure aot compressed32 MOCK_JIT_STATUS=1
 
