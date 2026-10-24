@@ -7545,6 +7545,10 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
             if (receiver instanceof ChannelRuntime.Channel<?> channel) {
+                if (!channel.belongsTo(context.channelAdmissionDomain())) {
+                    throw new SecurityException(
+                            "Channel member access crossed OresContext admission domain");
+                }
                 return switch (name) {
                     case "close" -> (Invokable) args -> {
                         requireZero(args, "Channel.close");
