@@ -51,6 +51,12 @@ public final class ChannelRuntime {
      */
     private static final int MAX_PROCESS_PENDING_SELECTS = 16_384;
     static final int MAX_PROCESS_PENDING_SELECT_ARM_REGISTRATIONS = 65_536;
+    /**
+     * Compatibility/test name for the normal host-domain arm allowance.
+     * The process emergency ceiling is intentionally larger.
+     */
+    static final int MAX_PENDING_SELECT_ARM_REGISTRATIONS =
+            DEFAULT_MAX_PENDING_SELECT_ARMS;
     /** Process retained descriptor count. Only accessed under COORDINATOR. */
     private static int activeArmRegistrations;
     private static long nextTicket;
