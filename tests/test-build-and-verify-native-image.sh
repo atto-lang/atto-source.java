@@ -55,7 +55,7 @@ int main(int argc, char **argv) {
                 fputs("Oreslang isolate denies capability NETWORK required by actor\n", stderr);
             else
                 fputs("Oreslang isolate denies capability SHARED_MEMORY required by SharedMutex<T>\n", stderr);
-            return 1;
+            return getenv("MOCK_BAD_DENIAL_STATUS") ? 2 : 1;
         }
         if (strstr(argv[2], "shared-private-actor-isolation.ores") != NULL) {
             if (getenv("MOCK_REJECT_VALID_ACTOR")) return 1;
@@ -221,6 +221,7 @@ assert_case 'check-only mistakenly executes guest' failure aot compressed32 MOCK
 assert_case 'silent callables guest execution' failure aot compressed32 MOCK_SILENT_CALLABLES=1
 assert_case 'incorrect lexical closure result' failure aot compressed32 MOCK_BAD_CALLABLES=1
 assert_case 'private actor capability violation admitted' failure aot compressed32 MOCK_ACCEPT_INVALID_PRIVATE_ACTOR=1
+assert_case 'private actor denial uses wrong CLI exit status' failure aot compressed32 MOCK_BAD_DENIAL_STATUS=1
 assert_case 'valid shared/private actor rejected' failure aot compressed32 MOCK_REJECT_VALID_ACTOR=1
 assert_case 'actor rejected for unrelated parse error' failure aot compressed32 MOCK_WRONG_ACTOR_REJECTION=1
 grep -Fx 'private actor negative fixture failed without a capability-denial diagnostic' "$tmp/stderr" >/dev/null || {
