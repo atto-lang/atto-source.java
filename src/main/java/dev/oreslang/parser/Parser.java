@@ -4403,9 +4403,20 @@ public final class Parser {
         if (check(MUT)) return looksLikeTypeFirstClassField();
         if (!check(IDENT)) return false;
         String word = peek().lexeme();
-        return ((word.equals("suspend") || word.equals("method") || word.equals("mtd")
-                || word.equals("final") || word.equals("critical"))
-                && (checkNext(IDENT) || checkNext(MUT) || checkNext(FNC) || checkNext(LPAREN)))
+        // Keep this boundary consistent with matchExplicitMethodMarker:
+        // keyword-named methods (mtd select(), mtd do()) and symbol methods
+        // may follow a semicolon-free field on a separate source line.
+        Token.Type following = current + 1 < tokens.size()
+                ? tokens.get(current + 1).type() : EOF;
+        boolean markedMethod = (word.equals("method") || word.equals("mtd"))
+                && (following == IDENT || following == LBRACKET
+                    || isReservedCallableName(following)
+                    || isContextualStatementCallableName(following)
+                    || following == TRUE || following == FALSE);
+        return markedMethod
+                || ((word.equals("suspend") || word.equals("method") || word.equals("mtd")
+                        || word.equals("final") || word.equals("critical"))
+                    && (checkNext(IDENT) || checkNext(MUT) || checkNext(FNC) || checkNext(LPAREN)))
                 || looksLikeTypeFirstClassField();
     }
 
