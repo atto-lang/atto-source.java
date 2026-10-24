@@ -886,6 +886,46 @@ final class ActorNativeArenaTest {
         }
     }
 
+    @Test
+    void suspendedPhysicalActorLaneDeniesNativeStateAndAllocationButPreservesBytes() {
+        AtomicBoolean admitted = new AtomicBoolean(true);
+        AtomicLong charged = new AtomicLong();
+        Object uninitialized = new Object();
+        try (ActorNativeArena arena = new ActorNativeArena(16 * 1024,
+                () -> {
+                    if (!admitted.get()) {
+                        throw new SecurityException("actor execution lane is idle");
+                    }
+                },
+                bytes -> {
+                    charged.addAndGet(bytes);
+                    return () -> charged.addAndGet(-bytes);
+                })) {
+            Map<String, Object> state = arena.fields(List.of("count"), uninitialized);
+            state.put("count", 13L);
+            ActorNativeArena.Region region = arena.region(32);
+            region.writeLong(0, 99L);
+            long bytesBeforeSuspension = charged.get();
+
+            admitted.set(false);
+            assertThrows(SecurityException.class, () -> state.get("count"));
+            assertThrows(SecurityException.class, () -> state.put("count", 66L));
+            assertThrows(SecurityException.class, () -> region.readLong(0));
+            assertThrows(SecurityException.class, () -> region.writeLong(0, 100L));
+            assertThrows(SecurityException.class, () -> arena.region(8));
+            assertEquals(bytesBeforeSuspension, charged.get(),
+                    "denied off-lane operations must not change native memory charge");
+
+            admitted.set(true);
+            assertEquals(13L, state.get("count"),
+                    "next physical turn must not see off-lane state mutation");
+            assertEquals(99L, region.readLong(0));
+            region.close();
+        }
+        assertEquals(0L, charged.get(),
+                "physical arena close must refund all native memory");
+    }
+
     private static ActorNativeArena arena(long limit, AtomicLong charged) {
         return new ActorNativeArena(limit, () -> {}, bytes -> {
             charged.addAndGet(bytes);
