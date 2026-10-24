@@ -6244,9 +6244,13 @@ public final class TypeChecker {
             // Ordinary non-Error guards retain pattern-test support.
             return false;
         }
-        if (expr instanceof Ast.CastExpr cast) {
-            return cast.mode() == Ast.CastMode.OPTIONAL
-                    && pureMatchGuardExpr(cast.value());
+        if (expr instanceof Ast.CastExpr) {
+            // Even 'as?' has a runtime allocation cost: OresEvalRootNode
+            // materializes a new OptionValue for a successful or failed
+            // optional cast. A pure-looking nested cast can run inside a
+            // type test; error dispatch must not allocate speculatively.
+            // Use a direct 'is type T' predicate instead.
+            return false;
         }
         // Explicit deny-by-default: CallExpr, MemberExpr, AssignExpr,
         // RuntimeCallExpr, IndexExpr, NewExpr, AwaitExpr, TrapExpr, channel
