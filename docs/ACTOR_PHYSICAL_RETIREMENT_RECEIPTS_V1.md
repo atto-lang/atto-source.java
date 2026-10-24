@@ -408,3 +408,58 @@ before the asynchronous rejection handler. Its throwing-notifier JUnit
 regression explicitly verifies that the final count is zero and that
 the registry retains the original sticky failure. A negative count
 must never be interpreted as clean physical retirement.
+
+## Actor-map removal is not an actor-DONE receipt (2026-10-23)
+
+A new teardown audit found two externally visible correctness gaps:
+
+1. `ActorRef.awaitTermination(timeout)` used to return success immediately
+   when the actor was no longer in `ActorRuntime.actors`, even though
+   `unregisterActor` runs **before** the final internal `finalizedFuture`
+   subscribers and external `doneFuture` settle. That is not a valid
+   terminal receipt. It now waits on the non-cancellable `doneFuture`
+   for its entire bounded timeout. Both successful and exceptional DONE
+   mean the actor reached a terminal state, but callers must inspect
+   `done()` to distinguish success from failure.
+
+2. `ActorRuntime.close()` formerly took its shutdown snapshot from
+   `actors` alone and could omit a cell that was already removed but
+   still executing its finalization subscriber. This could permit global
+   resource teardown while such a subscriber was still running. The
+   runtime now maintains a separate strong `terminalPublications` set:
+   registration precedes ordinary-map removal and release follows
+   externally observable DONE. Every runtime-close snapshot includes
+   both sets. STOP and cancel-queued callbacks skip already-finalizing
+   cells; the shutdown join waits on terminal Futures with a deadline
+   rather than acquiring a potentially blocked `lifecycleLock`.
+
+A trusted `finalizedFuture` observer error is now inspected before
+publishing `doneFuture`; a swallowed runtime-notification error produces
+an exceptional DONE instead of a false successful completion. The
+runtime-only Future is not a guest callback interface. This failure
+conversion does **not** by itself constitute proof that driver callback
+memory remained pinned after teardown; driver-specific release receipts
+are still required.
+
+Deterministic source JUnit cases:
+- `actorMapRemovalCannotPretendDoneWhileFinalizedObserverIsBlocked`
+- `failingInternalFinalizationSubscriberNeverPublishesSuccessfulDone`
+- `runtimeCloseCannotForgetActorRemovedBeforeTerminalSubscriberDrains`
+
+The last case deliberately blocks a terminal subscriber after ordinary
+actor-map removal, then asserts that runtime close terminates within a
+bounded time with quarantine and can succeed on retry after the callback
+exits. Those tests have not executed in JDK25 CI.
+
+**CI authorization and capacity observations:** The protected-main
+`.github/private-ci-approved-repositories.txt` has zero approved private
+source transfer destinations, and #1538 remains draft. The proposed
+private destination
+`ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra`
+(repository ID `1412142815`) is listed as an unapproved review-only
+candidate. Its most recent source-free runner-capacity canary also
+failed before assigning a runner (zero steps). A tokenless Git-tree
+mirror is still a private source transfer and must NOT be performed
+until independent approval and an actually executable destination
+are verified. Source-org Actions retries likewise produced no runner,
+so they provide neither passed tests nor evidence of a source defect.
