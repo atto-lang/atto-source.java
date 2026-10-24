@@ -163,7 +163,7 @@ public final class Parser {
                     throw error(previous(), "'shared'/'supervisor' must modify an actor declaration");
                 }
                 if (match(MODULE)) {
-                    if (modifiers.visibilitySeen || modifiers.async || modifiers.suspends || modifiers.suspends || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
+                    if (modifiers.visibilitySeen || modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
                             || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted || modifiers.supervisor) {
                         throw error(previous(), "modules do not accept declaration modifiers");
                     }
@@ -306,19 +306,28 @@ public final class Parser {
         // Keep the pre-"as" spelling accepted while existing source migrates.
         match(AS);
         List<Ast.Decl> declarations = new ArrayList<>();
-        while (!check(END) && !check(EOF)) {
-            // The frozen source-level actor scheduling enum can appear inside
-            // a module, but is a language-owned type, not a generated class.
-            // Ordinary enums remain unsupported until typed enum AST lowering.
-            if (check(DEFINE) && checkNext(ENUM)) {
-                advance();
-                advance();
-                parseBuiltInMaxActorThreadsEnum();
-                continue;
+        List<ForwardType> enclosing = moduleForwards;
+        List<ForwardType> forwards = new ArrayList<>();
+        moduleForwards = forwards;
+        try {
+            while (!check(END) && !check(EOF)) {
+                // The frozen source-level actor scheduling enum can appear inside
+                // a module, but is a language-owned type, not a generated class.
+                // Ordinary enums remain unsupported until typed enum AST lowering.
+                if (check(DEFINE) && checkNext(ENUM)) {
+                    advance();
+                    advance();
+                    parseBuiltInMaxActorThreadsEnum();
+                    continue;
+                }
+                Ast.Decl declaration = parseModuleMember();
+                if (declaration != null) declarations.add(declaration);
             }
-            declarations.add(parseModuleMember());
+            consume(END, "expected 'end' to close module " + name);
+            validateForwardTypes(forwards, declarations, "module " + name);
+        } finally {
+            moduleForwards = enclosing;
         }
-        consume(END, "expected 'end' to close module " + name);
         return new Ast.ModuleDecl(name, annotations, contracts, declarations);
     }
 
@@ -734,7 +743,7 @@ public final class Parser {
     }
 
     private void validateClassModifiers(Modifiers modifiers) {
-        if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
+        if (modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
                 || modifiers.isStatic || modifiers.shared || modifiers.untrusted || modifiers.supervisor) {
             throw error(previous(),
                     "classes accept only private/pub visibility and abstract; callable/actor modifiers are not permitted");
@@ -742,21 +751,21 @@ public final class Parser {
     }
 
     private void validateClassFieldModifiers(Modifiers modifiers) {
-        if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
+        if (modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
                 || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted || modifiers.supervisor) {
             throw error(peek(), "class fields accept only private/pub visibility modifiers");
         }
     }
 
     private void validateOnlyVisibilityModifiers(Modifiers modifiers, String context) {
-        if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical
+        if (modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural || modifiers.nonLexical
                 || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted || modifiers.supervisor) {
             throw error(previous(), context + " accept only private/pub visibility modifiers");
         }
     }
 
     private void validateInterfaceCallableModifiers(Modifiers modifiers) {
-        if (modifiers.visibilitySeen || modifiers.async || modifiers.generator || modifiers.nonLexical || modifiers.trapped
+        if (modifiers.visibilitySeen || modifiers.async || modifiers.suspends || modifiers.generator || modifiers.nonLexical || modifiers.trapped
                 || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted || modifiers.supervisor) {
             throw error(previous(),
                     "interface callable signatures currently accept only the structural callable modifier");
@@ -764,7 +773,7 @@ public final class Parser {
     }
 
     private void validateNoModifiers(Modifiers modifiers, String context) {
-        if (modifiers.visibilitySeen || modifiers.async || modifiers.generator || modifiers.structural
+        if (modifiers.visibilitySeen || modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural
                 || modifiers.nonLexical || modifiers.trapped || modifiers.isStatic || modifiers.isAbstract
                 || modifiers.shared || modifiers.untrusted || modifiers.supervisor) {
             throw error(previous(), context + " do not accept declaration modifiers");
@@ -1001,6 +1010,45 @@ public final class Parser {
             }
             if (mods.isStatic && !explicitFnc) {
                 consume(FNC, "static actor functions must be declared with 'static fnc'");
+            }
+            // Reserved lifecycle and unhandled-failure methods must not be
+            // silently treated as ordinary actor methods before runtime
+            // teardown dispatch and typed exceptional-effect lowering exist.
+            if (check(IDENT) && peek().lexeme().equals("tear_down")) {
+                int lifecycleStartToken = current;
+                Ast.MethodDecl teardown = parseMethod(annotations, mods);
+                // Fail closed at admission, not after state has already been
+                // mutated during shutdown. Nested lambda/defer awaits are also
+                // disallowed in this first synchronous lifecycle slice.
+                for (int i = lifecycleStartToken; i < current; i++) {
+                    Token token = tokens.get(i);
+                    if (token.type() == AWAIT
+                            || (token.type() == RT
+                                    && i + 1 < current
+                                    && tokens.get(i + 1).lexeme().equals("cooperate"))) {
+                        throw error(token,
+                                "actor tear_down cannot await or cooperate until "
+                                        + "scheduler-owned async teardown lowering exists");
+                    }
+                }
+                // tear_down is a runtime-only lifecycle entry point, not an
+                // ordinary user-invokable actor method. The first executable
+                // slice is synchronous; suspend/async awaits require a pinned
+                // teardown continuation and are rejected until implemented.
+                if (teardown.isStatic() || teardown.async() || teardown.suspends()
+                        || teardown.arity() != 0
+                        || !teardown.genericParameters().isEmpty()
+                        || !teardown.returnType().name().equals("void")
+                        || !teardown.returnType().arguments().isEmpty()) {
+                    throw error(previous(),
+                            "actor tear_down must be a synchronous, nonstatic, "
+                                    + "zero-argument, nongeneric void lifecycle method");
+                }
+                if (methods.stream().anyMatch(m -> m.name().equals("tear_down"))) {
+                    throw error(previous(), "actor tear_down may be declared only once");
+                }
+                methods.add(teardown);
+                continue;
             }
             if (check(IDENT) && (peek().lexeme().equals("on_throws")
                     || peek().lexeme().equals("on_recover"))) {
@@ -2158,6 +2206,37 @@ public final class Parser {
 
     private Ast.Stmt parseStatement() {
         rejectUnsupportedAcceleratorSyntax();
+        // A contextual statement keyword: calls to a function named using(...)
+        // retain their existing expression behavior. Scoped borrow syntax is
+        // parsed distinctly so compiler admission cannot silently desugar it.
+        if (check(IDENT) && peek().lexeme().equals("using")
+                && (checkNext(IDENT) || checkNext(SELF))) {
+            advance();
+            // 'as' delimits the scoped alias here, rather than Oreslang's
+            // ordinary checked-cast expression. Restore prior refinement
+            // mode even if the resource expression is malformed.
+            boolean previousRefinementMode = suppressRefinementOperators;
+            Ast.Expr resource;
+            try {
+                suppressRefinementOperators = true;
+                resource = parseExpression();
+            } finally {
+                suppressRefinementOperators = previousRefinementMode;
+            }
+            if (!(resource instanceof Ast.CallExpr call)
+                    || !(call.callee() instanceof Ast.MemberExpr member)
+                    || !member.member().equals("borrow")
+                    || !call.arguments().isEmpty() || call.typeArgumentsPresent()) {
+                throw error(previous(),
+                        "using borrowed scope requires a zero-argument resource.borrow() call");
+            }
+            consume(AS, "using borrowed scope requires 'as <view>'");
+            Token name = consume(IDENT, "using borrowed scope requires a binding name");
+            if (name.lexeme().equals("_") || name.lexeme().equals("using")) {
+                throw error(name, "using borrowed scope needs a named, usable view binding");
+            }
+            return new Ast.UsingBorrowStmt(resource, name.lexeme(), parseBlock());
+        }
         if (match(THROW, RAISE, PANIC)) {
             Token effect = previous();
             Ast.Expr value = parseExpression();
