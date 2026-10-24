@@ -141,6 +141,16 @@ final class ModelDefinitionHardeningTest {
     }
 
     @Test
+    void rejectsAlternatingDelimiterFamiliesBeforeGeneralExpressionParser() {
+        // Each delimiter family alone remains within its individual 48-depth
+        // limit; together they exceed the aggregate parser work budget.
+        String nested = "(".repeat(24) + "[".repeat(24)
+                + "{1}" + "]".repeat(24) + ")".repeat(24);
+        String source = "define model Mixed as Pass(" + nested + ") end";
+        reject("MODEL_EXPRESSION_BUDGET", () -> Parser.parse(source));
+    }
+
+    @Test
     void acceptOrdinaryParenthesizedModelStaticConstantsAtParserBoundary() {
         assertDoesNotThrow(() -> Parser.parse("""
                 define model SmallDefault(offset: int = ((1))) as
