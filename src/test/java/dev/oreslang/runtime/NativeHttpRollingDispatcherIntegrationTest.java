@@ -221,4 +221,119 @@ final class NativeHttpRollingDispatcherIntegrationTest {
             }
         }
     }
+    @Test
+    void supervisorConfigTransactionValidatesBeforeStagingAndSurvivesFailedCandidate()
+            throws Exception {
+        try (SharedCodeImageStore images = new SharedCodeImageStore();
+             ActorRuntime actors = new ActorRuntime(IsolatePolicy.developer());
+             NativeHttp http = new NativeHttp(actors);
+             HttpClient client = HttpClient.newHttpClient()) {
+            var image = images.publish("rolling/transaction.ores",
+                    Parser.parse("pub routine main(): void { return; }"));
+            var ref = new AtomicReference<>(http);
+            var g1 = http.handler(new VersionCode(image, ref, "G1", false, false),
+                    "RollingWorker", ActorRuntime.ActorKind.SHARED).pooled(1);
+            g1.warmup().get(8, TimeUnit.SECONDS);
+            var server = http.listen("127.0.0.1", 0, 16, 1024, 30_000);
+            int port = server.port();
+            long pid = ProcessHandle.current().pid();
+            java.util.concurrent.atomic.AtomicInteger candidateCount =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            var initial = new NativeHttpRollingReloadCoordinator.Config(
+                    "proxy", 1, java.util.Map.of("version", "G1"));
+            try (var rolling = new NativeHttpRollingDispatcher(server, 10001, g1, 3)) {
+                rolling.start();
+                try (var coordinator = new NativeHttpRollingReloadCoordinator(
+                        rolling,
+                        initial,
+                        (old, proposed) -> {
+                            if ("blocked".equals(proposed.settings().get("version")))
+                                throw new IllegalArgumentException("invalid configuration");
+                        },
+                        proposed -> {
+                            candidateCount.incrementAndGet();
+                            boolean fail = "FAIL_READY".equals(
+                                    proposed.settings().get("version"));
+                            var code = new VersionCode(image, ref,
+                                    proposed.settings().get("version"), false, fail);
+                            return http.handler(code, "RollingWorker",
+                                    ActorRuntime.ActorKind.SHARED).pooled(1);
+                        })) {
+                    assertEquals("G1", client.send(request(port),
+                            HttpResponse.BodyHandlers.ofString()).body());
+                    var invalid = new NativeHttpRollingReloadCoordinator.Config(
+                            "proxy", 2, java.util.Map.of("version", "blocked"));
+                    assertThrows(ExecutionException.class,
+                            () -> coordinator.reload(1, invalid).get(8, TimeUnit.SECONDS));
+                    assertEquals(0, candidateCount.get(),
+                            "invalid input must never create candidate actors");
+
+                    var failed = new NativeHttpRollingReloadCoordinator.Config(
+                            "proxy", 2, java.util.Map.of("version", "FAIL_READY"));
+                    assertThrows(ExecutionException.class,
+                            () -> coordinator.reload(1, failed).get(8, TimeUnit.SECONDS));
+                    assertEquals(1L, coordinator.published().epoch());
+                    assertEquals("G1", client.send(request(port),
+                            HttpResponse.BodyHandlers.ofString()).body());
+
+                    var next = new NativeHttpRollingReloadCoordinator.Config(
+                            "proxy", 2, java.util.Map.of("version", "G2"));
+                    var promotion = coordinator.reload(1, next).get(8, TimeUnit.SECONDS);
+                    assertEquals(NativeHttpRollingReloadCoordinator.Status.PUBLISHED,
+                            promotion.status());
+                    assertEquals(2L, coordinator.published().epoch());
+                    assertEquals("G2", client.send(request(port),
+                            HttpResponse.BodyHandlers.ofString()).body());
+
+                    var stale = coordinator.reload(1,
+                            new NativeHttpRollingReloadCoordinator.Config(
+                                    "proxy", 3, java.util.Map.of("version", "STALE")))
+                            .get(8, TimeUnit.SECONDS);
+                    assertEquals(NativeHttpRollingReloadCoordinator.Status.STALE, stale.status());
+                    assertEquals(2, candidateCount.get(),
+                            "stale epoch should fail before candidate allocation");
+
+                    var g3 = new NativeHttpRollingReloadCoordinator.Config(
+                            "proxy", 3, java.util.Map.of("version", "G3"));
+                    assertEquals(NativeHttpRollingReloadCoordinator.Status.PUBLISHED,
+                            coordinator.reload(2, g3).get(8, TimeUnit.SECONDS).status());
+                    assertEquals("G3", client.send(request(port),
+                            HttpResponse.BodyHandlers.ofString()).body());
+                    assertEquals(port, server.port());
+                    assertEquals(pid, ProcessHandle.current().pid());
+                    assertEquals(3L, coordinator.published().epoch());
+                    assertEquals(3, rolling.snapshot().liveGenerations(),
+                            "old generations remain retained pending physical proof");
+                    assertThrows(IllegalStateException.class,
+                            () -> rolling.acknowledgePhysicallyRetired(1L),
+                            "unverified physical retirement must fail closed");
+                    assertNull(rolling.failure());
+                }
+            }
+        }
+    }
+
+    @Test
+    void immutableConfigRejectsMalformedUntrustedInput() {
+        var mutable = new java.util.HashMap<String, String>();
+        mutable.put("version", "one");
+        var snapshot = new NativeHttpRollingReloadCoordinator.Config("proxy", 1, mutable);
+        mutable.put("version", "two");
+        assertEquals("one", snapshot.settings().get("version"));
+        assertThrows(UnsupportedOperationException.class,
+                () -> snapshot.settings().put("version", "three"));
+        assertThrows(IllegalArgumentException.class,
+                () -> new NativeHttpRollingReloadCoordinator.Config(
+                        "bad service", 1, java.util.Map.of()));
+        assertThrows(IllegalArgumentException.class,
+                () -> new NativeHttpRollingReloadCoordinator.Config(
+                        "proxy", 0, java.util.Map.of()));
+        assertThrows(IllegalArgumentException.class,
+                () -> new NativeHttpRollingReloadCoordinator.Config(
+                        "proxy", 1, java.util.Map.of("invalid key", "value")));
+        assertThrows(IllegalArgumentException.class,
+                () -> new NativeHttpRollingReloadCoordinator.Config(
+                        "proxy", 1, java.util.Map.of("key", "contains\u0000NUL")));
+    }
+
 }
