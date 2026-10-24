@@ -250,3 +250,24 @@ matching has **not** been proven. See [#1999](https://github.com/ores-truffle-or
 Integer/bigint ordering cost remains unproven under #1994.
 No private-source cross-org transfer is authorized while #1501 is open
 and the protected source allowlist has no approved destination.
+
+## October 24 — receiver-polymorphic identity equality, source-only verification
+
+The error-domain guard classifier already treats `SelfType(bound)` as its
+underlying Error class for whole-match purity admission. The bounded-equality
+type allowlist, however, rejected every `SelfType` even when `self` was a
+guest class reference. Java evaluator `valueEquals` compares guest
+`OresObject` instances by reference identity by default. The checker now
+unwraps `SelfType` into its resolved bound **only** for this equality
+admission, so `self == self` and `self == candidate` inside an Error
+class or subclass no longer fail solely due to receiver polymorphism.
+Unbounded aggregates and effectful guards remain disallowed.
+
+Two new JUnit tests bring `ErrorPatternGuardPurityTest` to **44 distinct
+`@Test` methods**. This is *not* evidence of passing compiler tests.
+Focused exact-head Actions [run #40132482962](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/40132482962)
+failed during job admission with **zero executed steps and no runner**.
+Full GraalVM JDK25 / Maven / JUnit execution and the corresponding
+Surefire proof remain blocked. The source repository's approved private-CI
+destination list is still empty, so **no cross-org private-source mirror**
+was created. Independent review authority #1724 remains draft.
