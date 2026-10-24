@@ -5524,8 +5524,9 @@ public final class ActorRuntime implements AutoCloseable {
      *
      * <p>The fast path is the existing fail-fast send. When the USER mailbox is
      * full, the message is validated and frozen immediately, then at most a
-     * bounded number of producers may wait on a zero-buffer slot handoff.
-     * Waiting never parks an Ores scheduler carrier. A released slot is
+     * bounded number of producer descriptors may wait in actor-owned scheduler
+     * state (never in a second message queue). Waiting never parks an Ores
+     * scheduler carrier. A released slot is
      * transferred directly to exactly one waiter and remains counted throughout
      * the handoff, preventing a racing synchronous sender from stealing it.</p>
      *
