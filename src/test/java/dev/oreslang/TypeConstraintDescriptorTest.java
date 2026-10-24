@@ -7,7 +7,11 @@ import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Map;
+import java.util.Properties;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -174,11 +178,60 @@ final class TypeConstraintDescriptorTest {
     }
 
     @Test
+    void sharedGoldenContractMatchesCompilerDescriptors() {
+        Properties golden = goldenContract();
+        assertEquals("ores.alias-extension-constraint.v1", golden.getProperty("schema"));
+        assertEquals(TypeConstraintDescriptors.SCHEMA_ID,
+                golden.getProperty("constraint.schema"));
+        assertEquals(TypeConstraintDescriptors.REPRESENTATION_I64,
+                golden.getProperty("constraint.representation"));
+
+        record Case(String source, String qualifiedName, String key) { }
+        for (Case item : new Case[]{
+                new Case(
+                        "declare type Code = int with min 0 and max 5;",
+                        "Code", "root.Code"),
+                new Case(
+                        "define module api as declare type Code = int with min -2 and max 5; end",
+                        "api.Code", "api.Code"),
+                new Case(
+                        "namespace acme; define module api as declare type Code = int with min 0 and max 5; end",
+                        "acme.api.Code", "acme.api.Code")
+        }) {
+            TypeConstraintDescriptors.Descriptor descriptor =
+                    TypeChecker.checkTypesWithDiagnostics(Parser.parse(item.source()))
+                            .constraintDescriptors().find(item.qualifiedName());
+            assertNotNull(descriptor, item.qualifiedName());
+            assertEquals(
+                    golden.getProperty("constraint." + item.key() + ".canonical"),
+                    TypeConstraintDescriptors.canonicalForm(
+                            descriptor.qualifiedTypeName(), descriptor.predicates()),
+                    item.qualifiedName());
+            assertEquals(
+                    golden.getProperty("constraint." + item.key() + ".fingerprint"),
+                    descriptor.fingerprint(),
+                    item.qualifiedName());
+        }
+    }
+
+    @Test
     void unconstrainedAliasesRemainBackwardCompatible() {
         var checked = TypeChecker.checkTypesWithDiagnostics(Parser.parse("""
                 declare type Code = int;
                 fnc read(Code code): int { return code; }
                 """));
         assertTrue(checked.constraintDescriptors().descriptors().isEmpty());
+    }
+
+    private static Properties goldenContract() {
+        Properties result = new Properties();
+        Path path = Path.of(
+                "contracts", "v1", "type-alias-extension-constraint-v1.properties");
+        try (var reader = Files.newBufferedReader(path)) {
+            result.load(reader);
+        } catch (IOException error) {
+            throw new AssertionError("cannot load shared alias/extension golden contract", error);
+        }
+        return result;
     }
 }
