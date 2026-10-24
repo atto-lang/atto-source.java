@@ -312,4 +312,29 @@ final class MethodDeclarationSpellingTest {
         }
     }
 
+
+    @Test
+    void mtdStartsAfterSemicolonFreeFieldsAndOwnsItsEnd() {
+        Ast.Program program = Parser.parse("""
+                define class Store as
+                    final count: int = 1
+                    mtd read() -> int ::
+                        if true then
+                            return 1;
+                        else
+                            return 2;
+                        fi
+                    end
+                    mtd blank(): void {}
+                end
+                """);
+        Ast.ClassDecl klass = assertInstanceOf(Ast.ClassDecl.class,
+                program.modules().getFirst().declarations().getFirst());
+        assertEquals(1, klass.fields().size());
+        assertEquals(2, klass.methods().size());
+        assertEquals(0, klass.methods().getFirst().arity());
+        assertFalse(klass.methods().getFirst().body().isEmpty());
+        assertDoesNotThrow(() -> TypeChecker.check(program));
+    }
+
 }
