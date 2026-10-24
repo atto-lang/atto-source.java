@@ -193,3 +193,27 @@ admission gate, not a hard real-time guarantee for all guard expressions.
 These changes have **not** been executed through Maven/JUnit. Source-org
 workflow failures before any steps are not test verdicts, and private
 cross-org source publication remains blocked pending approved governance.
+
+## October 24 follow-up — string/decimal ordering must not enter Error dispatch
+
+The evaluator uses lexicographic `String.compareTo` for string ordering and
+numeric conversions for decimal comparisons. Earlier error-guard admission
+checked only equality operands for boundedness, allowing `left < right`
+on arbitrary-length strings and decimal values. The Error-domain checker now
+checks `<`, `<=`, `>`, `>=` operands against a narrow numeric allowlist:
+`Primitive.FLOAT` and provisional `Primitive.INT`. It rejects strings,
+decimal, unknown and custom comparator domains. General non-Error matching
+retains its existing string-comparison semantics.
+
+The Error guard regression class now includes **33 distinct JUnit tests**
+(five new ordering cases), covering string and decimal rejection in statement
+and value matches, earlier catch-all guards on `Any`, accepted float ordering,
+and non-Error string-ordering compatibility. The 100 portable Error-pattern
+fixture manifest remains exactly 55 accepted and 45 rejected cases, with
+**zero backend execution confirmations**.
+
+**Remaining precision limitation:** `Primitive.INT` is shared by `int`
+and `bigint`, so preserving old `attempts > 0` guards does **not** prove
+hard-real-time bounded integer ordering. Tracked in #1994. Any zero-step
+Actions failure is an infrastructure admission failure, never a compiler
+verdict. No source was moved into an unapproved cross-organization carrier.
