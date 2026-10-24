@@ -138,11 +138,13 @@ final class SourceActorWorkerAcceptTest {
             }
             """.formatted(port, port, port, port);
         CompletableFuture<Void> ready = new CompletableFuture<>();
+        CompletableFuture<Void> served = new CompletableFuture<>();
         ByteArrayOutputStream output = new ByteArrayOutputStream() {
             @Override public synchronized void write(byte[] bytes, int offset, int len) {
                 super.write(bytes, offset, len);
-                if (toString(StandardCharsets.UTF_8).contains("listeners-ready"))
-                    ready.complete(null);
+                String latest = toString(StandardCharsets.UTF_8);
+                if (latest.contains("listeners-ready")) ready.complete(null);
+                if (latest.contains("four-actors-served")) served.complete(null);
             }
         };
         try (Context guest = IsolatePolicy.developer()
@@ -161,6 +163,10 @@ final class SourceActorWorkerAcceptTest {
                         peer.getOutputStream().write(0x21);
                         sockets.add(peer);
                     }
+                    // Do not tear down the client sockets until all workers
+                    // have completed. Otherwise queued accepts can observe
+                    // artificial EOF/ECONNRESET instead of genuine traffic.
+                    served.get(12, TimeUnit.SECONDS);
                 } catch (Exception error) {
                     throw new RuntimeException(error);
                 } finally {
