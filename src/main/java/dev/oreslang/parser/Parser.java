@@ -4494,6 +4494,47 @@ public final class Parser {
     }
 
     /**
+     * Physical actor parallelism is static compiler policy. Keep MEDIUM/HIGH
+     * fail-closed until per-turn state isolation and authenticated runtime
+     * leases are wired through the actor runtime.
+     */
+    private Ast.MaxActorThreads actorMaxThreads(List<Ast.Annotation> annotations) {
+        Ast.MaxActorThreads result = Ast.MaxActorThreads.LOW;
+        boolean seen = false;
+        for (Ast.Annotation annotation : annotations) {
+            if (!annotation.name().equals("ActorMaxThreads")) {
+                throw error(previous(), "@" + annotation.name()
+                        + " on actor class declarations is not implemented");
+            }
+            if (seen)
+                throw error(previous(), "duplicate @ActorMaxThreads on actor declaration");
+            seen = true;
+            if (annotation.arguments().size() != 1)
+                throw error(previous(),
+                        "@ActorMaxThreads requires exactly one MaxActorThreads enum value");
+            Ast.TypeRef value = annotation.arguments().getFirst();
+            if (!value.arguments().isEmpty() || value.inferArguments()
+                    || !value.name().startsWith("MaxActorThreads.")) {
+                throw error(previous(),
+                        "@ActorMaxThreads expects MaxActorThreads.LOW, .MEDIUM or .HIGH");
+            }
+            String member = value.name().substring("MaxActorThreads.".length());
+            try {
+                result = Ast.MaxActorThreads.valueOf(member);
+            } catch (IllegalArgumentException invalid) {
+                throw error(previous(), "unknown MaxActorThreads enum member: " + member);
+            }
+            if (result != Ast.MaxActorThreads.LOW) {
+                throw error(previous(),
+                        "@ActorMaxThreads(MaxActorThreads." + member
+                                + ") requires compiler-proven per-turn actor state isolation; "
+                                + "parallel actor execution is not yet enabled");
+            }
+        }
+        return result;
+    }
+
+    /**
      * Fail closed until these declaration nodes preserve typed annotation metadata.
      * Silently dropping metadata can bypass compile-time macro, ABI and safety contracts.
      * Module, function, method and field annotations have AST storage and are unaffected.
