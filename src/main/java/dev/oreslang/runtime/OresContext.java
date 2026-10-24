@@ -178,6 +178,14 @@ public final class OresContext implements AutoCloseable {
                     ActorRuntime.DispatcherConfig.defaults(),
                     this::executeActorTurn,
                     vm::executeControl);
+            // Accepted readiness completions reuse actor carrier capacity.
+            // The readiness group's one-shot helper may bootstrap a cold
+            // carrier off-selector; the completion callback itself runs only
+            // after actor-carrier admission succeeds.
+            actors.bindNioCompletionCapacityHook(
+                    vm.nioReadiness()::retryStagedNotifications);
+            vm.nioReadiness().bindVmCompletionExecutor(
+                    actors::executeHostIoCompletion, true);
             async = new AsyncRuntime(this::executeAsyncTurn);
             gc = new RuntimeGarbageCollector();
             actors.setActorExitHook(gc::retireActorDomain);
