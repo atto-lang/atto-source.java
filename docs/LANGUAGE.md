@@ -525,16 +525,24 @@ not copy authorization after rewriting an argument to an unchecked AST.
 Extension calls use ordinary function effect and ownership rules; they
 do not automatically validate or promote integer input.
 
-**Zorde and `with` refinements are a separate integration contract, not
-a built-in implementation implied by `mtd`.** Future `Code = int with
-min 0 and max 5` values must be constructed/converted through
-compiler-checked validation; simply assigning an arbitrary `int` to an
-alias or applying an extension method cannot be a validation bypass.
-Zorde should consume the compiler's normalized constraint metadata,
-including parameterized limits, and only advertise a validated `Code`
-after enforcing those constraints. Java/GraalVM and LLVM must use the
-same proof and import semantics before native or cross-package support
-is claimed.
+**Zorde and `with` refinements use a compiler-owned descriptor
+contract rather than extension-method lookup.** The first Java/GraalVM
+descriptor profile accepts, for example:
+
+```ores
+declare type Code = int with min 0 and max 5;
+```
+
+The type checker exposes a versioned `TypeConstraintDescriptors.Catalog`
+with canonical inclusive i64 predicates, deterministic validation error IDs,
+the stable qualified alias name, representation, and compatibility fingerprint.
+`declare type` and `define type` produce identical descriptors. This does
+**not** yet construct validated values: until checked conversion or compiler
+proof supplies validation provenance, any runtime use of a constrained alias
+fails closed with `CONSTRAINT_VALIDATION_BRIDGE_REQUIRED`. Zorde should
+consume the descriptor catalog directly, not parse source `with` clauses.
+Java/GraalVM and LLVM must use the same descriptor/proof semantics before
+native or cross-package constrained-value support is claimed.
 
 `define model` is different: it introduces a **nominal type and a separately
 owned executable model instance**. In the first executable Java/GraalVM
