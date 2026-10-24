@@ -6897,18 +6897,8 @@ public final class ActorRuntime implements AutoCloseable {
             firstClose = closed.compareAndSet(false, true);
             snapshot = List.copyOf(actors.values());
         }
-        for (ActorCell<?> cell : snapshot) cell.stop();
         RuntimeException channelAdmissionFailure = null;
-        if (firstClose) {
-            try {
-                channelAdmissionDomain.close(
-                        new IllegalStateException("ActorRuntime is closing"));
-            } catch (RuntimeException failure) {
-                // Domain close may publish host/runtime Future callbacks. Never
-                // let one observer prevent dispatcher/actor physical teardown.
-                channelAdmissionFailure = failure;
-            }
-        }
+        for (ActorCell<?> cell : snapshot) cell.stop();
         if (firstClose && physicalTurnGate != null) physicalTurnGate.close();
 
         if (firstClose) {
@@ -6974,6 +6964,21 @@ public final class ActorRuntime implements AutoCloseable {
         for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
         sharedValues.clear();
         sharedMemoryBytes.set(0L);
+
+        if (firstClose) {
+            try {
+                // Individual runtime-owned channels have already published
+                // their specific terminal semantics. Fence only residual
+                // registrations (including future-only selections) now.
+                channelAdmissionDomain.close(
+                        new IllegalStateException("ActorRuntime is closed"));
+            } catch (RuntimeException failure) {
+                // Domain-close publication may invoke host/runtime Future
+                // observers. Preserve the failure without skipping physical
+                // teardown or the actor termination proof below.
+                channelAdmissionFailure = failure;
+            }
+        }
 
         if (interrupted) Thread.currentThread().interrupt();
         if (!stillRunning.isEmpty() || !dispatchersTerminated || interrupted) {
