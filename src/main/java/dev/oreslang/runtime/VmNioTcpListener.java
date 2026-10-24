@@ -26,6 +26,8 @@ public final class VmNioTcpListener implements AutoCloseable {
     private final int maxConnections;
     private final int maxPending;
     private final Object gate = new Object();
+    /** Exact actor incarnation identity, never a guest-visible actor ID or FD. */
+    private volatile Object actorOwnerDomain;
     private final Set<Connection> connections = new HashSet<>();
     private OresFuture<Connection> pendingAccept;
     private final OresFuture<Void> listenerClosed = new OresFuture<>();
@@ -86,6 +88,18 @@ public final class VmNioTcpListener implements AutoCloseable {
         this.maxConnections = maxConnections;
         this.maxPending = maxPending;
     }
+
+    /** Bind exactly once, before publishing this listener into actor source. */
+    void bindActorOwner(Object domain) {
+        Objects.requireNonNull(domain, "actor owner domain");
+        synchronized (gate) {
+            if (actorOwnerDomain != null || closed)
+                throw new IllegalStateException("TCP listener already owned or closed");
+            actorOwnerDomain = domain;
+        }
+    }
+
+    Object actorOwnerDomain() { return actorOwnerDomain; }
 
     public int localPort() {
         try { return ((InetSocketAddress) server.getLocalAddress()).getPort(); }
