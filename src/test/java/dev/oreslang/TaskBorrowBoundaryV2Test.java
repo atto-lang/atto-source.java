@@ -465,6 +465,40 @@ final class TaskBorrowBoundaryV2Test {
     }
 
     @Test
+    void malformedScalarAndEmptyUnionDoNotCreateOwnershipAuthority()
+            throws Exception {
+        var program = Parser.parse("pub fnc main(): void { return; }");
+        var constructor = OwnershipChecker.class.getDeclaredConstructor(
+                dev.oreslang.ast.Ast.Program.class, java.util.Map.class);
+        constructor.setAccessible(true);
+        var checker = constructor.newInstance(program, java.util.Map.of());
+        var copy = OwnershipChecker.class.getDeclaredMethod(
+                "isCopyType", dev.oreslang.ast.Ast.TypeRef.class);
+        copy.setAccessible(true);
+        var send = OwnershipChecker.class.getDeclaredMethod(
+                "forbiddenTaskCapability", dev.oreslang.ast.Ast.TypeRef.class);
+        send.setAccessible(true);
+
+        var scalar = dev.oreslang.ast.Ast.TypeRef.simple("int");
+        assertTrue((Boolean) copy.invoke(checker, scalar));
+        assertFalse((Boolean) send.invoke(checker, scalar));
+
+        var fabricatedScalar = new dev.oreslang.ast.Ast.TypeRef(
+                "int", java.util.List.of(
+                        new dev.oreslang.ast.Ast.TypeRef("Rc",
+                                java.util.List.of(scalar), false)), false);
+        var fabricatedUnion = new dev.oreslang.ast.Ast.TypeRef(
+                "$union$", java.util.List.of(), false);
+        for (var candidate : java.util.List.of(
+                fabricatedScalar, fabricatedUnion)) {
+            assertFalse((Boolean) copy.invoke(checker, candidate),
+                    "malformed type must not gain Copy authority");
+            assertTrue((Boolean) send.invoke(checker, candidate),
+                    "malformed type must not gain Task Send authority");
+        }
+    }
+
+    @Test
     void recursiveNominalGenericCaptureCannotHideNestedNonSendAuthority() throws Exception {
         // A declaration-identity-only recursion short-circuit is unsound:
         // Recursive<T> can recur as Recursive<Rc<T>> with stronger restrictions.
