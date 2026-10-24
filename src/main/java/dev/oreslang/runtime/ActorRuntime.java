@@ -480,6 +480,12 @@ public final class ActorRuntime implements AutoCloseable {
             new java.util.HashMap<>();
     private final AtomicInteger actorCount = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
+    /**
+     * Deterministic race seam used only by package-local runtime tests. The
+     * hook runs after USER credit transfer linearizes, but before the waiter
+     * Future is published; production leaves it null.
+     */
+    volatile Runnable asyncSendCreditTransferHookForTesting;
     private final AtomicLong privateMemoryBytes = new AtomicLong();
     private final AtomicLong sharedMemoryBytes = new AtomicLong();
     private final Object memoryBudgetLock = new Object();
@@ -5645,19 +5651,41 @@ public final class ActorRuntime implements AutoCloseable {
         final int TERMINAL = 2;
         AtomicInteger state = new AtomicInteger(WAITING);
 
+        AtomicBoolean slotCancellationInProgress = new AtomicBoolean();
         OresFuture<Void> result = new OresFuture<>(
                 () -> {
-                    if (!state.compareAndSet(WAITING, TERMINAL)) return false;
-                    boolean waiterWithdrawn = slot.cancel(false);
+                    // The waiter/credit state is authoritative. Do not mark the
+                    // wrapper cancelled first: credit may already have moved to
+                    // this producer even though its Future callback has not run.
+                    if (state.get() != WAITING) return false;
+                    slotCancellationInProgress.set(true);
+                    final boolean waiterWithdrawn;
+                    try {
+                        waiterWithdrawn = slot.cancel(false);
+                    } finally {
+                        slotCancellationInProgress.set(false);
+                    }
+                    if (!waiterWithdrawn) {
+                        // Transfer, failure or another terminal settlement won.
+                        // Its callback owns payload/credit/loan retirement.
+                        return false;
+                    }
+                    if (!state.compareAndSet(WAITING, TERMINAL)) {
+                        throw new IllegalStateException(
+                                "async-send cancellation withdrew waiter after wrapper state advanced");
+                    }
                     releaseOnce.run();
-                    if (waiterWithdrawn) sendLoan.close();
-                    // If transfer/settlement already won, its completion path
-                    // still owns the admission loan until it returns the credit.
+                    sendLoan.close();
                     return true;
                 },
                 () -> { });
 
         slot.whenCompleteRuntime((ignored, slotFailure) -> {
+            // slot.cancel(false) invokes runtime waiters synchronously after
+            // revoking the waiter. The wrapper-cancellation path owns cleanup
+            // in that one case; every other settlement is handled below.
+            if (slotCancellationInProgress.get() && slot.isCancelled()) return;
+
             if (slotFailure != null) {
                 if (!state.compareAndSet(WAITING, TERMINAL)) {
                     releaseOnce.run();
@@ -7714,6 +7742,8 @@ public final class ActorRuntime implements AutoCloseable {
             // Future publication can synchronously invoke runtime plumbing.
             // Never do it while mailboxAccountingLock is held.
             if (transferred != null) {
+                Runnable hook = asyncSendCreditTransferHookForTesting;
+                if (hook != null) hook.run();
                 transferred.future.completeFromRuntime(Boolean.TRUE);
             }
         }
