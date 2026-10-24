@@ -17,6 +17,59 @@ import org.junit.jupiter.api.Timeout;
  */
 @Timeout(20)
 final class ActorPhysicalRetirementRegistryTest {
+    @Test void runtimeCloseCannotForgetActorRemovedBeforeTerminalSubscriberDrains()
+            throws Exception {
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var runtime = new ActorRuntime();
+        var actor = runtime.<String>spawnShared(() -> (message, context) -> { });
+        var mapField = ActorRuntime.class.getDeclaredField("actors");
+        mapField.setAccessible(true);
+        var map = (java.util.Map<?, ?>) mapField.get(runtime);
+        var cell = map.get(actor.id());
+        assertNotNull(cell);
+        var subscriberField = cell.getClass().getDeclaredField("finalizedFuture");
+        subscriberField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        var finalized = (OresFuture<Void>) subscriberField.get(cell);
+        finalized.whenCompleteRuntime((ignored, failure) -> {
+            entered.countDown();
+            while (release.getCount() != 0) {
+                try { release.await(20, TimeUnit.MILLISECONDS); }
+                catch (InterruptedException ignoredInterrupt) {
+                    // Native host subscribers may ignore a STOP interrupt.
+                }
+            }
+        });
+        var stopper = Thread.ofVirtual().start(actor::cancel);
+        try {
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            assertFalse(map.containsKey(actor.id()),
+                    "unregisterActor has removed the original actor");
+            assertFalse(actor.done().isDone());
+            var closingFailure = new AtomicReference<Throwable>();
+            var closer = Thread.ofVirtual().start(() -> {
+                try { runtime.close(); }
+                catch (Throwable t) { closingFailure.set(t); }
+            });
+            closer.join(3_000);
+            assertFalse(closer.isAlive(),
+                    "runtime close must not block indefinitely on lifecycleLock");
+            assertInstanceOf(IllegalStateException.class, closingFailure.get());
+            assertTrue(ActorRuntime.physicallyQuarantined(runtime),
+                    "the actor's terminal callback must remain strongly owned");
+            assertFalse(actor.done().isDone(),
+                    "a failed close cannot pretend the last observer drained");
+        } finally {
+            release.countDown();
+            stopper.join(3_000);
+        }
+        assertFalse(stopper.isAlive());
+        assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+        assertDoesNotThrow(runtime::close, "verified retry must drain the host lane");
+        assertFalse(ActorRuntime.physicallyQuarantined(runtime));
+    }
+
     @Test void failingInternalFinalizationSubscriberNeverPublishesSuccessfulDone()
             throws Exception {
         var listenerFailure = new IllegalStateException(
