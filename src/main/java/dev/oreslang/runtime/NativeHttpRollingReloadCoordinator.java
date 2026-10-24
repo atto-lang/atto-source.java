@@ -124,7 +124,18 @@ public final class NativeHttpRollingReloadCoordinator implements AutoCloseable {
                     factory.create(proposed), "factory returned null candidate");
             // Candidate ownership and all worker ready receipts are checked
             // by the dispatcher, in addition to route epoch compare-and-swap.
-            OresFuture<Boolean> stage = dispatcher.promoteAfterWarmup(expectedEpoch, candidate);
+            OresFuture<Boolean> stage;
+            try {
+                stage = dispatcher.promoteAfterWarmup(expectedEpoch, candidate);
+            } catch (RuntimeException | Error rejected) {
+                // Candidate was constructed but never admitted for warmup.
+                // Do not cancel an active or concurrently staged pool.
+                try { dispatcher.discardRejectedCandidate(candidate); }
+                catch (RuntimeException | Error cleanupFailure) {
+                    rejected.addSuppressed(cleanupFailure);
+                }
+                throw rejected;
+            }
             stage.whenCompleteRuntime((success, failure) -> {
                 Runnable finish = () -> {
                     try {
