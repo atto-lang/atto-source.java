@@ -237,7 +237,7 @@ assert_case() {
       'silent callables guest execution'|'incorrect lexical closure result')
         expected_diagnostic='native callables guest output differs from expected value' ;;
       'private actor capability violation admitted')
-        expected_diagnostic='native linked admission accepted private actor sharing violations' ;;
+        expected_diagnostic='expected private actor capability denial with CLI status 1, got 0' ;;
       'private actor denial uses wrong CLI exit status')
         expected_diagnostic='expected private actor capability denial with CLI status 1, got 2' ;;
       'valid shared/private actor rejected') : ;;
