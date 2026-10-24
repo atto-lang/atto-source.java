@@ -31,6 +31,59 @@ search for another overload. No implicit conversion ranking, structural
 member-by-member matching, return-type scoring, or runtime reflection
 may choose a callable slot.
 
+## Inline receiver marker and explicit `self` call arguments
+
+For ordinary class and actor instance methods, all three definitions below
+have the same **caller-visible arity** and overload identity:
+
+```ores
+foo(int x): void {}
+foo(self, int x): void {}
+foo(self Foo)(int x): void {} // legacy typed receiver form
+```
+
+They MUST NOT coexist in one owner: each defines `foo/1`.
+Likewise `foo()` and `foo(self)` both define `foo/0`. A leading
+`mut self` carries exclusive receiver borrowing, but does not add an
+argument or distinguish an overload. Only the **first declaration parameter**
+may be an inline standalone `self` / `mut self` marker. Trailing commas,
+duplicate markers, non-leading markers and receiver markers on static methods
+are errors. Methods with a normal `self`-typed *named parameter* are
+different: `foo(self other, int x)` defines `foo/2`.
+
+In a method **call**, the receiver is exclusively the left operand of the
+dot. Every value expression in parentheses counts as a separate explicit
+argument, even the expression spelled `self`:
+
+```ores
+define class Foo as
+  foo(int x): int { return x; }           // foo/1
+  foo(self other, int x): int { return x; } // foo/2
+  example(): int {
+    self.foo(5);        // foo/1
+    self.foo(self, 5);  // foo/2, first value argument has type self
+    return 0;
+  }
+end
+```
+
+If only `foo/1` is present, `self.foo(self, 5)` is **missing foo/2**.
+If `foo/2` exists but its first parameter rejects the receiver-polymorphic
+`self` value, report a first-argument **type/ownership** error and NEVER
+fall back to `foo/1`. The `self` expression may not bypass move, loan,
+actor isolation, mailbox or Sendable restrictions.
+
+**Normalization boundary:** the parser erases a declaration's inline
+receiver marker from `MethodDecl.parameters` before overload admission.
+It does **not** erase expressions from `CallExpr.arguments`. The method
+selector, type checker, ownership checker, interpreter, virtual dispatch,
+AOT linkage and actor mailbox lowering all use the same resolved expanded
+value-argument vector. Statically known tuple-spread expansion affects
+call-site arity; the receiver never does. Default arguments or variadic
+expansion (if later supported) must reject overlapping source-call arities.
+The proposed nominal-enum overload extension remains separately gated and
+must never use receiver spelling as a discriminator.
+
 ## Abstract signature shorthand
 
 Inside an abstract class, a method signature ending in `;` may omit
