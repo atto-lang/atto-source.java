@@ -18,16 +18,22 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          # Verify exactly the PR branch HEAD, not GitHub's synthetic merge commit.
+          # Push workflows still resolve to their triggering commit.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Pin actual source checkout and Git tree
         shell: bash
         run: |
           set -euo pipefail
-          test -n "${GITHUB_SHA:-}"
+          # A pull_request event's GITHUB_SHA normally names a synthetic merge
+          # commit. Explicitly pin the PR's immutable head SHA instead.
+          expected="${{ github.event.pull_request.head.sha || github.sha }}"
+          test -n "$expected"
           actual="$(git rev-parse --verify HEAD)"
           tree="$(git rev-parse --verify HEAD^{tree})"
-          if [[ "$actual" != "$GITHUB_SHA" ]]; then
-            echo "checkout does not match the workflow's immutable GITHUB_SHA" >&2
+          if [[ "$actual" != "$expected" ]]; then
+            echo "checkout differs from exact event PR head / push commit" >&2
             exit 1
           fi
           test -n "$tree"
@@ -35,9 +41,8 @@ jobs:
           git diff --cached --quiet
           printf 'ORESLANG_CI_SOURCE_COMMIT=%s\n' "$actual"
           printf 'ORESLANG_CI_SOURCE_TREE=%s\n' "$tree"
-          if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" ]]; then
-            echo "PR default checkout is the GitHub synthetic merge commit, not necessarily the PR branch head"
-          fi
+          printf 'ORESLANG_CI_EVENT_SHA=%s\n' "$GITHUB_SHA"
+          printf 'ORESLANG_CI_EXACT_PR_HEAD_OR_PUSH_SHA=%s\n' "$expected"
       - name: Verify native-image smoke gate with mocked binaries
         run: sh tests/test-build-and-verify-native-image.sh
       - name: Set up GraalVM
@@ -86,16 +91,22 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          # Verify exactly the PR branch HEAD, not GitHub's synthetic merge commit.
+          # Push workflows still resolve to their triggering commit.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Pin actual source checkout and Git tree
         shell: bash
         run: |
           set -euo pipefail
-          test -n "${GITHUB_SHA:-}"
+          # A pull_request event's GITHUB_SHA normally names a synthetic merge
+          # commit. Explicitly pin the PR's immutable head SHA instead.
+          expected="${{ github.event.pull_request.head.sha || github.sha }}"
+          test -n "$expected"
           actual="$(git rev-parse --verify HEAD)"
           tree="$(git rev-parse --verify HEAD^{tree})"
-          if [[ "$actual" != "$GITHUB_SHA" ]]; then
-            echo "checkout does not match the workflow's immutable GITHUB_SHA" >&2
+          if [[ "$actual" != "$expected" ]]; then
+            echo "checkout differs from exact event PR head / push commit" >&2
             exit 1
           fi
           test -n "$tree"
@@ -103,9 +114,8 @@ jobs:
           git diff --cached --quiet
           printf 'ORESLANG_CI_SOURCE_COMMIT=%s\n' "$actual"
           printf 'ORESLANG_CI_SOURCE_TREE=%s\n' "$tree"
-          if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" ]]; then
-            echo "PR default checkout is the GitHub synthetic merge commit, not necessarily the PR branch head"
-          fi
+          printf 'ORESLANG_CI_EVENT_SHA=%s\n' "$GITHUB_SHA"
+          printf 'ORESLANG_CI_EXACT_PR_HEAD_OR_PUSH_SHA=%s\n' "$expected"
       - name: Set up GraalVM
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
         with:
@@ -157,16 +167,22 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          # Verify exactly the PR branch HEAD, not GitHub's synthetic merge commit.
+          # Push workflows still resolve to their triggering commit.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Pin actual source checkout and Git tree
         shell: bash
         run: |
           set -euo pipefail
-          test -n "${GITHUB_SHA:-}"
+          # A pull_request event's GITHUB_SHA normally names a synthetic merge
+          # commit. Explicitly pin the PR's immutable head SHA instead.
+          expected="${{ github.event.pull_request.head.sha || github.sha }}"
+          test -n "$expected"
           actual="$(git rev-parse --verify HEAD)"
           tree="$(git rev-parse --verify HEAD^{tree})"
-          if [[ "$actual" != "$GITHUB_SHA" ]]; then
-            echo "checkout does not match the workflow's immutable GITHUB_SHA" >&2
+          if [[ "$actual" != "$expected" ]]; then
+            echo "checkout differs from exact event PR head / push commit" >&2
             exit 1
           fi
           test -n "$tree"
@@ -174,9 +190,8 @@ jobs:
           git diff --cached --quiet
           printf 'ORESLANG_CI_SOURCE_COMMIT=%s\n' "$actual"
           printf 'ORESLANG_CI_SOURCE_TREE=%s\n' "$tree"
-          if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" ]]; then
-            echo "PR default checkout is the GitHub synthetic merge commit, not necessarily the PR branch head"
-          fi
+          printf 'ORESLANG_CI_EVENT_SHA=%s\n' "$GITHUB_SHA"
+          printf 'ORESLANG_CI_EXACT_PR_HEAD_OR_PUSH_SHA=%s\n' "$expected"
       - name: Set up GraalVM
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
         with:
@@ -205,16 +220,22 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          # Verify exactly the PR branch HEAD, not GitHub's synthetic merge commit.
+          # Push workflows still resolve to their triggering commit.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Pin actual source checkout and Git tree
         shell: bash
         run: |
           set -euo pipefail
-          test -n "${GITHUB_SHA:-}"
+          # A pull_request event's GITHUB_SHA normally names a synthetic merge
+          # commit. Explicitly pin the PR's immutable head SHA instead.
+          expected="${{ github.event.pull_request.head.sha || github.sha }}"
+          test -n "$expected"
           actual="$(git rev-parse --verify HEAD)"
           tree="$(git rev-parse --verify HEAD^{tree})"
-          if [[ "$actual" != "$GITHUB_SHA" ]]; then
-            echo "checkout does not match the workflow's immutable GITHUB_SHA" >&2
+          if [[ "$actual" != "$expected" ]]; then
+            echo "checkout differs from exact event PR head / push commit" >&2
             exit 1
           fi
           test -n "$tree"
@@ -222,9 +243,8 @@ jobs:
           git diff --cached --quiet
           printf 'ORESLANG_CI_SOURCE_COMMIT=%s\n' "$actual"
           printf 'ORESLANG_CI_SOURCE_TREE=%s\n' "$tree"
-          if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" ]]; then
-            echo "PR default checkout is the GitHub synthetic merge commit, not necessarily the PR branch head"
-          fi
+          printf 'ORESLANG_CI_EVENT_SHA=%s\n' "$GITHUB_SHA"
+          printf 'ORESLANG_CI_EXACT_PR_HEAD_OR_PUSH_SHA=%s\n' "$expected"
       - name: Set up GraalVM
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
         with:
@@ -276,16 +296,22 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          # Verify exactly the PR branch HEAD, not GitHub's synthetic merge commit.
+          # Push workflows still resolve to their triggering commit.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Pin actual source checkout and Git tree
         shell: bash
         run: |
           set -euo pipefail
-          test -n "${GITHUB_SHA:-}"
+          # A pull_request event's GITHUB_SHA normally names a synthetic merge
+          # commit. Explicitly pin the PR's immutable head SHA instead.
+          expected="${{ github.event.pull_request.head.sha || github.sha }}"
+          test -n "$expected"
           actual="$(git rev-parse --verify HEAD)"
           tree="$(git rev-parse --verify HEAD^{tree})"
-          if [[ "$actual" != "$GITHUB_SHA" ]]; then
-            echo "checkout does not match the workflow's immutable GITHUB_SHA" >&2
+          if [[ "$actual" != "$expected" ]]; then
+            echo "checkout differs from exact event PR head / push commit" >&2
             exit 1
           fi
           test -n "$tree"
@@ -293,9 +319,8 @@ jobs:
           git diff --cached --quiet
           printf 'ORESLANG_CI_SOURCE_COMMIT=%s\n' "$actual"
           printf 'ORESLANG_CI_SOURCE_TREE=%s\n' "$tree"
-          if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" ]]; then
-            echo "PR default checkout is the GitHub synthetic merge commit, not necessarily the PR branch head"
-          fi
+          printf 'ORESLANG_CI_EVENT_SHA=%s\n' "$GITHUB_SHA"
+          printf 'ORESLANG_CI_EXACT_PR_HEAD_OR_PUSH_SHA=%s\n' "$expected"
       - name: Set up GraalVM
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
         with:
