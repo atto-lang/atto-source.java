@@ -282,6 +282,67 @@ final class ActorAsyncSendBackpressureTest {
     }
 
     @Test
+    void cancellationAfterCreditTransferCannotRollBackAdmission() throws Exception {
+        CountDownLatch firstEntered = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        CountDownLatch creditTransferred = new CountDownLatch(1);
+        CountDownLatch publishTransferredCredit = new CountDownLatch(1);
+        List<Integer> processed = Collections.synchronizedList(new ArrayList<>());
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            runtime.asyncSendCreditTransferHookForTesting = () -> {
+                creditTransferred.countDown();
+                try {
+                    if (!publishTransferredCredit.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("credit-transfer publication hook timed out");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(
+                            "credit-transfer publication hook interrupted",
+                            interrupted);
+                }
+            };
+
+            var ref = runtime.<Integer>spawnShared(oneMessagePolicy(), () -> (message, context) -> {
+                if (message == 1) {
+                    firstEntered.countDown();
+                    if (!releaseFirst.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("held actor turn timed out");
+                    }
+                }
+                processed.add(message);
+            });
+
+            ref.send(1);
+            assertTrue(firstEntered.await(5, TimeUnit.SECONDS));
+            ref.send(2);
+            OresFuture<Void> third = ref.sendAsync(3);
+            assertFalse(third.isDone());
+
+            releaseFirst.countDown();
+            assertTrue(creditTransferred.await(5, TimeUnit.SECONDS),
+                    "producer credit never reached the transferred state");
+
+            assertFalse(third.cancel(false),
+                    "cancellation must lose once mailbox credit has transferred");
+            assertFalse(third.isCancelled());
+
+            publishTransferredCredit.countDown();
+            third.get(5, TimeUnit.SECONDS);
+            ref.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(List.of(1, 2, 3), processed);
+
+            runtime.asyncSendCreditTransferHookForTesting = null;
+            ref.stop();
+            ref.getDone().get(5, TimeUnit.SECONDS);
+        } finally {
+            publishTransferredCredit.countDown();
+            releaseFirst.countDown();
+        }
+    }
+
+    @Test
     void releaseRacingWaiterRegistrationCannotLoseTheWakeup() throws Exception {
         for (int round = 0; round < 32; round++) {
             CountDownLatch firstEntered = new CountDownLatch(1);
