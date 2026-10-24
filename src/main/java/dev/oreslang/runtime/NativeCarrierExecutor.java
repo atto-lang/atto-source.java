@@ -9,6 +9,7 @@ import java.util.concurrent.AbstractExecutorService;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -40,6 +41,9 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     private static volatile boolean nativeLibraryLoaded;
 
     private final ArrayBlockingQueue<Runnable> queue;
+    // Linearizes enqueue against shutdown drain. Reactor-originated host
+    // completions use tryLock so a selector never parks behind teardown.
+    private final ReentrantLock queueAdmission = new ReentrantLock();
     private final int maximumPoolSize;
     private final long nativeStackBytes;
     private final AtomicInteger corePoolSize;
@@ -209,14 +213,44 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         }
     }
 
+    boolean readyForNoBootstrapAdmission() {
+        return !shutdown.get() && getStartedCarrierCount() > 0;
+    }
+
+    /**
+     * Host-only bounded admission used by the NIO reactor handoff. Current
+     * main eagerly creates the native carrier set at executor construction, so
+     * this path never needs to bootstrap or grow a carrier. Rejection leaves
+     * the completion owned by the readiness group for a later retry.
+     */
+    void executeWithoutBootstrap(Runnable task) {
+        Objects.requireNonNull(task, "task");
+        if (!readyForNoBootstrapAdmission())
+            throw new RejectedExecutionException("no started native carrier available");
+        enqueueIfOpen(task, true);
+    }
+
+    private void enqueueIfOpen(Runnable task, boolean noParking) {
+        if (noParking) {
+            if (!queueAdmission.tryLock())
+                throw new RejectedExecutionException("native carrier admission is busy");
+        } else {
+            queueAdmission.lock();
+        }
+        try {
+            if (shutdown.get())
+                throw new RejectedExecutionException("native carrier executor is shut down");
+            if (!queue.offer(task))
+                throw new RejectedExecutionException("native carrier ready queue is full");
+        } finally {
+            queueAdmission.unlock();
+        }
+    }
+
     @Override
     public void execute(Runnable task) {
         Objects.requireNonNull(task, "task");
-        if (shutdown.get() || !queue.offer(task)) {
-            throw new RejectedExecutionException(
-                    shutdown.get() ? "native carrier executor is shut down"
-                            : "native carrier ready queue is full");
-        }
+        enqueueIfOpen(task, false);
     }
 
     public boolean remove(Runnable task) {
@@ -253,7 +287,12 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     private List<Runnable> beginShutdown(boolean interruptActiveCarriers) {
         if (!shutdown.compareAndSet(false, true)) return List.of();
         ArrayList<Runnable> abandoned = new ArrayList<>();
-        queue.drainTo(abandoned);
+        queueAdmission.lock();
+        try {
+            queue.drainTo(abandoned);
+        } finally {
+            queueAdmission.unlock();
+        }
 
         if (interruptActiveCarriers) {
             // Match ThreadPoolExecutor.shutdownNow(): signal any active carrier
@@ -311,6 +350,12 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
 
     public int getActiveCount() { return activeCount.get(); }
     public int getQueueSize() { return queue.size(); }
+    public int getStartedCarrierCount() {
+        int count = 0;
+        for (int slot = 0; slot < carrierThreads.length(); slot++)
+            if (carrierThreads.get(slot) != null) count++;
+        return count;
+    }
     public long getCompletedTaskCount() { return completedTaskCount.get(); }
     public int getLargestPoolSize() { return largestPoolSize.get(); }
     public int getMaximumPoolSize() { return maximumPoolSize; }
