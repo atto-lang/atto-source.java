@@ -109,6 +109,7 @@ public final class NativeHttpRollingReloadCoordinator implements AutoCloseable {
             long routeEpoch = dispatcher.snapshot().activeEpoch();
             if (old.epoch() != expectedEpoch || routeEpoch != expectedEpoch) {
                 resolve(outcome, new Result(Status.STALE, routeEpoch, old.config()));
+                stagingCapacity.release();
                 return;
             }
             if (!old.config().service().equals(proposed.service())
