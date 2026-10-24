@@ -249,13 +249,13 @@ assert_case() {
         expected_diagnostic='native Oreslang core-library output differs from expected value' ;;
       'silent native channel execution'|'wrong native channel select winner'|'lost unselected native channel message')
         expected_diagnostic='native channel/select result differs from expected first-winner and retained-message output' ;;
-      'silent fake image without guest-test output'|'guest test reports failures'|
-      'valid summary without actual PASS/SKIP records'|'duplicate valid summary'|
-      'valid plus conflicting summary'|'valid summary alongside FAIL event'|
-      'valid summary alongside excess PASS event'|'duplicated PASS replacing missing PASS'|
+      'silent fake image without guest-test output'|'guest test reports failures'|\
+      'valid summary without actual PASS/SKIP records'|'duplicate valid summary'|\
+      'valid plus conflicting summary'|'valid summary alongside FAIL event'|\
+      'valid summary alongside excess PASS event'|'duplicated PASS replacing missing PASS'|\
       'duplicate arithmetic PASS identity'|'wrong SKIP test identity'|'duplicate SKIP identity')
         expected_diagnostic='native executable did not produce the exact unique PASS/SKIP guest tests and summary' ;;
-      'unrelated CLI error impersonates AOT JIT rejection'|
+      'unrelated CLI error impersonates AOT JIT rejection'|\
       'wrong AOT JIT refusal reason'|'wrong hybrid JIT refusal reason')
         expected_diagnostic='native executable refused JIT without the required build-mode diagnostic' ;;
       'native image accepting JVM JIT')
