@@ -126,14 +126,16 @@ final class OresCarrierPermitPool {
         Objects.requireNonNull(domain, "domain");
         if (count < 1) throw new IllegalArgumentException("permit count must be positive");
 
-        int originalDomain = held.get(domain);
-        int originalTotal = total;
         Permit[] permits = new Permit[count];
         for (int i = 0; i < count; i++) {
             Permit permit = tryAcquire(domain);
             if (permit == null) {
-                held.put(domain, originalDomain);
-                total = originalTotal;
+                // Roll back through the same idempotent ownership objects that
+                // successful callers receive. Never repair counters behind live
+                // Permit instances: a future refactor retaining one of those
+                // objects could otherwise double-release unrelated capacity.
+                for (int acquired = i - 1; acquired >= 0; --acquired)
+                    permits[acquired].close();
                 verifyLocked();
                 return null;
             }
