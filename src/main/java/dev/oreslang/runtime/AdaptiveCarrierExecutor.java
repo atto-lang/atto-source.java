@@ -364,6 +364,18 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
         // Never invoke this while admission is locked: it can submit the
         // next bounded NIO completion turn via execute().
         Runnable callback = afterTaskHook;
-        if (callback != null) callback.run();
+        if (callback != null) {
+            try {
+                callback.run();
+            } catch (RuntimeException | AssertionError failure) {
+                // Capacity notification is runtime bookkeeping, not authority
+                // to retire a physical carrier. Match ordinary turn failure
+                // containment so a transient/stale NIO retry cannot trigger a
+                // replacement before this worker returns its permit.
+                dispatchUncaught(failure);
+            } catch (Error fatal) {
+                throw fatal;
+            }
+        }
     }
 }
