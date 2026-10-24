@@ -158,10 +158,19 @@ final class SourceActorWorkerAcceptTest {
                     ready.get(10, TimeUnit.SECONDS);
                     // Deliberately oversupply connections: SO_REUSEPORT makes
                     // no equal-distribution guarantee between workers.
-                    for (int i = 0; i < 128; ++i) {
-                        Socket peer = connectWithRetry(port);
-                        peer.getOutputStream().write(0x21);
-                        sockets.add(peer);
+                    for (int i = 0; i < 128 && !served.isDone(); ++i) {
+                        try {
+                            Socket peer = new Socket(
+                                    InetAddress.getByName("127.0.0.1"), port);
+                            sockets.add(peer);
+                            peer.getOutputStream().write(0x21);
+                        } catch (IOException rejectedDuringDrain) {
+                            // Each actor retires its listener after one
+                            // connection, so late clients can race group
+                            // shrinkage. The assertion is on all four actors
+                            // completing, not every surplus TCP attempt.
+                            if (served.isDone()) break;
+                        }
                     }
                     // Do not tear down the client sockets until all workers
                     // have completed. Otherwise queued accepts can observe
