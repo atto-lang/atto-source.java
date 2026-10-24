@@ -6288,7 +6288,13 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private ChannelRuntime.SelectSet asSelectSet(Object value) {
-            if (value instanceof ChannelRuntime.SelectSet set) return set;
+            if (value instanceof ChannelRuntime.SelectSet set) {
+                if (!set.belongsTo(context.channelAdmissionDomain())) {
+                    throw new SecurityException(
+                            "dynamic select rejected SelectSet from another admission domain");
+                }
+                return set;
+            }
 
             ArrayList<ChannelRuntime.SelectCase> cases = new ArrayList<>();
             if (value instanceof List<?> list) {
