@@ -9227,6 +9227,15 @@ public final class ActorRuntime implements AutoCloseable {
         private Runnable finalCleanup;
         private boolean finalCleanupStarted;
         private volatile boolean finalCleanupActive;
+        /** Graceful source teardown is a reserved once-only actor turn. */
+        // schedule() is also called outside lifecycleLock by host stops and
+        // producer threads. Its admission read must see the shutdown request.
+        private volatile boolean gracefulTeardownPending;
+        private boolean gracefulTeardownStarted;
+        private boolean gracefulTeardownActive;
+        /** Cancellation, fatal failure and runtime close revoke all further
+         * guest finalization callbacks, even if teardown already began. */
+        private boolean gracefulTeardownRevoked;
         private boolean finalizationPrepared;
         private boolean finalized;
         private volatile ActorTurnWatchdog.Lease watchdogLease;
@@ -9663,6 +9672,7 @@ public final class ActorRuntime implements AutoCloseable {
                     || activeTurns != 0
                     || scheduled.get()
                     || carrierActive
+                    || gracefulTeardownPending
                     || !children.isEmpty()) return null;
             final int abandonedUserMessages;
             final int abandonedContinuations;
@@ -9960,6 +9970,17 @@ public final class ActorRuntime implements AutoCloseable {
             publishFinalization(finalization);
         }
 
+        /** Caller must hold lifecycleLock. Both output reservation and
+         * actual commit enforce this same revocable actor authority. */
+        private boolean acceptsActorOutputLocked() {
+            return !closed.get()
+                    && !finalized
+                    && !gracefulTeardownRevoked
+                    && !forceKillFenced
+                    && (!stopped.get() || endRequested
+                            || gracefulTeardownActive || finalCleanupActive);
+        }
+
         private void reserveOutput(long bytes) {
             if (bytes < 0) {
                 throw new IllegalArgumentException(
@@ -10213,12 +10234,13 @@ public final class ActorRuntime implements AutoCloseable {
                             scheduled.set(false);
                             if (stopped.get() && activeTurns == 0)
                                 finalization = prepareFinalizationLocked();
-                            reschedule = !stopped.get()
-                                    && !forceKillFenced
+                            reschedule = !forceKillFenced
                                     && !closed.get()
                                     && !finalized
                                     && !finalizationPrepared
-                                    && hasQueuedWorkLocked();
+                                    && (stopped.get()
+                                            ? gracefulTeardownPending
+                                            : hasQueuedWorkLocked());
                         }
                         lifecycleLock.notifyAll();
                     }
@@ -10558,12 +10580,23 @@ public final class ActorRuntime implements AutoCloseable {
         private void terminateTree(Throwable cause, boolean recordCause) {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
+            boolean scheduleTeardown;
             List<DrainWaiter> failedDrainWaiters;
             FinalizationPlan finalization;
             synchronized (lifecycleLock) {
                 if (finalized || finalizationPrepared) return;
                 if (recordCause && cause != null) {
                     ref.terminationCause.compareAndSet(null, cause);
+                }
+                // Only an initialized, quiescent source actor gets a guest
+                // teardown turn. Panic/cancel/failure, runtime shutdown, and
+                // a suspended receive use trusted-only retirement.
+                if (cause != null || closed.get() || forceKillFenced) {
+                    gracefulTeardownPending = false;
+                    gracefulTeardownRevoked = true;
+                } else if (!stopped.get() && codeExecutor != null
+                        && codeActorState != null && !sourceReceiveSuspended) {
+                    gracefulTeardownPending = true;
                 }
                 stopped.set(true);
                 sealing = true;
@@ -10581,8 +10614,11 @@ public final class ActorRuntime implements AutoCloseable {
                 pending = List.copyOf(pendingOperations);
                 pendingOperations.clear();
                 finalization = prepareFinalizationLocked();
+                scheduleTeardown = gracefulTeardownPending
+                        && activeTurns == 0 && !scheduled.get();
                 lifecycleLock.notifyAll();
             }
+            if (scheduleTeardown) schedule();
 
             // Runtime Future callbacks can take other actor/lifecycle locks.
             // Publish failure only after teardown has released lifecycleLock.
