@@ -20,25 +20,25 @@ Partial host primitives are not authority to execute source actors concurrently.
    to a bounded implementation maximum (initial target: four). Pending handle
    count alone is never a scaling signal. An explicit warm/server profile MAY
    prestart one reactor; that is configuration, not a language semantic.
-4. Throughput CONTROL, PRIVATE, SHARED and UNTRUSTED execution domains target
-   **zero resident carriers at cold startup**. A first carrier is created only
-   after independently runnable work is admitted. Hosts MAY opt into an
-   explicit nonzero warm minimum, but that is configuration rather than a
-   language semantic.
-5. Canonical normal-profile completion isolation adds **zero dedicated
-   completion-worker threads**. A reactor publishes only bounded immutable
+4. PRIVATE, SHARED and UNTRUSTED execution carriers are demand-driven unless
+   a backend/profile explicitly chooses a warm minimum. CONTROL MAY be
+   prestarted as a VM bootstrap guarantee. The number of resident CONTROL
+   workers is an implementation/profile property, not a source-language
+   semantic; whichever policy is chosen MUST be bounded and observable.
+5. Canonical normal-profile completion isolation adds **no unbounded private
+   completion-worker population**. A reactor publishes only bounded immutable
    readiness/completion records; continuation resumption is enqueued to the
    owning scheduler/domain, or to an explicitly supplied host executor for
    host-only callbacks. Reactor threads MUST NOT execute arbitrary Future
    subscribers, and slow subscribers MUST NOT consume/starve CONTROL. A
-   backend that still needs a private completion pool is transitional and MUST
-   report that implementation gap rather than claim canonical topology.
-6. Physical actor/CONTROL carrier capacity is governed by a **VM-wide bounded
-   carrier budget**, not four independent thread reservations. Domain maxima
-   are admission ceilings. CONTROL must retain guaranteed progress capacity
-   (for example one emergency/reserved permit) without requiring a resident
-   CONTROL thread. Demand for *runnable* turns can grow carriers; pending I/O,
-   actors, ActorGroups, mailboxes and suspended continuations cannot.
+   transient bounded bootstrap helper is conforming only when it never runs
+   guest completion code and is included in physical-worker accounting.
+6. When a backend advertises a VM-wide physical execution-carrier budget, that
+   budget MUST be actually enforced rather than inferred from independent pool
+   sizes. CONTROL retains guaranteed progress capacity and every additional
+   host execution domain included in the claim must consume the same permit
+   authority. Pending I/O, actors, ActorGroups, mailboxes and suspended
+   continuations cannot consume physical-carrier credits merely by existing.
 7. An **explicitly user-created fixed scheduler** is a deliberate exception to
    ordinary VM-pool laziness. Where exposed (for example Java
    `OresScheduler(N)`), `N` means exactly `N` dedicated user-owned carrier
@@ -89,56 +89,55 @@ Backends without proven RT admission must explicitly deny #hard.
 
 | Backend | NIO status | Actor physical turns | RT status |
 | --- | --- | --- | --- |
-| Java/GraalVM | VM readiness starts reactor #0 lazily; full OresContext binds terminal notifications to existing actor carriers. The first runnable bound completion may use one short-lived lazy bootstrap submitter solely to move cold carrier submission/startup off the selector; on the full OresContext path the delivery still executes on the actor carrier, and pending I/O alone does not start the helper. Standalone OresVM/readiness groups retain a transitional lazy private 0..2-worker completion pool. Legacy HTTP/FS paths need migration | Host credits 1..3, live actor default single-flight; opt-in 4..256 global static carrier cap with CONTROL reserve | Hybrid GC; no hard-RT guarantee |
-| LLVM | Linux epoll manager configures throughput at zero pthreads and lazily starts reactor #0; native VM attachment exists, source await bridge incomplete | Host credits 1..3, native execution authority still single-owner | Zero tracing-GC substrate and fixed prestart profile; no WCET guarantee |
+| Java/GraalVM | Current main prestarts bounded CONTROL; VM readiness starts reactor #0 lazily. Full OresContext binds terminal notifications to actor carriers, with at most one short-lived off-selector bootstrap helper for a cold bound executor. Standalone readiness retains a bounded lazy 0..2 completion pool. Legacy HTTP/FS paths reject in strict NIO mode | Host credits 1..3, live actor default single-flight; opt-in 5..256 global budget is enforced only for explicit JVM + non-affine topology | Hybrid GC; no hard-RT guarantee |
+| LLVM | Merged PR #880 provides Linux epoll VM lifecycle integration, generation-fenced completion/terminal accounting and fixed realtime prestart; source MEDIUM/HIGH actor turns remain fail-closed | Host credits 1..3, native execution authority remains single-owner for source actors | Zero tracing-GC substrate and fixed prestart profile; no WCET guarantee |
 | .NET | Source compiler/runtime has no guest NIO implementation | Host credits 1..3 only; no guest parallel actor execution | Managed GC; no hard-RT claim |
 | WASM | Zero-import scalar guest; no guest NIO or reactors | No guest actor execution, reject physical-turn requests | No hard-RT claim |
 | Forge | Mailbox prototype; no guest NIO/reactor | Host credits 1..3 only; no source parallel actor execution | Native/no tracing-GC host credit path; no hard-RT claim |
 
-## Incremental Java enforcement (2026-10-17)
+## Incremental Java enforcement (current branch)
 
-- In a fully constructed Java `OresContext`, the readiness manager is bound
-  **before first watch** to the existing actor dispatcher's host-only
-  notification execution path. Pending I/O starts no actor or bootstrap
-  carrier. When the first terminal notification becomes independently
-  runnable, one short-lived lazy bootstrap submitter may start solely to
-  submit that first delivery through the cold bound executor off the selector
-  stack. On the OresContext ActorRuntime binding the delivery itself executes
-  on the actor carrier, not the helper. After that handoff the helper retires,
-  and remaining bounded staged notifications execute on actor carriers. Host callbacks
-  must never consume CONTROL or selector carriers; guest continuation
-  resumption must still be enqueued through the owning actor scheduler.
-  This transient bootstrap is a Java implementation gap from a topology with
-  no extra handoff thread at all and must remain visible in thread accounting.
-- `OresContext.close()` stops and drains NIO before actor dispatchers retire.
-  A standalone `OresVM` or `NioReadinessGroup` retains the transitional lazy
-  private completion executor for compatibility. Do **not** claim universal
-  zero-worker completion topology until standalone users require an explicit
-  host executor or an owning scheduler.
-- `-Dores.runtime.carriers.global.max=N` (4..256) opts an `OresContext`
-  into an immediately enforceable *conservative static* physical-carrier cap:
-  CONTROL has one reserved carrier permit, and PRIVATE/SHARED/UNTRUSTED each
-  get `floor((N - 1) / 3)` maximum resident carriers. Native lane/affinity
-  configurations remain isolated; Java non-affine expansion cannot bypass the
-  domain cap. The total possible CONTROL+actor carriers is <= N. Up to two
-  permits may remain unallocated. This is **not yet work-conserving**: a busy
-  domain cannot borrow idle permits from another, and the legacy unconfigured
-  runtime still uses independent per-domain maxima.
-- The global execution-carrier cap excludes dedicated kernel readiness
-  reactors, Java's bounded lazy lifecycle-observer host workers, and
-  user-explicit fixed `OresScheduler(N)` threads. Java exposes lifecycle
-  observer worker/backlog counts separately; those workers are zero at cold
-  start and currently bounded to four, but they are a documented topology gap
-  from a future truly VM-wide physical-worker budget. The execution-carrier
-  cap does not certify guest multi-turn actor execution or RT latency.
-- These branch changes require current-head JDK 25 Maven/JUnit, Native Image
-  and real compiled guest TCP qualification before merge. Existing funded
-  exact-blob evidence predates this addition.
+- Current Java main's CONTROL startup barrier is preserved. This branch does
+  not claim zero resident CONTROL workers.
+- `OresVM` owns one lazy `NioReadinessGroup`. The first accepted watch starts
+  reactor #0; pending descriptors alone do not create actor carriers.
+- In a full `OresContext`, NIO completion delivery is bound before first watch
+  to `ActorRuntime.executeHostIoCompletion()`. Selector-originated submission
+  may target only an already-started carrier through a proven no-growth API.
+  The first runnable completion may use one short-lived off-selector helper
+  solely to bootstrap the cold actor executor; the completion itself runs on
+  actor-carrier capacity.
+- `OresContext.close()` drains NIO before actor dispatchers retire.
+  `OresVM.close()` rejects self-join from scheduler/actor/CONTROL/NIO worker
+  execution and aggregates teardown failures rather than skipping another
+  owned domain.
+- `-Dores.runtime.carriers.global.max=N` accepts **5..256** and fails closed
+  unless `ores.runtime.carriers=java` and `ores.actor.affinity=none` are
+  explicit. In that topology a single permit coordinator covers CONTROL,
+  PRIVATE, SHARED, UNTRUSTED, and LIFECYCLE/bootstrap host workers. Each domain
+  retains one protected reserve; JVM non-affine domains may borrow idle permits
+  without consuming another domain's final reserve.
+- Dedicated kernel readiness reactors and explicit user-owned
+  `OresScheduler(N)` carriers are separate resources and are not included in
+  the execution-carrier budget.
+- The LIFECYCLE permit domain currently accounts the transient NIO
+  bootstrap/completion helper. This branch does not implement #1100's separate
+  lifecycle-observer/terminal-journal subsystem.
+- The global budget is deliberately unavailable for native/affine actor
+  topologies until their individual carrier start/retirement lifecycle can be
+  tied to the permit coordinator without speculation.
+- Source `MaxActorThreads.LOW` is accepted. `MEDIUM/HIGH` reject before
+  executable lowering until per-turn actor state isolation is proven.
+- Java exact-head JDK/GraalVM execution is still required before merge.
+  Zero-step source-organization Actions failures are not test failures.
 
 ## Actor-system reliability and operability invariants
 
 These are cross-backend semantic requirements. A backend may explicitly reject
 an unsupported feature, but it must not silently weaken these guarantees.
+Several items below (notably terminal journals and dedicated lifecycle-observer
+workers) are future/other-slice requirements and are **not implemented by this
+Java NIO/carrier branch**.
 
 - **Bounded overload, never hidden growth.** User mailboxes, continuation
   headroom, dispatcher ready queues, lifecycle-observer work and diagnostic
@@ -183,37 +182,33 @@ an unsupported feature, but it must not silently weaken these guarantees.
 
 ## Required differential fixtures
 
-- Throughput cold start: zero VM reactor threads, zero CONTROL/actor carriers
-  and zero completion workers. Invalid/rejected I/O admission stays at zero;
-  the first valid readiness watch starts exactly one reactor. Pending watches
-  alone create no actor/bootstrap carrier. A first runnable bound completion
-  may create one transient Java bootstrap submitter; on the OresContext path
-  the callback must execute on the actor carrier and the helper must retire
-  after cold bound-executor handoff. Five and
-  10,000 idle/pending reads must not create proportional threads.
-- Independently runnable CPU work lazily creates carriers under one VM-wide
-  budget while preserving CONTROL progress capacity; ActorGroups, actors,
-  mailboxes and suspended awaits never directly own OS threads.
-- Java lifecycle observers start at zero host workers, remain bounded to at
-  most four when terminal callbacks block, expose backlog explicitly, and
-  never execute on actor/CONTROL/selector carriers. Until those workers are
-  folded into the VM-wide physical budget, record them as a separate topology
-  resource rather than claiming the execution-carrier property covers them.
+- Java current-main startup: bounded CONTROL is prestarted; readiness reactors
+  and NIO completion helpers remain zero until demanded. The first valid watch
+  starts exactly one reactor. Pending watches alone create no actor/bootstrap
+  carrier.
+- A first runnable bound Java completion may create one transient off-selector
+  bootstrap helper. With global budgeting enabled that helper consumes the
+  LIFECYCLE permit domain. The callback executes on actor-carrier capacity and
+  the helper retires after handoff.
+- Warm affine and non-affine Java actor carriers accept selector-originated
+  host completion records without worker growth.
+- Under the optional JVM/non-affine global budget, concurrently runnable work
+  never exceeds the permit ceiling and borrowing cannot consume another
+  domain's final reserve. All permits retire only after physical worker exit.
 - If a backend exposes a fixed user scheduler, constructing it with `N`
-  explicitly creates exactly `N` user-owned carriers; creating ActorGroups or
-  ordinary runtime schedulers never does so implicitly.
+  explicitly creates exactly `N` user-owned carriers; ordinary actors and
+  ActorGroups never receive dedicated OS threads implicitly.
 - Concurrent connect/accept/read/write, partial writes, EOF, cancel/close
-  races, generation/descriptor reuse, fd ownership and bounded backpressure.
+  races, generation/descriptor reuse, ownership and bounded backpressure.
 - A reactor publishes completions only; guest callbacks run on the owning
   scheduler. Idle/reactor shutdown never strands accepted operations.
-- Default one physical actor turn; opted-in three safe DATA turns, denied fourth,
-  state read/write loan safety, correct CONTROL/stop/panic priority and teardown.
+- Source actor LOW remains single-flight. MEDIUM/HIGH must reject until
+  independent frames, state loans and lifecycle quiescence are implemented.
 - Explicit unsupported-feature denial on .NET/WASM/Forge until source lowering
-  exists. Do not count host-only credit or NIO tests as source guest success.
-- LLVM RT: zero tracing-GC, preallocated hot-path resources, bounded worst-case
-  latency measurement under saturation, clear rejection of unproven #hard,
-  and a pthread-ID census proving no new runtime thread appears after the RT
-  admission fence.
+  exists. Host-only credit/NIO tests do not count as source guest success.
+- LLVM RT qualification must retain zero tracing-GC, preallocated hot-path
+  resources, bounded admission, clear denial of unproven #hard, and a thread
+  census showing no post-admission runtime-thread creation.
 
 ## Evidence and source handling
 
