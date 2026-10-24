@@ -122,6 +122,47 @@ final class SourceActorSpawnExecutionTest {
     }
 
     @Test
+    void actorPrivateActorRefFieldOwnsChildAndSurvivesReceiveAwait() throws Exception {
+        String program = """
+                define actor Consumer as
+                  receive(ActorMail<int> mail): void {
+                    self.send(mail.value + 1);
+                    self.end();
+                    return;
+                  }
+                end
+
+                define actor Producer as
+                  val ActorRef<Consumer> child = spawn Consumer();
+
+                  receive(ActorMail<int> mail): void {
+                    self.child.send(mail.value);
+                    val forwarded = (await self.child.outputs.next()).value.unwrap();
+                    self.send(forwarded.value);
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val producer = spawn Producer();
+                  await producer.get_ready();
+                  producer.send(41);
+
+                  val result = (await producer.outputs.next()).value.unwrap();
+                  stdio.stdout.write(result.value);
+                  await producer.get_done();
+                  return;
+                }
+                """;
+
+        assertEquals(
+                "42",
+                run(program, "source-actorref-child-field.ores"),
+                "actor-private ActorRef fields must retain a structured child capability across await");
+    }
+
+    @Test
     void readyFailsWhenOnStartLeavesActorStateUninitialized() throws Exception {
         String program = """
                 define actor Worker as
