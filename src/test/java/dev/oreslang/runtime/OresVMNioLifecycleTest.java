@@ -214,6 +214,65 @@ final class OresVMNioLifecycleTest {
         }
     }
 
+    @Test void affineJavaNioNotificationsReuseWarmLaneWithoutWorkerGrowth()
+            throws Exception {
+        String previousAffinity = System.getProperty("ores.actor.affinity");
+        String previousBackend = System.getProperty("ores.runtime.carriers");
+        System.setProperty("ores.actor.affinity", "lane");
+        System.setProperty("ores.runtime.carriers", "java");
+        try {
+            OresVM vm = OresVM.create(Runnable::run);
+            ActorRuntime actors = null;
+            var first = Pipe.open();
+            var second = Pipe.open();
+            try {
+                actors = new ActorRuntime(
+                        IsolatePolicy.developer(),
+                        new ActorRuntime.DispatcherConfig(1, 1, 16, 64),
+                        ActorRuntime.TurnExecutor.direct(),
+                        ActorRuntime.ControlDispatcher.unavailable());
+                actors.bindNioCompletionCapacityHook(
+                        vm.nioReadiness()::retryStagedNotifications);
+                vm.nioReadiness().bindVmCompletionExecutor(
+                        actors::executeHostIoCompletion, true);
+
+                first.source().configureBlocking(false);
+                var firstDone = new java.util.concurrent.CountDownLatch(1);
+                vm.nioReadiness().watch(first.source(), SelectionKey.OP_READ)
+                        .whenCompleteRuntime((events, failure) -> firstDone.countDown());
+                first.sink().write(ByteBuffer.wrap(new byte[] {1}));
+                assertTrue(firstDone.await(3, TimeUnit.SECONDS));
+                assertEquals(1, actors.startedActorCarrierCount());
+
+                long helperDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                while (vm.nioReadiness().completionCarrierCount() != 0
+                        && System.nanoTime() < helperDeadline)
+                    Thread.sleep(1);
+                assertEquals(0, vm.nioReadiness().completionCarrierCount());
+
+                second.source().configureBlocking(false);
+                var secondDone = new java.util.concurrent.CountDownLatch(1);
+                vm.nioReadiness().watch(second.source(), SelectionKey.OP_READ)
+                        .whenCompleteRuntime((events, failure) -> secondDone.countDown());
+                second.sink().write(ByteBuffer.wrap(new byte[] {2}));
+                assertTrue(secondDone.await(3, TimeUnit.SECONDS));
+                assertEquals(1, actors.startedActorCarrierCount(),
+                        "warm affine JVM lane must accept NIO completion without creating another worker");
+            } finally {
+                vm.nioReadiness().close();
+                first.source().close(); first.sink().close();
+                second.source().close(); second.sink().close();
+                if (actors != null) actors.close();
+                vm.close();
+            }
+        } finally {
+            if (previousAffinity == null) System.clearProperty("ores.actor.affinity");
+            else System.setProperty("ores.actor.affinity", previousAffinity);
+            if (previousBackend == null) System.clearProperty("ores.runtime.carriers");
+            else System.setProperty("ores.runtime.carriers", previousBackend);
+        }
+    }
+
     @Test void controlIsPrestartedWhileNioDomainsRemainLazy() throws Exception {
         OresVM vm = OresVM.create(Runnable::run);
         try {
