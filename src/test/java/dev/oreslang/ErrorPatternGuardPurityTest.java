@@ -352,6 +352,96 @@ final class ErrorPatternGuardPurityTest {
     }
 
     @Test
+    void ordinaryIntegerEqualityCannotInheritAnErasedBigintBound() {
+        String invalid = SOURCE + """
+                fnc classify(Error error, int left, int right): int {
+                  match error over
+                    on Error e when left == right -> { return 1; }
+                    on Error other -> { return 0; }
+                  end
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(invalid)));
+        assertTrue(failure.getMessage().contains("bounded equality"), failure.getMessage());
+    }
+
+    @Test
+    void arbitraryPrecisionBigintEqualityCannotRunInsideErrorGuard() {
+        String invalid = SOURCE + """
+                fnc classify(Error error, bigint left, bigint right): int {
+                  match error over
+                    on Error e when left == right -> { return 1; }
+                    on Error other -> { return 0; }
+                  end
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(invalid)));
+        assertTrue(failure.getMessage().contains("bounded equality"), failure.getMessage());
+    }
+
+    @Test
+    void stringEqualityCannotProveConstantTimeErrorGuard() {
+        String invalid = SOURCE + """
+                fnc classify(Error error, string left, string right): int {
+                  return match error over {
+                    on Error e when left == right { return 1; }
+                    on Error other { return 0; }
+                  };
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(invalid)));
+        assertTrue(failure.getMessage().contains("bounded equality"), failure.getMessage());
+    }
+
+    @Test
+    void arbitraryPrecisionDecimalEqualityCannotProveConstantTimeErrorGuard() {
+        String invalid = SOURCE + """
+                fnc classify(Error error, decimal left, decimal right): int {
+                  match error over
+                    on Error e when left == right -> { return 1; }
+                    on Error other -> { return 0; }
+                  end
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(invalid)));
+        assertTrue(failure.getMessage().contains("bounded equality"), failure.getMessage());
+    }
+
+    @Test
+    void nominalErrorIdentityEqualityRemainsAvailable() {
+        String valid = SOURCE + """
+                fnc classify(Error error, Error candidate): int {
+                  match error over
+                    on Error e when candidate == error -> { return 1; }
+                    on Error other -> { return 0; }
+                  end
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(valid)));
+    }
+
+    @Test
+    void booleanEqualityRemainsAvailableInsideErrorGuard() {
+        String valid = SOURCE + """
+                fnc classify(Error error, bool left, bool right): int {
+                  return match error over {
+                    on Error e when left == right { return 1; }
+                    on Error other { return 0; }
+                  };
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(valid)));
+    }
+
+    @Test
     void guardDivisionCannotSmuggleAnExceptionalArithmeticOperation() {
         String bad = SOURCE + """
                 fnc classify(Error error, int divisor): int {
