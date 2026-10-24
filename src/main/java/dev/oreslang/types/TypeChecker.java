@@ -6138,6 +6138,21 @@ public final class TypeChecker {
         return false;
     }
 
+    private boolean mixedErrorGuardComplexEquality(Type left, Type right) {
+        // The equality allowlist guarantees known types, but Union can still
+        // be a mixture of Complex and non-Complex runtime domains.
+        // Conservatively reject mixed/uncertain domains instead of allowing
+        // an implicit new Complex(...) conversion during guard dispatch.
+        boolean leftComplex = left == Primitive.COMPLEX;
+        boolean rightComplex = right == Primitive.COMPLEX;
+        boolean leftMayComplex = leftComplex || left instanceof Union union
+                && union.options().stream().anyMatch(t -> t == Primitive.COMPLEX);
+        boolean rightMayComplex = rightComplex || right instanceof Union union
+                && union.options().stream().anyMatch(t -> t == Primitive.COMPLEX);
+        return leftMayComplex != rightMayComplex
+                || leftMayComplex && (!leftComplex || !rightComplex);
+    }
+
     private boolean boundedErrorGuardOrderingType(Type type) {
         Type value = deref(type);
         if (value instanceof Union union) {
@@ -6179,10 +6194,16 @@ public final class TypeChecker {
                 defineConditionBindings(binary.left(), rightEnv, env, generics, self);
                 return boundedErrorGuardComparisons(binary.right(), rightEnv, generics, self);
             }
-            if (Set.of("==", "!=", "eq", "neq").contains(binary.operator())
-                    && (!boundedErrorGuardEqualityType(typeOf(binary.left(), env, generics, self))
-                        || !boundedErrorGuardEqualityType(typeOf(binary.right(), env, generics, self)))) {
-                return false;
+            if (Set.of("==", "!=", "eq", "neq").contains(binary.operator())) {
+                Type leftType = deref(typeOf(binary.left(), env, generics, self));
+                Type rightType = deref(typeOf(binary.right(), env, generics, self));
+                if (!boundedErrorGuardEqualityType(leftType)
+                        || !boundedErrorGuardEqualityType(rightType)) return false;
+                // OresEvalRootNode.valueEquals calls asComplex on both sides.
+                // Converting a Number into a Complex allocates an object.
+                // Deny uncertain/heterogeneous Complex comparisons here,
+                // but preserve Complex-to-Complex scalar comparisons.
+                if (mixedErrorGuardComplexEquality(leftType, rightType)) return false;
             }
             if (Set.of("<", "<=", ">", ">=").contains(binary.operator())
                     && (!boundedErrorGuardOrderingType(typeOf(binary.left(), env, generics, self))
