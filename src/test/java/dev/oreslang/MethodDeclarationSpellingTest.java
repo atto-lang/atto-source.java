@@ -337,4 +337,29 @@ final class MethodDeclarationSpellingTest {
         assertDoesNotThrow(() -> TypeChecker.check(program));
     }
 
+    @Test
+    void optionalMtdMarkerPreservesCallableNamesAndGenericHeaders() {
+        Ast.Program program = Parser.parse("""
+                define class Named as
+                    mtd do(): int { return 1; }
+                    mtd select() -> int ::
+                        return 2;
+                    end
+                    mtd mtd(): int { return 3; }
+                    mtd generic<T>(T value) -> T ::
+                        return value;
+                    end
+                    method mtd(): int { return 4; }
+                end
+                """);
+        Ast.ClassDecl klass = assertInstanceOf(Ast.ClassDecl.class,
+                program.modules().getFirst().declarations().getFirst());
+        assertEquals("do", klass.methods().get(0).name());
+        assertEquals("select", klass.methods().get(1).name());
+        assertEquals("mtd", klass.methods().get(2).name());
+        assertEquals("generic", klass.methods().get(3).name());
+        assertEquals(1, klass.methods().get(3).arity());
+        assertEquals("mtd", klass.methods().get(4).name());
+    }
+
 }
