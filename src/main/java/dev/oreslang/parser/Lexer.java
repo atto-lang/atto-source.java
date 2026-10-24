@@ -212,20 +212,36 @@ public final class Lexer {
     }
 
     private void number() {
-        while (isDigit(peek()) || peek() == '_') advance();
+        // All decimal runs use one lexical separator rule, including actor
+        // configuration integers, floating-point fractions, imaginary
+        // literals and exponents. Never normalize malformed input in the
+        // parser or let other grammar productions admit it accidentally.
+        decimalDigits("integer");
         boolean floating = false;
         if (peek() == '.' && isDigit(peekNext())) {
-            floating = true; advance();
-            while (isDigit(peek()) || peek() == '_') advance();
+            floating = true;
+            advance();
+            decimalDigits("fractional");
         }
         if (peek() == 'e' || peek() == 'E') {
-            floating = true; advance();
+            floating = true;
+            advance();
             if (peek() == '+' || peek() == '-') advance();
             if (!isDigit(peek())) throw error("malformed exponent");
-            while (isDigit(peek()) || peek() == '_') advance();
+            decimalDigits("exponent");
         }
         if (peek() == 'i') { advance(); add(IMAG); }
         else add(floating ? FLOAT : INT);
+    }
+
+    /** Called after the first digit in a run is known to exist. */
+    private void decimalDigits(String part) {
+        while (isDigit(peek()) || peek() == '_') {
+            if (peek() == '_' && !isDigit(peekNext())) {
+                throw error("malformed " + part + " separator");
+            }
+            advance();
+        }
     }
 
     private void identifier() {
