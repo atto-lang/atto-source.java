@@ -130,7 +130,14 @@ public final class OresVM implements AutoCloseable {
                 turnExecutor);
         try {
             startup();
-            this.nioReadiness = new NioReadinessGroup(4, 8192, 1024);
+            ThreadFactory nioBootstrapFactory = carrierPermitPool == null
+                    ? null
+                    : carrierPermitPool.threadFactory(
+                            OresCarrierPermitPool.Domain.LIFECYCLE,
+                            "ores-nio-completion-",
+                            runnable -> () -> OresVM.runAsNioWorker(runnable));
+            this.nioReadiness = new NioReadinessGroup(
+                    4, 8192, 1024, null, nioBootstrapFactory);
         } catch (IOException ioFailure) {
             rootScheduler.close();
             controlExecutor.shutdownNow();
