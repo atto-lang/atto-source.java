@@ -909,6 +909,34 @@ public final class ActorRuntime implements AutoCloseable {
                 && cell.continuationMailbox instanceof ChannelRuntime.Channel<?>;
     }
 
+    /** Integration proof: USER physical capacity must not include CONTROL headroom. */
+    int mailboxPhysicalCapacity(ActorRef<?> ref) {
+        requireSupervisorContext("inspect mailbox physical capacity");
+        Objects.requireNonNull(ref, "ref");
+        if (!ref.ownedBy(this)) {
+            throw new IllegalArgumentException(
+                    "ActorRef belongs to a different ActorRuntime");
+        }
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null) throw terminated(ref);
+        return cell.mailbox.capacity();
+    }
+
+    /** Integration proof: internal actor Channels charge this runtime's domain. */
+    boolean actorChannelsUseRuntimeAdmissionDomain(ActorRef<?> ref) {
+        requireSupervisorContext("inspect actor Channel admission domain");
+        Objects.requireNonNull(ref, "ref");
+        if (!ref.ownedBy(this)) {
+            throw new IllegalArgumentException(
+                    "ActorRef belongs to a different ActorRuntime");
+        }
+        ActorCell<?> cell = actors.get(ref.id());
+        return cell != null
+                && cell.mailbox.belongsTo(channelAdmissionDomain)
+                && cell.continuationMailbox.belongsTo(channelAdmissionDomain)
+                && cell.outputChannel.belongsTo(channelAdmissionDomain);
+    }
+
     public long privateMemoryBytes() { return privateMemoryBytes.get(); }
     public long sharedMemoryBytes() { return sharedMemoryBytes.get(); }
     public long actorMemoryBytes() { return privateMemoryBytes.get() + sharedMemoryBytes.get(); }
