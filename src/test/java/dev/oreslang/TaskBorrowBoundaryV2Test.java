@@ -465,6 +465,37 @@ final class TaskBorrowBoundaryV2Test {
     }
 
     @Test
+    void fabricatedCompilerLiteralTypesCannotHideNonSendPayloads()
+            throws Exception {
+        var program = Parser.parse("pub fnc main(): void { return; }");
+        var constructor = OwnershipChecker.class.getDeclaredConstructor(
+                dev.oreslang.ast.Ast.Program.class, java.util.Map.class);
+        constructor.setAccessible(true);
+        var checker = constructor.newInstance(program, java.util.Map.of());
+        var send = OwnershipChecker.class.getDeclaredMethod(
+                "forbiddenTaskCapability", dev.oreslang.ast.Ast.TypeRef.class);
+        send.setAccessible(true);
+
+        var rcInt = new dev.oreslang.ast.Ast.TypeRef(
+                "Rc", java.util.List.of(
+                        dev.oreslang.ast.Ast.TypeRef.simple("int")), false);
+        assertFalse((Boolean) send.invoke(
+                checker, dev.oreslang.ast.Ast.TypeRef.stringLiteral("safe")));
+        assertFalse((Boolean) send.invoke(
+                checker, dev.oreslang.ast.Ast.TypeRef.intLiteral("42")));
+        assertFalse((Boolean) send.invoke(
+                checker, dev.oreslang.ast.Ast.TypeRef.boolLiteral(true)));
+        for (String syntheticName : java.util.List.of(
+                "$string$hello", "$int$42", "$bool$true")) {
+            var fabricated = new dev.oreslang.ast.Ast.TypeRef(
+                    syntheticName, java.util.List.of(rcInt), false);
+            assertTrue((Boolean) send.invoke(checker, fabricated),
+                    "generic metadata must not launder Task Send: "
+                            + syntheticName);
+        }
+    }
+
+    @Test
     void nominalClassesCannotImpersonateCopySendBuiltinScalars()
             throws Exception {
         var parsed = Parser.parse("pub fnc main(): void { return; }");
