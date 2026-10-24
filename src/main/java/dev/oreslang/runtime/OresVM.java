@@ -274,34 +274,48 @@ public final class OresVM implements AutoCloseable {
         synchronized (this) {
             if (!closed.compareAndSet(false, true)) return;
             startupState = StartupState.CLOSED;
-            nioReadiness.close();
+            RuntimeException failure = null;
+
             try {
+                nioReadiness.close();
                 if (!nioReadiness.awaitStopped(5, TimeUnit.SECONDS)) {
-                    throw new IllegalStateException(
+                    failure = new IllegalStateException(
                             "Oreslang NIO readiness domain did not terminate");
                 }
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
-                throw new IllegalStateException(
+                failure = new IllegalStateException(
                         "interrupted while closing Oreslang NIO readiness domain",
                         interrupted);
+            } catch (RuntimeException nioFailure) {
+                failure = nioFailure;
             }
+
             try {
                 rootScheduler.close();
+            } catch (RuntimeException schedulerFailure) {
+                if (failure == null) failure = schedulerFailure;
+                else failure.addSuppressed(schedulerFailure);
             } finally {
                 controlExecutor.shutdownNow();
                 try {
                     if (!controlExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
-                        throw new IllegalStateException(
+                        RuntimeException controlFailure = new IllegalStateException(
                                 "Oreslang CONTROL scheduler carriers did not terminate");
+                        if (failure == null) failure = controlFailure;
+                        else failure.addSuppressed(controlFailure);
                     }
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
-                    throw new IllegalStateException(
+                    RuntimeException controlFailure = new IllegalStateException(
                             "interrupted while closing Oreslang CONTROL scheduler",
                             interrupted);
+                    if (failure == null) failure = controlFailure;
+                    else failure.addSuppressed(controlFailure);
                 }
             }
+
+            if (failure != null) throw failure;
         }
     }
 }
