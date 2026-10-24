@@ -63,6 +63,8 @@ public final class ActorRuntime implements AutoCloseable {
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
     private static final long MAILMAN_MAX_BATCH_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
     private static final int INTERNAL_CONTINUATION_SLOTS = 1_024;
+    /** Bound suspended producer registrations so backpressure cannot become an unbounded waiter queue. */
+    private static final int MAX_PENDING_ASYNC_SENDS = 1_024;
     /** A single UNTRUSTED actor cannot monopolize all global timed slots. */
     private static final int UNTRUSTED_TIMED_SOURCE_ADMISSION_SLOTS = 32;
     private static final long UNTRUSTED_FUEL_PER_MILLI = 256L;
@@ -348,7 +350,7 @@ public final class ActorRuntime implements AutoCloseable {
     public interface SendError {
         enum Reason {
             TERMINATED, MAILBOX_FULL, INVALID_REFERENCE, SEALED,
-            RESOURCE_EXHAUSTED, TRANSPORT_UNAVAILABLE
+            RESOURCE_EXHAUSTED, TRANSPORT_UNAVAILABLE, WOULD_DEADLOCK
         }
         Reason reason();
     }
@@ -359,6 +361,24 @@ public final class ActorRuntime implements AutoCloseable {
             super("actor mailbox limit exceeded for " + id);
         }
         @Override public Reason reason() { return Reason.MAILBOX_FULL; }
+    }
+
+    /** Awaitable send registration quota exhausted; no producer waiter was retained. */
+    public static final class ActorSendBackpressureException
+            extends IllegalStateException implements SendError {
+        public ActorSendBackpressureException(ActorId id, int limit) {
+            super("actor pending send limit exceeded for " + id + ": maximum " + limit);
+        }
+        @Override public Reason reason() { return Reason.RESOURCE_EXHAUSTED; }
+    }
+
+    /** A serial actor cannot await capacity which only its own current turn can release. */
+    public static final class ActorSendWouldDeadlockException
+            extends IllegalStateException implements SendError {
+        public ActorSendWouldDeadlockException(ActorId id) {
+            super("awaitable self-send would deadlock actor " + id);
+        }
+        @Override public Reason reason() { return Reason.WOULD_DEADLOCK; }
     }
 
     public static final class ActorSealedException
@@ -851,6 +871,7 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<?> cell = actors.get(ref.id());
         return cell != null
                 && cell.mailbox instanceof ChannelRuntime.Channel<?>
+                && cell.mailboxAdmissionWaiters instanceof ChannelRuntime.Channel<?>
                 && cell.continuationMailbox instanceof ChannelRuntime.Channel<?>;
     }
 
@@ -2368,6 +2389,16 @@ public final class ActorRuntime implements AutoCloseable {
             ActorRuntime.this.send(this, message);
         }
 
+        /**
+         * Await mailbox admission without parking an actor carrier. Completion
+         * means the immutable message envelope owns a mailbox slot; it is not a
+         * handler-processing acknowledgement. Cancellation before admission
+         * detaches the bounded producer waiter.
+         */
+        public OresFuture<Void> sendAsync(M message) {
+            return ActorRuntime.this.sendAsync(this, message);
+        }
+
         /** Successful completion covers messages admitted before this call.
          * Processing failures, cancellation or stop-before-processing fail it.
          * If the caller is this actor and has unprocessed accepted messages,
@@ -2456,6 +2487,8 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public void send(M message) { ref.send(message); }
+
+        public OresFuture<Void> sendAsync(M message) { return ref.sendAsync(message); }
 
         public void stop() {
             requireOwnedChildHandle(this, "stop");
@@ -5337,6 +5370,9 @@ public final class ActorRuntime implements AutoCloseable {
             // their per-actor quota. Repeated gracefulStop calls reuse ref.done().
             barrier = cell.drainAcceptedMessages(true);
         }
+        // Pending producers were never admitted and therefore are not part of
+        // the drain watermark. Seal and fail them outside lifecycleLock.
+        cell.mailboxAdmissionWaiters.close(new ActorSealedException(ref.id()));
         barrier.whenCompleteRuntime((ignored, failure) -> {
             if (failure == null) cell.stop();
         });
@@ -5458,7 +5494,8 @@ public final class ActorRuntime implements AutoCloseable {
                     envelope = MessageEnvelope.message(
                             prepared, release, sender, sequence);
                     if (!cell.mailbox.tryWrite(envelope)) {
-                        throw new ActorMailboxFullException(ref.id());
+                        throw new IllegalStateException(
+                                "actor mailbox credit/capacity invariant violated for " + ref.id());
                     }
                     cell.nextUserMessageSequence = nextSequence;
                     mailboxSlotTransferred = true;
@@ -5477,6 +5514,216 @@ public final class ActorRuntime implements AutoCloseable {
         } finally {
             if (!mailboxSlotTransferred) cell.releaseMailboxSlot(false);
         }
+    }
+
+
+    /**
+     * Awaitable actor-message admission with bounded producer retention.
+     *
+     * <p>The fast path is the existing fail-fast send. When the USER mailbox is
+     * full, the message is validated and frozen immediately, then at most a
+     * bounded number of producers may wait on a zero-buffer slot handoff.
+     * Waiting never parks an Ores scheduler carrier. A released slot is
+     * transferred directly to exactly one waiter and remains counted throughout
+     * the handoff, preventing a racing synchronous sender from stealing it.</p>
+     *
+     * <p>Completion acknowledges mailbox admission only. Handler completion is
+     * observed with drain/request-reply APIs. Cancelling before slot transfer
+     * detaches the waiter and releases all retained payload accounting. Once a
+     * slot transfer wins, cancellation cannot roll back an accepted ownership
+     * transfer.</p>
+     */
+    @SuppressWarnings("unchecked")
+    public <M> OresFuture<Void> sendAsync(ActorRef<M> ref, M message) {
+        try {
+            send(ref, message);
+            return OresFuture.completed(null);
+        } catch (ActorMailboxFullException full) {
+            // Full is the only synchronous send failure converted into
+            // cooperative backpressure. All authority/type/lifecycle failures
+            // retain their existing synchronous diagnostics.
+        }
+
+        ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
+        if (cell == null || cell.stopped.get()) return OresFuture.failed(terminated(ref));
+        if (currentActor.get() == cell) {
+            return OresFuture.failed(new ActorSendWouldDeadlockException(ref.id()));
+        }
+
+        // Snapshot ownership at call time. A producer must not mutate an object
+        // graph after requesting an async send and thereby change what is
+        // eventually admitted.
+        validateMessageGraph(message);
+        if (cell.kind == ActorKind.UNTRUSTED) {
+            rejectUntrustedInboundCapabilities(message, new IdentityHashMap<>(), 0);
+        }
+        requireMutexTransport(cell, message, new IdentityHashMap<>(), 0);
+        requireOwnedActorRefs(message, new IdentityHashMap<>(), 0);
+        long runtimeRemaining = Math.max(0L, policyCeiling.maxHeapBytes() - actorMemoryBytes());
+        if (cell.kind == ActorKind.SHARED) {
+            requireOwnedSharedHandles(message, new IdentityHashMap<>(), 0);
+            long actorRemaining = Math.max(
+                    0L, cell.policy.maxHeapBytes() - cell.sharedMailboxBytes.get());
+            long allowed = Math.min(actorRemaining, runtimeRemaining);
+            try {
+                estimateSharedTransportBytes(message, new IdentityHashMap<>(), 0, allowed);
+            } catch (IllegalStateException tooLarge) {
+                return OresFuture.failed(new IllegalStateException(
+                        "shared actor mailbox memory limit exceeded for " + ref.id()
+                                + ": " + tooLarge.getMessage(),
+                        tooLarge));
+            }
+        } else {
+            long actorRemaining = cell.memorySlice.remainingBytes();
+            try {
+                estimatePrivateTransportBytes(
+                        message, new IdentityHashMap<>(), 0, actorRemaining);
+                estimatePrivateTransportBytes(
+                        message, new IdentityHashMap<>(), 0, runtimeRemaining);
+            } catch (IllegalStateException tooLarge) {
+                return OresFuture.failed(new IllegalStateException(
+                        "private actor mailbox memory limit exceeded for " + ref.id()
+                                + ": " + tooLarge.getMessage(),
+                        tooLarge));
+            }
+        }
+
+        final Object prepared;
+        try {
+            prepared = isPrivateKind(cell.kind)
+                    ? isolateCopy(message) : freezeForTransport(message);
+        } catch (Throwable failure) {
+            return OresFuture.failed(failure);
+        }
+
+        final Runnable rawRelease;
+        try {
+            if (isPrivateKind(cell.kind)) {
+                MemoryReservation reservation = cell.memorySlice.reserveMailbox(prepared);
+                rawRelease = reservation::close;
+            } else {
+                long bytes = estimateSharedMailboxBytes(
+                        prepared, new IdentityHashMap<>(), 0);
+                cell.reserveSharedMailbox(bytes);
+                rawRelease = () -> cell.releaseSharedMailbox(bytes);
+            }
+        } catch (Throwable failure) {
+            return OresFuture.failed(failure);
+        }
+
+        AtomicBoolean payloadReleased = new AtomicBoolean();
+        Runnable releaseOnce = () -> {
+            if (payloadReleased.compareAndSet(false, true)) rawRelease.run();
+        };
+        ActorId sender = currentActorId().orElse(null);
+
+        final OresFuture<Boolean> slot;
+        try {
+            slot = cell.mailboxAdmissionWaiters.readAsync();
+        } catch (Throwable registrationFailure) {
+            releaseOnce.run();
+            return OresFuture.failed(registrationFailure);
+        }
+
+        // WAITING -> COMMITTING makes admission irrevocable.
+        // WAITING -> TERMINAL is cancellation/failure before slot transfer.
+        final int WAITING = 0;
+        final int COMMITTING = 1;
+        final int TERMINAL = 2;
+        AtomicInteger state = new AtomicInteger(WAITING);
+
+        OresFuture<Void> result = new OresFuture<>(
+                () -> {
+                    if (!state.compareAndSet(WAITING, TERMINAL)) return false;
+                    slot.cancel(false);
+                    releaseOnce.run();
+                    return true;
+                },
+                () -> { });
+
+        slot.whenCompleteRuntime((ignored, slotFailure) -> {
+            if (slotFailure != null) {
+                if (!state.compareAndSet(WAITING, TERMINAL)) return;
+                releaseOnce.run();
+                Throwable failure = OresFuture.unwrap(slotFailure);
+                if (failure instanceof ChannelRuntime.ChannelBackpressureException) {
+                    failure = new ActorSendBackpressureException(
+                            ref.id(), cell.maxPendingAsyncSends);
+                } else if (failure instanceof ChannelRuntime.ChannelClosedException
+                        && failure.getCause() != null) {
+                    failure = failure.getCause();
+                }
+                result.failFromRuntime(failure);
+                return;
+            }
+
+            if (!state.compareAndSet(WAITING, COMMITTING)) {
+                // Cancellation won after the rendezvous consumed a transferred
+                // slot but before this callback claimed it. Return that slot.
+                cell.releaseMailboxSlot(false);
+                return;
+            }
+
+            MessageEnvelope envelope = null;
+            List<OresMutex.Shared<?>> sharedMutexReservations = List.of();
+            boolean admitted = false;
+            try {
+                synchronized (runtimeLifecycleLock) {
+                    if (closed.get()) {
+                        throw new IllegalStateException("actor runtime is closed");
+                    }
+                    if (cell.kind == ActorKind.SHARED) {
+                        sharedMutexReservations = reserveSharedMutexBindings(prepared);
+                    }
+                    synchronized (cell.lifecycleLock) {
+                        if (cell.stopped.get() || cell.finalized) throw terminated(ref);
+                        if (cell.sealing) throw new ActorSealedException(ref.id());
+                        if (cell.forceKillFenced) {
+                            throw new IllegalStateException(
+                                    "actor " + ref.id()
+                                            + " is fenced while force cancellation is pending");
+                        }
+                        cell.validateTransferredMailboxSlot();
+                        long sequence = cell.nextUserMessageSequence;
+                        long nextSequence;
+                        try {
+                            nextSequence = Math.addExact(sequence, 1L);
+                        } catch (ArithmeticException exhausted) {
+                            throw new IllegalStateException(
+                                    "actor mailbox sequence exhausted for " + ref.id(),
+                                    exhausted);
+                        }
+                        envelope = MessageEnvelope.message(
+                                prepared, releaseOnce, sender, sequence);
+                        if (!cell.mailbox.tryWrite(envelope)) {
+                            throw new IllegalStateException(
+                                    "transferred actor mailbox slot was not physically writable for "
+                                            + ref.id());
+                        }
+                        cell.nextUserMessageSequence = nextSequence;
+                        admitted = true;
+                        commitSharedMutexBindings(sharedMutexReservations);
+                    }
+                }
+                cell.schedule();
+                result.completeFromRuntime(null);
+            } catch (Throwable failure) {
+                if (!admitted) {
+                    abortSharedMutexBindings(sharedMutexReservations);
+                    if (envelope != null) envelope.close();
+                    else releaseOnce.run();
+                    // The transferred slot remained counted for this producer.
+                    // Failure before mailbox admission must release or hand it
+                    // to the next bounded producer.
+                    cell.releaseMailboxSlot(false);
+                }
+                result.failFromRuntime(failure);
+            } finally {
+                state.set(TERMINAL);
+            }
+        });
+
+        return result;
     }
 
     /**
@@ -7089,6 +7336,13 @@ public final class ActorRuntime implements AutoCloseable {
         private final OresFuture<Void> finalizedFuture = new OresFuture<>();
         /** Mailbox transport for ordinary user messages. */
         private final ChannelRuntime.Channel<MessageEnvelope> mailbox;
+        /**
+         * Zero-buffer admission handoff. A released user-mail slot rendezvous
+         * directly with one bounded pending producer; no spare permit is ever
+         * buffered, so this cannot become a second mailbox.
+         */
+        private final ChannelRuntime.Channel<Boolean> mailboxAdmissionWaiters;
+        private final int maxPendingAsyncSends;
         private final ChannelRuntime.Channel<ActorOutputEnvelope> outputChannel;
         private final ActorOutputStream<Object> outputStream;
         private final ActorMemorySlice memorySlice;
@@ -7189,11 +7443,13 @@ public final class ActorRuntime implements AutoCloseable {
             this.codeExecutor = codeExecutor;
             this.codeActorType = codeActorType;
             this.parent = parent;
-            int mailboxCapacity = policy.maxMailboxMessages() >
-                            Integer.MAX_VALUE - INTERNAL_CONTINUATION_SLOTS
-                    ? Integer.MAX_VALUE
-                    : policy.maxMailboxMessages() + INTERNAL_CONTINUATION_SLOTS;
-            this.mailbox = new ChannelRuntime.Channel<>(mailboxCapacity);
+            // USER mail and runtime continuations are physically distinct
+            // channels. Do not inflate the USER channel with CONTROL headroom.
+            this.mailbox = new ChannelRuntime.Channel<>(policy.maxMailboxMessages());
+            this.maxPendingAsyncSends = Math.max(
+                    1, Math.min(MAX_PENDING_ASYNC_SENDS, policy.maxMailboxMessages()));
+            this.mailboxAdmissionWaiters = new ChannelRuntime.Channel<>(
+                    0, maxPendingAsyncSends);
             this.outputChannel = new ChannelRuntime.Channel<>(
                     Math.max(1, policy.maxMailboxMessages()));
             this.outputStream = new ActorOutputStream<>(
@@ -7236,6 +7492,22 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        /**
+         * Commit a slot already transferred by mailboxAdmissionWaiters. The
+         * released slot deliberately stayed counted while the rendezvous ran,
+         * so the new producer does not increment accounting a second time.
+         */
+        private void validateTransferredMailboxSlot() {
+            synchronized (mailboxAccountingLock) {
+                if (queuedUserMessages <= 0
+                        || queuedUserMessages > policy.maxMailboxMessages()
+                        || queuedMessages != queuedUserMessages + queuedContinuations) {
+                    throw new IllegalStateException(
+                            "actor transferred mailbox-slot invariant violation for " + ref.id());
+                }
+            }
+        }
+
         private boolean reserveContinuationSlot() {
             synchronized (mailboxAccountingLock) {
                 if (queuedContinuations >= INTERNAL_CONTINUATION_SLOTS) return false;
@@ -7246,7 +7518,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        private void releaseMailboxSlot(boolean continuation) {
+        private void decrementMailboxSlot(boolean continuation) {
             synchronized (mailboxAccountingLock) {
                 // Validate every counter before changing any of them: a failed
                 // invariant must not partially release another lane's capacity.
@@ -7264,23 +7536,32 @@ public final class ActorRuntime implements AutoCloseable {
                             "actor user-mailbox accounting underflow for " + ref.id());
                 }
                 queuedMessages--;
+                if (continuation) queuedContinuations--;
+                else queuedUserMessages--;
+            }
+        }
 
-                if (continuation) {
-                    if (queuedContinuations <= 0) {
-                        queuedMessages++;
-                        throw new IllegalStateException(
-                                "actor continuation accounting underflow for " + ref.id());
+        private void releaseMailboxSlot(boolean continuation) {
+            if (continuation) {
+                decrementMailboxSlot(true);
+                return;
+            }
+
+            // Keep the released USER slot counted while handing it directly to
+            // one suspended producer. This prevents a racing synchronous sender
+            // from stealing capacity between wakeup and commit.
+            if (!stopped.get() && !mailboxAdmissionWaiters.isClosed()) {
+                try {
+                    if (mailboxAdmissionWaiters.tryWrite(Boolean.TRUE)) {
+                        return;
                     }
-                    queuedContinuations--;
-                } else {
-                    if (queuedUserMessages <= 0) {
-                        queuedMessages++;
-                        throw new IllegalStateException(
-                                "actor user-mailbox accounting underflow for " + ref.id());
+                } catch (ChannelRuntime.ChannelClosedException closedAdmission) {
+                    if (!stopped.get() && !mailboxAdmissionWaiters.isClosed()) {
+                        throw closedAdmission;
                     }
-                    queuedUserMessages--;
                 }
             }
+            decrementMailboxSlot(false);
         }
 
         private OresFuture<Void> drainAcceptedMessages() {
@@ -8193,6 +8474,10 @@ public final class ActorRuntime implements AutoCloseable {
                         && activeTurns == 0 && !scheduled.get();
                 lifecycleLock.notifyAll();
             }
+            // Closing the rendezvous channel can synchronously settle producer
+            // Futures. Do it only after lifecycleLock is released.
+            mailboxAdmissionWaiters.close(
+                    cause == null ? terminated(ref) : cause);
             if (scheduleTeardown) schedule();
 
             // Runtime Future callbacks can take other actor/lifecycle locks.
