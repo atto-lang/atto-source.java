@@ -474,6 +474,9 @@ public final class ActorRuntime implements AutoCloseable {
     private final TurnExecutor turnExecutor;
     private final ControlDispatcher controlDispatcher;
     private volatile Consumer<Object> actorExitHook = ignored -> { };
+    // NIO completion records are host-only work. They reuse actor carrier
+    // capacity but never become actor mailbox or CONTROL turns.
+    private volatile Runnable nioCompletionCapacityHook = () -> { };
 
     /**
      * Host/isolate boundary hook. Returning true means the execution domain
@@ -582,6 +585,44 @@ public final class ActorRuntime implements AutoCloseable {
     public IsolatePolicy policyCeiling() { return policyCeiling; }
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
     public int maxActors() { return dispatcherConfig.maxActors(); }
+
+    void bindNioCompletionCapacityHook(Runnable hook) {
+        Objects.requireNonNull(hook, "hook");
+        if (closed.get()) throw new IllegalStateException("actor runtime closed");
+        nioCompletionCapacityHook = hook;
+    }
+
+    /**
+     * Host-only notification delivery for VM NIO. A selector may submit only
+     * to a verified warm carrier; cold-start/growth is delegated off-reactor by
+     * NioReadinessGroup. Guest code is never invoked on the selector thread.
+     */
+    void executeHostIoCompletion(Runnable notification) {
+        Objects.requireNonNull(notification, "notification");
+        if (closed.get()) throw new RejectedExecutionException("actor runtime closed");
+        Runnable hostOnly = () -> {
+            try {
+                OresVM.runAsNioWorker(notification);
+            } finally {
+                nioCompletionCapacityHook.run();
+            }
+        };
+
+        if (privateDispatcher instanceof ActorAffinityDispatcher lanes) {
+            lanes.executeHostOnWarmLane(hostOnly);
+        } else if (NioReadinessGroup.onReactorThread()
+                && privateDispatcher instanceof NativeCarrierExecutor nativePool) {
+            nativePool.executeWithoutBootstrap(hostOnly);
+        } else if (NioReadinessGroup.onReactorThread()
+                && privateDispatcher instanceof AdaptiveCarrierExecutor javaPool) {
+            javaPool.executeWithoutCarrierGrowth(hostOnly);
+        } else if (NioReadinessGroup.onReactorThread()) {
+            throw new RejectedExecutionException(
+                    "NIO reactor requires a verified no-bootstrap actor dispatcher");
+        } else {
+            privateDispatcher.execute(hostOnly);
+        }
+    }
 
     /** Total overrun detections, including notices dropped from the bounded queue. */
     public long watchdogOverruns() {
