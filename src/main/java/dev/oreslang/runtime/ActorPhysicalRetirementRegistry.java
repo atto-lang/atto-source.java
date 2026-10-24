@@ -92,9 +92,27 @@ final class ActorPhysicalRetirementRegistry {
             if (readyForFinalization) {
                 // Distinct trusted finalization handoff, NOT a second physical
                 // notifier. Unrelated threads cannot retire until it finishes.
+                // retireVerified() called by this handoff only PREPARES the
+                // terminal state. The registry publishes retired after the
+                // entire callback returns successfully.
                 try {
                     notificationDrained.run();
+                    synchronized (lock) {
+                        if (retirementPrepared) {
+                            if (firstFailure != null) {
+                                retirementPrepared = false;
+                                throw new IllegalStateException(
+                                        "finalization handoff failed before retirement commit",
+                                        firstFailure);
+                            }
+                            retired = true;
+                            retirementPrepared = false;
+                        }
+                    }
                 } catch (RuntimeException | Error callbackFailure) {
+                    synchronized (lock) {
+                        retirementPrepared = false;
+                    }
                     recordFailure(callbackFailure);
                     throw callbackFailure;
                 } finally {
@@ -135,6 +153,13 @@ final class ActorPhysicalRetirementRegistry {
     private Throwable firstFailure;
     private int inFlightNotifications;
     private Thread finalizationHandoffThread;
+    /*
+     * retireVerified() called from the reserved finalization handoff is only a
+     * prepare marker. The irreversible retired bit is published by the
+     * registry after the handoff callback returns normally, so no later
+     * callback failure can create retired && failure.
+     */
+    private boolean retirementPrepared;
     private boolean sealed;
     private boolean retired;
 
@@ -236,14 +261,21 @@ final class ActorPhysicalRetirementRegistry {
      */
     void retireVerified() {
         synchronized (lock) {
-            if (retired || firstFailure != null || !sealed
+            if (retired || retirementPrepared || firstFailure != null || !sealed
                     || !pending.isEmpty() || inFlightNotifications != 0
                     || (finalizationHandoffThread != null
                             && finalizationHandoffThread != Thread.currentThread())) {
                 throw new IllegalStateException(
                         "cannot retire actor with outstanding/failed physical receipts");
             }
-            retired = true;
+            if (finalizationHandoffThread == Thread.currentThread()) {
+                // This callback can still throw after returning from here.
+                // Stage only; completeAfterPhysicalRelease() performs the
+                // nonthrowing terminal publication after the callback exits.
+                retirementPrepared = true;
+            } else {
+                retired = true;
+            }
         }
     }
 }
