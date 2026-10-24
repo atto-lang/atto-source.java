@@ -7090,17 +7090,16 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        ThreadPoolExecutor executor = new ThreadPoolExecutor(
+        // JVM actor workers are also demand-driven, but use the adaptive
+        // wrapper even when min=max so reactor-originated host completions can
+        // prove no-growth admission. This preserves the current fixed carrier
+        // ceiling while preventing a selector from accidentally starting a
+        // replacement worker.
+        return new AdaptiveCarrierExecutor(
                 parallelism,
                 parallelism,
-                0L,
-                TimeUnit.MILLISECONDS,
-                new ArrayBlockingQueue<>(readyQueueCapacity),
-                namedFactory(threadPrefix),
-                new ThreadPoolExecutor.AbortPolicy());
-        // JVM workers are a portability fallback, not the preferred Oreslang
-        // runtime backend. They are created lazily on first scheduled turn.
-        return executor;
+                readyQueueCapacity,
+                namedFactory(threadPrefix));
     }
 
     private static boolean isNativeCarrierPlatform() {
