@@ -13,7 +13,7 @@ import java.util.Set;
 import java.util.concurrent.RejectedExecutionException;
 
 /**
- * Supervisor-owned std/net TCP facade using the owning VM's NIO selectors.
+ * Supervisor- or trusted SHARED-actor-owned TCP facade using VM NIO selectors.
  * No listener or connection allocates a selector thread. The VM owns the
  * readiness/notification executors; this facade only owns socket descriptors.
  *
