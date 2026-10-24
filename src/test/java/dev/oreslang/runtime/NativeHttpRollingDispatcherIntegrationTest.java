@@ -333,7 +333,7 @@ final class NativeHttpRollingDispatcherIntegrationTest {
                         "proxy", 1, java.util.Map.of("invalid key", "value")));
         assertThrows(IllegalArgumentException.class,
                 () -> new NativeHttpRollingReloadCoordinator.Config(
-                        "proxy", 1, java.util.Map.of("key", "contains\u0000NUL")));
+                        "proxy", 1, java.util.Map.of("key", "contains" + (char) 0 + "NUL")));
     }
 
 }
