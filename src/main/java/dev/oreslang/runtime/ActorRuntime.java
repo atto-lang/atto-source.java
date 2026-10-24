@@ -2561,9 +2561,26 @@ public final class ActorRuntime implements AutoCloseable {
             Objects.requireNonNull(unit);
             if (timeout < 0) throw new IllegalArgumentException("timeout must be non-negative");
             ActorCell<?> cell = actors.get(id);
-            if (cell == null) return true;
+            if (cell == null) {
+                // ActorCell removal is performed before runtime-owned
+                // finalizedFuture subscribers and ActorRef.done() settle.
+                // Absence from the registry therefore proves only that
+                // removal started, NOT that the observable DONE barrier
+                // has crossed its final callback. Wait on the actor's own
+                // non-cancellable termination receipt instead.
+                try {
+                    doneFuture.get(timeout, unit);
+                    return true;
+                } catch (ExecutionException | java.util.concurrent.CancellationException settled) {
+                    // A failed terminal Future still proves termination;
+                    // callers inspect done() for the actual failure.
+                    return true;
+                } catch (TimeoutException notYetDone) {
+                    return false;
+                }
+            }
             cell.awaitFinalized(unit.toNanos(timeout));
-            return cell.finalized();
+            return cell.finalized() && doneFuture.isDone();
         }
 
         public void send(M message) {
