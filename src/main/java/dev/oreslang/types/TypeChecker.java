@@ -350,6 +350,11 @@ public final class TypeChecker {
                 functions.computeIfAbsent(key, ignored -> new LinkedHashMap<>());
         Ast.FunctionDecl previous = family.putIfAbsent(fn.parameters().size(), fn);
         if (previous != null) {
+            if (key.contains("$mtd$")) {
+                throw new IllegalArgumentException(
+                        "EXTENSION_DUPLICATE_SLOT: duplicate receiver/method/arity for '"
+                                + key + "'");
+            }
             throw new IllegalArgumentException(
                     "callable '" + key + "' already has arity " + fn.parameters().size()
                             + "; module/top-level overload identity is name + arity only; "
