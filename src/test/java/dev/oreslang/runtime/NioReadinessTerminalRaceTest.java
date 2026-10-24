@@ -16,7 +16,8 @@ final class NioReadinessTerminalRaceTest {
     @Test void cancellationAndReadinessNeverLeaveAnOutstandingWatch() throws Exception {
         try (var group = new NioReadinessGroup(1, 32, 32)) {
             for (int round = 0; round < 32; round++) {
-                try (var pipe = Pipe.open()) {
+                var pipe = Pipe.open();
+                try {
                     pipe.source().configureBlocking(false);
                     pipe.sink().configureBlocking(false);
                     var watch = group.watch(pipe.source(), SelectionKey.OP_READ);
@@ -58,6 +59,9 @@ final class NioReadinessTerminalRaceTest {
                             "notification reservation leaked in round " + round);
                     assertEquals(0, group.stagedNotificationCount(),
                             "staged notification leaked in round " + round);
+                } finally {
+                    pipe.source().close();
+                    pipe.sink().close();
                 }
             }
             group.close();
