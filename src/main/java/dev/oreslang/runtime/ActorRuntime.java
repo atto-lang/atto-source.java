@@ -5363,18 +5363,18 @@ public final class ActorRuntime implements AutoCloseable {
         if (cell == null) return ref.done();
         final OresFuture<Void> barrier;
         final ActorSealedException sealedFailure = new ActorSealedException(ref.id());
-        final List<ActorCell<?>.MailboxAdmissionWaiter> rejectedAsyncSends;
+        final Runnable failRejectedAsyncSends;
         synchronized (cell.lifecycleLock) {
             if (cell.stopped.get() || cell.finalized || cell.sealing) return ref.done();
             cell.sealing = true;
             // Fence pending/unborn producers before taking the drain target.
             // They were never admitted and are not part of that watermark.
-            rejectedAsyncSends = cell.sealAsyncSendAdmission(sealedFailure);
+            failRejectedAsyncSends = cell.sealAsyncSendAdmission(sealedFailure);
             // Reserve a single shutdown waiter even when public observers hit
             // their per-actor quota. Repeated gracefulStop calls reuse ref.done().
             barrier = cell.drainAcceptedMessages(true);
         }
-        cell.failDetachedAsyncSendWaiters(rejectedAsyncSends, sealedFailure);
+        failRejectedAsyncSends.run();
         barrier.whenCompleteRuntime((ignored, failure) -> {
             if (failure == null) cell.stop();
         });
@@ -7551,32 +7551,30 @@ public final class ActorRuntime implements AutoCloseable {
          * transferred waiters. Caller publishes failures after lifecycle and
          * accounting locks have both been released.
          */
-        private List<MailboxAdmissionWaiter> sealAsyncSendAdmission(Throwable failure) {
+        private Runnable sealAsyncSendAdmission(Throwable failure) {
             Objects.requireNonNull(failure, "failure");
+            final List<MailboxAdmissionWaiter> detached;
             synchronized (mailboxAccountingLock) {
                 asyncSendAdmissionSealed = true;
                 if (asyncSendAdmissionFailure == null) asyncSendAdmissionFailure = failure;
-                if (pendingAsyncSends.isEmpty()) return List.of();
-                ArrayList<MailboxAdmissionWaiter> detached =
+                if (pendingAsyncSends.isEmpty()) return () -> { };
+                ArrayList<MailboxAdmissionWaiter> copy =
                         new ArrayList<>(pendingAsyncSends.size());
                 while (!pendingAsyncSends.isEmpty()) {
                     MailboxAdmissionWaiter waiter = pendingAsyncSends.removeFirst();
                     if (waiter.state.compareAndSet(
                             MailboxAdmissionWaiter.WAITING,
                             MailboxAdmissionWaiter.CANCELLED)) {
-                        detached.add(waiter);
+                        copy.add(waiter);
                     }
                 }
-                return List.copyOf(detached);
+                detached = List.copyOf(copy);
             }
-        }
-
-        private void failDetachedAsyncSendWaiters(
-                List<MailboxAdmissionWaiter> waiters,
-                Throwable failure) {
-            for (MailboxAdmissionWaiter waiter : waiters) {
-                waiter.future.failFromRuntime(failure);
-            }
+            return () -> {
+                for (MailboxAdmissionWaiter waiter : detached) {
+                    waiter.future.failFromRuntime(failure);
+                }
+            };
         }
 
         /**
@@ -8528,8 +8526,7 @@ public final class ActorRuntime implements AutoCloseable {
             List<OresFuture<?>> pending;
             boolean scheduleTeardown;
             List<DrainWaiter> failedDrainWaiters;
-            List<MailboxAdmissionWaiter> failedAsyncSendWaiters;
-            Throwable asyncSendFailure;
+            Runnable failAsyncSendWaiters;
             synchronized (lifecycleLock) {
                 if (finalized) return;
                 if (recordCause && cause != null) {
@@ -8547,8 +8544,8 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 stopped.set(true);
                 sealing = true;
-                asyncSendFailure = cause == null ? terminated(ref) : cause;
-                failedAsyncSendWaiters = sealAsyncSendAdmission(asyncSendFailure);
+                Throwable asyncSendFailure = cause == null ? terminated(ref) : cause;
+                failAsyncSendWaiters = sealAsyncSendAdmission(asyncSendFailure);
                 // Detach pending observers under the actor monitor. Settling an
                 // OresFuture invokes runtime callbacks inline, so never settle
                 // one while holding lifecycleLock.
@@ -8569,7 +8566,7 @@ public final class ActorRuntime implements AutoCloseable {
             // Runtime Future callbacks can take other actor/lifecycle locks.
             // Publish pending-producer failure only after lifecycleLock and
             // mailboxAccountingLock have both been released.
-            failDetachedAsyncSendWaiters(failedAsyncSendWaiters, asyncSendFailure);
+            failAsyncSendWaiters.run();
             if (scheduleTeardown) schedule();
 
             // Runtime Future callbacks can take other actor/lifecycle locks.
