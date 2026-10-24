@@ -72,6 +72,12 @@ this document does not claim that test has yet passed.
 - Per-worker listeners require a preselected **nonzero common port**.
   `port=0` on each separate listener binds separate ephemeral ports.
 - Only loopback IPv4 is supported by the experimental Java path.
+- Listener `socket()/bind()/listen()` configuration is still invoked
+  synchronously when an actor calls `listen_reuseport`. Although accepted
+  connections, reads and writes use nonblocking readiness, this bind path is
+  **not yet a strict carrier-free listener bootstrap**. A future control-plane
+  provisioning Future must move bind/syscall setup off actor carriers before
+  claiming strict nonblocking I/O end to end.
 - Actor owner-checked listeners are not generally transferable with `rt take`
   to a *different* actor. The first version uses actor-local socket creation,
   with no cross-actor FD passing or shared listener broker.
