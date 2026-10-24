@@ -1,5 +1,6 @@
 // Oreslang-owned TCP source facade over the minimal kernel readiness ABI.
-// Experimental loopback/supervisor-only initial slice; never Java HTTP.
+// Experimental loopback-only; ordinary listeners remain supervisor-only.
+// Independent SO_REUSEPORT listeners can be owned by trusted shared actors.
 define module net_core as
   pub fnc listen_loopback(int port, int backlog, int max_connections,
                           int max_pending): NioTcpListener {
