@@ -133,6 +133,33 @@ public final class TypeConstraintDescriptors {
         public Descriptor find(String qualifiedTypeName) {
             return descriptors.get(qualifiedTypeName);
         }
+
+        /**
+         * Link/import compatibility gate. Consumers must bind both schema and
+         * fingerprint; type name alone never authorizes stale constrained data.
+         */
+        public Descriptor requireCompatible(
+                String qualifiedTypeName,
+                String schemaId,
+                String fingerprint) {
+            Objects.requireNonNull(qualifiedTypeName, "qualified type name");
+            Objects.requireNonNull(schemaId, "constraint schema id");
+            Objects.requireNonNull(fingerprint, "constraint fingerprint");
+            Descriptor descriptor = descriptors.get(qualifiedTypeName);
+            if (descriptor == null) {
+                throw new IllegalArgumentException(
+                        "CONSTRAINT_DESCRIPTOR_NOT_FOUND: " + qualifiedTypeName);
+            }
+            if (!descriptor.schemaId().equals(schemaId)) {
+                throw new IllegalArgumentException(
+                        "CONSTRAINT_IMPORT_SCHEMA_MISMATCH: " + qualifiedTypeName);
+            }
+            if (!descriptor.fingerprint().equals(fingerprint)) {
+                throw new IllegalArgumentException(
+                        "CONSTRAINT_IMPORT_FINGERPRINT_MISMATCH: " + qualifiedTypeName);
+            }
+            return descriptor;
+        }
     }
 
     /** Compile and normalize every constrained alias in one checked source unit. */
