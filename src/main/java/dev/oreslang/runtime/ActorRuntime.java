@@ -7152,6 +7152,25 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        // A terminal Future becomes observable just before the owning
+        // finalization callback relinquishes its strong publication lease.
+        // The callback is still running while that lease is present; do not
+        // use Future.isDone alone as a full callback-exit certificate.
+        long publicationRemaining = deadline - System.nanoTime();
+        while (!terminalPublications.isEmpty() && publicationRemaining > 0
+                && !interrupted) {
+            java.util.concurrent.locks.LockSupport.parkNanos(
+                    Math.min(publicationRemaining, TimeUnit.MILLISECONDS.toNanos(1)));
+            if (Thread.interrupted()) {
+                interrupted = true;
+                break;
+            }
+            publicationRemaining = deadline - System.nanoTime();
+        }
+        for (ActorCell<?> cell : terminalPublications) {
+            if (!stillRunning.contains(cell.ref.id())) stillRunning.add(cell.ref.id());
+        }
+
         // An incomplete STOP MUST NOT close the host physical-notification
         // lane or invalidate shared/actor-owned resources. Late native-worker
         // receipts still need this lane to recheck STOP and unblock retries.
