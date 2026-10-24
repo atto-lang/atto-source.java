@@ -153,7 +153,7 @@ public final class VmNioTcpListener implements AutoCloseable {
         final OresFuture<Connection> exported;
         synchronized (gate) {
             if (closed) return OresFuture.failed(new IOException("TCP listener closed"));
-            if (connections.size() >= maxConnections)
+            if (connections.size() + closingConnections.size() >= maxConnections)
                 return OresFuture.failed(new RejectedExecutionException("TCP connection capacity exhausted"));
             if (pendingAccept != null)
                 return OresFuture.failed(new IllegalStateException("listener already has a pending accept"));
@@ -185,7 +185,8 @@ public final class VmNioTcpListener implements AutoCloseable {
                     return;
                 }
                 synchronized (gate) {
-                    if (!closed && connections.size() < maxConnections && !exported.isDone()) {
+                    if (!closed && connections.size() + closingConnections.size()
+                            < maxConnections && !exported.isDone()) {
                         connection = new Connection(socket);
                         connections.add(connection);
                     }
