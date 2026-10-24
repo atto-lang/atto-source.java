@@ -7469,8 +7469,10 @@ public final class ActorRuntime implements AutoCloseable {
             // USER mail and runtime continuations are physically distinct
             // channels. Do not inflate the USER channel with CONTROL headroom.
             this.mailbox = new ChannelRuntime.Channel<>(policy.maxMailboxMessages());
-            this.maxPendingAsyncSends = Math.max(
-                    1, Math.min(MAX_PENDING_ASYNC_SENDS, policy.maxMailboxMessages()));
+            // Producer-waiter retention is a separate resource from queued
+            // mailbox depth. Payload byte accounting still constrains the
+            // retained message snapshots themselves.
+            this.maxPendingAsyncSends = MAX_PENDING_ASYNC_SENDS;
             this.outputChannel = new ChannelRuntime.Channel<>(
                     Math.max(1, policy.maxMailboxMessages()));
             this.outputStream = new ActorOutputStream<>(
