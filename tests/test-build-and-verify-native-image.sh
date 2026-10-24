@@ -103,6 +103,18 @@ case "${MOCK_EXPECT_PROFILE_REFS:-}" in
       *) : ;;
     esac ;;
 esac
+case "${MOCK_EXPECT_OFFLINE:-}" in
+  yes)
+    case " $* " in
+      *' -o '*) : ;;
+      *) echo 'Maven offline flag -o required' >&2; exit 23 ;;
+    esac ;;
+  no)
+    case " $* " in
+      *' -o '*) echo 'unexpected Maven offline flag -o' >&2; exit 24 ;;
+      *) : ;;
+    esac ;;
+esac
 if [ "${MOCK_MVN_FAIL:-0}" = 1 ]; then exit 19; fi
 rm -rf target
 mkdir -p target
@@ -146,6 +158,9 @@ assert_case 'AOT compressed32' success aot compressed32 MOCK_EMBEDDED_MODE=aot M
 assert_case 'AOT native64' success aot native64 MOCK_EMBEDDED_MODE=aot MOCK_EMBEDDED_REFS=native64 MOCK_EXPECT_PROFILE_REFS=native64
 assert_case 'hybrid compressed32' success hybrid compressed32 MOCK_EMBEDDED_MODE=hybrid MOCK_EMBEDDED_REFS=compressed32 MOCK_EXPECT_PROFILE_REFS=compressed32
 assert_case 'hybrid native64' success hybrid native64 MOCK_EMBEDDED_MODE=hybrid MOCK_EMBEDDED_REFS=native64 MOCK_EXPECT_PROFILE_REFS=native64
+assert_case 'AOT forced-offline carrier build' success aot compressed32 ORES_NATIVE_IMAGE_OFFLINE=1 MOCK_EXPECT_OFFLINE=yes
+assert_case 'hybrid ref64 forced-offline carrier build' success hybrid native64 ORES_NATIVE_IMAGE_OFFLINE=1 MOCK_EXPECT_OFFLINE=yes MOCK_EMBEDDED_MODE=hybrid MOCK_EMBEDDED_REFS=native64 MOCK_EXPECT_PROFILE_REFS=native64
+assert_case 'invalid offline mode denied' failure aot compressed32 ORES_NATIVE_IMAGE_OFFLINE=sometimes
 assert_case 'invalid mode' failure invalid compressed32
 assert_case 'invalid refs' failure aot invalid
 assert_case 'Maven failure' failure aot compressed32 MOCK_MVN_FAIL=1
