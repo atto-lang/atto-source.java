@@ -175,6 +175,30 @@ if [ "$channel_output" != 'first:7:9' ]; then
 fi
 printf '%s\n' "$channel_output"
 
+# Verify that select wakes for completed Future<T> when the channel is
+# intentionally empty. Do not mistake silent completion for async progress.
+future_output="$(
+  unset JAVA_HOME CLASSPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS
+  "$executable" "--mode=$mode" examples/native-future-select-smoke.ores
+)"
+if [ "$future_output" != 'future:4' ]; then
+  echo "native Future/select output differs from expected result" >&2
+  exit 1
+fi
+printf '%s\n' "$future_output"
+
+# Root await must actually resume and return the typed result under both
+# Native Image AOT and hybrid, not merely pass linked syntax checking.
+await_output="$(
+  unset JAVA_HOME CLASSPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS
+  "$executable" "--mode=$mode" examples/strict-root-await.ores
+)"
+if [ "$await_output" != '42' ]; then
+  echo "native root-await result differs from expected value" >&2
+  exit 1
+fi
+printf '%s\n' "$await_output"
+
 # A native image that merely exits zero without executing guest code is NOT
 # sufficient evidence. Require the real Oreslang test framework's known output.
 # Capture the command first (no pipeline that could hide its exit status).
