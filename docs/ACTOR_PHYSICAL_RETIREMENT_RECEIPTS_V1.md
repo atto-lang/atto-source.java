@@ -463,3 +463,12 @@ mirror is still a private source transfer and must NOT be performed
 until independent approval and an actually executable destination
 are verified. Source-org Actions retries likewise produced no runner,
 so they provide neither passed tests nor evidence of a source defect.
+
+Additional boundary: an already-terminal `doneFuture` may be observed
+just *before* the final runtime callback releases its strong
+`terminalPublications` lease. `ActorRuntime.close()` therefore performs
+a **bounded join of the terminal-publication lease set itself** before
+shutting down the host-close lane or invalidating shared resources.
+A retained lease at the deadline triggers quarantine even if `done()`
+was already marked terminal. The JDK25 deterministic tests for this
+boundary are committed but remain unexecuted.
