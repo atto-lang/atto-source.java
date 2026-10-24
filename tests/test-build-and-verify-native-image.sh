@@ -12,7 +12,7 @@ command -v file >/dev/null 2>&1 || { echo "file utility required" >&2; exit 2; }
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 mkdir -p "$tmp/bin" "$tmp/graal/bin" "$tmp/work/examples"
-for name in callables together native-core-library native-testing shared-private-actor-isolation private-actor-sharing-invalid; do
+for name in callables together native-core-library native-testing native-channel-select-smoke shared-private-actor-isolation private-actor-sharing-invalid; do
   echo '// placeholder: not Oreslang source' > "$tmp/work/examples/$name.ores"
 done
 
@@ -84,6 +84,13 @@ int main(int argc, char **argv) {
             if (!getenv("MOCK_SILENT_CALLABLES")) {
                 if (getenv("MOCK_BAD_CALLABLES")) puts("120:9:12");
                 else puts("120:9:13");
+            }
+        }
+        if (strstr(argv[2], "native-channel-select-smoke.ores") != NULL) {
+            if (!getenv("MOCK_EMPTY_CHANNEL_OUTPUT")) {
+                if (getenv("MOCK_WRONG_CHANNEL_WINNER")) puts("wrong:9:7");
+                else if (getenv("MOCK_LOST_CHANNEL_MESSAGE")) puts("first:7:");
+                else puts("first:7:9");
             }
         }
         if (strstr(argv[2], "native-core-library.ores") != NULL) {
@@ -248,6 +255,9 @@ grep -Fx 'private actor negative fixture failed without a capability-denial diag
 assert_case 'actor check-only emitted guest output' failure aot compressed32 MOCK_ACTOR_CHECK_EXECUTES_GUEST=1
 assert_case 'silent fake image without guest-core output' failure aot compressed32 MOCK_EMPTY_CORE_OUTPUT=1
 assert_case 'wrong native core numeric result' failure aot compressed32 MOCK_BAD_CORE_OUTPUT=1
+assert_case 'silent native channel execution' failure aot compressed32 MOCK_EMPTY_CHANNEL_OUTPUT=1
+assert_case 'wrong native channel select winner' failure aot compressed32 MOCK_WRONG_CHANNEL_WINNER=1
+assert_case 'lost unselected native channel message' failure aot compressed32 MOCK_LOST_CHANNEL_MESSAGE=1
 assert_case 'silent fake image without guest-test output' failure aot compressed32 MOCK_EMPTY_TEST_OUTPUT=1
 assert_case 'guest test reports failures' failure aot compressed32 MOCK_BAD_TEST_SUMMARY=1
 assert_case 'valid summary without actual PASS/SKIP records' failure aot compressed32 MOCK_MISSING_TEST_EVENTS=1
