@@ -5,6 +5,7 @@ on:
     paths:
       - 'src/main/java/dev/oreslang/runtime/ActorRollingGenerationRoute.java'
       - 'src/main/java/dev/oreslang/runtime/NativeHttpRollingDispatcher.java'
+      - 'src/main/java/dev/oreslang/runtime/NativeHttpRollingReloadCoordinator.java'
       - 'src/main/java/dev/oreslang/runtime/NativeHttp.java'
       - 'src/test/java/dev/oreslang/runtime/ActorRollingGenerationRouteTest.java'
       - 'src/test/java/dev/oreslang/runtime/ActorRollingHttpSocketTest.java'
