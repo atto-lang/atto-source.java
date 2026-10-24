@@ -25,7 +25,12 @@ public final class OresVM implements AutoCloseable {
             Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors()));
     private static final int DEFAULT_QUEUE_CAPACITY = 65_536;
 
+    private static final ThreadLocal<Boolean> ON_CONTROL_CARRIER = new ThreadLocal<>();
     private static final ThreadLocal<Boolean> ON_NIO_WORKER = new ThreadLocal<>();
+
+    static boolean onControlCarrier() {
+        return Boolean.TRUE.equals(ON_CONTROL_CARRIER.get());
+    }
 
     static boolean onNioWorker() {
         return Boolean.TRUE.equals(ON_NIO_WORKER.get());
@@ -43,6 +48,8 @@ public final class OresVM implements AutoCloseable {
 
     private enum StartupState { NEW, STARTING, STARTED, FAILED, CLOSED }
 
+    private final OresCarrierBudget carrierBudget;
+    private final OresCarrierPermitPool carrierPermitPool;
     private final ThreadPoolExecutor controlExecutor;
     private final OresScheduler rootScheduler;
     private final NioReadinessGroup nioReadiness;
@@ -56,24 +63,69 @@ public final class OresVM implements AutoCloseable {
             throw new IllegalArgumentException("control parallelism must be positive");
         }
 
-        AtomicInteger carrierId = new AtomicInteger();
-        ThreadFactory factory = runnable -> Thread.ofPlatform()
-                .daemon(true)
-                .name("ores-control-plane-" + carrierId.getAndIncrement())
-                .unstarted(runnable);
+        this.carrierBudget = OresCarrierBudget.configured();
+        if (carrierBudget != null
+                && !OresCarrierBudget.explicitWorkConservingJvmTopology()) {
+            throw new IllegalStateException(
+                    OresCarrierBudget.PROPERTY
+                            + " currently requires -Dores.runtime.carriers=java "
+                            + "and -Dores.actor.affinity=none so every runtime "
+                            + "execution carrier is governed by the shared permit pool");
+        }
+        this.carrierPermitPool = carrierBudget == null
+                ? null : new OresCarrierPermitPool(carrierBudget.maximum());
 
-        this.controlExecutor = new ThreadPoolExecutor(
-                controlParallelism,
-                controlParallelism,
-                0L,
-                TimeUnit.MILLISECONDS,
-                new ArrayBlockingQueue<>(DEFAULT_QUEUE_CAPACITY),
-                factory,
-                new ThreadPoolExecutor.AbortPolicy());
+        int effectiveControlParallelism = controlParallelism;
+        if (carrierBudget != null) {
+            String explicitControl = System.getProperty("ores.runtime.control.parallelism");
+            if (explicitControl != null
+                    && controlParallelism != carrierBudget.controlReserve()) {
+                throw new IllegalArgumentException(
+                        "global carrier budget reserves exactly "
+                                + carrierBudget.controlReserve()
+                                + " CONTROL carrier; ores.runtime.control.parallelism="
+                                + controlParallelism + " is incompatible");
+            }
+            effectiveControlParallelism = carrierBudget.controlReserve();
+        }
+
+        AtomicInteger carrierId = new AtomicInteger();
+        ThreadFactory factory = carrierPermitPool == null
+                ? runnable -> Thread.ofPlatform()
+                        .daemon(true)
+                        .name("ores-control-plane-" + carrierId.getAndIncrement())
+                        .unstarted(() -> {
+                            ON_CONTROL_CARRIER.set(Boolean.TRUE);
+                            try { runnable.run(); }
+                            finally { ON_CONTROL_CARRIER.remove(); }
+                        })
+                : carrierPermitPool.threadFactory(
+                        OresCarrierPermitPool.Domain.CONTROL,
+                        "ores-control-plane-",
+                        runnable -> () -> {
+                            ON_CONTROL_CARRIER.set(Boolean.TRUE);
+                            try { runnable.run(); }
+                            finally { ON_CONTROL_CARRIER.remove(); }
+                        });
+
+        this.controlExecutor = carrierPermitPool == null
+                ? new ThreadPoolExecutor(
+                        effectiveControlParallelism,
+                        effectiveControlParallelism,
+                        0L,
+                        TimeUnit.MILLISECONDS,
+                        new ArrayBlockingQueue<>(DEFAULT_QUEUE_CAPACITY),
+                        factory,
+                        new ThreadPoolExecutor.AbortPolicy())
+                : new AdaptiveCarrierExecutor(
+                        effectiveControlParallelism,
+                        effectiveControlParallelism,
+                        DEFAULT_QUEUE_CAPACITY,
+                        factory);
 
         this.rootScheduler = OresScheduler.runtimeOwned(
                 "ores-root-scheduler",
-                rootAdmission == null ? controlParallelism : 1,
+                rootAdmission == null ? effectiveControlParallelism : 1,
                 rootAdmission == null ? controlExecutor : rootAdmission,
                 turnExecutor);
         try {
@@ -147,6 +199,12 @@ public final class OresVM implements AutoCloseable {
         return controlExecutor.getPoolSize();
     }
 
+    OresCarrierBudget carrierBudget() { return carrierBudget; }
+    OresCarrierPermitPool carrierPermitPool() { return carrierPermitPool; }
+    OresCarrierPermitPool.Snapshot carrierPermitSnapshot() {
+        return carrierPermitPool == null ? null : carrierPermitPool.snapshot();
+    }
+
     NioReadinessGroup nioReadiness() {
         if (!started()) {
             throw new IllegalStateException(
@@ -195,6 +253,7 @@ public final class OresVM implements AutoCloseable {
         // An ordinary actor/Mailman must likewise delegate blocking VM teardown
         // to its supervising host after its turn finishes.
         if (OresScheduler.current() != null
+                || onControlCarrier()
                 || onNioWorker()
                 || ActorRuntime.inActorExecution()
                 || ActorRuntime.inActorGroupMailmanExecution()) {
