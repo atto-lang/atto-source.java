@@ -6111,7 +6111,7 @@ public final class TypeChecker {
             return union.options().stream().allMatch(this::boundedErrorGuardEqualityType);
         }
         if (value == Primitive.BOOL || value == Primitive.FLOAT
-                || value == Primitive.COMPLEX || value instanceof BoolLiteral) {
+                || value == Primitive.COMPLEX || value instanceof Types.BoolLiteral) {
             return true;
         }
         // The evaluator compares strings/decimal/bigint by potentially
