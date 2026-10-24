@@ -144,6 +144,43 @@ final class ActorAsyncSendBackpressureTest {
         }
     }
 
+
+    @Test
+    void gracefulStopFailsUnadmittedProducerWithoutWaitingForItsPayload() throws Exception {
+        CountDownLatch firstEntered = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<Integer>spawnShared(oneMessagePolicy(), () -> (message, context) -> {
+                if (message == 1) {
+                    firstEntered.countDown();
+                    if (!releaseFirst.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("held actor turn timed out");
+                    }
+                }
+            });
+
+            ref.send(1);
+            assertTrue(firstEntered.await(5, TimeUnit.SECONDS));
+            ref.send(2);
+            OresFuture<Void> pending = ref.sendAsync(3);
+            assertFalse(pending.isDone());
+
+            OresFuture<Void> done = ref.gracefulStop();
+            ExecutionException rejected = assertThrows(
+                    ExecutionException.class,
+                    () -> pending.get(5, TimeUnit.SECONDS));
+            assertInstanceOf(ActorRuntime.ActorSealedException.class, rejected.getCause());
+            assertFalse(done.isDone(), "graceful stop still owes already-admitted mail");
+
+            releaseFirst.countDown();
+            done.get(5, TimeUnit.SECONDS);
+            assertFalse(ref.isAlive());
+        } finally {
+            releaseFirst.countDown();
+        }
+    }
+
     @Test
     void serialActorCannotAwaitCapacityThatOnlyItsOwnTurnCanRelease() throws Exception {
         CountDownLatch diagnosed = new CountDownLatch(1);
