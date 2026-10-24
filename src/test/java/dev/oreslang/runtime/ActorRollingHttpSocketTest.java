@@ -111,9 +111,10 @@ final class ActorRollingHttpSocketTest {
                     assertTrue(route.admissionsDrained(1L));
                     g1.stop();
                     g1.getDone().get(8, TimeUnit.SECONDS);
-                    assertTrue(route.acknowledgePhysicallyRetired(1L),
-                            "CONTROL retirement acknowledgment requires a separate physical proof");
-                    assertEquals(1, route.snapshot().liveGenerations());
+                    assertThrows(IllegalStateException.class,
+                            () -> route.acknowledgePhysicallyRetired(1L),
+                            "actor termination without Task/FFI/code proof must not reclaim G1");
+                    assertEquals(2, route.snapshot().liveGenerations());
                 } finally {
                     releaseOld.countDown();
                     listener.stop(0);
