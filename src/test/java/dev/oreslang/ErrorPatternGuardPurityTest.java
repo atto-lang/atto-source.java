@@ -660,6 +660,36 @@ final class ErrorPatternGuardPurityTest {
     }
 
     @Test
+    void errorReceiverSelfIdentityEqualityIsBoundedAndAccepted() {
+        String valid = SOURCE + """
+                define class IOError extends Error as
+                  pub classify(): int {
+                    match self over
+                      on _ when self == self -> { return 1; }
+                      on _ -> { return 0; }
+                    end
+                  }
+                end
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(valid)));
+    }
+
+    @Test
+    void errorReceiverSelfEqualityWithNominalCandidateIsAccepted() {
+        String valid = SOURCE + """
+                define class IOError extends Error as
+                  pub classify(IOError candidate): int {
+                    return match self over {
+                      on _ when self == candidate { return 1; }
+                      on _ { return 0; }
+                    };
+                  }
+                end
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(valid)));
+    }
+
+    @Test
     void guardDivisionCannotSmuggleAnExceptionalArithmeticOperation() {
         String bad = SOURCE + """
                 fnc classify(Error error, int divisor): int {
