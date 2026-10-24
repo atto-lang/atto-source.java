@@ -1271,8 +1271,87 @@ public final class Parser {
         List<String> generics = parseGenericParameters();
         consume(EQUAL, "expected '=' in type alias");
         Ast.TypeRef target = parseTypeRef();
+        List<Ast.TypeConstraint> constraints = parseTypeAliasConstraints();
         consumeStatementTerminator("type alias should end with ';'");
-        return new Ast.TypeAliasDecl(name, visibility, generics, target);
+        return new Ast.TypeAliasDecl(name, visibility, generics, target, constraints);
+    }
+
+    /**
+     * V1 constrained aliases deliberately admit only deterministic inclusive
+     * integer bounds. with/min/max/and stay contextual so value identifiers
+     * with those names remain legal outside this declaration suffix.
+     */
+    private List<Ast.TypeConstraint> parseTypeAliasConstraints() {
+        if (!matchContextualKeyword("with")) return List.of();
+
+        Long minimum = null;
+        Long maximum = null;
+        boolean expectAnother;
+        do {
+            expectAnother = false;
+            if (matchContextualKeyword("min")) {
+                if (minimum != null) {
+                    throw error(previous(), "duplicate 'min' type constraint");
+                }
+                minimum = parseConstraintI64("min");
+            } else if (matchContextualKeyword("max")) {
+                if (maximum != null) {
+                    throw error(previous(), "duplicate 'max' type constraint");
+                }
+                maximum = parseConstraintI64("max");
+            } else {
+                throw error(peek(),
+                        "type alias 'with' currently admits only 'min <i64>' and 'max <i64>'");
+            }
+
+            if (matchContextualKeyword("and")) {
+                if (check(SEMICOLON)) {
+                    throw error(peek(), "expected type constraint after 'and'");
+                }
+                expectAnother = true;
+            }
+        } while (expectAnother);
+
+        if (minimum != null && maximum != null && minimum > maximum) {
+            throw error(previous(), "type alias constraint min cannot exceed max");
+        }
+
+        List<Ast.TypeConstraint> constraints = new ArrayList<>(2);
+        if (minimum != null) {
+            constraints.add(new Ast.TypeConstraint(
+                    Ast.TypeConstraintKind.MIN_INCLUSIVE, minimum));
+        }
+        if (maximum != null) {
+            constraints.add(new Ast.TypeConstraint(
+                    Ast.TypeConstraintKind.MAX_INCLUSIVE, maximum));
+        }
+        return List.copyOf(constraints);
+    }
+
+    private long parseConstraintI64(String predicate) {
+        boolean negative = match(MINUS);
+        Token literal = consume(INT, "expected signed i64 literal after '" + predicate + "'");
+        String raw = literal.lexeme();
+        if (raw.endsWith("_") || raw.contains("__")) {
+            throw error(literal, "malformed integer separator: " + raw);
+        }
+        try {
+            java.math.BigInteger value =
+                    new java.math.BigInteger(raw.replace("_", ""));
+            if (negative) value = value.negate();
+            java.math.BigInteger minimum =
+                    java.math.BigInteger.valueOf(Long.MIN_VALUE);
+            java.math.BigInteger maximum =
+                    java.math.BigInteger.valueOf(Long.MAX_VALUE);
+            if (value.compareTo(minimum) < 0 || value.compareTo(maximum) > 0) {
+                throw error(literal,
+                        "type constraint overflows signed 64-bit: "
+                                + (negative ? "-" : "") + raw);
+            }
+            return value.longValueExact();
+        } catch (NumberFormatException invalid) {
+            throw error(literal, "malformed integer type constraint: " + raw);
+        }
     }
 
     private List<Ast.Annotation> parseAnnotations() {
