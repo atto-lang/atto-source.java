@@ -109,22 +109,25 @@ test_output="$(
 )"
 printf '%s\n' "$test_output"
 expected_summary='ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0'
-# Reject decoy summaries, extra FAIL records and missing PASS/SKIP events.
-# The checked-in native-testing.ores suite contains three passing cases and
-# one intentionally skipped case. A summary alone is insufficient evidence.
-if ! printf '%s\n' "$test_output" | awk -v expected="$expected_summary" '
+# Require each exact guest test identity once; counts alone can be forged by
+# duplicating one PASS event while omitting another. Tolerate detail text only
+# after the test name, preserving the checked-in reporting format.
+if ! printf '%s\n' "$test_output" | awk -F '|' -v expected="$expected_summary" '
   /^ORES_TEST\|/ {
     if ($0 == expected) { summaries++; next }
-    if ($0 ~ /^ORES_TEST\|SUMMARY\|/) { bad=1; next }
-    if ($0 ~ /^ORES_TEST\|PASS\|/) { passes++; next }
-    if ($0 ~ /^ORES_TEST\|SKIP\|/) { skips++; next }
+    if ($1 != "ORES_TEST") { bad=1; next }
+    if ($2 == "PASS" && $3 == "core/arithmetic/adds") { adds++; next }
+    if ($2 == "PASS" && $3 == "core/float/tolerance") { floats++; next }
+    if ($2 == "PASS" && $3 == "core/property/square") { properties++; next }
+    if ($2 == "SKIP" && $3 == "core/future/parallel-runner") { skips++; next }
     bad=1
   }
   END {
-    if (bad || summaries != 1 || passes != 3 || skips != 1) exit 1
+    if (bad || summaries != 1 || adds != 1 || floats != 1 ||
+        properties != 1 || skips != 1) exit 1
   }
 '; then
-  echo "native executable did not produce exactly three PASS, one SKIP and one matching summary" >&2
+  echo "native executable did not produce the exact unique PASS/SKIP guest tests and summary" >&2
   exit 1
 fi
 
