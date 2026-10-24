@@ -119,13 +119,24 @@ if [ ! -f examples/private-actor-sharing-invalid.ores ]; then
   echo "missing private actor capability-invalid fixture" >&2
   exit 1
 fi
-if (
+# A parse error, missing import, or crash is NOT proof of private-actor
+# isolation. Only the expected capability-denial diagnostic establishes that
+# the linked checker reached and enforced the protected actor boundary.
+if invalid_actor_diagnostic="$(
   unset JAVA_HOME CLASSPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS
-  "$executable" --check examples/private-actor-sharing-invalid.ores
-) >/dev/null 2>&1; then
+  "$executable" --check examples/private-actor-sharing-invalid.ores 2>&1
+)"; then
   echo "native linked admission accepted private actor sharing violations" >&2
   exit 1
 fi
+case "$invalid_actor_diagnostic" in
+  *"Oreslang isolate denies capability SHARED_MEMORY"*|\
+  *"Oreslang isolate denies capability ACTOR_SHARE_READONLY"*) ;;
+  *)
+    echo "private actor negative fixture failed without a capability-denial diagnostic" >&2
+    exit 1
+    ;;
+esac
 
 (
   unset JAVA_HOME CLASSPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS
