@@ -913,9 +913,13 @@ public final class ModelGraphCompiler {
             return "string:utf8:" + HexFormat.of().formatHex(utf8);
         }
         if (value instanceof dev.oreslang.runtime.OresSymbol symbol) {
-            String text = String.valueOf(symbol);
-            byte[] utf8 = canonicalUtf8(text, "model symbol constant");
-            return "symbol:utf8:" + HexFormat.of().formatHex(utf8);
+            // Identity binds nominal Symbol kind and NFC name, not display formatting.
+            String kind = switch (symbol.kind()) {
+                case PROCESS -> "process";
+                case STABLE -> "stable";
+            };
+            byte[] utf8 = canonicalUtf8(symbol.name(), "model symbol constant");
+            return "symbol:" + kind + ":utf8:" + HexFormat.of().formatHex(utf8);
         }
         fail("MODEL_INVALID_CONST", "unsupported model constant");
         throw new AssertionError();
