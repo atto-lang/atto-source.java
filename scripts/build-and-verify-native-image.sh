@@ -78,6 +78,20 @@ fi
   "$executable" "--mode=$mode" examples/native-core-library.ores
 )
 
+# A native image that merely exits zero without executing guest code is NOT
+# sufficient evidence. Require the real Oreslang test framework's known output.
+# Capture the command first (no pipeline that could hide its exit status).
+test_output="$(
+  unset JAVA_HOME CLASSPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS
+  "$executable" "--mode=$mode" examples/native-testing.ores
+)"
+printf '%s\n' "$test_output"
+expected_summary='ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0'
+if ! printf '%s\n' "$test_output" | grep -Fx "$expected_summary" >/dev/null; then
+  echo "native executable failed real Oreslang test-summary proof" >&2
+  exit 1
+fi
+
 # A native executable must never silently switch on JVM JIT at runtime.
 set +e
 (
