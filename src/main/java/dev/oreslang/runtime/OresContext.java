@@ -67,8 +67,14 @@ public final class OresContext implements AutoCloseable {
         requireCapability(IsolatePolicy.Capability.JAVA_INTEROP, "Java runtime handle conversion");
         if (env.isHostObject(value)) {
             Object host = env.asHostObject(value);
-            if (host instanceof ChannelRuntime.Channel<?>
-                    || host instanceof OresFuture<?>
+            if (host instanceof ChannelRuntime.Channel<?> channel) {
+                if (!channel.belongsTo(channelAdmissionDomain)) {
+                    throw new SecurityException(
+                            "host Channel belongs to another OresContext admission domain");
+                }
+                return channel;
+            }
+            if (host instanceof OresFuture<?>
                     || host instanceof CompletionStage<?>) {
                 return host;
             }
