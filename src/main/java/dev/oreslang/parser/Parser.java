@@ -4386,7 +4386,15 @@ public final class Parser {
     }
 
     private void consumeClassFieldTerminator(String message) {
-        if (match(SEMICOLON) || check(AT) || check(END) || check(PUB) || check(PRIVATE)
+        if (match(SEMICOLON)) return;
+        // An implicit separator is a newline, never adjacent tokens on the
+        // same source line. In particular a modifier such as 'pub' must not
+        // bypass the same-line guard that already applies to bare 'mtd'.
+        // Preserve the historical terminal 'end' spelling for the class.
+        if (!check(END) && current > 0 && previous().line() >= peek().line()) {
+            throw error(peek(), message + " (use ';' or a new line between class members)");
+        }
+        if (check(AT) || check(END) || check(PUB) || check(PRIVATE)
                 || check(STATIC) || check(ABSTRACT) || check(ASYNC) || check(SUSPENDS) || check(LBRACKET)
                 || isBindingKind(peek().type())
                 || (check(IDENT) && (checkNext(COLON) || checkNext(LPAREN)))
