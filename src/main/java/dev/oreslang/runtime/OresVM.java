@@ -213,6 +213,10 @@ public final class OresVM implements AutoCloseable {
         return nioReadiness;
     }
 
+    int nioReactorCount() {
+        return nioReadiness.reactorCount();
+    }
+
     public OresScheduler rootScheduler() {
         if (!started()) {
             throw new IllegalStateException(
