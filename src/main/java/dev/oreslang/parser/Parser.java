@@ -1252,7 +1252,8 @@ public final class Parser {
         consume(RPAREN, "expected ')' after extension arguments");
         for (Ast.Param parameter : explicitParams) {
             if (parameter.name().equals("self")) {
-                throw error(previous(), "extension method reserves 'self' for its receiver");
+                throw error(previous(),
+                        "EXTENSION_SELF_SHADOW: extension method reserves 'self' for its receiver");
             }
         }
         Ast.TypeRef result = parseReturnType(List.of());
