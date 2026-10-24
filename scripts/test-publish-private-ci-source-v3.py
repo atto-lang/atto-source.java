@@ -573,10 +573,33 @@ class PrivateCiV3Test(unittest.TestCase):
                 "sha": "7" * 40,
                 "repo": {"full_name": source_repo, "id": source_id},
             }}),
+            ("closed", {"state": "closed"}),
+            ("missing-head-repository", {"head": {"sha": "8" * 40}}),
+            ("wrong-base-ref", {"base": {
+                "ref": "develop",
+                "repo": {"full_name": source_repo, "id": source_id},
+            }}),
+            ("boolean-base-id", {"base": {
+                "ref": "main",
+                "repo": {"full_name": source_repo, "id": True},
+            }}),
         )
         for label, changes in variants:
             with self.subTest(label=label):
                 check(dict(valid_pr, **changes), False)
+
+    def test_verify_source_pr_rejects_malformed_pr_response(self):
+        for malformed in (None, [], "unexpected", True, 9):
+            with (
+                self.subTest(malformed_type=type(malformed).__name__),
+                patch.object(
+                    v3, "require_live_private_source",
+                    return_value={"id": v3.SOURCE_REPOSITORY_ID},
+                ),
+                patch.object(v3.legacy, "gh_api", return_value=malformed),
+            ):
+                with self.assertRaisesRegex(v3.Denied, "metadata response"):
+                    v3.verify_source_pr(1482, "8" * 40)
 
     def test_authorize_write_rejects_source_identity_or_privacy_flip(self):
         """One invalid live source metadata field denies before another Git write."""
