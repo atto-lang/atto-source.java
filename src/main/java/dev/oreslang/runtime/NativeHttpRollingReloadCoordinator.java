@@ -137,35 +137,33 @@ public final class NativeHttpRollingReloadCoordinator implements AutoCloseable {
                 throw rejected;
             }
             stage.whenCompleteRuntime((success, failure) -> {
-                Runnable finish = () -> {
-                    try {
-                        if (failure != null) {
-                            outcome.failFromRuntime(OresFuture.unwrap(failure));
-                        } else if (!Boolean.TRUE.equals(success)) {
-                            Published current = published.get();
-                            resolve(outcome, new Result(Status.STALE,
-                                    dispatcher.snapshot().activeEpoch(), current.config()));
+                // Publication is complete when this callback runs. Commit
+                // metadata on that SAME callback turn, before reporting a
+                // successful Future; queuing another executor turn can race
+                // shutdown and strand metadata after a route CAS succeeds.
+                try {
+                    if (failure != null) {
+                        outcome.failFromRuntime(OresFuture.unwrap(failure));
+                    } else if (!Boolean.TRUE.equals(success)) {
+                        Published current = published.get();
+                        resolve(outcome, new Result(Status.STALE,
+                                dispatcher.snapshot().activeEpoch(), current.config()));
+                    } else {
+                        Published installed = new Published(expectedEpoch + 1, proposed);
+                        if (!published.compareAndSet(old, installed)) {
+                            outcome.failFromRuntime(new IllegalStateException(
+                                    "published generation metadata raced"));
                         } else {
-                            Published installed = new Published(expectedEpoch + 1, proposed);
-                            if (!published.compareAndSet(old, installed)) {
-                                // This should be unreachable: route CAS permits
-                                // just one publish for an expected epoch.
-                                outcome.failFromRuntime(new IllegalStateException(
-                                        "published generation metadata raced"));
-                            } else {
-                                resolve(outcome, new Result(
-                                        Status.PUBLISHED, installed.epoch(), installed.config()));
-                            }
+                            resolve(outcome, new Result(
+                                    Status.PUBLISHED, installed.epoch(), installed.config()));
                         }
-                    } finally {
-                        stagingCapacity.release();
                     }
-                };
-                try { transactions.execute(finish); }
-                catch (RuntimeException | Error rejected) {
+                } catch (RuntimeException | Error unexpected) {
+                    // Fail closed on any callback/plumbing bug. Never tell a
+                    // caller it succeeded without publishing its metadata.
+                    outcome.failFromRuntime(unexpected);
+                } finally {
                     stagingCapacity.release();
-                    outcome.failFromRuntime(new IllegalStateException(
-                            "reload publication callback lost during shutdown", rejected));
                 }
             });
         } catch (Exception | Error failure) {
