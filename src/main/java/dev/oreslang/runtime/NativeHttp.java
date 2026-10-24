@@ -220,23 +220,6 @@ public final class NativeHttp implements AutoCloseable {
             if (firstFailure instanceof RuntimeException runtime) throw runtime;
         }
 
-        /**
-         * Supervisor-only; call only after independent physical-retirement
-         * proof and after all pooled actor get_done() barriers. Discards the
-         * registry's strong reference to an otherwise completed generation.
-         */
-        void releaseRetiredPoolAfterProof() {
-            supervisor();
-            synchronized (this) {
-                if (workers == null) throw new IllegalStateException("handler is not pooled");
-                for (Worker worker : workers)
-                    if (worker != null && (!worker.actor.done().isDone()
-                            || worker.actor.done().isCompletedExceptionally()))
-                        throw new IllegalStateException("cannot certify HTTP pool worker exit");
-                poolDiscarded = true;
-            }
-            pools.remove(this);
-        }
         private synchronized Worker worker() {
             if (poolDiscarded || NativeHttp.this.closed)
                 throw new RejectedExecutionException("HTTP worker pool discarded or transport closed");
