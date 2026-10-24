@@ -390,4 +390,33 @@ final class MethodDeclarationSpellingTest {
                 """));
     }
 
+
+    @Test
+    void semicolonFreeClassMembersMustHaveRealLineBoundary() {
+        for (String next : new String[] {
+                "pub mtd select(): int { return 2; }",
+                "private mtd select(): int { return 2; }",
+                "async mtd select(): int { return 2; }",
+                "mtd select(): int { return 2; }",
+                "mtd [Symbol.iterator](): int { return 2; }",
+                "final int other = 2"
+        }) {
+            String invalid = "define class C as final int count = 1 " + next + " end";
+            assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(invalid), invalid);
+        }
+
+        Ast.ClassDecl klass = assertInstanceOf(Ast.ClassDecl.class,
+                Parser.parse("""
+                        define class C as
+                            final int count = 1;
+                            pub mtd select(): int { return 2; }
+                            final int other = 3
+                            private mtd [Symbol.iterator](): int { return 4; }
+                        end
+                        """).modules().getFirst().declarations().getFirst());
+        assertEquals(2, klass.fields().size());
+        assertEquals(2, klass.methods().size());
+    }
+
 }
