@@ -507,6 +507,118 @@ class PrivateCiV3Test(unittest.TestCase):
             with self.assertRaisesRegex(v3.Denied, "identity/state"):
                 v3.verify_source_pr(1482, "8" * 40)
 
+    def test_authorize_write_rejects_source_identity_or_privacy_flip(self):
+        """One invalid live source metadata field denies before another Git write."""
+        carrier = contract()
+        live_carrier = {
+            "id": carrier["repository_id"],
+            "full_name": "trusted/ci",
+            "private": True,
+            "visibility": "private",
+            "archived": False,
+            "disabled": False,
+            "fork": False,
+            "default_branch": "main",
+        }
+        source = {
+            "id": v3.SOURCE_REPOSITORY_ID,
+            "full_name": v3.legacy.SOURCE_REPO,
+            "private": True,
+            "visibility": "private",
+            "archived": False,
+            "disabled": False,
+            "fork": False,
+        }
+        bad_states = (
+            ("public", {"private": False, "visibility": "public"}),
+            ("internal", {"private": True, "visibility": "internal"}),
+            ("replaced-id", {"id": v3.SOURCE_REPOSITORY_ID + 1}),
+            ("malformed-id", {"id": True}),
+            ("renamed", {"full_name": "elsewhere/renamed"}),
+            ("archived", {"archived": True}),
+            ("disabled", {"disabled": True}),
+            ("fork", {"fork": True}),
+            ("missing-disabled", {"disabled": None}),
+        )
+        source_route = "repos/" + v3.legacy.SOURCE_REPO
+        for label, mutation in bad_states:
+            with self.subTest(label=label):
+                attempted = []
+                state = dict(source, **mutation)
+
+                def api(route, method="GET", payload=None):
+                    attempted.append((route, method))
+                    if route != source_route or method != "GET" or payload is not None:
+                        raise AssertionError("unexpected source export operation")
+                    return state
+
+                with (
+                    patch.object(v3.legacy, "require_resolved_blocking_incidents"),
+                    patch.object(
+                        v3.legacy, "checked_policy_approval",
+                        return_value=(POLICY, carrier["repository_id"]),
+                    ),
+                    patch.object(
+                        v3.legacy, "checked_repo", return_value=live_carrier,
+                    ),
+                    patch.object(v3.legacy, "gh_api", side_effect=api),
+                ):
+                    with self.assertRaisesRegex(
+                        v3.Denied, "source repository identity/state"
+                    ):
+                        v3.authorize_write(
+                            Path("."), "trusted/ci", POLICY, carrier
+                        )
+                self.assertEqual(attempted, [(source_route, "GET")])
+
+    def test_authorize_write_rejects_source_flip_after_initial_success(self):
+        """A source that becomes nonprivate mid-batch cannot authorize the next blob."""
+        carrier = contract()
+        live_carrier = {
+            "id": carrier["repository_id"],
+            "full_name": "trusted/ci",
+            "private": True,
+            "visibility": "private",
+            "archived": False,
+            "disabled": False,
+            "fork": False,
+            "default_branch": "main",
+        }
+        source = {
+            "id": v3.SOURCE_REPOSITORY_ID,
+            "full_name": v3.legacy.SOURCE_REPO,
+            "private": True,
+            "visibility": "private",
+            "archived": False,
+            "disabled": False,
+            "fork": False,
+        }
+        source_reads = []
+
+        def source_api(route, method="GET", payload=None):
+            if (route != "repos/" + v3.legacy.SOURCE_REPO
+                    or method != "GET" or payload is not None):
+                raise AssertionError("unexpected source export operation")
+            source_reads.append(route)
+            return (source if len(source_reads) == 1
+                    else dict(source, private=False, visibility="public"))
+
+        with (
+            patch.object(v3.legacy, "require_resolved_blocking_incidents"),
+            patch.object(
+                v3.legacy, "checked_policy_approval",
+                return_value=(POLICY, carrier["repository_id"]),
+            ),
+            patch.object(v3.legacy, "checked_repo", return_value=live_carrier),
+            patch.object(v3.legacy, "gh_api", side_effect=source_api),
+        ):
+            v3.authorize_write(Path("."), "trusted/ci", POLICY, carrier)
+            with self.assertRaisesRegex(
+                v3.Denied, "source repository identity/state"
+            ):
+                v3.authorize_write(Path("."), "trusted/ci", POLICY, carrier)
+        self.assertEqual(len(source_reads), 2)
+
     def test_authorize_write_rechecks_carrier_eligibility(self):
         carrier = contract()
         ineligible = {
