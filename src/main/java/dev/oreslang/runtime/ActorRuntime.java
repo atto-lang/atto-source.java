@@ -462,6 +462,16 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicLong privateMemoryBytes = new AtomicLong();
     private final AtomicLong sharedMemoryBytes = new AtomicLong();
+    /**
+     * Runtime-owned Channels/select registrations use a private admission
+     * domain so one ActorRuntime cannot consume another runtime's normal
+     * retained-select budget. This is accounting authority, not a scheduler.
+     */
+    private final ChannelRuntime.AdmissionDomain channelAdmissionDomain =
+            new ChannelRuntime.AdmissionDomain(
+                    "actor-runtime-" + UUID.randomUUID(),
+                    ChannelRuntime.DEFAULT_MAX_PENDING_SELECTS,
+                    ChannelRuntime.DEFAULT_MAX_PENDING_SELECT_ARMS);
     private final Object memoryBudgetLock = new Object();
     private final Object runtimeLifecycleLock = new Object();
     private final Set<SyncCell<?>> syncCells = ConcurrentHashMap.newKeySet();
@@ -582,6 +592,11 @@ public final class ActorRuntime implements AutoCloseable {
     public IsolatePolicy policyCeiling() { return policyCeiling; }
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
     public int maxActors() { return dispatcherConfig.maxActors(); }
+
+    /** Package-private capability for runtime-owned Channel construction. */
+    ChannelRuntime.AdmissionDomain channelAdmissionDomain() {
+        return channelAdmissionDomain;
+    }
 
     /** Total overrun detections, including notices dropped from the bounded queue. */
     public long watchdogOverruns() {
@@ -3293,7 +3308,8 @@ public final class ActorRuntime implements AutoCloseable {
             }
             this.mailman = mailman;
             this.cooperativeMailman = cooperativeMailman;
-            this.outbox = new ChannelRuntime.Channel<>(outboxCapacity);
+            this.outbox = new ChannelRuntime.Channel<>(
+                    outboxCapacity, channelAdmissionDomain);
         }
 
         private final class PendingMailmanTask {
@@ -6882,6 +6898,17 @@ public final class ActorRuntime implements AutoCloseable {
             snapshot = List.copyOf(actors.values());
         }
         for (ActorCell<?> cell : snapshot) cell.stop();
+        RuntimeException channelAdmissionFailure = null;
+        if (firstClose) {
+            try {
+                channelAdmissionDomain.close(
+                        new IllegalStateException("ActorRuntime is closing"));
+            } catch (RuntimeException failure) {
+                // Domain close may publish host/runtime Future callbacks. Never
+                // let one observer prevent dispatcher/actor physical teardown.
+                channelAdmissionFailure = failure;
+            }
+        }
         if (firstClose && physicalTurnGate != null) physicalTurnGate.close();
 
         if (firstClose) {
@@ -6957,13 +6984,18 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 }
             }
-            throw new IllegalStateException(
+            IllegalStateException terminationFailure = new IllegalStateException(
                     "ActorRuntime close did not observe full actor termination/carrier exit: "
                             + stillRunning.size() + " actor(s) still running, dispatchersTerminated="
                             + dispatchersTerminated);
+            if (channelAdmissionFailure != null) {
+                terminationFailure.addSuppressed(channelAdmissionFailure);
+            }
+            throw terminationFailure;
         }
         actors.clear();
         actorCount.set(0);
+        if (channelAdmissionFailure != null) throw channelAdmissionFailure;
     }
 
     private ExecutorService dispatcherFor(ActorKind kind) {
@@ -7122,8 +7154,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ArrayList<DrainWaiter> pendingDrains = new ArrayList<>();
         private ActorInboxMail<M> activeMail;
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
-        private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
-                new ChannelRuntime.Channel<>(INTERNAL_CONTINUATION_SLOTS);
+        private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox;
         /** True while one source receive owns actor state across suspension. */
         private boolean sourceReceiveSuspended;
         private final Object lifecycleLock = new Object();
@@ -7189,13 +7220,17 @@ public final class ActorRuntime implements AutoCloseable {
             this.codeExecutor = codeExecutor;
             this.codeActorType = codeActorType;
             this.parent = parent;
+            this.continuationMailbox = new ChannelRuntime.Channel<>(
+                    INTERNAL_CONTINUATION_SLOTS, channelAdmissionDomain);
             int mailboxCapacity = policy.maxMailboxMessages() >
                             Integer.MAX_VALUE - INTERNAL_CONTINUATION_SLOTS
                     ? Integer.MAX_VALUE
                     : policy.maxMailboxMessages() + INTERNAL_CONTINUATION_SLOTS;
-            this.mailbox = new ChannelRuntime.Channel<>(mailboxCapacity);
+            this.mailbox = new ChannelRuntime.Channel<>(
+                    mailboxCapacity, channelAdmissionDomain);
             this.outputChannel = new ChannelRuntime.Channel<>(
-                    Math.max(1, policy.maxMailboxMessages()));
+                    Math.max(1, policy.maxMailboxMessages()),
+                    channelAdmissionDomain);
             this.outputStream = new ActorOutputStream<>(
                     ref.id(), outputChannel);
             ref.outputStream = outputStream;
