@@ -6131,6 +6131,20 @@ public final class TypeChecker {
         return false;
     }
 
+    private boolean boundedErrorGuardOrderingType(Type type) {
+        Type value = deref(type);
+        if (value instanceof Union union) {
+            return union.options().stream().allMatch(this::boundedErrorGuardOrderingType);
+        }
+        // A string comparison can scan arbitrarily long contents. Decimal
+        // comparisons may use variable-size numeric encodings. Do not silently
+        // certify them or unknown/custom comparators as bounded observations.
+        // INT is preserved for existing guards such as "attempts > 0", but
+        // bigint currently resolves to INT too: it is NOT a hard realtime proof.
+        // Track that separate precision/cost contract in issue #1994.
+        return value == Primitive.INT || value == Primitive.FLOAT;
+    }
+
     private boolean boundedErrorGuardRuntimeType(Ast.TypeRef target) {
         // Nominal type tags are bounded observations. In contrast,
         // oresTypeMatches recursively examines structural records/tuples.
@@ -6161,6 +6175,11 @@ public final class TypeChecker {
             if (Set.of("==", "!=", "eq", "neq").contains(binary.operator())
                     && (!boundedErrorGuardEqualityType(typeOf(binary.left(), env, generics, self))
                         || !boundedErrorGuardEqualityType(typeOf(binary.right(), env, generics, self)))) {
+                return false;
+            }
+            if (Set.of("<", "<=", ">", ">=").contains(binary.operator())
+                    && (!boundedErrorGuardOrderingType(typeOf(binary.left(), env, generics, self))
+                        || !boundedErrorGuardOrderingType(typeOf(binary.right(), env, generics, self)))) {
                 return false;
             }
             return boundedErrorGuardComparisons(binary.left(), env, generics, self)
