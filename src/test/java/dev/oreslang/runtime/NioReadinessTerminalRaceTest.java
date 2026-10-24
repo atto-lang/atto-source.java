@@ -43,6 +43,10 @@ final class NioReadinessTerminalRaceTest {
                     ready.start();
                     start.countDown();
                     assertTrue(finished.await(5, TimeUnit.SECONDS));
+                    cancel.join(3_000L);
+                    ready.join(3_000L);
+                    assertFalse(cancel.isAlive());
+                    assertFalse(ready.isAlive());
                     if (failure.get() != null) fail("terminal racer failed", failure.get());
                     long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
                     while ((group.pendingCount() != 0 || group.pendingNotifications() != 0)
@@ -52,6 +56,8 @@ final class NioReadinessTerminalRaceTest {
                     assertEquals(0, group.pendingCount(), "watch leaked in round " + round);
                     assertEquals(0, group.pendingNotifications(),
                             "notification reservation leaked in round " + round);
+                    assertEquals(0, group.stagedNotificationCount(),
+                            "staged notification leaked in round " + round);
                 }
             }
             group.close();
