@@ -50,11 +50,11 @@ int main(int argc, char **argv) {
         if (strstr(argv[2], "private-actor-sharing-invalid.ores") != NULL) {
             if (getenv("MOCK_ACCEPT_INVALID_PRIVATE_ACTOR")) return 0;
             if (getenv("MOCK_WRONG_ACTOR_REJECTION"))
-                fputs("Oreslang parse error at 1:1: unexpected token\\n", stderr);
+                fputs("Oreslang parse error at 1:1: unexpected token\n", stderr);
             else if (getenv("MOCK_WRONG_ACTOR_CAPABILITY"))
-                fputs("Oreslang isolate denies capability NETWORK required by actor\\n", stderr);
+                fputs("Oreslang isolate denies capability NETWORK required by actor\n", stderr);
             else
-                fputs("Oreslang isolate denies capability SHARED_MEMORY required by SharedMutex<T>\\n", stderr);
+                fputs("Oreslang isolate denies capability SHARED_MEMORY required by SharedMutex<T>\n", stderr);
             return 1;
         }
         if (strstr(argv[2], "shared-private-actor-isolation.ores") != NULL) {
