@@ -3939,8 +3939,9 @@ public final class Parser {
                 case RBRACE -> nestedBraces--;
                 default -> { }
             }
-            if (nestedParens > maximumDepth || nestedBrackets > maximumDepth
-                    || nestedBraces > maximumDepth) {
+            // Alternating () [] {} must not multiply the effective recursion
+            // ceiling: bound the aggregate nesting depth, not each family.
+            if (nestedParens + nestedBrackets + nestedBraces > maximumDepth) {
                 throw error(tokens.get(index),
                         "MODEL_EXPRESSION_BUDGET: " + where
                                 + " exceeds " + maximumDepth + " nested delimiters");
