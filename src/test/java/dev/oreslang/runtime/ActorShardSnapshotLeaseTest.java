@@ -46,6 +46,17 @@ final class ActorShardSnapshotLeaseTest {
             assertNotNull(copies);
             assertEquals(1000, copies.size());
             assertEquals(62.0, copies.get(999).read(31));
+            double[] copied = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+                    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+                    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+                    -1, -1, -1, -1};
+            copies.get(999).copyInto(copied, 1);
+            assertEquals(-1.0, copied[0]);
+            assertEquals(0.0, copied[1]);
+            assertEquals(62.0, copied[32]);
+            assertEquals(-1.0, copied[33]);
+            assertThrows(IndexOutOfBoundsException.class,
+                    () -> copies.get(999).copyInto(copied, 3));
             CountDownLatch foreignDone = new CountDownLatch(1);
             AtomicReference<Throwable> foreignFailure = new AtomicReference<>();
             ActorRuntime.ActorRef<Integer> foreign = runtime.spawnSharedTrusted(
@@ -53,6 +64,8 @@ final class ActorShardSnapshotLeaseTest {
                         try {
                             assertThrows(SecurityException.class, () -> copies.get(999).read(0));
                             assertThrows(SecurityException.class, () -> copies.get(999).length());
+                            assertThrows(SecurityException.class,
+                                    () -> copies.get(999).copyInto(new double[32], 0));
                             assertThrows(SecurityException.class, () -> copies.get(999).close());
                         } catch (Throwable error) {
                             foreignFailure.set(error);
