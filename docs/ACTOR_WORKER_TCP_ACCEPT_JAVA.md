@@ -59,8 +59,11 @@ this document does not claim that test has yet passed.
    FD. The context owns at most four listeners in this experimental slice.
 4. STOP seals the registry, closes every actor-owned listener **outside** the
    actor lifecycle monitor, and waits for each `closeAsync` Future before
-   publishing actor DONE or reclaiming its memory region. Close encompasses
-   pending accept cancellation, accepted connections and outstanding I/O.
+   publishing actor DONE or reclaiming its memory region. Close now joins
+   the actual per-channel NIO Selector watch and accept/read/write pump leases,
+   not merely the cancelled public Future. Retiring accepted connections
+   remain charged against the listener's `max_connections` bound until physical
+   release. This does not replace sanitizer and adversarial stress validation.
 5. The VM selector is shared across listeners; one active accept lease per
    listening socket. Inbound traffic does not imply round-robin distribution
    across workers, and the reactor never executes guest callbacks.
@@ -91,7 +94,7 @@ this document does not claim that test has yet passed.
 
 ## Gates before release
 
-- JDK25 Maven `-Dtest=SourceActorWorkerAcceptTest,ActorOwnedNioListenerLifecycleTest,VmNioWorkerReusePortTest test`.
+- JDK25 Maven `-Dtest=SourceActorWorkerAcceptTest,ActorOwnedNioListenerLifecycleTest,NioChannelPhysicalRetirementTest,VmNioWorkerReusePortTest,VmNioTcpListenerTest test`.
 - Executed, nonempty exact-PR-head BUILD/TEST steps (not merely GitHub's
   workflow failure record), then repeated concurrent stress, actor STOP
   cancellation races, foreign actor denial, and leak accounting.
