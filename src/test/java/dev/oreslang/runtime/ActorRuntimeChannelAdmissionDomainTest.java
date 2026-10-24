@@ -1,0 +1,116 @@
+package dev.oreslang.runtime;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+@Timeout(20)
+final class ActorRuntimeChannelAdmissionDomainTest {
+    @Test
+    void actorOutputWaitersAreChargedOnlyToTheirOwningRuntime() throws Exception {
+        try (ActorRuntime left = new ActorRuntime();
+             ActorRuntime right = new ActorRuntime()) {
+            ActorRuntime.ActorRef<Integer> leftActor =
+                    left.spawnShared(() -> (message, context) -> { });
+            ActorRuntime.ActorRef<Integer> rightActor =
+                    right.spawnShared(() -> (message, context) -> { });
+
+            OresFuture<GeneratorRuntime.Step<ActorRuntime.ActorOutput<Object>>> leftWait =
+                    leftActor.outputs().next();
+            assertFalse(leftWait.isDone());
+            assertEquals(1, left.channelAdmissionDomain().pendingSelections());
+            assertEquals(0, right.channelAdmissionDomain().pendingSelections());
+
+            OresFuture<GeneratorRuntime.Step<ActorRuntime.ActorOutput<Object>>> rightWait =
+                    rightActor.outputs().next();
+            assertFalse(rightWait.isDone());
+            assertEquals(1, left.channelAdmissionDomain().pendingSelections());
+            assertEquals(1, right.channelAdmissionDomain().pendingSelections());
+
+            assertTrue(leftWait.cancel(false));
+            assertEquals(0, left.channelAdmissionDomain().pendingSelections());
+            assertEquals(1, right.channelAdmissionDomain().pendingSelections());
+
+            assertTrue(rightWait.cancel(false));
+            assertEquals(0, right.channelAdmissionDomain().pendingSelections());
+
+            leftActor.stop();
+            rightActor.stop();
+            leftActor.getDone().get(5, TimeUnit.SECONDS);
+            rightActor.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void eventBusAsyncReadsUseOwningActorRuntimeDomain() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability join = group.joinCapability();
+            group.events().defineTopic(
+                    "updates", ActorEventBus.DeliveryPolicy.RELIABLE, 1);
+
+            CountDownLatch checked = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            ActorRuntime.ActorRef<Integer> subscriber =
+                    runtime.spawnShared(() -> (message, context) -> {
+                        try {
+                            join.join();
+                            ActorEventBus.Subscription<Integer> subscription =
+                                    group.events().subscribe("updates");
+                            OresFuture<ActorEventBus.Event<Integer>> pending =
+                                    subscription.readAsync();
+                            assertFalse(pending.isDone());
+                            assertEquals(
+                                    1,
+                                    context.runtime()
+                                            .channelAdmissionDomain()
+                                            .pendingSelections(),
+                                    "subscription waiter must charge its ActorRuntime domain");
+                            assertTrue(pending.cancel(false));
+                            assertEquals(
+                                    0,
+                                    context.runtime()
+                                            .channelAdmissionDomain()
+                                            .pendingSelections());
+                        } catch (Throwable problem) {
+                            failure.set(problem);
+                        } finally {
+                            checked.countDown();
+                        }
+                    });
+
+            subscriber.send(1);
+            assertTrue(checked.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            subscriber.stop();
+            subscriber.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void runtimeClosePublishesOutputTerminalBeforeClosingAdmissionDomain() throws Exception {
+        ActorRuntime runtime = new ActorRuntime();
+        ActorRuntime.ActorRef<Integer> actor =
+                runtime.spawnShared(() -> (message, context) -> { });
+        OresFuture<GeneratorRuntime.Step<ActorRuntime.ActorOutput<Object>>> pending =
+                actor.outputs().next();
+
+        assertFalse(pending.isDone());
+        assertEquals(1, runtime.channelAdmissionDomain().pendingSelections());
+
+        runtime.close();
+
+        GeneratorRuntime.Step<ActorRuntime.ActorOutput<Object>> terminal =
+                pending.get(5, TimeUnit.SECONDS);
+        assertTrue(terminal.done(),
+                "normal actor output closure must win before the residual domain fence");
+        assertTrue(runtime.channelAdmissionDomain().isClosed());
+        assertEquals(0, runtime.channelAdmissionDomain().pendingSelections());
+        assertEquals(0, runtime.channelAdmissionDomain().pendingArms());
+    }
+}
