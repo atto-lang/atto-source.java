@@ -122,11 +122,15 @@ fi
 # A parse error, missing import, or crash is NOT proof of private-actor
 # isolation. Only the expected capability-denial diagnostic establishes that
 # the linked checker reached and enforced the protected actor boundary.
-if invalid_actor_diagnostic="$(
+# OresMain returns status 1 for rejected --check admission. A crash
+# (signal status) or CLI usage failure (2) is not a capability-denial proof.
+invalid_actor_status=0
+invalid_actor_diagnostic="$(
   unset JAVA_HOME CLASSPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS
   "$executable" --check examples/private-actor-sharing-invalid.ores 2>&1
-)"; then
-  echo "native linked admission accepted private actor sharing violations" >&2
+)" || invalid_actor_status=$?
+if [ "$invalid_actor_status" -ne 1 ]; then
+  echo "expected private actor capability denial with CLI status 1, got $invalid_actor_status" >&2
   exit 1
 fi
 case "$invalid_actor_diagnostic" in
