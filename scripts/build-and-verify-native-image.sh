@@ -80,9 +80,31 @@ fi
 
 # Exercise a REAL .ores file and packaged stdlib with Java build environment
 # variables removed. Only a successful native build plus execution passes.
-(
+# Admission must NEVER execute the guest entry point. The same callables
+# fixture prints 120:9:13 when executed, but --check must emit no guest output.
+check_output="$(
   unset JAVA_HOME CLASSPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS
   "$executable" --check examples/callables.ores
+)"
+if [ -n "$check_output" ]; then
+  echo "native --check unexpectedly emitted guest output" >&2
+  exit 1
+fi
+
+# Running the checked source must execute its main routine. In addition to
+# the stdlib test below, verify factorial, lexical and nlexical closures.
+callables_output="$(
+  unset JAVA_HOME CLASSPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS
+  "$executable" "--mode=$mode" examples/callables.ores
+)"
+if [ "$callables_output" != '120:9:13' ]; then
+  echo "native callables guest output differs from expected value" >&2
+  exit 1
+fi
+printf '%s\n' "$callables_output"
+
+(
+  unset JAVA_HOME CLASSPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS
   "$executable" "--mode=$mode" examples/together.ores
 )
 
