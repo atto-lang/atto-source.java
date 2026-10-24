@@ -22,39 +22,43 @@ function symbol `$mtd$Type$name`. The typechecker authorizes method syntax
 by retaining the named alias at explicit type-binding sites. A raw `int`
 cannot acquire `Code` methods by accident. Instance-call dispatch is
 compile-time; no virtual table, object allocation or implicit conversion
-is implied. The current native LLVM compiler has **not** implemented
-this extension dispatch contract.
+is implied. The native LLVM companion PR now contains source-level static extension-call
+lowering with receiver-first ABI reuse and an LLVM/Clang executable gate. That
+work remains **unverified** because the latest hosted workflow created zero
+jobs, so it is not yet parity evidence.
 
 `declare` and `define` are synonymous **only for complete type
 declarations**: `declare type Code = int;` and `define type Code = int;`.
 Neither introduces an opaque forward type, and neither changes the extension
 method receiver identity.
 
-## Zorde and `with` refinements: required integration, not yet a claim
+## Zorde and `with` refinements: compiler descriptor v1
 
-Proposed constrained example:
+The compiler now accepts the first bounded descriptor slice:
 
 ```oreslang
 declare type Code = int with min 0 and max 5;
 ```
 
-Zorde must consume the compiler's normalized checked constraint
-descriptor, not independently parse or reinterpret `with` clauses.
-No `Zorde.parse` implementation or schema format is claimed here.
-A future shared descriptor should include at minimum:
+`TypeChecker.checkTypesWithDiagnostics(...).constraintDescriptors()`
+returns a compiler-owned `TypeConstraintDescriptors.Catalog`. Schema v1 is
+`ores.type-constraint.v1` and currently admits only inclusive signed-i64
+`min` / `max` predicates on non-generic direct `int` / `i64` aliases.
+The compiler canonicalizes predicate order, emits deterministic error IDs,
+records the stable qualified type name and `i64` representation, and computes
+a SHA-256 compatibility fingerprint over the canonical descriptor.
 
-- Stable nominal qualified type name and underlying primitive representation
-- Normalized range/length/case/character predicates and their parameters
-- Constraint-composition rules and deterministic validation error identities
-- Provenance of validation: construction, checked conversion or compiler proof
-- Schema/descriptor version and compatibility fingerprint across backends
+Zorde should consume this catalog directly rather than parsing or
+reinterpreting source `with` clauses. The descriptor is intentionally a data
+contract only: there is still no `Zorde.parse` adapter, checked conversion,
+or runtime provenance bridge in this PR.
 
-**Security invariant:** extension methods on constrained `Code` may assume
-that `self` has passed validation only if every route producing `Code`
-checks or proves its constraints. Aliases must never allow an unchecked
-`int -> Code` conversion or generic erasure that fabricates validated
-type evidence. Extension receivers remain immutable by default;
-future mutable methods must revalidate post-mutation invariants.
+**Security invariant:** constrained aliases cannot enter a runtime value path
+yet. Type checking fails with `CONSTRAINT_VALIDATION_BRIDGE_REQUIRED` rather
+than treating an unchecked `int` as validated `Code`. This includes
+extension receiver paths, so an extension method cannot assume `min/max`
+until checked conversion or compiler proof supplies validation provenance.
+Future mutable constrained values must revalidate post-mutation invariants.
 
 ## Admission boundaries and backend work
 
