@@ -21,6 +21,7 @@ public final class Parser {
     private final List<Token> tokens;
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
+    private boolean maxActorThreadsEnumDeclared;
     private boolean suppressRefinementOperators;
     // A match guard's outer '->' delimits an arm, not a lambda that happens
     // to follow a parenthesized guard expression.
@@ -146,6 +147,13 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                if (match(ENUM)) {
+                    if (!annotations.isEmpty())
+                        throw error(previous(), "built-in MaxActorThreads enum cannot have annotations");
+                    validateOnlyVisibilityModifiers(modifiers, "built-in MaxActorThreads enum");
+                    parseBuiltInMaxActorThreadsEnum();
+                    continue;
+                }
                 ActorPrefix actorPrefix = parseActorPrefix();
                 if (match(ACTOR, ISOACTOR)) {
                     rootDeclarations.add(parseDefinedActorClass(previous(), modifiers, annotations, actorPrefix));
@@ -367,6 +375,13 @@ public final class Parser {
 
         if (match(DEFINE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
+            if (match(ENUM)) {
+                if (!annotations.isEmpty())
+                    throw error(previous(), "built-in MaxActorThreads enum cannot have annotations");
+                validateOnlyVisibilityModifiers(modifiers, "built-in MaxActorThreads enum");
+                parseBuiltInMaxActorThreadsEnum();
+                return null;
+            }
             ActorPrefix actorPrefix = parseActorPrefix();
             if (match(ACTOR, ISOACTOR)) {
                 return parseDefinedActorClass(previous(), modifiers, annotations, actorPrefix);
@@ -442,8 +457,9 @@ public final class Parser {
                 throw error(actorToken, "actor class declarations accept only visibility and actor-kind modifiers");
             }
             rejectCallableStructuralAnnotation(annotations, "actor class declarations");
-            rejectDiscardedDeclarationAnnotations(annotations, "actor class declarations");
-            return parseActorClass(actorKind, modifiers.visibility);
+            Ast.MaxActorThreads maxThreads = actorMaxThreads(annotations);
+            return parseActorClass(
+                    actorKind, modifiers.visibility, ActorPrefix.DEFAULT, maxThreads);
         }
         if (match(FNC)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
