@@ -17,6 +17,52 @@ import org.junit.jupiter.api.Timeout;
  */
 @Timeout(20)
 final class ActorPhysicalRetirementRegistryTest {
+    @Test void actorMapRemovalCannotPretendDoneWhileFinalizedObserverIsBlocked()
+            throws Exception {
+        var observerEntered = new CountDownLatch(1);
+        var allowObserverExit = new CountDownLatch(1);
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> { });
+            // Intentionally observe the private runtime-only finalizedFuture:
+            // ordinary ActorRef consumers cannot register this callback.
+            var actorsField = ActorRuntime.class.getDeclaredField("actors");
+            actorsField.setAccessible(true);
+            var active = (java.util.Map<?, ?>) actorsField.get(runtime);
+            Object cell = active.get(actor.id());
+            assertNotNull(cell, "actor incarnation must still be live");
+            var finalizedField = cell.getClass().getDeclaredField("finalizedFuture");
+            finalizedField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            var finalized = (OresFuture<Void>) finalizedField.get(cell);
+            finalized.whenCompleteRuntime((ignored, failure) -> {
+                observerEntered.countDown();
+                while (allowObserverExit.getCount() != 0) {
+                    try { allowObserverExit.await(20, TimeUnit.MILLISECONDS); }
+                    catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(interrupted);
+                    }
+                }
+            });
+            Thread stop = Thread.ofVirtual().start(actor::cancel);
+            try {
+                assertTrue(observerEntered.await(3, TimeUnit.SECONDS));
+                assertFalse(active.containsKey(actor.id()),
+                        "the actor is removed before the final internal subscriber exits");
+                assertFalse(actor.done().isDone(),
+                        "external DONE must remain pending behind that subscriber");
+                assertFalse(actor.awaitTermination(75, TimeUnit.MILLISECONDS),
+                        "removal from actors cannot be mistaken for completed physical STOP");
+            } finally {
+                allowObserverExit.countDown();
+                stop.join(3_000);
+            }
+            assertFalse(stop.isAlive());
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(actor.done().isDone());
+        }
+    }
+
     @Test void actorStopWaitsForRealPhysicalIOAndFfiReceipts() throws Exception {
         try (var runtime = new ActorRuntime()) {
             AtomicReference<ActorPhysicalRetirementRegistry.Receipt> tcp =
