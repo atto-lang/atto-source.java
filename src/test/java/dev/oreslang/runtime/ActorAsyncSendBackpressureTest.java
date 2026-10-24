@@ -182,6 +182,117 @@ final class ActorAsyncSendBackpressureTest {
     }
 
     @Test
+    void releaseRacingWaiterRegistrationCannotLoseTheWakeup() throws Exception {
+        for (int round = 0; round < 32; round++) {
+            CountDownLatch firstEntered = new CountDownLatch(1);
+            CountDownLatch releaseFirst = new CountDownLatch(1);
+            try (ActorRuntime runtime = new ActorRuntime()) {
+                var ref = runtime.<Integer>spawnShared(oneMessagePolicy(), () -> (message, context) -> {
+                    if (message == 1) {
+                        firstEntered.countDown();
+                        if (!releaseFirst.await(5, TimeUnit.SECONDS)) {
+                            throw new AssertionError("held actor turn timed out");
+                        }
+                    }
+                });
+
+                ref.send(1);
+                assertTrue(firstEntered.await(5, TimeUnit.SECONDS));
+                ref.send(2);
+
+                AtomicReference<OresFuture<Void>> pending = new AtomicReference<>();
+                AtomicReference<Throwable> producerFailure = new AtomicReference<>();
+                CountDownLatch producerStarted = new CountDownLatch(1);
+                Thread producer = new Thread(() -> {
+                    producerStarted.countDown();
+                    try {
+                        pending.set(ref.sendAsync(3));
+                    } catch (Throwable failure) {
+                        producerFailure.set(failure);
+                    }
+                }, "async-send-registration-race-" + round);
+                producer.start();
+                assertTrue(producerStarted.await(5, TimeUnit.SECONDS));
+
+                // Intentionally race freeing the only USER slot against the
+                // producer's full-check/snapshot/registration path.
+                releaseFirst.countDown();
+                producer.join(5_000);
+                assertFalse(producer.isAlive());
+                assertNull(producerFailure.get());
+
+                OresFuture<Void> admitted = pending.get();
+                assertNotNull(admitted);
+                admitted.get(5, TimeUnit.SECONDS);
+                ref.drain().get(5, TimeUnit.SECONDS);
+                ref.stop();
+                ref.getDone().get(5, TimeUnit.SECONDS);
+            } finally {
+                releaseFirst.countDown();
+            }
+        }
+    }
+
+    @Test
+    void pendingSendObserversNeverRunUnderActorAdmissionLocks() throws Exception {
+        CountDownLatch firstEntered = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        CountDownLatch callbackObserved = new CountDownLatch(1);
+        AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<Integer>spawnShared(oneMessagePolicy(), () -> (message, context) -> {
+                if (message == 1) {
+                    firstEntered.countDown();
+                    if (!releaseFirst.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("held actor turn timed out");
+                    }
+                }
+            });
+            ref.send(1);
+            assertTrue(firstEntered.await(5, TimeUnit.SECONDS));
+            ref.send(2);
+
+            var actorsField = ActorRuntime.class.getDeclaredField("actors");
+            actorsField.setAccessible(true);
+            var actors = (java.util.Map<?, ?>) actorsField.get(runtime);
+            Object cell = actors.get(ref.id());
+            assertNotNull(cell);
+            var lifecycleField = cell.getClass().getDeclaredField("lifecycleLock");
+            lifecycleField.setAccessible(true);
+            Object lifecycleLock = lifecycleField.get(cell);
+            var accountingField = cell.getClass().getDeclaredField("mailboxAccountingLock");
+            accountingField.setAccessible(true);
+            Object accountingLock = accountingField.get(cell);
+
+            OresFuture<Void> pending = ref.sendAsync(3);
+            assertFalse(pending.isDone());
+            pending.whenCompleteRuntime((ignored, failure) -> {
+                try {
+                    if (failure != null) throw new AssertionError("unexpected async-send failure", failure);
+                    assertFalse(Thread.holdsLock(lifecycleLock),
+                            "async-send observer ran under actor lifecycleLock");
+                    assertFalse(Thread.holdsLock(accountingLock),
+                            "async-send observer ran under mailboxAccountingLock");
+                } catch (Throwable assertion) {
+                    callbackFailure.set(assertion);
+                } finally {
+                    callbackObserved.countDown();
+                }
+            });
+
+            releaseFirst.countDown();
+            assertTrue(callbackObserved.await(5, TimeUnit.SECONDS));
+            assertNull(callbackFailure.get());
+            ref.drain().get(5, TimeUnit.SECONDS);
+            ref.stop();
+            ref.getDone().get(5, TimeUnit.SECONDS);
+        } finally {
+            releaseFirst.countDown();
+        }
+    }
+
+    @Test
     void serialActorCannotAwaitCapacityThatOnlyItsOwnTurnCanRelease() throws Exception {
         CountDownLatch diagnosed = new CountDownLatch(1);
         AtomicReference<Throwable> unexpected = new AtomicReference<>();
