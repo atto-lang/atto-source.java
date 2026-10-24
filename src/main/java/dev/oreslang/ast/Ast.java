@@ -718,7 +718,7 @@ public final class Ast {
     public enum BindingKind { CONST, VAL, LET }
 
     public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
-            TerminalEffectStmt, BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
+            TerminalEffectStmt, BlockStmt, UsingBorrowStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
             ForOfStmt, ForOfDestructureStmt, ForStmt, DoWhileStmt, LoopStmt, SelectStmt { }
 
     public enum TerminalEffectKind { THROW, RAISE, PANIC }
