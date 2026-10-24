@@ -588,14 +588,26 @@ def verify_source_pr(source_pr, source_commit):
     pr = legacy.gh_api(f"repos/{legacy.SOURCE_REPO}/pulls/{source_pr}")
     head = pr.get("head")
     base = pr.get("base")
-    if (pr.get("number") != source_pr
+    # A matching slug is not sufficient: bind BOTH sides of the PR to the
+    # exact immutable source repository ID, including after a rename/recreate
+    # or a malformed/missing GitHub API field. Cross-repo PRs are not allowed.
+    head_repo = head.get("repo") if isinstance(head, dict) else None
+    base_repo = base.get("repo") if isinstance(base, dict) else None
+    if (type(pr.get("number")) is not int
+            or pr.get("number") != source_pr
             or pr.get("state") != "open"
             or not isinstance(head, dict)
             or head.get("sha") != source_commit
-            or not isinstance(head.get("repo"), dict)
-            or head["repo"].get("full_name") != legacy.SOURCE_REPO
+            or not isinstance(head_repo, dict)
+            or head_repo.get("full_name") != legacy.SOURCE_REPO
+            or type(head_repo.get("id")) is not int
+            or head_repo.get("id") != SOURCE_REPOSITORY_ID
             or not isinstance(base, dict)
-            or base.get("ref") != legacy.SOURCE_PROTECTED_BRANCH):
+            or base.get("ref") != legacy.SOURCE_PROTECTED_BRANCH
+            or not isinstance(base_repo, dict)
+            or base_repo.get("full_name") != legacy.SOURCE_REPO
+            or type(base_repo.get("id")) is not int
+            or base_repo.get("id") != SOURCE_REPOSITORY_ID):
         raise Denied("source commit is not the exact open PR head against main")
     return repo_id
 
