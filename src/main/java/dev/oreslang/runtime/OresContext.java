@@ -68,7 +68,7 @@ public final class OresContext implements AutoCloseable {
         if (env.isHostObject(value)) {
             Object host = env.asHostObject(value);
             if (host instanceof ChannelRuntime.Channel<?> channel) {
-                if (!channel.belongsTo(channelAdmissionDomain)) {
+                if (!channel.belongsTo(channelAdmissionDomain())) {
                     throw new SecurityException(
                             "host Channel belongs to another OresContext admission domain");
                 }
@@ -153,8 +153,19 @@ public final class OresContext implements AutoCloseable {
     public PrintWriter output() { return output; }
     public OresVM vm() { return vm; }
     public ActorRuntime actors() { return actors; }
+
+    /**
+     * Effective source Channel/select admission domain. Root/context work uses
+     * the context budget; actor turns use the owning actor's isolated budget.
+     */
     public ChannelRuntime.AdmissionDomain channelAdmissionDomain() {
-        return channelAdmissionDomain;
+        ActorRuntime current = ActorRuntime.currentActorRuntime();
+        if (current == null) return channelAdmissionDomain;
+        if (current != actors) {
+            throw new SecurityException(
+                    "source Channel admission crossed OresContext ActorRuntime ownership");
+        }
+        return actors.currentSourceChannelAdmissionDomain();
     }
     public AsyncRuntime asyncRuntime() { return asyncRuntime; }
     public RuntimeGarbageCollector garbageCollector() { return garbageCollector; }
