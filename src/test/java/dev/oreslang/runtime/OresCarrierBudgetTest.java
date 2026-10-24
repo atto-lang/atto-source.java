@@ -59,8 +59,8 @@ final class OresCarrierBudgetTest {
             assertTrue(budget.privateMaximum() >= 1);
             assertEquals(budget.privateMaximum(), budget.sharedMaximum());
             assertEquals(budget.privateMaximum(), budget.untrustedMaximum());
-            assertTrue(budget.lifecycleObserverMaximum() >= 1);
-            assertTrue(budget.lifecycleObserverMaximum() <= 4);
+            assertTrue(budget.lifecycleMaximum() >= 1);
+            assertTrue(budget.lifecycleMaximum() <= 4);
             assertEquals(cap, budget.allocatedCeiling());
         }
     }
