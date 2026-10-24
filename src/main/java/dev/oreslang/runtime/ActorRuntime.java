@@ -471,9 +471,14 @@ public final class ActorRuntime implements AutoCloseable {
             ConcurrentHashMap.newKeySet();
     private final IsolatePolicy policyCeiling;
     private final DispatcherConfig dispatcherConfig;
+    private final OresCarrierBudget carrierBudget;
+    private final OresCarrierPermitPool carrierPermitPool;
     private final TurnExecutor turnExecutor;
     private final ControlDispatcher controlDispatcher;
     private volatile Consumer<Object> actorExitHook = ignored -> { };
+    // NIO completion records are host-only work. They reuse actor carrier
+    // capacity but never become actor mailbox or CONTROL turns.
+    private volatile Runnable nioCompletionCapacityHook = () -> { };
 
     /**
      * Host/isolate boundary hook. Returning true means the execution domain
@@ -535,6 +540,16 @@ public final class ActorRuntime implements AutoCloseable {
             DispatcherConfig dispatcherConfig,
             TurnExecutor turnExecutor,
             ControlDispatcher controlDispatcher) {
+        this(policyCeiling, dispatcherConfig, turnExecutor, controlDispatcher, null, null);
+    }
+
+    ActorRuntime(
+            IsolatePolicy policyCeiling,
+            DispatcherConfig dispatcherConfig,
+            TurnExecutor turnExecutor,
+            ControlDispatcher controlDispatcher,
+            OresCarrierBudget carrierBudget,
+            OresCarrierPermitPool carrierPermitPool) {
         // Standalone ActorRuntime callers must not bypass OresVM's strict-GC
         // admission gate: the underlying JVM and direct-buffer cleaner still GC.
         ActorHeapAdmission.requireSupportedJvmMode(
@@ -542,6 +557,27 @@ public final class ActorRuntime implements AutoCloseable {
         long poolsPerf = CorePerf.start();
         this.policyCeiling = Objects.requireNonNull(policyCeiling);
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
+        this.carrierBudget = carrierBudget;
+        this.carrierPermitPool = carrierPermitPool;
+        if ((carrierBudget == null) != (carrierPermitPool == null)) {
+            throw new IllegalArgumentException(
+                    "carrier budget and physical permit coordinator must be configured together");
+        }
+        if (carrierBudget != null) {
+            if (!OresCarrierBudget.explicitWorkConservingJvmTopology()) {
+                throw new IllegalStateException(
+                        "global carrier budget requires explicit JVM non-affine actor topology");
+            }
+            if (carrierPermitPool.maximum() != carrierBudget.maximum()) {
+                throw new IllegalArgumentException(
+                        "physical permit coordinator maximum does not match VM carrier budget");
+            }
+            if (dispatcherConfig.privateParallelism() != carrierBudget.privateMaximum()
+                    || dispatcherConfig.sharedParallelism() != carrierBudget.sharedMaximum()) {
+                throw new IllegalArgumentException(
+                        "actor dispatcher minima do not match VM carrier budget partition");
+            }
+        }
         this.turnExecutor = Objects.requireNonNull(turnExecutor);
         this.controlDispatcher = Objects.requireNonNull(controlDispatcher);
         int physicalLimit = Integer.getInteger("ores.runtime.actor.max-active-turns", 0);
@@ -554,12 +590,29 @@ public final class ActorRuntime implements AutoCloseable {
         ExecutorService sharedPool = null;
         ExecutorService untrustedPool;
         try {
-            privatePool = newActorDispatcher(dispatcherConfig.privateParallelism(),
-                    dispatcherConfig.maxActors(), "ores-private-actor-dispatcher-");
-            sharedPool = newActorDispatcher(dispatcherConfig.sharedParallelism(),
-                    dispatcherConfig.maxActors(), "ores-shared-actor-dispatcher-");
-            untrustedPool = newActorDispatcher(Math.max(1, dispatcherConfig.privateParallelism()),
-                    dispatcherConfig.maxActors(), "ores-untrusted-actor-dispatcher-");
+            privatePool = newActorDispatcher(
+                    dispatcherConfig.privateParallelism(),
+                    dispatcherConfig.maxActors(),
+                    "ores-private-actor-dispatcher-",
+                    carrierBudget,
+                    carrierPermitPool,
+                    OresCarrierPermitPool.Domain.PRIVATE);
+            sharedPool = newActorDispatcher(
+                    dispatcherConfig.sharedParallelism(),
+                    dispatcherConfig.maxActors(),
+                    "ores-shared-actor-dispatcher-",
+                    carrierBudget,
+                    carrierPermitPool,
+                    OresCarrierPermitPool.Domain.SHARED);
+            untrustedPool = newActorDispatcher(
+                    carrierBudget == null
+                            ? Math.max(1, dispatcherConfig.privateParallelism())
+                            : carrierBudget.untrustedMaximum(),
+                    dispatcherConfig.maxActors(),
+                    "ores-untrusted-actor-dispatcher-",
+                    carrierBudget,
+                    carrierPermitPool,
+                    OresCarrierPermitPool.Domain.UNTRUSTED);
         } catch (RuntimeException | Error failure) {
             CoreLog.record(CoreLog.Level.ERROR, CoreLog.ACTOR_DISPATCHER_FAILED, 1L);
             if (privatePool != null) privatePool.shutdownNow();
@@ -582,6 +635,60 @@ public final class ActorRuntime implements AutoCloseable {
     public IsolatePolicy policyCeiling() { return policyCeiling; }
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
     public int maxActors() { return dispatcherConfig.maxActors(); }
+
+    int startedActorCarrierCount() {
+        return startedCarrierCount(privateDispatcher)
+                + startedCarrierCount(sharedDispatcher)
+                + startedCarrierCount(untrustedDispatcher);
+    }
+
+    private static int startedCarrierCount(ExecutorService executor) {
+        if (executor instanceof NativeCarrierExecutor nativePool)
+            return nativePool.getStartedCarrierCount();
+        if (executor instanceof ActorAffinityDispatcher lanes)
+            return lanes.startedCarrierCount();
+        if (executor instanceof ThreadPoolExecutor pool)
+            return pool.getPoolSize();
+        return 0;
+    }
+
+    void bindNioCompletionCapacityHook(Runnable hook) {
+        Objects.requireNonNull(hook, "hook");
+        if (closed.get()) throw new IllegalStateException("actor runtime closed");
+        nioCompletionCapacityHook = hook;
+    }
+
+    /**
+     * Host-only notification delivery for VM NIO. A selector may submit only
+     * to a verified warm carrier; cold-start/growth is delegated off-reactor by
+     * NioReadinessGroup. Guest code is never invoked on the selector thread.
+     */
+    void executeHostIoCompletion(Runnable notification) {
+        Objects.requireNonNull(notification, "notification");
+        if (closed.get()) throw new RejectedExecutionException("actor runtime closed");
+        Runnable hostOnly = () -> {
+            try {
+                OresVM.runAsNioWorker(notification);
+            } finally {
+                nioCompletionCapacityHook.run();
+            }
+        };
+
+        if (privateDispatcher instanceof ActorAffinityDispatcher lanes) {
+            lanes.executeHostOnWarmLane(hostOnly);
+        } else if (NioReadinessGroup.onReactorThread()
+                && privateDispatcher instanceof NativeCarrierExecutor nativePool) {
+            nativePool.executeWithoutBootstrap(hostOnly);
+        } else if (NioReadinessGroup.onReactorThread()
+                && privateDispatcher instanceof AdaptiveCarrierExecutor javaPool) {
+            javaPool.executeWithoutCarrierGrowth(hostOnly);
+        } else if (NioReadinessGroup.onReactorThread()) {
+            throw new RejectedExecutionException(
+                    "NIO reactor requires a verified no-bootstrap actor dispatcher");
+        } else {
+            privateDispatcher.execute(hostOnly);
+        }
+    }
 
     /** Total overrun detections, including notices dropped from the bounded queue. */
     public long watchdogOverruns() {
@@ -6979,8 +7086,26 @@ public final class ActorRuntime implements AutoCloseable {
                 || executor instanceof ActorAffinityDispatcher lanes && lanes.nativeCarriers();
     }
 
-    private static ExecutorService newActorDispatcher(int parallelism, int capacity, String prefix) {
+    private static ExecutorService newActorDispatcher(
+            int parallelism,
+            int capacity,
+            String prefix,
+            OresCarrierBudget carrierBudget,
+            OresCarrierPermitPool carrierPermitPool,
+            OresCarrierPermitPool.Domain permitDomain) {
         String mode = System.getProperty("ores.actor.affinity", "lane").trim();
+        if (carrierBudget != null) {
+            if (!mode.equals("none")) {
+                throw new IllegalStateException(
+                        "global carrier budget requires non-affine actor dispatch");
+            }
+            ThreadFactory factory = carrierPermitPool.threadFactory(permitDomain, prefix);
+            return new AdaptiveCarrierExecutor(
+                    parallelism,
+                    carrierBudget.borrowingMaximumPerDomain(),
+                    capacity,
+                    factory);
+        }
         if (mode.equals("none")) return newDispatcher(parallelism, capacity, prefix);
         if (!mode.equals("lane") && !mode.equals("cpu")) {
             throw new IllegalArgumentException("ores.actor.affinity must be lane, cpu, or none");
@@ -7033,17 +7158,16 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        ThreadPoolExecutor executor = new ThreadPoolExecutor(
+        // JVM actor workers are also demand-driven, but use the adaptive
+        // wrapper even when min=max so reactor-originated host completions can
+        // prove no-growth admission. This preserves the current fixed carrier
+        // ceiling while preventing a selector from accidentally starting a
+        // replacement worker.
+        return new AdaptiveCarrierExecutor(
                 parallelism,
                 parallelism,
-                0L,
-                TimeUnit.MILLISECONDS,
-                new ArrayBlockingQueue<>(readyQueueCapacity),
-                namedFactory(threadPrefix),
-                new ThreadPoolExecutor.AbortPolicy());
-        // JVM workers are a portability fallback, not the preferred Oreslang
-        // runtime backend. They are created lazily on first scheduled turn.
-        return executor;
+                readyQueueCapacity,
+                namedFactory(threadPrefix));
     }
 
     private static boolean isNativeCarrierPlatform() {
