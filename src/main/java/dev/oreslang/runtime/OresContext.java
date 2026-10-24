@@ -442,14 +442,29 @@ public final class OresContext implements AutoCloseable {
 
     @Override
     public void close() {
-        nativeIo.close();
-        http.close();
         RuntimeException failure = null;
+
+        // Fence new guest Channel/select admissions first. Pending selections
+        // must not survive just because an unrelated I/O subsystem throws while
+        // the context is tearing down.
         try {
             channelAdmissionDomain.close(
                     new IllegalStateException("OresContext is closing"));
         } catch (RuntimeException channelFailure) {
             failure = channelFailure;
+        }
+
+        try {
+            nativeIo.close();
+        } catch (RuntimeException nativeIoFailure) {
+            if (failure == null) failure = nativeIoFailure;
+            else failure.addSuppressed(nativeIoFailure);
+        }
+        try {
+            http.close();
+        } catch (RuntimeException httpFailure) {
+            if (failure == null) failure = httpFailure;
+            else failure.addSuppressed(httpFailure);
         }
         try {
             asyncRuntime.close();
@@ -468,15 +483,27 @@ public final class OresContext implements AutoCloseable {
         } catch (RuntimeException vmFailure) {
             if (failure == null) failure = vmFailure;
             else failure.addSuppressed(vmFailure);
-        } finally {
+        }
+
+        try {
             synchronized (this) {
                 linkedCodeUnits.clear();
                 linkedImportResolutions.clear();
                 sharedCodeImages.close();
             }
+        } catch (RuntimeException codeImageFailure) {
+            if (failure == null) failure = codeImageFailure;
+            else failure.addSuppressed(codeImageFailure);
+        }
+        try {
             garbageCollector.close();
+        } catch (RuntimeException gcFailure) {
+            if (failure == null) failure = gcFailure;
+            else failure.addSuppressed(gcFailure);
+        } finally {
             output.flush();
         }
+
         if (failure != null) throw failure;
     }
 }
