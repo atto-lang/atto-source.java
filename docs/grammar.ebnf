@@ -138,7 +138,8 @@ interface_member= { annotation } [ "structural" ] "fnc" IDENT [ generic_params ]
    'declare type T;' form exists. *)
 declared_type_only
                 = "declare" visibility
-                  ( "type" IDENT [ generic_params ] "=" type_ref stmt_terminator
+                  ( "type" IDENT [ generic_params ] "=" type_ref
+                    [ type_constraint_suffix ] stmt_terminator
                   | ( "trait" | "interface" ) IDENT [ generic_params ]
                     [ "extends" type_ref { "," type_ref } ] interface_body ) ;
 
@@ -152,7 +153,15 @@ model_param     = ( IDENT ":" type_ref | type_ref IDENT )
 model_op        = IDENT "(" [ expression { "," expression } ] ")"
                   [ ";" ] ;
 
-type_decl       = "type" IDENT [ generic_params ] "=" type_ref stmt_terminator ;
+type_decl       = "type" IDENT [ generic_params ] "=" type_ref
+                  [ type_constraint_suffix ] stmt_terminator ;
+
+(* Descriptor schema v1. with/min/max/and are contextual here. Runtime value
+   use remains fail-closed until a checked validation/provenance bridge exists. *)
+type_constraint_suffix
+                = "with" type_constraint { "and" type_constraint } ;
+type_constraint = "min" signed_i64 | "max" signed_i64 ;
+signed_i64      = [ "-" ] INT ;
 
 annotation      = "@" IDENT [ "<" [ annotation_args ] ">" | "(" [ annotation_args ] ")" ] ;
 annotation_args = annotation_arg { "," annotation_arg } ;
