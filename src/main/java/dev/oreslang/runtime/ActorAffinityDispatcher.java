@@ -75,7 +75,25 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
             executeOnLane(0, notification);
             return;
         }
-        executeOnLane(best, notification, true);
+
+        RejectedExecutionException last = null;
+        for (int offset = 0; offset < count; ++offset) {
+            int candidate = offset == 0 ? best : (start + offset - 1) % count;
+            if (offset != 0 && candidate == best) continue;
+            if (verifiedWarmHostLoad(lanes.get(candidate), reactor) < 0) continue;
+            try {
+                executeOnLane(candidate, notification, true);
+                return;
+            } catch (RejectedExecutionException rejected) {
+                // A warm lane can fill or begin shutdown after the census.
+                // Try another independently verified warm lane before asking
+                // the readiness owner to retain and retry the completion.
+                last = rejected;
+            }
+        }
+        if (last != null) throw last;
+        throw new RejectedExecutionException(
+                "no warm actor carrier accepted reactor completion");
     }
 
     private static int verifiedWarmHostLoad(ExecutorService lane, boolean reactor) {
