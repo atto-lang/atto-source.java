@@ -3827,7 +3827,11 @@ public final class OwnershipChecker {
 
         if (type.isStringLiteral() || type.isIntLiteral()
                 || type.isBoolLiteral()) {
-            return scalar;
+            // Literal metadata is compiler-created and never generic.
+            // A fabricated $string$/$int$/$bool$ wrapper containing a
+            // non-Send argument must not inherit scalar Send authority.
+            return type.arguments().isEmpty() && !type.inferArguments()
+                    ? scalar : none;
         }
 
         if (type.isUnion() || type.isTupleType()) {
