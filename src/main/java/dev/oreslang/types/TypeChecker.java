@@ -6,6 +6,7 @@ import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.compiler.ModelGraphCompiler;
+import dev.oreslang.compiler.TypeConstraintDescriptors;
 import dev.oreslang.types.Types.Function;
 import dev.oreslang.types.Types.Borrow;
 import dev.oreslang.types.Types.ClassNamespace;
@@ -120,7 +121,8 @@ public final class TypeChecker {
     public record TypeCheckResult(
             Ast.Program program,
             List<String> warnings,
-            Map<Ast.BindingStmt, String> shortInferredAliases) {
+            Map<Ast.BindingStmt, String> shortInferredAliases,
+            TypeConstraintDescriptors.Catalog constraintDescriptors) {
         public TypeCheckResult {
             warnings = List.copyOf(warnings);
             // BindingStmt is a value record. Two separately declared bindings
@@ -128,10 +130,21 @@ public final class TypeChecker {
             // Retain AST identity instead of collapsing them in Map.copyOf().
             shortInferredAliases = java.util.Collections.unmodifiableMap(
                     new IdentityHashMap<>(shortInferredAliases));
+            if (constraintDescriptors == null) {
+                throw new IllegalArgumentException("constraint descriptor catalog cannot be null");
+            }
+        }
+
+        /** Compatibility constructor for callers that do not request descriptor metadata. */
+        public TypeCheckResult(
+                Ast.Program program,
+                List<String> warnings,
+                Map<Ast.BindingStmt, String> shortInferredAliases) {
+            this(program, warnings, shortInferredAliases, TypeConstraintDescriptors.Catalog.empty());
         }
 
         public TypeCheckResult(Ast.Program program, List<String> warnings) {
-            this(program, warnings, Map.of());
+            this(program, warnings, Map.of(), TypeConstraintDescriptors.Catalog.empty());
         }
     }
     /** The one explicit struct literal currently permitted to omit declared fields. */
@@ -155,8 +168,11 @@ public final class TypeChecker {
         checker.validateImports(program);
         checker.validateTypeOnlyNamesBeforeCollection(program);
         checker.collect(program);
+        TypeConstraintDescriptors.Catalog constraintDescriptors =
+                TypeConstraintDescriptors.compile(program);
         checker.validate(program);
-        return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
+        return new TypeCheckResult(
+                program, checker.warnings, checker.shortInferredTypeNames, constraintDescriptors);
     }
 
     /**
@@ -214,8 +230,11 @@ public final class TypeChecker {
         if (!linkedClasses.keySet().containsAll(linkedAliases.keySet())) {
             throw new IllegalArgumentException("orphaned linked class field alias metadata");
         }
+        TypeConstraintDescriptors.Catalog constraintDescriptors =
+                TypeConstraintDescriptors.compile(program);
         checker.validate(program);
-        return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
+        return new TypeCheckResult(
+                program, checker.warnings, checker.shortInferredTypeNames, constraintDescriptors);
     }
 
     private void validateImports(Ast.Program program) {
@@ -8642,6 +8661,13 @@ public final class TypeChecker {
         Ast.TypeAliasDecl alias = resolvingLinkedFieldAliases.get(ref.name());
         if (alias == null) alias = findTypeAlias(ref.name());
         if (alias != null) {
+            if (alias.constrained()) {
+                throw new IllegalArgumentException(
+                        "CONSTRAINT_VALIDATION_BRIDGE_REQUIRED: constrained alias '"
+                                + alias.name()
+                                + "' cannot enter a runtime value path until checked conversion "
+                                + "or compiler proof supplies validation provenance");
+            }
             if (alias.genericParameters().size() != ref.arguments().size()) {
                 throw new IllegalArgumentException("type alias '" + alias.name() + "' expects " + alias.genericParameters().size()
                         + " type argument(s), got " + ref.arguments().size());
