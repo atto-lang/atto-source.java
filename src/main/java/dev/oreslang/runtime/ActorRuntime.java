@@ -5591,11 +5591,19 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        final ActorCell<M>.AsyncSendAdmissionLoan sendLoan;
+        try {
+            sendLoan = cell.acquireAsyncSendAdmissionLoan();
+        } catch (Throwable failure) {
+            return OresFuture.failed(failure);
+        }
+
         final Object prepared;
         try {
             prepared = isPrivateKind(cell.kind)
                     ? isolateCopy(message) : freezeForTransport(message);
         } catch (Throwable failure) {
+            sendLoan.close();
             return OresFuture.failed(failure);
         }
 
@@ -5611,6 +5619,7 @@ public final class ActorRuntime implements AutoCloseable {
                 rawRelease = () -> cell.releaseSharedMailbox(bytes);
             }
         } catch (Throwable failure) {
+            sendLoan.close();
             return OresFuture.failed(failure);
         }
 
@@ -5625,6 +5634,7 @@ public final class ActorRuntime implements AutoCloseable {
             slot = cell.reserveOrAwaitMailboxSlot();
         } catch (Throwable registrationFailure) {
             releaseOnce.run();
+            sendLoan.close();
             return OresFuture.failed(registrationFailure);
         }
 
@@ -5638,16 +5648,24 @@ public final class ActorRuntime implements AutoCloseable {
         OresFuture<Void> result = new OresFuture<>(
                 () -> {
                     if (!state.compareAndSet(WAITING, TERMINAL)) return false;
-                    slot.cancel(false);
+                    boolean waiterWithdrawn = slot.cancel(false);
                     releaseOnce.run();
+                    if (waiterWithdrawn) sendLoan.close();
+                    // If transfer/settlement already won, its completion path
+                    // still owns the admission loan until it returns the credit.
                     return true;
                 },
                 () -> { });
 
         slot.whenCompleteRuntime((ignored, slotFailure) -> {
             if (slotFailure != null) {
-                if (!state.compareAndSet(WAITING, TERMINAL)) return;
+                if (!state.compareAndSet(WAITING, TERMINAL)) {
+                    releaseOnce.run();
+                    sendLoan.close();
+                    return;
+                }
                 releaseOnce.run();
+                sendLoan.close();
                 result.failFromRuntime(OresFuture.unwrap(slotFailure));
                 return;
             }
@@ -5656,6 +5674,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // Cancellation won after the rendezvous consumed a transferred
                 // slot but before this callback claimed it. Return that slot.
                 cell.releaseMailboxSlot(false);
+                sendLoan.close();
                 return;
             }
 
@@ -5701,6 +5720,7 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 }
                 cell.schedule();
+                sendLoan.close();
                 result.completeFromRuntime(null);
             } catch (Throwable failure) {
                 if (!admitted) {
@@ -5712,6 +5732,7 @@ public final class ActorRuntime implements AutoCloseable {
                     // to the next bounded producer.
                     cell.releaseMailboxSlot(false);
                 }
+                sendLoan.close();
                 result.failFromRuntime(failure);
             } finally {
                 state.set(TERMINAL);
@@ -7383,6 +7404,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final Object lifecycleLock = new Object();
         private final Object executionDomain = new Object();
         private int activeTurns;
+        /** Payload/credit state retained by sendAsync before mailbox publication. Guarded by lifecycleLock. */
+        private int activeAsyncSendAdmissions;
         private boolean carrierActive;
         /** Physical worker currently owning this actor lane, guarded by lifecycleLock.
          * Not an affinity requirement: a later turn may use a different worker. */
@@ -7487,6 +7510,42 @@ public final class ActorRuntime implements AutoCloseable {
                 queuedUserMessages++;
                 queuedMessages++;
                 return true;
+            }
+        }
+
+        private final class AsyncSendAdmissionLoan implements AutoCloseable {
+            private final AtomicBoolean released = new AtomicBoolean();
+
+            @Override
+            public void close() {
+                if (!released.compareAndSet(false, true)) return;
+                synchronized (lifecycleLock) {
+                    if (activeAsyncSendAdmissions <= 0) {
+                        throw new IllegalStateException(
+                                "actor async-send admission loan underflow for " + ref.id());
+                    }
+                    --activeAsyncSendAdmissions;
+                    if (stopped.get()) finalizeStopLocked();
+                    lifecycleLock.notifyAll();
+                }
+            }
+        }
+
+        /**
+         * Retain actor-owned memory/credit state across an awaitable send before
+         * its envelope is published. Physical actor finalization must wait for
+         * this loan, not merely for a logical Future terminal state.
+         */
+        private AsyncSendAdmissionLoan acquireAsyncSendAdmissionLoan() {
+            synchronized (lifecycleLock) {
+                if (stopped.get() || finalized) throw terminated(ref);
+                if (sealing) throw new ActorSealedException(ref.id());
+                if (activeAsyncSendAdmissions == Integer.MAX_VALUE) {
+                    throw new IllegalStateException(
+                            "actor async-send admission loan count exhausted for " + ref.id());
+                }
+                ++activeAsyncSendAdmissions;
+                return new AsyncSendAdmissionLoan();
             }
         }
 
@@ -7847,6 +7906,7 @@ public final class ActorRuntime implements AutoCloseable {
                     || activeTurns != 0
                     || scheduled.get()
                     || carrierActive
+                    || activeAsyncSendAdmissions != 0
                     || gracefulTeardownPending
                     || !children.isEmpty()) return;
             finalized = true;
