@@ -123,6 +123,49 @@ final class OresCarrierBudgetTest {
         }
     }
 
+    @Test void nioBootstrapCompletionWorkerUsesLifecyclePermit() throws Exception {
+        Props prior = Props.capture();
+        CountDownLatch release = new CountDownLatch(1);
+        try {
+            enableBudgetedJvm("5");
+            OresVM vm = OresVM.create(Runnable::run);
+            var pipe = java.nio.channels.Pipe.open();
+            try {
+                pipe.source().configureBlocking(false);
+                CountDownLatch callbackEntered = new CountDownLatch(1);
+                var ready = vm.nioReadiness().watch(
+                        pipe.source(), java.nio.channels.SelectionKey.OP_READ);
+                ready.whenCompleteRuntime((events, failure) -> {
+                    callbackEntered.countDown();
+                    try {
+                        release.await(5, TimeUnit.SECONDS);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                });
+                pipe.sink().write(java.nio.ByteBuffer.wrap(new byte[] {1}));
+                assertTrue(callbackEntered.await(3, TimeUnit.SECONDS));
+
+                var snapshot = vm.carrierPermitSnapshot();
+                assertEquals(2, snapshot.totalHeld(),
+                        "prestarted CONTROL plus one NIO completion worker are tracked");
+                assertEquals(1, snapshot.controlHeld());
+                assertEquals(1, snapshot.lifecycleHeld(),
+                        "NIO bootstrap/completion helper belongs to LIFECYCLE reserve");
+                assertEquals(3, snapshot.free());
+            } finally {
+                release.countDown();
+                pipe.source().close();
+                pipe.sink().close();
+                vm.close();
+            }
+            assertEquals(0, vm.carrierPermitSnapshot().totalHeld());
+        } finally {
+            release.countDown();
+            prior.restore();
+        }
+    }
+
     @Test void sharedActorDomainBorrowsIdlePermitsWithoutConsumingOtherReserves()
             throws Exception {
         Props prior = Props.capture();
