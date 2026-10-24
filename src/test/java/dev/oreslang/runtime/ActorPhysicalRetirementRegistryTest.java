@@ -767,6 +767,47 @@ final class ActorPhysicalRetirementRegistryTest {
         }
     }
 
+    @Test void driverExitWitnessIsRequiredAfterSuccessfulDelegateReturn() {
+        var registry = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 76L, () -> { }, () -> { });
+        var receipt = registry.register(
+                ActorPhysicalRetirementRegistry.Kind.NATIVE_IO_OPERATION, false);
+        var callback = new ActorPhysicalIoCallbackLease<Integer, Void>(
+                receipt, new java.nio.channels.CompletionHandler<>() {
+                    @Override public void completed(Integer value, Void ignored) { }
+                    @Override public void failed(Throwable failure, Void ignored) { }
+                });
+        registry.seal();
+
+        callback.completed(1, null);
+        assertEquals(1, registry.snapshot().pending(),
+                "delegate return alone cannot release the native provider loan");
+        assertFalse(registry.snapshot().retired());
+        assertTrue(callback.providerExited());
+        assertFalse(callback.providerExited(), "provider exit witness is one-shot");
+        assertEquals(0, registry.snapshot().pending());
+        registry.retireVerified();
+        assertTrue(registry.snapshot().retired());
+    }
+
+    @Test void earlyDriverExitWitnessQuarantinesInsteadOfGuessingProviderExit() {
+        var registry = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 761L, () -> { }, () -> { });
+        var receipt = registry.register(
+                ActorPhysicalRetirementRegistry.Kind.NATIVE_IO_OPERATION, false);
+        var callback = new ActorPhysicalIoCallbackLease<Integer, Void>(
+                receipt, new java.nio.channels.CompletionHandler<>() {
+                    @Override public void completed(Integer value, Void ignored) { }
+                    @Override public void failed(Throwable failure, Void ignored) { }
+                });
+        registry.seal();
+
+        var failure = assertThrows(IllegalStateException.class, callback::providerExited);
+        assertSame(failure, registry.snapshot().failure());
+        assertEquals(1, registry.snapshot().pending());
+        assertThrows(IllegalStateException.class, registry::retireVerified);
+    }
+
     @Test void malformedNullNativeFailureMustQuarantineAndNeverReachDelegate() {
         var invoked = new AtomicInteger();
         var registry = new ActorPhysicalRetirementRegistry(
