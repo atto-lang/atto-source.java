@@ -37,8 +37,20 @@ int main(int argc, char **argv) {
         if (getenv("MOCK_EXTRA_BUILD_INFO")) puts("unexpected extra output");
         return 0;
     }
-    if (argc >= 2 && strcmp(argv[1], "--mode=jit") == 0)
-        return atoi(env_or("MOCK_JIT_STATUS", "2"));
+    if (argc >= 2 && strcmp(argv[1], "--mode=jit") == 0) {
+        int status = atoi(env_or("MOCK_JIT_STATUS", "2"));
+        if (status == 2) {
+            if (getenv("MOCK_JIT_UNRELATED_USAGE_ERROR"))
+                fputs("oreslang: unknown CLI option\n", stderr);
+            else if (getenv("MOCK_JIT_WRONG_MODE_REASON"))
+                fputs("oreslang: unrelated runtime compilation setting\n", stderr);
+            else if (strcmp(env_or("MOCK_EMBEDDED_MODE", "aot"), "aot") == 0)
+                fputs("oreslang: This executable was built AOT-only; --mode=jit cannot enable runtime compilation. Rebuild with native-hybrid.\n", stderr);
+            else
+                fputs("oreslang: Native hybrid executables accept --mode=hybrid or --mode=aot, not JVM --mode=jit\n", stderr);
+        }
+        return status;
+    }
     if (getenv("JAVA_HOME") || getenv("CLASSPATH")
             || getenv("JAVA_TOOL_OPTIONS") || getenv("JDK_JAVA_OPTIONS")) {
         fputs("Java launcher environment leaked\n", stderr);
@@ -247,6 +259,9 @@ assert_case 'duplicated PASS replacing missing PASS' failure aot compressed32 MO
 assert_case 'duplicate arithmetic PASS identity' failure aot compressed32 MOCK_DUPLICATE_TEST_PASS_ID=1
 assert_case 'wrong SKIP test identity' failure aot compressed32 MOCK_WRONG_SKIP_ID=1
 assert_case 'duplicate SKIP identity' failure aot compressed32 MOCK_DUPLICATE_TEST_SKIP_ID=1
+assert_case 'unrelated CLI error impersonates AOT JIT rejection' failure aot compressed32 MOCK_JIT_UNRELATED_USAGE_ERROR=1
+assert_case 'wrong AOT JIT refusal reason' failure aot compressed32 MOCK_JIT_WRONG_MODE_REASON=1
+assert_case 'wrong hybrid JIT refusal reason' failure hybrid compressed32 MOCK_EMBEDDED_MODE=hybrid MOCK_JIT_WRONG_MODE_REASON=1
 assert_case 'native image accepting JVM JIT' failure aot compressed32 MOCK_JIT_STATUS=0
 assert_case 'unexpected JIT refusal exit status' failure aot compressed32 MOCK_JIT_STATUS=1
 
