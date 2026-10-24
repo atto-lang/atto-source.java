@@ -3935,7 +3935,15 @@ public final class OwnershipChecker {
         if (name.equals("Future")) {
             if (type.arguments().size() != 1) return none;
             Ast.TypeRef payload = type.arguments().getFirst();
-            boolean payloadSend = payload.name().equals("void")
+            // Only the exact unshadowed void primitive is an empty result.
+            // Malformed void<T> or aliased/nominal "void" is not proof of
+            // an empty, Send-safe payload.
+            boolean emptyPayload = payload.name().equals("void")
+                    && payload.arguments().isEmpty()
+                    && !payload.inferArguments()
+                    && !hasLocalTypeAliasNamed("void")
+                    && findClass("void") == null;
+            boolean payloadSend = emptyPayload
                     || taskCaptureCapabilities(
                             payload, visitingClasses).send();
             return new AutoTraitRules.Capabilities(
