@@ -93,6 +93,63 @@ final class ActorRuntimeChannelAdmissionDomainTest {
     }
 
     @Test
+    void actorsInOneRuntimeOwnDistinctSourceDomainsAndStopFencesPendingSelects()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch entered = new CountDownLatch(2);
+            AtomicReference<ChannelRuntime.AdmissionDomain> leftDomain =
+                    new AtomicReference<>();
+            AtomicReference<ChannelRuntime.AdmissionDomain> rightDomain =
+                    new AtomicReference<>();
+            AtomicReference<OresFuture<Integer>> leftPending =
+                    new AtomicReference<>();
+            AtomicReference<OresFuture<Integer>> rightPending =
+                    new AtomicReference<>();
+
+            ActorRuntime.ActorRef<Integer> left =
+                    runtime.spawnShared(() -> (message, context) -> {
+                        ChannelRuntime.AdmissionDomain domain =
+                                context.runtime().currentSourceChannelAdmissionDomain();
+                        leftDomain.set(domain);
+                        ChannelRuntime.Channel<Integer> channel =
+                                new ChannelRuntime.Channel<>(0, domain);
+                        leftPending.set(channel.readAsync());
+                        entered.countDown();
+                        context.self().stop();
+                    });
+            ActorRuntime.ActorRef<Integer> right =
+                    runtime.spawnShared(() -> (message, context) -> {
+                        ChannelRuntime.AdmissionDomain domain =
+                                context.runtime().currentSourceChannelAdmissionDomain();
+                        rightDomain.set(domain);
+                        ChannelRuntime.Channel<Integer> channel =
+                                new ChannelRuntime.Channel<>(0, domain);
+                        rightPending.set(channel.readAsync());
+                        entered.countDown();
+                        context.self().stop();
+                    });
+
+            left.send(1);
+            right.send(1);
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            left.getDone().get(5, TimeUnit.SECONDS);
+            right.getDone().get(5, TimeUnit.SECONDS);
+
+            assertNotNull(leftDomain.get());
+            assertNotNull(rightDomain.get());
+            assertNotSame(leftDomain.get(), rightDomain.get(),
+                    "actors sharing one ActorRuntime must not share normal source select quota");
+            assertTrue(leftDomain.get().isClosed());
+            assertTrue(rightDomain.get().isClosed());
+            assertEquals(0, leftDomain.get().pendingSelections());
+            assertEquals(0, rightDomain.get().pendingSelections());
+
+            assertTrue(leftPending.get().isCompletedExceptionally());
+            assertTrue(rightPending.get().isCompletedExceptionally());
+        }
+    }
+
+    @Test
     void runtimeClosePublishesOutputTerminalBeforeClosingAdmissionDomain() throws Exception {
         ActorRuntime runtime = new ActorRuntime();
         ActorRuntime.ActorRef<Integer> actor =
