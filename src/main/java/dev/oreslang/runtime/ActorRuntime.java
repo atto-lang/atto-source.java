@@ -8714,10 +8714,9 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (mailboxAccountingLock) {
                 if (!stopped.get()
                         || !asyncSendAdmissionSealed
-                        || !pendingAsyncSends.isEmpty()
-                        || activeAsyncSendAdmissions != 0) {
+                        || !pendingAsyncSends.isEmpty()) {
                     throw new IllegalStateException(
-                            "terminal mailbox drain began before async-send quiescence for "
+                            "terminal mailbox drain began with live async-send waiters for "
                                     + ref.id());
                 }
             }
