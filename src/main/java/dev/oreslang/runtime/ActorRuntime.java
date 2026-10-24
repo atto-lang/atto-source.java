@@ -445,6 +445,13 @@ public final class ActorRuntime implements AutoCloseable {
     private final UUID runtimeInstanceId = UUID.randomUUID();
     private final AtomicLong nextActorGeneration = new AtomicLong(1);
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
+    /**
+     * A terminal callback may run after unregisterActor removes an ActorCell
+     * but before ActorRef.done() is published. Keep a separate strong owner
+     * and include these incarnations in every runtime-close join snapshot.
+     * Added BEFORE map removal, released only AFTER terminal publication.
+     */
+    private final Set<ActorCell<?>> terminalPublications = ConcurrentHashMap.newKeySet();
     private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
     /**
      * Reverse cooperation-membership index. All mutations to this map AND an
@@ -2560,27 +2567,20 @@ public final class ActorRuntime implements AutoCloseable {
                     "synchronously wait for actor termination");
             Objects.requireNonNull(unit);
             if (timeout < 0) throw new IllegalArgumentException("timeout must be non-negative");
-            ActorCell<?> cell = actors.get(id);
-            if (cell == null) {
-                // ActorCell removal is performed before runtime-owned
-                // finalizedFuture subscribers and ActorRef.done() settle.
-                // Absence from the registry therefore proves only that
-                // removal started, NOT that the observable DONE barrier
-                // has crossed its final callback. Wait on the actor's own
-                // non-cancellable termination receipt instead.
-                try {
-                    doneFuture.get(timeout, unit);
-                    return true;
-                } catch (ExecutionException | java.util.concurrent.CancellationException settled) {
-                    // A failed terminal Future still proves termination;
-                    // callers inspect done() for the actual failure.
-                    return true;
-                } catch (TimeoutException notYetDone) {
-                    return false;
-                }
+            // Never acquire ActorCell.lifecycleLock just to await DONE: the
+            // last runtime finalization observer may still hold that monitor.
+            // Waiting on the non-cancellable Future is bounded and never
+            // mistakes actor-map removal for full terminal publication.
+            try {
+                doneFuture.get(timeout, unit);
+                return true;
+            } catch (ExecutionException | java.util.concurrent.CancellationException settled) {
+                // Failed completion is still terminal. Inspect done() for
+                // its error; do not conflate success with physical cleanup.
+                return true;
+            } catch (TimeoutException notYetDone) {
+                return false;
             }
-            cell.awaitFinalized(unit.toNanos(timeout));
-            return cell.finalized() && doneFuture.isDone();
         }
 
         public void send(M message) {
@@ -5136,6 +5136,10 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private void unregisterActor(ActorCell<?> cell) {
+        // Atomically preserve a strong runtime-owned terminal publication
+        // reference BEFORE removing the actor from the normal registry.
+        // A concurrent runtime.close must join this in-flight incarnation.
+        terminalPublications.add(cell);
         // Keep the actor discoverable until all runtime-owned teardown that is
         // part of its termination contract has completed. ActorRef.awaitTermination()
         // treats absence from this map as terminal, so removing the actor first
@@ -7074,9 +7078,16 @@ public final class ActorRuntime implements AutoCloseable {
         final List<ActorCell<?>> snapshot;
         synchronized (runtimeLifecycleLock) {
             firstClose = closed.compareAndSet(false, true);
-            snapshot = List.copyOf(actors.values());
+            var owning = new java.util.HashSet<ActorCell<?>>(actors.values());
+            owning.addAll(terminalPublications);
+            snapshot = List.copyOf(owning);
         }
-        for (ActorCell<?> cell : snapshot) cell.stop();
+        for (ActorCell<?> cell : snapshot) {
+            // An already STOPPED actor may be blocked inside its final
+            // publication callback while holding lifecycleLock. Do not
+            // synchronously enter stop() again and defeat bounded close.
+            if (!cell.stopped.get()) cell.stop();
+        }
         if (firstClose && physicalTurnGate != null) physicalTurnGate.close();
 
         if (firstClose) {
@@ -7093,7 +7104,11 @@ public final class ActorRuntime implements AutoCloseable {
             // Clear those cells' scheduled bits only when no carrier actually
             // entered the TurnExecutor boundary. Active carriers retain the bit
             // until their executor finally exits.
-            for (ActorCell<?> cell : snapshot) cell.cancelQueuedScheduleOnShutdown();
+            for (ActorCell<?> cell : snapshot) {
+                if (!terminalPublications.contains(cell)) {
+                    cell.cancelQueuedScheduleOnShutdown();
+                }
+            }
         }
 
         long deadline = System.nanoTime() + CLOSE_WAIT_NANOS;
@@ -7103,13 +7118,19 @@ public final class ActorRuntime implements AutoCloseable {
             long remaining = deadline - System.nanoTime();
             if (remaining > 0) {
                 try {
-                    cell.awaitFinalized(remaining);
+                    // Unlike ActorCell.awaitFinalized(), Future.get does not
+                    // contend with a blocked teardown lifecycleLock.
+                    cell.ref.doneFuture.get(remaining, TimeUnit.NANOSECONDS);
+                } catch (ExecutionException | java.util.concurrent.CancellationException terminal) {
+                    // Exceptional DONE is still a completed physical join.
+                } catch (TimeoutException notYetDone) {
+                    // Retain actor/quarantine; no false termination.
                 } catch (InterruptedException waitInterrupted) {
                     interrupted = true;
                     break;
                 }
             }
-            if (!cell.finalized()) stillRunning.add(cell.ref.id());
+            if (!cell.ref.doneFuture.isDone()) stillRunning.add(cell.ref.id());
         }
 
         boolean dispatchersTerminated = true;
@@ -7819,8 +7840,14 @@ public final class ActorRuntime implements AutoCloseable {
             }
             lifecycleLock.notifyAll();
             Throwable doneTerminal = ref.terminationCause.get();
-            if (doneTerminal == null) ref.doneFuture.completeFromRuntime(null);
-            else ref.doneFuture.failFromRuntime(doneTerminal);
+            try {
+                if (doneTerminal == null) ref.doneFuture.completeFromRuntime(null);
+                else ref.doneFuture.failFromRuntime(doneTerminal);
+            } finally {
+                // Last action in a successful finalization callback. A
+                // failure before DONE leaves this strong quarantine root.
+                if (ref.doneFuture.isDone()) terminalPublications.remove(this);
+            }
         }
 
         private void sourceTaskCleanupQuiesced() {
