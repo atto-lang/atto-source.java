@@ -71,7 +71,7 @@ public final class NativeHttpRollingDispatcher implements AutoCloseable {
      * real actor get_ready() receipt. A failed stage cannot update the route.
      * If the compare-and-switch loses, the unpublished pool is cancelled.
      */
-    public OresFuture<Boolean> promoteAfterWarmup(long expectedEpoch,
+    OresFuture<Boolean> promoteAfterWarmup(long expectedEpoch,
                                                    NativeHttp.Handler replacement) {
         requireSupervisor();
         Objects.requireNonNull(replacement, "replacement");
