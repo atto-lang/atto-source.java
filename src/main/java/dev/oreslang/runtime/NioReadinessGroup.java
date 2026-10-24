@@ -142,7 +142,7 @@ public final class NioReadinessGroup implements AutoCloseable {
     }
 
     public NioReadinessGroup(int maxReactors, int maxPending, int commandCapacity) throws IOException {
-        this(maxReactors, maxPending, commandCapacity, null);
+        this(maxReactors, maxPending, commandCapacity, null, null);
     }
 
     // VM-only: no extra prestarted NIO completion threads. The caller must
@@ -150,6 +150,16 @@ public final class NioReadinessGroup implements AutoCloseable {
     // hook. A standalone manager retains its dedicated completion workers.
     NioReadinessGroup(int maxReactors, int maxPending, int commandCapacity,
                       Executor vmCompletionExecutor) throws IOException {
+        this(maxReactors, maxPending, commandCapacity, vmCompletionExecutor, null);
+    }
+
+    NioReadinessGroup(
+            int maxReactors,
+            int maxPending,
+            int commandCapacity,
+            Executor vmCompletionExecutor,
+            java.util.concurrent.ThreadFactory ownedCompletionFactory)
+            throws IOException {
         if (maxReactors < 1 || maxReactors > 4 || maxPending < 1 || commandCapacity < 8)
             throw new IllegalArgumentException("invalid NIO reactor bounds");
         this.maxReactors = maxReactors;
@@ -159,15 +169,19 @@ public final class NioReadinessGroup implements AutoCloseable {
         // but do not pay resident completion threads at cold start. Independent
         // terminal notifications grow this bounded pool 0 -> 2 on demand.
         if (vmCompletionExecutor == null) {
+            java.util.concurrent.ThreadFactory completionFactory =
+                    ownedCompletionFactory != null
+                            ? ownedCompletionFactory
+                            : new java.util.concurrent.ThreadFactory() {
+                                private final AtomicInteger ids = new AtomicInteger();
+                                @Override public Thread newThread(Runnable work) {
+                                    return Thread.ofPlatform().daemon(true)
+                                            .name("ores-nio-completion-" + ids.getAndIncrement())
+                                            .unstarted(() -> OresVM.runAsNioWorker(work));
+                                }
+                            };
             ownedCompletionExecutor = new AdaptiveCarrierExecutor(
-                    0, 2, maxPending, new java.util.concurrent.ThreadFactory() {
-                        private final AtomicInteger ids = new AtomicInteger();
-                        @Override public Thread newThread(Runnable work) {
-                            return Thread.ofPlatform().daemon(true)
-                                    .name("ores-nio-completion-" + ids.getAndIncrement())
-                                    .unstarted(() -> OresVM.runAsNioWorker(work));
-                        }
-                    });
+                    0, 2, maxPending, completionFactory);
             completionExecutor = ownedCompletionExecutor;
         } else {
             ownedCompletionExecutor = null;
