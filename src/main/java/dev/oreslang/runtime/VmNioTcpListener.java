@@ -29,6 +29,9 @@ public final class VmNioTcpListener implements AutoCloseable {
     /** Exact actor incarnation identity, never a guest-visible actor ID or FD. */
     private volatile Object actorOwnerDomain;
     private final Set<Connection> connections = new HashSet<>();
+    /** Closed sockets whose underlying NIO read/write watches have not retired. */
+    private final Set<Connection> closingConnections = new HashSet<>();
+    private boolean acceptKernelQuiesced; // guarded by gate
     private OresFuture<Connection> pendingAccept;
     private final OresFuture<Void> listenerClosed = new OresFuture<>();
     private int admittedOperations; // guarded by gate; includes Future callbacks
@@ -108,8 +111,9 @@ public final class VmNioTcpListener implements AutoCloseable {
 
     public boolean isTerminated() {
         synchronized (gate) {
-            return closed && admittedOperations == 0
-                    && pendingAccept == null && connections.isEmpty();
+            return closed && acceptKernelQuiesced && admittedOperations == 0
+                    && pendingAccept == null && connections.isEmpty()
+                    && closingConnections.isEmpty();
         }
     }
 
@@ -128,8 +132,9 @@ public final class VmNioTcpListener implements AutoCloseable {
     private void completeListenerCloseIfQuiesced() {
         final boolean quiesced;
         synchronized (gate) {
-            quiesced = closed && admittedOperations == 0
-                    && pendingAccept == null && connections.isEmpty();
+            quiesced = closed && acceptKernelQuiesced && admittedOperations == 0
+                    && pendingAccept == null && connections.isEmpty()
+                    && closingConnections.isEmpty();
         }
         if (quiesced) listenerClosed.completeFromRuntime(null);
     }
@@ -230,6 +235,13 @@ public final class VmNioTcpListener implements AutoCloseable {
         // Closing the caller-owned listener revokes the readiness registration.
         // NIO terminal notification will settle any pending source Future.
         try { server.close(); } catch (IOException ignored) { }
+        // A cancelled public accept Future can settle while a reactor still
+        // owns an outstanding Selector key. Listener shutdown cannot advertise
+        // physical quiescence until the kernel watch AND accept pump retire.
+        readiness.whenChannelIdle(server).whenCompleteRuntime((ignored, failure) -> {
+            synchronized (gate) { acceptKernelQuiesced = true; }
+            completeListenerCloseIfQuiesced();
+        });
         if (pending != null) pending.cancel(false);
         for (Connection connection : snapshot) connection.close();
         completeListenerCloseIfQuiesced();
@@ -238,6 +250,7 @@ public final class VmNioTcpListener implements AutoCloseable {
     public final class Connection implements AutoCloseable {
         private final SocketChannel channel;
         private boolean terminated;
+        private boolean channelKernelQuiesced; // guarded by outer listener gate
         private int activeOperations;
         private final OresFuture<Void> connectionClosed = new OresFuture<>();
         // Only terminal-exported operations are retained; each removes itself
@@ -278,15 +291,25 @@ public final class VmNioTcpListener implements AutoCloseable {
         }
 
         private void releaseSocketOperation() {
-            boolean quiesced;
             synchronized (gate) {
                 if (activeOperations <= 0)
                     throw new IllegalStateException("TCP socket operation reservation underflow");
                 --activeOperations;
-                quiesced = terminated && activeOperations == 0;
             }
             releaseOperation();
-            if (quiesced) connectionClosed.completeFromRuntime(null);
+            completeConnectionCloseIfQuiesced();
+        }
+
+        private void completeConnectionCloseIfQuiesced() {
+            final boolean quiesced;
+            synchronized (gate) {
+                quiesced = terminated && activeOperations == 0 && channelKernelQuiesced;
+                if (quiesced) closingConnections.remove(this);
+            }
+            if (quiesced) {
+                connectionClosed.completeFromRuntime(null);
+                completeListenerCloseIfQuiesced();
+            }
         }
 
         public OresFuture<List<Long>> readBytesAsync(int maximum) {
@@ -369,24 +392,27 @@ public final class VmNioTcpListener implements AutoCloseable {
 
         @Override public void close() {
             final List<OresFuture<?>> snapshot;
-            final boolean quiesced;
             synchronized (gate) {
                 if (terminated) return;
                 terminated = true;
                 connections.remove(this);
+                closingConnections.add(this);
                 snapshot = new ArrayList<>(outstanding);
-                quiesced = activeOperations == 0;
             }
             // Close the descriptor before publishing any terminal operation
             // drain. Otherwise a synchronous cancellation subscriber can drive
             // connectionClosed/listenerClosed to completion while the FD is
             // still open on this stack.
             try { channel.close(); } catch (IOException ignored) { }
+            readiness.whenChannelIdle(channel).whenCompleteRuntime((ignored, failure) -> {
+                synchronized (gate) { channelKernelQuiesced = true; }
+                completeConnectionCloseIfQuiesced();
+            });
             // Revoke only still-cancellable operations. An already committed
             // kernel write may instead fail after descriptor close, but must
             // never be reported as cleanly cancelled.
             for (OresFuture<?> pending : snapshot) pending.cancel(false);
-            if (quiesced) connectionClosed.completeFromRuntime(null);
+            completeConnectionCloseIfQuiesced();
         }
     }
 }
