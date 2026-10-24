@@ -257,7 +257,10 @@ final class ActorPhysicalRetirementRegistry {
     /**
      * The finalization winner seals the registry forever. It must hold the
      * actor lifecycle monitor and independently verify dispatcher/scheduler
-     * quiescence before calling this; no callback is run here.
+     * quiescence before calling this. During the reserved notification-drained
+     * handoff this only stages retirement; the registry publishes the retired
+     * bit after that callback returns normally. Outside a handoff the verified
+     * retirement is immediate.
      */
     void retireVerified() {
         synchronized (lock) {
