@@ -45,11 +45,20 @@ int main(int argc, char **argv) {
         return 7;
     }
     if (getenv("MOCK_BAD_PROGRAM_STATUS")) return 13;
-    if (argc >= 3 && strcmp(argv[1], "--check") == 0)
-        return access(argv[2], F_OK) == 0 ? 0 : 9;
+    if (argc >= 3 && strcmp(argv[1], "--check") == 0) {
+        if (access(argv[2], F_OK) != 0) return 9;
+        if (getenv("MOCK_CHECK_EXECUTES_GUEST")) puts("120:9:13");
+        return 0;
+    }
     if (argc >= 3 && (strcmp(argv[1], "--mode=aot") == 0
             || strcmp(argv[1], "--mode=hybrid") == 0)) {
         if (access(argv[2], F_OK) != 0) return 9;
+        if (strstr(argv[2], "callables.ores") != NULL) {
+            if (!getenv("MOCK_SILENT_CALLABLES")) {
+                if (getenv("MOCK_BAD_CALLABLES")) puts("120:9:12");
+                else puts("120:9:13");
+            }
+        }
         if (strstr(argv[2], "native-core-library.ores") != NULL) {
             if (!getenv("MOCK_EMPTY_CORE_OUTPUT")) {
                 if (getenv("MOCK_BAD_CORE_OUTPUT"))
@@ -193,6 +202,9 @@ assert_case 'wrong baked reference mode' failure aot compressed32 MOCK_EMBEDDED_
 assert_case 'wrong baked image mode' failure aot compressed32 MOCK_EMBEDDED_MODE=hybrid
 assert_case 'extra build-info lines' failure aot compressed32 MOCK_EXTRA_BUILD_INFO=1
 assert_case 'source execution failure' failure aot compressed32 MOCK_BAD_PROGRAM_STATUS=1
+assert_case 'check-only mistakenly executes guest' failure aot compressed32 MOCK_CHECK_EXECUTES_GUEST=1
+assert_case 'silent callables guest execution' failure aot compressed32 MOCK_SILENT_CALLABLES=1
+assert_case 'incorrect lexical closure result' failure aot compressed32 MOCK_BAD_CALLABLES=1
 assert_case 'silent fake image without guest-core output' failure aot compressed32 MOCK_EMPTY_CORE_OUTPUT=1
 assert_case 'wrong native core numeric result' failure aot compressed32 MOCK_BAD_CORE_OUTPUT=1
 assert_case 'silent fake image without guest-test output' failure aot compressed32 MOCK_EMPTY_TEST_OUTPUT=1
