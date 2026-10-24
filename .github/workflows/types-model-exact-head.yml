@@ -11,6 +11,7 @@ on:
       - 'src/test/java/dev/oreslang/DeclaredTypeOnlySyntaxTest.java'
       - 'src/test/java/dev/oreslang/ModelDefinitionHardeningTest.java'
       - 'src/test/java/dev/oreslang/AliasExtensionMethodTest.java'
+      - 'src/test/java/dev/oreslang/TypeConstraintDescriptorTest.java'
   workflow_dispatch:
 
 permissions:
@@ -45,12 +46,12 @@ jobs:
           distribution: 'graalvm'
           github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: maven
-      - name: Focused declaration, model and extension-method JUnit regression suite
+      - name: Focused declaration, model, extension and constraint-descriptor JUnit suite
         shell: bash
         run: |
           set -euo pipefail
           java --version
-          mvn -B -ntp -Dtest=DeclaredTypeOnlySyntaxTest,ModelDefinitionHardeningTest,AliasExtensionMethodTest test
+          mvn -B -ntp -Dtest=DeclaredTypeOnlySyntaxTest,ModelDefinitionHardeningTest,AliasExtensionMethodTest,TypeConstraintDescriptorTest test
 
   complete-maven-regressions:
     needs: focused-junit
