@@ -6104,17 +6104,31 @@ public final class TypeChecker {
 
     private boolean boundedErrorGuardEqualityType(Type type) {
         Type value = deref(type);
-        if (value == Unknown.INSTANCE || value instanceof Generic
-                || value instanceof Record || value instanceof Tuple) return false;
+        // This must be an allowlist rather than an exclusion list. ListType
+        // is a distinct resolved Type (not Named("List")), and new aggregate
+        // types would otherwise silently inherit a false O(1) proof.
         if (value instanceof Union union) {
             return union.options().stream().allMatch(this::boundedErrorGuardEqualityType);
         }
-        if (value instanceof Named named) {
-            return !Set.of("Any", "Option", "Result", "IteratorResult",
-                    "Array", "List", "Map", "Set", "Dictionary", "Vector")
-                    .contains(named.name());
+        if (value == Primitive.BOOL || value == Primitive.FLOAT
+                || value == Primitive.COMPLEX || value instanceof BoolLiteral) {
+            return true;
         }
-        return true;
+        // The evaluator compares strings/decimal/bigint by potentially
+        // variable-length values. The checker currently erases bigint and
+        // machine int to the same Primitive.INT, so even plain int equality
+        // is not yet a certified bounded observation in this path.
+        if (value instanceof Named named) {
+            // Guest class equality is reference identity by default.
+            // Symbol/actor handles also use constant-size identity fields.
+            return findClass(named.name()) != null
+                    || Set.of("$builtin$Symbol", "ActorId", "ActorKind", "ActorRef")
+                            .contains(named.name());
+        }
+        // Reject all other representations by default: StringLiteral,
+        // ListType, Tuple, Record, Not, Function, ClassNamespace, generic,
+        // Unknown, SelfType and any future compiler Type implementation.
+        return false;
     }
 
     private boolean boundedErrorGuardRuntimeType(Ast.TypeRef target) {
