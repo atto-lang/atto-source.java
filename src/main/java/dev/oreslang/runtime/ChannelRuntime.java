@@ -302,6 +302,11 @@ public final class ChannelRuntime {
             return maxPendingRegistrations;
         }
 
+        /** Runtime/interop admission proof; domain identity is capability identity. */
+        public boolean belongsTo(AdmissionDomain domain) {
+            return admissionDomain == Objects.requireNonNull(domain, "domain");
+        }
+
         public int pendingRegistrations() {
             COORDINATOR.lock();
             try {
