@@ -507,6 +507,77 @@ class PrivateCiV3Test(unittest.TestCase):
             with self.assertRaisesRegex(v3.Denied, "identity/state"):
                 v3.verify_source_pr(1482, "8" * 40)
 
+    def test_verify_source_pr_pins_both_head_and_base_numeric_ids(self):
+        """A slug-only match must not authorize a replaced or cross-repo PR."""
+        source_repo = v3.legacy.SOURCE_REPO
+        source_id = v3.SOURCE_REPOSITORY_ID
+        valid_pr = {
+            "number": 1482,
+            "state": "open",
+            "head": {
+                "sha": "8" * 40,
+                "repo": {"full_name": source_repo, "id": source_id},
+            },
+            "base": {
+                "ref": v3.legacy.SOURCE_PROTECTED_BRANCH,
+                "repo": {"full_name": source_repo, "id": source_id},
+            },
+        }
+        def check(pr, expected_valid):
+            with (
+                patch.object(
+                    v3, "require_live_private_source",
+                    return_value={"id": source_id},
+                ),
+                patch.object(v3.legacy, "gh_api", return_value=pr),
+            ):
+                if expected_valid:
+                    self.assertEqual(v3.verify_source_pr(1482, "8" * 40), source_id)
+                else:
+                    with self.assertRaisesRegex(
+                        v3.Denied, "exact open PR head"
+                    ):
+                        v3.verify_source_pr(1482, "8" * 40)
+
+        check(valid_pr, True)
+        variants = (
+            ("wrong-head-id", {"head": {
+                "sha": "8" * 40,
+                "repo": {"full_name": source_repo, "id": source_id + 1},
+            }}),
+            ("missing-head-id", {"head": {
+                "sha": "8" * 40, "repo": {"full_name": source_repo},
+            }}),
+            ("boolean-head-id", {"head": {
+                "sha": "8" * 40,
+                "repo": {"full_name": source_repo, "id": True},
+            }}),
+            ("wrong-base-id", {"base": {
+                "ref": "main",
+                "repo": {"full_name": source_repo, "id": source_id + 1},
+            }}),
+            ("missing-base-id", {"base": {
+                "ref": "main", "repo": {"full_name": source_repo},
+            }}),
+            ("wrong-base-name", {"base": {
+                "ref": "main",
+                "repo": {"full_name": "attacker/repo", "id": source_id},
+            }}),
+            ("missing-base-repo", {"base": {"ref": "main"}}),
+            ("invalid-pr-number", {"number": True}),
+            ("wrong-head-name", {"head": {
+                "sha": "8" * 40,
+                "repo": {"full_name": "attacker/repo", "id": source_id},
+            }}),
+            ("different-head-sha", {"head": {
+                "sha": "7" * 40,
+                "repo": {"full_name": source_repo, "id": source_id},
+            }}),
+        )
+        for label, changes in variants:
+            with self.subTest(label=label):
+                check(dict(valid_pr, **changes), False)
+
     def test_authorize_write_rejects_source_identity_or_privacy_flip(self):
         """One invalid live source metadata field denies before another Git write."""
         carrier = contract()
