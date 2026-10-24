@@ -517,6 +517,60 @@ final class ErrorPatternGuardPurityTest {
     }
 
     @Test
+    void errorReceiverSelfWildcardGuardCannotCallUserCode() {
+        String invalid = """
+                define class Error as
+                  pub classify(): int {
+                    match self over
+                      on _ when sideEffect() -> { return 1; }
+                      on _ -> { return 0; }
+                    end
+                  }
+                end
+                fnc sideEffect(): bool {
+                  return true;
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(invalid)));
+        assertTrue(failure.getMessage().contains("match guard must be pure/read-only"),
+                failure.getMessage());
+    }
+
+    @Test
+    void errorDescendantReceiverSelfValueMatchCannotCallUserCode() {
+        String invalid = SOURCE + """
+                define class IOError extends Error as
+                  pub classify(): int {
+                    return match self over {
+                      on _ when sideEffect() { return 1; }
+                      on _ { return 0; }
+                    };
+                  }
+                end
+                """;
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(invalid)));
+        assertTrue(failure.getMessage().contains("match guard must be pure/read-only"),
+                failure.getMessage());
+    }
+
+    @Test
+    void nonErrorReceiverSelfStillSupportsExistingCallableGuards() {
+        String valid = SOURCE + """
+                define class Ordinary as
+                  pub classify(): int {
+                    match self over
+                      on _ when sideEffect() -> { return 1; }
+                      on _ -> { return 0; }
+                    end
+                  }
+                end
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(valid)));
+    }
+
+    @Test
     void guardDivisionCannotSmuggleAnExceptionalArithmeticOperation() {
         String bad = SOURCE + """
                 fnc classify(Error error, int divisor): int {
