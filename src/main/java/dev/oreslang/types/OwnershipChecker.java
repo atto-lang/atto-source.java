@@ -408,9 +408,9 @@ public final class OwnershipChecker {
 
         Ast.ClassDecl klass = findClass(namespace);
         if (klass == null) return;
-        List<Ast.MethodDecl> candidates = new ArrayList<>();
-        collectStaticMethodsByName(
-                klass, member, new LinkedHashSet<>(), candidates);
+        List<Ast.MethodDecl> candidates =
+                staticMethodsByName(
+                        klass, member, new LinkedHashSet<>());
         if (candidates.size() == 1) {
             Ast.MethodDecl function = candidates.getFirst();
             rejectUnsafeFirstClassBorrowingParameters(
@@ -419,23 +419,34 @@ public final class OwnershipChecker {
         }
     }
 
-    private void collectStaticMethodsByName(
+    private List<Ast.MethodDecl> staticMethodsByName(
             Ast.ClassDecl klass,
             String name,
-            Set<Ast.ClassDecl> seen,
-            List<Ast.MethodDecl> methods) {
-        if (!seen.add(klass)) return;
+            Set<Ast.ClassDecl> seen) {
+        if (!seen.add(klass)) return List.of();
+
+        // Mirror TypeChecker.findStaticFunctionsByName exactly: a local static
+        // function hides an inherited function with the same arity, while
+        // different arities remain overloads and therefore are not reifiable
+        // without direct-call selection.
+        LinkedHashMap<Integer, Ast.MethodDecl> methods =
+                new LinkedHashMap<>();
         for (Ast.MethodDecl method : klass.methods()) {
             if (method.isStatic() && method.name().equals(name)) {
-                methods.add(method);
+                methods.put(method.parameters().size(), method);
             }
         }
         for (Ast.TypeRef parentRef : klass.parents()) {
             Ast.ClassDecl parent = findClass(parentRef.name());
-            if (parent != null) {
-                collectStaticMethodsByName(parent, name, seen, methods);
+            if (parent == null) continue;
+            for (Ast.MethodDecl inherited :
+                    staticMethodsByName(parent, name, seen)) {
+                methods.putIfAbsent(
+                        inherited.parameters().size(), inherited);
             }
         }
+        seen.remove(klass);
+        return List.copyOf(methods.values());
     }
 
     private void rejectUnsafeFirstClassBorrowingParameters(
