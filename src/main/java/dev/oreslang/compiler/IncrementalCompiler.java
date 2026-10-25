@@ -121,8 +121,16 @@ public final class IncrementalCompiler {
                 OwnershipChecker.checkWithImportedClasses(
                         checked, linked.classes(), analysis.shortInferredAliases());
             } catch (IllegalArgumentException invalid) {
+                Ast.Program sourceProgram = parsed.get(id);
+                String context = sourceProgram.modules().size() == 1
+                        ? " [module: " + sourceProgram.modules().get(0).name() + "]"
+                        : " [modules: " + sourceProgram.modules().size() + "]";
+                if (sourceProgram.namespace() != null && !sourceProgram.namespace().isBlank()) {
+                    context += " [namespace: " + sourceProgram.namespace() + "]";
+                }
                 throw new IllegalArgumentException(
-                        "Oreslang source unit '" + id + "': " + invalid.getMessage(), invalid);
+                        "Oreslang source unit '" + id + "':" + context
+                                + " " + invalid.getMessage(), invalid);
             }
             CompiledUnit unit = new CompiledUnit(
                     id,
