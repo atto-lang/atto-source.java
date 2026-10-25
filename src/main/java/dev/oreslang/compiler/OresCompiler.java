@@ -37,23 +37,32 @@ public final class OresCompiler {
      */
     private record LinkedSource(String codeUnitId, String source, Ast.Program checked) { }
     private static final ThreadLocal<LinkedSource> HOST_LINKED_SOURCE = new ThreadLocal<>();
+    // Enforce strict lexical lifetime; a nested scope cannot restore a stale
+    // verified program by closing the outer scope before the inner scope.
+    private static final ThreadLocal<LinkedGuestParseScope> ACTIVE_LINKED_SCOPE = new ThreadLocal<>();
 
     public static final class LinkedGuestParseScope implements AutoCloseable {
         private final LinkedSource prior;
+        private final LinkedGuestParseScope priorScope;
         private final Thread owner = Thread.currentThread();
         private boolean closed;
+        private boolean consumed;
 
-        private LinkedGuestParseScope(LinkedSource prior) {
+        private LinkedGuestParseScope(LinkedSource prior, LinkedGuestParseScope priorScope) {
             this.prior = prior;
+            this.priorScope = priorScope;
         }
 
         @Override public void close() {
-            if (closed || Thread.currentThread() != owner) {
-                throw new IllegalStateException("linked guest parse scope closed incorrectly");
+            if (closed || Thread.currentThread() != owner
+                    || ACTIVE_LINKED_SCOPE.get() != this) {
+                throw new IllegalStateException("linked guest parse scope closed incorrectly or out of order");
             }
             closed = true;
             if (prior == null) HOST_LINKED_SOURCE.remove();
             else HOST_LINKED_SOURCE.set(prior);
+            if (priorScope == null) ACTIVE_LINKED_SCOPE.remove();
+            else ACTIVE_LINKED_SCOPE.set(priorScope);
         }
     }
 
@@ -65,17 +74,26 @@ public final class OresCompiler {
             throw new IllegalArgumentException("linked source identity and checked AST are required");
         }
         LinkedSource previous = HOST_LINKED_SOURCE.get();
+        LinkedGuestParseScope scope = new LinkedGuestParseScope(
+                previous, ACTIVE_LINKED_SCOPE.get());
         HOST_LINKED_SOURCE.set(new LinkedSource(codeUnitId, source, checked));
-        return new LinkedGuestParseScope(previous);
+        ACTIVE_LINKED_SCOPE.set(scope);
+        return scope;
     }
 
     /** Null means ordinary standalone parsing; any active mismatched lease is fatal. */
     public static Ast.Program takeVerifiedGuestProgram(String codeUnitId, String source) {
         LinkedSource snapshot = HOST_LINKED_SOURCE.get();
         if (snapshot == null) return null;
+        LinkedGuestParseScope scope = ACTIVE_LINKED_SCOPE.get();
+        if (scope == null || scope.closed)
+            throw new IllegalStateException("unscoped linked guest parse source");
         if (!snapshot.codeUnitId().equals(codeUnitId) || !snapshot.source().equals(source)) {
             throw new SecurityException("Truffle parse source differs from verified linked compilation");
         }
+        if (scope.consumed)
+            throw new IllegalStateException("verified linked guest program already consumed");
+        scope.consumed = true;
         return snapshot.checked();
     }
 
