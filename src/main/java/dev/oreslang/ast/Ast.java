@@ -1429,7 +1429,10 @@ public final class Ast {
         return java.util.Set.copyOf(names);
     }
 
-    public record MemberExpr(Expr receiver, String member) implements Expr { }
+    /** Checked Option payload projection. Result error handling is never implicit. */
+    public record MemberExpr(Expr receiver, String member, boolean optional) implements Expr {
+        public MemberExpr(Expr receiver, String member) { this(receiver, member, false); }
+    }
     public record IndexExpr(Expr receiver, Expr index) implements Expr { }
 
     public record NewExpr(TypeRef type, List<Expr> arguments) implements Expr {
