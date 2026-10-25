@@ -158,7 +158,7 @@ public final class ActorPipeTransport implements AutoCloseable {
                 // oversized representation during validation.
                 long scale = value.scale();
                 if (scale < -MAX_PAYLOAD_BYTES || scale > MAX_PAYLOAD_BYTES
-                        || value.unscaledValue().bitLength() > MAX_PAYLOAD_BYTES * 3L
+                        || value.unscaledValue().bitLength() > MAX_PAYLOAD_BYTES * 4L
                         || value.toPlainString().length() > MAX_PAYLOAD_BYTES)
                     throw new IllegalArgumentException("actor pipe payload exceeds byte budget");
             }
