@@ -153,6 +153,8 @@ int main(int argc, char **argv) {
                     puts("ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0");
                 if (getenv("MOCK_CONFLICTING_TEST_SUMMARY"))
                     puts("ORES_TEST|SUMMARY|total=4|passed=0|failed=4|skipped=0|filtered=0");
+                if (getenv("MOCK_TRAILING_BLANK_STDOUT"))
+                    puts("");
             }
         }
         return 0;
@@ -283,7 +285,8 @@ assert_case() {
       'valid plus conflicting summary'|'valid summary alongside FAIL event'|\
       'valid summary alongside excess PASS event'|'duplicated PASS replacing missing PASS'|\
       'duplicate arithmetic PASS identity'|'wrong SKIP test identity'|'duplicate SKIP identity'|\
-      'stray stdout with valid test events and summary'|'unexpected blank stdout record')
+      'stray stdout with valid test events and summary'|'unexpected blank stdout record'|\
+      'trailing blank stdout after valid summary')
         expected_diagnostic='native executable did not produce the exact unique PASS/SKIP guest tests and summary' ;;
       'unrelated CLI error impersonates AOT JIT rejection'|\
       'wrong AOT JIT refusal reason'|'wrong hybrid JIT refusal reason')
@@ -383,6 +386,11 @@ grep -Fx 'native executable did not produce the exact unique PASS/SKIP guest tes
 assert_case 'unexpected blank stdout record' failure aot compressed32 MOCK_BLANK_STDOUT_LINE=1
 grep -Fx 'native executable did not produce the exact unique PASS/SKIP guest tests and summary' "$tmp/stderr" >/dev/null || {
   echo 'FAILED: blank stdout record was rejected by the wrong native gate' >&2
+  exit 1
+}
+assert_case 'trailing blank stdout after valid summary' failure aot compressed32 MOCK_TRAILING_BLANK_STDOUT=1
+grep -Fx 'native executable did not produce the exact unique PASS/SKIP guest tests and summary' "$tmp/stderr" >/dev/null || {
+  echo 'FAILED: trailing blank stdout record escaped the raw-output gate' >&2
   exit 1
 }
 assert_case 'valid summary alongside excess PASS event' failure aot compressed32 MOCK_EXTRA_TEST_PASS=1
