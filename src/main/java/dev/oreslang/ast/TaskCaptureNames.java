@@ -64,7 +64,7 @@ public final class TaskCaptureNames {
             visitBody(s.body(), locals, names);
         } else if (stmt instanceof Ast.IfStmt s) {
             for (Ast.IfBranch branch : s.branches()) {
-                visitExpr(branch.condition(), locals, names);
+                visitConditionExpr(branch.condition(), locals, names);
                 Set<String> branchLocals = new HashSet<>(locals);
                 bindCondition(branch.condition(), branchLocals);
                 visitBody(branch.body(), branchLocals, names);
@@ -75,7 +75,7 @@ public final class TaskCaptureNames {
             for (Ast.MatchArm arm : s.arms()) {
                 Set<String> armLocals = new HashSet<>(locals);
                 bindPattern(arm.pattern(), armLocals);
-                visitExpr(arm.guard(), armLocals, names);
+                visitConditionExpr(arm.guard(), armLocals, names);
                 visitBody(arm.body(), armLocals, names);
             }
         } else if (stmt instanceof Ast.SwitchStmt s) {
@@ -127,6 +127,25 @@ public final class TaskCaptureNames {
             throw new IllegalStateException("unsupported Task capture statement: "
                     + stmt.getClass().getName());
         }
+    }
+
+    /**
+     * Match TypeChecker condition-flow semantics: a refinement binding from
+     * the left side of && is local while visiting the right side.
+     */
+    private static void visitConditionExpr(
+            Ast.Expr condition,
+            Set<String> locals,
+            Set<String> names) {
+        if (condition instanceof Ast.BinaryExpr binary
+                && binary.operator().equals("&&")) {
+            visitConditionExpr(binary.left(), locals, names);
+            Set<String> rightLocals = new HashSet<>(locals);
+            bindCondition(binary.left(), rightLocals);
+            visitConditionExpr(binary.right(), rightLocals, names);
+            return;
+        }
+        visitExpr(condition, locals, names);
     }
 
     private static void bindCondition(
@@ -183,7 +202,7 @@ public final class TaskCaptureNames {
             for (Ast.MatchValueArm arm : s.arms()) {
                 Set<String> armLocals = new HashSet<>(locals);
                 bindPattern(arm.pattern(), armLocals);
-                visitExpr(arm.guard(), armLocals, names);
+                visitConditionExpr(arm.guard(), armLocals, names);
                 visitExpr(arm.value(), armLocals, names);
             }
         } else if (expr instanceof Ast.TypeTestExpr s) {
