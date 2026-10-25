@@ -128,7 +128,7 @@ public final class ConstraintValidationBridge {
         return previous == null ? evidence : previous;
     }
 
-    public static synchronized Evidence lookup(Ast.Expr expression) {
+    private static synchronized Evidence lookup(Ast.Expr expression) {
         Objects.requireNonNull(expression, "constrained alias expression");
         expunge();
         return EVIDENCE.get(new IdentityKey(expression, null));
@@ -138,7 +138,7 @@ public final class ConstraintValidationBridge {
      * Exact AST identity is required. Optimizer rewrites must call the normal
      * checker/validator again; there is intentionally no metadata-copy API.
      */
-    public static synchronized Evidence require(Ast.Expr expression) {
+    private static synchronized Evidence requireIdentity(Ast.Expr expression) {
         Evidence evidence = lookup(expression);
         if (evidence == null) {
             throw new IllegalStateException(
@@ -159,7 +159,7 @@ public final class ConstraintValidationBridge {
         Objects.requireNonNull(catalog, "constraint descriptor catalog");
         Objects.requireNonNull(qualifiedTypeName, "qualified constrained alias");
 
-        Evidence evidence = require(expression);
+        Evidence evidence = requireIdentity(expression);
         if (!evidence.qualifiedTypeName().equals(qualifiedTypeName)) {
             throw new IllegalStateException(
                     "CONSTRAINT_PROVENANCE_TYPE_MISMATCH: expected "
