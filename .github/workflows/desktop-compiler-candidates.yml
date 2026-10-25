@@ -50,7 +50,7 @@ jobs:
             echo "Refusing desktop candidate build from a dirty source checkout" >&2
             exit 65
           fi
-          printf 'candidate_source_sha=%s\\ncandidate_tree_sha=%s\\n' "$actual" "$(git rev-parse 'HEAD^{tree}')"
+          printf 'candidate_source_sha=%s\ncandidate_tree_sha=%s\n' "$actual" "$(git rev-parse 'HEAD^{tree}')"
       - name: Setup GraalVM
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
         with:
