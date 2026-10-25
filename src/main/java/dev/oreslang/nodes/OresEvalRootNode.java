@@ -4075,6 +4075,21 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (expr instanceof Ast.BinaryExpr binary) {
+                    if (binary.operator().equals("??")) {
+                        evalSuspendableExpr(task, binary.left(), env, (t, left, failure) -> {
+                            if (failure != null) {
+                                continuation.accept(t, null, failure);
+                            } else if (!(left instanceof OptionValue option)) {
+                                continuation.accept(t, null,
+                                        new IllegalStateException("?? expected checked Option<T>"));
+                            } else if (option.present()) {
+                                continuation.accept(t, option.value(), null);
+                            } else {
+                                evalSuspendableExpr(t, binary.right(), env, continuation);
+                            }
+                        });
+                        return;
+                    }
                     if (binary.operator().equals("pipe")) {
                         // Defense in depth: never spawn or inspect either stage
                         // if an untyped graph operator reaches guest evaluation.
@@ -4285,10 +4300,9 @@ public final class OresEvalRootNode extends RootNode {
                                 try {
                                     continuation.accept(
                                             t,
-                                            member(
-                                                    receiver,
-                                                    member.member(),
-                                                    env),
+                                            member.optional()
+                                                    ? optionalMember(receiver, member.member(), env)
+                                                    : member(receiver, member.member(), env),
                                             null);
                                 } catch (RuntimeException | Error failure2) {
                                     continuation.accept(t, null, failure2);
@@ -7431,6 +7445,13 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
             if (expr instanceof Ast.BinaryExpr binary) {
+                if (binary.operator().equals("??")) {
+                    Object left = eval(binary.left(), env);
+                    if (!(left instanceof OptionValue option)) {
+                        throw new IllegalStateException("?? expected checked Option<T>");
+                    }
+                    return option.present() ? option.value() : eval(binary.right(), env);
+                }
                 if (binary.operator().equals("pipe")) {
                     throw new IllegalStateException(
                             "actor pipe graph is not implemented; no stages were spawned");
@@ -7538,7 +7559,12 @@ public final class OresEvalRootNode extends RootNode {
                 if (isBooleanIntrinsicCall(call, env)) return evalBooleanIntrinsic(call, env);
                 return invoke(prepareInvocation(call, env));
             }
-            if (expr instanceof Ast.MemberExpr member) return member(eval(member.receiver(), env), member.member(), env);
+            if (expr instanceof Ast.MemberExpr member) {
+                Object receiver = eval(member.receiver(), env);
+                return member.optional()
+                        ? optionalMember(receiver, member.member(), env)
+                        : member(receiver, member.member(), env);
+            }
             if (expr instanceof Ast.IndexExpr indexed) {
                 return indexValue(
                         eval(indexed.receiver(), env),
@@ -8497,6 +8523,15 @@ public final class OresEvalRootNode extends RootNode {
             // The checked leaf is returned intact, even when its runtime
             // representation happens to be another OptionValue.
             return current;
+        }
+
+        private Object optionalMember(Object receiver, String name, Env env) {
+            if (!(receiver instanceof OptionValue option)) {
+                throw new IllegalStateException("?. expected checked Option<T>");
+            }
+            if (!option.present()) return new OptionValue(false, null);
+            Object field = member(option.value(), name, env);
+            return field instanceof OptionValue ? field : new OptionValue(true, field);
         }
 
         private Object optionMember(OptionValue option, String name) {
