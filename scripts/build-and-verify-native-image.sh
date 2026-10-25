@@ -208,7 +208,7 @@ printf '%s\n' "$await_output"
 
 # A native image that merely exits zero without executing guest code is NOT
 # sufficient evidence. Require the real Oreslang test framework's known output.
-# Capture the command first (no pipeline that could hide its exit status).
+# Capture raw stdout in a file (no pipeline can mask the guest exit status).
 # Preserve the raw stdout file byte-for-byte. POSIX command substitution
 # trims trailing newlines, which could hide an extra blank record after an
 # otherwise correct test summary and falsely certify the native executable.
@@ -218,7 +218,7 @@ trap 'rm -f "$guest_stderr" "$test_output_file"' 0
 test_guest_status=0
 (
   unset JAVA_HOME CLASSPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS
-  "$executable" "--mode=$mode" examples/native-testing.ores     >"$test_output_file" 2>"$guest_stderr"
+  "$executable" "--mode=$mode" examples/native-testing.ores >"$test_output_file" 2>"$guest_stderr"
 ) || test_guest_status=$?
 if [ "$test_guest_status" -ne 0 ]; then
   if [ -s "$guest_stderr" ]; then cat "$guest_stderr" >&2; fi
