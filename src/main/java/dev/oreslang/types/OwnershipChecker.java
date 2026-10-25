@@ -996,6 +996,36 @@ public final class OwnershipChecker {
             mergeBranchState(base, exits);
             return result;
         }
+        if (expr instanceof Ast.SwitchExpr switched) {
+            checkExpr(switched.subject(), scope, false);
+            Map<VarState, StateSnapshot> base = stateSnapshot(scope);
+            List<Map<VarState, StateSnapshot>> exits = new ArrayList<>();
+            ValueInfo result = null;
+
+            for (Ast.SwitchValueCase arm : switched.cases()) {
+                restoreState(base);
+                for (Ast.Expr constant : arm.constants()) {
+                    checkExpr(constant, scope, false);
+                }
+                ValueInfo value = checkExpr(arm.value(), scope, consuming);
+                if (isBorrowValue(value) || value.borrowSource != null) {
+                    throw error("value switch cannot return a borrowed branch-local value");
+                }
+                if (result == null) result = value;
+                exits.add(stateSnapshot(scope));
+            }
+
+            restoreState(base);
+            ValueInfo fallback = checkExpr(switched.defaultValue(), scope, consuming);
+            if (isBorrowValue(fallback) || fallback.borrowSource != null) {
+                throw error("value switch cannot return a borrowed branch-local value");
+            }
+            if (result == null) result = fallback;
+            exits.add(stateSnapshot(scope));
+
+            mergeBranchState(base, exits);
+            return result;
+        }
         if (expr instanceof Ast.LiteralExpr literal) {
             return new ValueInfo(inferLiteralType(literal.value()), ValueKind.COPY, null);
         }
