@@ -1197,6 +1197,21 @@ public final class OwnershipChecker {
                     source.borrowSource);
         }
         if (expr instanceof Ast.BinaryExpr binary) {
+            if (binary.operator().equals("??")) {
+                ValueInfo left = checkExpr(binary.left(), scope, false);
+                Ast.TypeRef carrier = left.type;
+                if (carrier == null || carrier.isBorrow()
+                        || !carrier.name().equals("Option")
+                        || carrier.arguments().size() != 1
+                        || !isCopyType(carrier.arguments().getFirst())) {
+                    throw error("?? currently requires an owned Option<Copy> payload");
+                }
+                Map<VarState, StateSnapshot> base = stateSnapshot(scope);
+                checkExpr(binary.right(), scope, false);
+                Map<VarState, StateSnapshot> fallbackExit = stateSnapshot(scope);
+                mergeBranchState(base, List.of(base, fallbackExit));
+                return new ValueInfo(carrier.arguments().getFirst(), ValueKind.COPY, null);
+            }
             checkExpr(binary.left(), scope, false);
             if (binary.operator().equals("&&")) {
                 Scope rightScope = new Scope(scope);
@@ -1235,6 +1250,42 @@ public final class OwnershipChecker {
             return checkCall(call, scope);
         }
         if (expr instanceof Ast.MemberExpr member) {
+            if (member.optional()) {
+                ValueInfo receiver = checkExpr(member.receiver(), scope, false);
+                Ast.TypeRef carrier = receiver.type;
+                if (carrier == null || carrier.isBorrow()
+                        || !carrier.name().equals("Option")
+                        || carrier.arguments().size() != 1) {
+                    throw error("?. requires an owned Option<T> receiver");
+                }
+                Ast.TypeRef payload = carrier.arguments().getFirst();
+                Ast.TypeRef fieldType = null;
+                if (payload.isClosedAggregateType()) {
+                    fieldType = payload.aggregateMembers().get(member.member());
+                } else {
+                    Ast.ClassDecl klass = findClass(payload.name());
+                    if (klass != null && klass.actorKind() == Ast.ActorKind.NONE) {
+                        ResolvedField target = findFieldTarget(
+                                klass, payload, member.member(), new LinkedHashSet<>());
+                        if (target != null) {
+                            fieldType = substituteType(
+                                    ownershipFieldType(target.field()),
+                                    genericBindings(target.owner().genericParameters(),
+                                            target.ownerType().arguments()));
+                        }
+                    }
+                }
+                // Copy-only phase: no projected affine moves or escaped borrows.
+                if (fieldType == null || !isCopyType(fieldType)) {
+                    throw error("?. currently requires a known Copy data field; "
+                            + "affine Option projection needs separate ownership proof");
+                }
+                Ast.TypeRef result = fieldType.name().equals("Option")
+                        && fieldType.arguments().size() == 1
+                        ? fieldType
+                        : new Ast.TypeRef("Option", List.of(fieldType), false);
+                return new ValueInfo(result, ValueKind.COPY, null);
+            }
             if (member.receiver() instanceof Ast.NameExpr receiverName) {
                 VarState receiverState = scope.lookup(receiverName.name());
                 if (receiverState != null && isScopedMutexReceiver(receiverState)) {
