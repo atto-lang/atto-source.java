@@ -45,6 +45,25 @@ history ambiguity fails closed. V3 repeats the authority check immediately
 before publication and again in the inert payload window before creating the
 one-use authorization ref. The legacy publisher remains protected-main-only.
 
+Carrier `main` has the same fail-closed choice, but the unprotected fallback
+is bound by the **carrier contract**, not by an implicit trusted branch. If the
+carrier reports `protected: true`, V3 requires CODEOWNER review, stale-review
+dismissal, at least one approval, administrator enforcement, no review
+bypasses, no force pushes, no deletion, and the exact security CODEOWNERS file.
+If those private-repository protections are unavailable, the protected source
+contract must include an exact positive `review_pr`. That PR must be a
+same-repository PR merged to carrier `main`, authored by an account other than
+immutable reviewer ID `11139560` / login `ORESoftware`, and the latest
+review from that reviewer must be `APPROVED` on the PR's exact head before
+merge. V3 then requires the **entire final carrier main root-tree SHA** to equal
+the reviewed PR head root-tree SHA and requires the exact carrier CODEOWNERS
+bytes. Thus path, Git mode, or blob drift after review fails closed.
+
+The exact carrier-main SHA is rechecked before every source-bearing destination
+write. Full carrier review/tree attestation is repeated at initial admission,
+immediately before executable refs, and again while the source-bearing payload
+ref is still inert before creating the one-use authorization ref.
+
 At the 2026-10-20 audit, source `main` still reported `protected: false`,
 and GitHub reported private-repository rulesets unavailable on the current
 plan. Therefore real V3 export must use the exact review-attested path unless
@@ -212,7 +231,8 @@ API operations. V3 tests additionally prove protected carrier-contract parsing,
 source-free base enforcement, exact open-PR binding, receipt construction,
 tree-derived branch naming, and dispatcher-authorization ref creation. The
 real allowlist remains empty and **no destination is authorized** unless
-separately reviewed and protected-main enforcement is active.
+separately reviewed and either protected-main enforcement or the exact-tree
+review-attested carrier mode is satisfied.
 
 ## Active disclosure incident
 
