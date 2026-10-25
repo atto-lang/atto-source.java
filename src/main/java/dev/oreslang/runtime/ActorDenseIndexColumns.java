@@ -73,7 +73,7 @@ public final class ActorDenseIndexColumns extends ActorShardBacking implements A
     }
 
     @Override
-    boolean ownedBy(ActorRuntime runtime, ActorRuntime.ActorId actor) {
+    boolean ownedBy(ActorRuntime runtime, ActorRuntime.ActorRef<?> actor) {
         return reservation.ownedBy(runtime, actor);
     }
 
@@ -90,9 +90,9 @@ public final class ActorDenseIndexColumns extends ActorShardBacking implements A
     @Override
     void revokeBackingFromLease() {
         int[] old = storage;
+        storage = null; // retained wrappers lose backing before scrub begins
         if (old != null) {
             java.util.Arrays.fill(old, 0);
-            storage = null;
         }
     }
 
@@ -162,8 +162,9 @@ public final class ActorDenseIndexColumns extends ActorShardBacking implements A
     public void close() {
         if (storage != null) {
             reservation.requireOwner();
-            java.util.Arrays.fill(storage, 0);
+            int[] old = storage;
             storage = null;
+            java.util.Arrays.fill(old, 0);
         }
         reservation.close();
     }
