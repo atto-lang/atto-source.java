@@ -3686,6 +3686,12 @@ public final class TypeChecker {
                         + "'; invoke directly or spread a statically known tuple with f(...args)");
             }
             Type collectionMember = builtinCollectionMember(sumReceiver, member.member());
+            if (collectionMember instanceof Function) {
+                throw new IllegalArgumentException(
+                        "collection method '" + member.member()
+                                + "' is direct-call-only; bound collection method "
+                                + "values would hide an untracked alias to the owning sequence");
+            }
             if (isStringLike(sumReceiver)) {
                 return switch (member.member()) {
                     case "replace_literal" -> new Function(List.of(Primitive.STRING, Primitive.STRING), Primitive.STRING);

@@ -173,6 +173,40 @@ final class ProjectedBorrowOwnershipTest {
     }
 
     @Test
+    void collectionBoundMethodsAreDirectCallOnly() {
+        IllegalArgumentException getter = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(List<int> values): void {
+                          val Fnc<int, int> get = values.get;
+                          return;
+                        }
+                        """)));
+        assertTrue(getter.getMessage().contains("direct-call-only"),
+                getter.getMessage());
+
+        IllegalArgumentException mutator = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(List<int> values): void {
+                          val Fnc<int, void> add = values.add;
+                          return;
+                        }
+                        """)));
+        assertTrue(mutator.getMessage().contains("direct-call-only"),
+                mutator.getMessage());
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc good(): int {
+                  let List<int> values = [1];
+                  values.add(2);
+                  values.set(0, 3);
+                  return values.get(0);
+                }
+                """)));
+    }
+
+    @Test
     void storedProjectionGuardsEntireOwnerAgainstMove() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(TYPES + """
