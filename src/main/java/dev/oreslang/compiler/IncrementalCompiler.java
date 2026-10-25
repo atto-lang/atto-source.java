@@ -57,7 +57,12 @@ public final class IncrementalCompiler {
         // neither unit is recursively compiled while discovering the other.
         for (Map.Entry<String, String> entry : normalized.entrySet()) {
             hashes.put(entry.getKey(), digest(entry.getValue()));
-            Ast.Program program = AnnotationExpander.expand(Parser.parse(entry.getValue()));
+            final Ast.Program program;
+            try {
+                program = AnnotationExpander.expand(Parser.parse(entry.getValue()));
+            } catch (IllegalArgumentException invalid) {
+                throw new SourceUnitDiagnosticException(entry.getKey(), "", "", invalid);
+            }
             parsed.put(entry.getKey(), program);
             abiHashes.put(entry.getKey(), abiDigest(program));
         }
@@ -122,15 +127,10 @@ public final class IncrementalCompiler {
                         checked, linked.classes(), analysis.shortInferredAliases());
             } catch (IllegalArgumentException invalid) {
                 Ast.Program sourceProgram = parsed.get(id);
-                String context = sourceProgram.modules().size() == 1
-                        ? " [module: " + sourceProgram.modules().get(0).name() + "]"
-                        : " [modules: " + sourceProgram.modules().size() + "]";
-                if (sourceProgram.namespace() != null && !sourceProgram.namespace().isBlank()) {
-                    context += " [namespace: " + sourceProgram.namespace() + "]";
-                }
-                throw new IllegalArgumentException(
-                        "Oreslang source unit '" + id + "':" + context
-                                + " " + invalid.getMessage(), invalid);
+                String moduleName = sourceProgram.modules().size() == 1
+                        ? sourceProgram.modules().get(0).name() : "";
+                throw new SourceUnitDiagnosticException(
+                        id, moduleName, sourceProgram.namespace(), invalid);
             }
             CompiledUnit unit = new CompiledUnit(
                     id,
