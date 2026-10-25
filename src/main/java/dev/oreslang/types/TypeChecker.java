@@ -2846,7 +2846,10 @@ public final class TypeChecker {
                 return Primitive.VOID;
             }
             return switch (runtime.operation()) {
-                case "borrow" -> new Borrow(operand, false);
+                // Canonical rt borrow must preserve the same reborrow type
+                // as the internal unary form, without nesting loan wrappers.
+                case "borrow" -> operand instanceof Borrow existing
+                        ? new Borrow(existing.target(), false) : new Borrow(operand, false);
                 case "copy", "take", "share" -> operand;
                 default -> throw new IllegalArgumentException(
                         "unknown runtime ownership operation 'rt " + runtime.operation() + "'");
@@ -2863,6 +2866,23 @@ public final class TypeChecker {
                             env, generics, self);
                 }
             }
+if (call.callee() instanceof Ast.MemberExpr console
+        && console.receiver() instanceof Ast.NameExpr namespace
+        && namespace.name().equals("stdio") && env.lookup("stdio") == null
+        && (console.member().equals("print") || console.member().equals("println"))) {
+    if (call.typeArgumentsPresent() || call.arguments().isEmpty()
+            || call.arguments().size() > 32) {
+        throw new IllegalArgumentException("stdio." + console.member()
+                + " requires 1 to 32 positional values and no type arguments");
+    }
+    for (Ast.Expr argument : call.arguments()) {
+        if (argument instanceof Ast.SpreadExpr) {
+            throw new IllegalArgumentException("stdio console spread is unsupported; use stdio.stdout.log");
+        }
+        typeOf(argument, env, generics, self);
+    }
+    return Primitive.VOID;
+}
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");

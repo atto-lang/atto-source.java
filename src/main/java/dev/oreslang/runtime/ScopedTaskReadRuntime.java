@@ -223,14 +223,17 @@ public final class ScopedTaskReadRuntime {
     }
 
     static boolean writeHeldForTesting(
+            Ast.Program program,
             ScopedTaskReadAuthority.AllocationIdentity allocation) {
-        return Integer.valueOf(WRITE_HELD).equals(ACCESS.get(key(allocation)));
+        return Integer.valueOf(WRITE_HELD).equals(ACCESS.get(key(program, allocation)));
     }
 
 
     private static AllocationKey key(
+            Ast.Program program,
             ScopedTaskReadAuthority.AllocationIdentity allocation) {
         return new AllocationKey(
+                program,
                 allocation.domain(),
                 allocation.allocationId(),
                 allocation.generation());
