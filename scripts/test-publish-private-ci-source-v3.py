@@ -244,6 +244,24 @@ class PrivateCiV3Test(unittest.TestCase):
                     "trusted/ci", hashlib.sha256(policy).digest(), 246810
                 )
 
+    def test_authorized_main_rejects_unprotected_review_attestation_fallback(self):
+        branch = {
+            "name": v3.legacy.SOURCE_PROTECTED_BRANCH,
+            "protected": False,
+            "commit": {"sha": PROTECTED},
+        }
+        with (
+            patch.object(v3.legacy, "gh_api", return_value=branch),
+            patch.object(v3.legacy, "verify_protected_origin") as protected,
+            patch.object(v3, "review_attested_main_sha") as fallback,
+        ):
+            with self.assertRaisesRegex(
+                v3.Denied, "source main is not protected"
+            ):
+                v3.authorized_main_sha("trusted/ci", POLICY, 246810)
+            protected.assert_not_called()
+            fallback.assert_not_called()
+
     def test_authorized_main_prefers_classic_protection_when_available(self):
         branch = {
             "name": v3.legacy.SOURCE_PROTECTED_BRANCH,
