@@ -450,6 +450,26 @@ final class MutexLanguageTest {
     }
 
     @Test
+    void withLockOneShotMayConsumeTransferredExternalCapture() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Box as
+                  pub let int value = 7;
+                end
+
+                fnc good(): void {
+                  val mutex = Mutex.new(1);
+                  val Box payload = new Box();
+                  mutex.with_lock(|protected| -> {
+                    val Box moved = rt take payload;
+                    stdio.println(moved.value);
+                    return;
+                  });
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void withLockProvidesMutableProtectedValue() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
 

@@ -86,6 +86,27 @@ final class SourceActorEndCleanupExecutionTest {
     }
 
     @Test
+    void finalCleanupOneShotMayConsumeTransferredOwnedCapture() {
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(
+                () -> dev.oreslang.types.OwnershipChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 7;
+                        end
+
+                        define actor Worker as
+                          receive(ActorMail<String> mail): void {
+                            val Box payload = new Box();
+                            self.endWithCleanup(|| -> {
+                              val Box moved = rt take payload;
+                              stdio.println(moved.value);
+                            });
+                            return;
+                          }
+                        end
+                        """)));
+    }
+
+    @Test
     void finalCleanupMayCaptureActorSelfButNotAnOrdinaryBorrow() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,

@@ -1772,7 +1772,7 @@ public final class OwnershipChecker {
                 if (actorSelf != null && isActorConfinedBorrow(actorSelf)) {
                     if (call.arguments().size() == 1
                             && call.arguments().getFirst() instanceof Ast.LambdaExpr cleanup) {
-                        checkLambda(cleanup, scope, null, true);
+                        checkOneShotLambda(cleanup, scope, null, true);
                     } else {
                         for (Ast.Expr argument : call.arguments()) {
                             checkExpr(argument, scope, false);
@@ -1847,7 +1847,7 @@ public final class OwnershipChecker {
                                     List.of(protectedParam), lambda.expressionBody(), lambda.blockBody());
                             mutexCriticalSectionDepth++;
                             try {
-                                checkLambda(protectedLambda, scope, null);
+                                checkOneShotLambda(protectedLambda, scope, null, false);
                             } finally {
                                 mutexCriticalSectionDepth--;
                             }
@@ -2723,7 +2723,13 @@ public final class OwnershipChecker {
             Scope outer,
             String recursiveBinding,
             boolean allowActorSelfCapture) {
-        return checkLambda(lambda, outer, recursiveBinding, allowActorSelfCapture, false);
+        return checkLambda(
+                lambda,
+                outer,
+                recursiveBinding,
+                allowActorSelfCapture,
+                false,
+                false);
     }
 
     private ValueInfo checkLambda(
@@ -2732,6 +2738,36 @@ public final class OwnershipChecker {
             String recursiveBinding,
             boolean allowActorSelfCapture,
             boolean deferredCleanup) {
+        return checkLambda(
+                lambda,
+                outer,
+                recursiveBinding,
+                allowActorSelfCapture,
+                deferredCleanup,
+                deferredCleanup);
+    }
+
+    private ValueInfo checkOneShotLambda(
+            Ast.LambdaExpr lambda,
+            Scope outer,
+            String recursiveBinding,
+            boolean allowActorSelfCapture) {
+        return checkLambda(
+                lambda,
+                outer,
+                recursiveBinding,
+                allowActorSelfCapture,
+                false,
+                true);
+    }
+
+    private ValueInfo checkLambda(
+            Ast.LambdaExpr lambda,
+            Scope outer,
+            String recursiveBinding,
+            boolean allowActorSelfCapture,
+            boolean deferredCleanup,
+            boolean oneShot) {
         boolean nonLexical = lambda.nonLexical() || outer.descendantsNonLexical();
         CaptureSet captures = nonLexical ? new CaptureSet() : collectCaptures(lambda, outer, recursiveBinding);
         Scope closure = new Scope(null, nonLexical);
@@ -2812,9 +2848,11 @@ public final class OwnershipChecker {
 
             // Ordinary Fnc values are reusable: calling them only borrows the
             // function value and its non-Copy arguments. Until a distinct
-            // FnOnce/consuming-callable contract exists, no invocation may
-            // move owned state out of the closure environment.
-            if (!deferredCleanup) {
+            // FnOnce/consuming-callable type exists, reusable invocations may
+            // not move owned state out of the closure environment. Inline
+            // one-shot APIs (defer, endWithCleanup, with_lock/recover) are
+            // checked with oneShot=true and may consume captures exactly once.
+            if (!oneShot) {
                 for (Capture capture : captures.values.values()) {
                     VarState captured = closure.lookup(capture.name);
                     if (captured != null && ownershipRoot(captured).moved) {
