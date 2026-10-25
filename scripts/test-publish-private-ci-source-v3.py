@@ -169,14 +169,13 @@ class PrivateCiV3Test(unittest.TestCase):
 
     def test_review_attestation_rejects_author_as_security_reviewer(self):
         policy = b"trusted/ci 246810\n"
-        api = self.review_authority_api(
-            author_id=v3.REVIEW_AUTHORITY_USER_ID
-        )
-        with patch.object(v3.legacy, "gh_api", side_effect=api):
-            with self.assertRaisesRegex(v3.Denied, "independent merged"):
-                v3.review_attested_main_sha(
-                    "trusted/ci", hashlib.sha256(policy).digest(), 246810
-                )
+        for author_id in (v3.REVIEW_AUTHORITY_USER_ID, 0):
+            api = self.review_authority_api(author_id=author_id)
+            with patch.object(v3.legacy, "gh_api", side_effect=api):
+                with self.assertRaisesRegex(v3.Denied, "independent merged"):
+                    v3.review_attested_main_sha(
+                        "trusted/ci", hashlib.sha256(policy).digest(), 246810
+                    )
 
     def test_review_attestation_rejects_latest_revocation(self):
         policy = b"trusted/ci 246810\n"
@@ -734,12 +733,13 @@ class PrivateCiV3Test(unittest.TestCase):
             with self.assertRaisesRegex(v3.Denied, "stale, late, or not approved"):
                 v3.checked_carrier_main("trusted/ci", carrier)
 
-        carrier, api, reviews = self.carrier_review_fixture(
-            author_id=v3.CARRIER_REVIEW_USER_ID
-        )
-        with patch.object(v3.legacy, "gh_api", side_effect=api):
-            with self.assertRaisesRegex(v3.Denied, "independent merged"):
-                v3.checked_carrier_main("trusted/ci", carrier)
+        for author_id in (v3.CARRIER_REVIEW_USER_ID, 0):
+            carrier, api, reviews = self.carrier_review_fixture(
+                author_id=author_id
+            )
+            with patch.object(v3.legacy, "gh_api", side_effect=api):
+                with self.assertRaisesRegex(v3.Denied, "independent merged"):
+                    v3.checked_carrier_main("trusted/ci", carrier)
 
     def test_protected_carrier_still_requires_codeowner_admin_and_no_bypass(self):
         carrier = contract()
