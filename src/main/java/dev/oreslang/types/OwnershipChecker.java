@@ -2029,6 +2029,15 @@ public final class OwnershipChecker {
         if (value instanceof Ast.ConditionalExpr conditional) {
             collectFormattingRoots(conditional.whenTrue(), scope, roots);
             collectFormattingRoots(conditional.whenFalse(), scope, roots);
+        } else if (value instanceof Ast.MatchExpr match) {
+            if (!isCopyType(syntacticType(match.subject(), scope)))
+                collectFormattingRoots(match.subject(), scope, roots);
+            for (Ast.MatchValueArm arm : match.arms())
+                collectFormattingRoots(arm.value(), scope, roots);
+        } else if (value instanceof Ast.AssignExpr assignment) {
+            // Assignment evaluates to the newly installed value, which can
+            // alias its target while later format arguments are evaluated.
+            collectFormattingRoots(assignment.target(), scope, roots);
         } else if (value instanceof Ast.CastExpr cast) {
             collectFormattingRoots(cast.value(), scope, roots);
         } else if (value instanceof Ast.NameExpr name) {

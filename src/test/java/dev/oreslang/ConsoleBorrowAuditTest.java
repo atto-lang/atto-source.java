@@ -52,6 +52,25 @@ final class ConsoleBorrowAuditTest {
     }
 
     @Test
+    void assignmentResultPinsItsNewOwner() {
+        assertBorrowRejected(PAYLOAD + """
+                pub fnc main():int {
+                  let ConsolePayload target = new ConsolePayload();
+                  val ConsolePayload donor = new ConsolePayload();
+                  stdio.stdout.log(target = donor, consume(target));
+                  return 0;
+                }
+                """);
+    }
+
+    @Test
+    void matchFormattingPinsAllPossibleArmOwners() {
+        assertBorrowRejected(main("val ConsolePayload other = new ConsolePayload();"
+                + "stdio.stdout.log(match<ConsolePayload> true over "
+                + "on true -> { return item; } on false -> { return other; } end, consume(other));"));
+    }
+
+    @Test
     void formattingSpreadPinsTheCollectionUntilTheInvocationCompletes() {
         assertBorrowRejected("""
                 fnc consume(Array<int> values):String { return "consumed"; }
