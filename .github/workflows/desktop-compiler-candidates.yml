@@ -36,6 +36,21 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      - name: Verify source checkout matches the immutable workflow commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="${{ github.sha }}"
+          actual="$(git rev-parse --verify HEAD)"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "Refusing desktop candidate build on a mismatched checkout: $actual != $expected" >&2
+            exit 65
+          fi
+          if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+            echo "Refusing desktop candidate build from a dirty source checkout" >&2
+            exit 65
+          fi
+          printf 'candidate_source_sha=%s\\ncandidate_tree_sha=%s\\n' "$actual" "$(git rev-parse 'HEAD^{tree}')"
       - name: Setup GraalVM
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
         with:
@@ -135,7 +150,7 @@ jobs:
           $p = Start-Process -FilePath $uninstall -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -PassThru -Wait
           if ($p.ExitCode -ne 0) { throw "Windows uninstaller failed with code $($p.ExitCode)" }
       - name: Upload PRIVATE candidate, never a public release
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: compiler-candidate-${{ matrix.platform }}
           path: |
