@@ -143,6 +143,62 @@ final class PointerlessFncOwnershipTest {
     }
 
     @Test
+    void qualifiedFunctionsWithOwnedParametersStayDirectCallOnly() {
+        IllegalArgumentException moduleFunction = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module helpers
+                          pub fnc count(List<int> values): int {
+                            return 1;
+                          }
+                        end
+
+                        fnc bad(): void {
+                          val Fnc<List<int>, int> callback = helpers.count;
+                          return;
+                        }
+                        """)));
+        assertTrue(moduleFunction.getMessage().contains("helpers.count"),
+                moduleFunction.getMessage());
+
+        IllegalArgumentException staticFunction = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Helpers as
+                          pub static fnc count(List<int> values): int {
+                            return 1;
+                          }
+                        end
+
+                        fnc bad(): void {
+                          val Fnc<List<int>, int> callback = Helpers.count;
+                          return;
+                        }
+                        """)));
+        assertTrue(staticFunction.getMessage().contains("Helpers.count"),
+                staticFunction.getMessage());
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module helpers
+                  pub fnc count(List<int> values): int {
+                    return 1;
+                  }
+                end
+
+                define class Helpers as
+                  pub static fnc count(List<int> values): int {
+                    return 1;
+                  }
+                end
+
+                fnc good(): int {
+                  val List<int> values = [1, 2];
+                  return helpers.count(values) + Helpers.count(values);
+                }
+                """)));
+    }
+
+    @Test
     void storedRtBorrowBlocksMutationUntilItsScopeEnds() {
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class,

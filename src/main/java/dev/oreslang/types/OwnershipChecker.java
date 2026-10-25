@@ -390,10 +390,60 @@ public final class OwnershipChecker {
         if (family == null || family.size() != 1) return;
 
         Ast.FunctionDecl function = family.values().iterator().next();
-        for (Ast.Param param : function.parameters()) {
+        rejectUnsafeFirstClassBorrowingParameters(
+                function.name(), function.parameters());
+    }
+
+    private void rejectUnsafeQualifiedFirstClassFunctionReification(
+            String namespace, String member) {
+        Map<Integer, Ast.FunctionDecl> family =
+                functions.get(namespace + "." + member);
+        if (family != null && family.size() == 1) {
+            Ast.FunctionDecl function = family.values().iterator().next();
+            rejectUnsafeFirstClassBorrowingParameters(
+                    namespace + "." + function.name(),
+                    function.parameters());
+            return;
+        }
+
+        Ast.ClassDecl klass = findClass(namespace);
+        if (klass == null) return;
+        List<Ast.MethodDecl> candidates = new ArrayList<>();
+        collectStaticMethodsByName(
+                klass, member, new LinkedHashSet<>(), candidates);
+        if (candidates.size() == 1) {
+            Ast.MethodDecl function = candidates.getFirst();
+            rejectUnsafeFirstClassBorrowingParameters(
+                    klass.name() + "." + function.name(),
+                    function.parameters());
+        }
+    }
+
+    private void collectStaticMethodsByName(
+            Ast.ClassDecl klass,
+            String name,
+            Set<Ast.ClassDecl> seen,
+            List<Ast.MethodDecl> methods) {
+        if (!seen.add(klass)) return;
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (method.isStatic() && method.name().equals(name)) {
+                methods.add(method);
+            }
+        }
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = findClass(parentRef.name());
+            if (parent != null) {
+                collectStaticMethodsByName(parent, name, seen, methods);
+            }
+        }
+    }
+
+    private void rejectUnsafeFirstClassBorrowingParameters(
+            String callable, List<Ast.Param> parameters) {
+        for (Ast.Param param : parameters) {
             if (param.structural() || param.type().isBorrow()) continue;
             if (kindOfType(param.type()) == ValueKind.COPY) continue;
-            throw error("cannot reify function '" + function.name()
+            throw error("cannot reify function '" + callable
                     + "' as first-class Fnc because parameter '" + param.name()
                     + "' is owned/non-Copy while Fnc invocation lends such "
                     + "arguments read-only; use an explicit borrow/structural "
@@ -1277,6 +1327,11 @@ public final class OwnershipChecker {
             return checkCall(call, scope);
         }
         if (expr instanceof Ast.MemberExpr member) {
+            if (member.receiver() instanceof Ast.NameExpr namespace
+                    && scope.lookup(namespace.name()) == null) {
+                rejectUnsafeQualifiedFirstClassFunctionReification(
+                        namespace.name(), member.member());
+            }
             if (member.receiver() instanceof Ast.NameExpr receiverName) {
                 VarState receiverState = scope.lookup(receiverName.name());
                 if (receiverState != null && isScopedMutexReceiver(receiverState)) {
