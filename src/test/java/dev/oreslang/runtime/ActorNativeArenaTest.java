@@ -762,6 +762,72 @@ final class ActorNativeArenaTest {
     }
 
     @Test
+    void rejectedNativeRegionReservationDoesNotConsumeActorRelativeAddress() {
+        AtomicLong charged = new AtomicLong();
+        AtomicBoolean reject = new AtomicBoolean();
+        try (ActorNativeArena arena = new ActorNativeArena(128, () -> {}, bytes -> {
+            if (reject.get()) throw new IllegalStateException("synthetic quota denial");
+            charged.addAndGet(bytes);
+            return () -> charged.addAndGet(-bytes);
+        })) {
+            try (ActorNativeArena.Region first = arena.region(9)) {
+                assertEquals(0L, first.nativeOffset());
+            }
+            assertEquals(0L, charged.get());
+            reject.set(true);
+            assertThrows(IllegalStateException.class, () -> arena.region(9));
+            assertEquals(0L, charged.get());
+            reject.set(false);
+            try (ActorNativeArena.Region next = arena.region(9)) {
+                // A closed allocation is never recycled; a failed admission
+                // must not create an additional phantom logical allocation.
+                assertEquals(16L, next.nativeOffset());
+                next.writeByte(0, (byte) 42);
+                assertEquals((byte) 42, next.readByte(0));
+            }
+            assertEquals(0L, charged.get());
+        }
+        assertEquals(0L, charged.get());
+    }
+
+    @Test
+    void rejectedSlabGrowthPreservesPublishedMetadataAndExistingValues() {
+        AtomicLong charged = new AtomicLong();
+        AtomicBoolean reject = new AtomicBoolean();
+        try (ActorNativeArena arena = new ActorNativeArena(8192, () -> {}, bytes -> {
+            if (reject.get()) throw new IllegalStateException("synthetic growth quota denial");
+            charged.addAndGet(bytes);
+            return () -> charged.addAndGet(-bytes);
+        })) {
+            ActorNativeArena.ValueCell first = null;
+            ActorNativeArena.ValueCell last = null;
+            for (int index = 0; index < 170; index++) {
+                last = arena.valueCell((long) index, new Object());
+                if (first == null) first = last;
+            }
+            assertEquals(4096, arena.committedBytes());
+            assertEquals(4080, arena.allocatedBytes());
+            assertEquals(4096, charged.get());
+
+            reject.set(true);
+            assertThrows(IllegalStateException.class,
+                    () -> arena.valueCell(170L, new Object()));
+            assertEquals(4096, arena.committedBytes());
+            assertEquals(4080, arena.allocatedBytes());
+            assertEquals(4096, charged.get());
+
+            reject.set(false);
+            ActorNativeArena.ValueCell resumed = arena.valueCell(170L, new Object());
+            assertEquals(0L, first.get());
+            assertEquals(169L, last.get());
+            assertEquals(170L, resumed.get());
+            assertEquals(8192, arena.committedBytes());
+            assertEquals(8192, charged.get());
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
     void nativeTaskPhaseRejectsOverflowedOrTruncated64BitCodes() {
         for (long code : new long[] {-1L, 6L, Integer.MAX_VALUE,
                                      0x1_0000_0001L, Long.MAX_VALUE}) {
@@ -935,3 +1001,4 @@ final class ActorNativeArenaTest {
         });
     }
 }
+
