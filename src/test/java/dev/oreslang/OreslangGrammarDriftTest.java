@@ -27,7 +27,7 @@ final class OreslangGrammarDriftTest {
             binding_decl binding_kind named_inferred_binding named_inferred_literal destructure_stmt sequence_pattern
             object_pattern sequence_destructure_item sequence_rest_item object_destructure_item object_rest_item block
             statement return_stmt defer_stmt block_stmt break_stmt continue_stmt
-            loop_stmt while_stmt if_stmt conditional_branch deprecated_if_do condition condition_and
+            loop_stmt while_stmt if_stmt conditional_branch deprecated_if_do condition_head condition condition_and
             match_stmt match_arm pattern switch_stmt switch_case switch_default
             try_stmt select_stmt select_wait_mode select_policy select_arm select_arm_keyword
             select_default for_stmt c_for_head for_init for_update for_of_head
@@ -36,7 +36,7 @@ final class OreslangGrammarDriftTest {
             multiplicative unary channel_expr channel_wait_mode postfix call_suffix
             call_argument_list call_argument member_suffix member_name index_suffix argument_list
             primary lambda pipe_lambda lambda_param typed_legacy_lambda lambda_body
-            tuple_literal array_literal legacy_array_literal inferred_struct_literal explicit_struct_literal struct_field_spec
+            tuple_literal array_literal legacy_array_literal record_literal inferred_struct_literal inferred_record_literal explicit_struct_literal struct_field_spec
             struct_value_field static_struct_key literal type_ref type_atom borrow_type
             tuple_type record_type record_type_field alias_marker callable_generic_type named_type
             type_arg_or_named named_type_param meta_value sequence_type_shape sequence_type_item function_type

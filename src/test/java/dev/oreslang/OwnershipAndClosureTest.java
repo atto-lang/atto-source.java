@@ -595,13 +595,14 @@ final class OwnershipAndClosureTest {
     }
 
     @Test
-    void ordinaryRecordFieldProjectionIsAReadNotAnImplicitPartialMove() {
+    void ordinaryStructFieldProjectionIsAReadNotAnImplicitPartialMove() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc seed(): string { return "a"; }
 
                 fnc ok(): void {
-                  val outer = struct{inner: {value: string}}{inner: struct{value: string}{value: seed()}};
-                  val alias = outer.inner;
+                  const Inner initial = infer<Inner> struct{value: seed()};
+                  val outer = infer struct{inner: initial};
+                  val Inner alias = outer.inner;
                   alias.value = "alias";
                   outer.inner.value = "owner";
                   return;

@@ -2,6 +2,7 @@ package dev.oreslang.launcher;
 
 import dev.oreslang.compiler.BuildOptions;
 import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.compiler.ReachabilityReport;
 import dev.oreslang.compiler.TreeShaker;
 import dev.oreslang.config.OresProjectConfig;
 import dev.oreslang.parser.Parser;
@@ -9,15 +10,12 @@ import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.NativeBuildMode;
 import dev.oreslang.runtime.CorePerf;
 import dev.oreslang.runtime.CoreDebug;
+import dev.oreslang.runtime.CoreLog;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.LinkedProgramRunner;
 import dev.oreslang.runtime.PermissionCheckMode;
 import dev.oreslang.runtime.RuntimePermissions;
 import java.io.IOException;
-import java.io.InputStream;
-import java.nio.ByteBuffer;
-import java.nio.charset.CodingErrorAction;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -49,7 +47,14 @@ public final class OresMain {
     /** Testable CLI boundary: syntax/configuration failures never masquerade as success. */
     static int exitStatusForArgs(String[] args) {
         try {
-            return runForExitStatus(args);
+            int status = runForExitStatus(args);
+            // PrintStream records failed writes instead of throwing IOException.
+            // Flush and inspect both CLI streams before publishing success.
+            if (status == 0 && (System.out.checkError() || System.err.checkError())) {
+                System.err.println("oreslang: failed to publish CLI output");
+                return 1;
+            }
+            return status;
         } catch (UsageException failure) {
             System.err.println("oreslang: " + failure.getMessage());
             return 2;
@@ -62,21 +67,29 @@ public final class OresMain {
         }
     }
 
+    static String buildInfoJson() {
+        return "{\"build_mode\":\"" + NativeBuildMode.kind().name().toLowerCase(Locale.ROOT)
+                + "\",\"default_execution_mode\":\"" + NativeBuildMode.defaultExecutionMode()
+                + "\",\"managed_reference_mode\":\""
+                + NativeBuildMode.managedReferenceMode().name().toLowerCase(Locale.ROOT)
+                + "\",\"guest_execution\":\"" + (NativeBuildMode.kind() == NativeBuildMode.Kind.AOT
+                    ? "interpreter-no-jit" : "runtime-selected") + "\"}";
+    }
+
     private static int runForExitStatus(String[] args) throws Exception {
         if (args.length == 1 && args[0].equals("--build-info")) {
-            System.out.println("{\"build_mode\":\"" + NativeBuildMode.kind().name().toLowerCase(Locale.ROOT)
-                    + "\",\"default_execution_mode\":\"" + NativeBuildMode.defaultExecutionMode()
-                    + "\",\"guest_execution\":\"" + (NativeBuildMode.kind() == NativeBuildMode.Kind.AOT
-                        ? "interpreter-no-jit" : "runtime-selected") + "\"}");
+            System.out.println(buildInfoJson());
             return 0;
         }
         String perfEnv = System.getenv("ORES_CORE_PERF");
         boolean corePerf = "true".equalsIgnoreCase(perfEnv) || "1".equals(perfEnv);
+        String coreLogLevel = System.getenv().getOrDefault("ORES_CORE_LOG_LEVEL", "off");
         String debugEnv = System.getenv("ORES_CORE_DEBUG");
         boolean coreDebug = "true".equalsIgnoreCase(debugEnv) || "1".equals(debugEnv);
         boolean strict = false;
         boolean checkOnly = false;
         boolean buildAnalysis = false;
+        String reachabilityReportPath = null;
         List<String> buildDefines = new ArrayList<>();
         Set<String> buildEntryPoints = new LinkedHashSet<>();
         String mode = NativeBuildMode.defaultExecutionMode();
@@ -95,9 +108,21 @@ public final class OresMain {
                 else if (arg.equals("--check")) checkOnly = true;
                 else if (arg.equals("--core-perf")) corePerf = true;
                 else if (arg.equals("--no-core-perf")) corePerf = false;
+                else if (arg.startsWith("--core-log-level="))
+                    coreLogLevel = arg.substring("--core-log-level=".length());
+                else if (arg.equals("--no-core-log")) coreLogLevel = "off";
                 else if (arg.equals("--core-debug")) coreDebug = true;
                 else if (arg.equals("--no-core-debug")) coreDebug = false;
                 else if (arg.equals("--build-analysis")) buildAnalysis = true;
+                else if (arg.startsWith("--reachability-report=")) {
+                    if (reachabilityReportPath != null) {
+                        throw new UsageException("--reachability-report may be supplied only once");
+                    }
+                    reachabilityReportPath = arg.substring("--reachability-report=".length()).trim();
+                    if (reachabilityReportPath.isEmpty()) {
+                        throw new UsageException("--reachability-report requires a file path");
+                    }
+                }
                 else if (arg.equals("--no-prompt")) {
                     // Oreslang permissions never prompt. This Deno-compatible
                     // spelling is accepted so automation can state that intent.
@@ -153,7 +178,17 @@ public final class OresMain {
         if (checkOnly && buildAnalysis) {
             throw new UsageException("--check and --build-analysis are mutually exclusive");
         }
+        if (reachabilityReportPath != null && !buildAnalysis) {
+            throw new UsageException("--reachability-report requires --build-analysis");
+        }
 
+        final CoreLog.Level admittedLogLevel;
+        try {
+            admittedLogLevel = CoreLog.Level.parse(coreLogLevel);
+        } catch (IllegalArgumentException badLogLevel) {
+            throw new UsageException(badLogLevel.getMessage());
+        }
+        CoreLog.configure(admittedLogLevel);
         CorePerf.configure(corePerf);
         CoreDebug.configure(coreDebug);
         try {
@@ -222,9 +257,28 @@ public final class OresMain {
             }
             Map<String, String> defines = BuildOptions.mergeDefines(System.getenv(), buildDefines);
             Set<String> entries = buildEntryPoints.isEmpty() ? Set.of("main") : Set.copyOf(buildEntryPoints);
+            BuildOptions buildOptions = new BuildOptions(defines, entries, false);
             TreeShaker.Result result = OresCompiler.compileForBuild(
                     directOresSource,
-                    new BuildOptions(defines, entries, false));
+                    buildOptions);
+
+            if (reachabilityReportPath != null) {
+                final Path reportPath;
+                try {
+                    reportPath = Path.of(reachabilityReportPath);
+                } catch (java.nio.file.InvalidPathException invalidPath) {
+                    throw new UsageException(
+                            "invalid reachability report path: " + invalidPath.getMessage());
+                }
+                String report = ReachabilityReport.render(
+                        result,
+                        buildOptions,
+                        "graal",
+                        "analysis",
+                        "graal-" + platform,
+                        "executable");
+                Files.writeString(reportPath, report + System.lineSeparator());
+            }
 
             System.out.println("tree-shake retained:");
             result.retainedSymbols().stream().sorted().forEach(symbol -> System.out.println("  + " + symbol));
@@ -233,8 +287,8 @@ public final class OresMain {
             return 0;
         }
 
-        if (!buildDefines.isEmpty() || !buildEntryPoints.isEmpty()) {
-            throw new UsageException("--define/--entry require --build-analysis until the artifact build command is wired");
+        if (!buildDefines.isEmpty() || !buildEntryPoints.isEmpty() || reachabilityReportPath != null) {
+            throw new UsageException("--define/--entry/--reachability-report require --build-analysis until the artifact build command is wired");
         }
 
         if (checkOnly) {
@@ -265,21 +319,9 @@ public final class OresMain {
         return exitStatus;
     }
 
-    // Cap the directly supplied .ores CLI source before parsing or warning scans.
-    // Imported modules require their own separately enforced admission budgets.
+    // Share admission policy with the linked-unit loader, including imports.
     private static String readBoundedOresSource(Path path) throws IOException {
-        final int maxBytes = 16 * 1024 * 1024;
-        byte[] bytes;
-        try (InputStream in = Files.newInputStream(path)) {
-            bytes = in.readNBytes(maxBytes + 1);
-        }
-        if (bytes.length > maxBytes) {
-            throw new IllegalArgumentException("Oreslang source exceeds 16 MiB CLI limit");
-        }
-        return StandardCharsets.UTF_8.newDecoder()
-                .onMalformedInput(CodingErrorAction.REPORT)
-                .onUnmappableCharacter(CodingErrorAction.REPORT)
-                .decode(ByteBuffer.wrap(bytes)).toString();
+        return dev.oreslang.runtime.BoundedSourceReader.readUtf8(path);
     }
 
     private static final class UsageException extends IllegalArgumentException {
@@ -341,8 +383,9 @@ public final class OresMain {
                         + "[--allow-sys[=API,...]] [--deny-sys[=API,...]] "
                         + "[--allow-ffi[=PATH,...]] [--deny-ffi[=PATH,...]] "
                         + "[--allow-import[=PATH,...]] [--deny-import[=PATH,...]] "
-                        + "[--no-prompt] [--define=name=value ...] [--entry=symbol ...] "
-                        + "[--strict-isolate] [--core-perf|--no-core-perf] [--core-debug|--no-core-debug] [--mode=aot|jit|hybrid] "
+                        + "[--no-prompt] [--define=name=value ...] [--entry=symbol ...] [--reachability-report=FILE] "
+                        + "[--strict-isolate] [--core-perf|--no-core-perf] [--core-debug|--no-core-debug] "
+                        + "[--core-log-level=off|error|warn|info|debug|trace] [--no-core-log] [--mode=aot|jit|hybrid] "
                         + "[--platform=server|windows|macos|linux|android|ios] "
                         + "[--allow=CAP,...] [--allow-host-class=java.util.ArrayList ...] "
                         + "[file.ores|file.java]");

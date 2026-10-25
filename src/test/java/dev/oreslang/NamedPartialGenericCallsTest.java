@@ -84,6 +84,31 @@ final class NamedPartialGenericCallsTest {
     }
 
     @Test
+    void nestedInferenceHoleFailsClosedDuringSourceTypechecking() {
+        for (String argument : java.util.List.of(
+                "Array<_>", "Option<Array<_>>", "T=Result<int,_>")) {
+            String source = """
+                    fnc unused<T>(): int { return 7; }
+                    fnc use(): int { return unused<%s>(); }
+                    """.formatted(argument);
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), argument);
+            assertTrue(failure.getMessage().contains("nested inference hole"),
+                    failure.getMessage());
+        }
+    }
+
+    @Test
+    void bareInferenceHoleCannotBecomeANominalTypeInDeclarations() {
+        for (String declared : java.util.List.of("_", "Array<_>", "Result<int,_>")) {
+            String source = "fnc bad(" + declared + " value): void { return; }";
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), declared);
+            assertTrue(failure.getMessage().contains("inference hole"), failure.getMessage());
+        }
+    }
+
+    @Test
     void comparisonExpressionsRemainUnambiguous() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module app
