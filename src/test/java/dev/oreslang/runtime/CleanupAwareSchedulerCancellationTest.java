@@ -280,6 +280,8 @@ final class CleanupAwareSchedulerCancellationTest {
             assertSame(fatal, assertThrows(ExecutionException.class,
                     () -> work.get(3, TimeUnit.SECONDS)).getCause());
             assertFalse(work.isCancelled());
+            assertTrue(scheduler.hasIncompleteCleanup(),
+                    "panic during cancellation unwind must quarantine actor/FFI loans");
         }
     }
 
@@ -318,6 +320,159 @@ final class CleanupAwareSchedulerCancellationTest {
             assertEquals(0, blockedCleanup.pendingRuntimeWaiterCount());
         } finally {
             scheduler.close();
+        }
+    }
+
+    @Test void shutdownDuringActiveCleanupCannotPublishDoneBeforeCarrierExit()
+            throws Exception {
+        OresFuture<Void> upstream = new OresFuture<>();
+        CountDownLatch suspended = new CountDownLatch(1);
+        CountDownLatch enteredCleanup = new CountDownLatch(1);
+        CountDownLatch releaseCleanup = new CountDownLatch(1);
+        AtomicInteger cleanupEntries = new AtomicInteger();
+        OresScheduler scheduler = new OresScheduler(2);
+        try {
+            OresFuture<Void> work = scheduler.start(
+                    new OresScheduler.CleanupAwareTask<Void>() {
+                        int pc;
+                        @Override public OresScheduler.Step<Void> resume(
+                                OresScheduler.Resume resume) throws Exception {
+                            if (pc++ == 0) {
+                                suspended.countDown();
+                                return OresScheduler.await(upstream);
+                            }
+                            assertTrue(OresScheduler.cancellationCleanupTurn());
+                            cleanupEntries.incrementAndGet();
+                            enteredCleanup.countDown();
+                            if (!releaseCleanup.await(4, TimeUnit.SECONDS)) {
+                                throw new IllegalStateException("test cleanup carrier timeout");
+                            }
+                            return OresScheduler.done(null);
+                        }
+                    });
+            assertTrue(suspended.await(3, TimeUnit.SECONDS));
+            assertTrue(work.cancel(false));
+            assertTrue(enteredCleanup.await(3, TimeUnit.SECONDS));
+            Thread closer = new Thread(scheduler::close, "close-during-source-cleanup");
+            closer.start();
+            try {
+                // Scheduler shutdown fences queued turns; it cannot treat a
+                // still-executing cleanup frame as a physical release receipt.
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                while (!scheduler.hasIncompleteCleanup() &&
+                        System.nanoTime() < deadline) {
+                    Thread.sleep(2);
+                }
+                assertTrue(scheduler.hasIncompleteCleanup(),
+                        "closing an executing cleanup frame must quarantine");
+                assertFalse(work.isDone(),
+                        "no terminal Future while the cleanup carrier still executes");
+                assertFalse(work.isCancelled(),
+                        "cancel request is not a physical cleanup acknowledgment");
+            } finally {
+                releaseCleanup.countDown();
+                closer.join(3000);
+            }
+            assertFalse(closer.isAlive());
+            assertEquals(1, cleanupEntries.get(),
+                    "another carrier must not replay the cleanup turn");
+            ExecutionException failure = assertThrows(ExecutionException.class,
+                    () -> work.get(3, TimeUnit.SECONDS));
+            assertInstanceOf(OresScheduler.CleanupIncompleteError.class,
+                    failure.getCause());
+            assertFalse(work.isCancelled(),
+                    "shutdown cleanup failure must dominate logical cancellation");
+            assertEquals(0, upstream.pendingRuntimeWaiterCount());
+        } finally {
+            releaseCleanup.countDown();
+            scheduler.close();
+        }
+    }
+
+    @Test void terminalFutureWaitsForPhysicalQuiescenceHookEvenDuringClose()
+            throws Exception {
+        CountDownLatch hookEntered = new CountDownLatch(1);
+        CountDownLatch allowRetirement = new CountDownLatch(1);
+        OresScheduler scheduler = new OresScheduler(1);
+        Thread closer = null;
+        try {
+            OresFuture<Integer> work = scheduler.start(
+                    new OresScheduler.CleanupAwareTask<Integer>() {
+                        @Override public OresScheduler.Step<Integer> resume(
+                                OresScheduler.Resume resume) {
+                            return OresScheduler.done(42);
+                        }
+                    },
+                    () -> {
+                        hookEntered.countDown();
+                        boolean released = false;
+                        while (!released) {
+                            try {
+                                released = allowRetirement.await(25, TimeUnit.MILLISECONDS);
+                            } catch (InterruptedException ignored) {
+                                // shutdownNow is not a physical retire receipt.
+                            }
+                        }
+                    });
+            assertTrue(hookEntered.await(3, TimeUnit.SECONDS));
+            assertFalse(work.isDone(),
+                    "the quiescence callback still owns the actor lease");
+            assertTrue(scheduler.hasIncompleteCleanup(),
+                    "a terminal Task must still pin the actor arena while onQuiescent runs");
+            closer = new Thread(scheduler::close, "close-before-lease-retirement");
+            closer.start();
+            assertFalse(work.isDone(),
+                    "external close must not overtake the quiescence callback");
+            allowRetirement.countDown();
+            assertEquals(Integer.valueOf(42), work.get(3, TimeUnit.SECONDS));
+            closer.join(3000);
+            assertFalse(closer.isAlive());
+            assertFalse(scheduler.hasIncompleteCleanup(),
+                    "a successful physical release returns the Task to the scheduler pool");
+        } finally {
+            allowRetirement.countDown();
+            if (closer != null) closer.join(3000);
+            scheduler.close();
+        }
+    }
+
+    @Test void failedPhysicalRetirementQuarantinesCleanupTaskInsteadOfPublishingSuccess()
+            throws Exception {
+        IllegalStateException failedLoanRevocation =
+                new IllegalStateException("actor FFI loan did not retire");
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> work = scheduler.start(
+                    new OresScheduler.CleanupAwareTask<Integer>() {
+                        @Override public OresScheduler.Step<Integer> resume(
+                                OresScheduler.Resume resume) {
+                            return OresScheduler.done(42);
+                        }
+                    },
+                    () -> { throw failedLoanRevocation; });
+            ExecutionException failure = assertThrows(ExecutionException.class,
+                    () -> work.get(3, TimeUnit.SECONDS));
+            assertInstanceOf(OresScheduler.CleanupIncompleteError.class,
+                    failure.getCause(), "incomplete physical release must dominate Done");
+            assertSame(failedLoanRevocation, failure.getCause().getCause());
+            assertTrue(scheduler.hasIncompleteCleanup(),
+                    "outstanding actor/FFI loans must remain registered");
+            assertFalse(work.isCancelled());
+        }
+    }
+
+    @Test void failedPhysicalRetirementPreservesFailureIdentityForOrdinaryTask()
+            throws Exception {
+        IllegalStateException failedLoanRevocation =
+                new IllegalStateException("ordinary Task owner release failed");
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> work = scheduler.start(
+                    resume -> OresScheduler.done(42),
+                    () -> { throw failedLoanRevocation; });
+            assertSame(failedLoanRevocation,
+                    assertThrows(ExecutionException.class,
+                            () -> work.get(3, TimeUnit.SECONDS)).getCause());
+            assertTrue(scheduler.hasIncompleteCleanup(),
+                    "physical retirement failure cannot be swept away");
         }
     }
 
