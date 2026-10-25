@@ -236,6 +236,19 @@ chmod +x "$target"
 MOCK_MAVEN
 chmod +x "$tmp/bin/mvn"
 
+# Track verifier mktemp paths so every success and failure path proves cleanup.
+# Resolve the real tool before shadowing PATH, avoiding recursive invocation.
+mock_real_mktemp="$(command -v mktemp)"
+cat > "$tmp/bin/mktemp" <<'MOCK_MKTEMP'
+#!/bin/sh
+set -eu
+made="$("$MOCK_REAL_MKTEMP" "$@")"
+printf '%s\n' "$made" >> "$MOCK_MKTEMP_LOG"
+printf '%s\n' "$made"
+MOCK_MKTEMP
+chmod +x "$tmp/bin/mktemp"
+export MOCK_REAL_MKTEMP="$mock_real_mktemp" MOCK_MKTEMP_LOG="$tmp/mktemp-created.log"
+
 export JAVA_HOME="$tmp/graal" PATH="$tmp/bin:$PATH"
 export MOCK_BINARY="$tmp/native-fixture" MOCK_MVN_LOG="$tmp/mvn.log"
 # These variables must be cleared for *all* native source executions.
@@ -244,11 +257,20 @@ export CLASSPATH=some-java-path JAVA_TOOL_OPTIONS=-Xmx32m JDK_JAVA_OPTIONS=-Xmx3
 assert_case() {
   name="$1"; expected="$2"; mode="$3"; refs="$4"
   shift 4
+  : > "$MOCK_MKTEMP_LOG"
   if (cd "$tmp/work" && env "$@" sh "$script" "$mode" "$refs") > "$tmp/stdout" 2> "$tmp/stderr"; then
     result=0
   else
     result=$?
   fi
+  # Native verifier must not leak its manifest, guest or test-output files,
+  # including when a deliberate negative exits before completing all stages.
+  while IFS= read -r temp_path; do
+    if [ -e "$temp_path" ]; then
+      echo "FAILED: $name leaked temporary verifier file: $temp_path" >&2
+      exit 1
+    fi
+  done < "$MOCK_MKTEMP_LOG"
   if { [ "$expected" = success ] && [ "$result" -ne 0 ]; } \
       || { [ "$expected" = failure ] && [ "$result" -eq 0 ]; }; then
     echo "FAILED: $name (expected $expected, got exit $result)" >&2
