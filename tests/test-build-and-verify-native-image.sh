@@ -72,11 +72,15 @@ int main(int argc, char **argv) {
         if (strstr(argv[2], "shared-private-actor-isolation.ores") != NULL) {
             if (getenv("MOCK_REJECT_VALID_ACTOR")) return 1;
             if (getenv("MOCK_ACTOR_CHECK_EXECUTES_GUEST")) puts("actor guest output");
+            if (getenv("MOCK_ACTOR_CHECK_NUL_STDOUT")) fputc(0, stdout);
+            if (getenv("MOCK_ACTOR_CHECK_NUL_STDERR")) fputc(0, stderr);
             if (getenv("MOCK_ACTOR_CHECK_STDERR"))
                 fputs("unexpected actor admission diagnostic\n", stderr);
             return 0;
         }
         if (getenv("MOCK_CHECK_EXECUTES_GUEST")) puts("120:9:13");
+        if (getenv("MOCK_CHECK_NUL_STDOUT")) fputc(0, stdout);
+        if (getenv("MOCK_CHECK_NUL_STDERR")) fputc(0, stderr);
         if (getenv("MOCK_CHECK_STDERR"))
             fputs("unexpected source admission diagnostic\n", stderr);
         return 0;
@@ -262,7 +266,8 @@ assert_case() {
       'wrong baked reference mode'|'wrong baked image mode'|'extra build-info lines')
         expected_diagnostic='native build-info does not match canonical' ;;
       'source execution failure') expected_status=13 ;;
-      'check-only mistakenly executes guest'|'check-only reports stderr diagnostic with zero exit')
+      'check-only mistakenly executes guest'|'check-only reports stderr diagnostic with zero exit'|\
+      'check-only emits NUL stdout'|'check-only emits NUL stderr')
         expected_diagnostic='native --check unexpectedly emitted diagnostics or guest output' ;;
       'silent callables guest execution'|'incorrect lexical closure result'|'trailing blank callables stdout')
         expected_diagnostic='native callables guest output differs from expected value' ;;
@@ -275,7 +280,8 @@ assert_case() {
       'valid shared/private actor rejected') : ;;
       'actor rejected for unrelated parse error'|'actor rejected for unrelated network capability')
         expected_diagnostic='private actor negative fixture failed without a capability-denial diagnostic' ;;
-      'actor check-only emitted guest output'|'actor check-only reports stderr diagnostic with zero exit')
+      'actor check-only emitted guest output'|'actor check-only reports stderr diagnostic with zero exit'|\
+      'actor check-only emits NUL stdout'|'actor check-only emits NUL stderr')
         expected_diagnostic='native actor --check unexpectedly emitted diagnostics or guest output' ;;
       'silent fake image without guest-core output'|'wrong native core numeric result'|'trailing blank core stdout')
         expected_diagnostic='native Oreslang core-library output differs from expected value' ;;
@@ -347,6 +353,8 @@ grep -Fx 'native --check unexpectedly emitted diagnostics or guest output' "$tmp
   echo 'FAILED: check-only stderr diagnostic did not reach the output gate' >&2
   exit 1
 }
+assert_case 'check-only emits NUL stdout' failure aot compressed32 MOCK_CHECK_NUL_STDOUT=1
+assert_case 'check-only emits NUL stderr' failure aot compressed32 MOCK_CHECK_NUL_STDERR=1
 assert_case 'silent callables guest execution' failure aot compressed32 MOCK_SILENT_CALLABLES=1
 assert_case 'incorrect lexical closure result' failure aot compressed32 MOCK_BAD_CALLABLES=1
 assert_case 'trailing blank callables stdout' failure aot compressed32 MOCK_TRAILING_BLANK_CALLABLES=1
@@ -370,6 +378,8 @@ grep -Fx 'native actor --check unexpectedly emitted diagnostics or guest output'
   echo 'FAILED: actor check stderr diagnostic did not reach the output gate' >&2
   exit 1
 }
+assert_case 'actor check-only emits NUL stdout' failure aot compressed32 MOCK_ACTOR_CHECK_NUL_STDOUT=1
+assert_case 'actor check-only emits NUL stderr' failure aot compressed32 MOCK_ACTOR_CHECK_NUL_STDERR=1
 assert_case 'silent fake image without guest-core output' failure aot compressed32 MOCK_EMPTY_CORE_OUTPUT=1
 assert_case 'wrong native core numeric result' failure aot compressed32 MOCK_BAD_CORE_OUTPUT=1
 assert_case 'trailing blank core stdout' failure aot compressed32 MOCK_TRAILING_BLANK_CORE=1
