@@ -82,9 +82,11 @@ final class AuthorityGuestConformanceTypeV1Test {
     void untrustedActorCapabilitiesRejectDirectAndTransitiveProcessAccess() {
         for (Fixture fixture : CASES) {
             if (!fixture.checker().equals("cap")) continue;
+            // A parser error is not proof of capability isolation.
+            var parsed = assertDoesNotThrow(
+                    () -> Parser.parse(fixture.source()), "parser: " + fixture.id());
             assertThrows(SecurityException.class,
-                    () -> CapabilityChecker.check(
-                            Parser.parse(fixture.source()), IsolatePolicy.developer()),
+                    () -> CapabilityChecker.check(parsed, IsolatePolicy.developer()),
                     fixture.id());
         }
     }
