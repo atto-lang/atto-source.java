@@ -20,7 +20,8 @@ final class ReservedKeywordsDynamicStructTest {
         assertEquals(Token.Type.STOP, tokens.get(0).type());
         assertEquals(Token.Type.DO, tokens.get(1).type());
         assertEquals(Token.Type.DONE, tokens.get(2).type());
-        assertEquals(Token.Type.TUPLE, tokens.get(3).type());
+        // Modern tuple syntax is contextual, not a reserved lexer token.
+        assertEquals(Token.Type.IDENT, tokens.get(3).type());
 
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module app
@@ -55,14 +56,14 @@ final class ReservedKeywordsDynamicStructTest {
                 end
                 """));
 
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module app
                   fnc main(): void {
                     val tuple = 1;
                     return;
                   }
                 end
-                """));
+                """)));
 
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module app
