@@ -1,5 +1,7 @@
 package dev.oreslang.runtime;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
@@ -106,8 +108,18 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     private volatile BooleanSupplier cancelAdmission;
     /** One-shot release after terminal subscribers complete; never retain owners afterwards. */
     private volatile Runnable onNotificationDrained;
+    /**
+     * Runtime subscribers may finish after the terminal state CAS. Actor arena
+     * owners therefore need a receipt for the winning settlement's complete
+     * notification drain, not merely isDone() or an early waiter callback.
+     */
+    private final Object notificationDrainLock = new Object();
+    private List<Runnable> notificationDrainListeners;
+    private boolean notificationDrainComplete;
     private final AtomicReference<Runnable> cancelHook;
     private final AtomicBoolean cancelHookRun = new AtomicBoolean();
+    /** Runtime-owned physical resource revocation failures are never a clean release receipt. */
+    private final AtomicReference<Throwable> cancelHookFailure = new AtomicReference<>();
     /**
      * A subscriber registering after the cancellation CAS must not run its
      * callback before the internal revoker. Deferring such a subscriber to
@@ -490,6 +502,27 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         return waiter;
     }
 
+    /**
+     * Host/runtime-only, exactly once after the winning terminal settlement
+     * has drained its registered callbacks and its own drain hook. Registration
+     * linearizes with draining, even if terminal state is already visible.
+     * This is a physical host-notification receipt, not a guest continuation.
+     */
+    void whenNotificationsDrainedRuntime(Runnable receipt) {
+        Objects.requireNonNull(receipt, "receipt");
+        boolean alreadyDrained;
+        synchronized (notificationDrainLock) {
+            alreadyDrained = notificationDrainComplete;
+            if (!alreadyDrained) {
+                if (notificationDrainListeners == null) {
+                    notificationDrainListeners = new ArrayList<>();
+                }
+                notificationDrainListeners.add(receipt);
+            }
+        }
+        if (alreadyDrained) receipt.run();
+    }
+
     int pendingRuntimeWaiterCount() {
         return waiters.size();
     }
@@ -684,12 +717,18 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         if (hook != null && cancelHookRun.compareAndSet(false, true)) {
             try {
                 hook.run();
-            } catch (RuntimeException | Error ignored) {
-                // Cancellation is already authoritative. Neither a
-                // misbehaving host hook nor arbitrary Future subscribers
-                // may restore the operation or prevent waiter delivery.
+            } catch (RuntimeException | Error failure) {
+                // The terminal cancellation remains authoritative and other
+                // subscribers must still be notified. Preserve the physical
+                // revoker failure for actor arena-retirement/quarantine checks.
+                cancelHookFailure.compareAndSet(null, failure);
             }
         }
+    }
+
+    /** Host-only inspection after a terminal notification-drain receipt. */
+    Throwable cancellationHookFailureFromRuntime() {
+        return cancelHookFailure.get();
     }
 
     private boolean settle(Object terminal) {
@@ -750,8 +789,28 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
             Runnable drained = onNotificationDrained;
             onNotificationDrained = null;
             // There is exactly one winning terminal CAS, hence one release.
-            // Keep the callback live until every synchronous waiter returns.
-            if (drained != null) drained.run();
+            // Run the existing scheduler receipt before publishing the general
+            // host-notification drain receipt used by actor resource owners.
+            try {
+                if (drained != null) drained.run();
+            } finally {
+                List<Runnable> receipts;
+                synchronized (notificationDrainLock) {
+                    notificationDrainComplete = true;
+                    receipts = notificationDrainListeners;
+                    notificationDrainListeners = null;
+                }
+                if (receipts != null) {
+                    for (Runnable receipt : receipts) {
+                        try {
+                            receipt.run();
+                        } catch (RuntimeException | Error ignored) {
+                            // One broken runtime observer cannot suppress the
+                            // remaining physical notification-drain receipts.
+                        }
+                    }
+                }
+            }
         }
     }
 
