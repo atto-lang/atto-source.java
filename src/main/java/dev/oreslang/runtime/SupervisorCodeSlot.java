@@ -54,7 +54,7 @@ public final class SupervisorCodeSlot<P> implements AutoCloseable {
         private static final long serialVersionUID = 1L;
         private final long committedRevision;
         private final String committedAbi;
-        private PostCommitReclamationException(Descriptor committed, RuntimeException cause) {
+        private PostCommitReclamationException(Descriptor committed, Throwable cause) {
             super("supervisor code revision " + committed.revision()
                     + " committed, but retired-policy reclamation failed", cause);
             this.committedRevision = committed.revision();
@@ -182,9 +182,11 @@ public final class SupervisorCodeSlot<P> implements AutoCloseable {
         if (cleanup != null) {
             try {
                 cleanup.run();
-            } catch (RuntimeException failure) {
+            } catch (RuntimeException | Error failure) {
                 // Activation has already committed under lock; never report a
                 // generic failure that invites retrying the previous revision.
+                // Reclamation is trusted infrastructure code, so Error must be
+                // normalized too: the policy revision is already visible.
                 throw new PostCommitReclamationException(result, failure);
             }
         }
