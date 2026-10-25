@@ -49,6 +49,7 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           printf 'Exact Oreslang tree: %s\n' "$(git rev-parse HEAD^{tree})"
+          sha256sum contracts/v1/type-declarations-conformance-v1.tsv
           printf 'Commit: %s\n' "$EXPECTED_SHA"
       - name: Set up GraalVM JDK 25
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
