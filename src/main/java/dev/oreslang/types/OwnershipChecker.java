@@ -3019,7 +3019,12 @@ public final class OwnershipChecker {
         } else if (expr instanceof Ast.NewExpr e) for (Ast.Expr arg : e.arguments()) scanExpr(arg, locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.AwaitExpr e) scanExpr(e.expression(), locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.TaskExpr e) {
-            scanStatements(e.body(), locals, outer, recursiveBinding, captures);
+            // The nested Task is a new ownership-registration boundary. Its
+            // free names must remain transitively live in this activation, but
+            // an explicit rt take inside the nested Task consumes the nested
+            // Task's capture, not an otherwise-Copy value one parent earlier.
+            scanNestedActivationStatements(
+                    e.body(), locals, outer, recursiveBinding, captures);
         }
         else if (expr instanceof Ast.ChannelOpExpr e) {
             scanExpr(e.channel(), locals, outer, recursiveBinding, captures, false);
@@ -3029,7 +3034,12 @@ public final class OwnershipChecker {
             // Callback-bearing writes keep their own future activation alive.
             // Nested deferred callbacks therefore contribute transitive captures.
             if (e.callback()) {
-                scanStatements(e.callbackBody(), locals, outer, recursiveBinding, captures);
+                scanNestedActivationStatements(
+                        e.callbackBody(),
+                        locals,
+                        outer,
+                        recursiveBinding,
+                        captures);
             }
         }
         else if (expr instanceof Ast.DynamicSelectExpr e) {
@@ -3058,13 +3068,14 @@ public final class OwnershipChecker {
                 nestedLocals.add(parameter.name());
             }
             nestedLocals.add("arguments");
+            CaptureSet nestedCaptures = new CaptureSet();
             if (lambda.expressionBody() != null) {
                 scanExpr(
                         lambda.expressionBody(),
                         nestedLocals,
                         outer,
                         recursiveBinding,
-                        captures,
+                        nestedCaptures,
                         false);
             } else {
                 scanStatements(
@@ -3072,13 +3083,40 @@ public final class OwnershipChecker {
                         nestedLocals,
                         outer,
                         recursiveBinding,
-                        captures);
+                        nestedCaptures);
             }
+            mergeNestedActivationCaptures(captures, nestedCaptures);
         } else {
             throw error(
                     "unsupported Task capture expression '"
                             + expr.getClass().getName()
                             + "'; capture analysis must fail closed");
+        }
+    }
+
+    private void scanNestedActivationStatements(
+            List<Ast.Stmt> body,
+            Set<String> locals,
+            Scope outer,
+            String recursiveBinding,
+            CaptureSet captures) {
+        CaptureSet nested = new CaptureSet();
+        scanStatements(body, locals, outer, recursiveBinding, nested);
+        mergeNestedActivationCaptures(captures, nested);
+    }
+
+    private void mergeNestedActivationCaptures(
+            CaptureSet captures, CaptureSet nested) {
+        for (Capture capture : nested.values.values()) {
+            // Preserve transitive liveness and mutation requirements. Consume
+            // is intentionally local to the nested registration boundary:
+            // Copy values can be copied into the current activation and then
+            // explicitly taken by the nested activation later.
+            captures.add(
+                    capture.name,
+                    capture.source,
+                    capture.write,
+                    false);
         }
     }
 

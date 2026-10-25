@@ -115,6 +115,44 @@ final class TaskCaptureAdmissionIdentityTest {
     }
 
     @Test
+    void nestedTaskTakeOfCopyCaptureConsumesAtNestedBoundaryOnly() {
+        Ast.Program checked = OresCompiler.parseAndTypeCheck("""
+                pub async fnc main(): void {
+                  const int token = 41;
+                  let Future<int> child = task {
+                    let Future<int> nested = task {
+                      return rt take token;
+                    };
+                    return await nested;
+                  };
+                  stdio.stdout.write(token);
+                  stdio.stdout.write(await child);
+                  return;
+                }
+                """);
+
+        long epoch = Ast.CheckedTaskCaptures.requireProgramEpoch(checked);
+        Ast.TaskExpr outer = firstTask(checked);
+        assertEquals(
+                java.util.Map.of(
+                        "token", Ast.TaskCaptureTransfer.COPY),
+                Ast.CheckedTaskCaptures.require(
+                        checked, outer, epoch).captureTransfers());
+
+        var tasks = dev.oreslang.ast.TaskCaptureNames.taskIdentitiesIn(checked);
+        assertEquals(2, tasks.size());
+        Ast.TaskExpr nested = tasks.stream()
+                .filter(task -> task != outer)
+                .findFirst()
+                .orElseThrow();
+        assertEquals(
+                java.util.Map.of(
+                        "token", Ast.TaskCaptureTransfer.MOVE),
+                Ast.CheckedTaskCaptures.require(
+                        checked, nested, epoch).captureTransfers());
+    }
+
+    @Test
     void affineCaptureAdmissionCarriesMoveMode() {
         Ast.Program checked = OresCompiler.parseAndTypeCheck("""
                 define class Box as
