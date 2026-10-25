@@ -48,8 +48,17 @@ final class AuthorityGuestCheckedEffectsV1Test {
             if (fixture.accept()) {
                 assertDoesNotThrow(() -> TypeChecker.checkTypes(parsed), fixture.id());
             } else {
-                assertThrows(IllegalArgumentException.class,
+                var failure = assertThrows(IllegalArgumentException.class,
                         () -> TypeChecker.checkTypes(parsed), fixture.id());
+                // A syntax or unrelated semantic failure cannot certify
+                // exact checked-effect category propagation.
+                switch (fixture.id()) {
+                    case "checked-effect-missing-rejected" ->
+                            assertTrue(failure.getMessage().contains("caller signature does not cover"), fixture.id());
+                    case "checked-effect-crosscategory-rejected" ->
+                            assertTrue(failure.getMessage().contains("checked throws"), fixture.id());
+                    default -> fail("unaccounted checked-effect fixture: " + fixture.id());
+                }
             }
         }
     }
