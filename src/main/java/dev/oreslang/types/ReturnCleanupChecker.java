@@ -305,6 +305,19 @@ public final class ReturnCleanupChecker {
             expression(conditional.condition(), scope, inDefer, state);
             expression(conditional.whenTrue(), scope, inDefer, state);
             expression(conditional.whenFalse(), scope, inDefer, state);
+        } else if (expr instanceof Ast.MatchExpr matched) {
+            expression(matched.subject(), scope, inDefer, state);
+            for (Ast.MatchValueArm arm : matched.arms()) {
+                if (arm.guard() != null) expression(arm.guard(), scope, inDefer, state);
+                expression(arm.value(), scope, inDefer, state);
+            }
+        } else if (expr instanceof Ast.SwitchExpr switched) {
+            expression(switched.subject(), scope, inDefer, state);
+            for (Ast.SwitchValueCase arm : switched.cases()) {
+                for (Ast.Expr constant : arm.constants()) expression(constant, scope, inDefer, state);
+                expression(arm.value(), scope, inDefer, state);
+            }
+            expression(switched.defaultValue(), scope, inDefer, state);
         } else if (expr instanceof Ast.TypeTestExpr test) {
             expression(test.value(), scope, inDefer, state);
         } else if (expr instanceof Ast.PatternTestExpr test) {
