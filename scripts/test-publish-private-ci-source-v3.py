@@ -1188,16 +1188,22 @@ class PrivateCiV3Test(unittest.TestCase):
             {"returncode": 0, "stderr": "", "stdout": "{}"},
         )()
         ref_name = "ci/authorized-" + COMMIT
-        with patch.object(v3.subprocess, "run", return_value=response) as run:
+        with (
+            patch.object(v3, "trusted_github_cli", return_value="/usr/bin/gh"),
+            patch.object(v3, "github_api_environment", return_value={"GH_TOKEN": "x"}),
+            patch.object(v3, "run_bounded_gh", return_value=response) as run,
+        ):
             self.assertIs(
                 v3._gh_ref_request("trusted/ci", ref_name, "GET"),
                 response,
             )
         argv = run.call_args.args[0]
+        self.assertEqual(argv[0], "/usr/bin/gh")
         self.assertIn(
             "repos/trusted/ci/git/ref/heads/ci%2Fauthorized-" + COMMIT,
             argv,
         )
+        self.assertEqual(run.call_args.kwargs["env"], {"GH_TOKEN": "x"})
 
     def test_ref_request_uses_plural_delete_route(self):
         response = type(
@@ -1205,7 +1211,11 @@ class PrivateCiV3Test(unittest.TestCase):
             {"returncode": 0, "stderr": "", "stdout": ""},
         )()
         ref_name = "ci/authorized-" + COMMIT
-        with patch.object(v3.subprocess, "run", return_value=response) as run:
+        with (
+            patch.object(v3, "trusted_github_cli", return_value="/usr/bin/gh"),
+            patch.object(v3, "github_api_environment", return_value={"GITHUB_TOKEN": "x"}),
+            patch.object(v3, "run_bounded_gh", return_value=response) as run,
+        ):
             self.assertIs(
                 v3._gh_ref_request("trusted/ci", ref_name, "DELETE"),
                 response,
@@ -1215,6 +1225,56 @@ class PrivateCiV3Test(unittest.TestCase):
             "repos/trusted/ci/git/refs/heads/ci%2Fauthorized-" + COMMIT,
             argv,
         )
+        self.assertEqual(run.call_args.kwargs["env"], {"GITHUB_TOKEN": "x"})
+
+    def test_github_api_environment_is_minimal_and_requires_one_token(self):
+        with patch.dict(v3.os.environ, {}, clear=True):
+            with self.assertRaisesRegex(v3.Denied, "exactly one"):
+                v3.github_api_environment()
+        with patch.dict(
+            v3.os.environ,
+            {"GH_TOKEN": "one", "GITHUB_TOKEN": "two", "AWS_SECRET_ACCESS_KEY": "leak"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(v3.Denied, "exactly one"):
+                v3.github_api_environment()
+        with patch.dict(
+            v3.os.environ,
+            {"GITHUB_TOKEN": "one", "AWS_SECRET_ACCESS_KEY": "leak", "HOME": "/tmp/leak"},
+            clear=True,
+        ):
+            env = v3.github_api_environment()
+        self.assertEqual(env["GITHUB_TOKEN"], "one")
+        self.assertEqual(env["PATH"], "/usr/bin:/bin")
+        self.assertEqual(env["HOME"], "/")
+        self.assertEqual(env["XDG_CONFIG_HOME"], "/nonexistent")
+        self.assertNotIn("AWS_SECRET_ACCESS_KEY", env)
+        self.assertEqual(
+            set(env),
+            {
+                "GITHUB_TOKEN", "GH_HOST", "GH_PROMPT_DISABLED",
+                "PATH", "HOME", "XDG_CONFIG_HOME", "LC_ALL",
+            },
+        )
+
+    def test_http_status_match_is_first_line_and_exact(self):
+        self.assertTrue(v3._is_http_status("gh: Not Found (HTTP 404)\nbody", 404))
+        self.assertFalse(v3._is_http_status("body mentions HTTP 404", 404))
+        self.assertFalse(v3._is_http_status("HTTP 404: Not Found", 404))
+        self.assertFalse(v3._is_http_status("gh: Forbidden (HTTP 403)", 404))
+
+    def test_bounded_gh_rejects_output_at_limit(self):
+        def fake_run(argv, **kwargs):
+            kwargs["stdout"].write(b"x" * 8)
+            kwargs["stderr"].write(b"")
+            return v3.subprocess.CompletedProcess(argv, 0)
+
+        with (
+            patch.object(v3, "MAX_GH_API_RESPONSE_BYTES", 8),
+            patch.object(v3.subprocess, "run", side_effect=fake_run),
+        ):
+            with self.assertRaisesRegex(v3.Denied, "exceeds size limit"):
+                v3.run_bounded_gh(["/usr/bin/gh"], env={}, timeout=1)
 
     def test_ref_request_rejects_unrelated_ci_namespace(self):
         with self.assertRaisesRegex(v3.Denied, "target is invalid"):
@@ -1223,7 +1283,7 @@ class PrivateCiV3Test(unittest.TestCase):
     def test_live_ref_404_requires_carrier_identity_to_remain_visible(self):
         response = type(
             "Result", (),
-            {"returncode": 1, "stderr": "HTTP 404: Not Found", "stdout": ""},
+            {"returncode": 1, "stderr": "gh: Not Found (HTTP 404)", "stdout": ""},
         )()
         with (
             patch.object(v3, "_gh_ref_request", return_value=response),
