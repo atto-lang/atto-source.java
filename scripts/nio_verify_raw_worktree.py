@@ -76,17 +76,33 @@ def verify(commit: str, tree: str) -> int:
         if head_entries.pop(path, None) != (mode, expected_blob):
             raise ValueError('staged index differs from HEAD tree: ' + repr(path[:120]))
         if mode in (b'100644', b'100755'):
-            # Open actual worktree bytes without following the final symlink.
-            fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+            # Production qualification requires non-following, nonblocking leaf
+            # opens. A tracked FIFO substitution must fail immediately instead
+            # of parking the runner, and a symlink must never redirect the read.
+            nofollow = getattr(os, 'O_NOFOLLOW', None)
+            nonblock = getattr(os, 'O_NONBLOCK', None)
+            if (not isinstance(nofollow, int) or isinstance(nofollow, bool)
+                    or nofollow <= 0 or not isinstance(nonblock, int)
+                    or isinstance(nonblock, bool) or nonblock <= 0
+                    or (nofollow & nonblock) != 0):
+                raise ValueError('platform cannot safely inspect tracked source files')
+            fd = os.open(path, os.O_RDONLY | nofollow | nonblock)
             try:
                 st = os.fstat(fd)
                 if not stat.S_ISREG(st.st_mode):
                     raise ValueError('tracked input is not regular: ' + repr(path[:120]))
+                # A hardlink outside the checkout can mutate this inode after
+                # verification while HEAD/index identity remains unchanged.
+                if st.st_nlink != 1:
+                    raise ValueError('multiply-linked tracked input: ' + repr(path[:120]))
                 if bool(st.st_mode & 0o111) != (mode == b'100755'):
                     raise ValueError('tracked mode differs: ' + repr(path[:120]))
                 actual_blob = raw_digest(fd, st.st_size)
                 after = os.fstat(fd)
-                if (st.st_size, st.st_mtime_ns, st.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                if (st.st_size, st.st_mtime_ns, st.st_ctime_ns,
+                        st.st_ino, st.st_dev, st.st_nlink) != (
+                        after.st_size, after.st_mtime_ns, after.st_ctime_ns,
+                        after.st_ino, after.st_dev, after.st_nlink):
                     raise ValueError('tracked source changed during hashing: ' + repr(path[:120]))
             finally:
                 os.close(fd)
