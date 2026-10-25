@@ -15,6 +15,32 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class ParserTest {
     @Test
+    void inlineTrapCannotHideExpressionBodiedLambdaMissingTerminator() {
+        String invalid = """
+                pub fnc main(): void {
+                    const closure = trap (|int value| -> value)
+                    return;
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(invalid));
+        assertTrue(failure.getMessage().contains(
+                "expression-bodied lambda statements require an explicit ';'"), failure::toString);
+
+        Ast.Program valid = assertDoesNotThrow(() -> Parser.parse("""
+                pub fnc main(): void {
+                    const closure = trap (|int value| -> value);
+                    return;
+                }
+                """));
+        Ast.FunctionDecl fn = assertInstanceOf(Ast.FunctionDecl.class,
+                valid.modules().getFirst().declarations().getFirst());
+        Ast.BindingStmt binding = assertInstanceOf(Ast.BindingStmt.class, fn.body().getFirst());
+        Ast.TrapExpr trap = assertInstanceOf(Ast.TrapExpr.class, binding.initializer());
+        assertInstanceOf(Ast.LambdaExpr.class, trap.expression());
+    }
+
+    @Test
     void exhaustivelyAcceptsSupportedDeclarationModifierPermutations() {
         for (List<String> order : permutations("define", "class", "pub", "abstract")) {
             assertDoesNotThrow(() -> Parser.parse("""
@@ -575,6 +601,70 @@ final class ParserTest {
         assertEquals(1, outer.branches().size());
         assertEquals(2, outer.elseBody().size());
         assertInstanceOf(Ast.IfStmt.class, outer.elseBody().getFirst());
+    }
+
+    @Test
+    void ifIsStatementOnlyAndValueSelectionUsesTernaryOrExplicitReturns() {
+        assertFalse(Ast.Expr.class.isAssignableFrom(Ast.IfStmt.class));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc choose(bool condition): int {
+                  const y = if condition then
+                    1;
+                  else
+                    2;
+                  fi;
+                  return y;
+                }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc choose_return(bool condition): int {
+                  return if condition then
+                    1;
+                  else
+                    2;
+                  fi;
+                }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc identity(int value): int { return value; }
+                fnc choose_argument(bool condition): int {
+                  return identity(if condition then
+                    1;
+                  else
+                    2;
+                  fi);
+                }
+                """));
+
+        IllegalArgumentException implicitBranchValues = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc choose(bool condition): int {
+                          if condition then
+                            1;
+                          else
+                            2;
+                          fi
+                        }
+                        """)));
+        assertTrue(implicitBranchValues.getMessage().contains("must explicitly return on every path"));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc choose(bool condition): int {
+                  if condition then
+                    return 1;
+                  else
+                    return 2;
+                  fi
+                }
+
+                fnc choose_expression(bool condition): int {
+                  return condition ? 1 : 2;
+                }
+                """)));
     }
 
     @Test
@@ -1195,6 +1285,30 @@ final class ParserTest {
         assertTrue(failure.getMessage().contains("expected 'as' after class header"));
     }
 
+
+    @Test
+    void acceleratorExecutionDomainsRemainFailClosedAfterG2RuntimeIr() {
+        for (String domain : List.of("gpu", "cpu", "quantum")) {
+            String source = """
+                    pub fnc main(): int {
+                        return %s {
+                            return 1;
+                        };
+                    }
+                    """.formatted(domain);
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> Parser.parse(source),
+                    domain);
+            assertTrue(
+                    failure.getMessage().contains("execution domain '" + domain + "'"),
+                    failure::toString);
+            assertTrue(
+                    failure.getMessage().contains("no implicit CPU fallback"),
+                    failure::toString);
+        }
+    }
+
     private static List<List<String>> permutations(String... tokens) {
         List<List<String>> out = new ArrayList<>();
         permute(new ArrayList<>(List.of(tokens)), new ArrayList<>(), out);
@@ -1217,5 +1331,40 @@ final class ParserTest {
             permute(nextRemaining, nextPrefix, out);
         }
     }
+
+    @Test
+    void routeGuardConditionalsAcceptDoElifElseifAndElseIfAliases() {
+        String source = """
+                define module routes as
+                  fnc validate(int handler_id, bool pattern_valid, int segment_count): int {
+                    if handler_id < 0; do
+                      return -1;
+                    elif !pattern_valid; then
+                      return -2;
+                    elseif segment_count > 10; do
+                      return -3;
+                    else if handler_id == 0; then
+                      return 0;
+                    else
+                      return 1;
+                    fi
+                  }
+                end
+                """;
+
+        Parser.ParseResult parsed = Parser.parseWithWarnings(source);
+        assertDoesNotThrow(() -> TypeChecker.check(parsed.program()));
+
+        Ast.FunctionDecl function =
+                (Ast.FunctionDecl) parsed.program().modules().getFirst().declarations().getFirst();
+        Ast.IfStmt statement = (Ast.IfStmt) function.body().getFirst();
+
+        assertEquals(4, statement.branches().size());
+        assertFalse(statement.elseBody().isEmpty());
+        assertEquals(2, parsed.warnings().size());
+        assertTrue(parsed.warnings().stream()
+                .allMatch(warning -> warning.message().contains("use 'then'")));
+    }
+
 
 }

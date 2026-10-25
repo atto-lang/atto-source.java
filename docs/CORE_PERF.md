@@ -1,0 +1,146 @@
+# Core performance flight recorder
+
+Core runtime diagnostics, independent of `oreslang-otel` and guest Ores code.
+Both modes are disabled by default. Neither is distributed tracing or application logging.
+
+## Enable
+
+```sh
+oreslang-compiler --core-perf --platform=server program.ores
+oreslang-compiler --core-debug --platform=server program.ores
+# Use both switches when correlating timing and numeric diagnostic events.
+# Or with flags-2-env's canonical .cli-flags.toml:
+# eval "$(flags2env export -- oreslang-compiler --core-perf)"
+# ORES_CORE_PERF=true oreslang-compiler --platform=server program.ores
+```
+
+The `--no-core-perf` and `--no-core-debug` switches override
+`ORES_CORE_PERF=true` and `ORES_CORE_DEBUG=true` respectively. The canonical
+flags-2-env schema filename is `.cli-flags.toml`, **not** `.cli-args.toml`.
+The core binary recognizes the switch directly; flags-2-env need not be linked
+into the JVM or invoked for the recorder to work.
+
+Performance and debug each retain their first 8192 events in separate
+preallocated buffers. Reservations are bounded and cannot overflow. The
+shutdown summary distinguishes published events from in-flight reservations.
+The first 8192 completed timing phases use the performance buffer: no JSON
+formatting, locks, strings, file writes, or guest object allocations occur on
+instrumented requests. The disabled hot path checks one volatile reference;
+the enabled path captures monotonic timestamps and atomically reserves a slot.
+The fixed-capacity buffer intentionally stops collecting when full so warm
+traffic cannot evict the first cold-start samples.
+
+Backend metadata (native pthread versus JVM thread pool, including configured
+actor-pool sizes) is written once at dump time.
+
+Events are serialized as `ores-core-perf.v1` JSON Lines to **stderr on clean
+JVM shutdown** (Ctrl-C/SIGTERM). SIGKILL and crashes do not invoke shutdown
+hooks. Each phase provides `start_ns` relative to recorder installation,
+`duration_ns`, and `thread_id`; no request body, path, header, or other
+user-controlled data are included. Different phases can overlap and **must not
+be summed** as mutually exclusive CPU time.
+
+With `--core-debug`, `ores-core-debug.v1` events contain only fixed event
+names, relative monotonic timestamp, a numeric value and host thread ID.
+Instrumentation sites should use `if (CoreDebug.enabled())` for expensive
+argument construction; never look up guest env vars or call stdio on the hot path.
+The initial events cover actor-pool creation, listener readiness, and HTTP
+executor task starts. For Java embedding, configure diagnostics before
+creating the Ores context; reconfiguring a recorder pauses/resumes sampling
+without discarding buffered records. Shutdown output is not crash-safe.
+
+The current instrumentation includes CONTROL and actor-pool startup, context
+startup, HTTP listener setup, request admission/dispatch, the deadline-timer schedule and actor spawn, actor readiness and
+claim, and HTTP / standard-library asynchronous I/O queue and work. HTTP
+`receive` timing begins **inside** the virtual-thread handler and therefore
+does not capture how long the JDK's transport waits before submitting to
+its executor. In diagnostic mode, `http.executor.queue` measures the interval
+from JDK executor submission until the worker begins running the task; this
+adds a wrapper only when diagnostics are enabled.
+A first-request delay not accounted for by phases should be investigated with
+JFR (thread start, scheduling and JIT compilation) before adding a prewarm.
+
+`stdio.write` measures the single-argument standard-library stdout print/flush
+or println call, after converting its already-evaluated argument to text. It
+does not include guest JSON construction, integer encoding, or variadic
+`stdout.log`. `http.lifetime` measures admission through transport closure and
+actor finalization, captured exactly once when the active exchange releases
+its admission permit, before completing its observation future. Both phases
+use fixed names and numeric samples; they retain no payload or correlation ID.
+
+These boundaries help distinguish slow guest telemetry construction from the
+actual console write and the request's transport/actor lifetime. The lifetime
+can overlap every request phase. Userland request spans can end later, after
+the supervisor resumes and exports them.
+
+## Analyze
+
+```sh
+# After stopping the instrumented server:
+jq -r 'select(.schema == "ores-core-perf.v1" and .kind == "phase")
+  | [.phase, (.duration_ns/1000000), (.start_ns/1000000)] | @tsv' server.log
+```
+
+`--core-perf` is a diagnostic mode; timing and buffer writes themselves can
+perturb very short operations. Always compare both enabled and disabled runs.
+
+
+## Architecture boundary and backend parity
+
+CorePerf/CoreDebug/CoreLog are **host-owned diagnostic flight recorders**, not a guest
+standard-library logging API and not an implementation of OpenTelemetry.
+The shared cross-backend contract is tracked in
+[core logging / OTel separation](https://github.com/ores-truffle-oreslang/oreslang-common-source/blob/audit/core-logging-separation-2026-10-16/docs/CORE_LOGGING_AND_OTEL.md).
+Application code should import `oreslang-otel` explicitly and must guard expensive
+message construction with `should_log`. It currently serializes JSON and writes
+stdout synchronously; never call it from a scheduler, actor mailbox admission,
+GC or borrow-checking critical section.
+
+Java now implements `--core-log-level=off|error|warn|info|debug|trace`,
+`--no-core-log`, and `ORES_CORE_LOG_LEVEL` independently of the existing
+`--core-perf` and `--core-debug` switches.
+The LLVM, .NET, Forge and Wasm backends do not currently implement matching
+native logging/OTel features; do not infer runtime parity from this document.
+
+## Severity-aware core diagnostics
+
+A separate host-owned numeric flight recorder is controlled by
+`--core-log-level=off|error|warn|info|debug|trace` (default `off`),
+`--no-core-log`, or `ORES_CORE_LOG_LEVEL`. CLI options take precedence over the
+environment and the **last** explicit CLI option wins. Invalid levels fail as
+usage errors, before guest source execution. `off` suppresses **CoreLog**
+recording and export only; it does not disable independently configured
+`--core-perf` or `--core-debug`. Normal guest errors and output are independent. The fixed-ID `CoreLog` path allocates no event objects and performs
+no formatting or I/O; its first 8192 records are serialized to **stderr** at
+normal JVM shutdown **only if still enabled**, schema `ores-core-log.v1`.
+Explicit `off` discards the current buffer and prevents its shutdown export;
+a later enable starts an empty session. Recording saturation stops
+future writes, preserving cold-start evidence. SIGKILL/crashes bypass shutdown
+export.
+
+Initially instrumented sites: async native I/O rejection/failure and actor
+dispatcher initialization failure. Recording uses fixed event identifiers and
+a numeric counter only, never guest arguments, exception text, headers, paths,
+identifiers, stack traces or serialized data. More diagnostic sites should
+follow the same rule. These switches **do not affect `oreslang-otel`**, which
+remains a user-imported telemetry library with independent severity policy.
+
+## Audit evidence and shutdown boundaries (2026-10-16)
+
+CoreLog export is synchronized with configuration: disabling logging returns
+only after any already-running cold-path export completes. Newly enabled sessions
+start empty. Recorder export reports `reserved`, `recorded`, and `unpublished`
+counts, so partial reservations are visible without disclosing half-written
+events. The producer uses fixed event identifiers and numeric values only.
+
+- [Native AOT executable and CLI smoke passed](https://github.com/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-web-server.ores/actions/runs/38929690187): GraalVM 25.3; exact 96-blob Java module mirror
+- [Java actor/CLI/OTel regression tests 50/50 passed](https://github.com/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-web-server.ores/actions/runs/38929064534)
+- [Expanded async I/O and CLI failure tests 59/59 passed](https://github.com/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-web-server.ores/actions/runs/38945844351): exact 98-blob source mirror, including real failure/rejection and prevention of exception-text disclosure
+- [60/60 Java logging + OTel integration tests passed](https://github.com/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-web-server.ores/actions/runs/38946580025), including a JDK thread-allocation regression over 100,000 enabled numeric recorder events
+- [GraalVM native hybrid executable and CLI smoke passed](https://github.com/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-web-server.ores/actions/runs/38946273871): exact 98-blob source mirror, `--build-info` reports `hybrid`, severity and disabled CLI flags verified
+- The guest telemetry smoke executes real `oreslang-otel` code and validates nine JSONL records. This is not OTLP exporter verification.
+
+No complete Git root-tree SHA match is claimed: the full-tree transfer
+encountered a connector restriction. The native AOT and JDK regression evidence
+is for SHA-verified source subsets only, with native pthread profile disabled.
+Backend parity and whole-repository validation remain independent requirements.

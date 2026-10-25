@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -32,20 +33,18 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class ChannelRuntime {
     private ChannelRuntime() { }
 
+    /** A finite default prevents an idle producer from retaining unbounded select waiters. */
+    public static final int DEFAULT_MAX_PENDING_REGISTRATIONS = 4096;
+    /** Bound dynamic select fan-in before allocating waiter registrations. */
+    public static final int MAX_SELECT_CASES = 256;
+
     private static final ReentrantLock COORDINATOR = new ReentrantLock(true);
     private static final Set<SelectRegistration> ACTIVE = new LinkedHashSet<>();
-    private static final java.util.concurrent.ScheduledThreadPoolExecutor TIMER =
-            new java.util.concurrent.ScheduledThreadPoolExecutor(
-                    1,
-                    runnable -> {
-                        Thread thread = new Thread(runnable, "ores-select-timer");
-                        thread.setDaemon(true);
-                        return thread;
-                    });
-    static {
-        TIMER.setRemoveOnCancelPolicy(true);
-        TIMER.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
-    }
+    /** Global cap on pending selections, independent of per-channel arm limits. */
+    private static final int MAX_PENDING_SELECTS = 4_096;
+    static final int MAX_PENDING_SELECT_ARM_REGISTRATIONS = 4_096;
+    /** Global retained descriptor count. Only accessed under COORDINATOR. */
+    private static int activeArmRegistrations;
     private static long nextTicket;
 
     public enum SelectPolicy {
@@ -60,9 +59,7 @@ public final class ChannelRuntime {
     public enum SelectOperation {
         READ,
         WRITE,
-        AWAIT,
-        TIMEOUT,
-        CANCELLED,
+        FUTURE,
         DEFAULT
     }
 
@@ -76,6 +73,19 @@ public final class ChannelRuntime {
                         "select result index must be non-negative");
             }
             Objects.requireNonNull(operation, "operation");
+        }
+    }
+
+    /** Admission exhaustion is distinct from closure; no waiter is retained. */
+    public static final class ChannelBackpressureException extends IllegalStateException {
+        public ChannelBackpressureException(String message) {
+            super(message);
+        }
+    }
+
+    public static final class SelectAdmissionException extends IllegalArgumentException {
+        public SelectAdmissionException(String message) {
+            super(message);
         }
     }
 
@@ -93,21 +103,49 @@ public final class ChannelRuntime {
      */
     public static final class Channel<T> implements AutoCloseable {
         private final int capacity;
+        private final int maxPendingRegistrations;
         private final java.util.ArrayDeque<T> buffer = new java.util.ArrayDeque<>();
         private final ArrayList<CaseRegistration> registrations = new ArrayList<>();
         private boolean closed;
         private Throwable closeCause;
 
         public Channel(int capacity) {
+            this(capacity, DEFAULT_MAX_PENDING_REGISTRATIONS);
+        }
+
+        /**
+         * Pending operation quota counts registered select arms, not only
+         * buffered values. A multi-arm select counts once per referenced arm;
+         * it is admitted atomically across every participating channel.
+         */
+        public Channel(int capacity, int maxPendingRegistrations) {
             if (capacity < 0) {
                 throw new IllegalArgumentException(
                         "channel capacity cannot be negative");
             }
+            if (maxPendingRegistrations < 1) {
+                throw new IllegalArgumentException(
+                        "max pending channel registrations must be positive");
+            }
             this.capacity = capacity;
+            this.maxPendingRegistrations = maxPendingRegistrations;
         }
 
         public int capacity() {
             return capacity;
+        }
+
+        public int maxPendingRegistrations() {
+            return maxPendingRegistrations;
+        }
+
+        public int pendingRegistrations() {
+            COORDINATOR.lock();
+            try {
+                return registrations.size();
+            } finally {
+                COORDINATOR.unlock();
+            }
         }
 
         public int size() {
@@ -148,15 +186,34 @@ public final class ChannelRuntime {
         /** Runtime-only drain of committed mailbox values, including after close. */
         boolean drainOne(java.util.function.Consumer<? super T> consumer) {
             Objects.requireNonNull(consumer, "consumer");
+            ArrayList<Runnable> completions = new ArrayList<>();
             T value;
             COORDINATOR.lock();
             try {
                 if (buffer.isEmpty()) return false;
                 value = buffer.removeFirst();
+                // Draining creates a slot for a pending writer. It must run the
+                // same arbitration path as ordinary channel reads; otherwise
+                // admitted writers can remain stuck until unrelated channel
+                // activity wakes the coordinator.
+                pumpLocked(completions);
             } finally {
                 COORDINATOR.unlock();
             }
-            consumer.accept(value);
+            Throwable consumerFailure = null;
+            try {
+                // FIFO: deliver the older buffered value before publishing
+                // newly admitted writes; retain a failing consumer as primary.
+                consumer.accept(value);
+            } catch (RuntimeException | Error failure) {
+                consumerFailure = failure;
+                throw failure;
+            } finally {
+                // Preserve the consumer's exception as the primary failure,
+                // without abandoning any already-committed writer completion.
+                final Throwable primary = consumerFailure;
+                runAfterPreservingFailure(primary, () -> runCompletions(completions));
+            }
             return true;
         }
 
@@ -233,8 +290,23 @@ public final class ChannelRuntime {
         }
     }
 
-    public sealed interface SelectCase permits
-            ReadCase, WriteCase, AwaitCase, TimeoutCase, CancelledCase, DefaultCase { }
+    /**
+     * Runtime-side descriptor protocol for the source-level Selectable<T> trait.
+     * One invocation reduces a source to one NEXT event operation. The method
+     * must be side-effect-free: no subscriptions, waiting, consumption, guest
+     * callbacks, or producer scheduling; only an approved SelectCase descriptor.
+     *
+     * <p>Java host callers are trusted; the Oreslang compiler must statically
+     * enforce pure/effect-safe descriptions before opening this adapter to
+     * guest-defined traits. The winner coordinator still only accepts the
+     * sealed channel/Future cases below.</p>
+     */
+    @FunctionalInterface
+    public interface Selectable<T> {
+        SelectCase selectNext();
+    }
+
+    public sealed interface SelectCase permits ReadCase, WriteCase, FutureCase, DefaultCase { }
 
     public record ReadCase<T>(Channel<T> channel) implements SelectCase {
         public ReadCase {
@@ -252,27 +324,18 @@ public final class ChannelRuntime {
         }
     }
 
-    public record AwaitCase<T>(OresFuture<T> future) implements SelectCase {
-        public AwaitCase {
+    /** One immutable Future completion, not another concurrently running actor. */
+    public record FutureCase<T>(OresFuture<T> future) implements SelectCase {
+        public FutureCase {
             Objects.requireNonNull(future, "future");
         }
     }
 
-    public record TimeoutCase(long timeoutNanos) implements SelectCase {
-        public TimeoutCase {
-            if (timeoutNanos < 0L) {
-                throw new IllegalArgumentException("select timeout cannot be negative");
-            }
-        }
-    }
-
-    public record CancelledCase(CancellationToken token) implements SelectCase {
-        public CancelledCase {
-            Objects.requireNonNull(token, "token");
-        }
-    }
-
     public record DefaultCase() implements SelectCase { }
+
+    public static <T> FutureCase<T> await(OresFuture<T> future) {
+        return new FutureCase<>(future);
+    }
 
     public static <T> ReadCase<T> read(Channel<T> channel) {
         return new ReadCase<>(channel);
@@ -280,18 +343,6 @@ public final class ChannelRuntime {
 
     public static <T> WriteCase<T> write(Channel<T> channel, T value) {
         return new WriteCase<>(channel, value);
-    }
-
-    public static <T> AwaitCase<T> await(OresFuture<T> future) {
-        return new AwaitCase<>(future);
-    }
-
-    public static TimeoutCase timeout(long timeoutNanos) {
-        return new TimeoutCase(timeoutNanos);
-    }
-
-    public static CancelledCase cancelled(CancellationToken token) {
-        return new CancelledCase(token);
     }
 
     public static DefaultCase defaultCase() {
@@ -304,7 +355,7 @@ public final class ChannelRuntime {
      */
     public static final class SelectSet {
         private final List<SelectCase> cases;
-        private final AtomicLong fairCursor = new AtomicLong();
+        private final AtomicLong fairCursor;
 
         public SelectSet(Collection<? extends SelectCase> cases) {
             this(cases, 0L);
@@ -318,13 +369,25 @@ public final class ChannelRuntime {
         public SelectSet(
                 Collection<? extends SelectCase> cases,
                 long initialFairCursor) {
+            this(cases, new AtomicLong(initialFairCursor));
+        }
+
+        // Dynamic plan generations share a cursor only with their immutable snapshot.
+        // Old completions cannot rotate a newer generation's FAIR state.
+        private SelectSet(
+                Collection<? extends SelectCase> cases,
+                AtomicLong sharedFairCursor) {
             Objects.requireNonNull(cases, "cases");
+            this.fairCursor = Objects.requireNonNull(sharedFairCursor, "sharedFairCursor");
             if (cases.isEmpty()) {
                 throw new IllegalArgumentException(
                         "select requires at least one case");
             }
+            if (cases.size() > MAX_SELECT_CASES) {
+                throw new SelectAdmissionException(
+                        "select case count exceeds maximum " + MAX_SELECT_CASES);
+            }
             this.cases = List.copyOf(cases);
-            this.fairCursor.set(initialFairCursor);
             long defaults = this.cases.stream()
                     .filter(DefaultCase.class::isInstance)
                     .count();
@@ -341,9 +404,40 @@ public final class ChannelRuntime {
         public static SelectSet from(Iterable<? extends SelectCase> cases) {
             ArrayList<SelectCase> copy = new ArrayList<>();
             for (SelectCase selectCase : cases) {
+                if (copy.size() == MAX_SELECT_CASES) {
+                    throw new IllegalArgumentException(
+                            "select case count exceeds maximum " + MAX_SELECT_CASES);
+                }
                 copy.add(Objects.requireNonNull(selectCase));
             }
             return new SelectSet(copy);
+        }
+
+        /**
+         * Reduce heterogeneous trusted sources to exactly one operation each
+         * BEFORE acquiring the atomic coordinator. Describing a candidate
+         * must never await or consume its next event. A default is a select
+         * control arm, not a one-event Selectable source.
+         */
+        public static SelectSet fromSelectables(
+                Iterable<? extends Selectable<?>> selectables) {
+            Objects.requireNonNull(selectables, "selectables");
+            ArrayList<SelectCase> cases = new ArrayList<>();
+            for (Selectable<?> selectable : selectables) {
+                if (cases.size() >= MAX_SELECT_CASES) {
+                    throw new SelectAdmissionException(
+                            "selectable source quota exceeded: " + MAX_SELECT_CASES);
+                }
+                SelectCase operation = Objects.requireNonNull(
+                        Objects.requireNonNull(selectable, "selectable source").selectNext(),
+                        "selectNext must produce one operation");
+                if (operation instanceof DefaultCase) {
+                    throw new IllegalArgumentException(
+                            "Selectable<T> cannot reduce to a default arm");
+                }
+                cases.add(operation);
+            }
+            return new SelectSet(cases);
         }
 
         /**
@@ -369,6 +463,34 @@ public final class ChannelRuntime {
                     new SelectRegistration(
                             this,
                             Objects.requireNonNull(policy, "policy"));
+            registration.start(false);
+            return registration.future;
+        }
+
+        /**
+         * Package-private deterministic race seam for runtime regression tests.
+         * Observers run only in explicitly opted-in test selections; the normal
+         * select path never executes injected callbacks.
+         */
+        OresFuture<SelectResult> selectAsyncForTesting(
+                SelectPolicy policy,
+                java.util.function.Consumer<OresFuture<SelectResult>> onCreated,
+                Runnable afterWaiterAttached) {
+            return selectAsyncForTesting(policy, onCreated, afterWaiterAttached, null);
+        }
+
+        /** Opt-in observer for the critical decision-to-late-detach window. */
+        OresFuture<SelectResult> selectAsyncForTesting(
+                SelectPolicy policy,
+                java.util.function.Consumer<OresFuture<SelectResult>> onCreated,
+                Runnable afterWaiterAttached,
+                Runnable beforeLateWaiterDetached) {
+            SelectRegistration registration =
+                    new SelectRegistration(this,
+                            Objects.requireNonNull(policy, "policy"),
+                            Objects.requireNonNull(afterWaiterAttached, "afterWaiterAttached"),
+                            beforeLateWaiterDetached);
+            Objects.requireNonNull(onCreated, "onCreated").accept(registration.future);
             registration.start(false);
             return registration.future;
         }
@@ -413,12 +535,9 @@ public final class ChannelRuntime {
         }
 
         private void selected(int index, SelectPolicy policy) {
-            if (policy == SelectPolicy.FAIR
-                    && !cases.isEmpty()
+            // Default did not perform I/O and must not rotate FAIR credit.
+            if (policy == SelectPolicy.FAIR && !cases.isEmpty()
                     && !(cases.get(index) instanceof DefaultCase)) {
-                // default is an idle probe, not a readiness winner. Letting it
-                // advance the cursor would make repeated empty polls bias which
-                // real arm wins when work eventually arrives.
                 fairCursor.set((index + 1L) % cases.size());
             }
         }
@@ -486,19 +605,157 @@ public final class ChannelRuntime {
         }
     }
 
+    /**
+     * Mutation-friendly select plan retaining only reusable case descriptors,
+     * never armed waiters or completion authority. Insertion order defines
+     * index order; keyed selections pin that order to one immutable generation.
+     *
+     * <p>Each select creates a fresh, bounded SelectRegistration through the
+     * underlying SelectSet. This preserves Channel, Future and cancellation
+     * semantics (including late Future waiter detachment) from the current
+     * runtime rather than implementing a second arbitration path.
+     */
+    public static final class DynamicSelectPlan<K> {
+        private final LinkedHashMap<K, SelectCase> entries = new LinkedHashMap<>();
+        // One cursor per structural generation: late old wins never rotate a
+        // newer generation. Mutations do not acquire COORDINATOR.
+        private AtomicLong fairness = new AtomicLong();
+        private long version;
+        // The fast path performs one volatile read, not a plan monitor entry.
+        private volatile Snapshot<K> cached;
+
+        private record Snapshot<K>(long version, List<K> keys, SelectSet set) { }
+
+        public record PlannedResult<K>(long version, K key, SelectResult selection) {
+            public PlannedResult {
+                Objects.requireNonNull(key, "key");
+                Objects.requireNonNull(selection, "selection");
+            }
+        }
+
+        public DynamicSelectPlan() { }
+
+        public DynamicSelectPlan(Map<? extends K, ? extends SelectCase> initial) {
+            Objects.requireNonNull(initial, "initial");
+            for (Map.Entry<? extends K, ? extends SelectCase> entry : initial.entrySet()) {
+                put(entry.getKey(), entry.getValue());
+            }
+        }
+
+        /**
+         * Mutations publish a new generation. Replacements retain their key's
+         * insertion position; failed duplicates and quota checks are atomic.
+         */
+        public synchronized void put(K key, SelectCase selectCase) {
+            Objects.requireNonNull(key, "key");
+            Objects.requireNonNull(selectCase, "selectCase");
+            if (!entries.containsKey(key) && entries.size() >= MAX_SELECT_CASES) {
+                throw new SelectAdmissionException(
+                        "dynamic select case count exceeds maximum " + MAX_SELECT_CASES);
+            }
+            if (selectCase instanceof DefaultCase) {
+                for (Map.Entry<K, SelectCase> entry : entries.entrySet()) {
+                    if (!entry.getKey().equals(key)
+                            && entry.getValue() instanceof DefaultCase) {
+                        throw new IllegalArgumentException(
+                                "select permits at most one default case");
+                    }
+                }
+            }
+            long nextVersion = Math.addExact(version, 1L);
+            entries.put(key, selectCase);
+            fairness = new AtomicLong(fairness.get());
+            version = nextVersion;
+            cached = null;
+        }
+
+        /** Existing in-flight selections keep their original snapshot. */
+        public synchronized boolean remove(K key) {
+            Objects.requireNonNull(key, "key");
+            if (!entries.containsKey(key)) return false;
+            long nextVersion = Math.addExact(version, 1L);
+            entries.remove(key);
+            fairness = new AtomicLong(fairness.get());
+            version = nextVersion;
+            cached = null;
+            return true;
+        }
+
+        public synchronized long version() {
+            return version;
+        }
+
+        public synchronized int size() {
+            return entries.size();
+        }
+
+        public synchronized List<K> keys() {
+            return List.copyOf(entries.keySet());
+        }
+
+        /**
+         * Snapshot capture is the select's plan-version linearization point.
+         * Concurrent mutations may complete after the capture but before
+         * registration; the in-flight operation still owns the old generation.
+         */
+        private Snapshot<K> snapshot() {
+            Snapshot<K> result = cached;
+            if (result != null) return result;
+            synchronized (this) {
+                result = cached;
+                if (result != null) return result;
+                if (entries.isEmpty()) {
+                    throw new IllegalStateException("cannot select from an empty dynamic plan");
+                }
+                result = new Snapshot<>(
+                        version, List.copyOf(entries.keySet()),
+                        new SelectSet(entries.values(), fairness));
+                cached = result;
+                return result;
+            }
+        }
+
+        public SelectSet selectSetSnapshot() {
+            return snapshot().set();
+        }
+
+        public OresFuture<SelectResult> selectAsync() {
+            return selectAsync(SelectPolicy.FAIR);
+        }
+
+        public OresFuture<SelectResult> selectAsync(SelectPolicy policy) {
+            return snapshot().set().selectAsync(policy);
+        }
+
+        public Optional<SelectResult> trySelect() {
+            return trySelect(SelectPolicy.FAIR);
+        }
+
+        public Optional<SelectResult> trySelect(SelectPolicy policy) {
+            return snapshot().set().trySelect(policy);
+        }
+
+        public OresFuture<PlannedResult<K>> selectKeyedAsync(SelectPolicy policy) {
+            Snapshot<K> selected = snapshot();
+            return mapSelection(
+                    selected.set().selectAsync(policy),
+                    result -> new PlannedResult<>(
+                            selected.version(), selected.keys().get(result.index()), result));
+        }
+
+        public Optional<PlannedResult<K>> trySelectKeyed(SelectPolicy policy) {
+            Snapshot<K> selected = snapshot();
+            return selected.set().trySelect(policy)
+                    .map(result -> new PlannedResult<>(
+                            selected.version(), selected.keys().get(result.index()), result));
+        }
+    }
+
     private static final class CaseRegistration {
         private final SelectRegistration selection;
         private final int index;
         private final SelectCase selectCase;
         private final long ticket;
-        private final long timeoutStartedNanos;
-
-        private boolean externalReady;
-        private Object externalValue;
-        private Throwable externalFailure;
-        private OresFuture.RuntimeWaiterRegistration<?> futureWaiter;
-        private CancellationToken.Registration cancellationWaiter;
-        private java.util.concurrent.ScheduledFuture<?> timeoutTask;
 
         private CaseRegistration(
                 SelectRegistration selection,
@@ -508,62 +765,67 @@ public final class ChannelRuntime {
             this.index = index;
             this.selectCase = selectCase;
             this.ticket = nextTicket++;
-            this.timeoutStartedNanos =
-                    selectCase instanceof TimeoutCase
-                            ? System.nanoTime()
-                            : 0L;
         }
 
         private Channel<?> channel() {
             if (selectCase instanceof ReadCase<?> read) return read.channel();
             if (selectCase instanceof WriteCase<?> write) return write.channel();
-            return null;
+            throw new IllegalStateException(
+                    "only channel cases have channel registrations");
         }
 
         private SelectOperation operation() {
             if (selectCase instanceof ReadCase<?>) return SelectOperation.READ;
             if (selectCase instanceof WriteCase<?>) return SelectOperation.WRITE;
-            if (selectCase instanceof AwaitCase<?>) return SelectOperation.AWAIT;
-            if (selectCase instanceof TimeoutCase) return SelectOperation.TIMEOUT;
-            if (selectCase instanceof CancelledCase) return SelectOperation.CANCELLED;
+            if (selectCase instanceof FutureCase<?>) return SelectOperation.FUTURE;
             return SelectOperation.DEFAULT;
         }
 
         private Object writeValue() {
             return ((WriteCase<?>) selectCase).value();
         }
-
-        private void detachExternal() {
-            if (futureWaiter != null) {
-                futureWaiter.detach();
-                futureWaiter = null;
-            }
-            if (cancellationWaiter != null) {
-                cancellationWaiter.detach();
-                cancellationWaiter = null;
-            }
-            if (timeoutTask != null) {
-                timeoutTask.cancel(false);
-                timeoutTask = null;
-            }
-        }
     }
 
     private static final class SelectRegistration {
         private final SelectSet set;
         private final SelectPolicy policy;
-        private final int[] order;
+        /** Captured under COORDINATOR at admission, after preceding FAIR commits. */
+        private int[] order;
         private final ArrayList<CaseRegistration> registrations =
+                new ArrayList<>();
+        /**
+         * Direct lookup by source arm index. Arbitration repeatedly checks
+         * up to MAX_SELECT_CASES arms under the global coordinator; scanning
+         * the registration list for every arm would make each probe quadratic.
+         * Indexed slots are populated/cleared only under COORDINATOR.
+         */
+        private final CaseRegistration[] registeredByIndex;
+        /** Detached on any winner/cancellation; never cancels a shared producer Future. */
+        private final ArrayList<OresFuture.RuntimeWaiterRegistration<?>> futureWaiters =
                 new ArrayList<>();
         private final int defaultIndex;
         private final OresFuture<SelectResult> future;
+        private final Runnable afterWaiterAttachedForTesting;
+        private final Runnable beforeLateWaiterDetachedForTesting;
         private boolean decided;
         private boolean registered;
+        /** Registrations that can still return after a selection was committed. */
+        private int attachingFutureWaiters;
+        /** Completion publication is held until in-flight listener attachments detach. */
+        private final ArrayList<Runnable> deferredPublication = new ArrayList<>();
 
         private SelectRegistration(SelectSet set, SelectPolicy policy) {
+            this(set, policy, null, null);
+        }
+
+        private SelectRegistration(SelectSet set, SelectPolicy policy,
+                Runnable afterWaiterAttachedForTesting,
+                Runnable beforeLateWaiterDetachedForTesting) {
             this.set = set;
             this.policy = policy;
-            this.order = set.initialOrder(policy);
+            this.afterWaiterAttachedForTesting = afterWaiterAttachedForTesting;
+            this.beforeLateWaiterDetachedForTesting = beforeLateWaiterDetachedForTesting;
+            this.registeredByIndex = new CaseRegistration[set.cases.size()];
 
             int foundDefault = -1;
             for (int i = 0; i < set.cases.size(); i++) {
@@ -579,14 +841,18 @@ public final class ChannelRuntime {
         }
 
         private boolean cancelAdmission() {
+            ArrayList<Runnable> cleanups = new ArrayList<>();
             COORDINATOR.lock();
             try {
                 if (decided) return false;
                 decided = true;
-                unregisterLocked(this);
+                unregisterLocked(this, cleanups);
                 return true;
             } finally {
                 COORDINATOR.unlock();
+                // Producer queues may be large even when this select is bounded.
+                // Never scan/remove their waiters under the channel coordinator.
+                runCompletions(cleanups);
             }
         }
 
@@ -594,8 +860,10 @@ public final class ChannelRuntime {
             ArrayList<Runnable> completions = new ArrayList<>();
             COORDINATOR.lock();
             try {
+                // Even when the retained-waiter quota is full, a ready
+                // rendezvous or immediate probe must be able to make progress.
+                // A transient registration is held only while under the lock.
                 registerLocked(this);
-                refreshExternalReadyLocked(this);
                 pumpLocked(completions);
 
                 if (!decided && defaultIndex >= 0) {
@@ -608,12 +876,145 @@ public final class ChannelRuntime {
                             completions);
                 }
 
+                if (!decided && !immediateOnly
+                        && exceedsPendingBudgetLocked(this)) {
+                    decided = true;
+                    unregisterLocked(this, completions);
+                    completions.add(() -> future.failFromRuntime(
+                            new ChannelBackpressureException(
+                                    "channel pending registration budget exhausted")));
+                }
+
+                if (!decided && !immediateOnly && activeArmRegistrations > MAX_PENDING_SELECT_ARM_REGISTRATIONS) {
+                    // Ready operations have already been given a chance to commit.
+                    decided = true;
+                    unregisterLocked(this, completions);
+                    completions.add(() -> future.failFromRuntime(
+                            new SelectAdmissionException(
+                                    "pending select arm registration quota exceeded")));
+                }
+
+                if (!decided && !immediateOnly && ACTIVE.size() > MAX_PENDING_SELECTS) {
+                    decided = true;
+                    unregisterLocked(this, completions);
+                    completions.add(() -> future.failFromRuntime(
+                            new SelectAdmissionException(
+                                    "pending select registration quota exceeded")));
+                }
+
                 if (!decided && immediateOnly) {
                     decided = true;
-                    unregisterLocked(this);
-                } else if (!decided) {
-                    armExternalWaitersLocked(this);
+                    unregisterLocked(this, completions);
                 }
+            } finally {
+                COORDINATOR.unlock();
+            }
+            Throwable publicationFailure = null;
+            try {
+                runCompletions(completions);
+            } catch (RuntimeException | Error failure) {
+                publicationFailure = failure;
+                throw failure;
+            } finally {
+                // A failure in an unrelated committed completion must not
+                // leave this registered selection without Future wakeups.
+                if (!immediateOnly) {
+                    final Throwable primary = publicationFailure;
+                    runAfterPreservingFailure(primary, this::attachFutureWaiters);
+                }
+            }
+        }
+
+        private void attachFutureWaiters() {
+            List<CaseRegistration> pending;
+            COORDINATOR.lock();
+            try {
+                if (decided) return;
+                pending = List.copyOf(registrations);
+            } finally {
+                COORDINATOR.unlock();
+            }
+            for (CaseRegistration registration : pending) {
+                if (!(registration.selectCase instanceof FutureCase<?> candidate)) continue;
+                // Claim the attachment lifetime before leaving the coordinator.
+                // Committed results cannot be published while this claim lives.
+                COORDINATOR.lock();
+                try {
+                    if (decided) return;
+                    attachingFutureWaiters++;
+                } finally {
+                    COORDINATOR.unlock();
+                }
+                OresFuture.RuntimeWaiterRegistration<?> waiter = null;
+                // Ordinary pending listeners never need a drain snapshot.
+                List<Runnable> readyToPublish = null;
+                try {
+                    waiter = candidate.future().whenCompleteRuntimeCancellable(
+                            (ignored, failure) -> futureBecameReady());
+                    if (afterWaiterAttachedForTesting != null) {
+                        afterWaiterAttachedForTesting.run();
+                    }
+                } finally {
+                    boolean lost;
+                    COORDINATOR.lock();
+                    try {
+                        lost = decided;
+                        if (!lost && waiter != null) futureWaiters.add(waiter);
+                    } finally {
+                        COORDINATOR.unlock();
+                    }
+                    try {
+                        // Detachment can scan a large producer waiter queue.
+                        // Leave the attachment claim live until AFTER removal:
+                        // a concurrent publisher must not observe count == 0
+                        // while this losing registration remains linked.
+                        if (lost && waiter != null) {
+                            try {
+                                if (beforeLateWaiterDetachedForTesting != null) {
+                                    beforeLateWaiterDetachedForTesting.run();
+                                }
+                            } finally {
+                                // Even a throwing test hook cannot retain a late handle.
+                                waiter.detach();
+                            }
+                        }
+                    } finally {
+                        COORDINATOR.lock();
+                        try {
+                            attachingFutureWaiters--;
+                            if (attachingFutureWaiters == 0
+                                    && !deferredPublication.isEmpty()) {
+                                readyToPublish = List.copyOf(deferredPublication);
+                                deferredPublication.clear();
+                            }
+                        } finally {
+                            COORDINATOR.unlock();
+                        }
+                        if (readyToPublish != null) runCompletions(readyToPublish);
+                    }
+                }
+            }
+        }
+
+        /** Publish a selected result only after every in-flight attachment has settled. */
+        private void publishAfterAttachment(Runnable action) {
+            COORDINATOR.lock();
+            try {
+                if (attachingFutureWaiters > 0) {
+                    deferredPublication.add(action);
+                    return;
+                }
+            } finally {
+                COORDINATOR.unlock();
+            }
+            action.run();
+        }
+
+        private void futureBecameReady() {
+            ArrayList<Runnable> completions = new ArrayList<>();
+            COORDINATOR.lock();
+            try {
+                if (!decided) pumpLocked(completions);
             } finally {
                 COORDINATOR.unlock();
             }
@@ -634,8 +1035,29 @@ public final class ChannelRuntime {
         }
     }
 
+    private static boolean exceedsPendingBudgetLocked(
+            SelectRegistration selection) {
+        for (CaseRegistration registration : selection.registrations) {
+            // FutureCase has no Channel and consumes no per-channel credits.
+            if (registration.selectCase instanceof ReadCase<?>
+                    || registration.selectCase instanceof WriteCase<?>) {
+                Channel<?> channel = registration.channel();
+                if (channel.registrations.size() > channel.maxPendingRegistrations) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     private static void registerLocked(SelectRegistration selection) {
         if (selection.decided || selection.registered) return;
+
+        // A reusable SelectSet may have had another selection commit after
+        // this registration object was constructed. Capture the fairness
+        // cursor at atomic admission, not at construction, so overlapping
+        // invocations observe all earlier committed rotations.
+        selection.order = selection.set.initialOrder(selection.policy);
         selection.registered = true;
         ACTIVE.add(selection);
 
@@ -646,128 +1068,45 @@ public final class ChannelRuntime {
             CaseRegistration registration =
                     new CaseRegistration(selection, index, selectCase);
             selection.registrations.add(registration);
-            Channel<?> channel = registration.channel();
-            if (channel != null) channel.registrations.add(registration);
+            selection.registeredByIndex[index] = registration;
+            activeArmRegistrations++;
+            if (selectCase instanceof ReadCase<?> || selectCase instanceof WriteCase<?>) {
+                channelOf(selectCase).registrations.add(registration);
+            }
         }
     }
 
-    private static void unregisterLocked(SelectRegistration selection) {
+    private static void unregisterLocked(
+            SelectRegistration selection, List<Runnable> completions) {
         if (!selection.registered) return;
         selection.registered = false;
         ACTIVE.remove(selection);
+        if (activeArmRegistrations < selection.registrations.size()) {
+            throw new IllegalStateException("select arm registration accounting underflow");
+        }
+        activeArmRegistrations -= selection.registrations.size();
         for (CaseRegistration registration :
                 List.copyOf(selection.registrations)) {
-            Channel<?> channel = registration.channel();
-            if (channel != null) channel.registrations.remove(registration);
-            registration.detachExternal();
+            selection.registeredByIndex[registration.index] = null;
+            if (registration.selectCase instanceof ReadCase<?>
+                    || registration.selectCase instanceof WriteCase<?>) {
+                registration.channel().registrations.remove(registration);
+            }
         }
         selection.registrations.clear();
-    }
-
-    private static void refreshExternalReadyLocked(SelectRegistration selection) {
-        long now = System.nanoTime();
-        for (CaseRegistration registration : selection.registrations) {
-            if (registration.externalReady) continue;
-
-            if (registration.selectCase instanceof AwaitCase<?> awaited) {
-                if (!awaited.future().isDone()) continue;
-                try {
-                    registration.externalValue = awaited.future().join();
-                } catch (RuntimeException failure) {
-                    registration.externalFailure = OresFuture.unwrap(failure);
-                }
-                registration.externalReady = true;
-                continue;
-            }
-
-            if (registration.selectCase instanceof CancelledCase cancelled) {
-                if (cancelled.token().isCancelled()) {
-                    registration.externalReady = true;
-                }
-                continue;
-            }
-
-            if (registration.selectCase instanceof TimeoutCase timeout
-                    && now - registration.timeoutStartedNanos >= timeout.timeoutNanos()) {
-                registration.externalReady = true;
-            }
-        }
-    }
-
-    private static void armExternalWaitersLocked(SelectRegistration selection) {
-        for (CaseRegistration registration :
-                List.copyOf(selection.registrations)) {
-            if (selection.decided || registration.externalReady) continue;
-
-            if (registration.selectCase instanceof AwaitCase<?> awaited) {
-                OresFuture.RuntimeWaiterRegistration<?> waiter =
-                        awaited.future().whenCompleteRuntimeCancellable(
-                                (value, failure) ->
-                                        signalExternalReady(
-                                                registration,
-                                                value,
-                                                failure == null
-                                                        ? null
-                                                        : OresFuture.unwrap(failure)));
-                registration.futureWaiter = waiter;
-                if (selection.decided || !selection.registered) {
+        if (!selection.futureWaiters.isEmpty()) {
+            // Once decided=true, callbacks cannot commit another arm. Queue
+            // removals can be linear in shared producer waiters; schedule all
+            // detaches after releasing COORDINATOR, before publishing the winner.
+            List<OresFuture.RuntimeWaiterRegistration<?>> detached =
+                    List.copyOf(selection.futureWaiters);
+            selection.futureWaiters.clear();
+            completions.add(() -> {
+                for (OresFuture.RuntimeWaiterRegistration<?> waiter : detached) {
                     waiter.detach();
-                    registration.futureWaiter = null;
                 }
-                continue;
-            }
-
-            if (registration.selectCase instanceof CancelledCase cancelled) {
-                CancellationToken.Registration waiter =
-                        cancelled.token().whenCancelledRuntime(
-                                () -> signalExternalReady(
-                                        registration,
-                                        null,
-                                        null));
-                registration.cancellationWaiter = waiter;
-                if (selection.decided || !selection.registered) {
-                    waiter.detach();
-                    registration.cancellationWaiter = null;
-                }
-                continue;
-            }
-
-            if (registration.selectCase instanceof TimeoutCase timeout) {
-                long elapsed = System.nanoTime() - registration.timeoutStartedNanos;
-                long remaining = timeout.timeoutNanos() - Math.max(0L, elapsed);
-                registration.timeoutTask = TIMER.schedule(
-                        () -> signalExternalReady(
-                                registration,
-                                null,
-                                null),
-                        Math.max(0L, remaining),
-                        java.util.concurrent.TimeUnit.NANOSECONDS);
-            }
+            });
         }
-    }
-
-    private static void signalExternalReady(
-            CaseRegistration registration,
-            Object value,
-            Throwable failure) {
-        ArrayList<Runnable> completions = new ArrayList<>();
-        COORDINATOR.lock();
-        try {
-            SelectRegistration selection = registration.selection;
-            if (selection.decided || !selection.registered) return;
-            registration.externalReady = true;
-            registration.externalValue = value;
-            registration.externalFailure = failure;
-
-            // Refresh every external arm before arbitration. A Future/token may
-            // have become ready before its callback was attached, and FAIR or
-            // PRIORITY ordering must still see the complete ready set.
-            refreshExternalReadyLocked(selection);
-            pumpLocked(completions);
-        } finally {
-            COORDINATOR.unlock();
-        }
-        runCompletions(completions);
     }
 
     /**
@@ -782,27 +1121,21 @@ public final class ChannelRuntime {
 
             for (SelectRegistration selection : List.copyOf(ACTIVE)) {
                 if (selection.decided) continue;
-                refreshExternalReadyLocked(selection);
 
                 CaseRegistration chosen =
                         preferredCommittableCaseLocked(selection);
                 if (chosen == null) continue;
 
-                if (chosen.operation() == SelectOperation.AWAIT
-                        || chosen.operation() == SelectOperation.TIMEOUT
-                        || chosen.operation() == SelectOperation.CANCELLED) {
-                    if (chosen.externalFailure != null) {
-                        commitFailureLocked(
-                                chosen,
-                                chosen.externalFailure,
-                                completions);
+                if (chosen.selectCase instanceof FutureCase<?> awaiting) {
+                    Object settled = awaiting.future().runtimeSelectReadyStateOrNull();
+                    if (settled == null) continue;
+                    Throwable failure = OresFuture.runtimeTerminalFailure(settled);
+                    if (failure != null) {
+                        commitFailureLocked(chosen, failure, completions);
                     } else {
-                        commitSingleLocked(
-                                chosen,
-                                new SelectResult(
-                                        chosen.index,
-                                        chosen.operation(),
-                                        chosen.externalValue),
+                        commitSingleLocked(chosen,
+                                new SelectResult(chosen.index, SelectOperation.FUTURE,
+                                        OresFuture.runtimeTerminalValue(settled)),
                                 completions);
                     }
                     progressed = true;
@@ -810,6 +1143,7 @@ public final class ChannelRuntime {
                 }
 
                 Channel<?> channel = chosen.channel();
+
                 if (chosen.operation() == SelectOperation.READ) {
                     if (!channel.buffer.isEmpty()) {
                         Object value = channel.buffer.removeFirst();
@@ -886,6 +1220,15 @@ public final class ChannelRuntime {
             SelectRegistration selection) {
         if (selection.decided) return null;
 
+        // A producer Future can settle midway through this priority scan.
+        // Multiple arms awaiting that SAME Future must use one readiness
+        // observation for the entire arbitration pass; otherwise an earlier
+        // arm may be sampled PENDING while a later duplicate observes SUCCESS
+        // and spuriously wins PRIORITY over the identical earlier source.
+        // Identity comparison is intentional: distinct Futures are distinct
+        // completion authorities, even when their values compare equal.
+        // IdentityHashMap accepts null values so PENDING is cached too.
+        java.util.IdentityHashMap<OresFuture<?>, Object> observedFutureStates = null;
         for (int index : selection.order) {
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
@@ -894,13 +1237,21 @@ public final class ChannelRuntime {
                     findRegistration(selection, index);
             if (registration == null) continue;
 
-            if (registration.operation() == SelectOperation.AWAIT
-                    || registration.operation() == SelectOperation.TIMEOUT
-                    || registration.operation() == SelectOperation.CANCELLED) {
-                if (registration.externalReady) return registration;
+            if (registration.selectCase instanceof FutureCase<?> awaiting) {
+                if (observedFutureStates == null) {
+                    observedFutureStates = new java.util.IdentityHashMap<>();
+                }
+                OresFuture<?> producer = awaiting.future();
+                Object observed;
+                if (observedFutureStates.containsKey(producer)) {
+                    observed = observedFutureStates.get(producer);
+                } else {
+                    observed = producer.runtimeSelectReadyStateOrNull();
+                    observedFutureStates.put(producer, observed);
+                }
+                if (observed != null) return registration;
                 continue;
             }
-
             Channel<?> channel = registration.channel();
             if (registration.operation() == SelectOperation.READ) {
                 if (!channel.buffer.isEmpty() || channel.closed) {
@@ -930,13 +1281,31 @@ public final class ChannelRuntime {
             SelectRegistration selection) {
         if (selection.decided) return null;
 
+        // Peer preference must make the same stable observation of repeated
+        // Future arms as primary arbitration. A producer can settle outside
+        // COORDINATOR while we probe aliases of that producer: without an
+        // identity snapshot, an earlier alias can see PENDING while a later
+        // alias sees READY in the very same PRIORITY/FAIR preference pass.
+        java.util.IdentityHashMap<OresFuture<?>, Boolean> observedFutureReadiness =
+                new java.util.IdentityHashMap<>();
+
         for (int index : selection.order) {
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
 
             CaseRegistration registration =
                     findRegistration(selection, index);
-            if (registration != null && basicReadyLocked(registration)) {
+            if (registration == null) continue;
+
+            if (selectCase instanceof FutureCase<?> futureCase) {
+                OresFuture<?> producer = futureCase.future();
+                Boolean ready = observedFutureReadiness.get(producer);
+                if (ready == null) {
+                    ready = producer.runtimeSelectReadyStateOrNull() != null;
+                    observedFutureReadiness.put(producer, ready);
+                }
+                if (ready) return registration;
+            } else if (basicReadyLocked(registration)) {
                 return registration;
             }
         }
@@ -944,12 +1313,9 @@ public final class ChannelRuntime {
     }
 
     private static boolean basicReadyLocked(CaseRegistration registration) {
-        if (registration.operation() == SelectOperation.AWAIT
-                || registration.operation() == SelectOperation.TIMEOUT
-                || registration.operation() == SelectOperation.CANCELLED) {
-            return registration.externalReady;
+        if (registration.selectCase instanceof FutureCase<?> awaiting) {
+            return awaiting.future().runtimeSelectReadyStateOrNull() != null;
         }
-
         Channel<?> channel = registration.channel();
 
         if (registration.operation() == SelectOperation.READ) {
@@ -1018,10 +1384,7 @@ public final class ChannelRuntime {
     private static CaseRegistration findRegistration(
             SelectRegistration selection,
             int index) {
-        for (CaseRegistration registration : selection.registrations) {
-            if (registration.index == index) return registration;
-        }
-        return null;
+        return selection.registeredByIndex[index];
     }
 
     private static void commitPairLocked(
@@ -1040,8 +1403,8 @@ public final class ChannelRuntime {
         writer.selection.decided = true;
         reader.selection.set.selected(reader.index, reader.selection.policy);
         writer.selection.set.selected(writer.index, writer.selection.policy);
-        unregisterLocked(reader.selection);
-        unregisterLocked(writer.selection);
+        unregisterLocked(reader.selection, completions);
+        unregisterLocked(writer.selection, completions);
 
         SelectResult readResult = new SelectResult(
                 reader.index,
@@ -1052,10 +1415,10 @@ public final class ChannelRuntime {
                 SelectOperation.WRITE,
                 null);
 
-        completions.add(() ->
-                reader.selection.future.completeFromRuntime(readResult));
-        completions.add(() ->
-                writer.selection.future.completeFromRuntime(writeResult));
+        completions.add(() -> reader.selection.publishAfterAttachment(
+                () -> reader.selection.future.completeFromRuntime(readResult)));
+        completions.add(() -> writer.selection.publishAfterAttachment(
+                () -> writer.selection.future.completeFromRuntime(writeResult)));
     }
 
     private static void commitSingleLocked(
@@ -1067,9 +1430,9 @@ public final class ChannelRuntime {
 
         selection.decided = true;
         selection.set.selected(result.index(), selection.policy);
-        unregisterLocked(selection);
-        completions.add(() ->
-                selection.future.completeFromRuntime(result));
+        unregisterLocked(selection, completions);
+        completions.add(() -> selection.publishAfterAttachment(
+                () -> selection.future.completeFromRuntime(result)));
     }
 
     private static void commitFailureLocked(
@@ -1084,12 +1447,19 @@ public final class ChannelRuntime {
         // permanently closed arm can monopolize a reusable SelectSet forever.
         selection.decided = true;
         selection.set.selected(registration.index, selection.policy);
-        unregisterLocked(selection);
-        completions.add(() ->
-                selection.future.failFromRuntime(failure));
+        unregisterLocked(selection, completions);
+        completions.add(() -> selection.publishAfterAttachment(
+                () -> selection.future.failFromRuntime(failure)));
     }
 
-    private static <T> OresFuture<T> mapSelection(
+    private static Channel<?> channelOf(SelectCase selectCase) {
+        if (selectCase instanceof ReadCase<?> read) return read.channel();
+        if (selectCase instanceof WriteCase<?> write) return write.channel();
+        throw new IllegalArgumentException(
+                "default select case has no channel");
+    }
+
+    static <T> OresFuture<T> mapSelection(
             OresFuture<SelectResult> source,
             Function<SelectResult, T> mapper) {
         OresFuture<T> result = new OresFuture<>(
@@ -1115,7 +1485,44 @@ public final class ChannelRuntime {
         return result;
     }
 
+    /**
+     * Execute required cleanup/follow-up despite a previous failure. Preserve
+     * the original exception as primary rather than masking it with a later
+     * listener, cleanup, or notification failure.
+     */
+    private static void runAfterPreservingFailure(
+            Throwable primaryFailure, Runnable requiredAction) {
+        try {
+            requiredAction.run();
+        } catch (RuntimeException | Error laterFailure) {
+            if (primaryFailure == null) throw laterFailure;
+            if (primaryFailure != laterFailure) {
+                primaryFailure.addSuppressed(laterFailure);
+            }
+        }
+    }
+
+    /**
+     * Every atomic commit may publish more than one terminal Future (notably
+     * rendezvous pairs), and unregistering Future arms queues loser detachments
+     * ahead of publication. A failure in any one completion must not prevent
+     * the remaining committed operations from being published or detached.
+     *
+     * <p>Do not execute this drain while holding COORDINATOR. Preserve the
+     * original failure after running all remaining callbacks, rather than
+     * silently treating a broken internal completion hook as success.</p>
+     */
     private static void runCompletions(List<Runnable> completions) {
-        for (Runnable completion : completions) completion.run();
+        Throwable firstFailure = null;
+        for (Runnable completion : completions) {
+            try {
+                completion.run();
+            } catch (RuntimeException | Error failure) {
+                if (firstFailure == null) firstFailure = failure;
+                else if (firstFailure != failure) firstFailure.addSuppressed(failure);
+            }
+        }
+        if (firstFailure instanceof RuntimeException failure) throw failure;
+        if (firstFailure instanceof Error failure) throw failure;
     }
 }

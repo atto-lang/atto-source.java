@@ -112,6 +112,52 @@ final class StructuralTuplePatternMatchTest {
     }
 
     @Test
+    void structuralPatternBindingsAreReadOnlyContractViews() {
+        for (String target : new String[]{"{ bar: string }", "Readable"}) {
+            String source = """
+                    define trait Readable as
+                      bar: string;
+                    end
+                    define class Base as
+                    end
+                    fnc bad(Base value): void {
+                      match value over
+                        on structural %s narrowed -> {
+                          narrowed.bar = "after";
+                          return;
+                        }
+                        on _ -> { return; }
+                      end
+                    }
+                    """.formatted(target);
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)));
+            assertTrue(error.getMessage().toLowerCase().contains("read-only")
+                            || error.getMessage().toLowerCase().contains("readonly"),
+                    error.getMessage());
+        }
+    }
+
+    @Test
+    void structuralPatternCanReadCanonicalInferredStructWithContextualGuard() {
+        assertDoesNotThrow(() -> {
+            var typed = TypeChecker.check(Parser.parse("""
+                    fnc read(): string {
+                      const when = true;
+                      const value = infer struct{bar: "ok"};
+                      match value over
+                        on structural { bar: string } narrowed when when -> {
+                          return narrowed.bar;
+                        }
+                        on _ -> { return "missing"; }
+                      end
+                    }
+                    """));
+            OwnershipChecker.check(typed);
+        });
+    }
+
+    @Test
     void listPatternsAndDefaultMatchArmsAreRejected() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc bad(List<int> values): int {
