@@ -282,7 +282,8 @@ assert_case() {
       'valid summary without actual PASS/SKIP records'|'duplicate valid summary'|\
       'valid plus conflicting summary'|'valid summary alongside FAIL event'|\
       'valid summary alongside excess PASS event'|'duplicated PASS replacing missing PASS'|\
-      'duplicate arithmetic PASS identity'|'wrong SKIP test identity'|'duplicate SKIP identity')
+      'duplicate arithmetic PASS identity'|'wrong SKIP test identity'|'duplicate SKIP identity'|\
+      'stray stdout with valid test events and summary'|'unexpected blank stdout record')
         expected_diagnostic='native executable did not produce the exact unique PASS/SKIP guest tests and summary' ;;
       'unrelated CLI error impersonates AOT JIT rejection'|\
       'wrong AOT JIT refusal reason'|'wrong hybrid JIT refusal reason')
