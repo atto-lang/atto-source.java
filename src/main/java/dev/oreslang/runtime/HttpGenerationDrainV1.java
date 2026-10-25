@@ -23,7 +23,7 @@ final class HttpGenerationDrainV1 {
     private final int maxResourcePins;
     private int exchanges;
     private int resourcePins;
-    private final EnumMap<ResourceKind, Integer> byKind = new EnumMap<>(ResourceKind.class);
+    private final int[] pinsByKind = new int[ResourceKind.values().length];
     private boolean draining;
 
     HttpGenerationDrainV1(long generation, int maxExchanges, int maxResourcePins) {
@@ -50,8 +50,13 @@ final class HttpGenerationDrainV1 {
                        boolean readyToRetire) { }
 
     synchronized DrainStatus status() {
+        EnumMap<ResourceKind, Integer> counts = new EnumMap<>(ResourceKind.class);
+        for (ResourceKind kind : ResourceKind.values()) {
+            int count = pinsByKind[kind.ordinal()];
+            if (count != 0) counts.put(kind, count);
+        }
         return new DrainStatus(generation, draining, exchanges, resourcePins,
-                Map.copyOf(byKind), readyToRetire());
+                Map.copyOf(counts), readyToRetire());
     }
 
     /** The caller must hold the trusted routing admission lock while calling this. */
@@ -132,7 +137,7 @@ final class HttpGenerationDrainV1 {
                     throw new IllegalStateException("HTTP resource pin limit exhausted");
                 ResourcePin pin = new ResourcePin(this, kind);
                 ++resourcePins;
-                byKind.merge(kind, 1, Integer::sum);
+                ++pinsByKind[kind.ordinal()];
                 return pin;
             }
         }
@@ -168,12 +173,11 @@ final class HttpGenerationDrainV1 {
                 if (closed) return;
                 if (resourcePins <= 0)
                     throw new IllegalStateException("HTTP resource pin accounting underflow");
-                int kindPins = byKind.getOrDefault(kind, 0);
+                int kindPins = pinsByKind[kind.ordinal()];
                 if (kindPins <= 0)
                     throw new IllegalStateException("HTTP kind pin accounting underflow");
                 --resourcePins;
-                if (kindPins == 1) byKind.remove(kind);
-                else byKind.put(kind, kindPins - 1);
+                --pinsByKind[kind.ordinal()];
                 closed = true;
             }
         }
