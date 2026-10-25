@@ -34,6 +34,97 @@ final class PointerlessFncOwnershipTest {
     }
 
     @Test
+    void firstClassFncLambdaCannotConsumeOrEscapeReadBorrowedArgument() {
+        IllegalArgumentException take = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 7;
+                        end
+
+                        fnc bad(): void {
+                          let Box box = new Box();
+                          val Fnc<Box, int> consume = |value| -> {
+                            val Box moved = rt take value;
+                            return moved.value;
+                          };
+                          stdio.println(consume(box));
+                          stdio.println(box.value);
+                          return;
+                        }
+                        """)));
+        assertTrue(take.getMessage().contains("borrow"), take.getMessage());
+
+        IllegalArgumentException escape = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 7;
+                        end
+
+                        fnc bad(): void {
+                          let Box box = new Box();
+                          val Fnc<Box, Box> echo = |value| -> {
+                            return value;
+                          };
+                          val Box alias = echo(box);
+                          stdio.println(alias.value);
+                          stdio.println(box.value);
+                          return;
+                        }
+                        """)));
+        assertTrue(escape.getMessage().contains("returned borrows"),
+                escape.getMessage());
+    }
+
+    @Test
+    void reusableFncClosureCannotConsumeCapturedOwner() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 7;
+                        end
+
+                        fnc bad(): void {
+                          let Box captured = new Box();
+                          val Fnc<int, int> consume = |offset| -> {
+                            val Box moved = rt take captured;
+                            return moved.value + offset;
+                          };
+                          stdio.println(consume(1));
+                          return;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("cannot consume captured value"),
+                failure.getMessage());
+    }
+
+    @Test
+    void namedFunctionWithOwnedParameterCannotBeReifiedAsBorrowingFnc() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 7;
+                        end
+
+                        fnc read(Box value): int {
+                          return value.value;
+                        }
+
+                        fnc bad(): void {
+                          val Fnc<Box, int> callback = read;
+                          let Box box = new Box();
+                          stdio.println(callback(box));
+                          return;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("cannot reify function"),
+                failure.getMessage());
+    }
+
+    @Test
     void storedRtBorrowBlocksMutationUntilItsScopeEnds() {
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class,

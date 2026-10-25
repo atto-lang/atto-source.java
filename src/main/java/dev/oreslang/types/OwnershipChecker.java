@@ -365,6 +365,42 @@ public final class OwnershipChecker {
         scope.define("arguments", arguments);
     }
 
+    private VarState stateForFirstClassFncParam(Ast.Param param) {
+        VarState ordinary = stateForParam(param);
+        if (param.structural()
+                || param.type().isBorrow()
+                || ordinary.kind == ValueKind.COPY) {
+            return ordinary;
+        }
+        // Fnc call sites retain ownership of non-Copy by-value arguments and
+        // lend them only for this invocation. Keep the nominal source type for
+        // member/type checking, but downgrade ownership capability to a
+        // non-escaping shared loan distinct from an explicit incoming borrow.
+        return new VarState(
+                param.type(),
+                false,
+                false,
+                ValueKind.IMM_BORROW,
+                Origin.FNC_PARAM);
+    }
+
+    private void rejectUnsafeFirstClassFunctionReification(String name) {
+        if (ambiguousFunctions.contains(name)) return;
+        Map<Integer, Ast.FunctionDecl> family = functions.get(name);
+        if (family == null || family.size() != 1) return;
+
+        Ast.FunctionDecl function = family.values().iterator().next();
+        for (Ast.Param param : function.parameters()) {
+            if (param.structural() || param.type().isBorrow()) continue;
+            if (kindOfType(param.type()) == ValueKind.COPY) continue;
+            throw error("cannot reify function '" + function.name()
+                    + "' as first-class Fnc because parameter '" + param.name()
+                    + "' is owned/non-Copy while Fnc invocation lends such "
+                    + "arguments read-only; use an explicit borrow/structural "
+                    + "parameter or keep the call direct");
+        }
+    }
+
     private VarState stateForParam(Ast.Param param) {
         if (param.structural() && param.mutable()) {
             throw error("structural parameter '" + param.name()
@@ -1013,7 +1049,10 @@ public final class OwnershipChecker {
                         ValueKind.MOVE_ONLY,
                         null);
             }
-            if (state == null) return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.COPY, null); // function/module/global
+            if (state == null) {
+                rejectUnsafeFirstClassFunctionReification(name.name());
+                return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.COPY, null); // function/module/global
+            }
             state.debugName = name.name();
             requireUsable(state, name.name(), false);
             if (consuming && initializingClass != null && name.name().equals("self")) {
@@ -2740,7 +2779,13 @@ public final class OwnershipChecker {
             }
         }
 
-        for (Ast.Param param : lambda.parameters()) closure.define(param.name(), stateForParam(param));
+        // Fnc<T,...> invocation is a temporary shared loan for non-Copy
+        // by-value arguments (see the first-class call path below). Lambda
+        // parameter capability must mirror that caller contract: otherwise a
+        // lambda could rt take / move a value that its caller still owns.
+        for (Ast.Param param : lambda.parameters()) {
+            closure.define(param.name(), stateForFirstClassFncParam(param));
+        }
         defineImplicitArguments(closure, lambda.parameters());
         int previousLoopDepth = loopDepth;
         boolean previousDiscard = discardingSelectReturn;
@@ -2758,9 +2803,23 @@ public final class OwnershipChecker {
                 if (containsMutexGuardType(returned.type)) {
                     throw error("MutexGuard values are lexical and cannot be returned from a lambda");
                 }
+                validateReturnedBorrow(lambda.expressionBody(), returned);
             } else {
                 for (Ast.Stmt stmt : lambda.blockBody()) {
                     checkStatement(stmt, closure, Ast.TypeRef.inferred());
+                }
+            }
+
+            // Ordinary Fnc values are reusable: calling them only borrows the
+            // function value and its non-Copy arguments. Until a distinct
+            // FnOnce/consuming-callable contract exists, no invocation may
+            // move owned state out of the closure environment.
+            for (Capture capture : captures.values.values()) {
+                VarState captured = closure.lookup(capture.name);
+                if (captured != null && ownershipRoot(captured).moved) {
+                    throw error("first-class Fnc closure cannot consume captured value '"
+                            + capture.name
+                            + "'; use an explicit one-shot callable contract when available");
                 }
             }
         } finally {
@@ -4769,7 +4828,7 @@ public final class OwnershipChecker {
     }
 
     private enum ValueKind { COPY, MOVE_ONLY, IMM_BORROW, MUT_BORROW }
-    private enum Origin { PARAM, LOCAL, CAPTURE }
+    private enum Origin { PARAM, FNC_PARAM, LOCAL, CAPTURE }
 
     private static final class ValueInfo {
         private final Ast.TypeRef type;
