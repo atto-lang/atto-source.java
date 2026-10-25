@@ -213,9 +213,12 @@ test_output="$(run_clean_guest "--mode=$mode" examples/native-testing.ores)"
 printf '%s\n' "$test_output"
 expected_summary='ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0'
 # Require each exact guest test identity once; counts alone can be forged by
-# duplicating one PASS event while omitting another. Tolerate detail text only
-# after the test name, preserving the checked-in reporting format.
+# duplicating one PASS event while omitting another. The checked-in fixture
+# requests machine-readable records, so *all* stdout must be ORES_TEST events;
+# stray logs/warnings/diagnostics must not hide behind a valid summary.
+# Tolerate detail text only after a recognized test name.
 if ! printf '%s\n' "$test_output" | awk -F '|' -v expected="$expected_summary" '
+  !/^ORES_TEST\|/ { bad=1; next }
   /^ORES_TEST\|/ {
     if ($0 == expected) { summaries++; next }
     if ($1 != "ORES_TEST") { bad=1; next }
