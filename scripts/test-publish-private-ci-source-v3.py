@@ -509,6 +509,40 @@ class PrivateCiV3Test(unittest.TestCase):
                 with self.assertRaisesRegex(v3.Denied, "outside the trusted control plane"):
                     v3.require_control_plane_location(root)
 
+    def test_safe_policy_path_rejects_encoded_noncanonical_and_git_routes(self):
+        self.assertEqual(
+            v3.safe_policy_path(
+                "ci/test-plans/java-pr1482.json",
+                "ci/test-plans/",
+                ".json",
+            ),
+            "ci/test-plans/java-pr1482.json",
+        )
+        for value in (
+            "ci/test-plans/../x.json",
+            "ci/test-plans/x%2fescape.json",
+            "ci/test-plans/x.json?ref=other",
+            "ci/test-plans//x.json",
+            "ci/test-plans/./x.json",
+            "ci/test-plans/.git/x.json",
+            "ci/test-plans/.GIT/x.json",
+        ):
+            with self.subTest(value=value), self.assertRaises(v3.Denied):
+                v3.safe_policy_path(value, "ci/test-plans/", ".json")
+
+    def test_handoff_ref_is_exact_tree_or_authorization_sha_only(self):
+        self.assertRegex("ci/oreslang-" + SOURCE_TREE, v3.HANDOFF_REF)
+        self.assertRegex("ci/authorized-" + COMMIT, v3.HANDOFF_REF)
+        for value in (
+            "ci/oreslang-test",
+            "ci/oreslang-" + "a" * 39,
+            "ci/oreslang-" + "A" * 40,
+            "ci/authorized-test",
+            "ci/unrelated-" + COMMIT,
+        ):
+            with self.subTest(value=value):
+                self.assertIsNone(v3.HANDOFF_REF.fullmatch(value))
+
     def test_parse_contract_requires_exact_pr_and_pinned_fields(self):
         raw = json.dumps(
             {
@@ -1350,7 +1384,7 @@ class PrivateCiV3Test(unittest.TestCase):
         with patch.object(v3, "live_ref_sha", return_value=None):
             self.assertFalse(
                 v3.delete_exact_ref(
-                    "trusted/ci", "ci/oreslang-test", COMMIT, 1323598177
+                    "trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT, 1323598177
                 )
             )
 
@@ -1358,7 +1392,7 @@ class PrivateCiV3Test(unittest.TestCase):
         with patch.object(v3, "live_ref_sha", return_value="9" * 40):
             with self.assertRaisesRegex(v3.Denied, "moved"):
                 v3.delete_exact_ref(
-                    "trusted/ci", "ci/oreslang-test", COMMIT, 1323598177
+                    "trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT, 1323598177
                 )
 
     def test_delete_exact_ref_verifies_absence_after_delete(self):
@@ -1369,11 +1403,11 @@ class PrivateCiV3Test(unittest.TestCase):
         ):
             self.assertTrue(
                 v3.delete_exact_ref(
-                    "trusted/ci", "ci/oreslang-test", COMMIT, 1323598177
+                    "trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT, 1323598177
                 )
             )
         request.assert_called_once_with(
-            "trusted/ci", "ci/oreslang-test", "DELETE"
+            "trusted/ci", "ci/oreslang-" + SOURCE_TREE, "DELETE"
         )
 
     def test_delete_exact_ref_rejects_still_present_after_delete(self):
@@ -1384,7 +1418,7 @@ class PrivateCiV3Test(unittest.TestCase):
         ):
             with self.assertRaisesRegex(v3.Denied, "still exists"):
                 v3.delete_exact_ref(
-                    "trusted/ci", "ci/oreslang-test", COMMIT, 1323598177
+                    "trusted/ci", "ci/oreslang-" + SOURCE_TREE, COMMIT, 1323598177
                 )
 
     def test_manifest_matches_carrier_row_shape(self):
