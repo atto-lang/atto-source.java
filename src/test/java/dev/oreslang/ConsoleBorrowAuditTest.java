@@ -83,6 +83,57 @@ final class ConsoleBorrowAuditTest {
     }
 
     @Test
+    void collectionGetterViewPinsItsCollection() {
+        assertBorrowRejected(PAYLOAD + """
+                fnc consume_array(Array<ConsolePayload> values):String { return "consumed"; }
+                pub fnc main():int {
+                  val Array<ConsolePayload> values = new Array<ConsolePayload>();
+                  values.add(new ConsolePayload());
+                  stdio.stdout.log(values.get(0), consume_array(values));
+                  return 0;
+                }
+                """);
+    }
+
+    @Test
+    void collectionGetterCopySnapshotDoesNotKeepAnUnnecessaryLoan() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                fnc consume_array(Array<int> values):String { return "consumed"; }
+                pub fnc main():int {
+                  val Array<int> values = new Array<int>(); values.add(42);
+                  stdio.stdout.log(values.get(0), consume_array(values));
+                  return 0;
+                }
+                """));
+    }
+
+    @Test
+    void collectionReceiverIsProtectedWhileItsIndexIsEvaluated() {
+        assertBorrowRejected("""
+                fnc consume_index(Array<int> values):int { return 0; }
+                pub fnc main():int {
+                  val Array<int> values = new Array<int>(); values.add(42);
+                  stdio.println(values.get(consume_index(values)));
+                  return 0;
+                }
+                """);
+    }
+
+    @Test
+    void projectedCollectionCopySnapshotDoesNotKeepAnUnnecessaryLoan() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                define class Holder as pub val Array<int> values; end
+                fnc consume_holder(Holder holder):String { return "consumed"; }
+                pub fnc main():int {
+                  val Array<int> values = new Array<int>(); values.add(42);
+                  val Holder holder = new Holder(values);
+                  stdio.stdout.log(holder.values.get(0), consume_holder(holder));
+                  return 0;
+                }
+                """));
+    }
+
+    @Test
     void shadowedConsoleStillUsesOrdinaryConsumingCallSemantics() {
         var failure = assertThrows(IllegalArgumentException.class, () -> OwnershipChecker.check(Parser.parse("""
                 define class Payload as end
