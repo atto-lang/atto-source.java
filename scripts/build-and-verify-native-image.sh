@@ -133,11 +133,14 @@ run_exact_guest() {
 # Admission must NEVER execute the guest entry point. The same callables
 # fixture prints 120:9:13 when executed, but --check must emit no output
 # on either stdout or stderr.
-check_output="$(
+: > "$guest_stdout"
+: > "$guest_stderr"
+(
   unset JAVA_HOME CLASSPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS
-  "$executable" --check examples/callables.ores 2>&1
-)"
-if [ -n "$check_output" ]; then
+  "$executable" --check examples/callables.ores >"$guest_stdout" 2>"$guest_stderr"
+) || exit $?
+# Inspect raw bytes: command substitution discards trailing LF-only output.
+if [ -s "$guest_stdout" ] || [ -s "$guest_stderr" ]; then
   echo "native --check unexpectedly emitted diagnostics or guest output" >&2
   exit 1
 fi
@@ -150,11 +153,13 @@ run_exact_guest '120:9:13' 'native callables guest output differs from expected 
 # executable as well. Positive shared/private declarations must typecheck,
 # while private actors must not launder SharedMutex/share_readonly authority
 # through imported types, helpers, or callbacks.
-actor_check_output="$(
+: > "$guest_stdout"
+: > "$guest_stderr"
+(
   unset JAVA_HOME CLASSPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS
-  "$executable" --check examples/shared-private-actor-isolation.ores 2>&1
-)"
-if [ -n "$actor_check_output" ]; then
+  "$executable" --check examples/shared-private-actor-isolation.ores >"$guest_stdout" 2>"$guest_stderr"
+) || exit $?
+if [ -s "$guest_stdout" ] || [ -s "$guest_stderr" ]; then
   echo "native actor --check unexpectedly emitted diagnostics or guest output" >&2
   exit 1
 fi
