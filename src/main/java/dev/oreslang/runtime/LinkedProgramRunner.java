@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.IncrementalCompiler;
+import dev.oreslang.compiler.SourceUnitDiagnosticException;
 import dev.oreslang.config.OresProjectConfig;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.interop.MixedInteropBridge;
@@ -393,9 +394,7 @@ public final class LinkedProgramRunner {
         try {
             program = Parser.parse(mixed.oresSource());
         } catch (IllegalArgumentException malformedSource) {
-            throw new IllegalArgumentException(
-                    "Oreslang source unit '" + id + "': " + malformedSource.getMessage(),
-                    malformedSource);
+            throw new SourceUnitDiagnosticException(id, "", "", malformedSource);
         }
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
