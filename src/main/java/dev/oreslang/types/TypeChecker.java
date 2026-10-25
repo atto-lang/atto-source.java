@@ -2846,7 +2846,10 @@ public final class TypeChecker {
                 return Primitive.VOID;
             }
             return switch (runtime.operation()) {
-                case "borrow" -> new Borrow(operand, false);
+                // Canonical rt borrow must preserve the same reborrow type
+                // as the internal unary form, without nesting loan wrappers.
+                case "borrow" -> operand instanceof Borrow existing
+                        ? new Borrow(existing.target(), false) : new Borrow(operand, false);
                 case "copy", "take", "share" -> operand;
                 default -> throw new IllegalArgumentException(
                         "unknown runtime ownership operation 'rt " + runtime.operation() + "'");
