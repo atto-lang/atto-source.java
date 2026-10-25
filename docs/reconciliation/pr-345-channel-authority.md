@@ -6,6 +6,6 @@ The historical TypeChecker snapshot applied an unconditional prohibition to call
 
 Preserve main `ChannelSelectSyntaxTest`, including source `do select`, typed arms, deferred execution/synchronization semantics, and actor cancellation tests, rather than restoring the older test class. Historical differences are retained in first-parent ancestry for review.
 
-Follow-up (not implicitly implemented): compiler-owned checks of actor/message crossings, nested callable authority, generic specialization and escape across await/Task submit; enforce denial where local authority would leave its verified domain. Add dedicated positive local-callback and negative actor-transfer tests under the current source syntax. **Do not claim the old blanket channel prohibition is canonical.**
+Current main already carries dedicated executable coverage in `ChannelCallableTransportTest` and `DeferredChannelOwnershipHardeningTest`: local callable channels are accepted and executed, transferred callables are move-only, nested callable payloads are rejected at actor boundaries, borrowed payloads and captures are rejected, and deferred channel callbacks/select arms preserve ownership fences. Remaining follow-up is narrower: generic specialization and cross-Task/await escape cases not already covered by those suites. **Do not claim the old blanket channel prohibition is canonical.**
 
 This commit is conflict resolution only. Exact-head compiler/JVM tests and independent review remain required.
