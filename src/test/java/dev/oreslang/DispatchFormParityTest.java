@@ -54,7 +54,7 @@ final class DispatchFormParityTest {
                 end;
             }
             """));
-        assertTrue(nbMatch.getMessage().contains("'nb' must prefix readch, writech, select, or cb writech"));
+        assertTrue(nbMatch.getMessage().contains("'nb match' and 'nb switch' are invalid"));
 
         var nbSwitch = assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
             fnc f(int x): int {
@@ -64,7 +64,7 @@ final class DispatchFormParityTest {
                 end;
             }
             """));
-        assertTrue(nbSwitch.getMessage().contains("'nb' must prefix readch, writech, select, or cb writech"));
+        assertTrue(nbSwitch.getMessage().contains("'nb match' and 'nb switch' are invalid"));
     }
 
     @Test
