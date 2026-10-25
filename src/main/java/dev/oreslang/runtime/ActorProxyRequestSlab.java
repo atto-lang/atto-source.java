@@ -109,16 +109,16 @@ public final class ActorProxyRequestSlab extends ActorShardBacking implements Au
     public int live() { owner(); return live; }
     public boolean full() { owner(); return freeHead == -1; }
 
-    @Override boolean ownedBy(ActorRuntime runtime, ActorRuntime.ActorId actor) {
+    @Override boolean ownedBy(ActorRuntime runtime, ActorRuntime.ActorRef<?> actor) {
         return lease.ownedBy(runtime, actor);
     }
     @Override boolean isPrivateBacked() { return lease.privateBacking(); }
 
     @Override void revokeBackingFromLease() {
         int[] previous = storage;
+        storage = null; // detach before scrub so retained slab handles lose backing
         if (previous != null) {
             Arrays.fill(previous, 0);
-            storage = null;
         }
         freeHead = -1;
         live = 0;
@@ -268,7 +268,7 @@ public final class ActorProxyRequestSlab extends ActorShardBacking implements Au
     @Override public void close() {
         if (closed) {
             if (!lease.ownedBy(ActorRuntime.currentActorRuntime(),
-                    ActorRuntime.currentActorId().orElse(null))) {
+                    ActorRuntime.currentActorRef())) {
                 throw new SecurityException("closed slab requires original actor");
             }
             return;
