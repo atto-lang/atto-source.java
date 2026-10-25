@@ -30,6 +30,11 @@ SPEC.loader.exec_module(legacy)
 
 Denied = legacy.Denied
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
+MAVEN_ARTIFACT = re.compile(
+    r"^[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+"
+    r"(?::[A-Za-z0-9_.-]+(?::[A-Za-z0-9_.-]+)?)?$"
+)
+MAX_MAVEN_PREFETCH_ARTIFACTS = 16
 HANDOFF_REF = re.compile(
     r"^ci/(?:oreslang-[A-Za-z0-9][A-Za-z0-9_.-]{0,70}|authorized-[0-9a-f]{40})$"
 )
@@ -586,6 +591,41 @@ def verify_source_pr(source_pr, source_commit):
     return repo_id
 
 
+def _validate_maven_prefetch_artifacts(plan, uses_maven):
+    extras = plan.get("maven_prefetch_artifacts", [])
+    if extras is None:
+        extras = []
+    if (not isinstance(extras, list)
+            or len(extras) > MAX_MAVEN_PREFETCH_ARTIFACTS
+            or any(not isinstance(value, str)
+                   or len(value) > 256
+                   or not MAVEN_ARTIFACT.fullmatch(value)
+                   for value in extras)
+            or len(set(extras)) != len(extras)):
+        raise Denied("reviewed test plan Maven prefetch artifacts invalid")
+    if not uses_maven and extras:
+        raise Denied("non-Maven test plan cannot prefetch Maven artifacts")
+    return list(extras)
+
+
+def _validate_maven_argv(argv):
+    if "-o" not in argv and "--offline" not in argv:
+        raise Denied("Maven carrier commands must run offline")
+    short_with_values = ("-s", "-gs", "-f")
+    long_with_values = ("--settings", "--global-settings", "--file")
+    dangerous_props = (
+        "-Dmaven.repo.local", "-DskipTests", "-Dmaven.test.skip", "-DskipITs",
+    )
+    for arg in argv[1:]:
+        if (any(arg == flag or (arg.startswith(flag) and arg != flag)
+                for flag in short_with_values)
+                or any(arg == flag or arg.startswith(flag + "=")
+                       for flag in long_with_values)
+                or any(arg == prop or arg.startswith(prop + "=")
+                       for prop in dangerous_props)):
+            raise Denied("Maven carrier command overrides trusted build controls")
+
+
 def validate_test_plan(plan_bytes, source_pr):
     try:
         plan = json.loads(plan_bytes.decode("utf-8"), object_pairs_hook=unique_object)
@@ -597,7 +637,8 @@ def validate_test_plan(plan_bytes, source_pr):
         raise Denied("reviewed test plan source/schema mismatch")
     allowed_fields = {
         "schema", "source_repo", "allowed_prs", "commands",
-        "required_source_blobs",
+        "required_source_blobs", "maven_pom_blob_sha",
+        "maven_prefetch_artifacts",
     }
     if not set(plan).issubset(allowed_fields):
         raise Denied("reviewed test plan has unexpected fields")
@@ -645,16 +686,28 @@ def validate_test_plan(plan_bytes, source_pr):
             raise Denied("reviewed test plan command invalid")
         if argv[0] == "mvn":
             uses_maven = True
-            if "-o" not in argv and "--offline" not in argv:
-                raise Denied("Maven carrier commands must run offline")
+            _validate_maven_argv(argv)
 
+    pom_pin = plan.get("maven_pom_blob_sha")
+    if pom_pin is not None:
+        pom_pin = valid_sha(pom_pin, "reviewed Maven pom blob invalid")
+        old_pin = checked_required.get("pom.xml")
+        if old_pin is not None and old_pin != pom_pin:
+            raise Denied("reviewed Maven pom pins disagree")
+        checked_required["pom.xml"] = pom_pin
+
+    extras = _validate_maven_prefetch_artifacts(plan, uses_maven)
     if uses_maven and "pom.xml" not in checked_required:
         raise Denied("Maven test plan must bind exact pom.xml blob")
+    if not uses_maven and pom_pin is not None:
+        raise Denied("non-Maven test plan cannot bind Maven pom")
 
     return {
         "sha256": hashlib.sha256(plan_bytes).hexdigest(),
         "required_source_blobs": checked_required,
         "uses_maven": uses_maven,
+        "maven_pom_blob_sha": checked_required.get("pom.xml"),
+        "maven_prefetch_artifacts": extras,
     }
 
 
