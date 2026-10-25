@@ -13,10 +13,10 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 final class HttpGenerationDrainV1Test {
     @Test void currentHttpRequestFinishesOldGenerationAfterPromotion() {
-        var old = new HttpGenerationDrainV1(1, 2);
+        var old = new HttpGenerationDrainV1(1, 2, 8);
         var request = old.admit();
         old.beginDrain();
-        var next = new HttpGenerationDrainV1(2, 2);
+        var next = new HttpGenerationDrainV1(2, 2, 8);
         var newRequest = next.admit();
 
         assertEquals(1, request.generation());
@@ -36,7 +36,7 @@ final class HttpGenerationDrainV1Test {
     }
 
     @Test void transportAbortDoesNotFakeHandlerTermination() {
-        var ledger = new HttpGenerationDrainV1(31, 1);
+        var ledger = new HttpGenerationDrainV1(31, 1, 8);
         var request = ledger.admit();
         ledger.beginDrain();
         request.requestCancellation();
@@ -49,7 +49,7 @@ final class HttpGenerationDrainV1Test {
     }
 
     @Test void settledResponseDoesNotReleaseNativeOrSuspendedResource() {
-        var ledger = new HttpGenerationDrainV1(42, 1);
+        var ledger = new HttpGenerationDrainV1(42, 1, 8);
         var request = ledger.admit();
         var nativeCall = request.pin(HttpGenerationDrainV1.ResourceKind.FFI_CALL);
         var task = request.pin(HttpGenerationDrainV1.ResourceKind.SUSPENDED_TASK);
@@ -70,7 +70,7 @@ final class HttpGenerationDrainV1Test {
     }
 
     @Test void duplicateCompletionAndPhysicalReleaseAreIdempotent() {
-        var ledger = new HttpGenerationDrainV1(7, 1);
+        var ledger = new HttpGenerationDrainV1(7, 1, 8);
         var request = ledger.admit();
         var pin = request.pin(HttpGenerationDrainV1.ResourceKind.HTTP_STREAM);
         request.transportQuiescent();
@@ -88,9 +88,9 @@ final class HttpGenerationDrainV1Test {
     }
 
     @Test void boundedAdmissionAndFrozenGenerationStayClosed() {
-        assertThrows(IllegalArgumentException.class, () -> new HttpGenerationDrainV1(0, 1));
-        assertThrows(IllegalArgumentException.class, () -> new HttpGenerationDrainV1(1, 0));
-        var ledger = new HttpGenerationDrainV1(15, 1);
+        assertThrows(IllegalArgumentException.class, () -> new HttpGenerationDrainV1(0, 1, 8));
+        assertThrows(IllegalArgumentException.class, () -> new HttpGenerationDrainV1(1, 0, 8));
+        var ledger = new HttpGenerationDrainV1(15, 1, 8);
         var request = ledger.admit();
         assertThrows(IllegalStateException.class, ledger::admit);
         ledger.beginDrain();
@@ -100,8 +100,23 @@ final class HttpGenerationDrainV1Test {
         assertTrue(ledger.readyToRetire());
     }
 
+    @Test void physicalResourcePinsHaveIndependentBound() {
+        var ledger = new HttpGenerationDrainV1(11, 1, 1);
+        var exchange = ledger.admit();
+        var pin = exchange.pin(HttpGenerationDrainV1.ResourceKind.HTTP_STREAM);
+        assertThrows(IllegalStateException.class,
+                () -> exchange.pin(HttpGenerationDrainV1.ResourceKind.CALLBACK));
+        exchange.handlerQuiescent();
+        exchange.transportQuiescent();
+        ledger.beginDrain();
+        assertFalse(ledger.readyToRetire());
+        pin.close();
+        assertTrue(ledger.readyToRetire());
+        assertThrows(IllegalArgumentException.class, () -> new HttpGenerationDrainV1(1, 1, 0));
+    }
+
     @Test void admissionAndDrainShareALinearizationPoint() throws Exception {
-        var ledger = new HttpGenerationDrainV1(19, 1);
+        var ledger = new HttpGenerationDrainV1(19, 1, 8);
         var ready = new CountDownLatch(1);
         var start = new CountDownLatch(1);
         var failed = new AtomicReference<Throwable>();
