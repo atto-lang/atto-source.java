@@ -6,6 +6,8 @@ on:
       - 'scripts/test-private-ci-destination.sh'
       - 'scripts/run-in-private-ci-destination.sh'
       - 'scripts/publish-private-ci-source*.py'
+      - 'scripts/nio_verify_raw_worktree.py'
+      - 'tests/test_nio_raw_worktree_link_aliases.py'
       - '.github/private-ci-approved-repositories.txt'
       - '.github/workflows/source-free-private-ci-gates.yml'
   workflow_dispatch:
@@ -37,3 +39,18 @@ jobs:
         run: |
           python3 scripts/test-publish-private-ci-source.py
           python3 scripts/test-publish-private-ci-source-v3.py
+      - name: Verify exact-tree link-alias regression from committed blobs
+        run: |
+          set -euo pipefail
+          verifier=scripts/nio_verify_raw_worktree.py
+          test_path=tests/test_nio_raw_worktree_link_aliases.py
+          verifier_blob="$(git rev-parse --verify "HEAD:$verifier")"
+          test_blob="$(git rev-parse --verify "HEAD:$test_path")"
+          test "$(git hash-object --no-filters -- "$verifier")" = "$verifier_blob"
+          test "$(git hash-object --no-filters -- "$test_path")" = "$test_blob"
+          tmp="$(mktemp -d)"
+          trap 'rm -rf -- "$tmp"' EXIT
+          mkdir -p "$tmp/scripts" "$tmp/tests"
+          git cat-file blob "$verifier_blob" > "$tmp/scripts/nio_verify_raw_worktree.py"
+          git cat-file blob "$test_blob" > "$tmp/tests/test_nio_raw_worktree_link_aliases.py"
+          python3 -I -B "$tmp/tests/test_nio_raw_worktree_link_aliases.py"
