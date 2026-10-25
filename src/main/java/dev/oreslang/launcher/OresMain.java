@@ -33,6 +33,11 @@ public final class OresMain {
             "^Oreslang\\s+(?:lexer|parse)\\s+error\\s+at\\s+(\\d+):(\\d+):\\s*(.*)$",
             Pattern.CASE_INSENSITIVE);
 
+    // Linked check failures can originate in an imported source unit rather
+    // than the entry file. Prefer the compiler's authoritative unit identity.
+    private static final Pattern SOURCE_UNIT_DIAGNOSTIC = Pattern.compile(
+            "^Oreslang source unit '(.+)': (.*)$", Pattern.DOTALL);
+
     private OresMain() { }
 
     /**
@@ -430,14 +435,20 @@ public final class OresMain {
         String message = error.getMessage();
         if (message == null || message.isBlank()) message = error.getClass().getSimpleName();
 
+        String unit = path.toAbsolutePath().normalize().toString();
+        Matcher linkedUnit = SOURCE_UNIT_DIAGNOSTIC.matcher(message);
+        if (linkedUnit.matches()) {
+            unit = linkedUnit.group(1);
+            message = linkedUnit.group(2);
+        }
+
         Matcher matcher = POSITIONED_DIAGNOSTIC.matcher(message);
         if (matcher.matches()) {
-            return path.toAbsolutePath().normalize()
-                    + ":" + matcher.group(1)
+            return unit + ":" + matcher.group(1)
                     + ":" + matcher.group(2)
                     + ": error: " + matcher.group(3);
         }
 
-        return path.toAbsolutePath().normalize() + ":1:1: error: " + message;
+        return unit + ":1:1: error: " + message;
     }
 }
