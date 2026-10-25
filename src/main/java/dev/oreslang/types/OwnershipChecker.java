@@ -2963,13 +2963,12 @@ public final class OwnershipChecker {
                 Set<String> armLocals = new HashSet<>(locals);
                 collectPatternBindingNames(arm.pattern(), armLocals);
                 if (arm.guard() != null) {
-                    scanExpr(
+                    scanConditionExpr(
                             arm.guard(),
                             armLocals,
                             outer,
                             recursiveBinding,
-                            captures,
-                            false);
+                            captures);
                 }
                 scanExpr(
                         arm.value(),
