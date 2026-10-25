@@ -101,6 +101,24 @@ final class PointerlessFncOwnershipTest {
     }
 
     @Test
+    void oneShotDeferLambdaMayConsumeOwnedCaptureAtCleanup() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Box as
+                  pub let int value = 7;
+                end
+
+                fnc ok(): void {
+                  let Box box = new Box();
+                  defer || -> {
+                    val Box moved = rt take box;
+                    stdio.println(moved.value);
+                  };
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void namedFunctionWithOwnedParameterCannotBeReifiedAsBorrowingFnc() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,

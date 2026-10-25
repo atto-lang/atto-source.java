@@ -2814,12 +2814,14 @@ public final class OwnershipChecker {
             // function value and its non-Copy arguments. Until a distinct
             // FnOnce/consuming-callable contract exists, no invocation may
             // move owned state out of the closure environment.
-            for (Capture capture : captures.values.values()) {
-                VarState captured = closure.lookup(capture.name);
-                if (captured != null && ownershipRoot(captured).moved) {
-                    throw error("first-class Fnc closure cannot consume captured value '"
-                            + capture.name
-                            + "'; use an explicit one-shot callable contract when available");
+            if (!deferredCleanup) {
+                for (Capture capture : captures.values.values()) {
+                    VarState captured = closure.lookup(capture.name);
+                    if (captured != null && ownershipRoot(captured).moved) {
+                        throw error("first-class Fnc closure cannot consume captured value '"
+                                + capture.name
+                                + "'; use an explicit one-shot callable contract when available");
+                    }
                 }
             }
         } finally {
