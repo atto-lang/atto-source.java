@@ -104,6 +104,43 @@ specific sequencing relationship *between* two init hooks in the same cycle,
 that relationship should be made explicit in application code rather than
 inferred from the import edges.
 
+## Compile-time-only forward type declarations (v1 admission slice)
+
+`declare` is contextual at the start of a file-root or module declaration.
+Only `type`, `trait`, and `interface` support forward signatures:
+
+```ores
+declare type UserId;
+define type UserId = int;
+
+declare pub trait Printable<T>;
+define pub trait Printable<T> as
+  fnc print(T value) => void;
+end
+
+declare pub interface Named;
+define pub interface Named as
+  name: String;
+end
+```
+
+These forward signatures **do not** create runtime values, constructors,
+reflection descriptors, or executable AST nodes. They merely authorize a
+same-file, **same-scope** reference to a definition that must also be present in
+the compilation unit. The parser rejects an unresolved forward, duplicate
+forward, mismatched type/trait/interface kind, visibility changes in either
+direction, generic parameter mismatches and a type declaration resolved to a
+class or other value declaration.
+
+Do not use `declare class`, `declare actor`, `declare enum`, `declare model`
+or arbitrary external declaration stubs. Cross-file unresolved forward
+declarations and ABI import/export signatures are **not supported** by this
+slice; a different source module does not complete a declaration. Existing
+concrete `define` forms and runtime type/value distinction remain unchanged.
+
+This is an initial **parser-enforced** capability. It is not proof of
+cross-backend compiler parity or first-class runtime type objects.
+
 ## Module contracts
 
 Module shape is described by a dedicated `contract`, not by a trait or ordinary type interface. Traits are for structs, classes, actors, and other types; contracts are for modules.

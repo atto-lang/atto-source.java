@@ -27,6 +27,28 @@ final class CheckedFunctionTypeTest {
     }
 
     @Test
+    void effectDeclarationOrderAndDuplicatesAreCanonical() {
+        var first = new CheckedEffects(
+                List.of(Primitive.INT, Primitive.BOOL, Primitive.INT),
+                List.of(Primitive.STRING), List.of());
+        var second = new CheckedEffects(
+                List.of(Primitive.BOOL, Primitive.INT),
+                List.of(Primitive.STRING), List.of());
+        assertEquals(first, second);
+        assertEquals(2, first.throwsTypes().size());
+        assertEquals(fn(first), fn(second));
+    }
+
+    @Test
+    void unknownCannotSynthesizeOrEraseCheckedFunctionTypes() {
+        var effectful = fn(new CheckedEffects(
+                List.of(), List.of(), List.of(Primitive.INT)));
+        assertFalse(Types.isAssignable(Types.Unknown.INSTANCE, fn(CheckedEffects.none())));
+        assertFalse(Types.isAssignable(Types.Unknown.INSTANCE, effectful));
+        assertFalse(Types.isAssignable(effectful, Types.Unknown.INSTANCE));
+    }
+
+    @Test
     void existingConstructorsProducePureFunctions() {
         var old = new Function(List.of(Primitive.INT), List.of(false), false, Primitive.STRING);
         var simple = new Function(List.of(Primitive.INT), Primitive.STRING);

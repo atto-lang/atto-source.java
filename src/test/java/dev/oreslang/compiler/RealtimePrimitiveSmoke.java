@@ -111,11 +111,12 @@ public final class RealtimePrimitiveSmoke {
         rejects("unreachable statement after return", () -> RealtimePrimitiveCompiler.analyze(
                 program(fn("dead", List.of(), List.of(ret(num(1)), ret(num(2))))),
                 "dead", 0, budget));
+        Ast.IfBranch returningBranch = new Ast.IfBranch(
+                new Ast.BinaryExpr(">", name("x"), num(0)), List.of(ret(num(1))));
+        Ast.IfStmt incompleteBranch = new Ast.IfStmt(
+                List.of(returningBranch), List.of(new Ast.ExprStmt(num(3))));
         rejects("unreturned else path", () -> RealtimePrimitiveCompiler.analyze(
-                program(fn("branch", List.of(param("x")), List.of(
-                        new Ast.IfStmt(List.of(new Ast.IfBranch(
-                                new Ast.BinaryExpr(">", name("x"), num(0)), List.of(ret(num(1))))),
-                                List.of(new Ast.ExprStmt(num(3)))))),
+                program(fn("branch", List.of(param("x")), List.of(incompleteBranch))),
                 "branch", 1, budget));
         rejects("excessive expression nesting", () -> {
             Ast.Expr nested = num(0);
