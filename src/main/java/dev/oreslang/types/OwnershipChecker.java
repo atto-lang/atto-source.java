@@ -1271,6 +1271,12 @@ public final class OwnershipChecker {
                     throw error("unknown record field '" + member.member() + "'");
                 }
                 ValueKind valueKind = kindOfType(valueType);
+                if (consuming && valueKind != ValueKind.COPY) {
+                    throw error("cannot consume move-only field projection '"
+                            + member.member()
+                            + "' until projection-level move tracking is available; "
+                            + "move/destructure the containing owner or borrow the field");
+                }
                 return new ValueInfo(valueType, valueKind, null);
             }
             Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
@@ -1281,9 +1287,15 @@ public final class OwnershipChecker {
                             ownershipFieldType(target.field()),
                             genericBindings(target.owner().genericParameters(), target.ownerType().arguments()));
                     ValueKind fieldKind = kindOfType(fieldType);
-                    if (consuming && isRootedAtActorSelf(member.receiver(), scope) && fieldKind != ValueKind.COPY) {
-                        throw error("cannot move actor-owned field '" + member.member()
-                                + "' out of its mailbox turn; return a copy/immutable value or explicit shared snapshot");
+                    if (consuming && fieldKind != ValueKind.COPY) {
+                        if (isRootedAtActorSelf(member.receiver(), scope)) {
+                            throw error("cannot move actor-owned field '" + member.member()
+                                    + "' out of its mailbox turn; return a copy/immutable value or explicit shared snapshot");
+                        }
+                        throw error("cannot consume move-only field projection '"
+                                + member.member()
+                                + "' until projection-level move tracking is available; "
+                                + "move/destructure the containing owner or borrow the field");
                     }
                     return new ValueInfo(fieldType, fieldKind, null);
                 }
@@ -1300,14 +1312,17 @@ public final class OwnershipChecker {
             checkExpr(indexed.index(), scope, false);
             Ast.TypeRef elementType = indexedElementType(indexed, receiver.type, scope);
             ValueKind elementKind = elementType.name().equals("$infer$") ? ValueKind.MOVE_ONLY : kindOfType(elementType);
-            if (consuming && elementKind != ValueKind.COPY
-                    && isRootedAtActorSelf(indexed.receiver(), scope)) {
-                throw error("cannot move actor-owned indexed state out of its mailbox turn");
+            if (consuming && elementKind != ValueKind.COPY) {
+                if (isRootedAtActorSelf(indexed.receiver(), scope)) {
+                    throw error("cannot move actor-owned indexed state out of its mailbox turn");
+                }
+                throw error("cannot consume move-only indexed projection until "
+                        + "projection-level move tracking is available; move/destructure "
+                        + "the containing owner or borrow the element");
             }
-            // Ordinary projection is an aliasing read, not an implicit partial
-            // move. Explicit ownership transfer remains spelled rt take; indexed
-            // rt take stays fail-closed below until projection-level move
-            // tracking can invalidate exactly the selected slot.
+            // Ordinary non-consuming projection remains an aliasing read.
+            // Consuming a move-only projection is rejected above because there
+            // is no field/index partial-move state to invalidate its source.
             return new ValueInfo(elementType, elementKind, null);
         }
         if (expr instanceof Ast.NewExpr created) {

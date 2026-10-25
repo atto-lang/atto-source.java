@@ -46,6 +46,33 @@ final class ProjectedBorrowOwnershipTest {
     }
 
     @Test
+    void moveOnlyProjectedValuesCannotBecomeOwnedAliases() {
+        IllegalArgumentException field = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(TYPES + """
+                        fnc bad(Holder holder): void {
+                          val List<Item> alias = holder.items;
+                          stdio.stdout.write(alias.size());
+                          return;
+                        }
+                        """)));
+        assertTrue(field.getMessage().contains("move-only field projection"),
+                field.getMessage());
+
+        IllegalArgumentException indexed = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(TYPES + """
+                        fnc bad(Holder holder): void {
+                          val Item alias = holder.items[0];
+                          stdio.stdout.write(alias.number);
+                          return;
+                        }
+                        """)));
+        assertTrue(indexed.getMessage().contains("move-only indexed projection"),
+                indexed.getMessage());
+    }
+
+    @Test
     void storedProjectionGuardsEntireOwnerAgainstMove() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(TYPES + """
