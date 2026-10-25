@@ -1,5 +1,8 @@
 package dev.oreslang.runtime;
 
+import java.util.EnumMap;
+import java.util.Map;
+
 /**
  * Trusted-host accounting for HTTP exchanges pinned to one immutable actor
  * generation. This is NOT a router, socket adapter, or source-level hot reload.
@@ -20,6 +23,7 @@ final class HttpGenerationDrainV1 {
     private final int maxResourcePins;
     private int exchanges;
     private int resourcePins;
+    private final EnumMap<ResourceKind, Integer> byKind = new EnumMap<>(ResourceKind.class);
     private boolean draining;
 
     HttpGenerationDrainV1(long generation, int maxExchanges, int maxResourcePins) {
@@ -35,6 +39,20 @@ final class HttpGenerationDrainV1 {
     synchronized int exchanges() { return exchanges; }
     synchronized int resourcePins() { return resourcePins; }
     synchronized boolean draining() { return draining; }
+
+    /**
+     * Immutable diagnostics for old-code retention; this HTTP-side snapshot
+     * does NOT independently authorize unloading. The code-image gate must
+     * also prove all actor/FFI/continuation pins have physically retired.
+     */
+    record DrainStatus(long generation, boolean draining, int exchanges,
+                       int resourcePins, Map<ResourceKind, Integer> resourcesByKind,
+                       boolean readyToRetire) { }
+
+    synchronized DrainStatus status() {
+        return new DrainStatus(generation, draining, exchanges, resourcePins,
+                Map.copyOf(byKind), readyToRetire());
+    }
 
     /** The caller must hold the trusted routing admission lock while calling this. */
     synchronized Exchange admit() {
@@ -114,6 +132,7 @@ final class HttpGenerationDrainV1 {
                     throw new IllegalStateException("HTTP resource pin limit exhausted");
                 ResourcePin pin = new ResourcePin(this, kind);
                 ++resourcePins;
+                byKind.merge(kind, 1, Integer::sum);
                 return pin;
             }
         }
@@ -149,7 +168,12 @@ final class HttpGenerationDrainV1 {
                 if (closed) return;
                 if (resourcePins <= 0)
                     throw new IllegalStateException("HTTP resource pin accounting underflow");
+                int kindPins = byKind.getOrDefault(kind, 0);
+                if (kindPins <= 0)
+                    throw new IllegalStateException("HTTP kind pin accounting underflow");
                 --resourcePins;
+                if (kindPins == 1) byKind.remove(kind);
+                else byKind.put(kind, kindPins - 1);
                 closed = true;
             }
         }
