@@ -120,6 +120,26 @@ final class ActorPipeTransportTest {
                         "oversized string cannot allocate unbounded cross-actor payload storage");
             }
         }
+            String decimalType = java.math.BigDecimal.class.getName();
+            var decimalStages = List.of(
+                    new ActorPipelineContract.Stage("DecimalSource",
+                            ActorPipelineContract.Role.READABLE, null, decimalType),
+                    new ActorPipelineContract.Stage("DecimalSink",
+                            ActorPipelineContract.Role.WRITABLE, decimalType, null));
+            try (var decimalPipe = ActorPipeTransport.open(runtime, runtime.rootSupervisor(),
+                    decimalStages, List.of(java.math.BigDecimal.class), 1)) {
+                var writer = decimalPipe.writer(0, java.math.BigDecimal.class);
+                assertThrows(IllegalArgumentException.class,
+                        () -> writer.tryWrite(new java.math.BigDecimal(java.math.BigInteger.ONE,
+                                Integer.MAX_VALUE)),
+                        "huge positive decimal scale must not bypass payload budget");
+                assertThrows(IllegalArgumentException.class,
+                        () -> writer.tryWrite(new java.math.BigDecimal(java.math.BigInteger.ONE,
+                                Integer.MIN_VALUE)),
+                        "huge negative decimal scale must not bypass payload budget");
+                assertTrue(writer.tryWrite(new java.math.BigDecimal("12.50")),
+                        "ordinary immutable decimal scalars should still pass");
+            }
     }
 
     @Test
