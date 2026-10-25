@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -82,6 +83,116 @@ final class ActorShardSnapshotLeaseTest {
             assertThrows(IllegalStateException.class, () -> copies.get(999).read(0));
             assertTrue(runtime.sharedMemoryBytes() <= before,
                     "physical actor finalization revokes remaining snapshot allocations");
+        }
+    }
+
+    @Test
+    void detachedSnapshotsShareTheActorHeapBudgetWithNativeArenaMemory() throws Exception {
+        long limit = 16L * 1024 * 1024;
+        IsolatePolicy policy = new IsolatePolicy(
+                IsolatePolicy.developer().capabilities(),
+                limit,
+                64,
+                Duration.ofSeconds(10),
+                false);
+
+        for (boolean shared : new boolean[] {false, true}) {
+            try (ActorRuntime runtime = new ActorRuntime(policy)) {
+                CountDownLatch done = new CountDownLatch(1);
+                AtomicReference<Throwable> failure = new AtomicReference<>();
+                ActorRuntime.BehaviorFactory<Integer> behavior =
+                        ctx -> (value, turn) -> {
+                            try (ActorNativeArena.Region filler =
+                                            ActorRuntime.currentNativeArena()
+                                                    .region(Math.toIntExact(limit - 800));
+                                    ActorShardColumns shard =
+                                            new ActorShardColumns(
+                                                    ActorShardColumns.Layout.SOA,
+                                                    64,
+                                                    1,
+                                                    1)) {
+                                IllegalStateException denied = assertThrows(
+                                        IllegalStateException.class,
+                                        () -> shard.snapshotColumnLeased(0));
+                                assertTrue(
+                                        denied.getMessage().contains("snapshot quota exceeded"),
+                                        denied.toString());
+                            } catch (Throwable x) {
+                                failure.set(x);
+                            } finally {
+                                done.countDown();
+                            }
+                        };
+
+                ActorRuntime.ActorRef<Integer> actor = shared
+                        ? runtime.spawnSharedTrusted(policy, behavior)
+                        : runtime.spawnPrivateTrusted(policy, behavior);
+                actor.send(1);
+                assertTrue(done.await(10, TimeUnit.SECONDS), shared ? "shared" : "private");
+                assertNull(failure.get(), shared ? "shared" : "private");
+                actor.gracefulStop().get(10, TimeUnit.SECONDS);
+                assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
+            }
+        }
+    }
+
+    @Test
+    void retainedSnapshotConstrainsLaterNativeArenaGrowthInEitherActorKind() throws Exception {
+        long limit = 16L * 1024 * 1024;
+        IsolatePolicy policy = new IsolatePolicy(
+                IsolatePolicy.developer().capabilities(),
+                limit,
+                64,
+                Duration.ofSeconds(10),
+                false);
+
+        for (boolean shared : new boolean[] {false, true}) {
+            try (ActorRuntime runtime = new ActorRuntime(policy)) {
+                CountDownLatch done = new CountDownLatch(1);
+                AtomicReference<Throwable> failure = new AtomicReference<>();
+                ActorRuntime.BehaviorFactory<Integer> behavior =
+                        ctx -> (value, turn) -> {
+                            try {
+                                ActorShardColumns.ColumnSnapshot snapshot;
+                                try (ActorShardColumns shard =
+                                        new ActorShardColumns(
+                                                ActorShardColumns.Layout.SOA,
+                                                64,
+                                                1,
+                                                1)) {
+                                    snapshot = shard.snapshotColumnLeased(0);
+                                }
+
+                                int nearLimit = Math.toIntExact(limit - 256);
+                                IllegalStateException denied = assertThrows(
+                                        IllegalStateException.class,
+                                        () -> ActorRuntime.currentNativeArena()
+                                                .region(nearLimit));
+                                assertTrue(
+                                        denied.getMessage().contains("limit exceeded"),
+                                        denied.toString());
+
+                                snapshot.close();
+                                try (ActorNativeArena.Region admitted =
+                                        ActorRuntime.currentNativeArena().region(nearLimit)) {
+                                    assertEquals(nearLimit, admitted.capacity());
+                                }
+                            } catch (Throwable x) {
+                                failure.set(x);
+                            } finally {
+                                done.countDown();
+                            }
+                        };
+
+                ActorRuntime.ActorRef<Integer> actor = shared
+                        ? runtime.spawnSharedTrusted(policy, behavior)
+                        : runtime.spawnPrivateTrusted(policy, behavior);
+                actor.send(1);
+                assertTrue(done.await(10, TimeUnit.SECONDS), shared ? "shared" : "private");
+                assertNull(failure.get(), shared ? "shared" : "private");
+                actor.gracefulStop().get(10, TimeUnit.SECONDS);
+                assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
+            }
         }
     }
 

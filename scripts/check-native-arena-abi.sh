@@ -2,15 +2,55 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-java_compiler="$(command -v javac)"
-java_home="$(dirname "$(dirname "$(readlink -f "$java_compiler")")")"
+os="$(uname -s)"
+
+if [[ -n "${JAVA_HOME:-}" && -x "$JAVA_HOME/bin/javac" ]]; then
+  java_home="$JAVA_HOME"
+  java_compiler="$JAVA_HOME/bin/javac"
+else
+  java_compiler="$(command -v javac || true)"
+  if [[ -z "$java_compiler" ]]; then
+    echo "javac is unavailable; set JAVA_HOME or put javac on PATH" >&2
+    exit 2
+  fi
+  if command -v realpath >/dev/null 2>&1; then
+    java_compiler="$(realpath "$java_compiler")"
+    java_home="$(cd "$(dirname "$java_compiler")/.." && pwd)"
+  elif [[ "$os" == Darwin && -x /usr/libexec/java_home ]]; then
+    java_home="$(/usr/libexec/java_home)"
+  elif command -v readlink >/dev/null 2>&1 && readlink -f "$java_compiler" >/dev/null 2>&1; then
+    java_compiler="$(readlink -f "$java_compiler")"
+    java_home="$(cd "$(dirname "$java_compiler")/.." && pwd)"
+  else
+    echo "cannot resolve JAVA_HOME from javac; set JAVA_HOME explicitly" >&2
+    exit 2
+  fi
+fi
+
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/classes" "$work/src/dev/oreslang/runtime"
 
-cc -Wall -Wextra -Werror -O2 -fPIC -shared \
-  -I "$java_home/include" -I "$java_home/include/linux" \
-  -o "$work/liboresarena_probe.so" "$repo_root/src/main/c/oresarena.c"
+case "$os" in
+  Linux)
+    jni_os="linux"
+    probe_lib="$work/liboresarena_probe.so"
+    shared_flags=(-shared)
+    ;;
+  Darwin)
+    jni_os="darwin"
+    probe_lib="$work/liboresarena_probe.dylib"
+    shared_flags=(-dynamiclib)
+    ;;
+  *)
+    echo "native arena ABI probe supports Linux and macOS only" >&2
+    exit 2
+    ;;
+esac
+
+"${CC:-cc}" -std=c11 -Wall -Wextra -Werror -O2 -fPIC "${shared_flags[@]}" \
+  -I "$java_home/include" -I "$java_home/include/$jni_os" \
+  -o "$probe_lib" "$repo_root/src/main/c/oresarena.c"
 
 cat > "$work/src/dev/oreslang/runtime/ActorNativeArena.java" <<'JAVA'
 package dev.oreslang.runtime;
@@ -66,5 +106,5 @@ public final class ActorNativeArena {
 JAVA
 
 javac -d "$work/classes" "$work/src/dev/oreslang/runtime/ActorNativeArena.java"
-java -Dores.audit.lib="$work/liboresarena_probe.so" \
+java -Dores.audit.lib="$probe_lib" \
   -cp "$work/classes" dev.oreslang.runtime.ActorNativeArena

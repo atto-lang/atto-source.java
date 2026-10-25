@@ -924,7 +924,18 @@ public final class ActorRuntime implements AutoCloseable {
         public ActorId owner() { return owner; }
         public long limitBytes() { return limitBytes; }
         public long usedBytes() { return usedBytes.get(); }
-        public long remainingBytes() { return Math.max(0L, limitBytes - usedBytes.get()); }
+        public long remainingBytes() {
+            ActorCell<?> cell = actors.get(owner);
+            if (cell == null) return Math.max(0L, limitBytes - usedBytes.get());
+            synchronized (cell.lifecycleLock) {
+                long external = Math.addExact(
+                        cell.outputBytes.get(),
+                        cell.shardSnapshotReservedBytes);
+                return Math.max(
+                        0L,
+                        limitBytes - usedBytes.get() - external);
+            }
+        }
         public boolean closed() { return sliceClosed.get(); }
 
         /**
@@ -961,26 +972,53 @@ public final class ActorRuntime implements AutoCloseable {
             return reserve(estimateFrozenBytes(isolatedMessage), "private actor mailbox");
         }
 
-        private synchronized MemoryReservation reserve(long bytes, String purpose) {
+        private MemoryReservation reserve(long bytes, String purpose) {
             if (bytes < 0) throw new IllegalArgumentException("memory reservation cannot be negative");
-            if (sliceClosed.get()) throw new IllegalStateException("private actor memory slice is closed");
-            if (bytes == 0) return new MemoryReservation(this, 0);
-
-            long current = usedBytes.get();
-            long next;
-            try {
-                next = Math.addExact(current, bytes);
-            } catch (ArithmeticException overflow) {
-                throw new IllegalStateException(purpose + " accounting overflow");
+            ActorCell<?> cell = actors.get(owner);
+            if (cell != null) {
+                synchronized (cell.lifecycleLock) {
+                    return reserveWithActorQuota(bytes, purpose, cell);
+                }
             }
-            if (next > limitBytes) {
-                throw new IllegalStateException(purpose + " limit exceeded for " + owner
-                        + ": requested=" + bytes + " used=" + current + " limit=" + limitBytes);
+            synchronized (this) {
+                return reserveWithActorQuota(bytes, purpose, null);
             }
+        }
 
-            reservePrivateRuntimeBytes(bytes, owner, purpose);
-            usedBytes.set(next);
-            return new MemoryReservation(this, bytes);
+        private MemoryReservation reserveWithActorQuota(
+                long bytes,
+                String purpose,
+                ActorCell<?> cell) {
+            synchronized (this) {
+                if (sliceClosed.get()) {
+                    throw new IllegalStateException("private actor memory slice is closed");
+                }
+                if (bytes == 0) return new MemoryReservation(this, 0);
+
+                long current = usedBytes.get();
+                long external = cell == null
+                        ? 0L
+                        : Math.addExact(
+                                cell.outputBytes.get(),
+                                cell.shardSnapshotReservedBytes);
+                long next;
+                try {
+                    next = Math.addExact(current, bytes);
+                } catch (ArithmeticException overflow) {
+                    throw new IllegalStateException(purpose + " accounting overflow");
+                }
+                if (next > limitBytes - external) {
+                    throw new IllegalStateException(purpose + " limit exceeded for " + owner
+                            + ": requested=" + bytes
+                            + " used=" + current
+                            + " external=" + external
+                            + " limit=" + limitBytes);
+                }
+
+                reservePrivateRuntimeBytes(bytes, owner, purpose);
+                usedBytes.set(next);
+                return new MemoryReservation(this, bytes);
+            }
         }
 
         private void requireCurrentOwner() {
@@ -1343,11 +1381,13 @@ public final class ActorRuntime implements AutoCloseable {
                 java.util.Arrays.fill(old, 0.0);
                 values = null; // no reachable mutable buffer retained by this lease
                 cell.shardSnapshotLeases.remove(this);
-                if (cell.shardReservedBytes < bytes) {
+                if (cell.shardReservedBytes < bytes
+                        || cell.shardSnapshotReservedBytes < bytes) {
                     throw new IllegalStateException("snapshot accounting underflow");
                 }
-                cell.shardReservedBytes -= bytes;
                 releaseSharedRuntimeBytes(bytes);
+                cell.shardReservedBytes -= bytes;
+                cell.shardSnapshotReservedBytes -= bytes;
             }
         }
 
@@ -1370,8 +1410,26 @@ public final class ActorRuntime implements AutoCloseable {
                 throw terminated(cell.ref);
             }
             final long total = Math.addExact(cell.shardReservedBytes, bytes);
-            if (total > cell.policy.maxHeapBytes()) {
-                throw new IllegalStateException("actor snapshot quota exceeded");
+            final long nextSnapshotBytes =
+                    Math.addExact(cell.shardSnapshotReservedBytes, bytes);
+            final long alreadyUsed = isPrivateKind(cell.kind)
+                    ? Math.addExact(
+                            cell.memorySlice.usedBytes(),
+                            Math.addExact(
+                                    cell.outputBytes.get(),
+                                    cell.shardSnapshotReservedBytes))
+                    : Math.addExact(
+                            Math.addExact(
+                                    cell.nativeArenaBytes,
+                                    cell.sharedMailboxBytes.get()),
+                            Math.addExact(
+                                    cell.outputBytes.get(),
+                                    cell.shardSnapshotReservedBytes));
+            if (bytes > cell.policy.maxHeapBytes() - alreadyUsed) {
+                throw new IllegalStateException(
+                        "actor snapshot quota exceeded: requested=" + bytes
+                                + " used=" + alreadyUsed
+                                + " limit=" + cell.policy.maxHeapBytes());
             }
             reserveSharedRuntimeBytes(bytes, "actor column snapshot");
             final double[] contents;
@@ -1383,6 +1441,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
             ActorShardSnapshotLease lease = new ActorShardSnapshotLease(cell, contents, bytes);
             cell.shardReservedBytes = total;
+            cell.shardSnapshotReservedBytes = nextSnapshotBytes;
             cell.shardSnapshotLeases.add(lease);
             return lease;
         }
@@ -7095,8 +7154,10 @@ public final class ActorRuntime implements AutoCloseable {
         private long nativeArenaBytes;
         private final Set<ActorShardLease> shardLeases = ConcurrentHashMap.newKeySet();
         private final Set<ActorShardSnapshotLease> shardSnapshotLeases = ConcurrentHashMap.newKeySet();
-        /** Guarded by lifecycleLock; private and shared shard bytes both counted. */
+        /** Guarded by lifecycleLock; native shard + detached snapshot bytes. */
         private long shardReservedBytes;
+        /** Detached JVM snapshot bytes are outside ActorNativeArena/ActorMemorySlice. */
+        private long shardSnapshotReservedBytes;
         private final AtomicBoolean scheduled = new AtomicBoolean();
         /** Per-dispatch identity, guarded by lifecycleLock. A stale queued
          * runnable can never consume a newer scheduled=false->true claim. */
@@ -7215,7 +7276,10 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (lifecycleLock) {
                 if (finalized || closed.get()) throw new IllegalStateException("actor allocation after shutdown");
                 long next = Math.addExact(nativeArenaBytes, bytes);
-                if (next > policy.maxHeapBytes() - sharedMailboxBytes.get() - outputBytes.get()) {
+                if (next > policy.maxHeapBytes()
+                        - sharedMailboxBytes.get()
+                        - outputBytes.get()
+                        - shardSnapshotReservedBytes) {
                     throw new IllegalStateException("actor native object memory limit exceeded");
                 }
                 reserveSharedRuntimeBytes(bytes, "actor native objects");
@@ -7590,12 +7654,13 @@ public final class ActorRuntime implements AutoCloseable {
                 }
 
                 long actorAvailable = isPrivateKind(kind)
-                        ? Math.max(0L, memorySlice.remainingBytes() - current)
+                        ? memorySlice.remainingBytes()
                         : Math.max(
                                 0L,
                                 policy.maxHeapBytes()
                                         - sharedMailboxBytes.get()
                                         - nativeArenaBytes
+                                        - shardSnapshotReservedBytes
                                         - current);
                 if (bytes > actorAvailable) {
                     throw new IllegalStateException(
@@ -7639,7 +7704,10 @@ public final class ActorRuntime implements AutoCloseable {
                 } catch (ArithmeticException overflow) {
                     throw new IllegalStateException("shared actor mailbox memory accounting overflow");
                 }
-                if (next > policy.maxHeapBytes() - nativeArenaBytes - outputBytes.get()) {
+                if (next > policy.maxHeapBytes()
+                        - nativeArenaBytes
+                        - outputBytes.get()
+                        - shardSnapshotReservedBytes) {
                     throw new IllegalStateException("shared actor mailbox memory limit exceeded for " + ref.id()
                             + ": requested=" + bytes + " used=" + current + " limit=" + policy.maxHeapBytes());
                 }

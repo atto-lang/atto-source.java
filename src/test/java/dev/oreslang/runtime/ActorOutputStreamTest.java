@@ -3,9 +3,13 @@ package dev.oreslang.runtime;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -68,6 +72,55 @@ final class ActorOutputStreamTest {
                 assertNull(terminal.value());
                 assertTrue(ref.outputs().isDone());
             }
+        }
+    }
+
+    @Test
+    void retainedPrivateOutputConstrainsLaterNativeArenaGrowth() throws Exception {
+        long limit = 16L * 1024 * 1024;
+        IsolatePolicy policy = new IsolatePolicy(
+                IsolatePolicy.developer().capabilities(),
+                limit,
+                64,
+                Duration.ofSeconds(10),
+                false);
+
+        try (ActorRuntime runtime = new ActorRuntime(policy)) {
+            CountDownLatch done = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            ActorRuntime.ActorRef<String> ref = runtime.spawnPrivateTrusted(
+                    policy,
+                    context -> (message, turn) -> {
+                        try {
+                            String payload = "x".repeat(512 * 1024);
+                            turn.runtime().emitCurrentActorOutput(payload);
+
+                            int nearLimit = Math.toIntExact(limit - 512 * 1024);
+                            IllegalStateException denied = assertThrows(
+                                    IllegalStateException.class,
+                                    () -> ActorRuntime.currentNativeArena()
+                                            .region(nearLimit));
+                            assertTrue(
+                                    denied.getMessage().contains("limit exceeded"),
+                                    denied.toString());
+                        } catch (Throwable x) {
+                            failure.set(x);
+                        } finally {
+                            done.countDown();
+                        }
+                    });
+
+            ref.send("go");
+            assertTrue(done.await(10, TimeUnit.SECONDS));
+            assertNull(failure.get());
+
+            GeneratorRuntime.Step<ActorRuntime.ActorOutput<Object>> output =
+                    ref.outputs().next().get(10, TimeUnit.SECONDS);
+            assertFalse(output.done());
+            assertEquals(512 * 1024, ((String) output.value().value()).length());
+
+            ref.gracefulStop().get(10, TimeUnit.SECONDS);
+            assertTrue(ref.awaitTermination(10, TimeUnit.SECONDS));
         }
     }
 
