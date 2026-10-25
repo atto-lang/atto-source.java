@@ -146,4 +146,37 @@ public final class ConstraintValidationBridge {
         }
         return evidence;
     }
+
+    /**
+     * Consume evidence only against the compiler catalog that is authoritative
+     * at the use site. Exact AST identity alone is insufficient: recompilation,
+     * imports or package metadata may carry a newer descriptor fingerprint.
+     */
+    public static synchronized Evidence requireCompatible(
+            Ast.Expr expression,
+            TypeConstraintDescriptors.Catalog catalog,
+            String qualifiedTypeName) {
+        Objects.requireNonNull(catalog, "constraint descriptor catalog");
+        Objects.requireNonNull(qualifiedTypeName, "qualified constrained alias");
+
+        Evidence evidence = require(expression);
+        if (!evidence.qualifiedTypeName().equals(qualifiedTypeName)) {
+            throw new IllegalStateException(
+                    "CONSTRAINT_PROVENANCE_TYPE_MISMATCH: expected "
+                            + qualifiedTypeName + ", got " + evidence.qualifiedTypeName());
+        }
+
+        TypeConstraintDescriptors.Descriptor descriptor =
+                catalog.requireCompatible(
+                        qualifiedTypeName,
+                        evidence.schemaId(),
+                        evidence.fingerprint());
+        if (evidence.value() < Long.MIN_VALUE || evidence.value() > Long.MAX_VALUE) {
+            throw new IllegalStateException("CONSTRAINT_PROVENANCE_VALUE_INVALID");
+        }
+        if (!descriptor.validationRequired()) {
+            throw new IllegalStateException("CONSTRAINT_PROVENANCE_DESCRIPTOR_INVALID");
+        }
+        return evidence;
+    }
 }
