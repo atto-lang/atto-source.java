@@ -72,8 +72,20 @@ final class AuthorityGuestConformanceTypeV1Test {
             if (fixture.accept()) {
                 assertDoesNotThrow(() -> TypeChecker.check(parsed), fixture.id());
             } else {
-                assertThrows(IllegalArgumentException.class,
+                var failure = assertThrows(IllegalArgumentException.class,
                         () -> TypeChecker.check(parsed), fixture.id());
+                // Pin established checker categories where the candidate
+                // already has stable diagnostics. A generic type error is
+                // not sufficient for a capability/opaque transport claim.
+                switch (fixture.id()) {
+                    case "unguarded-any-return-rejected" ->
+                            assertTrue(failure.getMessage().contains("return value"), fixture.id());
+                    case "opaque-member-rejected" ->
+                            assertTrue(failure.getMessage().contains("no statically available members"), fixture.id());
+                    case "opaque-call-rejected" ->
+                            assertTrue(failure.getMessage().contains("not directly callable"), fixture.id());
+                    default -> assertNotNull(failure.getMessage(), fixture.id());
+                }
             }
         }
     }
