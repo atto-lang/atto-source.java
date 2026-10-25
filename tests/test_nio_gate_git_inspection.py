@@ -126,6 +126,8 @@ class RawWorktreeSecurityTests(unittest.TestCase):
         (self.root / 'source.txt').write_text('trusted source\n')
         (self.root / 'nested').mkdir()
         (self.root / 'nested' / 'source.txt').write_text('nested trusted source\n')
+        (self.root / 'linkdir').mkdir()
+        (self.root / 'linkdir' / 'tracked-link').symlink_to('../source.txt')
         for argv in (['git', 'init', '-q'],
                      ['git', 'config', 'user.email', 'fixture@example.invalid'],
                      ['git', 'config', 'user.name', 'Source-free CI'],
@@ -176,6 +178,15 @@ class RawWorktreeSecurityTests(unittest.TestCase):
         # The tracked leaf bytes remain reachable through the symlink. Git
         # porcelain also notices this topology change, but the raw verifier
         # must independently reject it without relying on porcelain status.
+        result = self.gate()
+        self.assertEqual(77, result.returncode, result.stderr + result.stdout)
+
+
+    def test_tracked_symlink_parent_directory_symlink_is_rejected(self):
+        original = self.root / 'linkdir'
+        external = Path(self.tmp.name) / 'external-linkdir'
+        original.rename(external)
+        original.symlink_to(external, target_is_directory=True)
         result = self.gate()
         self.assertEqual(77, result.returncode, result.stderr + result.stdout)
 
