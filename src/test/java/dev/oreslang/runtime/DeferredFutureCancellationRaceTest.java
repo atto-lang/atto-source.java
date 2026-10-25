@@ -90,6 +90,50 @@ final class DeferredFutureCancellationRaceTest {
         }
     }
 
+    @Test void cleanupCompletionVersusFatalUnwindHasExactlyOneWinner()
+            throws Exception {
+        for (int iteration = 0; iteration < 120; iteration++) {
+            OresFuture<Integer> future =
+                    new OresFuture<>(() -> true, () -> { }, () -> { }, true);
+            IllegalStateException fatal = new IllegalStateException("cleanup failed");
+            assertTrue(future.cancel(false));
+            CountDownLatch go = new CountDownLatch(1);
+            AtomicBoolean cancelled = new AtomicBoolean();
+            AtomicBoolean failed = new AtomicBoolean();
+            Thread completion = Thread.ofVirtual().start(() -> {
+                try {
+                    go.await();
+                    cancelled.set(future.completeDeferredCancellationFromRuntime());
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            Thread failure = Thread.ofVirtual().start(() -> {
+                try {
+                    go.await();
+                    failed.set(future.failDeferredCleanupFromRuntime(fatal));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            go.countDown();
+            completion.join(2000);
+            failure.join(2000);
+            assertFalse(completion.isAlive());
+            assertFalse(failure.isAlive());
+            assertNotEquals(cancelled.get(), failed.get(),
+                    "physical cleanup and fatal unwind must have exactly one winner");
+            if (failed.get()) {
+                assertFalse(future.isCancelled());
+                assertSame(fatal, assertThrows(ExecutionException.class,
+                        () -> future.get(2, TimeUnit.SECONDS)).getCause());
+            } else {
+                assertTrue(future.isCancelled());
+                assertThrows(CancellationException.class, future::join);
+            }
+        }
+    }
+
     @Test void physicalCleanupFailureCannotBeRewrittenAsCancellation()
             throws Exception {
         OresFuture<Integer> future = new OresFuture<>(
