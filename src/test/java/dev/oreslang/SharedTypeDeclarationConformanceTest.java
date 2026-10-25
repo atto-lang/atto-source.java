@@ -32,7 +32,7 @@ final class SharedTypeDeclarationConformanceTest {
             assertTrue(parts[1].equals("+") || parts[1].equals("-"), parts[0]);
             assertFalse(parts[4].isEmpty(), "empty program: " + parts[0]);
             result.add(new Vector(parts[0], parts[1], parts[2], parts[3],
-                    parts[4].replace("\\\\n", "\\n")));
+                    parts[4].replace("\\n", "\n")));
         }
         assertEquals(22, result.size(), "shared contract must not silently lose cases");
         return result;
