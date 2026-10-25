@@ -2291,7 +2291,14 @@ public final class Parser {
         // distinction in the AST instead of relying on source spelling later.
         if (match(DO)) {
             if (match(MATCH)) return parseMatch(true);
-            if (match(SWITCH)) return parseSwitch();
+            if (match(SWITCH)) {
+                Ast.SwitchStmt statement = parseSwitch();
+                return new Ast.SwitchStmt(
+                        statement.subject(),
+                        statement.cases(),
+                        statement.defaultBody(),
+                        true);
+            }
             throw error(previous(), "'do' requires match, switch, or a braced select");
         }
         // Legacy statement syntax remains accepted during migration.
