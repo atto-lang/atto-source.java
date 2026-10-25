@@ -701,6 +701,13 @@ public final class TreeShaker {
                 return List.of(new Ast.BlockStmt(
                         rewriteStatements(block.body(), module, new LinkedHashMap<>(locals))));
             }
+            if (statement instanceof Ast.TaskScopeStmt scope) {
+                // Preserve the structured-concurrency boundary exactly. It is
+                // a physical-quiescence effect and must never be folded into a
+                // plain block even when its children appear side-effect free.
+                return List.of(new Ast.TaskScopeStmt(
+                        rewriteStatements(scope.body(), module, new LinkedHashMap<>(locals))));
+            }
             if (statement instanceof Ast.BreakStmt || statement instanceof Ast.ContinueStmt) {
                 return List.of(statement);
             }
@@ -1245,6 +1252,8 @@ public final class TreeShaker {
                     scanExpression(module, deferred.expression(), locals);
                 } else if (statement instanceof Ast.BlockStmt block) {
                     scanStatements(module, block.body(), new LinkedHashSet<>(locals));
+                } else if (statement instanceof Ast.TaskScopeStmt scope) {
+                    scanStatements(module, scope.body(), new LinkedHashSet<>(locals));
                 } else if (statement instanceof Ast.LoopStmt loop) {
                     scanStatements(module, loop.body(), new LinkedHashSet<>(locals));
                 } else if (statement instanceof Ast.DoWhileStmt loop) {

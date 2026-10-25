@@ -1509,9 +1509,13 @@ public final class Parser {
             return marked;
         }
 
-        if (matchContextualKeyword("borrow") || match(AMP)) {
+        if (matchContextualKeyword("borrow")) {
             boolean mutable = match(MUT);
             return Ast.TypeRef.borrowed(parseTypeAtom(), mutable);
+        }
+        if (match(AMP)) {
+            throw error(previous(),
+                    "borrowed types use 'borrow T' or 'borrow mut T'; pointer sigils are not Oreslang source syntax");
         }
         if (match(STRING)) return Ast.TypeRef.stringLiteral(previous().lexeme());
 
@@ -1841,6 +1845,18 @@ public final class Parser {
             return new Ast.ForStmt(null, new Ast.LiteralExpr(true), null, turn);
         }
         if (match(IF)) return parseIf();
+        if ((check(NB)
+                || (check(IDENT) && peek().lexeme().equals("task")))
+                && current + 2 < tokens.size()
+                && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 1).lexeme().equals("scope")
+                && tokens.get(current + 2).type() == LBRACE) {
+            advance(); // nb or contextual task
+            advance(); // contextual scope
+            Ast.Stmt scoped = new Ast.TaskScopeStmt(parseBlock());
+            match(SEMICOLON);
+            return scoped;
+        }
         if (check(DO) && checkNext(LBRACE)) {
             advance();
             return parseDoWhile();
@@ -3285,8 +3301,7 @@ public final class Parser {
         }
         if (match(BANG, TILDE, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
         if (match(AMP)) {
-            boolean mutable = match(MUT);
-            return new Ast.UnaryExpr(mutable ? "&mut" : "&", parseUnary());
+            throw error(previous(), "use rt borrow or rt mut borrow; unary pointer syntax is not supported");
         }
         if (match(AWAIT)) return new Ast.AwaitExpr(parseUnary());
 
@@ -3368,6 +3383,10 @@ public final class Parser {
     }
 
     private Ast.Expr parseRuntimeExpression() {
+        // Canonical mutable borrow is `rt mut borrow value`. Keep `mut`
+        // ahead of the operation so ownership syntax reads as a modifier and
+        // reject the historical `rt borrow mut value` ordering below.
+        boolean mutableBorrow = match(MUT);
         Token operation;
         if (match(YIELD)) {
             operation = previous(); // compatibility spelling: rt yield
@@ -3376,6 +3395,9 @@ public final class Parser {
         }
 
         String name = operation.lexeme();
+        if (mutableBorrow && !name.equals("borrow")) {
+            throw error(operation, "'rt mut' may only modify borrow; use 'rt mut borrow value'");
+        }
         if (operation.type() == YIELD || name.equals("yield") || name.equals("cooperate")) {
             if (match(LPAREN)) {
                 if (!check(RPAREN)) {
@@ -3394,8 +3416,11 @@ public final class Parser {
                             + "'; supported operations are cooperate, copy, take, borrow, share, and fail");
         }
 
-        // Mutable borrows use the same ownership checks as the legacy spelling.
-        if (name.equals("borrow") && match(MUT)) {
+        if (name.equals("borrow") && check(MUT)) {
+            throw error(peek(),
+                    "legacy 'rt borrow mut value' is not accepted; use 'rt mut borrow value'");
+        }
+        if (mutableBorrow) {
             return new Ast.UnaryExpr("&mut", parseUnary());
         }
         Ast.Expr argument;

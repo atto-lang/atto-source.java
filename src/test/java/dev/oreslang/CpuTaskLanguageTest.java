@@ -127,6 +127,111 @@ final class CpuTaskLanguageTest {
                 failure::getMessage);
     }
 
+    @Test void consecutivelySubmittedTasksDoNotClonePreviousFuture() throws Exception {
+        assertEquals("1|2", run("""
+                pub async fnc main(): void {
+                  let Future<int> first = task { return 1; };
+                  let Future<int> second = task { return 2; };
+                  stdio.stdout.write(await first);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(await second);
+                  return;
+                }
+                """));
+    }
+
+    @Test void shadowedParentFutureDoesNotLeakIntoChildSnapshot() throws Exception {
+        assertEquals("42|1", run("""
+                pub async fnc main(): void {
+                  let Future<int> value = task { return 1; };
+                  block {
+                    const int value = 41;
+                    let Future<int> second = task { return value + 1; };
+                    stdio.stdout.write(await second);
+                  }
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(await value);
+                  return;
+                }
+                """));
+    }
+
+    @Test void taskLocalShadowDoesNotDetachOuterCapability() throws Exception {
+        assertEquals("42", run("""
+                define class Box as
+                  pub let int value = 1;
+                end
+                pub async fnc main(): void {
+                  val mutex = Mutex.new(new Box());
+                  let Future<int> worker = task {
+                    const int mutex = 41;
+                    return mutex + 1;
+                  };
+                  stdio.stdout.write(await worker);
+                  return;
+                }
+                """));
+    }
+
+    @Test void taskLocalCanShadowUnrelatedParentFuture() throws Exception {
+        assertEquals("42|1", run("""
+                pub async fnc main(): void {
+                  let Future<int> value = task { return 1; };
+                  let Future<int> second = task {
+                    const int value = 41;
+                    return value + 1;
+                  };
+                  stdio.stdout.write(await second);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(await value);
+                  return;
+                }
+                """));
+    }
+
+    @Test void taskCapturesTransitiveNestedTaskReferences() throws Exception {
+        assertEquals("42", run("""
+                pub async fnc main(): void {
+                  const int base = 40;
+                  let Future<int> outer = task {
+                    let Future<int> inner = task { return base + 2; };
+                    return await inner;
+                  };
+                  stdio.stdout.write(await outer);
+                  return;
+                }
+                """));
+    }
+
+    @Test void affineFutureMovesIntoSecondTaskWithoutRuntimeCloning() throws Exception {
+        assertEquals("42", run("""
+                pub async fnc main(): void {
+                  let Future<int> first = task {
+                    return 41;
+                  };
+                  let Future<int> second = task {
+                    return (await first) + 1;
+                  };
+                  stdio.stdout.write(await second);
+                  return;
+                }
+                """));
+    }
+
+    @Test void copiedScalarCaptureIsFrozenAtSubmission() throws Exception {
+        assertEquals("41|99", run("""
+                pub async fnc main(): void {
+                  let int value = 41;
+                  let Future<int> worker = task { return value; };
+                  value = 99;
+                  stdio.stdout.write(await worker);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(value);
+                  return;
+                }
+                """));
+    }
+
     @Test void gpuTaskIsRejectedInsteadOfExecutingOnCpu() {
         var failure = assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
