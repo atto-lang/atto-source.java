@@ -286,7 +286,7 @@ public final class InvertedColumnStore implements AutoCloseable {
         int last = length - 1;
         if (row != last) {
             for (int i = 0; i < kinds.length; i++) {
-                int stride = kinds[i].bytes();
+                int stride = specs[i].bytes();
                 System.arraycopy(columns[i], last * stride, columns[i], row * stride, stride);
             }
             int displaced = rowSlots[last];
@@ -297,7 +297,7 @@ public final class InvertedColumnStore implements AutoCloseable {
         // deleted row after a swap. This also clears references to old scalar
         // payloads before that storage slot can be reused.
         for (int i = 0; i < kinds.length; i++) {
-            int stride = kinds[i].bytes();
+            int stride = specs[i].bytes();
             int start = last * stride;
             Arrays.fill(columns[i], start, start + stride, (byte) 0);
         }
@@ -343,7 +343,7 @@ public final class InvertedColumnStore implements AutoCloseable {
             throw new IllegalArgumentException("row width mismatch");
         }
         unborrowed();
-        for (int i = 0; i < kinds.length; i++) validateValue(kinds[i], values[i]);
+        for (int i = 0; i < kinds.length; i++) validateValue(specs[i], values[i]);
         for (int i = 0; i < kinds.length; i++) store(i, row, values[i]);
     }
 
