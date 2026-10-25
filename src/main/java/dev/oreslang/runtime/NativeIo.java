@@ -81,7 +81,13 @@ public final class NativeIo {
         // symbolic link. Requiring READ on the child would canonicalize a
         // symlink to its target and incorrectly reject detecting unsafe links.
         // Resolve/check the parent instead; ancestor escapes still fail.
-        Path canonicalParent = realPath(parent);
+        // Metadata is a non-mutating probe. Missing parent components under an
+        // authorized root imply a missing target; do not throw merely because
+        // toRealPath() requires every intermediate component to exist.
+        // canonicalWritePath resolves only the nearest existing ancestor and
+        // preserves the canonical permission boundary. Dangling/escaping
+        // symlink ancestors still fail closed during realPath() resolution.
+        Path canonicalParent = canonicalWritePath(parent.toString());
         Path target = canonicalParent.resolve(lexical.getFileName());
         try {
             context.requirePermission(RuntimePermissions.Permission.READ,
@@ -219,6 +225,32 @@ public final class NativeIo {
 
     public static String httpPostText(OresContext context, String rawUri, String body) {
         return httpText(context, "POST", rawUri, body);
+    }
+
+    public static OresFuture<String> httpGetTextAsync(OresContext context, String rawUri) {
+        return httpTextAsync(context, "GET", rawUri, null);
+    }
+
+    public static OresFuture<String> httpPostTextAsync(OresContext context, String rawUri, String body) {
+        return httpTextAsync(context, "POST", rawUri, body);
+    }
+
+    private static OresFuture<String> httpTextAsync(OresContext context, String method,
+            String rawUri, String body) {
+        String operation = "http." + method.toLowerCase(java.util.Locale.ROOT) + "_text_async";
+        return context.nativeIo().submitAsync(context, RuntimePermissions.Permission.NET, operation, () -> {
+            URI uri = checkedHttpUri(rawUri);
+            String endpoint = networkEndpoint(uri);
+            // Check endpoint authority in the invoking actor's domain, before
+            // any asynchronous producer starts. Redirects remain disabled.
+            context.requirePermission(RuntimePermissions.Permission.NET, endpoint, operation);
+            HttpRequest.Builder request = HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(30));
+            if (method.equals("POST")) request.POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8));
+            else request.GET();
+            return context.nativeIo().httpClient()
+                    .sendAsync(request.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
+                    .thenApply(HttpResponse::body);
+        });
     }
 
     private static String httpText(

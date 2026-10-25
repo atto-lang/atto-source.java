@@ -141,13 +141,13 @@ final class ProperTailCallTest {
                   }
                 }
 
-                fnc divide_by_zero(): int {
-                  return 1 / 0;
+                fnc remainder_by_zero(): int {
+                  return 1 % 0;
                 }
 
                 fnc with_catch(): int {
                   try {
-                    return divide_by_zero();
+                    return remainder_by_zero();
                   } catch (err) {
                     return 42;
                   }
@@ -192,6 +192,36 @@ final class ProperTailCallTest {
                 """);
 
         assertEquals("0", output);
+    }
+
+    @Test
+    void nestedTailReturnRetainsOuterMutexGuardUntilCalleeCompletes() throws Exception {
+        String output = run("""
+                fnc inspect(borrow Mutex<int> mutex): bool {
+                  try {
+                    val maybe = mutex.try_lock();
+                    return maybe.is_some();
+                  } catch (err) { return false; }
+                }
+                fnc nested(bool choose): bool {
+                  val mutex = Mutex.new(1);
+                  val guard = mutex.lock();
+                  if choose; then
+                    for (let int i = 0; i < 1; i = i + 1) {
+                      return inspect(rt borrow mutex);
+                    }
+                  else
+                    return true ? inspect(rt borrow mutex) : true;
+                  fi
+                  return true;
+                }
+                pub routine main(): void {
+                  stdio.println(nested(true));
+                  stdio.println(nested(false));
+                  return;
+                }
+                """);
+        assertEquals("false\nfalse\n", output);
     }
 
     private static String run(String program) throws Exception {

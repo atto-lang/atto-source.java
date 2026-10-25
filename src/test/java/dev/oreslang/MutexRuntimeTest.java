@@ -85,6 +85,47 @@ final class MutexRuntimeTest {
     }
 
     @Test
+    void actorLocalMutexFencesStaleGuardsAcrossPhysicalDispatchSegments() throws Exception {
+        // Throughput=1 forces distinct physical dispatches for the messages,
+        // even when the runtime reuses the same JVM carrier thread.
+        var config = new ActorRuntime.DispatcherConfig(2, 2, 1);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            CountDownLatch checked = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+
+            var actor = runtime.<String>spawn(() -> {
+                var mutex = OresMutex.local(new int[]{9});
+                AtomicReference<OresMutex.Guard<int[]>> retained = new AtomicReference<>();
+                return (message, context) -> {
+                    try {
+                        if ("hold".equals(message)) {
+                            retained.set(mutex.lock());
+                        } else if ("check".equals(message)) {
+                            assertNotNull(retained.get());
+                            assertThrows(OresMutex.WrongMutexDomainException.class,
+                                    () -> retained.get().value());
+                            assertThrows(OresMutex.WrongMutexDomainException.class,
+                                    () -> retained.get().release());
+                            assertTrue(mutex.tryLock().isEmpty());
+                            assertThrows(OresMutex.MutexContendedException.class,
+                                    mutex::lock);
+                        }
+                    } catch (Throwable unexpected) {
+                        failure.compareAndSet(null, unexpected);
+                    } finally {
+                        if ("check".equals(message)) checked.countDown();
+                    }
+                };
+            });
+
+            actor.send("hold");
+            actor.send("check");
+            assertTrue(checked.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get(), "a later turn must not reuse a stale mutex guard");
+        }
+    }
+
+    @Test
     void actorLocalMutexPersistsAcrossMessagesInOneSemanticDomain() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch done = new CountDownLatch(1);
@@ -724,8 +765,16 @@ final class MutexRuntimeTest {
 
             assertTrue(validationEntered.await(2, TimeUnit.SECONDS));
             allowFailure.countDown();
-            for (int i = 0; i < 500 && doomed.failure().isEmpty(); i++) Thread.yield();
-            assertTrue(doomed.failure().isPresent());
+            // Scheduling of the failed actor is asynchronous. A fixed 500
+            // Thread.yield() spin can finish before the dispatcher runs at all
+            // on a loaded CI machine. Wait for the actual failure event with
+            // a bounded monotonic deadline instead of asserting scheduling.
+            long untilFailure = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (doomed.failure().isEmpty() && System.nanoTime() < untilFailure) {
+                Thread.sleep(1);
+            }
+            assertTrue(doomed.failure().isPresent(),
+                    "failed actor admission must observe actual termination");
 
             releaseValidation.countDown();
             sender.join();

@@ -110,6 +110,53 @@ class AsyncNativeIoTest {
         }
     }
 
+    @Test void coreNumericLoggingDoesNotChangeIoFailuresOrLeakGuestExceptionText() throws Exception {
+        CoreLog.configure(CoreLog.Level.OFF);
+        CoreLog.configure(CoreLog.Level.WARN);
+        var started = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        try (var io = new AsyncNativeIo(1)) {
+            var blocked = io.submit("slow", () -> {
+                started.countDown();
+                release.await();
+                return 19;
+            });
+            assertTrue(started.await(2, TimeUnit.SECONDS));
+            var rejected = io.submit("private-operation-name", () -> fail("must not run"));
+            assertInstanceOf(RejectedExecutionException.class,
+                    assertThrows(ExecutionException.class,
+                            () -> rejected.get(2, TimeUnit.SECONDS)).getCause());
+            release.countDown();
+            assertEquals(19, blocked.get(2, TimeUnit.SECONDS));
+
+            var failed = io.submit("another-secret-operation", () -> {
+                throw new IllegalStateException("PRIVATE-GUEST-EXCEPTION-TEXT");
+            });
+            assertInstanceOf(IllegalStateException.class,
+                    assertThrows(ExecutionException.class,
+                            () -> failed.get(2, TimeUnit.SECONDS)).getCause());
+            assertEquals(7, io.submit("normal", () -> 7).get(2, TimeUnit.SECONDS),
+                    "diagnostic publication must not change later admissions");
+
+            var output = new ByteArrayOutputStream();
+            CoreLog.dumpRetained(new PrintStream(output, true, java.nio.charset.StandardCharsets.UTF_8));
+            String json = output.toString(java.nio.charset.StandardCharsets.UTF_8);
+            assertTrue(json.contains("\"event\":\"async.io.rejected\""));
+            assertTrue(json.contains("\"event\":\"async.io.failed\""));
+            assertFalse(json.contains("PRIVATE-GUEST-EXCEPTION-TEXT"));
+            assertFalse(json.contains("private-operation-name"));
+            assertFalse(json.contains("another-secret-operation"));
+            assertFalse(json.contains("\"value\":0"));
+        } finally {
+            release.countDown();
+            CoreLog.configure(CoreLog.Level.OFF);
+        }
+        var afterDisable = new ByteArrayOutputStream();
+        CoreLog.dumpRetained(new PrintStream(afterDisable));
+        assertEquals("", afterDisable.toString(),
+                "explicitly disabled diagnostics must not export prior I/O events");
+    }
+
     @Test void delayedTcpReadReleasesSingleActorCarrierAndSupportsWriteAndEof() throws Exception {
         String previous = System.getProperty("ores.runtime.actor.shared.parallelism");
         System.setProperty("ores.runtime.actor.shared.parallelism", "1");
@@ -169,6 +216,85 @@ class AsyncNativeIoTest {
         }
     }
 
+    @Test void asynchronousProducersShareAdmissionAndCloseFencesLateCompletion() throws Exception {
+        try (var io = new AsyncNativeIo(1)) {
+            Thread caller = Thread.currentThread();
+            var producer = new CompletableFuture<Integer>();
+            var pending = io.submitAsync("nio", () -> {
+                assertSame(caller, Thread.currentThread(), "registration must not spawn a blocking I/O worker");
+                return producer;
+            });
+            assertFalse(pending.isDone());
+            assertInstanceOf(RejectedExecutionException.class,
+                    assertThrows(ExecutionException.class,
+                            () -> io.submit("worker-overflow", () -> 7).get()).getCause());
+            producer.complete(19);
+            assertEquals(19, pending.get(2, TimeUnit.SECONDS));
+            assertEquals(23, io.submitAsync("inline", () -> CompletableFuture.completedFuture(23)).get());
+            assertThrows(AssertionError.class, () -> io.submitAsync("fatal-register", () -> {
+                throw new AssertionError("fatal registrar");
+            }));
+            assertEquals(29, io.submitAsync("after-fatal", () -> CompletableFuture.completedFuture(29)).get());
+            var late = new CompletableFuture<Integer>();
+            var closing = io.submitAsync("closing", () -> late);
+            io.close();
+            assertThrows(ExecutionException.class, () -> closing.get(2, TimeUnit.SECONDS));
+            late.complete(99);
+            assertThrows(ExecutionException.class, () -> closing.get(2, TimeUnit.SECONDS));
+            assertThrows(ExecutionException.class,
+                    () -> io.submitAsync("closed", () -> fail("closed registrar must not run")).get());
+        }
+    }
+
+    @Test void delayedHttpResponseReleasesOnlyActorCarrier() throws Exception {
+        String previous = System.getProperty("ores.runtime.actor.shared.parallelism");
+        System.setProperty("ores.runtime.actor.shared.parallelism", "1");
+        var probe = new CompletableFuture<Void>();
+        ByteArrayOutputStream output = new ByteArrayOutputStream() {
+            @Override public synchronized void write(byte[] bytes, int off, int len) {
+                super.write(bytes, off, len);
+                if (toString().contains("probe-ran")) probe.complete(null);
+            }
+        };
+        NioHttpTransport server = new NioHttpTransport("127.0.0.1", 0, 8, 1024, 10000,
+                exchange -> probe.orTimeout(5, TimeUnit.SECONDS).whenComplete((v, failure) ->
+                        exchange.respond(failure == null ? 200 : 500,
+                                (failure == null ? "response-after-probe" : "probe-timeout")
+                                        .getBytes(java.nio.charset.StandardCharsets.UTF_8), false)));
+        try {
+            String program = """
+                define actor Probe as
+                  receive(ActorMail<String> mail): void {
+                    stdio.println("probe-ran"); self.end(); return;
+                  }
+                end
+                define actor Reader as
+                  receive(ActorMail<String> mail): void {
+                    val reading = http.get_text_async("http://127.0.0.1:%d/");
+                    self.send("reading");
+                    stdio.println(await reading);
+                    self.end(); return;
+                  }
+                end
+                pub async routine main(): void {
+                  val reader = spawn Reader(); await reader.get_ready();
+                  val probe = spawn Probe(); await probe.get_ready();
+                  reader.send("go"); await reader.outputs.next();
+                  probe.send("go");
+                  await reader.get_done(); await probe.get_done(); return;
+                }
+                """.formatted(server.port());
+            run(program, RuntimePermissions.denyAll().withAllowed(RuntimePermissions.Permission.NET,
+                    "127.0.0.1:" + server.port()), output);
+            assertTrue(output.toString().contains("response-after-probe"), output.toString());
+            assertFalse(probe.isCompletedExceptionally());
+        } finally {
+            server.stop(0).toCompletableFuture().get(5, TimeUnit.SECONDS);
+            if (previous == null) System.clearProperty("ores.runtime.actor.shared.parallelism");
+            else System.setProperty("ores.runtime.actor.shared.parallelism", previous);
+        }
+    }
+
     @Test void httpClientAwaitsGetPostAndDoesNotFollowRedirects() throws Exception {
         var server = com.sun.net.httpserver.HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/", exchange -> {
@@ -189,11 +315,13 @@ class AsyncNativeIoTest {
                   stdio.println(await http.post_text_async("%s/", "posted"));
                   await http.get_text_async("%s/redirect");
                   stdio.println("redirect-not-followed");
+                  try { await http.get_text_async("http://127.0.0.1:1/denied"); }
+                  catch (failure) { stdio.println("denied-before-connect"); }
                   return;
                 }
                 """.formatted(url, url, url), RuntimePermissions.denyAll().withAllowed(
                     RuntimePermissions.Permission.NET, "127.0.0.1:" + server.getAddress().getPort()), new ByteArrayOutputStream());
-            assertEquals("hello\nposted\nredirect-not-followed\n", output.replace("\r", ""));
+            assertEquals("hello\nposted\nredirect-not-followed\ndenied-before-connect\n", output.replace("\r", ""));
         } finally { server.stop(0); }
     }
 }

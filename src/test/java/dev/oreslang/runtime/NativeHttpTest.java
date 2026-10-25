@@ -16,6 +16,140 @@ import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class NativeHttpTest {
+    @Test void sharedSupervisorDispatchKeepsOneInstanceAndDrainsAllLanes() throws Exception {
+        String output = run("""
+            pub define class Dispatcher as
+              val HttpServer server;
+              val SharedMutex<Array<int>> count;
+              pub constructor(HttpServer server) {
+                self.server = server;
+                self.count = SharedMutex.new(arr[0]);
+              }
+              pub dispatch(HttpExchange mut request): void {
+                if request.target == "/stop"; then
+                  request.respond(200, "text/plain", "stop");
+                  self.server.shutdown(1000);
+                  return;
+                fi
+                if true; then
+                  val guard = self.count.lock();
+                  val int old = guard.get(0);
+                  guard.set(0, old + 1);
+                fi
+                request.respond(200, "text/plain", "ok");
+                return;
+              }
+              pub start(): Future<void> { return self.server.serve(self, "dispatch", 4); }
+              pub port(): int { return self.server.port; }
+              pub active(): int { return self.server.active; }
+              pub manual(): Future<HttpExchange> { return self.server.accept(); }
+              pub drain(): Future<void> { return self.server.shutdown(1000); }
+              pub requests(): int {
+                val guard = self.count.lock();
+                return guard.get(0);
+              }
+            end
+            pub async routine main(): void {
+              val server = http.listen("127.0.0.1", 0, 20, 1024, 5000);
+              val dispatcher = new Dispatcher(server);
+              val serving = dispatcher.start();
+              stdio.println(dispatcher.port());
+              try { dispatcher.manual(); stdio.println("MANUAL ACCEPTED"); }
+              catch (err) { stdio.println("manual-rejected"); }
+              try { dispatcher.start(); stdio.println("DUPLICATE ACCEPTED"); }
+              catch (err) { stdio.println("duplicate-rejected"); }
+              await serving;
+              await dispatcher.drain();
+              stdio.println(dispatcher.requests());
+              stdio.println(dispatcher.active());
+              return;
+            }
+            """, port -> {
+                try (HttpClient client = HttpClient.newHttpClient()) {
+                    var jobs = new java.util.ArrayList<CompletableFuture<HttpResponse<String>>>();
+                    for (int i=0;i<12;i++) jobs.add(client.sendAsync(HttpRequest.newBuilder(URI.create("http://127.0.0.1:"+port+"/"))
+                        .timeout(Duration.ofSeconds(8)).GET().build(), HttpResponse.BodyHandlers.ofString()));
+                    for (var job: jobs) assertEquals("ok", job.get(10,TimeUnit.SECONDS).body());
+                    assertEquals("stop", request(port,"GET","/stop","").body());
+                }
+            });
+        assertFalse(output.contains("ACCEPTED"), output);
+        assertTrue(output.contains("12\n0\n"), output);
+    }
+
+    @Test void independentAcceptLanesDeliverUniqueExchangesAndCloseAllWaiters() throws Exception {
+        String output = run("""
+            pub async routine main(): void {
+              val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
+              val a = server.accept_on(1);
+              val b = server.accept_on(2);
+              stdio.println(server.port);
+              try { server.accept_on(1); stdio.println("DUPLICATE ACCEPTED"); }
+              catch (err) { stdio.println("duplicate-rejected"); }
+              try { server.accept_on(16); stdio.println("INVALID ACCEPTED"); }
+              catch (err) { stdio.println("range-rejected"); }
+              val first = await a;
+              val second = await b;
+              stdio.println(first.request_id != second.request_id);
+              await first.respond(200, "text/plain", "ok");
+              await second.respond(200, "text/plain", "ok");
+              val pending_a = server.accept_on(1);
+              val pending_b = server.accept_on(2);
+              await server.shutdown(1000);
+              try { await pending_a; stdio.println("OPEN ACCEPTED"); }
+              catch (err) { stdio.println("closed-a"); }
+              try { await pending_b; stdio.println("OPEN ACCEPTED"); }
+              catch (err) { stdio.println("closed-b"); }
+              stdio.println(server.accepting);
+              return;
+            }
+            """, port -> {
+                try (HttpClient client = HttpClient.newHttpClient()) {
+                    var req = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/"))
+                        .timeout(Duration.ofSeconds(8)).GET().build();
+                    var a = client.sendAsync(req, HttpResponse.BodyHandlers.ofString());
+                    var b = client.sendAsync(req, HttpResponse.BodyHandlers.ofString());
+                    assertEquals(200, a.get(10, TimeUnit.SECONDS).statusCode());
+                    assertEquals(200, b.get(10, TimeUnit.SECONDS).statusCode());
+                }
+            });
+        assertFalse(output.contains("ACCEPTED"), output);
+        assertTrue(output.contains("true"), output);
+        assertTrue(output.contains("closed-a\nclosed-b\nfalse"), output);
+    }
+
+    @Test void acceptTimingSeparatesWaitingConsumerFromQueuedRequest() throws Exception {
+        String output = run("""
+            pub async routine main(): void {
+              val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
+              val waiting = server.accept();
+              stdio.println(server.port);
+              val first = await waiting;
+              val int resumed = process.monotonic_ns();
+              stdio.println(first.http_queued_ns == first.accept_ready_ns);
+              stdio.println(resumed >= first.accept_ready_ns);
+              loop { if server.accepted == 2; then break; fi }
+              val second = await server.accept();
+              stdio.println(second.accept_ready_ns > second.http_queued_ns);
+              stdio.println(second.http_queued_ns >= second.admitted_ns);
+              await first.respond(200, "text/plain", "ok");
+              await second.respond(200, "text/plain", "ok");
+              await server.shutdown(1000);
+              return;
+            }
+            """, port -> {
+                try (HttpClient client = HttpClient.newHttpClient()) {
+                    var req = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/"))
+                        .timeout(Duration.ofSeconds(8)).GET().build();
+                    var first = client.sendAsync(req, HttpResponse.BodyHandlers.ofString());
+                    var second = client.sendAsync(req, HttpResponse.BodyHandlers.ofString());
+                    assertEquals(200, first.get(10, TimeUnit.SECONDS).statusCode());
+                    assertEquals(200, second.get(10, TimeUnit.SECONDS).statusCode());
+                }
+            });
+        assertTrue(output.contains("true\ntrue\ntrue\ntrue\n"), output);
+    }
+
     @Test void rootBufferedResponseTransfersOwnershipAndRejectsRootStreaming() throws Exception {
         String output = run("""
             pub async routine main(): void {
@@ -45,7 +179,9 @@ class NativeHttpTest {
         assertTrue(output.contains("401\n0\n"), output);
     }
 
-    @Test void pooledActorsReuseMailboxWithoutRetainingExchangeAdmission() throws Exception {
+    @org.junit.jupiter.api.RepeatedTest(5)
+    @org.junit.jupiter.api.Timeout(30)
+    void pooledActorsReuseMailboxWithoutRetainingExchangeAdmission() throws Exception {
         for (String kind : List.of("actor", "isoactor")) {
             String output = run("""
                 define %s Worker as
@@ -88,11 +224,14 @@ class NativeHttpTest {
                         assertEquals(200, response.statusCode());
                         assertEquals(i > 1 ? "yes" : "no", response.headers().firstValue("X-Reused").orElseThrow());
                     }
-                });
+                }, 8);
             assertFalse(output.contains("ACCEPTED"), output);
             assertEquals(7, output.split("stale-rejected", -1).length - 1, output);
             assertEquals(8, output.split("closed-rejected", -1).length - 1, output);
-            assertTrue(output.contains("1\n7\n0\n"), output);
+            // Supervisor counters may interleave with post-response diagnostics.
+            var numbers = output.lines().filter(line -> line.matches("[0-9]+")).toList();
+            assertEquals(4, numbers.size(), output); // port plus three counters
+            assertEquals(List.of("1", "7", "0"), numbers.subList(1, 4), output);
         }
     }
 
@@ -342,13 +481,33 @@ class NativeHttpTest {
         }
     }
     private static String run(String program, Client client) throws Exception {
+        return run(program, client, 0);
+    }
+
+    private static String run(String program, Client client, int expectedPostResponseDiagnostics)
+            throws Exception {
         CompletableFuture<Integer> port = new CompletableFuture<>();
+        CompletableFuture<Void> diagnosticBarrier = new CompletableFuture<>();
+        CompletableFuture<Void> supervisorFooterBarrier = new CompletableFuture<>();
         ByteArrayOutputStream output = new ByteArrayOutputStream() {
             @Override public synchronized void write(byte[] b, int off, int len) {
                 super.write(b, off, len);
                 String text = toString(StandardCharsets.UTF_8);
                 int end = text.indexOf('\n');
                 if (end >= 0 && !port.isDone()) port.complete(Integer.parseInt(text.substring(0, end).trim()));
+                // HTTP response completion can precede the actor's final
+                // post-response duplicate-rejection check. Keep the context
+                // alive until the diagnostic has actually been emitted, not
+                // merely until the supervisor's response Future completes.
+                if (expectedPostResponseDiagnostics > 0
+                        && text.split("closed-rejected", -1).length - 1
+                                >= expectedPostResponseDiagnostics) {
+                    diagnosticBarrier.complete(null);
+                }
+                if (expectedPostResponseDiagnostics > 0
+                        && text.lines().filter(line -> line.matches("[0-9]+")).count() >= 4) {
+                    supervisorFooterBarrier.complete(null);
+                }
             }
         };
         try (Context context = IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.NETWORK)
@@ -361,9 +520,35 @@ class NativeHttpTest {
             try {
                 context.eval(Source.newBuilder(OresLanguage.ID, program, "native-http-test.ores").build());
                 clientWork.get(10, TimeUnit.SECONDS);
+                // A bounded actor-output completion barrier closes the race
+                // between response transport completion and receive cleanup.
+                // If a duplicate rejection never occurs, the test fails
+                // rather than silently reducing its expected assertion count.
+                if (expectedPostResponseDiagnostics > 0) {
+                    CompletableFuture.allOf(diagnosticBarrier, supervisorFooterBarrier)
+                            .get(8, TimeUnit.SECONDS);
+                    closeWhenQuiescent(context);
+                }
             } finally { clientWork.cancel(true); }
 
         }
         return output.toString(StandardCharsets.UTF_8);
+    }
+
+    private static void closeWhenQuiescent(Context context) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        while (true) {
+            try {
+                context.close(false);
+                return;
+            } catch (IllegalStateException busy) {
+                if (busy.getMessage() == null
+                        || !busy.getMessage().contains("currently executing on another thread")
+                        || System.nanoTime() >= deadline) {
+                    throw busy;
+                }
+                Thread.sleep(5);
+            }
+        }
     }
 }

@@ -34,15 +34,19 @@ pub async routine main(): void {
 ```
 
 Grant the same filesystem/network permissions required by synchronous calls.
-Actor-local capabilities are checked before submission. Canonical path resolution,
-resource permission checks, DNS/connect, file operations and blocking client HTTP
-work execute off the actor carrier. Only immutable argument values are captured.
-HTTP redirects remain disabled so a response cannot bypass the destination grant.
+Actor-local capabilities are checked before submission. Outbound HTTP checks
+endpoint permissions in the invoking actor domain and uses `HttpClient.sendAsync`
+through one context-owned client; no blocking `HttpClient.send` worker is involved
+in the async HTTP path. Redirects remain disabled so a response cannot bypass the
+destination grant. Only immutable request arguments cross into native producers.
+Canonical filesystem path resolution, file operations and legacy TCP helpers still
+use workers; an `_async` suffix alone does not imply selector-based host I/O.
 Failures retain their cause and a bounded `native:io` boundary annotation.
 
 ## Execution and lifecycle
 
-Each context owns a virtual-thread executor with a hard maximum of 128 in-flight
+Each context owns a virtual-thread executor for legacy adapters and a lazy
+asynchronous HTTP client. Both share a hard maximum of 128 in-flight
 standard-library operations. Submission above that bound returns a failed future;
 there is no unbounded backlog or caller-runs fallback. Socket close has 16
 separately reserved in-flight control slots, so saturated reads cannot consume
@@ -50,11 +54,16 @@ all admission needed to close their sockets. These are executor admission
 counters, not additional actor channels. One future is created per
 operation, not one channel. Await uses the actor's existing continuation transport.
 
-This is **non-blocking for guest execution**. The portable implementation offloads
-blocking host filesystem, TCP and HTTP client calls; it does not promise kernel
-asynchronous filesystem I/O or zero blocked OS threads. HTTP client connections
-are currently per call and closed after completion. No throughput improvement is
-claimed for tiny cached files.
+The asynchronous HTTP client performs network operations through JDK completion
+callbacks and reuses connections within its context. It is shut down without
+waiting for peer responses when the context closes. See the [JDK HttpClient
+contract](https://docs.oracle.com/en/java/javase/25/docs/api/java.net.http/java/net/http/HttpClient.html).
+
+Filesystem and legacy TCP adapters remain **non-blocking for guest execution**
+by offloading blocking host calls. They do not promise kernel asynchronous
+filesystem I/O or zero blocked OS threads. No throughput improvement is claimed
+for tiny cached files. `async.io.work` on the native HTTP path is elapsed
+registration-to-completion time, not CPU time.
 
 Cancellation of an individual I/O future is declined (`cancel` returns false):
 filesystem writes cannot safely promise rollback. Ending an actor does not undo
@@ -64,9 +73,10 @@ that ignores interruption may still finish after context closure. Await outstand
 writes when their completion matters; closing a socket interrupts its pending read.
 Close TCP sockets explicitly when finished; context shutdown is a fallback.
 
-The server-side HTTP API already returns futures for accept, body reads, response
-writes and graceful shutdown. Listener setup and synchronous abort/close control
-remain separate operations. Stdout/console export and stdin are not migrated by
+The server-side HTTP API uses Netty NIO channels and returns futures for accept,
+body reads, response writes and graceful shutdown. Listener setup currently waits
+for NIO bind registration; request socket reads/writes never use blocking streams.
+Abort/close schedules transport closure without waiting for peer I/O. Stdout/console export and stdin are not migrated by
 this change. This implementation does not add physical actor heap isolation.
 
 ## Validation
@@ -76,7 +86,10 @@ symlink escape, untrusted actor authority, HTTP GET/POST and redirect suppressio
 TCP write/read/EOF, bounded admission and context shutdown. A delayed TCP peer
 withholds its response until a second actor runs on the **same single actor
 carrier**, proving that the first actor's pending read does not occupy that carrier.
-EOF, errors and future results travel through normal continuation lowering.
+A delayed HTTP response similarly waits for another actor on the only carrier;
+shared admission, immediate completion, fatal registration cleanup, and context
+close fencing of late native completions are also checked. EOF, errors and future
+results travel through normal continuation lowering.
 
 Run `mvn -Dtest=AsyncNativeIoTest test` with JDK 25.
 

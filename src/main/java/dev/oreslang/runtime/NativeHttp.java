@@ -1,9 +1,5 @@
 package dev.oreslang.runtime;
 
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpServer;
-import java.io.IOException;
-import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
@@ -17,7 +13,6 @@ public final class NativeHttp implements AutoCloseable {
     private final OresContext context;
     private final Set<Server> servers = ConcurrentHashMap.newKeySet();
     private final Map<String, Exchange> transfers = new ConcurrentHashMap<>();
-    private final ExecutorService io = Executors.newVirtualThreadPerTaskExecutor();
     private final ScheduledThreadPoolExecutor timers = new ScheduledThreadPoolExecutor(1, r -> {
         Thread t = new Thread(r, "ores-http-deadlines"); t.setDaemon(true); return t;
     });
@@ -38,30 +33,11 @@ public final class NativeHttp implements AutoCloseable {
                 || capacity < 1 || capacity > 65536 || bodyLimit < 1 || bodyLimit > 64 * 1024 * 1024
                 || deadlineMillis < 1) throw new IllegalArgumentException("invalid HTTP listener limits");
         context.requirePermission(RuntimePermissions.Permission.NET, host.toLowerCase(Locale.ROOT) + ":" + port, "http.listen");
-        configureTransportDefaults();
-        try {
-            Server server = new Server(HttpServer.create(new InetSocketAddress(host, port), capacity),
-                    capacity, bodyLimit, deadlineMillis);
-            servers.add(server);
-            server.transport.start();
-            CorePerf.end(CorePerf.HTTP_LISTEN, perf);
-            if (CoreDebug.enabled()) {
-                CoreDebug.event(CoreDebug.HTTP_LISTENER_READY, server.transport.getAddress().getPort());
-            }
-            return server;
-        } catch (IOException e) { throw new IllegalStateException("HTTP listen failed", e); }
-    }
-
-    // JDK HTTP server limits are JVM-wide and read on its first initialization.
-    // Embedders that initialize it earlier must configure these themselves.
-    private static void configureTransportDefaults() {
-        Map.of("jdk.httpserver.maxConnections", "1024",
-               "sun.net.httpserver.maxReqHeaders", "100",
-               "sun.net.httpserver.maxReqHeaderSize", "32768",
-               "sun.net.httpserver.maxReqTime", "15",
-               "sun.net.httpserver.maxRspTime", "30",
-               "sun.net.httpserver.drainAmount", "1",
-               "sun.net.httpserver.nodelay", "true").forEach((key, value) -> System.getProperties().putIfAbsent(key, value));
+        Server server = new Server(host, port, capacity, bodyLimit, deadlineMillis);
+        servers.add(server);
+        CorePerf.end(CorePerf.HTTP_LISTEN, perf);
+        if (CoreDebug.enabled()) CoreDebug.event(CoreDebug.HTTP_LISTENER_READY, server.port());
+        return server;
     }
 
     public Handler handler(ActorRuntime.ActorCodeExecutor code, String type, ActorRuntime.ActorKind kind) {
@@ -195,57 +171,106 @@ public final class NativeHttp implements AutoCloseable {
     }
 
     public final class Server implements AutoCloseable {
-        private final HttpServer transport;
+        private final NioHttpTransport transport;
         private final Semaphore admission;
         private final int bodyLimit, deadlineMillis;
         private final ArrayDeque<Exchange> pending = new ArrayDeque<>();
         private final Set<State> active = ConcurrentHashMap.newKeySet();
-        private OresFuture<Object> waiter;
-        private boolean stopped, transportStopped;
+        private final OresFuture<?>[] waiters = new OresFuture<?>[16];
+        private final ArrayDeque<Integer> waitingLanes = new ArrayDeque<>();
+        private boolean stopped, transportStopped, serving;
         private OresFuture<Object> drained;
-        private final AtomicLong accepted = new AtomicLong(), rejected = new AtomicLong(), completed = new AtomicLong();
+        private final AtomicLong accepted = new AtomicLong(), rejected = new AtomicLong(), completed = new AtomicLong(), peakActive = new AtomicLong();
 
-        private Server(HttpServer transport, int capacity, int bodyLimit, int deadlineMillis) {
-            this.transport = transport; this.admission = new Semaphore(capacity);
+        private Server(String host, int port, int capacity, int bodyLimit, int deadlineMillis) {
+            this.admission = new Semaphore(capacity);
             this.bodyLimit = bodyLimit; this.deadlineMillis = deadlineMillis;
-            // Preserve the original executor when diagnostics are off. In
-            // diagnostic mode, measure the JDK-to-virtual-thread handoff.
-            if (CorePerf.enabled() || CoreDebug.enabled()) {
-                transport.setExecutor(task -> {
-                    long queued = CorePerf.start();
-                    io.execute(() -> {
-                        CorePerf.end(CorePerf.HTTP_EXECUTOR_QUEUE, queued);
-                        if (CoreDebug.enabled()) {
-                            CoreDebug.event(CoreDebug.HTTP_EXECUTOR_TASK_STARTED, 0L);
-                        }
-                        task.run();
-                    });
-                });
-            } else {
-                transport.setExecutor(io);
-            }
-            transport.createContext("/", this::receive);
+            this.transport = new NioHttpTransport(host, port, capacity, bodyLimit, deadlineMillis, this::receive);
         }
         private void supervisor() {
             if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP server is supervisor-owned");
         }
-        public int port() { supervisor(); return transport.getAddress().getPort(); }
+        public synchronized boolean accepting() { supervisor(); return !stopped; }
+        public int port() { supervisor(); return transport.port(); }
+        public long peakActive() { supervisor(); return peakActive.get(); }
         public long accepted() { supervisor(); return accepted.get(); }
         public long rejected() { supervisor(); return rejected.get(); }
         public long completed() { supervisor(); return completed.get(); }
         public int active() { supervisor(); return active.size(); }
 
-        public synchronized OresFuture<Object> accept() {
+        public OresFuture<Object> accept() { return acceptOn(0); }
+        /** Independent bounded supervisor lanes; one outstanding accept per lane. */
+        public OresFuture<Object> acceptOn(int lane) { return acceptLane(lane, false); }
+        private synchronized OresFuture<Object> acceptLane(int lane, boolean dispatcher) {
             supervisor();
+            if (serving && !dispatcher) throw new IllegalStateException("HTTP server is owned by its dispatcher");
+            if (lane < 0 || lane >= waiters.length) throw new IllegalArgumentException("HTTP accept lane must be 0..15");
             if (stopped) return OresFuture.failed(new IllegalStateException("HTTP server closed"));
-            if (waiter != null) throw new IllegalStateException("only one pending HTTP accept is permitted");
+            if (waiters[lane] != null) throw new IllegalStateException("only one pending HTTP accept per lane is permitted");
             Exchange exchange = pending.poll();
             while (exchange != null && exchange.state.terminal) exchange = pending.poll();
-            if (exchange != null) return OresFuture.completed(exchange);
-            waiter = new OresFuture<>(() -> false, () -> { });
-            return waiter;
+            if (exchange != null) {
+                exchange.state.acceptReadyNanos = System.nanoTime();
+                CorePerf.elapsed(CorePerf.HTTP_ACCEPT_QUEUE, exchange.state.queuedNanos, exchange.state.acceptReadyNanos);
+                return OresFuture.completed(exchange);
+            }
+            OresFuture<Object> waiting = new OresFuture<>(() -> false, () -> { });
+            waiters[lane] = waiting;
+            waitingLanes.addLast(lane);
+            return waiting;
         }
-        private void receive(HttpExchange raw) {
+        /** Explicit shared-supervisor dispatch; ordinary async payload rules are unchanged. */
+        public OresFuture<Object> serve(int lanes, java.util.function.Function<Exchange, OresFuture<Object>> dispatch) {
+            supervisor();
+            Objects.requireNonNull(dispatch, "dispatch");
+            if (lanes < 1 || lanes > waiters.length) throw new IllegalArgumentException("HTTP dispatch lanes must be 1..16");
+            if (context.isolatePolicy().adversarial()) throw new SecurityException("concurrent HTTP supervision requires a trusted server context");
+            synchronized (this) {
+                if (stopped || serving || !waitingLanes.isEmpty()) throw new IllegalStateException("HTTP server already accepting or closed");
+                serving = true;
+            }
+            OresFuture<Object> result = new OresFuture<>(() -> false, () -> { });
+            java.util.concurrent.atomic.AtomicInteger remaining = new java.util.concurrent.atomic.AtomicInteger(lanes);
+            try {
+                for (int lane = 0; lane < lanes; lane++) {
+                    final int id = lane;
+                    OresFuture<Object> task = context.vm().rootScheduler().start(new OresScheduler.Task<Object>() {
+                        private boolean accepting;
+                        private Exchange request;
+                        @Override public OresScheduler.Step<Object> resume(OresScheduler.Resume resume) {
+                            if (resume.failure() != null) {
+                                synchronized (Server.this) {
+                                    if (stopped && accepting) return OresScheduler.done(null);
+                                }
+                                if (request != null) request.state.abort(500);
+                                throw new CompletionException(resume.failure());
+                            }
+                            if (!resume.initial() && accepting) {
+                                accepting = false;
+                                request = (Exchange) resume.value();
+                                return OresScheduler.await(dispatch.apply(request));
+                            }
+                            request = null;
+                            accepting = true;
+                            return OresScheduler.await(acceptLane(id, true));
+                        }
+                    });
+                    task.whenCompleteRuntime((ignored, failure) -> {
+                        if (failure != null) {
+                            result.failFromRuntime(failure);
+                            shutdown(0);
+                        }
+                        if (remaining.decrementAndGet() == 0 && !result.isDone()) result.completeFromRuntime(null);
+                    });
+                }
+            } catch (RuntimeException failure) {
+                result.failFromRuntime(failure);
+                shutdown(0);
+            }
+            return result;
+        }
+
+        private void receive(NioHttpTransport.Exchange raw) {
             long perf = CorePerf.start();
             try {
             if (!admission.tryAcquire()) { rejected.incrementAndGet(); reject(raw, 503); return; }
@@ -256,13 +281,24 @@ public final class NativeHttp implements AutoCloseable {
                 synchronized (this) {
                     if (stopped) { admission.release(); reject(raw, 503); return; }
                     active.add(state); accepted.incrementAndGet();
+                    peakActive.accumulateAndGet(active.size(), Math::max);
                     State timed = state;
                     long schedulePerf = CorePerf.start();
                     state.deadline = timers.schedule(() -> timed.abort(504), deadlineMillis, TimeUnit.MILLISECONDS);
                     CorePerf.end(CorePerf.HTTP_TIMER_SCHEDULE, schedulePerf);
                     Exchange exchange = new Exchange(state, context, 0);
-                    if (waiter == null) pending.add(exchange);
-                    else { OresFuture<Object> next = waiter; waiter = null; next.completeFromRuntime(exchange); }
+                    state.queuedNanos = System.nanoTime();
+                    if (waitingLanes.isEmpty()) pending.add(exchange);
+                    else {
+                        // Direct delivery spends no time in the pending HTTP queue.
+                        state.acceptReadyNanos = state.queuedNanos;
+                        CorePerf.elapsed(CorePerf.HTTP_ACCEPT_QUEUE, state.queuedNanos, state.acceptReadyNanos);
+                        int lane = waitingLanes.removeFirst();
+                        @SuppressWarnings("unchecked")
+                        OresFuture<Object> next = (OresFuture<Object>) waiters[lane];
+                        waiters[lane] = null;
+                        next.completeFromRuntime(exchange);
+                    }
                 }
             } catch (IllegalArgumentException invalid) {
                 admission.release(); reject(raw, invalid.getMessage().equals("body too large") ? 413 : 400);
@@ -274,19 +310,19 @@ public final class NativeHttp implements AutoCloseable {
                 CorePerf.end(CorePerf.HTTP_RECEIVE, perf);
             }
         }
-        private void validateRequest(HttpExchange raw) {
+        private void validateRequest(NioHttpTransport.Exchange raw) {
             if (raw.getRequestURI().isAbsolute() || raw.getRequestURI().getRawAuthority() != null || raw.getRequestURI().getRawFragment() != null)
                 throw new IllegalArgumentException("only origin-form request targets are supported");
             String target = raw.getRequestURI().toASCIIString();
             if (target.length() > 8192) throw new IllegalArgumentException("request target too long");
             segments(raw.getRequestURI().getRawPath());
             int size = 0;
-            for (var entry : raw.getRequestHeaders().entrySet()) {
+            for (var entry : raw.getRequestHeaders()) {
                 size += entry.getKey().length();
-                for (String value : entry.getValue()) size += value.length();
+                for (String value : List.of(entry.getValue())) size += value.length();
             }
             if (size > 32768 || raw.getRequestHeaders().size() > 100) throw new IllegalArgumentException("headers too large");
-            String length = raw.getRequestHeaders().getFirst("Content-Length");
+            String length = raw.getRequestHeaders().get("Content-Length");
             if (length != null && Long.parseLong(length) > bodyLimit) throw new IllegalArgumentException("body too large");
         }
         public synchronized OresFuture<Object> shutdown(int graceMillis) {
@@ -295,14 +331,11 @@ public final class NativeHttp implements AutoCloseable {
             if (drained != null) return drained;
             drained = new OresFuture<>(() -> false, () -> { });
             stopAccepting();
-            io.execute(() -> {
-                try { transport.stop((int) (((long) graceMillis + 999) / 1000)); }
-                finally {
-                    synchronized (this) { transportStopped = true; }
-                    for (State state : active) state.abort(503);
-                    servers.remove(this);
-                    completeDrain();
-                }
+            transport.stop(graceMillis).whenComplete((ignored, failure) -> {
+                synchronized (this) { transportStopped = true; }
+                for (State state : active) state.abort(503);
+                servers.remove(this);
+                completeDrain();
             });
             return drained;
         }
@@ -311,7 +344,12 @@ public final class NativeHttp implements AutoCloseable {
         }
         private synchronized void stopAccepting() {
             stopped = true;
-            if (waiter != null) { waiter.failFromRuntime(new IllegalStateException("HTTP server closed")); waiter = null; }
+            while (!waitingLanes.isEmpty()) {
+                int lane = waitingLanes.removeFirst();
+                OresFuture<?> waiting = waiters[lane];
+                waiters[lane] = null;
+                waiting.failFromRuntime(new IllegalStateException("HTTP server closed"));
+            }
             pending.clear();
         }
         @Override public void close() {
@@ -324,10 +362,11 @@ public final class NativeHttp implements AutoCloseable {
 
     private final class State {
         final Server server;
-        final HttpExchange raw;
+        final NioHttpTransport.Exchange raw;
         final List<String> path;
         long generation;
         long spawnNanos, readyNanos, movedNanos, claimedNanos;
+        volatile long queuedNanos, acceptReadyNanos;
         Object owner;
         boolean busy, committed, bodyRead, streamingBody, suppressBody;
         int bodyBytes;
@@ -344,7 +383,7 @@ public final class NativeHttp implements AutoCloseable {
         ScheduledFuture<?> deadline;
         ActorRuntime.ActorRef<?> actor;
         Handler.Worker poolWorker;
-        State(Server server, HttpExchange raw) {
+        State(Server server, NioHttpTransport.Exchange raw) {
             this.server = server; this.raw = raw; this.path = segments(raw.getRequestURI().getRawPath()); this.owner = context;
         }
         void abort(int status) { abort(status, true); }
@@ -360,12 +399,18 @@ public final class NativeHttp implements AutoCloseable {
             if (alreadyClosed && poolWorker != null) { release(); return; }
             if (actor != null && cancelOwner) actor.cancel();
             if (alreadyClosed) { release(); return; }
-            try { io.execute(() -> { try { if (send) reject(raw, status); else raw.close(); } finally { synchronized (this) { transportClosed = true; } release(); } }); }
-            catch (RejectedExecutionException closed) { release(); }
+            raw.abort(send ? status : 500).whenComplete((ignored, failure) -> {
+                synchronized (this) { transportClosed = true; }
+                release();
+            });
         }
         void finish() {
-            synchronized (this) { if (terminal) return; terminal = true; }
-            try { raw.close(); } finally { synchronized (this) { transportClosed = true; } release(); }
+            synchronized (this) {
+                if (terminal) return;
+                terminal = true;
+                transportClosed = true;
+            }
+            release();
         }
         void release() {
             // Fresh handlers hold admission through actor finalization. Explicit
@@ -440,6 +485,8 @@ public final class NativeHttp implements AutoCloseable {
         public String serverTiming() { return "actor-startup;dur=" + startupNanos() / 1_000_000.0 + ", move-to-claim;dur=" + transferNanos() / 1_000_000.0; }
         public long startupNanos() { synchronized (state) { checkOwner(); return state.spawnNanos == 0 ? 0 : Math.max(0, state.readyNanos - state.spawnNanos); } }
         public long transferNanos() { synchronized (state) { checkOwner(); return state.claimedNanos == 0 ? 0 : Math.max(0, state.claimedNanos - state.movedNanos); } }
+        public long queuedNanos() { synchronized (state) { checkOwner(); return state.queuedNanos; } }
+        public long acceptReadyNanos() { synchronized (state) { checkOwner(); return state.acceptReadyNanos; } }
         public long admittedNanos() { synchronized (state) { checkOwner(); return state.admittedNanos; } }
         public OresFuture<Object> completion() { synchronized (state) { checkOwner(); return state.completion; } }
         public String requestId() { synchronized (state) { checkOwner(); return state.requestId; } }
@@ -457,7 +504,7 @@ public final class NativeHttp implements AutoCloseable {
         public String target() { synchronized (state) { checkOwner(); return state.raw.getRequestURI().toASCIIString(); } }
         public int pathSize() { synchronized (state) { checkOwner(); return state.path.size(); } }
         public String pathAt(int index) { synchronized (state) { checkOwner(); return state.path.get(index); } }
-        public String header(String name) { synchronized (state) { checkOwner(); return Objects.toString(state.raw.getRequestHeaders().getFirst(name), ""); } }
+        public String header(String name) { synchronized (state) { checkOwner(); return Objects.toString(state.raw.getRequestHeaders().get(name), ""); } }
         public String query(String name) {
             synchronized (state) {
                 checkOwner();
@@ -488,11 +535,10 @@ public final class NativeHttp implements AutoCloseable {
                 if (state.bodyRead) throw new IllegalStateException("request body already consumed");
                 state.bodyRead = true;
             }
-            return operation(() -> {
-                byte[] bytes = state.raw.getRequestBody().readNBytes(state.server.bodyLimit + 1);
+            return operation(() -> state.raw.read(state.server.bodyLimit + 1, true).thenApply(bytes -> {
                 if (bytes.length > state.server.bodyLimit) throw new IllegalArgumentException("body too large");
                 return utf8(bytes);
-            });
+            }));
         }
         public OresFuture<Object> readChunk(int maximum) {
             if (maximum < 1 || maximum > 65536) throw new IllegalArgumentException("chunk size must be 1..65536");
@@ -502,14 +548,13 @@ public final class NativeHttp implements AutoCloseable {
                 if (state.bodyRead && !state.streamingBody) throw new IllegalStateException("request body already consumed");
                 state.streamingBody = true; state.bodyRead = true;
             }
-            return operation(() -> {
-                byte[] bytes = state.raw.getRequestBody().readNBytes(Math.min(maximum, state.server.bodyLimit - state.bodyBytes + 1));
+            return operation(() -> state.raw.read(Math.min(maximum, state.server.bodyLimit - state.bodyBytes + 1), false).thenApply(bytes -> {
                 state.bodyBytes += bytes.length;
                 if (state.bodyBytes > state.server.bodyLimit) throw new IllegalArgumentException("body too large");
                 List<Object> owned = new ArrayList<>(bytes.length);
                 for (byte value : bytes) owned.add((long) (value & 255));
                 return owned;
-            });
+            }));
         }
         public OresFuture<Object> respond(int status, String contentType, String body) {
             return respondBuffer(status, contentType, body.getBytes(StandardCharsets.UTF_8));
@@ -527,12 +572,7 @@ public final class NativeHttp implements AutoCloseable {
                     state.committed = true;
                     state.responseStatus = status;
                 }
-                boolean noBody = noBody(status);
-                if (state.raw.getRequestMethod().equals("HEAD") && status != 204 && status != 205)
-                    state.raw.getResponseHeaders().set("Content-Length", Integer.toString(bytes.length));
-                state.raw.sendResponseHeaders(status, noBody || bytes.length == 0 ? -1 : bytes.length);
-                if (!noBody && bytes.length != 0) state.raw.getResponseBody().write(bytes);
-                state.finish(); return null;
+                return state.raw.respond(status, bytes, noBody(status)).thenApply(ignored -> { state.finish(); return null; });
             });
         }
         // Root/middleware replies take the same single-owner mailbox handoff
@@ -570,8 +610,7 @@ public final class NativeHttp implements AutoCloseable {
                     state.responseStatus = status;
                 }
                 state.suppressBody = noBody(status);
-                state.raw.sendResponseHeaders(status, state.suppressBody ? -1 : 0);
-                return null;
+                return state.raw.start(status, state.suppressBody);
             });
         }
         public OresFuture<Object> write(String text) { return writeBuffer(text.getBytes(StandardCharsets.UTF_8)); }
@@ -580,43 +619,42 @@ public final class NativeHttp implements AutoCloseable {
             if (bytes.length > state.server.bodyLimit) throw new IllegalArgumentException("response chunk too large");
             return operation(() -> {
                 if (!state.committed) throw new IllegalStateException("response not started");
-                if (!state.suppressBody) { state.raw.getResponseBody().write(bytes); state.raw.getResponseBody().flush(); }
-                return null;
+                return state.raw.write(bytes);
             });
         }
-        public OresFuture<Object> finish() { return operation(() -> { if (!state.committed) throw new IllegalStateException("response not started"); state.finish(); return null; }); }
+        public OresFuture<Object> finish() {
+            return operation(() -> {
+                if (!state.committed) throw new IllegalStateException("response not started");
+                return state.raw.finish().thenApply(ignored -> { state.finish(); return null; });
+            });
+        }
         public void abort() { synchronized (state) { checkOwner(); } state.abort(500); }
         private boolean noBody(int status) { return state.raw.getRequestMethod().equals("HEAD") || status == 204 || status == 205 || status == 304; }
-        private OresFuture<Object> operation(Callable<Object> operation) {
+        private OresFuture<Object> operation(java.util.function.Supplier<? extends CompletionStage<?>> operation) {
             synchronized (state) {
                 checkOwner();
                 if (state.busy) throw new IllegalStateException("await the pending HTTP operation first");
                 state.busy = true;
             }
             OresFuture<Object> result = new OresFuture<>(() -> false, () -> { });
-            long queued = CorePerf.start();
+            long started = CorePerf.start();
             try {
-                io.execute(() -> {
-                    CorePerf.end(CorePerf.HTTP_IO_QUEUE, queued);
-                    long workPerf = CorePerf.start();
-                    try {
-                        Object value = operation.call();
-                        synchronized (state) { state.busy = false; }
-                        result.completeFromRuntime(value);
-                    } catch (Throwable failure) {
-                        synchronized (state) { state.busy = false; }
-                        state.abort("body too large".equals(failure.getMessage()) ? 413 : 500);
-                        SourceBoundaryTrace.record(failure, "native:http", state.requestId, "I/O");
-                        result.failFromRuntime(failure);
-                        if (failure instanceof VirtualMachineError fatal) throw fatal;
-                        if (failure instanceof ThreadDeath fatal) throw fatal;
-                        if (failure instanceof LinkageError fatal) throw fatal;
-                    } finally {
-                        CorePerf.end(CorePerf.HTTP_IO_WORK, workPerf);
-                    }
+                operation.get().whenComplete((value, failure) -> {
+                    synchronized (state) { state.busy = false; }
+                    CorePerf.end(CorePerf.HTTP_IO_WORK, started);
+                    if (failure == null) result.completeFromRuntime(value);
+                    else failOperation(result, OresFuture.unwrap(failure));
                 });
-            } catch (RuntimeException failure) { state.abort(500); result.failFromRuntime(failure); }
+            } catch (RuntimeException failure) {
+                synchronized (state) { state.busy = false; }
+                failOperation(result, failure);
+            }
             return result;
+        }
+        private void failOperation(OresFuture<Object> result, Throwable failure) {
+            state.abort("body too large".equals(failure.getMessage()) ? 413 : 500);
+            SourceBoundaryTrace.record(failure, "native:http", state.requestId, "NIO");
+            result.failFromRuntime(failure);
         }
     }
 
@@ -668,14 +706,14 @@ public final class NativeHttp implements AutoCloseable {
         try { return StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes)).toString(); }
         catch (CharacterCodingException invalid) { throw new IllegalArgumentException("invalid UTF-8", invalid); }
     }
-    private static void reject(HttpExchange raw, int status) {
-        try { raw.sendResponseHeaders(status, -1); } catch (IOException ignored) { } finally { raw.close(); }
+    private static void reject(NioHttpTransport.Exchange raw, int status) {
+        raw.abort(status);
     }
     @Override public synchronized void close() {
         closed = true;
         for (Server server : List.copyOf(servers)) server.close();
         for (Handler pool : pools) pool.stopPool();
         pools.clear();
-        timers.shutdownNow(); io.shutdownNow(); transfers.clear();
+        timers.shutdownNow(); transfers.clear();
     }
 }

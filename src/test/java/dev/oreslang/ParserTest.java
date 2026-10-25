@@ -15,6 +15,32 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class ParserTest {
     @Test
+    void inlineTrapCannotHideExpressionBodiedLambdaMissingTerminator() {
+        String invalid = """
+                pub fnc main(): void {
+                    const closure = trap (|int value| -> value)
+                    return;
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(invalid));
+        assertTrue(failure.getMessage().contains(
+                "expression-bodied lambda statements require an explicit ';'"), failure::toString);
+
+        Ast.Program valid = assertDoesNotThrow(() -> Parser.parse("""
+                pub fnc main(): void {
+                    const closure = trap (|int value| -> value);
+                    return;
+                }
+                """));
+        Ast.FunctionDecl fn = assertInstanceOf(Ast.FunctionDecl.class,
+                valid.modules().getFirst().declarations().getFirst());
+        Ast.BindingStmt binding = assertInstanceOf(Ast.BindingStmt.class, fn.body().getFirst());
+        Ast.TrapExpr trap = assertInstanceOf(Ast.TrapExpr.class, binding.initializer());
+        assertInstanceOf(Ast.LambdaExpr.class, trap.expression());
+    }
+
+    @Test
     void exhaustivelyAcceptsSupportedDeclarationModifierPermutations() {
         for (List<String> order : permutations("define", "class", "pub", "abstract")) {
             assertDoesNotThrow(() -> Parser.parse("""
