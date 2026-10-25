@@ -41,12 +41,15 @@ final class AuthorityGuestCheckedEffectsV1Test {
     void transitiveThrowsRaisesPanicsMustBeCoveredSeparately() {
         for (Fixture fixture : CASES) {
             if (fixture.id().equals("checked-effect-duplicate-rejected")) continue;
+            // Checked-effect rejection must occur after successful parsing;
+            // otherwise unsupported syntax could falsely pass the contract.
+            var parsed = assertDoesNotThrow(
+                    () -> Parser.parse(fixture.source()), "parser: " + fixture.id());
             if (fixture.accept()) {
-                assertDoesNotThrow(
-                        () -> TypeChecker.checkTypes(Parser.parse(fixture.source())), fixture.id());
+                assertDoesNotThrow(() -> TypeChecker.checkTypes(parsed), fixture.id());
             } else {
                 assertThrows(IllegalArgumentException.class,
-                        () -> TypeChecker.checkTypes(Parser.parse(fixture.source())), fixture.id());
+                        () -> TypeChecker.checkTypes(parsed), fixture.id());
             }
         }
     }
