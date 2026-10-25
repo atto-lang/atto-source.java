@@ -3663,6 +3663,11 @@ public final class Parser {
             boolean actorPipe = !functional && matchContextualKeyword("pipe");
             if (!functional && !actorPipe) break;
             Token operator = previous();
+            if (actorPipe) {
+                throw error(operator, "actor pipe expressions require compiler-checked "
+                        + "source/transform/sink role typing, supervisor exclusion, "
+                        + "bounded edge transport and Java/LLVM lowering; not yet enabled");
+            }
             if (++stages > 128) {
                 throw error(operator, "pipeline exceeds 128 stages");
             }
