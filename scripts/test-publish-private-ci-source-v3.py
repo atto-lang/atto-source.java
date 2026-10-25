@@ -405,6 +405,25 @@ class PrivateCiV3Test(unittest.TestCase):
                 {"pom.xml": expected},
             )
 
+    def test_test_plan_accepts_exact_cpp_compiler_executables(self):
+        for executable in ("g++", "clang++"):
+            with self.subTest(executable=executable):
+                doc = json.loads(PLAN)
+                doc["commands"][0]["argv"] = [executable, "--version"]
+                meta = v3.validate_test_plan(
+                    (json.dumps(doc) + "\n").encode(), 1482
+                )
+                self.assertFalse(meta["uses_maven"])
+
+        for executable in (r"g\\+\\+", r"clang\\+\\+", "g+", "clang+"):
+            with self.subTest(executable=executable):
+                doc = json.loads(PLAN)
+                doc["commands"][0]["argv"] = [executable, "--version"]
+                with self.assertRaisesRegex(v3.Denied, "command invalid"):
+                    v3.validate_test_plan(
+                        (json.dumps(doc) + "\n").encode(), 1482
+                    )
+
     def test_test_plan_rejects_unapproved_executable_cwd_and_stdout_shape(self):
         for argv in (
             ["bash", "-lc", "true"],
