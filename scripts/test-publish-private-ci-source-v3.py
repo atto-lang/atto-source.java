@@ -398,6 +398,35 @@ class PrivateCiV3Test(unittest.TestCase):
                 {"pom.xml": expected},
             )
 
+    def test_test_plan_rejects_unapproved_executable_cwd_and_stdout_shape(self):
+        for argv in (
+            ["bash", "-lc", "true"],
+            ["sh", "-c", "true"],
+            ["git", "status"],
+            ["curl", "https://example.invalid"],
+        ):
+            with self.subTest(argv=argv):
+                doc = json.loads(PLAN)
+                doc["commands"][0]["argv"] = argv
+                with self.assertRaisesRegex(v3.Denied, "command invalid"):
+                    v3.validate_test_plan(
+                        (json.dumps(doc) + "\n").encode(), 1482
+                    )
+
+        doc = json.loads(PLAN)
+        doc["commands"][0]["cwd"] = "../escape"
+        with self.assertRaisesRegex(v3.Denied, "command invalid"):
+            v3.validate_test_plan((json.dumps(doc) + "\n").encode(), 1482)
+
+        doc = json.loads(PLAN)
+        doc["commands"][0]["stdout_contains"] = "ok"
+        meta = v3.validate_test_plan((json.dumps(doc) + "\n").encode(), 1482)
+        self.assertFalse(meta["uses_maven"])
+
+        doc["commands"][0]["stdout_contains"] = ""
+        with self.assertRaisesRegex(v3.Denied, "command invalid"):
+            v3.validate_test_plan((json.dumps(doc) + "\n").encode(), 1482)
+
     def test_test_plan_rejects_unreviewed_extension_fields(self):
         doc = json.loads(PLAN)
         doc["network"] = "allow"
