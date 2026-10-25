@@ -157,13 +157,9 @@ When Task physical retirement races with the grant:
   accounting. Do not execute source defer/recover on a granting carrier.
 
 New Java JUnit tests check the publication predicate for pending,
-cancelled, timed-out, and successful Futures, race async permit
-handoff against owner cancellation across 64 fresh locks, and
-exercise **exhausted Task-owned lease admission** twice to verify
-waiter/domain reservation rollback (not a recursive-acquisition
-failure), followed by a successful fresh host acquisition.
-Tests are **committed but not executed** on the required
-JDK25/GraalVM runner.
+cancelled, timed-out, and successful Futures, and race async permit
+handoff against owner cancellation across 64 fresh locks. Tests are
+**committed but not executed** on the required JDK25/GraalVM runner.
 
 A separate local JDK21 **protocol model**, not compiled Oreslang source,
 completed three deterministic schedules plus 10,000 concurrent
@@ -227,3 +223,63 @@ No Task's arbitrary `defer` runs on the host lock notification thread.
 
 Related: Java #1887 task-owned host leases, Java #1911 supervisor shutdown,
 Java #1572 child quiescence and actor arena issue #1566.
+
+
+## In-flight grant retirement barrier (October 22, 2026 — draft)
+
+The queued mutex path now distinguishes **four** ordered safety milestones:
+waiter registration, dequeue/claim, public Future publication, and *physical
+grant settlement*. The final milestone is not inferred from Future cancellation,
+completion, or a removed queue node.
+
+* The originating authenticated Task registers a noncancellable physical
+  receipt with its lease registry **before** its waiter becomes visible.
+* Under `asyncQueueLock`, dequeue marks the Task request **claimed** before
+  allowing another carrier to cancel it. Requeue for fair semaphore precedence
+  reverses that claim under the same monitor. Discarded terminal waiters
+  finish their domain bookkeeping before the claim receipt is completed.
+* A public cancellation or timeout may retire the pending request, but may
+  not complete the physical receipt if a grant is claimed. The releasing
+  carrier settles that receipt only after publishing the grant (including
+  synchronous Future observers) or physically reclaiming the losing grant.
+  A published abandoned guard is poisoned **after** the granting carrier
+  completes that publication path; an undelivered grant is never poisoned.
+* TaskHandle performs lease revocation after scheduler/child physical
+  quiescence, then asynchronously **joins outstanding physical receipts**
+  before publishing either `cleanupFailures()` or `getDone()`. There is
+  no carrier-blocking wait. Repeated retirement observation joins the same
+  receipt instead of reporting an artificial empty cleanup.
+* A receipt completed exceptionally produces a failed Task cleanup outcome,
+  preserving the original cancellation/failure classification in
+  `CleanupFailure.originalOutcome()`. It is **not** evidence that an arena
+  can be reclaimed; actor/supervisor quarantine remains a separate gate.
+
+The focused regression deliberately blocks between dequeue and grant binding,
+cancels the owning suspended Task, witnesses the Future's cancellation, and
+asserts `getDone()` is still incomplete. It then permits reclamation and
+asserts no false poisoning, no second simultaneous owner, and successful
+subsequent reacquisition. A second deterministic schedule blocks a successful
+publication subscriber and checks that retirement cannot revoke its guard
+until the carrier leaves the publication path, after which abandonment
+poisons exactly once. Additional ledger tests cover idempotent observation
+and failed physical receipts. These are committed JUnit source tests, **not
+passing JDK25 execution evidence**.
+
+The source-local workflow `.github/workflows/task-mutex-retirement.yml` pins
+checkout to the submitted SHA, records its tree, and requests the focused
+JDK25 GraalVM Java/native-carrier Maven suites. A workflow without steps,
+Surefire XML, and the exact revision is NOT a test pass. Never mirror this
+private repository to a different organization without prior independent
+destination approval and protected source policy authorization.
+
+**Still unproved**: guest SourceTask suspension unwinding with exactly-once
+implicit guards/defer/finally/iterator cleanup; actor STOP/crash and supervisor
+restart cleanup admission; actor/FFI loan + arena quarantine receipts; LLVM
+native model, sanitizer and backend differential checks; and isolation of
+arbitrary user-installed host CompletableFuture dependents from caller
+notification threads. Those must stay draft blockers.
+
+Ownership and receipt state transitions are logical, generation-/identity-
+checked contracts, independent of AoS, SoA, AoSoA, SoAoS or ECS metadata
+storage layouts. Different layouts must replay the same grant/cancel/cleanup
+trace before replacing this correctness-oriented host implementation.

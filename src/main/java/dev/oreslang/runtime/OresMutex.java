@@ -653,6 +653,11 @@ public final class OresMutex {
             private GuardFuture<T> future;
             private SharedGuard guard;
             private boolean retired;
+            private boolean handoffInFlight;
+            // This receipt is registered while the originating Task is still
+            // executing, BEFORE any waiter is placed in a public queue.
+            private final CompletableFuture<Void> physicalSettlement =
+                    new CompletableFuture<>();
             private final TaskOwnedLeases.Lease lease;
 
             private TaskBoundRequest() {
@@ -661,6 +666,53 @@ public final class OresMutex {
                 if (lease == null) {
                     throw new IllegalStateException("async lock Task ownership was lost");
                 }
+                try {
+                    TaskHandle.registerPhysicalSettlement(physicalSettlement);
+                } catch (RuntimeException | Error registrationFailure) {
+                    lease.disarmWithoutRelease();
+                    throw registrationFailure;
+                }
+            }
+
+            /** Claim under asyncQueueLock, before any releasing carrier can race retirement. */
+            private synchronized void beginHandoff() {
+                handoffInFlight = true;
+            }
+
+            /** A fair semaphore waiter takes precedence, returning this request to the queue. */
+            private synchronized void deferHandoff() {
+                handoffInFlight = false;
+            }
+
+            /**
+             * Finalize the claim on the granting carrier. A successfully
+             * published but abandoned guard is revoked only AFTER all
+             * synchronous completion subscribers have returned; a cancelled
+             * unpublished grant was already reclaimed by this carrier.
+             */
+            private void finishHandoff() {
+                final SharedGuard abandoned;
+                final GuardFuture<T> pending;
+                synchronized (this) {
+                    handoffInFlight = false;
+                    abandoned = retired ? guard : null;
+                    pending = future;
+                }
+                try {
+                    if (abandoned != null) {
+                        abandoned.releaseFromRuntime(isPublishedAsyncGrant(pending));
+                    }
+                    physicalSettlement.complete(null);
+                } catch (RuntimeException | Error failure) {
+                    physicalSettlement.completeExceptionally(failure);
+                    throw failure;
+                }
+            }
+
+            private void failHandoff(Throwable failure) {
+                // If a carrier aborts during a physical grant transition,
+                // success cannot be proven. Quarantine through Task cleanup.
+                physicalSettlement.completeExceptionally(failure);
             }
 
             private synchronized void bindFuture(GuardFuture<T> future) {
@@ -680,11 +732,16 @@ public final class OresMutex {
              * is invoked and no protected payload was ever exposed.
              */
             private void finishWithoutGrant() {
+                boolean settled;
                 synchronized (this) {
                     if (guard != null) return;
                     retired = true;
+                    settled = !handoffInFlight;
                 }
                 lease.disarmWithoutRelease();
+                // A Future terminal notification does not settle a dequeued
+                // permit. Only its granting carrier can do that.
+                if (settled) physicalSettlement.complete(null);
             }
 
             /** A grant lost the Future completion race; reclaim it first. */
@@ -711,10 +768,12 @@ public final class OresMutex {
             private void retireAbandoned() {
                 GuardFuture<T> pending;
                 SharedGuard acquired;
+                boolean claimed;
                 synchronized (this) {
                     retired = true;
                     pending = future;
                     acquired = guard;
+                    claimed = handoffInFlight;
                 }
                 // Binding a guard is NOT publication. The grant may still
                 // lose the Future completion race to Task cancellation or
@@ -735,9 +794,12 @@ public final class OresMutex {
                     // required; if it was not, merely reclaim the permit.
                     // The guard CAS protects exact-once release against the
                     // concurrent granting carrier.
-                    if (acquired != null) {
+                    if (acquired != null && !claimed) {
                         acquired.releaseFromRuntime(isPublishedAsyncGrant(pending));
                     }
+                    // Claimed permits are still owned by the granting carrier.
+                    // It performs the abandoned release in finishHandoff(),
+                    // then resolves the physical receipt joined by getDone().
                 }
             }
         }
@@ -787,69 +849,109 @@ public final class OresMutex {
          * <p>When both blocking host waiters and async waiters exist, alternate
          * preference so neither class can monopolize release handoff.</p>
          */
+        // Test-only, same-package hook; invoked OUTSIDE queue and lease locks.
+        // A deterministic latch lets tests halt between dequeue and publication.
+        private volatile Runnable afterAsyncDequeueForTesting;
+
+        void setAfterAsyncDequeueForTesting(Runnable hook) {
+            afterAsyncDequeueForTesting = hook;
+        }
+
         private void releasePermitOrHandoff() {
             while (true) {
                 AsyncWaiter waiter = null;
+                ArrayDeque<TaskBoundRequest> discarded = null;
+                boolean releasedToSemaphore = false;
                 synchronized (asyncQueueLock) {
                     while (!asyncQueue.isEmpty()) {
                         AsyncWaiter candidate = asyncQueue.removeFirst();
+                        if (candidate.taskRequest != null) {
+                            // Claim even a now-cancelled candidate: cleanup
+                            // must not complete its retirement receipt before
+                            // wait/domain accounting is physically removed.
+                            candidate.taskRequest.beginHandoff();
+                        }
                         if (!candidate.future.isDone()) {
                             waiter = candidate;
                             break;
                         }
-                        // Cancellation/completion can race with dequeue. Once
-                        // removed from the queue, this path owns wait/domain cleanup.
                         endWait(candidate.ownerDomain);
                         releaseDomain(candidate.ownerDomain);
+                        if (candidate.taskRequest != null) {
+                            if (discarded == null) discarded = new ArrayDeque<>();
+                            discarded.addLast(candidate.taskRequest);
+                        }
                     }
 
                     if (waiter == null) {
                         permit.release();
-                        return;
-                    }
-
-                    if (permit.hasQueuedThreads() && !preferAsyncHandoff) {
+                        releasedToSemaphore = true;
+                    } else if (permit.hasQueuedThreads() && !preferAsyncHandoff) {
                         asyncQueue.addFirst(waiter);
+                        if (waiter.taskRequest != null) {
+                            waiter.taskRequest.deferHandoff();
+                        }
                         preferAsyncHandoff = true;
                         permit.release();
+                        releasedToSemaphore = true;
+                    } else if (permit.hasQueuedThreads()) {
+                        preferAsyncHandoff = false;
+                    }
+                }
+                // Physical accounting and receipt completion are outside
+                // asyncQueueLock. Never publish getDone under a queue monitor.
+                if (discarded != null) {
+                    for (TaskBoundRequest skipped : discarded) {
+                        skipped.finishHandoff();
+                    }
+                }
+                if (releasedToSemaphore) return;
+
+                try {
+                    Runnable hook = afterAsyncDequeueForTesting;
+                    if (hook != null) hook.run();
+
+                    if (poisoned.get()) {
+                        endWait(waiter.ownerDomain);
+                        releaseDomain(waiter.ownerDomain);
+                        waiter.future.failFromRuntime(new PoisonedMutexException());
+                        continue;
+                    }
+
+                    endWait(waiter.ownerDomain);
+                    markOwner(waiter.ownerDomain);
+                    SharedGuard guard = new SharedGuard(
+                            waiter.ownerDomain,
+                            waiter.enforceOwnerDomain,
+                            waiter.requestingActorDomain,
+                            waiter.taskRequest == null ? null : waiter.taskRequest.lease,
+                            false);
+                    if (waiter.taskRequest != null && !waiter.taskRequest.bindGuard(guard)) {
+                        boolean reclaimed = guard.takePermitForHandoff();
+                        waiter.taskRequest.finishUndeliveredGrant(guard);
+                        if (reclaimed) continue;
                         return;
                     }
-                    if (permit.hasQueuedThreads()) preferAsyncHandoff = false;
-                }
+                    if (waiter.future.completeFromRuntime(guard)) return;
 
-                if (poisoned.get()) {
-                    endWait(waiter.ownerDomain);
-                    releaseDomain(waiter.ownerDomain);
-                    waiter.future.failFromRuntime(new PoisonedMutexException());
-                    continue;
-                }
-
-                endWait(waiter.ownerDomain);
-                markOwner(waiter.ownerDomain);
-                SharedGuard guard = new SharedGuard(
-                        waiter.ownerDomain,
-                        waiter.enforceOwnerDomain,
-                        waiter.requestingActorDomain,
-                        waiter.taskRequest == null ? null : waiter.taskRequest.lease,
-                        false);
-                if (waiter.taskRequest != null && !waiter.taskRequest.bindGuard(guard)) {
-                    // The Task retired or the Future failed while handoff was
-                    // in flight. Reclaim the undelivered permit exactly once.
+                    // Cancellation won after dequeue. Do not confuse
+                    // Future completion with reclaimed permit ownership.
                     boolean reclaimed = guard.takePermitForHandoff();
-                    waiter.taskRequest.finishUndeliveredGrant(guard);
+                    if (waiter.taskRequest != null) {
+                        waiter.taskRequest.finishUndeliveredGrant(guard);
+                    }
                     if (reclaimed) continue;
                     return;
+                } catch (RuntimeException | Error handoffFailure) {
+                    if (waiter.taskRequest != null) {
+                        waiter.taskRequest.failHandoff(handoffFailure);
+                    }
+                    throw handoffFailure;
+                } finally {
+                    if (waiter.taskRequest != null) {
+                        waiter.taskRequest.finishHandoff();
+                    }
                 }
-                if (waiter.future.completeFromRuntime(guard)) return;
-
-                // Cancellation won after dequeue. Either this loop or Task
-                // cleanup owns the physical permit, never both.
-                boolean reclaimed = guard.takePermitForHandoff();
-                if (waiter.taskRequest != null) {
-                    waiter.taskRequest.finishUndeliveredGrant(guard);
-                }
-                if (reclaimed) continue;
-                return;
             }
         }
 
@@ -1017,6 +1119,7 @@ public final class OresMutex {
                         // fairness contract.
                         if (permit.tryAcquire(0L, TimeUnit.NANOSECONDS)) {
                             acquired = true;
+                            if (taskRequest != null) taskRequest.beginHandoff();
                         } else {
                             beginWait(ownerDomain);
                             waitRegistered = true;
@@ -1060,9 +1163,12 @@ public final class OresMutex {
                         }
                     }
                 } catch (RuntimeException | Error failure) {
+                    if (taskRequest != null) taskRequest.failHandoff(failure);
                     releaseDomain(ownerDomain);
                     releasePermitOrHandoff();
                     future.failFromRuntime(failure);
+                } finally {
+                    if (taskRequest != null) taskRequest.finishHandoff();
                 }
             }
 

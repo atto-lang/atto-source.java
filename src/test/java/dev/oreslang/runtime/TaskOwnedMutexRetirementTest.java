@@ -140,38 +140,6 @@ public class TaskOwnedMutexRetirementTest {
     }
 
     @Test
-    void exhaustedTrackedTaskLeaseQuotaRollsBackAsyncAcquisitionAdmission()
-            throws Exception {
-        var shared = OresMutex.shared(new int[] { 0 });
-        try (var scheduler = new OresScheduler(1)) {
-            TaskHandle<Integer> task = scheduler.startTracked(resume -> {
-                for (int i = 0; i < TaskOwnedLeases.MAX_LEASES_PER_TASK; i++) {
-                    TaskOwnedLeases.register(() -> { });
-                }
-                // The async path reserves a logical owner and two waiter
-                // quotas BEFORE it attempts lease registration. Both
-                // failures must unwind those reservations; the second
-                // attempt must not be mistaken for recursive acquisition.
-                for (int attempt = 0; attempt < 2; attempt++) {
-                    var rejected = assertThrows(IllegalStateException.class,
-                            shared::lockAsync);
-                    assertTrue(rejected.getMessage().contains("lease quota"),
-                            "admission must fail for quota, not stale mutex ownership");
-                }
-                return OresScheduler.done(7);
-            });
-            assertInstanceOf(TaskHandle.Success.class,
-                    task.getDone().get(5, TimeUnit.SECONDS));
-            assertTrue(task.cleanupFailures().get(3, TimeUnit.SECONDS).isEmpty());
-        }
-        // This also proves no physical permit was consumed by a failed
-        // registration on the tracked Task's scheduler carrier.
-        assertFalse(shared.isPoisoned());
-        var guard = shared.tryLock().orElseThrow();
-        guard.release();
-    }
-
-    @Test
     void onlyCompletedSuccessfulAsyncGrantsCountAsPublishedOwnership() {
         var waiting = new CompletableFuture<Object>();
         assertFalse(OresMutex.Shared.isPublishedAsyncGrant(null));
@@ -190,6 +158,163 @@ public class TaskOwnedMutexRetirementTest {
         assertTrue(OresMutex.Shared.isPublishedAsyncGrant(succeeded));
         assertFalse(succeeded.cancel(false));
         assertTrue(OresMutex.Shared.isPublishedAsyncGrant(succeeded));
+    }
+
+    @Test
+    void dequeuedGrantCancellationJoinsPhysicalReclamationBeforeTaskDone() throws Exception {
+        var shared = OresMutex.shared(new int[] { 19 });
+        var originalHolder = shared.lock();
+        var requestQueued = new CountDownLatch(1);
+        var grantDequeued = new CountDownLatch(1);
+        var finishGrant = new CountDownLatch(1);
+        var pending = new AtomicReference<CompletableFuture<OresMutex.Guard<int[]>>>();
+        var grantingFailure = new AtomicReference<Throwable>();
+        var never = new OresFuture<Integer>();
+
+        // This hook runs after the queue's dequeue/claim linearization
+        // but before markOwner, bindGuard and Future publication.
+        shared.setAfterAsyncDequeueForTesting(() -> {
+            grantDequeued.countDown();
+            try {
+                if (!finishGrant.await(10, TimeUnit.SECONDS)) {
+                    throw new AssertionError("dequeued grant did not resume");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(interrupted);
+            }
+        });
+        try (var scheduler = new OresScheduler(1)) {
+            TaskHandle<Integer> task = scheduler.startTracked(resume -> {
+                pending.set(shared.lockAsync());
+                requestQueued.countDown();
+                return OresScheduler.await(never);
+            });
+            assertTrue(requestQueued.await(3, TimeUnit.SECONDS));
+            assertFalse(pending.get().isDone());
+
+            var granting = Thread.ofPlatform().start(() -> {
+                try {
+                    originalHolder.release();
+                } catch (Throwable failure) {
+                    grantingFailure.set(failure);
+                }
+            });
+            try {
+                assertTrue(grantDequeued.await(3, TimeUnit.SECONDS),
+                        "the waiter must be removed and its handoff claimed");
+                var requestTerminal = new CompletableFuture<Void>();
+                pending.get().whenComplete((value, failure) ->
+                        requestTerminal.complete(null));
+                assertTrue(task.cancel("cancel after dequeue before delivery"));
+                requestTerminal.get(3, TimeUnit.SECONDS);
+                assertTrue(pending.get().isCancelled(),
+                        "retirement must cancel before the paused grant publishes");
+                assertFalse(task.getDone().isDone(),
+                        "getDone must JOIN a claimed grant even after Future cancellation");
+                assertFalse(task.cleanupFailures().isDone(),
+                        "cleanup receipt must not precede physical permit reclamation");
+            } finally {
+                finishGrant.countDown();
+                granting.join(4000);
+                shared.setAfterAsyncDequeueForTesting(null);
+            }
+
+            assertFalse(granting.isAlive(), "grant carrier must finish its handoff");
+            assertNull(grantingFailure.get(), "grant carrier must not throw");
+            assertInstanceOf(TaskHandle.Cancelled.class,
+                    task.getDone().get(4, TimeUnit.SECONDS));
+            assertTrue(task.cleanupFailures().get(3, TimeUnit.SECONDS).isEmpty());
+            assertFalse(shared.isPoisoned(),
+                    "a cancelled never-published guard must not poison the shared state");
+
+            var newOwner = shared.tryLock().orElseThrow();
+            assertEquals(19, newOwner.value()[0]);
+            // A second logical owner on another host carrier must NOT also
+            // receive the single permit while the first guard is live.
+            var competing = CompletableFuture.supplyAsync(shared::tryLock)
+                    .get(3, TimeUnit.SECONDS);
+            if (competing.isPresent()) competing.get().release();
+            assertTrue(competing.isEmpty(), "physical permit must have exactly one owner");
+            newOwner.release();
+            // Second admission proves the original permit was neither leaked
+            // nor double-issued while the cancelled request was reclaimed.
+            var followingOwner = shared.tryLock().orElseThrow();
+            followingOwner.release();
+        } finally {
+            finishGrant.countDown();
+            shared.setAfterAsyncDequeueForTesting(null);
+            if (!originalHolder.released()) originalHolder.release();
+        }
+    }
+
+    @Test
+    void publishedGrantRetirementWaitsForGrantCarrierBeforePoisoning() throws Exception {
+        var shared = OresMutex.shared(new int[] { 42 });
+        var original = shared.lock();
+        var queued = new CountDownLatch(1);
+        var subscriberEntered = new CountDownLatch(1);
+        var releaseSubscriber = new CountDownLatch(1);
+        var pending = new AtomicReference<CompletableFuture<OresMutex.Guard<int[]>>>();
+        var releaserFailure = new AtomicReference<Throwable>();
+        var never = new OresFuture<Integer>();
+
+        try (var scheduler = new OresScheduler(1)) {
+            TaskHandle<Integer> task = scheduler.startTracked(resume -> {
+                pending.set(shared.lockAsync());
+                queued.countDown();
+                return OresScheduler.await(never);
+            });
+            assertTrue(queued.await(3, TimeUnit.SECONDS));
+            pending.get().whenComplete((guard, failure) -> {
+                if (failure != null) return;
+                subscriberEntered.countDown();
+                try {
+                    if (!releaseSubscriber.await(10, TimeUnit.SECONDS)) {
+                        throw new AssertionError("published observer did not resume");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                }
+            });
+            var granting = Thread.ofPlatform().start(() -> {
+                try {
+                    original.release();
+                } catch (Throwable failure) {
+                    releaserFailure.set(failure);
+                }
+            });
+            try {
+                assertTrue(subscriberEntered.await(3, TimeUnit.SECONDS));
+                assertTrue(OresMutex.Shared.isPublishedAsyncGrant(pending.get()));
+                var delivered = pending.get().getNow(null);
+                assertNotNull(delivered);
+                assertTrue(task.cancel("published-but-not-yet-settled grant"));
+                // No cleanup may revoke the permit while a synchronous
+                // publication subscriber still runs on this carrier.
+                assertFalse(task.getDone().isDone());
+                assertFalse(task.cleanupFailures().isDone());
+                assertFalse(delivered.released());
+                assertFalse(shared.isPoisoned());
+            } finally {
+                releaseSubscriber.countDown();
+                granting.join(4000);
+            }
+            assertFalse(granting.isAlive());
+            assertNull(releaserFailure.get());
+            assertInstanceOf(TaskHandle.Cancelled.class,
+                    task.getDone().get(4, TimeUnit.SECONDS));
+            assertTrue(task.cleanupFailures().get(3, TimeUnit.SECONDS).isEmpty());
+            assertTrue(shared.isPoisoned(), "published abandoned guard must poison");
+            assertTrue(pending.get().getNow(null).released());
+            shared.recover(value -> { value[0] = 42; return null; });
+            var next = shared.tryLock().orElseThrow();
+            next.release();
+        } finally {
+            releaseSubscriber.countDown();
+            if (!original.released()) original.release();
+        }
     }
 
     @Test

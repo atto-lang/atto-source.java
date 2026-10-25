@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -94,6 +95,16 @@ public final class TaskHandle<T> {
                     "task lease registration requires current tracked Task turn");
         }
         return current.leases().register(ordinary, abandoned);
+    }
+
+    /** Called before an async mutex waiter can become visible to a granting carrier. */
+    static void registerPhysicalSettlement(CompletableFuture<Void> receipt) {
+        CancellationContext current = CURRENT_CANCELLATION.get();
+        if (!isCurrentTrackedTaskTurn()) {
+            throw new IllegalStateException(
+                    "task physical settlement registration requires current tracked Task turn");
+        }
+        current.leases().trackPhysicalSettlement(receipt);
     }
 
     static boolean isCurrentLeaseOwner(TaskOwnedLeases.Registry owner) {
@@ -333,7 +344,21 @@ public final class TaskHandle<T> {
         // code or descendants still run. Only here, after physical retirement
         // and descendant joins, may transferable logical lock leases retire.
         // Thread-affine Java locks MUST instead unwind on the original carrier.
-        List<Throwable> releaseErrors = ownedLeases.releaseOnRetirement();
+        // The release callbacks are synchronous, but a dequeued mutex grant
+        // may still be physically held by a foreign notification carrier.
+        // Observe its independently registered receipt without parking this
+        // scheduler carrier or falsely publishing getDone().
+        ownedLeases.releaseOnRetirementAsync().whenComplete((releaseErrors, failure) -> {
+            if (failure != null) {
+                Throwable root = OresFuture.unwrap(failure);
+                publishAfterPhysicalSettlements(List.of(root));
+            } else {
+                publishAfterPhysicalSettlements(releaseErrors);
+            }
+        });
+    }
+
+    private void publishAfterPhysicalSettlements(List<Throwable> releaseErrors) {
         cleanupFailures.completeFromRuntime(releaseErrors);
 
         // Never claim done before lifecycle retirement and cleanup were
