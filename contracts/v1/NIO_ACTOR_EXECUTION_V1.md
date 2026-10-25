@@ -209,6 +209,40 @@ Java NIO/carrier branch**.
   accounts for every admitted envelope/continuation, and cannot resurrect a
   retired execution domain through a late Future/channel callback.
 
+## Actor lifecycle Future / HasFuture semantics
+
+`ActorRef<T>` is awaitable through its readiness projection. Direct
+`await actor` is semantically equivalent to awaiting `actor.get_ready()`;
+it is **not** a shorthand for `get_done()`. `get_done()` is the distinct
+physical-quiescence/finalization barrier.
+
+Lifecycle observation is non-consuming:
+
+- `get_ready()` and `get_done()` expose runtime-owned observation Futures.
+  Awaiting one observer does not consume the ActorRef or make the lifecycle
+  result unavailable to a later observer.
+- Repeated readiness observation of the same live actor must report the same
+  readiness outcome. Repeated DONE observation after finalization must report
+  the same terminal outcome.
+- A backend may temporarily support only one lifecycle await site or a single
+  compiler-owned `Future<void>` token, but that is an implementation
+  restriction and MUST fail closed with an unsupported-feature diagnostic. It
+  must not be presented as a language-level linear/one-shot lifecycle rule.
+- A source Future or continuation may never execute guest code on the producer,
+  selector or arbitrary completion thread. Completion publishes state and
+  schedules the owning logical continuation through bounded scheduler/CONTROL
+  admission.
+- Stop-before-ready fails readiness with the actor-termination effect; DONE
+  still settles only after physical actor finalization. Cancellation and stale
+  generation/incarnation callbacks cannot revive either observer.
+- No raw actor-state borrow, mutable `StateAccess`, native pointer or
+  state-backed projection may be retained merely because a Future remains
+  observable. Suspension follows the state-loan rules above.
+
+General `Future<T>` lowering may remain narrower on a backend, but lifecycle
+Future semantics and direct ActorRef readiness must not be weakened to match a
+backend's temporary compiler slice.
+
 ## Required differential fixtures
 
 - Java current-main startup: bounded CONTROL is prestarted; readiness reactors
@@ -235,6 +269,10 @@ Java NIO/carrier branch**.
   express that invariant; MEDIUM/HIGH must reject rather than enable parallel
   guest turns. Multiple request/message lifetimes may remain outstanding and
   interleave only at suspension points under the one-turn rule.
+- Actor lifecycle differential coverage must prove `await actor` ==
+  `await actor.get_ready()`, distinguish `get_done()` as physical
+  finalization, and exercise repeated observation of readiness/DONE without
+  consuming the ActorRef or lifecycle result.
 - Explicit unsupported-feature denial on .NET/WASM/Forge until source lowering
   exists. Host-only credit/NIO tests do not count as source guest success.
 - LLVM RT qualification must retain zero tracing-GC, preallocated hot-path
