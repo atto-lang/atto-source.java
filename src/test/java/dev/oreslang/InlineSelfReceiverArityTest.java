@@ -15,6 +15,61 @@ import static org.junit.jupiter.api.Assertions.*;
 /** Receiver marker normalization and caller-visible arity, isolated from lambda changes. */
 final class InlineSelfReceiverArityTest {
     @Test
+    void exactX1X2EmptyVoidMethodsAreBothZeroArity() {
+        // Exact standalone syntax: declaring self explicitly never adds an
+        // argument to the name+arity overload selector.
+        String source = """
+                define class X1 as
+
+                   foo():void {}
+
+                end
+
+                define class X2 as
+
+                   foo(self):void {}
+
+                end
+                """;
+        Ast.Program program = assertDoesNotThrow(() -> Parser.parse(source));
+        assertEquals(2, program.modules().getFirst().declarations().size());
+        Ast.ClassDecl x1 = assertInstanceOf(Ast.ClassDecl.class,
+                program.modules().getFirst().declarations().get(0));
+        Ast.ClassDecl x2 = assertInstanceOf(Ast.ClassDecl.class,
+                program.modules().getFirst().declarations().get(1));
+
+        Ast.MethodDecl implicit = x1.methods().getFirst();
+        Ast.MethodDecl explicit = x2.methods().getFirst();
+        assertTrue(implicit.parameters().isEmpty());
+        assertTrue(explicit.parameters().isEmpty());
+        assertEquals(0, implicit.arity());
+        assertEquals(0, explicit.arity());
+        assertEquals(new Ast.MethodArity("foo", 0), implicit.overloadIdentity());
+        assertEquals(implicit.overloadIdentity(), explicit.overloadIdentity());
+        assertDoesNotThrow(() -> TypeChecker.check(program));
+    }
+
+    @Test
+    void emptyVoidMethodCallsNeverRequireAnExplicitSelfArgument() throws Exception {
+        String output = run("""
+                define class X1 as
+                  pub foo():void {}
+                end
+                define class X2 as
+                  pub foo(self):void {}
+                end
+                pub routine main():void {
+                  val x1 = new X1();
+                  val x2 = new X2();
+                  x1.foo();
+                  x2.foo();
+                  stdio.stdout.write("ok");
+                }
+                """);
+        assertEquals("ok", output);
+    }
+
+    @Test
     void inlineAndImplicitReceiverHaveEqualValueArity() {
         Ast.Program program = Parser.parse("""
                 define class Foo as
