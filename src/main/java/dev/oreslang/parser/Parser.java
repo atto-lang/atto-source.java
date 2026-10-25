@@ -3921,7 +3921,7 @@ public final class Parser {
 
         String name = operation.lexeme();
         if (mutableBorrow && !name.equals("borrow")) {
-            throw error(operation, "expected borrow after 'rt mut'");
+            throw error(operation, "'rt mut' may only modify borrow; use 'rt mut borrow value'");
         }
         if (operation.type() == YIELD || name.equals("yield") || name.equals("cooperate")) {
             if (match(LPAREN)) {
@@ -3941,10 +3941,9 @@ public final class Parser {
                             + "'; supported operations are cooperate, copy, take, borrow, share, and fail");
         }
 
-        // Mutable borrows use the same ownership checks as the legacy spelling.
-        if (name.equals("borrow") && match(MUT)) {
-            if (mutableBorrow) throw error(previous(), "duplicate mut borrow qualifier");
-            return new Ast.UnaryExpr("&mut", parseUnary());
+        if (name.equals("borrow") && check(MUT)) {
+            throw error(peek(),
+                    "legacy 'rt borrow mut value' is not accepted; use 'rt mut borrow value'");
         }
         Ast.Expr argument;
         if (match(LPAREN)) {
