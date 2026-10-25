@@ -209,15 +209,35 @@ printf '%s\n' "$await_output"
 # A native image that merely exits zero without executing guest code is NOT
 # sufficient evidence. Require the real Oreslang test framework's known output.
 # Capture the command first (no pipeline that could hide its exit status).
-test_output="$(run_clean_guest "--mode=$mode" examples/native-testing.ores)"
-printf '%s\n' "$test_output"
+# Preserve the raw stdout file byte-for-byte. POSIX command substitution
+# trims trailing newlines, which could hide an extra blank record after an
+# otherwise correct test summary and falsely certify the native executable.
+test_output_file="$(mktemp)"
+trap 'rm -f "$guest_stderr" "$test_output_file"' 0
+: > "$guest_stderr"
+test_guest_status=0
+(
+  unset JAVA_HOME CLASSPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS
+  "$executable" "--mode=$mode" examples/native-testing.ores     >"$test_output_file" 2>"$guest_stderr"
+) || test_guest_status=$?
+if [ "$test_guest_status" -ne 0 ]; then
+  if [ -s "$guest_stderr" ]; then cat "$guest_stderr" >&2; fi
+  echo "native guest test failed with exit status $test_guest_status" >&2
+  exit "$test_guest_status"
+fi
+if [ -s "$guest_stderr" ]; then
+  echo 'native guest unexpectedly emitted stderr diagnostics' >&2
+  cat "$guest_stderr" >&2
+  exit 1
+fi
+cat "$test_output_file"
 expected_summary='ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0'
 # Require each exact guest test identity once; counts alone can be forged by
 # duplicating one PASS event while omitting another. The checked-in fixture
 # requests machine-readable records, so *all* stdout must be ORES_TEST events;
 # stray logs/warnings/diagnostics must not hide behind a valid summary.
 # Tolerate detail text only after a recognized test name.
-if ! printf '%s\n' "$test_output" | awk -F '|' -v expected="$expected_summary" '
+if ! awk -F '|' -v expected="$expected_summary" '
   !/^ORES_TEST\|/ { bad=1; next }
   /^ORES_TEST\|/ {
     if ($0 == expected) { summaries++; next }
@@ -232,7 +252,7 @@ if ! printf '%s\n' "$test_output" | awk -F '|' -v expected="$expected_summary" '
     if (bad || summaries != 1 || adds != 1 || floats != 1 ||
         properties != 1 || skips != 1) exit 1
   }
-'; then
+' "$test_output_file"; then
   echo "native executable did not produce the exact unique PASS/SKIP guest tests and summary" >&2
   exit 1
 fi
