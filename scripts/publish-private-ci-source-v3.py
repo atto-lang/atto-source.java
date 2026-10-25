@@ -38,7 +38,7 @@ MAVEN_ARTIFACT = re.compile(
 )
 MAX_MAVEN_PREFETCH_ARTIFACTS = 16
 SAFE_EXECUTABLE = re.compile(
-    r"^(?:python3|mvn|cmake|ctest|g\\+\\+|clang\\+\\+|/tmp/ores-[A-Za-z0-9_.-]+)$"
+    r"^(?:python3|mvn|cmake|ctest|g\+\+|clang\+\+|/tmp/ores-[A-Za-z0-9_.-]+)$"
 )
 HANDOFF_REF = re.compile(
     r"^ci/(?:oreslang-[0-9a-f]{40}|authorized-[0-9a-f]{40})$"
