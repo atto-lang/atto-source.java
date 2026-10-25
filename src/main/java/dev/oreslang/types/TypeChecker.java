@@ -2207,7 +2207,7 @@ public final class TypeChecker {
                     }
                     // Use immutable AST value equality for case identity.
                     // Diagnostic rendering is not a semantic identity contract.
-                    Object key = constant;
+                    Object key = switchCaseKey(constant);
                     if (!seen.add(key)) throw new IllegalArgumentException("duplicate switch case: " + constant);
                 }
                 checkBlock(arm.body(), env, generics, expectedReturn, self);
@@ -4459,7 +4459,7 @@ if (call.callee() instanceof Ast.MemberExpr console
                         }
                         // Keep duplicate identity structural and independent of
                         // diagnostic rendering, matching statement-form switch.
-                        Object key = constant;
+                        Object key = switchCaseKey(constant);
                         if (!seen.add(key)) {
                             throw new IllegalArgumentException(
                                     "duplicate value switch case: " + constant);
@@ -10058,6 +10058,45 @@ if (call.callee() instanceof Ast.MemberExpr console
             if (!result.add(name)) throw new IllegalArgumentException("duplicate generic '" + name + "' in " + owner);
         }
         return result;
+    }
+
+    private record SwitchFoldedIntCaseKey(long value) { }
+
+    private Object switchCaseKey(Ast.Expr expr) {
+        Long folded = foldedIntegralSwitchConstant(expr);
+        return folded == null ? expr : new SwitchFoldedIntCaseKey(folded);
+    }
+
+    private Long foldedIntegralSwitchConstant(Ast.Expr expr) {
+        if (expr instanceof Ast.LiteralExpr literal
+                && literal.value() instanceof Number number
+                && (number instanceof Byte
+                        || number instanceof Short
+                        || number instanceof Integer
+                        || number instanceof Long)) {
+            return number.longValue();
+        }
+        if (expr instanceof Ast.UnaryExpr unary) {
+            Long operand = foldedIntegralSwitchConstant(unary.operand());
+            if (operand == null) return null;
+            return switch (unary.operator()) {
+                case "+" -> operand;
+                case "-" -> -operand;
+                default -> null;
+            };
+        }
+        if (expr instanceof Ast.BinaryExpr binary) {
+            Long left = foldedIntegralSwitchConstant(binary.left());
+            Long right = foldedIntegralSwitchConstant(binary.right());
+            if (left == null || right == null) return null;
+            return switch (binary.operator()) {
+                case "+" -> left + right;
+                case "-" -> left - right;
+                case "*" -> left * right;
+                default -> null;
+            };
+        }
+        return null;
     }
 
     private boolean constant(Ast.Expr expr) {
