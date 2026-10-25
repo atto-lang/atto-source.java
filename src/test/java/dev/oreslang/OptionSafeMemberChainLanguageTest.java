@@ -16,14 +16,13 @@ final class OptionSafeMemberChainLanguageTest {
     void safeMemberShortCircuitsNoneAndFlattensOnlyItsGeneratedLayer() throws Exception {
         String source = """
                 define class Person as
-                  pub val Option<string> name = Some("Ada");
-                  pub val Option<Option<string>> deep = Some(None);
+                  pub val string name = "Ada";
                 end
                 fnc nameOf(Option<Person> person): Option<string> {
                   return person?.name;
                 }
-                fnc deepOf(Option<Person> person): Option<Option<string>> {
-                  return person?.deep;
+                fnc deepOf(Option<{deep: Option<Option<string>>}> obj): Option<Option<string>> {
+                  return obj?.deep;
                 }
                 pub fnc main(): void {
                   val Option<Person> present = Some(new Person());
@@ -32,7 +31,9 @@ final class OptionSafeMemberChainLanguageTest {
                   stdio.stdout.write(":");
                   stdio.stdout.write(nameOf(missing).is_none());
                   stdio.stdout.write(":");
-                  val Option<Option<string>> nested = deepOf(Some(new Person()));
+                  val Option<Option<string>> leaf = Some(None);
+                  val Option<{deep: Option<Option<string>>}> structLike = Some(record{deep: leaf});
+                  val Option<Option<string>> nested = deepOf(structLike);
                   stdio.stdout.write(nested.is_some());
                   stdio.stdout.write(":");
                   stdio.stdout.write(nested.unwrap().is_none());
@@ -74,7 +75,7 @@ final class OptionSafeMemberChainLanguageTest {
     void optionApiStillWorksAfterSafeProjectionButUnknownPayloadFieldsDoNot() {
         String valid = """
                 define class Node as
-                  pub val Option<int> number = Some(7);
+                  pub val int number = 7;
                 end
                 fnc pick(Option<Node> value): bool {
                   return value?.number.is_some();
@@ -83,7 +84,7 @@ final class OptionSafeMemberChainLanguageTest {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(valid));
         reject("""
                 define class Node as
-                  pub val Option<int> number = Some(7);
+                  pub val int number = 7;
                 end
                 fnc bad(Option<Node> value): bool {
                   return value?.number.unknown();
