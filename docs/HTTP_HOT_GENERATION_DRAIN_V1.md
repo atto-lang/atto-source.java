@@ -54,3 +54,13 @@ The first implementation target is a stable Java/Graal listener + one SHARED HTT
 ## Explicit current blocker
 
 `NativeHttp.Server.shutdown(graceMillis)` currently stops the **transport/listener** and may abort active exchanges. It must **not** be repurposed for a code-generation-only hot deploy, which must keep the process/listener alive and drain the old handler generation independently. [Java #973](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/973) records a race between HTTP actor activity and Graal Context close; this ledger is not that fix until the real transport and ActorRuntime quiescence hooks are wired.
+
+## Avoid Erlang/OTP old-code purge pitfalls
+
+Normative contract: [common-source HOT_UPGRADE_ERLANG_PITFALLS_V1](https://github.com/ores-truffle-oreslang/oreslang-common-source/blob/main/docs/HOT_UPGRADE_ERLANG_PITFALLS_V1.md).
+
+- Unlike Erlang's normal current/old two-version code model, a third actor image does **not** force a purge of a still pinned earlier image. Bounded generation retention must reject additional deploys or apply a documented graceful-drain policy, never silently kill the old actor just to make room.
+- The HTTP-ledger `status()` returns immutable, per-resource-kind blockers (e.g. CALLBACK, FFI_CALL, HTTP_STREAM, SUSPENDED_TASK). An observable timeout or cancellation request is never a physical-release receipt. The image-loader's independent quiescence/cleanup proof is still mandatory.
+- A V1 streaming request/callback may remain pinned while V2 and V3 handle new admissions. The existence of a later generation never invalidates an already admitted request.
+- At the implementation boundary, host code must not mix old middleware, response framing, callback code, source actor method dispatch or dependency ABI with newer code halfway through an existing request.
+- Legacy `ActorUpgradeEpochGate` and `ActorRoutePublicationV1` must remain the only supervisory route/code authorities; this HTTP diagnostic ledger must not become a second code-loader/publisher.
