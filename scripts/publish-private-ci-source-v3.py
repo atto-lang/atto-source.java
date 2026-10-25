@@ -315,6 +315,9 @@ def review_attested_main_sha(
             or authority.get("state") != "closed"
             or authority.get("merged_at") is None
             or not isinstance(author, dict)
+            or not isinstance(author.get("id"), int)
+            or isinstance(author.get("id"), bool)
+            or author.get("id") <= 0
             or author.get("id") == REVIEW_AUTHORITY_USER_ID
             or not isinstance(head, dict)
             or not isinstance(head.get("repo"), dict)
@@ -626,6 +629,9 @@ def review_attested_carrier_main(repository, contract, branch):
             or pr.get("state") != "closed"
             or pr.get("merged_at") is None
             or not isinstance(author, dict)
+            or not isinstance(author.get("id"), int)
+            or isinstance(author.get("id"), bool)
+            or author.get("id") <= 0
             or author.get("id") == CARRIER_REVIEW_USER_ID
             or not isinstance(head, dict)
             or not isinstance(head.get("repo"), dict)
