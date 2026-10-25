@@ -1373,6 +1373,7 @@ public final class OwnershipChecker {
             for (Capture capture : captured.values.values()) {
                 Ast.TaskCaptureTransfer transfer =
                         !capture.write
+                                && !capture.consume
                                 && capture.source.kind == ValueKind.COPY
                                 ? Ast.TaskCaptureTransfer.COPY
                                 : Ast.TaskCaptureTransfer.MOVE;
@@ -2996,6 +2997,18 @@ public final class OwnershipChecker {
         } else if (expr instanceof Ast.RuntimeCallExpr e) {
             for (Ast.Expr arg : e.arguments()) {
                 scanExpr(arg, locals, outer, recursiveBinding, captures, false);
+                // rt take is ownership consumption, not mutation. A direct
+                // free-name take must therefore force MOVE admission even for
+                // otherwise-Copy values, without requiring a mutable binding.
+                if (e.operation().equals("take")
+                        && arg instanceof Ast.NameExpr name
+                        && !name.name().equals(recursiveBinding)
+                        && !locals.contains(name.name())) {
+                    VarState state = outer.lookup(name.name());
+                    if (state != null) {
+                        captures.add(name.name(), state, false, true);
+                    }
+                }
             }
         } else if (expr instanceof Ast.CallExpr e) {
             scanExpr(e.callee(), locals, outer, recursiveBinding, captures, false);
@@ -4154,8 +4167,10 @@ public final class OwnershipChecker {
                             + capture.name + "' mutably while borrowed");
                 }
                 move(source, capture.name);
-            } else if (source.kind == ValueKind.MOVE_ONLY) {
-                // Registration owns this value from this point forward.
+            } else if (capture.consume || source.kind == ValueKind.MOVE_ONLY) {
+                // Registration owns an explicitly consumed value immediately,
+                // including Copy values named by rt take. Consumption is not a
+                // write, so fixed/const bindings remain valid transfer sources.
                 move(source, capture.name);
             }
         }
@@ -4755,14 +4770,28 @@ public final class OwnershipChecker {
 
     private record StateSnapshot(boolean moved, int immutableBorrows, boolean mutableBorrowed) { }
 
-    private record Capture(String name, VarState source, boolean write) { }
+    private record Capture(
+            String name, VarState source, boolean write, boolean consume) { }
 
     private static final class CaptureSet {
         private final Map<String,Capture> values = new LinkedHashMap<>();
+
         private void add(String name, VarState state, boolean write) {
+            add(name, state, write, false);
+        }
+
+        private void add(
+                String name, VarState state, boolean write, boolean consume) {
             Capture existing = values.get(name);
-            values.put(name, existing == null ? new Capture(name, state, write)
-                    : new Capture(name, state, existing.write() || write));
+            values.put(
+                    name,
+                    existing == null
+                            ? new Capture(name, state, write, consume)
+                            : new Capture(
+                                    name,
+                                    state,
+                                    existing.write() || write,
+                                    existing.consume() || consume));
         }
     }
 }
