@@ -7,9 +7,11 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 final class CompilerCheckModeTest {
     @Test
@@ -53,6 +55,28 @@ final class CompilerCheckModeTest {
                 new IllegalArgumentException("Oreslang parse error at 7:13: expected expression"));
 
         assertTrue(diagnostic.endsWith("demo.ores:7:13: error: expected expression"));
+    }
+
+    @Test
+    void incrementalCompilerAttachesOriginalFileToRealParseFailure() {
+        var failure = assertThrows(SourceUnitDiagnosticException.class,
+                () -> new IncrementalCompiler().compile(
+                        Map.of("src/malformed.ores", "this is not Oreslang source;")));
+        assertTrue(failure.unitId().endsWith("src/malformed.ores"));
+        assertTrue(failure.detail().contains("Oreslang parse error"));
+    }
+
+    @Test
+    void incrementalCompilerAttachesModuleToRealSemanticFailure() {
+        var failure = assertThrows(SourceUnitDiagnosticException.class,
+                () -> new IncrementalCompiler().compile(
+                        Map.of("src/broken.ores", """
+                                define module payment as
+                                  pub fnc amount(): int { return "wrong"; }
+                                end
+                                """)));
+        assertEquals("payment", failure.moduleName());
+        assertTrue(failure.unitId().endsWith("src/broken.ores"));
     }
 
     @Test
