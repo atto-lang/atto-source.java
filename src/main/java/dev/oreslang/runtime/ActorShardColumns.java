@@ -73,7 +73,7 @@ public final class ActorShardColumns extends ActorShardBacking implements AutoCl
     }
 
     @Override
-    boolean ownedBy(ActorRuntime runtime, ActorRuntime.ActorId actor) {
+    boolean ownedBy(ActorRuntime runtime, ActorRuntime.ActorRef<?> actor) {
         return reservation.ownedBy(runtime, actor);
     }
     @Override
