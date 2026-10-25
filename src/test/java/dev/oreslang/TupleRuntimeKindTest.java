@@ -167,8 +167,12 @@ final class TupleRuntimeKindTest {
     @Test
     void asyncTupleReturnRemainsAValidRuntimeTuple() throws Exception {
         String code = """
+                async fnc loadLeft(): int {
+                  return 4;
+                }
+
                 async fnc pair(): (int, int) {
-                  return tuple {4, 2};
+                  return tuple {await loadLeft(), 2};
                 }
 
                 pub fnc main(): void {
