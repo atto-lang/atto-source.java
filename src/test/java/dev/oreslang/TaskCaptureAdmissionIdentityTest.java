@@ -233,6 +233,49 @@ final class TaskCaptureAdmissionIdentityTest {
     }
 
     @Test
+    void unreferencedStagedCaptureCannotMintTaskTransferAuthority() {
+        Ast.Program checked = OresCompiler.parseAndTypeCheck("""
+                pub async fnc main(): void {
+                  const int value = 41;
+                  const int unrelated = 9;
+                  let Future<int> child = task { return value + 1; };
+                  stdio.stdout.write(await child);
+                  return;
+                }
+                """);
+        Ast.TaskExpr task = firstTask(checked);
+        long revoked = Ast.CheckedTaskCaptures.requireProgramEpoch(checked);
+        long attempt = Ast.CheckedTaskCaptures.newCheckEpoch();
+        Ast.CheckedTaskCaptures.beginCheck(checked, attempt);
+
+        java.util.Map<Ast.TaskExpr,
+                java.util.Map<String, Ast.TaskCaptureTransfer>> overbroad =
+                java.util.Map.of(task, java.util.Map.of(
+                        "value", Ast.TaskCaptureTransfer.COPY,
+                        "unrelated", Ast.TaskCaptureTransfer.MOVE));
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> Ast.CheckedTaskCaptures.publish(
+                        checked, attempt, overbroad));
+        assertTrue(failure.getMessage().contains("unreferenced"),
+                failure::getMessage);
+        // Rejection is transactional: no staged authority or old epoch
+        // becomes executable after the failed publication.
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedTaskCaptures.requireProgramEpoch(checked));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedTaskCaptures.require(checked, task, revoked));
+
+        var exact = java.util.Map.of(task, java.util.Map.of(
+                "value", Ast.TaskCaptureTransfer.COPY));
+        Ast.CheckedTaskCaptures.publish(checked, attempt, exact);
+        assertEquals(attempt,
+                Ast.CheckedTaskCaptures.requireProgramEpoch(checked));
+        assertEquals(exact.get(task),
+                Ast.CheckedTaskCaptures.require(
+                        checked, task, attempt).captureTransfers());
+    }
+
+    @Test
     void supersededConcurrentCheckerCannotRepublishStaleTaskAuthority() {
         Ast.Program checked = OresCompiler.parseAndTypeCheck("""
                 pub async fnc main(): void {
