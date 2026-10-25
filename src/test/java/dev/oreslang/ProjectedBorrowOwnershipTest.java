@@ -52,7 +52,6 @@ final class ProjectedBorrowOwnershipTest {
                 () -> TypeChecker.check(Parser.parse(TYPES + """
                         fnc bad(Holder holder): void {
                           val List<Item> alias = holder.items;
-                          stdio.stdout.write(alias.size());
                           return;
                         }
                         """)));
@@ -64,12 +63,31 @@ final class ProjectedBorrowOwnershipTest {
                 () -> TypeChecker.check(Parser.parse(TYPES + """
                         fnc bad(Holder holder): void {
                           val Item alias = holder.items[0];
-                          stdio.stdout.write(alias.number);
                           return;
                         }
                         """)));
         assertTrue(indexed.getMessage().contains("move-only indexed projection"),
                 indexed.getMessage());
+    }
+
+    @Test
+    void listGetCannotExtractMoveOnlyElementByAlias() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(TYPES + """
+                        fnc bad(Holder holder): void {
+                          val Item alias = holder.items.get(0);
+                          return;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("sequence element"),
+                failure.getMessage());
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc ok(List<int> values): int {
+                  return values.get(0);
+                }
+                """)));
     }
 
     @Test

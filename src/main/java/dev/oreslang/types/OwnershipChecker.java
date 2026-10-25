@@ -1690,6 +1690,10 @@ public final class OwnershipChecker {
             if (memberReceiverType != null) {
                 Ast.TypeRef concreteCollection = memberReceiverType.isBorrow()
                         ? memberReceiverType.borrowedTarget() : memberReceiverType;
+                boolean sequence =
+                        concreteCollection.name().equals("Array")
+                                || concreteCollection.name().equals("List")
+                                || concreteCollection.isTupleType();
                 if ((concreteCollection.name().equals("Array")
                         || concreteCollection.name().equals("List"))
                         && (member.member().equals("add") || member.member().equals("set"))) {
@@ -1697,6 +1701,19 @@ public final class OwnershipChecker {
                             member.receiver(),
                             scope,
                             "collection method '" + member.member() + "'");
+                }
+                if (sequence
+                        && member.member().equals("get")
+                        && call.arguments().size() == 1) {
+                    checkExpr(call.arguments().getFirst(), scope, false);
+                    Ast.TypeRef element = collectionElementType(concreteCollection);
+                    if (element.name().equals("$infer$")
+                            || kindOfType(element) != ValueKind.COPY) {
+                        throw error("cannot extract a move-only or unresolved sequence "
+                                + "element with get(); borrow an indexed place or move/replace "
+                                + "the containing sequence");
+                    }
+                    return new ValueInfo(element, ValueKind.COPY, null);
                 }
             }
 
