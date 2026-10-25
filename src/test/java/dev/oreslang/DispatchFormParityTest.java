@@ -236,11 +236,16 @@ final class DispatchFormParityTest {
               end;
             }
 
+            fnc failIfSelected(): int {
+              rt fail("unselected switch arm executed");
+              return 0;
+            }
+
             async fnc viaSwitch(): int {
               val Channel<int> blocked = Channel.new<int>(0);
               return switch 1
                 case 1 -> { 42; }
-                case 2 -> { rt fail("unselected switch arm executed"); }
+                case 2 -> { failIfSelected(); }
                 default -> { await (nb readch blocked); }
               end;
             }
@@ -351,8 +356,10 @@ final class DispatchFormParityTest {
             }
             """;
 
-        var typed = TypeChecker.check(Parser.parse(program));
-        assertThrows(IllegalArgumentException.class, () -> OwnershipChecker.check(typed));
+        assertThrows(IllegalArgumentException.class, () -> {
+            var typed = TypeChecker.check(Parser.parse(program));
+            OwnershipChecker.check(typed);
+        });
     }
 
     @Test
