@@ -49,9 +49,12 @@ class RawWorktreeAliasTest(unittest.TestCase):
 
     @unittest.skipUnless(hasattr(os, "symlink"), "symlink unavailable")
     def test_symlinked_parent_directory_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as outside_td:
-            repo = Path(td)
-            outside = Path(outside_td)
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = root / "repo"
+            outside = root / "outside"
+            repo.mkdir()
+            outside.mkdir()
             commit, tree = self.make_repo(repo)
             (outside / "value.txt").write_text("exact bytes\n", encoding="utf-8")
             (repo / "src" / "value.txt").unlink()
@@ -64,9 +67,12 @@ class RawWorktreeAliasTest(unittest.TestCase):
 
     @unittest.skipUnless(hasattr(os, "link"), "hard links unavailable")
     def test_tracked_hardlink_alias_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as outside_td:
-            repo = Path(td)
-            outside = Path(outside_td)
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = root / "repo"
+            outside = root / "outside"
+            repo.mkdir()
+            outside.mkdir()
             commit, tree = self.make_repo(repo)
             os.link(repo / "src" / "value.txt", outside / "alias.txt")
 
