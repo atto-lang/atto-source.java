@@ -562,6 +562,8 @@ public final class OwnershipChecker {
             for (Ast.MatchArm arm : matched.arms()) {
                 restoreState(base);
                 Scope armScope = new Scope(scope);
+                rejectAffineProjectedPatternBinding(
+                        matched.subject(), arm.pattern(), scope);
                 definePatternAliases(arm.pattern(), subject.type, source, armScope);
                 if (arm.guard() != null) checkExpr(arm.guard(), armScope, false);
                 checkBlock(arm.body(), armScope, returnType);
@@ -981,6 +983,8 @@ public final class OwnershipChecker {
                 restoreState(base);
                 Scope armScope = new Scope(scope);
                 try {
+                    rejectAffineProjectedPatternBinding(
+                            match.subject(), arm.pattern(), scope);
                     definePatternAliases(arm.pattern(), subject.type, source, armScope);
                     if (arm.guard() != null) checkExpr(arm.guard(), armScope, false);
                     ValueInfo value = checkExpr(arm.value(), armScope, consuming);
@@ -3156,11 +3160,13 @@ public final class OwnershipChecker {
 
     private void defineConditionAliases(Ast.Expr condition, Scope destination, Scope source) {
         if (condition instanceof Ast.TypeTestExpr test && test.binding() != null) {
+            rejectAffineProjectedRefinementBinding(test.value(), source);
             VarState original = test.value() instanceof Ast.NameExpr name ? source.lookup(name.name()) : null;
             defineRefinementAlias(test.binding(), test.targetType(), original, destination);
             return;
         }
         if (condition instanceof Ast.PatternTestExpr test) {
+            rejectAffineProjectedPatternBinding(test.value(), test.pattern(), source);
             VarState original = test.value() instanceof Ast.NameExpr name ? source.lookup(name.name()) : null;
             Ast.TypeRef type = original == null ? Ast.TypeRef.inferred() : original.type;
             definePatternAliases(test.pattern(), type, original, destination);
@@ -3169,6 +3175,29 @@ public final class OwnershipChecker {
         if (condition instanceof Ast.BinaryExpr binary && binary.operator().equals("&&")) {
             defineConditionAliases(binary.left(), destination, source);
             defineConditionAliases(binary.right(), destination, source);
+        }
+    }
+
+    private void rejectAffineProjectedPatternBinding(
+            Ast.Expr subject, Ast.Pattern pattern, Scope scope) {
+        Set<String> bindings = new LinkedHashSet<>();
+        collectPatternBindingNames(pattern, bindings);
+        if (bindings.isEmpty()) return;
+        rejectAffineProjectedRefinementBinding(subject, scope);
+    }
+
+    private void rejectAffineProjectedRefinementBinding(
+            Ast.Expr subject, Scope scope) {
+        if (!(subject instanceof Ast.MemberExpr || subject instanceof Ast.IndexExpr)) {
+            return;
+        }
+        BorrowPlace place = borrowPlace(subject, scope);
+        Ast.TypeRef projectedType = place.type();
+        if (projectedType.name().equals("$infer$")
+                || kindOfType(projectedType) != ValueKind.COPY) {
+            throw error("pattern/refinement binding cannot alias a move-only "
+                    + "projected value until projection-level move tracking is "
+                    + "available; match the containing owner or borrow explicitly");
         }
     }
 

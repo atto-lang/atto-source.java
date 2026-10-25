@@ -130,6 +130,49 @@ final class ProjectedBorrowOwnershipTest {
     }
 
     @Test
+    void projectedPatternBindingsCannotMintMoveOnlyOwners() {
+        IllegalArgumentException matchProjection = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(TYPES + """
+                        fnc bad(Holder holder): void {
+                          match holder.items[0] over
+                            on Item item -> {
+                              stdio.stdout.write(item.number);
+                              return;
+                            }
+                          end
+                        }
+                        """)));
+        assertTrue(matchProjection.getMessage().contains("pattern/refinement binding"),
+                matchProjection.getMessage());
+
+        IllegalArgumentException conditionProjection = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(TYPES + """
+                        fnc bad(Holder holder): void {
+                          if holder.items[0] is type Item item then
+                            stdio.stdout.write(item.number);
+                          fi
+                          return;
+                        }
+                        """)));
+        assertTrue(conditionProjection.getMessage().contains("pattern/refinement binding"),
+                conditionProjection.getMessage());
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class NumberBox as
+                  pub let int value = 7;
+                end
+
+                fnc ok(NumberBox box): int {
+                  match box.value over
+                    on int value -> { return value; }
+                  end
+                }
+                """)));
+    }
+
+    @Test
     void storedProjectionGuardsEntireOwnerAgainstMove() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(TYPES + """
