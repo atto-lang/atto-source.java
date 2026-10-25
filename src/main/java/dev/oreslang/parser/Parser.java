@@ -3639,8 +3639,10 @@ public final class Parser {
                     + "bounded edge transport and Java/LLVM lowering; not yet enabled");
         }
         if (match(EQUAL)) {
-            if (!(expr instanceof Ast.NameExpr) && !(expr instanceof Ast.MemberExpr) && !(expr instanceof Ast.IndexExpr)) {
-                throw error(previous(), "assignment target must be a local, field, or index");
+            if (!(expr instanceof Ast.NameExpr)
+                    && !(expr instanceof Ast.MemberExpr member && !member.optional())
+                    && !(expr instanceof Ast.IndexExpr)) {
+                throw error(previous(), "assignment target must be a local, non-optional field, or index");
             }
             return new Ast.AssignExpr(expr, parseAssignment());
         }
@@ -3715,12 +3717,20 @@ public final class Parser {
     }
 
     private Ast.Expr parseConditional() {
-        Ast.Expr condition = parseLogicalOr();
+        Ast.Expr condition = parseCoalescing();
         if (!match(QUESTION)) return condition;
         Ast.Expr whenTrue = parseAssignment();
         consume(COLON, "expected ':' in ternary expression");
         Ast.Expr whenFalse = parseConditional();
         return new Ast.ConditionalExpr(condition, whenTrue, whenFalse);
+    }
+
+    /** Right-associative Option fallback, with precedence above ternary. */
+    private Ast.Expr parseCoalescing() {
+        Ast.Expr left = parseLogicalOr();
+        return match(QUESTION_QUESTION)
+                ? new Ast.BinaryExpr("??", left, parseCoalescing())
+                : left;
     }
 
     private Ast.Expr parseLogicalOr() {
@@ -4047,11 +4057,10 @@ public final class Parser {
                 List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, args);
-            } else if (match(DOT, DOUBLE_COLON)) {
-                // Two explicit qualified-member spellings, one binding and
-                // evaluation path; no dynamic symbol lookup or macro rewrite.
+            } else if (match(DOT, DOUBLE_COLON, QUESTION_DOT)) {
+                boolean optional = previous().type() == QUESTION_DOT;
                 String member = consumeMemberName();
-                expr = new Ast.MemberExpr(expr, member);
+                expr = new Ast.MemberExpr(expr, member, optional);
             } else if (match(LBRACKET)) {
                 Ast.Expr index = parseExpression();
                 consume(RBRACKET, "expected ']' after index");
