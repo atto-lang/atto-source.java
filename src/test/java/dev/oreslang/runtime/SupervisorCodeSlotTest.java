@@ -82,6 +82,59 @@ final class SupervisorCodeSlotTest {
         assertEquals(1, failedCleanup.get());
     }
 
+    @Test void concurrentLeasesAndPolicyUpgradesRetireEachGenerationOnce() throws Exception {
+        // Bounded deterministic race: no sleep-based synchronization and no
+        // executor may outlive its runtime policy slot.
+        for (int round = 0; round < 20; round++) {
+            AtomicInteger retired = new AtomicInteger();
+            AtomicInteger upgrades = new AtomicInteger();
+            var slot = new SupervisorCodeSlot<>("abi", 1, retired::incrementAndGet, 4);
+            var go = new java.util.concurrent.CountDownLatch(1);
+            var pool = java.util.concurrent.Executors.newFixedThreadPool(5);
+            var tasks = new java.util.ArrayList<java.util.concurrent.Future<?>>();
+            try {
+                for (int reader = 0; reader < 4; reader++) {
+                    tasks.add(pool.submit(() -> {
+                        go.await();
+                        for (int i = 0; i < 100; i++) {
+                            try (var lease = slot.acquire()) {
+                                assertEquals(lease.descriptor().revision(), lease.code().longValue(),
+                                        "a pinned code lease cannot change revision during activation");
+                            }
+                        }
+                        return null;
+                    }));
+                }
+                tasks.add(pool.submit(() -> {
+                    go.await();
+                    for (int i = 0; i < 100; i++) {
+                        long expected = slot.current().revision();
+                        try {
+                            slot.activate(expected, "abi", Math.toIntExact(expected + 1),
+                                    retired::incrementAndGet);
+                            upgrades.incrementAndGet();
+                        } catch (IllegalStateException bounded) {
+                            if (!bounded.getMessage().contains("pinned supervisor code revision limit"))
+                                throw bounded;
+                        }
+                    }
+                    return null;
+                }));
+                go.countDown();
+                for (var task : tasks) task.get(8, java.util.concurrent.TimeUnit.SECONDS);
+            } finally {
+                pool.shutdownNow();
+                assertEquals(true, pool.awaitTermination(8, java.util.concurrent.TimeUnit.SECONDS),
+                        "no worker may retain the supervisor policy after test exit");
+                slot.close();
+            }
+            assertEquals(0, slot.liveRevisions(), "every retired generation must be reclaimed");
+            assertEquals(upgrades.get() + 1, retired.get(),
+                    "a successfully installed policy must be reclaimed exactly once");
+            assertEquals(true, upgrades.get() > 0, "upgrader must make forward progress");
+        }
+    }
+
     @Test void closeFencesNewAcquisitionsButWaitsForPinnedCleanup() {
         AtomicInteger freed = new AtomicInteger();
         var slot = new SupervisorCodeSlot<>("v1", "running", freed::incrementAndGet, 2);
