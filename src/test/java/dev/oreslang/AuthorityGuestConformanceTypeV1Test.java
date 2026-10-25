@@ -97,9 +97,11 @@ final class AuthorityGuestConformanceTypeV1Test {
             // A parser error is not proof of capability isolation.
             var parsed = assertDoesNotThrow(
                     () -> Parser.parse(fixture.source()), "parser: " + fixture.id());
-            assertThrows(SecurityException.class,
+            var denial = assertThrows(SecurityException.class,
                     () -> CapabilityChecker.check(parsed, IsolatePolicy.developer()),
                     fixture.id());
+            assertTrue(denial.getMessage().contains("PROCESS_INFO"),
+                    "must be PROCESS_INFO denial: " + fixture.id());
         }
     }
 }
