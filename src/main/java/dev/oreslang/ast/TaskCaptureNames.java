@@ -205,6 +205,13 @@ public final class TaskCaptureNames {
                 visitConditionExpr(arm.guard(), armLocals, names);
                 visitExpr(arm.value(), armLocals, names);
             }
+        } else if (expr instanceof Ast.SwitchExpr s) {
+            visitExpr(s.subject(), locals, names);
+            for (Ast.SwitchValueCase arm : s.cases()) {
+                for (Ast.Expr constant : arm.constants()) visitExpr(constant, locals, names);
+                visitExpr(arm.value(), locals, names);
+            }
+            visitExpr(s.defaultValue(), locals, names);
         } else if (expr instanceof Ast.TypeTestExpr s) {
             visitExpr(s.value(), locals, names);
         } else if (expr instanceof Ast.PatternTestExpr s) {

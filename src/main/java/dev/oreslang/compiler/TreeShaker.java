@@ -210,6 +210,14 @@ public final class TreeShaker {
             if (expression instanceof Ast.AssignExpr assignment) {
                 return containsLambda(assignment.target()) || containsLambda(assignment.value());
             }
+            if (expression instanceof Ast.SwitchExpr switched) {
+                if (containsLambda(switched.subject()) || containsLambda(switched.defaultValue())) return true;
+                for (Ast.SwitchValueCase arm : switched.cases()) {
+                    if (containsLambda(arm.value())) return true;
+                    for (Ast.Expr constant : arm.constants()) if (containsLambda(constant)) return true;
+                }
+                return false;
+            }
             if (expression instanceof Ast.ConditionalExpr conditional) {
                 return containsLambda(conditional.condition())
                         || containsLambda(conditional.whenTrue())
@@ -289,6 +297,22 @@ public final class TreeShaker {
                             substitute(arm.value(), substitutions, armLocals)));
                 }
                 return new Ast.MatchExpr(subject, arms, matched.resultType());
+            }
+            if (expression instanceof Ast.SwitchExpr switched) {
+                List<Ast.SwitchValueCase> cases = new ArrayList<>();
+                for (Ast.SwitchValueCase arm : switched.cases()) {
+                    List<Ast.Expr> constants = new ArrayList<>();
+                    for (Ast.Expr constant : arm.constants()) {
+                        constants.add(substitute(constant, substitutions, shadowed));
+                    }
+                    cases.add(new Ast.SwitchValueCase(
+                            constants,
+                            substitute(arm.value(), substitutions, shadowed)));
+                }
+                return new Ast.SwitchExpr(
+                        substitute(switched.subject(), substitutions, shadowed),
+                        cases,
+                        substitute(switched.defaultValue(), substitutions, shadowed));
             }
             if (expression instanceof Ast.TypeTestExpr test) {
                 return new Ast.TypeTestExpr(
@@ -878,6 +902,22 @@ public final class TreeShaker {
                             rewriteExpression(arm.value(), module, armLocals)));
                 }
                 return new Ast.MatchExpr(subject, arms, matched.resultType());
+            }
+            if (expression instanceof Ast.SwitchExpr switched) {
+                List<Ast.SwitchValueCase> cases = new ArrayList<>();
+                for (Ast.SwitchValueCase arm : switched.cases()) {
+                    List<Ast.Expr> constants = new ArrayList<>();
+                    for (Ast.Expr constant : arm.constants()) {
+                        constants.add(rewriteExpression(constant, module, locals));
+                    }
+                    cases.add(new Ast.SwitchValueCase(
+                            constants,
+                            rewriteExpression(arm.value(), module, locals)));
+                }
+                return new Ast.SwitchExpr(
+                        rewriteExpression(switched.subject(), module, locals),
+                        cases,
+                        rewriteExpression(switched.defaultValue(), module, locals));
             }
             if (expression instanceof Ast.TypeTestExpr test) {
                 return new Ast.TypeTestExpr(

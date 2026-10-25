@@ -489,6 +489,21 @@ public final class CapabilityChecker {
             checkExpr(e.value(), policy);
         }
         else if (expr instanceof Ast.ConditionalExpr e) { checkExpr(e.condition(), policy); checkExpr(e.whenTrue(), policy); checkExpr(e.whenFalse(), policy); }
+        else if (expr instanceof Ast.MatchExpr e) {
+            checkExpr(e.subject(), policy);
+            for (Ast.MatchValueArm arm : e.arms()) {
+                if (arm.guard() != null) checkExpr(arm.guard(), policy);
+                checkExpr(arm.value(), policy);
+            }
+        }
+        else if (expr instanceof Ast.SwitchExpr e) {
+            checkExpr(e.subject(), policy);
+            for (Ast.SwitchValueCase arm : e.cases()) {
+                for (Ast.Expr constant : arm.constants()) checkExpr(constant, policy);
+                checkExpr(arm.value(), policy);
+            }
+            checkExpr(e.defaultValue(), policy);
+        }
         else if (expr instanceof Ast.IndexExpr e) { checkExpr(e.receiver(), policy); checkExpr(e.index(), policy); }
         else if (expr instanceof Ast.NewExpr e) {
             checkType(e.type(), policy);

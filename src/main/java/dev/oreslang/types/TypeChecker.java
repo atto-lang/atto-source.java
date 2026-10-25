@@ -2205,11 +2205,9 @@ public final class TypeChecker {
                     if (!assignable(actual, subject) && !assignable(subject, actual)) {
                         throw new IllegalArgumentException("switch case type " + actual + " is incompatible with " + subject);
                     }
-                    // Display text cannot be used for identity: String "#x" and
-                    // Symbol #x can render alike, while #x and #"x" are equal.
-                    Object key = constant instanceof Ast.LiteralExpr literal
-                            ? new SwitchLiteralCaseKey(literal.value().getClass(), literal.value())
-                            : constant.toString();
+                    // Use immutable AST value equality for case identity.
+                    // Diagnostic rendering is not a semantic identity contract.
+                    Object key = constant;
                     if (!seen.add(key)) throw new IllegalArgumentException("duplicate switch case: " + constant);
                 }
                 checkBlock(arm.body(), env, generics, expectedReturn, self);
@@ -4437,6 +4435,67 @@ if (call.callee() instanceof Ast.MemberExpr console
             } finally {
                 // Only the selected arm executes at runtime. Type-checking
                 // all branches cannot establish outer definite-init facts.
+                env.restoreInitialization(before);
+            }
+        }
+        if (expr instanceof Ast.SwitchExpr valueSwitch) {
+            Type subject = deref(typeOf(valueSwitch.subject(), env, generics, self));
+            Type result = null;
+            Set<Object> seen = new HashSet<>();
+            Map<Env.Binding, Set<String>> before = env.initializationSnapshot();
+            try {
+                for (Ast.SwitchValueCase arm : valueSwitch.cases()) {
+                    env.restoreInitialization(before);
+                    for (Ast.Expr constant : arm.constants()) {
+                        if (!constant(constant)) {
+                            throw new IllegalArgumentException(
+                                    "value switch case must be a compile-time constant");
+                        }
+                        Type actualCase = typeOf(constant, env, generics, self);
+                        if (!assignable(actualCase, subject) && !assignable(subject, actualCase)) {
+                            throw new IllegalArgumentException(
+                                    "value switch case type " + actualCase
+                                            + " is incompatible with " + subject);
+                        }
+                        // Keep duplicate identity structural and independent of
+                        // diagnostic rendering, matching statement-form switch.
+                        Object key = constant;
+                        if (!seen.add(key)) {
+                            throw new IllegalArgumentException(
+                                    "duplicate value switch case: " + constant);
+                        }
+                    }
+                    Type actual = typeOf(arm.value(), env, generics, self);
+                    if (actual == Primitive.VOID || actual == Unknown.INSTANCE) {
+                        throw new IllegalArgumentException(
+                                "value switch arms must produce a statically known non-void value");
+                    }
+                    if (result == null) {
+                        result = actual;
+                    } else {
+                        requireReadonlyCapabilityPreserved(
+                                actual, result, "value switch arm");
+                        requireAssignable(actual, result, "value switch arm");
+                        requireAssignable(result, actual, "value switch arm");
+                    }
+                }
+
+                env.restoreInitialization(before);
+                Type fallback = typeOf(valueSwitch.defaultValue(), env, generics, self);
+                if (fallback == Primitive.VOID || fallback == Unknown.INSTANCE) {
+                    throw new IllegalArgumentException(
+                            "value switch default must produce a statically known non-void value");
+                }
+                if (result == null) {
+                    result = fallback;
+                } else {
+                    requireReadonlyCapabilityPreserved(
+                            fallback, result, "value switch default");
+                    requireAssignable(fallback, result, "value switch default");
+                    requireAssignable(result, fallback, "value switch default");
+                }
+                return result;
+            } finally {
                 env.restoreInitialization(before);
             }
         }
@@ -7070,6 +7129,15 @@ if (call.callee() instanceof Ast.MemberExpr console
                 if ((arm.guard() != null && hasSuspendingSumCallbackSyntax(arm.guard()))
                         || hasSuspendingSumCallbackSyntax(arm.value())) return true;
             return false;
+        }
+        if (expr instanceof Ast.SwitchExpr switched) {
+            if (hasSuspendingSumCallbackSyntax(switched.subject())) return true;
+            for (Ast.SwitchValueCase arm : switched.cases()) {
+                for (Ast.Expr constant : arm.constants())
+                    if (hasSuspendingSumCallbackSyntax(constant)) return true;
+                if (hasSuspendingSumCallbackSyntax(arm.value())) return true;
+            }
+            return hasSuspendingSumCallbackSyntax(switched.defaultValue());
         }
         if (expr instanceof Ast.TypeTestExpr test)
             return hasSuspendingSumCallbackSyntax(test.value());
@@ -9991,8 +10059,6 @@ if (call.callee() instanceof Ast.MemberExpr console
         }
         return result;
     }
-
-    private record SwitchLiteralCaseKey(Class<?> nominalType, Object value) { }
 
     private boolean constant(Ast.Expr expr) {
         if (expr instanceof Ast.LiteralExpr) return true;
