@@ -149,6 +149,27 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Installed CLI compiler check failed' }
           $p = Start-Process -FilePath $uninstall -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -PassThru -Wait
           if ($p.ExitCode -ne 0) { throw "Windows uninstaller failed with code $($p.ExitCode)" }
+          # Regression: a user-owned PATH entry must survive a later setup/uninstall.
+          $installDir = Join-Path $env:LOCALAPPDATA 'Programs/Oreslang'
+          $originalPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+          $entries = "$originalPath".Split(';', [StringSplitOptions]::RemoveEmptyEntries)
+          if ($entries -contains $installDir) {
+            throw 'Cannot test preexisting PATH ownership: installation path already present'
+          }
+          $seededPath = if ([string]::IsNullOrEmpty($originalPath)) { $installDir } else { "$originalPath;$installDir" }
+          try {
+            [Environment]::SetEnvironmentVariable('Path', $seededPath, 'User')
+            $p = Start-Process -FilePath (Resolve-Path $setup) -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -PassThru -Wait
+            if ($p.ExitCode -ne 0) { throw 'Second Windows setup failed' }
+            $p = Start-Process -FilePath $uninstall -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -PassThru -Wait
+            if ($p.ExitCode -ne 0) { throw 'Second Windows uninstall failed' }
+            $actualPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+            if ($actualPath -cne $seededPath) {
+              throw "Uninstall changed a preexisting user PATH: expected '$seededPath', got '$actualPath'"
+            }
+          } finally {
+            [Environment]::SetEnvironmentVariable('Path', $originalPath, 'User')
+          }
       - name: Upload PRIVATE candidate, never a public release
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
