@@ -140,6 +140,123 @@ public class TaskOwnedMutexRetirementTest {
     }
 
     @Test
+    void exhaustedTrackedTaskLeaseQuotaRollsBackAsyncAcquisitionAdmission()
+            throws Exception {
+        var shared = OresMutex.shared(new int[] { 0 });
+        try (var scheduler = new OresScheduler(1)) {
+            TaskHandle<Integer> task = scheduler.startTracked(resume -> {
+                for (int i = 0; i < TaskOwnedLeases.MAX_LEASES_PER_TASK; i++) {
+                    TaskOwnedLeases.register(() -> { });
+                }
+                // The async path reserves a logical owner and two waiter
+                // quotas BEFORE it attempts lease registration. Both
+                // failures must unwind those reservations; the second
+                // attempt must not be mistaken for recursive acquisition.
+                for (int attempt = 0; attempt < 2; attempt++) {
+                    var rejected = assertThrows(IllegalStateException.class,
+                            shared::lockAsync);
+                    assertTrue(rejected.getMessage().contains("lease quota"),
+                            "admission must fail for quota, not stale mutex ownership");
+                }
+                return OresScheduler.done(7);
+            });
+            assertInstanceOf(TaskHandle.Success.class,
+                    task.getDone().get(5, TimeUnit.SECONDS));
+            assertTrue(task.cleanupFailures().get(3, TimeUnit.SECONDS).isEmpty());
+        }
+        // This also proves no physical permit was consumed by a failed
+        // registration on the tracked Task's scheduler carrier.
+        assertFalse(shared.isPoisoned());
+        var guard = shared.tryLock().orElseThrow();
+        guard.release();
+    }
+
+    @Test
+    void onlyCompletedSuccessfulAsyncGrantsCountAsPublishedOwnership() {
+        var waiting = new CompletableFuture<Object>();
+        assertFalse(OresMutex.Shared.isPublishedAsyncGrant(null));
+        assertFalse(OresMutex.Shared.isPublishedAsyncGrant(waiting));
+        assertTrue(waiting.cancel(false));
+        assertFalse(OresMutex.Shared.isPublishedAsyncGrant(waiting),
+                "internally bound but cancelled guards were never published");
+
+        var timedOut = new CompletableFuture<Object>();
+        timedOut.completeExceptionally(new OresMutex.LockTimeoutException(
+                java.time.Duration.ZERO));
+        assertFalse(OresMutex.Shared.isPublishedAsyncGrant(timedOut));
+
+        var succeeded = new CompletableFuture<Object>();
+        succeeded.complete(new Object());
+        assertTrue(OresMutex.Shared.isPublishedAsyncGrant(succeeded));
+        assertFalse(succeeded.cancel(false));
+        assertTrue(OresMutex.Shared.isPublishedAsyncGrant(succeeded));
+    }
+
+    @Test
+    void concurrentAsyncHandoffAndTaskRetirementNeverPoisonsAnUnpublishedGrant()
+            throws Exception {
+        // Two carrier threads race Future publication against Task shutdown.
+        // A failed/cancelled Future never conveyed a guarded payload; a
+        // successful Future MUST be conservatively poisoned on abandonment.
+        try (var scheduler = new OresScheduler(1)) {
+            for (int iteration = 0; iteration < 64; iteration++) {
+                var shared = OresMutex.shared(new int[] { iteration });
+                var holder = shared.lock();
+                var waiting = new AtomicReference<CompletableFuture<OresMutex.Guard<int[]>>>();
+                var queued = new CountDownLatch(1);
+                var never = new OresFuture<Integer>();
+                TaskHandle<Integer> task = scheduler.startTracked(resume -> {
+                    waiting.set(shared.lockAsync());
+                    queued.countDown();
+                    return OresScheduler.await(never);
+                });
+                try {
+                    assertTrue(queued.await(3, TimeUnit.SECONDS));
+                    assertFalse(waiting.get().isDone());
+
+                    var start = new CountDownLatch(1);
+                    var canceller = Thread.ofPlatform().start(() -> {
+                        try {
+                            start.await();
+                            task.cancel("handoff versus Task retirement");
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                        }
+                    });
+                    start.countDown();
+                    // Physical permit handoff runs here, not on the Task
+                    // carrier. Both possible Future completion outcomes are
+                    // legal, but poisoning must agree with publication.
+                    holder.release();
+                    canceller.join(3000);
+                    assertFalse(canceller.isAlive());
+
+                    assertInstanceOf(TaskHandle.Cancelled.class,
+                            task.getDone().get(4, TimeUnit.SECONDS));
+                    assertTrue(task.cleanupFailures().get(3, TimeUnit.SECONDS).isEmpty());
+                    var future = waiting.get();
+                    boolean published = OresMutex.Shared.isPublishedAsyncGrant(future);
+                    assertEquals(published, shared.isPoisoned(),
+                            "poison must reflect Future grant publication at iteration "
+                                    + iteration);
+                    if (published) {
+                        assertTrue(future.getNow(null).released());
+                        shared.recover(state -> { state[0] = 0; return null; });
+                    } else {
+                        assertTrue(future.isCancelled(),
+                                "undelivered cancelled requests cannot leak live Futures");
+                    }
+                    var next = shared.tryLock().orElseThrow();
+                    next.release();
+                } finally {
+                    if (!holder.released()) holder.release();
+                    task.cancel("cleanup test");
+                }
+            }
+        }
+    }
+
+    @Test
     void actorLocalGateAutoRetiresWithOwningTask() throws Exception {
         var guard = new AtomicReference<OresMutex.Guard<int[]>>();
         var never = new OresFuture<Integer>();

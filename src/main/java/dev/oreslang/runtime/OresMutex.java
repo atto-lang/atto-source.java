@@ -716,16 +716,44 @@ public final class OresMutex {
                     pending = future;
                     acquired = guard;
                 }
-                // Complete cancellation outside this monitor: subscribers can
-                // synchronously remove waiters and dispatch notifications.
+                // Binding a guard is NOT publication. The grant may still
+                // lose the Future completion race to Task cancellation or
+                // timeout, in which case guest state was never exposed and
+                // poisoning would be a false-positive.
+                //
+                // Cancellation of the Future linearizes before this cleanup
+                // decides whether an acquired guard was actually published.
+                // A successfully completed Future cannot subsequently become
+                // cancelled, even if its observers have not yet run.
                 try {
-                    if (pending != null) pending.cancel(false);
+                    if (pending != null && !isPublishedAsyncGrant(pending)) {
+                        pending.cancel(false);
+                    }
                 } finally {
-                    // An observer failing during cancellation must never
-                    // suppress physical mutex release.
-                    if (acquired != null) acquired.releaseFromRuntime(true);
+                    // Cancellation callbacks execute outside this monitor.
+                    // If a grant was delivered, conservative poison is
+                    // required; if it was not, merely reclaim the permit.
+                    // The guard CAS protects exact-once release against the
+                    // concurrent granting carrier.
+                    if (acquired != null) {
+                        acquired.releaseFromRuntime(isPublishedAsyncGrant(pending));
+                    }
                 }
             }
+        }
+
+        /**
+         * The Future's successful completion is the publication point, not
+         * the earlier internal guard binding. A cancelled/timed-out/failed
+         * request cannot have exposed protected state to its caller.
+         *
+         * Keep this side-effect-free so the same predicate can be exercised
+         * by deterministic regression tests without Task scheduling.
+         */
+        static boolean isPublishedAsyncGrant(CompletableFuture<?> future) {
+            return future != null
+                    && future.isDone()
+                    && !future.isCompletedExceptionally();
         }
 
         private final class AsyncWaiter {
