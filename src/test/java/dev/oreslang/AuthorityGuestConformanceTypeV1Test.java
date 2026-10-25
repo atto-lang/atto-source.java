@@ -65,12 +65,15 @@ final class AuthorityGuestConformanceTypeV1Test {
     void typesAndOwnershipAreCompilerCheckedNotMerelyParsed() {
         for (Fixture fixture : CASES) {
             if (!fixture.checker().equals("type")) continue;
+            // The stage matters: syntax failure cannot certify a semantic
+            // any/unknown or ownership boundary. Parse must succeed first.
+            var parsed = assertDoesNotThrow(
+                    () -> Parser.parse(fixture.source()), "parser: " + fixture.id());
             if (fixture.accept()) {
-                assertDoesNotThrow(
-                        () -> TypeChecker.check(Parser.parse(fixture.source())), fixture.id());
+                assertDoesNotThrow(() -> TypeChecker.check(parsed), fixture.id());
             } else {
                 assertThrows(IllegalArgumentException.class,
-                        () -> TypeChecker.check(Parser.parse(fixture.source())), fixture.id());
+                        () -> TypeChecker.check(parsed), fixture.id());
             }
         }
     }
