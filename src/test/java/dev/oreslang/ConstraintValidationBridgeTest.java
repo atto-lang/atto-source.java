@@ -37,8 +37,10 @@ final class ConstraintValidationBridgeTest {
         assertEquals(0L, minEvidence.value());
         assertEquals(5L, maxEvidence.value());
         assertEquals(catalog.find("Code").fingerprint(), minEvidence.fingerprint());
-        assertSame(minEvidence, ConstraintValidationBridge.lookup(minimum));
-        assertSame(maxEvidence, ConstraintValidationBridge.require(maximum));
+        assertSame(minEvidence, ConstraintValidationBridge.requireCompatible(
+                minimum, catalog, "Code"));
+        assertSame(maxEvidence, ConstraintValidationBridge.requireCompatible(
+                maximum, catalog, "Code"));
     }
 
     @Test
@@ -51,7 +53,9 @@ final class ConstraintValidationBridgeTest {
                 () -> ConstraintValidationBridge.validateAndRecord(
                         tooSmall, catalog, "Code", -1));
         assertEquals("ORES_CONSTRAINT_MIN_INCLUSIVE_I64", minimum.errorId());
-        assertNull(ConstraintValidationBridge.lookup(tooSmall));
+        assertThrows(IllegalStateException.class,
+                () -> ConstraintValidationBridge.requireCompatible(
+                        tooSmall, catalog, "Code"));
 
         Ast.Expr tooLarge = new Ast.LiteralExpr(6);
         ConstraintValidationBridge.Violation maximum = assertThrows(
@@ -59,7 +63,9 @@ final class ConstraintValidationBridgeTest {
                 () -> ConstraintValidationBridge.validateAndRecord(
                         tooLarge, catalog, "Code", 6));
         assertEquals("ORES_CONSTRAINT_MAX_INCLUSIVE_I64", maximum.errorId());
-        assertNull(ConstraintValidationBridge.lookup(tooLarge));
+        assertThrows(IllegalStateException.class,
+                () -> ConstraintValidationBridge.requireCompatible(
+                        tooLarge, catalog, "Code"));
     }
 
     @Test
@@ -69,14 +75,17 @@ final class ConstraintValidationBridgeTest {
         Ast.Expr equalValueReplacement = new Ast.LiteralExpr(3);
 
         ConstraintValidationBridge.validateAndRecord(checked, catalog, "Code", 3);
-        assertNotNull(ConstraintValidationBridge.lookup(checked));
-        assertNull(ConstraintValidationBridge.lookup(equalValueReplacement));
+        assertEquals("Code", ConstraintValidationBridge.requireCompatible(
+                checked, catalog, "Code").qualifiedTypeName());
+        assertThrows(IllegalStateException.class,
+                () -> ConstraintValidationBridge.requireCompatible(
+                        equalValueReplacement, catalog, "Code"));
 
         Ast.copyCheckedMetadata(checked, equalValueReplacement);
-        assertNull(ConstraintValidationBridge.lookup(equalValueReplacement),
-                "constraint provenance must not be copied by generic AST metadata transfer");
         assertThrows(IllegalStateException.class,
-                () -> ConstraintValidationBridge.require(equalValueReplacement));
+                () -> ConstraintValidationBridge.requireCompatible(
+                        equalValueReplacement, catalog, "Code"),
+                "constraint provenance must not be copied by generic AST metadata transfer");
     }
 
     @Test
@@ -85,7 +94,8 @@ final class ConstraintValidationBridgeTest {
         Ast.Expr checked = new Ast.LiteralExpr(3);
         ConstraintValidationBridge.validateAndRecord(checked, catalog, "Code", 3);
 
-        assertEquals("Code", ConstraintValidationBridge.require(checked).qualifiedTypeName());
+        assertEquals("Code", ConstraintValidationBridge.requireCompatible(
+                checked, catalog, "Code").qualifiedTypeName());
         ConstraintValidationBridge.Violation other = assertThrows(
                 ConstraintValidationBridge.Violation.class,
                 () -> ConstraintValidationBridge.validateAndRecord(
