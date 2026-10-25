@@ -281,6 +281,43 @@ final class SourceActorSpawnExecutionTest {
     }
 
     @Test
+    void actorLifecycleAwaitObserversAreReusableAndDirectAwaitMeansReady() throws Exception {
+        String program = """
+                define actor Worker as
+                  receive(ActorMail<String> message): void {
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+
+                  await worker;
+                  await worker;
+
+                  val ready = worker.get_ready();
+                  await ready;
+                  await ready;
+
+                  worker.send("finish");
+
+                  val done = worker.get_done();
+                  await done;
+                  await done;
+
+                  stdio.stdout.write("lifecycle-observers-reusable");
+                  return;
+                }
+                """;
+
+        assertEquals(
+                "lifecycle-observers-reusable",
+                run(program, "source-actor-lifecycle-repeated-await.ores"),
+                "ActorRef/ready/done lifecycle observation must be non-consuming");
+    }
+
+    @Test
     void actorLifecycleMethodsReturnAwaitableFuturesAndRejectPropertyAccess() throws Exception {
         String valid = """
                 define actor Worker as
