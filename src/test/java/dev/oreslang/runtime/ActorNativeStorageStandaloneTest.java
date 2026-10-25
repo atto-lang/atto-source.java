@@ -88,6 +88,43 @@ final class ActorNativeStorageStandaloneTest {
     }
 
     @Test
+    void crossActorRegionAuthorityCannotBeStoredInAnotherArena() {
+        AtomicLong leftCharge = new AtomicLong();
+        AtomicLong rightCharge = new AtomicLong();
+        AtomicBoolean owner = new AtomicBoolean(true);
+        Object uninitialized = new Object();
+        try (ActorNativeArena left = arena(256 * 1024, leftCharge, owner);
+             ActorNativeArena right = arena(256 * 1024, rightCharge, owner)) {
+            ActorNativeArena.Region leftRegion = left.region(32);
+            Map<String, Object> rightFields = right.fields(List.of("foreign"), uninitialized);
+            assertThrows(SecurityException.class, () -> rightFields.put("foreign", leftRegion));
+            assertSame(uninitialized, rightFields.get("foreign"));
+            leftRegion.writeLong(0, 314L);
+            assertEquals(314L, leftRegion.readLong(0));
+        }
+        assertEquals(0, leftCharge.get());
+        assertEquals(0, rightCharge.get());
+    }
+
+    @Test
+    void physicalRetirementWaitsForOutstandingReadOnlyLease() {
+        AtomicLong charged = new AtomicLong();
+        AtomicBoolean owner = new AtomicBoolean(true);
+        ActorNativeArena a = arena(256 * 1024, charged, owner);
+        var region = a.region(32);
+        region.writeLong(0, 94L);
+        var loan = region.leaseReadOnly(0, Long.BYTES);
+        assertThrows(IllegalStateException.class, a::close);
+        assertFalse(a.closed());
+        assertEquals(94L, loan.readLong(0));
+        loan.close();
+        a.close();
+        assertTrue(a.closed());
+        assertEquals(0, charged.get());
+        assertThrows(IllegalStateException.class, () -> region.readLong(0));
+    }
+
+    @Test
     void failedGrowLeavesOriginalPagesAndBudgetUnchanged() {
         AtomicLong charged = new AtomicLong();
         AtomicBoolean owner = new AtomicBoolean(true);
