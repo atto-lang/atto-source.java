@@ -171,9 +171,6 @@ public final class ConstraintValidationBridge {
                         qualifiedTypeName,
                         evidence.schemaId(),
                         evidence.fingerprint());
-        if (evidence.value() < Long.MIN_VALUE || evidence.value() > Long.MAX_VALUE) {
-            throw new IllegalStateException("CONSTRAINT_PROVENANCE_VALUE_INVALID");
-        }
         if (!descriptor.validationRequired()) {
             throw new IllegalStateException("CONSTRAINT_PROVENANCE_DESCRIPTOR_INVALID");
         }
