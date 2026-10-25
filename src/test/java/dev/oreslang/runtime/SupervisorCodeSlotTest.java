@@ -82,6 +82,31 @@ final class SupervisorCodeSlotTest {
         assertEquals(1, failedCleanup.get());
     }
 
+    @Test void reclaimErrorAfterUpgradeStillReportsCommittedRevision() {
+        AtomicInteger failedCleanup = new AtomicInteger();
+        try (var slot = new SupervisorCodeSlot<>("abi", "old", () -> {
+            failedCleanup.incrementAndGet();
+            throw new AssertionError("reclamation error");
+        }, 2)) {
+            var failure = assertThrows(
+                    SupervisorCodeSlot.PostCommitReclamationException.class,
+                    () -> slot.activate(1, "abi", "next", () -> { }));
+            assertEquals(2L, failure.committed().revision(),
+                    "Error from post-commit reclaim must not hide committed activation");
+            assertEquals("abi", failure.committed().abi());
+            assertInstanceOf(AssertionError.class, failure.getCause());
+            assertEquals(1, failedCleanup.get());
+            assertEquals(2L, slot.current().revision());
+            assertThrows(IllegalStateException.class,
+                    () -> slot.activate(1, "abi", "retry", () -> { }),
+                    "old revision cannot be retried after post-commit Error");
+            try (var lease = slot.acquire()) {
+                assertEquals("next", lease.code());
+            }
+        }
+        assertEquals(1, failedCleanup.get());
+    }
+
     @Test void concurrentLeasesAndPolicyUpgradesRetireEachGenerationOnce() throws Exception {
         // Bounded deterministic race: no sleep-based synchronization and no
         // executor may outlive its runtime policy slot.
