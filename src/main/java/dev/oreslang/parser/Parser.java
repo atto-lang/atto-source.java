@@ -3815,6 +3815,11 @@ public final class Parser {
         if (match(RT)) return parseRuntimeExpression();
 
         if (match(NB)) {
+            if (check(MATCH) || check(SWITCH)) {
+                throw error(peek(),
+                        "'nb match' and 'nb switch' are invalid; "
+                                + "await in a dispatch arm is governed by the enclosing suspending context");
+            }
             if (match(CB)) {
                 if (!match(WRITECH)) {
                     throw error(previous(), "'nb cb' must prefix writech");
