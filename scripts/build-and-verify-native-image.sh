@@ -233,7 +233,9 @@ run_exact_guest '42' 'native root-await result differs from expected value' "--m
 # trims trailing newlines, which could hide an extra blank record after an
 # otherwise correct test summary and falsely certify the native executable.
 test_output_file="$(mktemp)"
-trap 'rm -f "$guest_stderr" "$guest_stdout" "$guest_exact_actual" "$guest_expected" "$test_output_file"' 0
+# Keep every temporary file in the final EXIT trap. Replacing the trap
+# without the earlier manifest files leaks their contents on every build.
+trap 'rm -f "$build_info_stdout" "$build_info_stderr" "$build_info_expected" "$guest_stderr" "$guest_stdout" "$guest_exact_actual" "$guest_expected" "$test_output_file"' 0
 : > "$guest_stderr"
 test_guest_status=0
 (
