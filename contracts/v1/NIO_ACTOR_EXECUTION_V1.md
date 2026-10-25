@@ -85,13 +85,18 @@ legacy `MaxActorThreads` metadata are not source authority for intra-actor
 parallel execution.
 
 Actor persistent mutable data lives only in the actor's single protected
-`state { ... }` schema. Access occurs through a verified lexical state loan,
-such as `critical handle_state(callback)` or the equivalent state read/write
-loan. A state loan MAY suspend. While that loan is suspended, another admitted
-message lifetime may execute non-state work, but competing state-loan admission
-must remain blocked until the original loan is released. The loan must not
-escape its lexical callback, be copied to another actor, or survive actor
-termination.
+`state { ... }` schema. Access occurs through a verified lexical critical
+scope such as `critical handle_state(callback)` or the equivalent state
+read/write scope. The logical critical scope/ticket MAY span a correctly lowered
+suspension while retaining exclusion, but a raw/native mutable `StateAccess`
+borrow or projected state-backed reference MUST NOT remain live across
+`await`, blocking select/channel I/O, `rt cooperate`, task handoff or an
+equivalent suspension boundary. The implementation must revoke/release that
+borrow before suspension and revalidate a fresh access view on resume under the
+same logical critical ownership. While exclusion is retained, another admitted
+message lifetime may execute non-state work, but competing state-scope admission
+remains blocked. No state-backed view may escape its lexical callback, be copied
+to another actor, or survive actor termination.
 
 A backend that cannot preserve these invariants MUST reject the relevant source
 feature before guest execution. No backend may silently downgrade logical
@@ -270,8 +275,10 @@ This metadata does **not** override the canonical actor execution model.
 - `ActorGroup` may execute different actors in parallel subject to its own
   aggregate bound and available VM carriers.
 - The actor's single protected `state { ... }` schema remains the only
-  persistent mutable actor-instance state. A verified critical state loan may
-  suspend; competing state loans remain blocked until it is released.
+  persistent mutable actor-instance state. A verified logical critical scope
+  may span a lowered suspension while retaining exclusion, but any raw/native
+  mutable state-access view is revoked before suspension and freshly
+  revalidated on resume. Competing state scopes remain blocked until release.
 - Java/GraalVM and LLVM may continue recognizing LOW while their staged
   MEDIUM/HIGH syntax fails closed. .NET/WASM/Forge must reject unsupported
   actor execution rather than treating host worker credits as source support.
