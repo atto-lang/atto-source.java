@@ -17,15 +17,18 @@ final class HttpGenerationDrainV1 {
 
     private final long generation;
     private final int maxExchanges;
+    private final int maxResourcePins;
     private int exchanges;
     private int resourcePins;
     private boolean draining;
 
-    HttpGenerationDrainV1(long generation, int maxExchanges) {
+    HttpGenerationDrainV1(long generation, int maxExchanges, int maxResourcePins) {
         if (generation <= 0) throw new IllegalArgumentException("invalid generation");
         if (maxExchanges <= 0) throw new IllegalArgumentException("invalid exchange capacity");
+        if (maxResourcePins <= 0) throw new IllegalArgumentException("invalid physical pin capacity");
         this.generation = generation;
         this.maxExchanges = maxExchanges;
+        this.maxResourcePins = maxResourcePins;
     }
 
     synchronized long generation() { return generation; }
@@ -107,7 +110,7 @@ final class HttpGenerationDrainV1 {
             if (kind == null) throw new NullPointerException("resource kind");
             synchronized (owner) {
                 if (finished) throw new IllegalStateException("HTTP exchange has retired");
-                if (resourcePins == Integer.MAX_VALUE)
+                if (resourcePins == maxResourcePins)
                     throw new IllegalStateException("HTTP resource pin limit exhausted");
                 ResourcePin pin = new ResourcePin(this, kind);
                 ++resourcePins;
