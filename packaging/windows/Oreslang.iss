@@ -31,6 +31,9 @@ Source: "..\..\stage\provenance.json"; DestDir: "{app}"; Flags: ignoreversion
 Name: "{autoprograms}\Oreslang"; Filename: "{app}\oreslang.exe"; Parameters: "doctor"
 
 [Code]
+const
+  PathOwnershipKey = 'Software\Oreslang\Installer';
+
 function PathContains(const PathValue, InstallPath: String): Boolean;
 begin
   Result := Pos(';' + Uppercase(InstallPath) + ';',
@@ -49,25 +52,46 @@ begin
     NewPath := InstallPath
   else
     NewPath := OldPath + ';' + InstallPath;
+  // Only remove a PATH value on uninstall if this installation added it.
+  // Preexisting user configuration must never be claimed by the installer.
+  if not RegWriteStringValue(HKEY_CURRENT_USER, PathOwnershipKey,
+          'InstallerAddedPath', InstallPath) then
+    RaiseException('Could not record Oreslang PATH ownership');
   if not RegWriteExpandStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', NewPath) then
+  begin
+    RegDeleteValue(HKEY_CURRENT_USER, PathOwnershipKey, 'InstallerAddedPath');
     RaiseException('Could not update the per-user PATH');
+  end;
 end;
 
 procedure RemoveUserPath;
 var
-  OldPath, Wrapped, InstallPath, Needle, NewPath: String;
+  OldPath, Wrapped, InstallPath, OwnedPath, Needle, NewPath: String;
   Position: Integer;
 begin
-  if not RegQueryStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', OldPath) then Exit;
+  // A path which was already present before setup is not our property.
+  if not RegQueryStringValue(HKEY_CURRENT_USER, PathOwnershipKey,
+          'InstallerAddedPath', OwnedPath) then Exit;
   InstallPath := ExpandConstant('{app}');
+  if Uppercase(OwnedPath) <> Uppercase(InstallPath) then Exit;
+  if not RegQueryStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', OldPath) then
+  begin
+    RegDeleteValue(HKEY_CURRENT_USER, PathOwnershipKey, 'InstallerAddedPath');
+    Exit;
+  end;
   Wrapped := ';' + OldPath + ';';
   Needle := ';' + InstallPath + ';';
   Position := Pos(Uppercase(Needle), Uppercase(Wrapped));
-  if Position = 0 then Exit;
+  if Position = 0 then
+  begin
+    RegDeleteValue(HKEY_CURRENT_USER, PathOwnershipKey, 'InstallerAddedPath');
+    Exit;
+  end;
   Delete(Wrapped, Position, Length(Needle) - 1);
   NewPath := Copy(Wrapped, 2, Length(Wrapped) - 2);
   if not RegWriteExpandStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', NewPath) then
     RaiseException('Could not remove Oreslang from the per-user PATH');
+  RegDeleteValue(HKEY_CURRENT_USER, PathOwnershipKey, 'InstallerAddedPath');
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
