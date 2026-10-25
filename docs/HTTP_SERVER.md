@@ -1,28 +1,16 @@
 # Native HTTP server capabilities
 
+> **Current lower-level implementation.** The proposed Fetch-inspired
+> `HttpResponse` unary actor return is separately specified in
+> [HTTP_RESPONSE_FETCH_API_V1.md](HTTP_RESPONSE_FETCH_API_V1.md) and is
+> **not yet implemented or compiler-verified** on this backend. The API below
+> remains the existing `http.claim`/`HttpExchange` path; this document does
+> not claim that a `run(HttpMessage): HttpResponse` actor can already serve requests.
+
 `http.listen(host, port, capacity, body_limit_bytes, deadline_ms)` creates an
 HTTP/1.1 server under the supervisor's scoped NET permission. Port zero selects
 an ephemeral port. The native backend uses `jdk.httpserver`; Java socket,
 exchange, executor, and stream objects are never available to guest code.
-
-## Actor-level concurrency versus listener capacity
-
-The existing `http.listen(host, port, capacity, ...)` capacity counts active
-**HTTP exchanges for one listener**, not concurrent actor connections and
-not per-connection message-handler activations. The current JDK
-`HttpExchange` does not expose a stable public transport connection
-identifier, so enforcing the new `http actor` dual-axis policy requires
-a connection-aware broker adapter.
-
-The proposed `@concurrency(messages = N)` ordinary actor policy and
-`@concurrency(connections = C, messages_per_connection = M)`
-`http`/`tcp`/`ws` actor policies are specified in
-[HTTP actor envelopes](HTTP_ACTOR_ENVELOPES.md). The host-only
-`ActorIngressConcurrency` admission gate and its tests are implemented;
-**the new source syntax, actor scheduler integration and broker
-per-connection enforcement are not yet implemented.** The one-carrier
-execution lease remains fixed regardless of these logical in-flight
-limits.
 
 ## Ownership and dispatch
 
@@ -43,18 +31,9 @@ HttpServer. Guest code cannot manufacture these opaque handles.
 
 For lower-level supervisors, `exchange.move_to(actor_ref)` exposes the same
 single-use transfer; the caller sends the returned String token. Both move
-and claim reject stale owners. Unlike `handler.dispatch` (which creates a
-dedicated actor for one exchange), explicitly moving into an **existing**
-actor supports multiple HTTP exchanges on a single long-lived actor.
-Request abort or expiry revokes that exchange without cancelling the reusable
-actor or disturbing its other requests. HTTP listener capacity is released
-once that exchange's transport closes, without waiting for the reusable actor
-to terminate. The runtime tracks outstanding exchanges under one actor-death
-watcher per reusable actor; completed exchanges detach immediately, preventing
-an actor-lived completion-listener leak under sustained traffic. A dedicated handler retains its original actor-finalization
-barrier for admission release. Actor death revokes unfinished exchanges.
-See [typed HTTP/TCP/WS actor envelopes](HTTP_ACTOR_ENVELOPES.md) for the
-proposed source API and remaining compiler/backend work.
+and claim reject stale owners, and failed dispatch cancels the destination
+and closes the exchange. Actor startup failure and termination revoke any
+unclaimed token and unfinished exchange.
 
 The socket and HTTP framing state remain in the transport. An isolated actor
 exclusively owns **guest authority** over one exchange; this is not a physical
@@ -100,13 +79,10 @@ call lowering introduces an internal continuation task.
 
 ## Lifecycle and limits
 
-Every request has its own deadline. For `handler.dispatch` dedicated actors,
-capacity counts both transport completion and actor finalization: forgetting
-self.end cannot accumulate unlimited dedicated actors after responding.
-For requests explicitly moved to reusable actors, capacity counts each request's
-transport closure independently of actor lifetime, and failure of one request
-must not cancel other work belonging to the actor. Finished exchanges release
-capacity exactly once. Exhausted capacity gets 503.
+A request has a deadline from admission through actor termination. Capacity
+counts both transport completion and actor finalization: forgetting self.end
+cannot accumulate unlimited actors after sending a response. Finished actors
+and exchanges release capacity exactly once. Exhausted capacity gets 503.
 Unfinished actor termination gets 500 before headers, or connection closure
 after headers. A deadline gets 504 when no I/O is in progress; otherwise it
 closes the transport and cancels the actor. Partial responses are never retried.
@@ -159,3 +135,35 @@ The planned native socket and request-scoped endpoint transfer paths, including
 serialized-only untrusted handlers, are described in
 [Actor physical boundaries](runtime/actor-physical-boundaries.md). The standalone
 native transfer tests do not change the JDK transport ownership model above.
+
+## Reusable request actors
+
+`http.handler("Worker").pooled(size)` registers a supervisor-owned lazy pool
+of 1..4096 workers. Register this handler with Spin as usual. Both shared and
+isolated source actors are supported; untrusted actors remain disallowed.
+A worker receives each request token through its existing bounded mailbox and
+calls `http.claim`. Return from `receive` after awaiting the response; **do not
+call `self.end()`** after each request. Actor fields persist across requests;
+request-local data should remain local to the receive callback.
+
+Each exchange still gets its own ownership generation and single-use token.
+Closing its response revokes its capability, removes it from the worker's active
+request set, releases HTTP admission, and settles `completion`. For pooled
+handlers, completion means transport/exchange completion, not worker termination
+or the end of any application code after `respond`. Later mailbox deliveries
+remain serialized across `await` by the existing source receive gate.
+
+Workers are selected round-robin. Pool size controls reusable actor count, not
+HTTP admission, mailbox capacity, or scheduler threads. A full mailbox rejects
+dispatch with 500 in this initial API; no hidden retry is performed. HTTP admission
+exhaustion remains 503. Set explicit ingress limits so accepted work fits bounded
+mailboxes. A request timeout/abort cancels its worker and fails other pending
+requests assigned to that worker; a later dispatch replaces a fully terminated
+worker. Failed dispatch does not cancel otherwise healthy workers. Completed
+requests do not accumulate actor-termination subscriptions.
+
+`handler.created` counts worker creations and `handler.reused` counts selections
+of existing workers; they are supervisor-only diagnostics, not successful-request
+counters. Pools live until their HTTP runtime/context closes; server shutdown
+still drains request exchanges, and context shutdown cancels idle pool workers.
+The existing unpooled API keeps its actor-per-request/self.end lifecycle.

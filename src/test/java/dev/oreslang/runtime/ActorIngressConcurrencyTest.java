@@ -113,13 +113,17 @@ class ActorIngressConcurrencyTest {
             CountDownLatch start = new CountDownLatch(1);
             CountDownLatch release = new CountDownLatch(1);
             AtomicInteger admitted = new AtomicInteger();
+            CountDownLatch admissionsAttempted = new CountDownLatch(50);
             List<Future<?>> futures = new ArrayList<>();
             for (int i = 0; i < 50; i++) {
                 futures.add(workers.submit(() -> {
                     start.await();
                     var conn = budget.tryOpenConnection(66);
+                    if (conn != null) admitted.incrementAndGet();
+                    // Publish the observation before marking this contender
+                    // finished, otherwise the parent can read a stale count.
+                    admissionsAttempted.countDown();
                     if (conn == null) return null;
-                    admitted.incrementAndGet();
                     try (conn) {
                         // Distinct connection handlers can each have 2 live turns.
                         var first = conn.tryEnter(1, 66);
@@ -135,13 +139,86 @@ class ActorIngressConcurrencyTest {
                 }));
             }
             start.countDown();
-            // Hold admitted connections until all workers have tried admission.
-            for (int retry = 0; retry < 200 && admitted.get() < 3; retry++) Thread.sleep(2);
-            assertEquals(3, admitted.get());
-            assertEquals(3, budget.activeConnections());
-            release.countDown();
+            // All competing attempts must have reached the admission gate.
+            // Don't depend on an arbitrary sleep interval or scheduler speed.
+            try {
+                assertTrue(admissionsAttempted.await(5, TimeUnit.SECONDS),
+                        "all contenders must attempt admission before checking quotas");
+                assertEquals(3, admitted.get());
+                assertEquals(3, budget.activeConnections());
+            } finally {
+                // Avoid stranding the winning workers if an assertion fails.
+                release.countDown();
+            }
             for (var future : futures) future.get(5, TimeUnit.SECONDS);
             assertEquals(0, budget.activeConnections());
+        }
+    }
+
+    @Test void shutdownRacingContendedAdmissionNeverReopensAClosedBudget() throws Exception {
+        for (int iteration = 0; iteration < 64; iteration++) {
+            var budget = ActorIngressConcurrency.network(
+                    ActorIngressConcurrency.Protocol.WS, iteration + 1L, 2, 2);
+            try (ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
+                CountDownLatch start = new CountDownLatch(1);
+                List<Future<?>> attempts = new ArrayList<>();
+                final long incarnation = iteration + 1L;
+                for (int k = 0; k < 16; k++) {
+                    attempts.add(workers.submit(() -> {
+                        start.await();
+                        try {
+                            var connection = budget.tryOpenConnection(incarnation);
+                            if (connection != null) {
+                                try (connection) {
+                                    var message = connection.tryEnter(1, incarnation);
+                                    if (message != null) message.close();
+                                }
+                            }
+                        } catch (IllegalStateException shutdownWon) {
+                            assertTrue(budget.isClosed(),
+                                    "only a terminated budget may reject admission here");
+                        }
+                        return null;
+                    }));
+                }
+                attempts.add(workers.submit(() -> {
+                    start.await();
+                    budget.close();
+                    return null;
+                }));
+                start.countDown();
+                for (var attempt : attempts) attempt.get(5, TimeUnit.SECONDS);
+                assertTrue(budget.isClosed());
+                assertEquals(0, budget.activeConnections());
+                assertThrows(IllegalStateException.class,
+                        () -> budget.tryOpenConnection(incarnation));
+            } finally {
+                budget.close();
+            }
+        }
+    }
+
+    @Test void releasingALeaseNeverMakesItsSequenceReplayable() {
+        try (var budget = ActorIngressConcurrency.regular(101, 1)) {
+            var first = budget.tryEnterRegular(1, 101);
+            first.close();
+            assertThrows(IllegalArgumentException.class,
+                    () -> budget.tryEnterRegular(1, 101));
+            var next = budget.tryEnterRegular(2, 101);
+            assertNotNull(next);
+            next.close();
+        }
+        try (var budget = ActorIngressConcurrency.network(
+                ActorIngressConcurrency.Protocol.TCP, 102, 1, 1)) {
+            var conn = budget.tryOpenConnection(102);
+            var first = conn.tryEnter(1, 102);
+            first.close();
+            assertThrows(IllegalArgumentException.class, () -> conn.tryEnter(1, 102));
+            var next = conn.tryEnter(2, 102);
+            assertNotNull(next);
+            conn.close();
+            assertTrue(next.isClosed());
+            assertThrows(IllegalStateException.class, () -> conn.tryEnter(3, 102));
         }
     }
 

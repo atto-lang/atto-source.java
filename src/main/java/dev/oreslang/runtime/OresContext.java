@@ -40,6 +40,7 @@ public final class OresContext implements AutoCloseable {
 
     private final UUID contextId = UUID.randomUUID();
     private final AtomicLong schedulerSafepoints = new AtomicLong();
+    private final AtomicLong sourceLoopCooperates = new AtomicLong();
     private final IsolatePolicy isolatePolicy;
     private final RuntimePermissions runtimePermissions;
     private final PermissionCheckMode permissionCheckMode;
@@ -204,10 +205,22 @@ public final class OresContext implements AutoCloseable {
      */
     public void schedulerSafepoint() {
         schedulerSafepoints.incrementAndGet();
+        OresScheduler.checkpointCurrentTurn();
         actors.schedulerSafepoint();
     }
 
     public long schedulerSafepoints() { return schedulerSafepoints.get(); }
+
+    /** A watchdog request is advisory until a continuation-safe boundary. */
+    public boolean watchdogPreemptionRequested() {
+        return OresScheduler.preemptionRequested()
+                || actors.watchdogPreemptionRequested();
+    }
+
+    /** Count completed VM decisions to hand a source loop off cooperatively. */
+    public void recordSourceLoopCooperate() { sourceLoopCooperates.incrementAndGet(); }
+
+    public long sourceLoopCooperates() { return sourceLoopCooperates.get(); }
 
     /**
      * Host-managed cross-file link registry. Guest imports may only observe
@@ -321,6 +334,9 @@ public final class OresContext implements AutoCloseable {
                 if (pc == 1) {
                     if (resume.failure() != null) {
                         Throwable failure = OresFuture.unwrap(resume.failure());
+                        if (failure instanceof ProcessExitSignal exit) {
+                            return OresScheduler.done(exit.exitStatus());
+                        }
                         if (failure instanceof Exception checked) throw checked;
                         if (failure instanceof Error error) throw error;
                         throw new RuntimeException(failure);
@@ -395,7 +411,7 @@ public final class OresContext implements AutoCloseable {
 
 
     public Map<String, Object> processDescriptor() {
-        return Map.of(
+        Map<String, Object> descriptor = new java.util.HashMap<>(Map.of(
                 "context_id", contextId.toString(),
                 "runtime", "graalvm-truffle",
                 "language", "oreslang",
@@ -405,7 +421,9 @@ public final class OresContext implements AutoCloseable {
                 "root_scheduler", vm.rootScheduler().name(),
                 "scheduler_started", vm.started(),
                 "control_carriers_started", vm.controlCarrierCount(),
-                "scheduler_safepoints", schedulerSafepoints.get());
+                "scheduler_safepoints", schedulerSafepoints.get()));
+        descriptor.put("source_loop_cooperates", sourceLoopCooperates.get());
+        return Map.copyOf(descriptor);
     }
 
     @Override

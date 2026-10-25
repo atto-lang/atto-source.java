@@ -151,6 +151,58 @@ final class NativeCliIoTest {
                         new ByteArrayOutputStream(), new ByteArrayOutputStream()));
         assertFalse(Files.exists(outside.resolve("write.ores")));
     }
+
+    @Test
+    void missingParentMetadataIsFalseButSymlinkAncestorStillFailsClosed() throws Exception {
+        Path root = Files.createTempDirectory("ores-cli-metadata-missing-").toRealPath();
+        Path outside = Files.createTempDirectory("ores-cli-metadata-other-").toRealPath();
+        Path absent = root.resolve("absent").resolve("child.ores");
+        Path broken = root.resolve("broken");
+        Files.createSymbolicLink(broken, outside.resolve("missing-target"));
+        Path escape = root.resolve("escape");
+        Files.createSymbolicLink(escape, outside);
+        Path sourceFile = root.resolve("probe.ores");
+        RuntimePermissions permissions = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.READ, root.toString());
+        IsolatePolicy policy = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.FILESYSTEM_READ);
+
+        // Metadata for an absent nested entry is harmless and deterministic;
+        // a dangling final symlink remains visible for explicit rejection.
+        String source = """
+            pub routine main(): void {
+              stdio.println(fs.is_dir("%s"));
+              stdio.println(fs.is_symlink("%s"));
+              stdio.println(fs.is_symlink("%s"));
+              return;
+            }
+            """.formatted(absent, absent, broken);
+        Files.writeString(sourceFile, source);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(sourceFile, policy, permissions,
+                PermissionCheckMode.RUNTIME, ExecutionProfile.serverJit(),
+                Set.of(), System.getenv(), out, new ByteArrayOutputStream());
+        String logged = out.toString(java.nio.charset.StandardCharsets.UTF_8);
+        assertEquals("false\nfalse\ntrue", logged.trim().replace("\r", ""));
+
+        // A symlink in the parent is never treated as a missing ordinary
+        // directory; an escaping existing parent is still denied.
+        for (Path forbidden : java.util.List.of(
+                broken.resolve("child.ores"), escape.resolve("secret.ores"))) {
+            Files.writeString(sourceFile, """
+                pub routine main(): void {
+                  stdio.println(fs.is_dir("%s"));
+                  return;
+                }
+                """.formatted(forbidden));
+            assertThrows(RuntimeException.class, () ->
+                    LinkedProgramRunner.run(sourceFile, policy, permissions,
+                            PermissionCheckMode.RUNTIME, ExecutionProfile.serverJit(),
+                            Set.of(), System.getenv(), new ByteArrayOutputStream(),
+                            new ByteArrayOutputStream()));
+        }
+    }
+
     @Test
     void metadataCannotEscapeReadScopeThroughSymlinkedParent() throws Exception {
         Path root = Files.createTempDirectory("ores-cli-metadata-").toRealPath();
