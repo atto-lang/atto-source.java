@@ -261,6 +261,40 @@ final class DispatchFormParityTest {
     }
 
     @Test
+    void switchSubjectsAreEvaluatedExactlyOnce() throws Exception {
+        String program = """
+            fnc viaValueSwitch(): int {
+              let int n = 0;
+              val int result = switch (n = n + 1)
+                case 0 -> { 100; }
+                case 1 -> { 20; }
+                case 2 -> { 300; }
+                default -> { 400; }
+              end;
+              return result + n;
+            }
+
+            fnc viaDoSwitch(): int {
+              let int n = 0;
+              do switch (n = n + 1)
+                case 0 -> { return 100 + n; }
+                case 1 -> { return 20 + n; }
+                case 2 -> { return 300 + n; }
+                default -> { return 400 + n; }
+              end
+            }
+
+            pub routine main(): void {
+              stdio.println(viaValueSwitch());
+              stdio.println(viaDoSwitch());
+              return;
+            }
+            """;
+
+        assertEquals("21\n21", run(program));
+    }
+
+    @Test
     void incompatibleValueArmTypesAreRejected() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
             fnc bad(): int {
