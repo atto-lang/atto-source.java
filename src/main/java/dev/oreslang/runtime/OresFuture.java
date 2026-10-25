@@ -16,7 +16,6 @@ import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
-import java.util.function.Function;
 
 /**
  * Oreslang's runtime-owned Future primitive.
@@ -231,16 +230,18 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         try {
             registrar.accept(completion);
         } catch (Throwable failure) {
-            // Promise-style constructor semantics: a registrar failure rejects
-            // only if the callback has not already won the single-shot race.
+            // VM-fatal failures must escape regardless of whether the foreign
+            // registrar has already settled the Future. Turning an unhandled
+            // VM/linkage failure into an ordinary rejected Future is unsafe.
+            if (failure instanceof VirtualMachineError fatal) throw fatal;
+            if (failure instanceof ThreadDeath fatal) throw fatal;
+            if (failure instanceof LinkageError fatal) throw fatal;
+
+            // A normal registrar failure rejects only if the callback has not
+            // already won the single-shot race. A late benign exception must
+            // never overwrite a result the registrar already published.
             if (callbackClaimed.compareAndSet(false, true)) {
                 future.failFromRuntime(failure);
-            } else if (failure instanceof VirtualMachineError fatal) {
-                throw fatal;
-            } else if (failure instanceof ThreadDeath fatal) {
-                throw fatal;
-            } else if (failure instanceof LinkageError fatal) {
-                throw fatal;
             }
         }
         return future;
@@ -266,23 +267,47 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
                 ? () -> cancellable.cancel(true)
                 : () -> { };
         OresFuture<T> result = new OresFuture<>(cancelHook);
-        stage.whenComplete((value, failure) -> {
-            if (failure == null) {
-                result.completeFromRuntime(value);
-                return;
-            }
+        try {
+            stage.whenComplete((value, failure) -> {
+                if (failure == null) {
+                    result.completeFromRuntime(value);
+                    return;
+                }
 
-            Throwable terminalFailure = unwrap(failure);
-            boolean cancelled = stage instanceof Future<?> hostFuture
-                    ? hostFuture.isCancelled()
-                    : terminalFailure instanceof CancellationException;
+                Throwable terminalFailure = unwrap(failure);
+                final boolean cancelled;
+                try {
+                    // A host may convey cancellation through the terminal
+                    // error even when its Future.isCancelled() flag is false.
+                    // Conversely, an inconsistent host may throw from its
+                    // cancellation probe. Neither may strand this adapter.
+                    cancelled = terminalFailure instanceof CancellationException
+                            || (stage instanceof Future<?> hostFuture
+                                    && hostFuture.isCancelled());
+                } catch (Throwable observationFailure) {
+                    if (observationFailure instanceof VirtualMachineError fatal) throw fatal;
+                    if (observationFailure instanceof ThreadDeath fatal) throw fatal;
+                    if (observationFailure instanceof LinkageError fatal) throw fatal;
+                    result.failFromRuntime(unwrap(observationFailure));
+                    return;
+                }
 
-            if (cancelled) {
-                result.cancel(false);
-            } else {
-                result.failFromRuntime(terminalFailure);
-            }
-        });
+                if (cancelled) {
+                    result.cancel(false);
+                } else {
+                    result.failFromRuntime(terminalFailure);
+                }
+            });
+        } catch (Throwable failure) {
+            // An untrusted host CompletionStage can fail while registering the
+            // completion observer. Never strand the Ores Future in PENDING or
+            // replace a result which raced registration failure. VM-fatal
+            // exceptions retain their normal host failure semantics.
+            if (failure instanceof VirtualMachineError fatal) throw fatal;
+            if (failure instanceof ThreadDeath fatal) throw fatal;
+            if (failure instanceof LinkageError fatal) throw fatal;
+            result.failFromRuntime(unwrap(failure));
+        }
         return result;
     }
 
@@ -413,53 +438,6 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     }
 
     /**
-     * Transform an exclusively owned runtime operation's terminal outcome
-     * without ever running Oreslang guest code on the producer's thread.
-     *
-     * The mapping functions must only create runtime values or propagate
-     * failures. Cancellation of the returned Future detaches the observer
-     * and cancels the owned source operation (e.g. one stdin readch).
-     * Do not use this on shared broadcasts or multi-consumer Futures.
-     */
-    public <U> OresFuture<U> mapOwnedTerminal(
-            Function<? super T, ? extends U> onValue,
-            Function<? super Throwable, ? extends U> onFailure) {
-        Objects.requireNonNull(onValue, "onValue");
-        Objects.requireNonNull(onFailure, "onFailure");
-        AtomicReference<RuntimeWaiterRegistration<T>> registration =
-                new AtomicReference<>();
-        OresFuture<U> mapped = new OresFuture<>(() -> {
-            RuntimeWaiterRegistration<T> active = registration.getAndSet(null);
-            if (active != null) active.detach();
-            this.cancel(false);
-        });
-
-        RuntimeWaiterRegistration<T> waiter =
-                whenCompleteRuntimeCancellable((value, failure) -> {
-                    try {
-                        if (mapped.isDone()) return;
-                        U converted = failure == null
-                                ? onValue.apply(value)
-                                : onFailure.apply(OresFuture.unwrap(failure));
-                        mapped.completeFromRuntime(converted);
-                    } catch (Throwable conversionFailure) {
-                        mapped.failFromRuntime(conversionFailure);
-                    } finally {
-                        RuntimeWaiterRegistration<T> active =
-                                registration.getAndSet(null);
-                        if (active != null) active.detach();
-                    }
-                });
-        registration.set(waiter);
-        if (mapped.isDone()) {
-            RuntimeWaiterRegistration<T> active =
-                    registration.getAndSet(null);
-            if (active != null) active.detach();
-        }
-        return mapped;
-    }
-
-    /**
      * Runtime-only completion subscription.
      *
      * <p>Callbacks registered here must be scheduler plumbing only: transition a
@@ -470,13 +448,7 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      * must remain strictly host-only: source continuations must be queued
      * through an owning scheduler/actor mailbox, never invoked here.</p>
      */
-    /**
-     * Trusted runtime completion observer, including compiler-owned nodes in
-     * dev.oreslang.nodes. The callback may only settle another Future or
-     * enqueue scheduler work: it must never execute guest code inline.
-     * This is not an Oreslang/host-interoperability API.
-     */
-    public void whenCompleteRuntime(BiConsumer<? super T, ? super Throwable> callback) {
+    void whenCompleteRuntime(BiConsumer<? super T, ? super Throwable> callback) {
         whenCompleteRuntimeCancellable(callback);
     }
 

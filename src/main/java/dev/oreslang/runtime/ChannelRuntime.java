@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -100,7 +101,7 @@ public final class ChannelRuntime {
      * <p>Null is deliberately rejected because Oreslang has no standalone null
      * value. Use Option<T> or an explicit signal/unit value instead.</p>
      */
-    public static class Channel<T> implements AutoCloseable, Iterable<T> {
+    public static final class Channel<T> implements AutoCloseable {
         private final int capacity;
         private final int maxPendingRegistrations;
         private final java.util.ArrayDeque<T> buffer = new java.util.ArrayDeque<>();
@@ -182,62 +183,6 @@ public final class ChannelRuntime {
             return Optional.of(value);
         }
 
-        /**
-         * Pull-based native-language iteration. Only a runtime virtual carrier
-         * may park in hasNext; scheduler-owned guest turns use suspendable
-         * channel-iteration lowering instead. A clean close ends iteration;
-         * an I/O failure is never silently converted to EOF.
-         */
-        @Override
-        public java.util.Iterator<T> iterator() {
-            return new java.util.Iterator<>() {
-                private boolean finished;
-                private boolean buffered;
-                private T value;
-
-                @Override
-                public boolean hasNext() {
-                    if (finished) return false;
-                    if (buffered) return true;
-                    if (ActorRuntime.inActorExecution()
-                            || OresScheduler.current() != null) {
-                        throw new IllegalStateException(
-                                "channel iterator cannot park an actor/root carrier; use suspendable for-of");
-                    }
-                    // Only the runtime-owned virtual-thread compatibility
-                    // reader can arrive here. Use interruptible Future.get:
-                    // join() deliberately ignores interruption and would leave
-                    // cancelled generator reads registered indefinitely.
-                    OresFuture<T> pending = readAsync();
-                    try {
-                        value = pending.get();
-                        buffered = true;
-                        return true;
-                    } catch (InterruptedException interrupted) {
-                        pending.cancel(false); // remove the exact registered read
-                        Thread.currentThread().interrupt();
-                        throw new java.util.concurrent.CancellationException(
-                                "channel iterator was cancelled");
-                    } catch (java.util.concurrent.ExecutionException error) {
-                        Throwable cause = OresFuture.unwrap(error);
-                        if (cause instanceof ChannelClosedException closed
-                                && closed.getCause() == null) {
-                            finished = true;
-                            return false;
-                        }
-                        throw new java.util.concurrent.CompletionException(cause);
-                    }
-                }
-
-                @Override
-                public T next() {
-                    if (!hasNext()) throw new java.util.NoSuchElementException();
-                    buffered = false;
-                    return value;
-                }
-            };
-        }
-
         /** Runtime-only drain of committed mailbox values, including after close. */
         boolean drainOne(java.util.function.Consumer<? super T> consumer) {
             Objects.requireNonNull(consumer, "consumer");
@@ -314,22 +259,9 @@ public final class ChannelRuntime {
         }
 
         private ChannelClosedException closedFailure() {
-            // Clean close is a normal EOF for iterators. Abnormal close MUST
-            // retain an identifiable error across Truffle's polyglot exception
-            // boundary, which may suppress Java getCause() in guest-visible
-            // envelopes. Preserve the cause object for host diagnostics too.
-            if (closeCause == null) return new ChannelClosedException("channel is closed");
-            String detail = closeCause.getClass().getSimpleName();
-            String message = closeCause.getMessage();
-            if (message != null && !message.isBlank()) {
-                // Bound diagnostics: untrusted host exception messages must
-                // never produce unlimited error text or multiline log injection.
-                String bounded = message.replace('\r', ' ').replace('\n', ' ');
-                detail += ": " + bounded.substring(0, Math.min(bounded.length(), 160));
-            }
             ChannelClosedException failure =
-                    new ChannelClosedException("channel failed: " + detail);
-            failure.initCause(closeCause);
+                    new ChannelClosedException("channel is closed");
+            if (closeCause != null) failure.initCause(closeCause);
             return failure;
         }
 
@@ -418,35 +350,12 @@ public final class ChannelRuntime {
     }
 
     /**
-     * Internal-only descriptor reads. The explicit endpoint type prevents an
-     * arbitrary guest select from inheriting host I/O bridge privileges.
-     */
-    static OresFuture<String> bridgeReadOutput(StdChannels.OutputChannel output) {
-        Objects.requireNonNull(output, "output");
-        OresFuture<SelectResult> selected =
-                new SelectSet(List.of(read(output)), 0L, true)
-                        .selectAsync(SelectPolicy.PRIORITY);
-        return mapSelection(selected, result -> (String) result.value());
-    }
-
-    /** Internal-only descriptor writes, never exposed through public Channel APIs. */
-    static OresFuture<Void> bridgeWriteInput(StdChannels.InputChannel input, String line) {
-        Objects.requireNonNull(input, "input");
-        Objects.requireNonNull(line, "line");
-        OresFuture<SelectResult> selected =
-                new SelectSet(List.of(write(input, line)), 0L, true)
-                        .selectAsync(SelectPolicy.PRIORITY);
-        return mapSelection(selected, ignored -> null);
-    }
-
-    /**
      * Reusable select descriptor. Static and dynamic source select lower to
      * this same primitive.
      */
     public static final class SelectSet {
         private final List<SelectCase> cases;
-        private final boolean trustedBridge;
-        private final AtomicLong fairCursor = new AtomicLong();
+        private final AtomicLong fairCursor;
 
         public SelectSet(Collection<? extends SelectCase> cases) {
             this(cases, 0L);
@@ -460,15 +369,16 @@ public final class ChannelRuntime {
         public SelectSet(
                 Collection<? extends SelectCase> cases,
                 long initialFairCursor) {
-            this(cases, initialFairCursor, false);
+            this(cases, new AtomicLong(initialFairCursor));
         }
 
+        // Dynamic plan generations share a cursor only with their immutable snapshot.
+        // Old completions cannot rotate a newer generation's FAIR state.
         private SelectSet(
                 Collection<? extends SelectCase> cases,
-                long initialFairCursor,
-                boolean trustedBridge) {
+                AtomicLong sharedFairCursor) {
             Objects.requireNonNull(cases, "cases");
-            this.trustedBridge = trustedBridge;
+            this.fairCursor = Objects.requireNonNull(sharedFairCursor, "sharedFairCursor");
             if (cases.isEmpty()) {
                 throw new IllegalArgumentException(
                         "select requires at least one case");
@@ -478,29 +388,6 @@ public final class ChannelRuntime {
                         "select case count exceeds maximum " + MAX_SELECT_CASES);
             }
             this.cases = List.copyOf(cases);
-            if (!trustedBridge) {
-                for (SelectCase selected : this.cases) {
-                    if (selected instanceof ReadCase<?> reader
-                            && reader.channel() instanceof StdChannels.OutputChannel) {
-                        throw new IllegalArgumentException("stdio output is a write-only channel");
-                    }
-                    if (selected instanceof WriteCase<?> writer
-                            && writer.channel() instanceof StdChannels.InputChannel) {
-                        throw new IllegalArgumentException("stdio input is a read-only channel");
-                    }
-                    // Handles can outlive their creating actor. Check the
-                    // caller's live authority even for cached or upcast refs.
-                    if (selected instanceof ReadCase<?> reader
-                            && reader.channel() instanceof StdChannels.InputChannel input) {
-                        input.requireGuestRead();
-                    }
-                    if (selected instanceof WriteCase<?> writer
-                            && writer.channel() instanceof StdChannels.OutputChannel output) {
-                        output.requireGuestWrite();
-                    }
-                }
-            }
-            this.fairCursor.set(initialFairCursor);
             long defaults = this.cases.stream()
                     .filter(DefaultCase.class::isInstance)
                     .count();
@@ -648,7 +535,9 @@ public final class ChannelRuntime {
         }
 
         private void selected(int index, SelectPolicy policy) {
-            if (policy == SelectPolicy.FAIR && !cases.isEmpty()) {
+            // Default did not perform I/O and must not rotate FAIR credit.
+            if (policy == SelectPolicy.FAIR && !cases.isEmpty()
+                    && !(cases.get(index) instanceof DefaultCase)) {
                 fairCursor.set((index + 1L) % cases.size());
             }
         }
@@ -713,6 +602,152 @@ public final class ChannelRuntime {
 
         public Optional<SelectResult> trySelect(SelectPolicy policy) {
             return set.trySelect(policy);
+        }
+    }
+
+    /**
+     * Mutation-friendly select plan retaining only reusable case descriptors,
+     * never armed waiters or completion authority. Insertion order defines
+     * index order; keyed selections pin that order to one immutable generation.
+     *
+     * <p>Each select creates a fresh, bounded SelectRegistration through the
+     * underlying SelectSet. This preserves Channel, Future and cancellation
+     * semantics (including late Future waiter detachment) from the current
+     * runtime rather than implementing a second arbitration path.
+     */
+    public static final class DynamicSelectPlan<K> {
+        private final LinkedHashMap<K, SelectCase> entries = new LinkedHashMap<>();
+        // One cursor per structural generation: late old wins never rotate a
+        // newer generation. Mutations do not acquire COORDINATOR.
+        private AtomicLong fairness = new AtomicLong();
+        private long version;
+        // The fast path performs one volatile read, not a plan monitor entry.
+        private volatile Snapshot<K> cached;
+
+        private record Snapshot<K>(long version, List<K> keys, SelectSet set) { }
+
+        public record PlannedResult<K>(long version, K key, SelectResult selection) {
+            public PlannedResult {
+                Objects.requireNonNull(key, "key");
+                Objects.requireNonNull(selection, "selection");
+            }
+        }
+
+        public DynamicSelectPlan() { }
+
+        public DynamicSelectPlan(Map<? extends K, ? extends SelectCase> initial) {
+            Objects.requireNonNull(initial, "initial");
+            for (Map.Entry<? extends K, ? extends SelectCase> entry : initial.entrySet()) {
+                put(entry.getKey(), entry.getValue());
+            }
+        }
+
+        /**
+         * Mutations publish a new generation. Replacements retain their key's
+         * insertion position; failed duplicates and quota checks are atomic.
+         */
+        public synchronized void put(K key, SelectCase selectCase) {
+            Objects.requireNonNull(key, "key");
+            Objects.requireNonNull(selectCase, "selectCase");
+            if (!entries.containsKey(key) && entries.size() >= MAX_SELECT_CASES) {
+                throw new SelectAdmissionException(
+                        "dynamic select case count exceeds maximum " + MAX_SELECT_CASES);
+            }
+            if (selectCase instanceof DefaultCase) {
+                for (Map.Entry<K, SelectCase> entry : entries.entrySet()) {
+                    if (!entry.getKey().equals(key)
+                            && entry.getValue() instanceof DefaultCase) {
+                        throw new IllegalArgumentException(
+                                "select permits at most one default case");
+                    }
+                }
+            }
+            long nextVersion = Math.addExact(version, 1L);
+            entries.put(key, selectCase);
+            fairness = new AtomicLong(fairness.get());
+            version = nextVersion;
+            cached = null;
+        }
+
+        /** Existing in-flight selections keep their original snapshot. */
+        public synchronized boolean remove(K key) {
+            Objects.requireNonNull(key, "key");
+            if (!entries.containsKey(key)) return false;
+            long nextVersion = Math.addExact(version, 1L);
+            entries.remove(key);
+            fairness = new AtomicLong(fairness.get());
+            version = nextVersion;
+            cached = null;
+            return true;
+        }
+
+        public synchronized long version() {
+            return version;
+        }
+
+        public synchronized int size() {
+            return entries.size();
+        }
+
+        public synchronized List<K> keys() {
+            return List.copyOf(entries.keySet());
+        }
+
+        /**
+         * Snapshot capture is the select's plan-version linearization point.
+         * Concurrent mutations may complete after the capture but before
+         * registration; the in-flight operation still owns the old generation.
+         */
+        private Snapshot<K> snapshot() {
+            Snapshot<K> result = cached;
+            if (result != null) return result;
+            synchronized (this) {
+                result = cached;
+                if (result != null) return result;
+                if (entries.isEmpty()) {
+                    throw new IllegalStateException("cannot select from an empty dynamic plan");
+                }
+                result = new Snapshot<>(
+                        version, List.copyOf(entries.keySet()),
+                        new SelectSet(entries.values(), fairness));
+                cached = result;
+                return result;
+            }
+        }
+
+        public SelectSet selectSetSnapshot() {
+            return snapshot().set();
+        }
+
+        public OresFuture<SelectResult> selectAsync() {
+            return selectAsync(SelectPolicy.FAIR);
+        }
+
+        public OresFuture<SelectResult> selectAsync(SelectPolicy policy) {
+            return snapshot().set().selectAsync(policy);
+        }
+
+        public Optional<SelectResult> trySelect() {
+            return trySelect(SelectPolicy.FAIR);
+        }
+
+        public Optional<SelectResult> trySelect(SelectPolicy policy) {
+            return snapshot().set().trySelect(policy);
+        }
+
+        public OresFuture<PlannedResult<K>> selectKeyedAsync(SelectPolicy policy) {
+            Snapshot<K> selected = snapshot();
+            return mapSelection(
+                    selected.set().selectAsync(policy),
+                    result -> new PlannedResult<>(
+                            selected.version(), selected.keys().get(result.index()), result));
+        }
+
+        public Optional<PlannedResult<K>> trySelectKeyed(SelectPolicy policy) {
+            Snapshot<K> selected = snapshot();
+            return selected.set().trySelect(policy)
+                    .map(result -> new PlannedResult<>(
+                            selected.version(), selected.keys().get(result.index()), result));
         }
     }
 
@@ -1000,8 +1035,6 @@ public final class ChannelRuntime {
         }
     }
 
-    private static final int MAX_PENDING_STDIO_GUEST_OPERATIONS = 128;
-
     private static boolean exceedsPendingBudgetLocked(
             SelectRegistration selection) {
         for (CaseRegistration registration : selection.registrations) {
@@ -1019,52 +1052,6 @@ public final class ChannelRuntime {
 
     private static void registerLocked(SelectRegistration selection) {
         if (selection.decided || selection.registered) return;
-
-        // Rendezvous capacity bounds accepted frames but not pending nb writes.
-        // Apply a hard, pre-admission quota so an unawaited stream of writes
-        // cannot accumulate arbitrarily many registrations. Do this BEFORE
-        // registering any case, otherwise an error could leak a partial select.
-        if (!selection.set.trustedBridge) {
-            java.util.IdentityHashMap<Channel<?>, Integer> pending =
-                    new java.util.IdentityHashMap<>();
-            for (SelectCase candidate : selection.set.cases) {
-                // A cached SelectSet can be reused from a different actor.
-                // Admission must recheck the current actor's authority.
-                if (candidate instanceof ReadCase<?> read
-                        && read.channel() instanceof StdChannels.InputChannel input) {
-                    input.requireGuestRead();
-                }
-                if (candidate instanceof WriteCase<?> write
-                        && write.channel() instanceof StdChannels.OutputChannel output) {
-                    output.requireGuestWrite();
-                }
-                if (candidate instanceof WriteCase<?> write
-                        && write.channel() instanceof StdChannels.OutputChannel) {
-                    // All guest writes (including dynamically built selects)
-                    // must have a bounded frame before admission retains it.
-                    StdChannels.validateOutputFrame(write.value());
-                    pending.merge(write.channel(), 1, Integer::sum);
-                } else if (candidate instanceof ReadCase<?> read
-                        && read.channel() instanceof StdChannels.InputChannel) {
-                    pending.merge(read.channel(), 1, Integer::sum);
-                }
-            }
-            for (var entry : pending.entrySet()) {
-                Channel<?> channel = entry.getKey();
-                SelectOperation direction = channel instanceof StdChannels.InputChannel
-                        ? SelectOperation.READ : SelectOperation.WRITE;
-                int existing = 0;
-                for (CaseRegistration waiter : channel.registrations) {
-                    if (waiter.operation() == direction) existing++;
-                }
-                if (existing + entry.getValue() > MAX_PENDING_STDIO_GUEST_OPERATIONS) {
-                    throw new java.util.concurrent.RejectedExecutionException(
-                            "stdio channel pending admission limit exceeded ("
-                                    + MAX_PENDING_STDIO_GUEST_OPERATIONS + ")");
-                }
-            }
-        }
-
 
         // A reusable SelectSet may have had another selection commit after
         // this registration object was constructed. Capture the fairness
@@ -1085,17 +1072,6 @@ public final class ChannelRuntime {
             activeArmRegistrations++;
             if (selectCase instanceof ReadCase<?> || selectCase instanceof WriteCase<?>) {
                 channelOf(selectCase).registrations.add(registration);
-            }
-        }
-
-        // Descriptor handles are inert until a real read is registered.
-        // This includes readch, channel iteration, and dynamic select, not
-        // just InputChannel.readAsync(). The startup thread acquires the
-        // coordinator only after this registration transaction releases it.
-        for (SelectCase readCase : selection.set.cases) {
-            if (readCase instanceof ReadCase<?> reader
-                    && reader.channel() instanceof StdChannels.InputChannel stdin) {
-                stdin.activateReadDemand();
             }
         }
     }

@@ -95,12 +95,7 @@ final class NativeCoreLibraryTest {
                 assertFalse(source.contains("java:"),
                         () -> relative + " contains a java: host import");
 
-                // Inspect packaged stdlib declarations before userland prelude injection:
-                // the native Observable module must not be mistaken for an
-                // attempt to shadow its own reserved global name.
-                var program = new dev.oreslang.parser.Parser(
-                        new dev.oreslang.parser.Lexer(unit.oresSource()).scan())
-                        .parseProgram();
+                var program = dev.oreslang.parser.Parser.parse(unit.oresSource());
                 for (var imported : program.imports()) {
                     assertTrue(
                             CoreLibrarySources.isCoreImport(imported.path()),

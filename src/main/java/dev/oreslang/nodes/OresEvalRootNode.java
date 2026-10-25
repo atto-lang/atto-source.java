@@ -535,6 +535,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             Ast.ClassDecl klass = requireLocalActorClass(actorTypeName);
+            requireSupportedActorExecutionPolicy(klass);
             ActorRuntime.ActorKind expectedKind = switch (klass.actorKind()) {
                 case NONE -> throw new IllegalArgumentException(
                         "source spawn target '" + actorTypeName + "' is not an actor");
@@ -658,6 +659,52 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        @Override
+        public void tearDownActor(
+                String actorTypeName,
+                ActorRuntime.ActorOwnedGuestState rawState,
+                ActorRuntime.ActorContext<Object> actorContext) {
+            if (!(rawState instanceof SourceActorState state)
+                    || !state.ownerActorId().equals(actorContext.self().id())
+                    || !state.actorTypeName().equals(actorTypeName)) {
+                throw new SecurityException(
+                        "source actor tear_down does not match actor-owned state");
+            }
+            Ast.MethodDecl teardown = findMethod(
+                    state.object().klass,
+                    CallableSelector.instance("tear_down", 0));
+            if (teardown == null) return;
+            if (teardown.async() || teardown.suspends()
+                    || methodContainsPotentialSuspension(teardown)) {
+                throw new IllegalStateException(
+                        "actor tear_down cannot suspend until scheduler-owned teardown awaits are supported");
+            }
+            // Deliberately bypass ordinary method lookup/call: actor tear_down
+            // is not callable by guest source and can only enter from the
+            // runtime's once-only lifecycle turn.
+            executeActorLifecycleMethod(state.object(), teardown, "tear_down");
+        }
+
+        /**
+         * Runtime admission guard independent of source type-checker entry
+         * points. No actor with unsupported parallel state access may start.
+         */
+        private void requireSupportedActorExecutionPolicy(Ast.ClassDecl actor) {
+            Ast.ActorConcurrency policy = actor.actorConcurrency();
+            if (policy.transport() != Ast.ActorTransport.GENERIC) {
+                throw new SecurityException(
+                        "actor " + actor.name() + " uses a " + policy.transport()
+                                + " transport, but generic ActorRef spawning does not bind "
+                                + "HTTP/TCP/WebSocket requests to actor connection lanes");
+            }
+            if (policy.requestConcurrency() != 1 || policy.messageConcurrency() != 1) {
+                throw new SecurityException(
+                        "actor " + actor.name() + " declares unsupported parallel execution "
+                                + policy + "; ActorRuntime holds a single-writer actor-state "
+                                + "lease across every await/cooperate boundary");
+            }
+        }
+
         private Ast.ClassDecl requireLocalActorClass(String actorTypeName) {
             Ast.ClassDecl klass = findClass(actorTypeName);
             if (klass == null) {
@@ -675,31 +722,29 @@ public final class OresEvalRootNode extends RootNode {
             return klass;
         }
 
-        private void executeActorStartup(
-                OresObject object,
-                Ast.MethodDecl startup) {
-            Env env =
-                    new Env(
-                            null,
-                            false,
-                            declaringClass(startup),
-                            object);
+        private void executeActorStartup(OresObject object, Ast.MethodDecl startup) {
+            executeActorLifecycleMethod(object, startup, "on_start");
+        }
+
+        private void executeActorLifecycleMethod(
+                OresObject object, Ast.MethodDecl method, String hook) {
+            Env env = new Env(null, false, declaringClass(method), object);
             env.define("self", object, Ast.BindingKind.VAL);
-            bindCallableArguments(env, startup.parameters(), List.of(), "actor on_start");
+            bindCallableArguments(env, method.parameters(), List.of(), "actor " + hook);
             try {
-                executeBlock(startup.body(), env);
+                executeBlock(method.body(), env);
             } catch (ReturnSignal signal) {
                 if (signal.value != null) {
                     throw new IllegalStateException(
-                            "actor on_start cannot return a value");
+                            "actor " + hook + " cannot return a value");
                 }
             } catch (TailCallSignal signal) {
                 throw new IllegalStateException(
-                        "actor on_start cannot tail-call across the startup initialization boundary",
+                        "actor " + hook + " cannot tail-call across a lifecycle boundary",
                         signal);
             } catch (BreakSignal | ContinueSignal signal) {
                 throw new IllegalStateException(
-                        "loop control cannot cross actor on_start",
+                        "loop control cannot cross actor " + hook,
                         signal);
             }
         }
@@ -1658,12 +1703,7 @@ public final class OresEvalRootNode extends RootNode {
                                         statementContainsPotentialSuspension(nested, seen));
             }
             if (stmt instanceof Ast.ForOfStmt loop) {
-                // Built-in stdin iterators are potentially suspending even
-                // without an explicit readch in source. Route the enclosing
-                // function to SourceTask so it releases its guest carrier.
-                return loop.asyncIteration()
-                        || isProcessInputChannelExpr(loop.iterable())
-                        || expressionContainsPotentialSuspension(loop.iterable(), seen)
+                return loop.asyncIteration() || expressionContainsPotentialSuspension(loop.iterable(), seen)
                         || loop.body().stream().anyMatch(
                                 nested ->
                                         statementContainsPotentialSuspension(nested, seen));
@@ -1703,17 +1743,6 @@ public final class OresEvalRootNode extends RootNode {
             return false;
         }
 
-        private static boolean isProcessInputChannelExpr(Ast.Expr expr) {
-            if (!(expr instanceof Ast.MemberExpr member)
-                    || !(member.receiver() instanceof Ast.NameExpr root)) return false;
-            return switch (root.name()) {
-                case "stdio", "stdin" ->
-                        member.member().equals("in") || member.member().equals("stdin");
-                case "process" -> member.member().equals("stdin");
-                default -> false;
-            };
-        }
-
         private boolean expressionContainsPotentialSuspension(
                 Ast.Expr expr,
                 Set<Object> seen) {
@@ -1747,22 +1776,6 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (expressionContainsPotentialSuspension(call.callee(), seen)) return true;
                 if (call.callee() instanceof Ast.MemberExpr member) {
-                    // Prelude modules are authored in Oreslang. A call such
-                    // as Stdio.println_blocking() is an ordinary function
-                    // containing writech, so it must suspend the *caller* as
-                    // well. Otherwise the caller returns while its callee
-                    // still executes and context shutdown races the worker.
-                    if (member.receiver() instanceof Ast.NameExpr namespace) {
-                        Ast.FunctionDecl moduleMethod =
-                                findFunction(namespace.name() + "." + member.member(),
-                                        call.arguments().size());
-                        if (moduleMethod != null && !moduleMethod.generator()) {
-                            if (moduleMethod.async()
-                                    || functionContainsPotentialSuspension(moduleMethod, seen)) {
-                                return true;
-                            }
-                        }
-                    }
                     // Resolve local method families conservatively across
                     // overrides, without turning every builtin call into a task.
                     // Declaration aliases refer to the same AST object. Structural
@@ -1883,14 +1896,9 @@ public final class OresEvalRootNode extends RootNode {
                 SourceFlowCont continuation) {
             Env env = new Env(parent);
             ArrayDeque<Ast.Expr> defers = new ArrayDeque<>();
-            runStatements(
-                    task,
-                    statements,
-                    env,
-                    defers,
-                    0,
-                    (ignored, flow) ->
-                            finishBlock(task, env, defers, flow, continuation));
+            // runStatements owns terminal finalization for this block.
+            // A second finishBlock would release the same environment twice.
+            runStatements(task, statements, env, defers, 0, continuation);
         }
 
         /**
@@ -2027,15 +2035,26 @@ public final class OresEvalRootNode extends RootNode {
          * An earlier exit owns its status; an earlier unhandled failure must
          * never be downgraded by a later deferred exit(0).
          */
+        private static final int MAX_CLEANUP_SUPPRESSED = 64;
+
+        private static void suppressCleanupFailure(Throwable primary, Throwable secondary) {
+            if (primary == secondary) return;
+            synchronized (primary) {
+                if (primary.getSuppressed().length < MAX_CLEANUP_SUPPRESSED) {
+                    primary.addSuppressed(secondary);
+                }
+            }
+        }
+
         private SourceFlow mergeCleanupFailure(SourceFlow currentFlow, Throwable cleanupFailure) {
             Throwable earlier = currentFlow.failure();
             if (earlier == cleanupFailure) return currentFlow; // no self-suppression
             if (earlier != null && (isUnmaskableFailure(earlier)
                     || cleanupFailure instanceof ProcessExitSignal)) {
-                earlier.addSuppressed(cleanupFailure);
+                suppressCleanupFailure(earlier, cleanupFailure);
                 return currentFlow;
             }
-            if (earlier != null) cleanupFailure.addSuppressed(earlier);
+            if (earlier != null) suppressCleanupFailure(cleanupFailure, earlier);
             return SourceFlow.throwing(cleanupFailure);
         }
 
@@ -2051,7 +2070,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (isUnmaskableFailure(earlier)) {
                     if (finallyFlow.kind() == SourceFlowKind.THROW
                             && earlier != finallyFlow.failure()) {
-                        earlier.addSuppressed(finallyFlow.failure());
+                        suppressCleanupFailure(earlier, finallyFlow.failure());
                     }
                     return pending;
                 }
@@ -2140,6 +2159,10 @@ public final class OresEvalRootNode extends RootNode {
                 ArrayDeque<Ast.Expr> defers,
                 SourceFlowCont continuation) {
             try {
+                if (stmt instanceof Ast.UsingBorrowStmt) {
+                    throw new IllegalStateException(
+                            "using request.borrow() as view is not executable without checked loan cleanup");
+                }
                 if (stmt instanceof Ast.BindingStmt binding) {
                     evalSuspendableExpr(
                             task,
@@ -2447,26 +2470,6 @@ public final class OresEvalRootNode extends RootNode {
                                             (iteration, item) -> iteration.define(
                                                     loop.bindingName(), item, loop.bindingKind()),
                                             continuation);
-                                    return;
-                                }
-                                if (iterable instanceof ChannelRuntime.Channel<?> channel) {
-                                    runChannelForOfIteration(t, loop, env, channel, continuation);
-                                    return;
-                                }
-                                // The native ReadableStream<T> class is a
-                                // single-consumer adapter over one Channel<T>.
-                                // Drive it directly on the resumable source-task
-                                // protocol: do not park an actor/root turn in
-                                // GeneratorRuntime.Generator.nextStep().
-                                if (iterable instanceof OresObject stream
-                                        && stream.owner == this
-                                        && stream.klass == classes.get("ReadableStream")
-                                        && stream.fields.get("source") instanceof ChannelRuntime.Channel<?> source) {
-                                    runChannelForOfIteration(t, loop, env, source, continuation);
-                                    return;
-                                }
-                                if (iterable instanceof GeneratorRuntime.Generator<?> generator) {
-                                    runSuspendableGeneratorForOf(t, loop, env, generator, continuation);
                                     return;
                                 }
                                 Iterable<?> values = iterableValues(iterable, env);
@@ -3139,88 +3142,6 @@ public final class OresEvalRootNode extends RootNode {
             });
         }
 
-        /** Suspendable channel iteration: never calls blocking Iterator.hasNext on a guest carrier. */
-        private void runChannelForOfIteration(
-                SourceTask task,
-                Ast.ForOfStmt loop,
-                Env env,
-                ChannelRuntime.Channel<?> channel,
-                SourceFlowCont continuation) {
-            task.suspend(channel.readAsync(), (t, value, failure) -> {
-                if (failure != null) {
-                    Throwable root = OresFuture.unwrap(failure);
-                    if (root instanceof ChannelRuntime.ChannelClosedException ended
-                            && ended.getCause() == null) {
-                        continuation.accept(t, SourceFlow.normal());
-                    } else {
-                        continuation.accept(t, SourceFlow.throwing(root));
-                    }
-                    return;
-                }
-                Env iteration = new Env(env);
-                iteration.define(loop.bindingName(), value, loop.bindingKind());
-                runBlock(t, loop.body(), iteration, (t2, flow) -> {
-                    if (flow.kind() == SourceFlowKind.BREAK) {
-                        continuation.accept(t2, SourceFlow.normal());
-                    } else if (flow.kind() == SourceFlowKind.RETURN
-                            || flow.kind() == SourceFlowKind.THROW) {
-                        continuation.accept(t2, flow);
-                    } else {
-                        t2.scheduleLoopContinuation(env, (resumed, ignored, resumeError) -> {
-                            if (resumeError != null) {
-                                continuation.accept(resumed, SourceFlow.throwing(resumeError));
-                            } else {
-                                runChannelForOfIteration(resumed, loop, env, channel, continuation);
-                            }
-                        });
-                    }
-                });
-            });
-        }
-
-        /**
-         * A normal (non-async) Oreslang generator can still suspend internally
-         * on readch. Pull it asynchronously and admit the body only after the
-         * completion is delivered on an OresScheduler turn.
-         */
-        private void runSuspendableGeneratorForOf(
-                SourceTask task,
-                Ast.ForOfStmt loop,
-                Env env,
-                GeneratorRuntime.Generator<?> generator,
-                SourceFlowCont continuation) {
-            task.suspend(generator.nextStepAsync(), (t, value, failure) -> {
-                if (failure != null) {
-                    finishSourceIterable(t, generator, SourceFlow.throwing(failure), continuation);
-                    return;
-                }
-                GeneratorRuntime.Step<?> step = (GeneratorRuntime.Step<?>) value;
-                if (step.done()) {
-                    finishSourceIterable(t, generator, SourceFlow.normal(), continuation);
-                    return;
-                }
-                Env iteration = new Env(env);
-                iteration.define(loop.bindingName(), step.value(), loop.bindingKind());
-                runBlock(t, loop.body(), iteration, (t2, flow) -> {
-                    if (flow.kind() == SourceFlowKind.BREAK) {
-                        finishSourceIterable(t2, generator, SourceFlow.normal(), continuation);
-                    } else if (flow.kind() == SourceFlowKind.RETURN
-                            || flow.kind() == SourceFlowKind.THROW) {
-                        finishSourceIterable(t2, generator, flow, continuation);
-                    } else {
-                        t2.scheduleLoopContinuation(env, (resumed, ignored, resumeFailure) -> {
-                            if (resumeFailure != null) {
-                                finishSourceIterable(resumed, generator,
-                                        SourceFlow.throwing(resumeFailure), continuation);
-                            } else {
-                                runSuspendableGeneratorForOf(resumed, loop, env, generator, continuation);
-                            }
-                        });
-                    }
-                });
-            });
-        }
-
         private void runForOfIteration(
                 SourceTask task,
                 Ast.ForOfStmt loop,
@@ -3433,19 +3354,40 @@ public final class OresEvalRootNode extends RootNode {
                 SourceTask task,
                 Ast.Expr expr,
                 Env env,
-                SourceValueCont continuation) {
+                SourceValueCont downstream) {
+            // Deliver the non-suspending hot path outside the evaluation catch.
+            boolean canSuspend;
             try {
-                if (!expressionContainsPotentialSuspension(
+                canSuspend = expressionContainsPotentialSuspension(
                         expr,
-                        java.util.Collections.newSetFromMap(
-                                new IdentityHashMap<>()))) {
-                    continuation.accept(
-                            task,
-                            eval(expr, env),
-                            null);
+                        java.util.Collections.newSetFromMap(new IdentityHashMap<>()));
+            } catch (RuntimeException | Error failure) {
+                downstream.accept(task, null, failure);
+                return;
+            }
+            if (!canSuspend) {
+                Object value;
+                try {
+                    value = eval(expr, env);
+                } catch (RuntimeException | Error failure) {
+                    downstream.accept(task, null, failure);
                     return;
                 }
+                downstream.accept(task, value, null);
+                return;
+            }
 
+            // Resumable expressions have exactly one terminal delivery.
+            java.util.concurrent.atomic.AtomicBoolean delivered =
+                    new java.util.concurrent.atomic.AtomicBoolean();
+            SourceValueCont continuation = (resumedTask, value, failure) -> {
+                if (!delivered.compareAndSet(false, true)) {
+                    throw new IllegalStateException(
+                            "suspendable expression completed more than once");
+                }
+                downstream.accept(resumedTask, value, failure);
+            };
+            try {
                 if (expr instanceof Ast.MatchExpr matched) {
                     // Evaluate the subject once on the SourceTask. In
                     // particular, an awaited subject must not be replayed
@@ -3607,6 +3549,13 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (expr instanceof Ast.BinaryExpr binary) {
+                    if (binary.operator().equals("pipe")) {
+                        // Defense in depth: never spawn or inspect either stage
+                        // if an untyped graph operator reaches guest evaluation.
+                        continuation.accept(task, null, new IllegalStateException(
+                                "actor pipe graph is not implemented; no stages were spawned"));
+                        return;
+                    }
                     if (binary.operator().equals("&&")) {
                         evalSuspendableExpr(
                                 task,
@@ -4015,6 +3964,9 @@ public final class OresEvalRootNode extends RootNode {
 
                 continuation.accept(task, eval(expr, env), null);
             } catch (RuntimeException | Error failure) {
+                // A delivered continuation owns its downstream failure.
+                // Re-delivery could replay effects or release affine resources twice.
+                if (delivered.get()) throw failure;
                 continuation.accept(task, null, failure);
             }
         }
@@ -4635,15 +4587,8 @@ public final class OresEvalRootNode extends RootNode {
                                                             values,
                                                             env);
                                             boolean declaredFuture =
-                                                    invocationDeclaresAsync(invocation);
-                                            // read_line is a sequential stdin
-                                            // effect returning Option<String>,
-                                            // not a Future-valued API. Like
-                                            // readch, it suspends this guest turn.
-                                            if (receiver instanceof dev.oreslang.runtime.StdChannels.InputChannel
-                                                    && member.member().equals("read_line")) {
-                                                declaredFuture = false;
-                                            }
+                                                    invocationDeclaresAsync(
+                                                            invocation);
                                             completeSourceInvocation(
                                                     t2,
                                                     invocation,
@@ -5610,6 +5555,11 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callMethodRaw(OresObject receiver, Ast.MethodDecl method, List<?> args) {
+            if (receiver.klass.actorKind() != Ast.ActorKind.NONE
+                    && method.name().equals("tear_down")) {
+                throw new SecurityException(
+                        "actor tear_down is a runtime-only lifecycle hook, not a callable method");
+            }
             if (args.size() != method.parameters().size()) {
                 throw new IllegalArgumentException(
                         "method " + method.name() + " arity mismatch");
@@ -5672,16 +5622,16 @@ public final class OresEvalRootNode extends RootNode {
                         if (pendingFailure != null && isUnmaskableFailure(pendingFailure)) {
                             // Never let a deferred ordinary failure replace a panic,
                             // denial, cancellation, host Error, or earlier process exit.
-                            if (failure != pendingFailure) pendingFailure.addSuppressed(failure);
+                            if (failure != pendingFailure) suppressCleanupFailure(pendingFailure, failure);
                         } else if (failure instanceof ProcessExitSignal && pendingFailure != null) {
                             // A deferred exit(0) must not convert an earlier
                             // unhandled failure into a successful process exit.
                             // Keep the original failure authoritative; the exit
                             // attempt is diagnostic only.
-                            if (failure != pendingFailure) pendingFailure.addSuppressed(failure);
+                            if (failure != pendingFailure) suppressCleanupFailure(pendingFailure, failure);
                         } else {
                             if (pendingFailure != null && pendingFailure != failure) {
-                                failure.addSuppressed(pendingFailure);
+                                suppressCleanupFailure(failure, pendingFailure);
                             }
                             pendingFailure = failure;
                         }
@@ -5691,14 +5641,14 @@ public final class OresEvalRootNode extends RootNode {
                     env.releaseMutexGuards(abnormalExit || pendingFailure != null);
                 } catch (RuntimeException | Error failure) {
                     if (pendingFailure != null && isUnmaskableFailure(pendingFailure)) {
-                        if (failure != pendingFailure) pendingFailure.addSuppressed(failure);
+                        if (failure != pendingFailure) suppressCleanupFailure(pendingFailure, failure);
                     } else if (failure instanceof ProcessExitSignal && pendingFailure != null) {
                         // Mutex cleanup cannot downgrade an already failing
                         // root task into successful exit(0).
-                        if (failure != pendingFailure) pendingFailure.addSuppressed(failure);
+                        if (failure != pendingFailure) suppressCleanupFailure(pendingFailure, failure);
                     } else {
                         if (pendingFailure != null && pendingFailure != failure) {
-                            failure.addSuppressed(pendingFailure);
+                            suppressCleanupFailure(failure, pendingFailure);
                         }
                         pendingFailure = failure;
                     }
@@ -5720,6 +5670,13 @@ public final class OresEvalRootNode extends RootNode {
                 Env env,
                 ArrayDeque<Ast.Expr> deferred,
                 boolean inheritedTailBarrier) {
+            // Defense in depth: source can reach this evaluator through host
+            // adapters that do not run the normal TypeChecker on every call.
+            // Never silently ignore an unlowered scoped resource statement.
+            if (stmt instanceof Ast.UsingBorrowStmt) {
+                throw new IllegalStateException(
+                        "using request.borrow() as view is not executable without checked loan cleanup");
+            }
             if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
                 context.schedulerSafepoint();
             }
@@ -5952,11 +5909,11 @@ public final class OresEvalRootNode extends RootNode {
                                 && (isUnmaskableFailure(pendingTryFailure)
                                         || cleanupFailure instanceof ProcessExitSignal)) {
                             if (pendingTryFailure != cleanupFailure) {
-                                pendingTryFailure.addSuppressed(cleanupFailure);
+                                suppressCleanupFailure(pendingTryFailure, cleanupFailure);
                             }
                         } else {
                             if (pendingTryFailure != null && pendingTryFailure != cleanupFailure) {
-                                cleanupFailure.addSuppressed(pendingTryFailure);
+                                suppressCleanupFailure(cleanupFailure, pendingTryFailure);
                             }
                             throw cleanupFailure;
                         }
@@ -6783,7 +6740,6 @@ public final class OresEvalRootNode extends RootNode {
                 Object local = env.lookup(name.name());
                 if (local != Env.MISSING) return local;
                 if (name.name().equals("stdio")) return new StdioFacade(context);
-                if (name.name().equals("stdin")) return new StdinNamespace(context);
                 if (name.name().equals("std")) return new StdFacade(context);
                 if (name.name().equals("fs") || name.name().equals("File")) return new FileSystemFacade(context);
                 if (name.name().equals("network") || name.name().equals("net")) return new NetworkFacade(context);
@@ -6944,6 +6900,10 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
             if (expr instanceof Ast.BinaryExpr binary) {
+                if (binary.operator().equals("pipe")) {
+                    throw new IllegalStateException(
+                            "actor pipe graph is not implemented; no stages were spawned");
+                }
                 if (binary.operator().equals("&&")) {
                     Object left = eval(binary.left(), env);
                     return truth(left) && truth(eval(binary.right(), env));
@@ -6998,6 +6958,7 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     Ast.ClassDecl actorClass =
                             requireLocalActorClass(created.type().name());
+                    requireSupportedActorExecutionPolicy(actorClass);
                     ActorRuntime.ActorKind runtimeKind =
                             switch (actorClass.actorKind()) {
                                 case NONE -> throw new AssertionError(
@@ -7270,16 +7231,8 @@ public final class OresEvalRootNode extends RootNode {
                     case "print" -> (Invokable) stdio::print;
                     case "println" -> (Invokable) stdio::println;
                     case "stdout" -> new StdoutFacade(stdio.context());
-                    case "stdin", "in" -> stdio.context().standardChannels().input();
-                    case "out" -> stdio.context().standardChannels().output();
-                    case "stderr", "err" -> stdio.context().standardChannels().error();
+                    case "stdin" -> new StdinFacade(stdio.context());
                     default -> throw new IllegalArgumentException("unknown stdio member " + name);
-                };
-            }
-            if (receiver instanceof StdinNamespace stdin) {
-                return switch (name) {
-                    case "in", "stdin" -> stdin.context().standardChannels().input();
-                    default -> throw new IllegalArgumentException("unknown stdin namespace member " + name);
                 };
             }
             if (receiver instanceof StdoutFacade stdout) {
@@ -7291,24 +7244,10 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException("unknown stdout member " + name);
                 };
             }
-            if (receiver instanceof dev.oreslang.runtime.StdChannels.InputChannel stdin
-                    && name.equals("read_line")) {
-                return (Invokable) args -> {
-                    requireZero(args, "stdio.stdin.read_line");
-                    // A descriptor read is exclusively owned by this call.
-                    // mapOwnedTerminal translates clean EOF to Option.None,
-                    // propagates failures, and cancels/detaches the pending
-                    // read when the awaiting Oreslang frame is cancelled.
-                    return stdin.readAsync().mapOwnedTerminal(
-                            value -> new OptionValue(true, value),
-                            failure -> {
-                                if (failure instanceof ChannelRuntime.ChannelClosedException closed
-                                        && closed.getCause() == null) {
-                                    return new OptionValue(false, null);
-                                }
-                                if (failure instanceof RuntimeException runtime) throw runtime;
-                                throw new java.util.concurrent.CompletionException(failure);
-                            });
+            if (receiver instanceof StdinFacade stdin) {
+                return switch (name) {
+                    case "read_line" -> (Invokable) stdin::readLine;
+                    default -> throw new IllegalArgumentException("unknown stdin member " + name);
                 };
             }
             if (receiver instanceof FileSystemFacade fs) {
@@ -7581,9 +7520,6 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof ProcessFacade process) {
                 return switch (name) {
-                    case "stdin" -> process.context().standardChannels().input();
-                    case "stdout" -> process.context().standardChannels().output();
-                    case "stderr" -> process.context().standardChannels().error();
                     case "monotonic_ns" -> (Invokable) args -> { requireZero(args, "process.monotonic_ns"); return System.nanoTime(); };
                     case "unique_id" -> (Invokable) args -> { requireZero(args, "process.unique_id"); return java.util.UUID.randomUUID().toString(); };
                     case "unix_ms" -> (Invokable) args -> { requireZero(args, "process.unix_ms"); return System.currentTimeMillis(); };
@@ -7603,35 +7539,6 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof ChannelRuntime.Channel<?> channel) {
                 return switch (name) {
-                    case "stream" -> (Invokable) args -> {
-                        requireZero(args, "Channel.stream");
-                        if (channel instanceof dev.oreslang.runtime.StdChannels.OutputChannel) {
-                            throw new IllegalArgumentException("write-only stdio output cannot create a readable stream");
-                        }
-                        Ast.ClassDecl stream = classes.get("ReadableStream");
-                        if (stream == null) {
-                            throw new IllegalStateException("native ReadableStream prelude is not installed");
-                        }
-                        return instantiate(stream, List.of(channel), false);
-                    };
-                    case "tee" -> (Invokable) args -> {
-                        requireOne(args, "Channel.tee");
-                        if (!(channel instanceof dev.oreslang.runtime.StdChannels.OutputChannel)) {
-                            throw new IllegalArgumentException("tee is for a writable stdout/stderr descriptor");
-                        }
-                        Object other = args.getFirst();
-                        if (!(other instanceof ChannelRuntime.Channel<?> target)
-                                || target instanceof dev.oreslang.runtime.StdChannels.InputChannel) {
-                            throw new IllegalArgumentException("tee target must be a writable Channel<String>");
-                        }
-                        Ast.ClassDecl tee = classes.get("WritableTee");
-                        if (tee == null) {
-                            throw new IllegalStateException("native WritableTee prelude is not installed");
-                        }
-                        // Compose a new writer. Do not capture/intercept unrelated
-                        // writes to the global descriptor behind the caller's back.
-                        return instantiate(tee, List.of(channel, target), false);
-                    };
                     case "close" -> (Invokable) args -> {
                         requireZero(args, "Channel.close");
                         channel.close();
@@ -8092,6 +7999,26 @@ public final class OresEvalRootNode extends RootNode {
                     requireOne(args, "Option.unwrap_or");
                     return option.present() ? option.value() : args.getFirst();
                 };
+                case "unwrap_or_else" -> (Invokable) args -> {
+                    requireSumCallback(args, "Option.unwrap_or_else");
+                    return option.present() ? option.value()
+                            : sumCallback(args, "Option.unwrap_or_else");
+                };
+                case "or_else" -> (Invokable) args -> {
+                    requireSumCallback(args, "Option.or_else");
+                    if (option.present()) return option;
+                    Object fallback = sumCallback(args, "Option.or_else");
+                    if (!(fallback instanceof OptionValue)) {
+                        throw new IllegalArgumentException("Option.or_else callback must return Option");
+                    }
+                    return fallback;
+                };
+                case "ok_or" -> (Invokable) args -> {
+                    requireOne(args, "Option.ok_or");
+                    return option.present()
+                            ? new ResultValue(true, option.value())
+                            : new ResultValue(false, args.getFirst());
+                };
                 case "map" -> (Invokable) args -> {
                     requireSumCallback(args, "Option.map");
                     return option.present()
@@ -8159,6 +8086,11 @@ public final class OresEvalRootNode extends RootNode {
                 case "unwrap_or" -> (Invokable) args -> {
                     requireOne(args, "Result.unwrap_or");
                     return result.ok() ? result.value() : args.getFirst();
+                };
+                case "unwrap_or_else" -> (Invokable) args -> {
+                    requireSumCallback(args, "Result.unwrap_or_else");
+                    return result.ok() ? result.value()
+                            : sumCallback(args, "Result.unwrap_or_else", result.value());
                 };
                 case "map" -> (Invokable) args -> {
                     requireSumCallback(args, "Result.map");
@@ -8858,7 +8790,6 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Iterable<?> iterableValues(Object value, Env env) {
-            if (value instanceof ChannelRuntime.Channel<?> channel) return channel;
             if (value instanceof List<?> list) return list;
             if (value instanceof Object[] array) return List.of(array);
             if (value instanceof GeneratorRuntime.Generator<?> generator) return generator;
@@ -8948,11 +8879,6 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private void closeIterable(Iterable<?> iterable) {
-            // A Channel is a borrowed stream endpoint, not an owned iterator
-            // activation. Closing its iterator (including on normal EOF or
-            // break) must never close the ambient process.stdin descriptor or
-            // a caller-owned channel shared by other consumers.
-            if (iterable instanceof ChannelRuntime.Channel<?>) return;
             if (!(iterable instanceof AutoCloseable closeable)) return;
             try {
                 closeable.close();
@@ -9548,6 +9474,9 @@ public final class OresEvalRootNode extends RootNode {
             boolean integral = isIntegral(a) && isIntegral(b) && op != '/';
             if (integral) {
                 long x = a.longValue(), y = b.longValue();
+                // An implicit VM fast-throw exception may have suppression disabled,
+                // which would discard source-boundary diagnostics after warm-up.
+                if (op == '%' && y == 0) throw new ArithmeticException("/ by zero");
                 return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
             }
             double x = a.doubleValue(), y = b.doubleValue();
@@ -10599,8 +10528,19 @@ public final class OresEvalRootNode extends RootNode {
             return log(expandArgumentSequence(args.getFirst(),"stdio.stdout.logList"));
         }
     }
+    private record StdinFacade(OresContext context) {
+        private Object readLine(List<Object> args) {
+            context.requireCapability(IsolatePolicy.Capability.STDIN, "stdio.stdin.read_line");
+            requireZero(args, "stdio.stdin.read_line");
+            try {
+                String value = context.input().readLine();
+                return value == null ? new OptionValue(false, null) : new OptionValue(true, value);
+            } catch (java.io.IOException failure) {
+                throw new IllegalStateException("stdin read failed: " + failure.getMessage(), failure);
+            }
+        }
+    }
     private record StdFacade(OresContext context) { }
-    private record StdinNamespace(OresContext context) { }
     private record ProcessFacade(OresContext context) {
         private Object exit(List<Object> args) {
             requireOne(args, "std.process.exit");

@@ -28,7 +28,6 @@ public final class OresContext implements AutoCloseable {
     private final TruffleLanguage.Env env;
     private final BufferedReader input;
     private final PrintWriter output;
-    private final StdChannels standardChannels;
     private final OresVM vm;
     private final ArrayBlockingQueue<Runnable> isolatedRootTurns;
     private final ActorRuntime actors;
@@ -76,13 +75,8 @@ public final class OresContext implements AutoCloseable {
         long contextPerf = CorePerf.start();
         this.language = language;
         this.env = env;
-        this.input = new BufferedReader(new InputStreamReader(
-                env.in(),
-                java.nio.charset.StandardCharsets.UTF_8.newDecoder()
-                        .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
-                        .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)));
+        this.input = new BufferedReader(new InputStreamReader(env.in()));
         this.output = new PrintWriter(env.out(), true);
-        this.standardChannels = new StdChannels(this);
         this.isolatePolicy = IsolatePolicy.fromApplicationArguments(env.getApplicationArguments());
         this.runtimePermissions = RuntimePermissions.fromApplicationArguments(
                 env.getApplicationArguments(), isolatePolicy);
@@ -146,7 +140,6 @@ public final class OresContext implements AutoCloseable {
     public TruffleLanguage.Env env() { return env; }
     public BufferedReader input() { return input; }
     public PrintWriter output() { return output; }
-    public StdChannels standardChannels() { return standardChannels; }
     public OresVM vm() { return vm; }
     public ActorRuntime actors() { return actors; }
     public AsyncRuntime asyncRuntime() { return asyncRuntime; }
@@ -435,50 +428,34 @@ public final class OresContext implements AutoCloseable {
 
     @Override
     public void close() {
-        // Each subsystem owns resources independently. Do not abandon later
-        // cleanup merely because a native socket, HTTP server, or stdio worker
-        // failed while closing. Preserve the first error and suppress the rest.
+        nativeIo.close();
+        http.close();
         RuntimeException failure = null;
-        try { standardChannels.close(); }
-        catch (RuntimeException error) { failure = appendCloseFailure(failure, error); }
-
-        try { nativeIo.close(); }
-        catch (RuntimeException error) { failure = appendCloseFailure(failure, error); }
-
-        try { http.close(); }
-        catch (RuntimeException error) { failure = appendCloseFailure(failure, error); }
-
-        try { asyncRuntime.close(); }
-        catch (RuntimeException error) { failure = appendCloseFailure(failure, error); }
-
-        try { actors.close(); }
-        catch (RuntimeException error) { failure = appendCloseFailure(failure, error); }
-
-        try { vm.close(); }
-        catch (RuntimeException error) { failure = appendCloseFailure(failure, error); }
-
         try {
+            asyncRuntime.close();
+        } catch (RuntimeException asyncFailure) {
+            failure = asyncFailure;
+        }
+        try {
+            actors.close();
+        } catch (RuntimeException actorFailure) {
+            if (failure == null) failure = actorFailure;
+            else failure.addSuppressed(actorFailure);
+        }
+        try {
+            vm.close();
+        } catch (RuntimeException vmFailure) {
+            if (failure == null) failure = vmFailure;
+            else failure.addSuppressed(vmFailure);
+        } finally {
             synchronized (this) {
                 linkedCodeUnits.clear();
                 linkedImportResolutions.clear();
                 sharedCodeImages.close();
             }
-        } catch (RuntimeException error) {
-            failure = appendCloseFailure(failure, error);
+            garbageCollector.close();
+            output.flush();
         }
-
-        try { garbageCollector.close(); }
-        catch (RuntimeException error) { failure = appendCloseFailure(failure, error); }
-
-        try { output.flush(); }
-        catch (RuntimeException error) { failure = appendCloseFailure(failure, error); }
-
         if (failure != null) throw failure;
-    }
-
-    private static RuntimeException appendCloseFailure(RuntimeException first, RuntimeException next) {
-        if (first == null) return next;
-        if (first != next) first.addSuppressed(next);
-        return first;
     }
 }
