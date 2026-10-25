@@ -230,6 +230,25 @@ final class TaskBorrowBoundaryV2Test {
     }
 
     @Test
+    void leftAndRefinementDoesNotMoveSameNamedParentBinding() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(BOX + """
+                pub async fnc main(): void {
+                  let Box narrowed = new Box();
+                  let Box subject = new Box();
+                  let Future<int> child = task {
+                    if subject is type Box narrowed && narrowed.value > 0 then
+                      return narrowed.value;
+                    fi
+                    return 0;
+                  };
+                  stdio.stdout.write(narrowed.value);
+                  stdio.stdout.write(await child);
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void affineFutureCanMoveIntoTaskButCannotBeUsedTwice() {
         // Futures are transferable owned handles, not copyable capabilities.
         // A child may consume the Future while the parent loses that binding.
