@@ -283,9 +283,19 @@ public final class TypeChecker {
                     || declaration.visibility() != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("invalid linked public class: " + name);
             }
+            // A checked actor signature is transport/protocol metadata, not
+            // a transferable actor instance. Link it only through an exact
+            // named actor import; class imports cannot silently reclassify
+            // actor objects as mailbox-safe references (or vice versa).
+            Ast.ImportKind expectedKind = declaration.actorKind()
+                    == Ast.ActorKind.NONE
+                    ? Ast.ImportKind.CLASS
+                    : Ast.ImportKind.ACTOR;
             boolean imported = program.imports().stream().anyMatch(use ->
-                    use.kind() == Ast.ImportKind.CLASS && !use.wildcard()
-                            && use.names().contains(name));
+                    use.kind() == expectedKind && !use.wildcard()
+                            && use.names().contains(name)
+                            && (use.namespace() == null
+                                    || use.namespace().equals(name)));
             if (!imported || checker.classes.containsKey(name)
                     || checker.ambiguousClasses.contains(name)) {
                 throw new IllegalArgumentException(
@@ -1133,6 +1143,7 @@ public final class TypeChecker {
      */
     private boolean fieldInitializerMaySuspend(Ast.Expr expr) {
         if (expr instanceof Ast.AwaitExpr
+                || expr instanceof Ast.TaskExpr
                 || expr instanceof Ast.ChannelOpExpr
                 || expr instanceof Ast.DynamicSelectExpr
                 || expr instanceof Ast.AssignExpr) return true;
@@ -2076,6 +2087,20 @@ public final class TypeChecker {
             checkBlock(block.body(), env, generics, expectedReturn, self);
             return;
         }
+        if (stmt instanceof Ast.TaskScopeStmt taskScope) {
+            if (currentActorKind != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "task scope is not enabled inside actor execution until "
+                                + "actor quota/hot-reload structured lifetime authority is proven");
+            }
+            if (!currentMaySuspend) {
+                throw new IllegalArgumentException(
+                        "task scope exit is a physical-quiescence suspension point; "
+                                + "declare the enclosing callable async or suspends");
+            }
+            checkBlock(taskScope.body(), env, generics, expectedReturn, self);
+            return;
+        }
         if (stmt instanceof Ast.BreakStmt) {
             if (loopDepth == 0) throw new IllegalArgumentException("'break' may only appear inside loop or for");
             return;
@@ -2821,7 +2846,10 @@ public final class TypeChecker {
                 return Primitive.VOID;
             }
             return switch (runtime.operation()) {
-                case "borrow" -> new Borrow(operand, false);
+                // Canonical rt borrow must preserve the same reborrow type
+                // as the internal unary form, without nesting loan wrappers.
+                case "borrow" -> operand instanceof Borrow existing
+                        ? new Borrow(existing.target(), false) : new Borrow(operand, false);
                 case "copy", "take", "share" -> operand;
                 default -> throw new IllegalArgumentException(
                         "unknown runtime ownership operation 'rt " + runtime.operation() + "'");
@@ -2837,6 +2865,23 @@ public final class TypeChecker {
                     return checkTypedSumCombinator(call, sum, sumMethod.member(),
                             env, generics, self);
                 }
+            }
+            if (call.callee() instanceof Ast.MemberExpr console
+                    && console.receiver() instanceof Ast.NameExpr namespace
+                    && namespace.name().equals("stdio") && env.lookup("stdio") == null
+                    && (console.member().equals("print") || console.member().equals("println"))) {
+                if (call.typeArgumentsPresent() || call.arguments().isEmpty()
+                        || call.arguments().size() > 32) {
+                    throw new IllegalArgumentException("stdio." + console.member()
+                            + " requires 1 to 32 positional values and no type arguments");
+                }
+                for (Ast.Expr argument : call.arguments()) {
+                    if (argument instanceof Ast.SpreadExpr) {
+                        throw new IllegalArgumentException("stdio console spread is unsupported; use stdio.stdout.log");
+                    }
+                    typeOf(argument, env, generics, self);
+                }
+                return Primitive.VOID;
             }
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
@@ -4260,6 +4305,18 @@ public final class TypeChecker {
             }
             return nominal;
         }
+        if (expr instanceof Ast.TaskExpr task) {
+            // A value-producing task needs contextual Future<T> information so
+            // every return path can be checked without guessing a result type.
+            // A no-value task is unambiguously Future<void>.
+            if (taskHasValueReturn(task.body())) {
+                throw new IllegalArgumentException(
+                        "value-producing task blocks require a contextual Future<T> type; "
+                                + "for example: let Future<int> t = cpu task { return 42; }");
+            }
+            checkTaskExpression(task, Primitive.VOID, env, generics, self);
+            return new Named("Future", List.of(Primitive.VOID));
+        }
         if (expr instanceof Ast.AwaitExpr awaited) {
             Type awaitedType = typeOf(awaited.expression(), env, generics, self);
             if (awaitedType instanceof Named named
@@ -4771,7 +4828,86 @@ public final class TypeChecker {
         return Primitive.BOOL;
     }
 
+    private Type checkTaskExpression(
+            Ast.TaskExpr task,
+            Type result,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        if (task.domain() == Ast.ExecutionDomain.GPU) {
+            throw new IllegalArgumentException(
+                    "gpu task is parsed and typed as an execution-domain boundary, "
+                            + "but physical GPU dispatch is not enabled on this backend; "
+                            + "no implicit CPU fallback");
+        }
+        if (currentActorKind != Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException(
+                    "task blocks inside actor state are not enabled until captured actor-state "
+                            + "authority is proven; launch a task from ordinary owned data instead");
+        }
+        validateAsyncBoundaryType(result, true, "CPU task result");
+
+        Map<Env.Binding, Set<String>> before = env.initializationSnapshot();
+        boolean previousGenerator = currentGenerator;
+        boolean previousAsync = currentAsyncCallable;
+        boolean previousMaySuspend = currentMaySuspend;
+        try {
+            Env taskEnv = new Env(env, env.descendantsNonLexical(), true);
+            currentGenerator = false;
+            currentAsyncCallable = true;
+            currentMaySuspend = true;
+            checkBlock(task.body(), taskEnv, generics, result, self);
+            if (result != Primitive.VOID && !definitelyReturns(task.body())) {
+                throw new IllegalArgumentException(
+                        "non-void CPU task must explicitly return on every path");
+            }
+        } finally {
+            env.restoreInitialization(before);
+            currentGenerator = previousGenerator;
+            currentAsyncCallable = previousAsync;
+            currentMaySuspend = previousMaySuspend;
+        }
+        return new Named("Future", List.of(result));
+    }
+
+    private boolean taskHasValueReturn(List<Ast.Stmt> body) {
+        for (Ast.Stmt stmt : body) {
+            if (stmt instanceof Ast.ReturnStmt ret && ret.value() != null) return true;
+            if (stmt instanceof Ast.BlockStmt block && taskHasValueReturn(block.body())) return true;
+            if (stmt instanceof Ast.TaskScopeStmt scope && taskHasValueReturn(scope.body())) return true;
+            if (stmt instanceof Ast.LoopStmt loop && taskHasValueReturn(loop.body())) return true;
+            if (stmt instanceof Ast.IfStmt conditional) {
+                for (Ast.IfBranch branch : conditional.branches()) {
+                    if (taskHasValueReturn(branch.body())) return true;
+                }
+                if (taskHasValueReturn(conditional.elseBody())) return true;
+            } else if (stmt instanceof Ast.MatchStmt matched) {
+                for (Ast.MatchArm arm : matched.arms()) {
+                    if (taskHasValueReturn(arm.body())) return true;
+                }
+            } else if (stmt instanceof Ast.SwitchStmt switched) {
+                for (Ast.SwitchCase arm : switched.cases()) {
+                    if (taskHasValueReturn(arm.body())) return true;
+                }
+                if (taskHasValueReturn(switched.defaultBody())) return true;
+            } else if (stmt instanceof Ast.TryStmt attempted) {
+                if (taskHasValueReturn(attempted.body())
+                        || taskHasValueReturn(attempted.catchBody())
+                        || taskHasValueReturn(attempted.finallyBody())) return true;
+            }
+        }
+        return false;
+    }
+
     private Type typeOfAgainstExpected(Ast.Expr expr, Type expected, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.TaskExpr task
+                && expected instanceof Named future
+                && future.name().equals("Future")
+                && future.arguments().size() == 1) {
+            Type result = future.arguments().getFirst();
+            checkTaskExpression(task, result, env, generics, self);
+            return future;
+        }
         if (expr instanceof Ast.LambdaExpr lambda && expected instanceof Function fn) {
             validateLambdaAgainstExpected(lambda, fn, env, generics, self);
             return fn;
@@ -8372,6 +8508,8 @@ public final class TypeChecker {
                 rejectStaticClassGenericReferences(defer.expression(), classGenerics, klass, method);
             } else if (statement instanceof Ast.BlockStmt block) {
                 rejectStaticClassGenericReferences(block.body(), classGenerics, klass, method);
+            } else if (statement instanceof Ast.TaskScopeStmt taskScope) {
+                rejectStaticClassGenericReferences(taskScope.body(), classGenerics, klass, method);
             } else if (statement instanceof Ast.LoopStmt loop) {
                 rejectStaticClassGenericReferences(loop.body(), classGenerics, klass, method);
             } else if (statement instanceof Ast.IfStmt conditional) {
@@ -9871,6 +10009,7 @@ public final class TypeChecker {
         for (Ast.Stmt stmt : body) {
             if (stmt instanceof Ast.ReturnStmt) return true;
             if (stmt instanceof Ast.BlockStmt block && definitelyReturns(block.body())) return true;
+            if (stmt instanceof Ast.TaskScopeStmt scope && definitelyReturns(scope.body())) return true;
             if (stmt instanceof Ast.LoopStmt loop && !containsBreakForCurrentLoop(loop.body())) return true;
             if (stmt instanceof Ast.IfStmt conditional) {
                 boolean allBranches = !conditional.branches().isEmpty()
@@ -9898,6 +10037,8 @@ public final class TypeChecker {
         for (Ast.Stmt stmt : body) {
             if (stmt instanceof Ast.BreakStmt) return true;
             if (stmt instanceof Ast.BlockStmt block && containsBreakForCurrentLoop(block.body())) return true;
+            if (stmt instanceof Ast.TaskScopeStmt scope
+                    && containsBreakForCurrentLoop(scope.body())) return true;
             if (stmt instanceof Ast.IfStmt conditional) {
                 for (Ast.IfBranch branch : conditional.branches()) {
                     if (containsBreakForCurrentLoop(branch.body())) return true;
