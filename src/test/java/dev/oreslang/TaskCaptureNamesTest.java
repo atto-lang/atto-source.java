@@ -136,6 +136,30 @@ final class TaskCaptureNamesTest {
     }
 
     @Test
+    void leftAndRefinementBindingShadowsSameNamedParentInRightOperand() {
+        Ast.TypeTestExpr refinement = new Ast.TypeTestExpr(
+                new Ast.NameExpr("subject"),
+                Ast.TypeRef.simple("Box"),
+                "narrowed");
+        Ast.BinaryExpr condition = new Ast.BinaryExpr(
+                "&&",
+                refinement,
+                new Ast.BinaryExpr(
+                        ">",
+                        new Ast.MemberExpr(
+                                new Ast.NameExpr("narrowed"),
+                                "value"),
+                        new Ast.LiteralExpr(0L)));
+        Ast.IfStmt statement = new Ast.IfStmt(
+                List.of(new Ast.IfBranch(condition, List.of())),
+                List.of());
+
+        assertEquals(
+                Set.of("subject"),
+                TaskCaptureNames.referencedIn(List.of(statement)));
+    }
+
+    @Test
     void nestedTaskNameInventoryDoesNotRequireStartingTheChild() {
         // A capture inventory cannot run task code, schedule work, or await.
         Ast.TaskExpr nested = new Ast.TaskExpr(Ast.ExecutionDomain.GPU,
