@@ -1197,6 +1197,17 @@ public final class OwnershipChecker {
                     source.borrowSource);
         }
         if (expr instanceof Ast.BinaryExpr binary) {
+            if (binary.operator().equals("??")) {
+                ValueInfo left = checkExpr(binary.left(), scope, true);
+                Map<VarState, StateSnapshot> baseline = stateSnapshot(scope);
+                checkExpr(binary.right(), scope, consuming);
+                Map<VarState, StateSnapshot> fallbackExit = stateSnapshot(scope);
+                mergeBranchState(baseline, List.of(baseline, fallbackExit));
+                Ast.TypeRef payload = left.type != null && left.type.name().equals("Option")
+                        && left.type.arguments().size() == 1
+                        ? left.type.arguments().getFirst() : Ast.TypeRef.inferred();
+                return new ValueInfo(payload, kindOfType(payload), null);
+            }
             checkExpr(binary.left(), scope, false);
             if (binary.operator().equals("&&")) {
                 Scope rightScope = new Scope(scope);
@@ -1235,6 +1246,33 @@ public final class OwnershipChecker {
             return checkCall(call, scope);
         }
         if (expr instanceof Ast.MemberExpr member) {
+            if (member.optional()) {
+                ValueInfo source = checkExpr(member.receiver(), scope, false);
+                Ast.TypeRef option = source.type;
+                if (option == null || !option.name().equals("Option") || option.arguments().size() != 1)
+                    throw error("?. requires a statically known Option<T> receiver");
+                Ast.TypeRef inner = option.arguments().getFirst();
+                Ast.TypeRef fieldType = null;
+                if (inner.isClosedAggregateType()) {
+                    fieldType = inner.aggregateMembers().get(member.member());
+                } else {
+                    Ast.ClassDecl klass = findClass(inner.name());
+                    if (klass != null) {
+                        ResolvedField found = findFieldTarget(klass, inner, member.member(), new LinkedHashSet<>());
+                        if (found != null)
+                            fieldType = substituteType(ownershipFieldType(found.field()),
+                                    genericBindings(found.owner().genericParameters(),
+                                            found.ownerType().arguments()));
+                    }
+                }
+                // Until affine projection/partial-move evidence exists, only Copy fields.
+                if (fieldType == null || !isCopyType(fieldType))
+                    throw error("?. field projection requires a statically proven Copy field");
+                Ast.TypeRef result = fieldType.name().equals("Option")
+                        && fieldType.arguments().size() == 1 ? fieldType
+                        : new Ast.TypeRef("Option", List.of(fieldType), false);
+                return new ValueInfo(result, kindOfType(result), null);
+            }
             if (member.receiver() instanceof Ast.NameExpr receiverName) {
                 VarState receiverState = scope.lookup(receiverName.name());
                 if (receiverState != null && isScopedMutexReceiver(receiverState)) {
@@ -2574,6 +2612,7 @@ public final class OwnershipChecker {
             return;
         }
         if (target instanceof Ast.MemberExpr member) {
+            if (member.optional()) throw error("?. is not an assignment target");
             Ast.ClassDecl klass = classOfReceiver(member.receiver(), scope);
             if (klass != null) {
                 Ast.FieldDecl field = findField(klass, member.member(), new LinkedHashSet<>());

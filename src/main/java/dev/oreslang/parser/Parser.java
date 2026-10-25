@@ -3639,6 +3639,8 @@ public final class Parser {
                     + "bounded edge transport and Java/LLVM lowering; not yet enabled");
         }
         if (match(EQUAL)) {
+            if (expr instanceof Ast.MemberExpr m && m.optional())
+                throw error(previous(), "?. cannot be an assignment target");
             if (!(expr instanceof Ast.NameExpr) && !(expr instanceof Ast.MemberExpr) && !(expr instanceof Ast.IndexExpr)) {
                 throw error(previous(), "assignment target must be a local, field, or index");
             }
@@ -3715,12 +3717,18 @@ public final class Parser {
     }
 
     private Ast.Expr parseConditional() {
-        Ast.Expr condition = parseLogicalOr();
+        Ast.Expr condition = parseCoalesce();
         if (!match(QUESTION)) return condition;
         Ast.Expr whenTrue = parseAssignment();
         consume(COLON, "expected ':' in ternary expression");
         Ast.Expr whenFalse = parseConditional();
         return new Ast.ConditionalExpr(condition, whenTrue, whenFalse);
+    }
+
+    /** Right-associative lazy Option default, tighter than ternary. */
+    private Ast.Expr parseCoalesce() {
+        Ast.Expr left = parseLogicalOr();
+        return match(COALESCE) ? new Ast.BinaryExpr("??", left, parseCoalesce()) : left;
     }
 
     private Ast.Expr parseLogicalOr() {
@@ -4044,9 +4052,13 @@ public final class Parser {
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, typeArguments, args);
             } else if (match(LPAREN)) {
+                if (expr instanceof Ast.MemberExpr m && m.optional())
+                    throw error(previous(), "?. supports data fields only; optional method calls are not enabled");
                 List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, args);
+            } else if (match(QUESTION_DOT)) {
+                expr = new Ast.MemberExpr(expr, consumeMemberName(), true);
             } else if (match(DOT, DOUBLE_COLON)) {
                 // Two explicit qualified-member spellings, one binding and
                 // evaluation path; no dynamic symbol lookup or macro rewrite.

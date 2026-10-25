@@ -2728,6 +2728,16 @@ public final class TypeChecker {
                         + "with bounded delivery/startup/cancellation is not implemented yet");
             }
             Type left = typeOf(binary.left(), env, generics, self);
+            if (binary.operator().equals("??")) {
+                if (!(deref(left) instanceof Named opt) || !opt.name().equals("Option")
+                        || opt.arguments().size() != 1)
+                    throw new IllegalArgumentException("?? requires Option<T> on the left, not " + left);
+                Map<Env.Binding, Set<String>> afterLeft = env.initializationSnapshot();
+                Type fallback = typeOf(binary.right(), env, generics, self);
+                requireAssignable(fallback, opt.arguments().getFirst(), "?? fallback");
+                env.restoreInitialization(afterLeft);
+                return opt.arguments().getFirst();
+            }
             if (binary.operator().equals("&&") || binary.operator().equals("||")) {
                 requireAssignable(left, Primitive.BOOL, "logical operand");
                 Map<Env.Binding, Set<String>> afterLeft = env.initializationSnapshot();
@@ -3764,6 +3774,7 @@ public final class TypeChecker {
             return fn.result();
         }
         if (expr instanceof Ast.MemberExpr member) {
+            if (member.optional()) return typeOfSafeMember(member, env, generics, self);
             if (member.receiver() instanceof Ast.NameExpr namespace
                     && namespace.name().equals("BooleanOps")
                     && !modules.containsKey("BooleanOps")
@@ -5689,6 +5700,44 @@ public final class TypeChecker {
         };
     }
 
+    /** One generated Option layer is joined on field access; existing nested Options remain distinct. */
+    private Type typeOfSafeMember(Ast.MemberExpr access, Env env, Set<String> generics, Type self) {
+        Type receiver = deref(typeOf(access.receiver(), env, generics, self));
+        if (!(receiver instanceof Named option)
+                || !option.name().equals("Option") || option.arguments().size() != 1) {
+            throw new IllegalArgumentException(
+                    "?. requires Option<T>, not " + receiver + "; use explicit Result propagation");
+        }
+        Type payload = receiverDispatchType(deref(option.arguments().getFirst()));
+        Type fieldType;
+        if (payload instanceof Record record) {
+            fieldType = record.members().get(access.member());
+            if (fieldType == null)
+                throw new IllegalArgumentException("unknown optional record field '" + access.member() + "'");
+        } else if (payload instanceof Named named) {
+            Ast.ClassDecl klass = findClass(named.name());
+            if (klass == null)
+                throw new IllegalArgumentException("?. requires a statically known record or class field");
+            ResolvedField field = findFieldTarget(klass, named, access.member(), new LinkedHashSet<>());
+            if (field == null)
+                throw new IllegalArgumentException("unknown optional class field '" + access.member() + "'");
+            requireClassMemberVisible(field.field().visibility(), field.owner(), "field", field.field().name());
+            fieldType = substituteGenerics(
+                    classFieldType(field.owner(), field.field()),
+                    classGenericBindings(field.owner(), field.ownerType()));
+        } else {
+            throw new IllegalArgumentException("?. requires a statically known record or class field");
+        }
+        if (fieldType == Unknown.INSTANCE || fieldType instanceof Borrow
+                || fieldType instanceof Function || fieldType instanceof Generic
+                || fieldType instanceof SelfType) {
+            throw new IllegalArgumentException("?. rejects unknown, borrowed and callable fields");
+        }
+        return fieldType instanceof Named nested && nested.name().equals("Option")
+                && nested.arguments().size() == 1
+                ? fieldType : new Named("Option", List.of(fieldType));
+    }
+
     private Type memberType(Ast.MemberExpr member, Env env, Set<String> generics, Type self) {
         return memberType(member, env, generics, self, false);
     }
@@ -5699,6 +5748,7 @@ public final class TypeChecker {
             Set<String> generics,
             Type self,
             boolean writing) {
+        if (member.optional()) throw new IllegalArgumentException("?. is not an assignment target");
         Type rawReceiver;
         if (member.receiver() instanceof Ast.NameExpr name && env.lookup(name.name()) != null) {
             Env.Binding binding = env.lookup(name.name());
