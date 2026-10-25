@@ -82,25 +82,50 @@ fi
 # A zero exit plus correct stdout must not hide a runtime diagnostic on stderr.
 # The file is isolated per invocation; it is removed when the verifier exits.
 guest_stderr="$(mktemp)"
-trap 'rm -f "$guest_stderr"' 0
+guest_stdout="$(mktemp)"
+guest_exact_actual="$(mktemp)"
+guest_expected="$(mktemp)"
+trap 'rm -f "$guest_stderr" "$guest_stdout" "$guest_exact_actual" "$guest_expected"' 0
 run_clean_guest() {
   : > "$guest_stderr"
-  guest_output="$(
+  : > "$guest_stdout"
+  guest_status=0
+  (
     unset JAVA_HOME CLASSPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS
-    "$executable" "$@" 2>"$guest_stderr"
-  )" || {
-    guest_status=$?
-    if [ -s "$guest_stderr" ]; then
-      cat "$guest_stderr" >&2
-    fi
+    "$executable" "$@" >"$guest_stdout" 2>"$guest_stderr"
+  ) || guest_status=$?
+  if [ "$guest_status" -ne 0 ]; then
+    if [ -s "$guest_stderr" ]; then cat "$guest_stderr" >&2; fi
     return "$guest_status"
-  }
+  fi
   if [ -s "$guest_stderr" ]; then
     echo 'native guest unexpectedly emitted stderr diagnostics' >&2
     cat "$guest_stderr" >&2
     return 1
   fi
-  printf '%s\n' "$guest_output"
+  cat "$guest_stdout"
+}
+
+# Compare raw bytes, allowing either no final LF or exactly one final LF.
+# Shell command substitution strips ALL trailing newlines, potentially hiding
+# extra blank stdout records from otherwise successful native guest smokes.
+run_exact_guest() {
+  expected_exact_output="$1"
+  exact_diagnostic="$2"
+  shift 2
+  run_clean_guest "$@" > "$guest_exact_actual" || return $?
+  printf '%s' "$expected_exact_output" > "$guest_expected"
+  if cmp -s "$guest_exact_actual" "$guest_expected"; then
+    cat "$guest_exact_actual"
+    return 0
+  fi
+  printf '\n' >> "$guest_expected"
+  if cmp -s "$guest_exact_actual" "$guest_expected"; then
+    cat "$guest_exact_actual"
+    return 0
+  fi
+  echo "$exact_diagnostic" >&2
+  return 1
 }
 
 # Exercise a REAL .ores file and packaged stdlib with Java build environment
@@ -119,12 +144,7 @@ fi
 
 # Running the checked source must execute its main routine. In addition to
 # the stdlib test below, verify factorial, lexical and nlexical closures.
-callables_output="$(run_clean_guest "--mode=$mode" examples/callables.ores)"
-if [ "$callables_output" != '120:9:13' ]; then
-  echo "native callables guest output differs from expected value" >&2
-  exit 1
-fi
-printf '%s\n' "$callables_output"
+run_exact_guest '120:9:13' 'native callables guest output differs from expected value' "--mode=$mode" examples/callables.ores
 
 # Validate the linked actor-isolation admission boundary inside the *native*
 # executable as well. Positive shared/private declarations must typecheck,
@@ -170,41 +190,20 @@ run_clean_guest "--mode=$mode" examples/together.ores
 # Verify exact Oreslang semantics and packaged stdlib resolution, not merely
 # a successful process exit. This output is from the checked-in native core
 # library fixture (also observed in the previously successful AOT CI run).
-core_output="$(run_clean_guest "--mode=$mode" examples/native-core-library.ores)"
-expected_core_output='9007199254740992|-999999999999999999|10'
-if [ "$core_output" != "$expected_core_output" ]; then
-  echo "native Oreslang core-library output differs from expected value" >&2
-  exit 1
-fi
-printf '%s\n' "$core_output"
+run_exact_guest '9007199254740992|-999999999999999999|10' 'native Oreslang core-library output differs from expected value' "--mode=$mode" examples/native-core-library.ores
 
 # Native channel selection must preserve ordered buffered reads and return
 # the unselected message. A wrong select winner or a lost second message
 # cannot be certified by a zero guest exit status.
-channel_output="$(run_clean_guest "--mode=$mode" examples/native-channel-select-smoke.ores)"
-if [ "$channel_output" != 'first:7:9' ]; then
-  echo "native channel/select result differs from expected first-winner and retained-message output" >&2
-  exit 1
-fi
-printf '%s\n' "$channel_output"
+run_exact_guest 'first:7:9' 'native channel/select result differs from expected first-winner and retained-message output' "--mode=$mode" examples/native-channel-select-smoke.ores
 
 # Verify that select wakes for completed Future<T> when the channel is
 # intentionally empty. Do not mistake silent completion for async progress.
-future_output="$(run_clean_guest "--mode=$mode" examples/native-future-select-smoke.ores)"
-if [ "$future_output" != 'future:4' ]; then
-  echo "native Future/select output differs from expected result" >&2
-  exit 1
-fi
-printf '%s\n' "$future_output"
+run_exact_guest 'future:4' 'native Future/select output differs from expected result' "--mode=$mode" examples/native-future-select-smoke.ores
 
 # Root await must actually resume and return the typed result under both
 # Native Image AOT and hybrid, not merely pass linked syntax checking.
-await_output="$(run_clean_guest "--mode=$mode" examples/strict-root-await.ores)"
-if [ "$await_output" != '42' ]; then
-  echo "native root-await result differs from expected value" >&2
-  exit 1
-fi
-printf '%s\n' "$await_output"
+run_exact_guest '42' 'native root-await result differs from expected value' "--mode=$mode" examples/strict-root-await.ores
 
 # A native image that merely exits zero without executing guest code is NOT
 # sufficient evidence. Require the real Oreslang test framework's known output.
@@ -213,7 +212,7 @@ printf '%s\n' "$await_output"
 # trims trailing newlines, which could hide an extra blank record after an
 # otherwise correct test summary and falsely certify the native executable.
 test_output_file="$(mktemp)"
-trap 'rm -f "$guest_stderr" "$test_output_file"' 0
+trap 'rm -f "$guest_stderr" "$guest_stdout" "$guest_exact_actual" "$guest_expected" "$test_output_file"' 0
 : > "$guest_stderr"
 test_guest_status=0
 (
