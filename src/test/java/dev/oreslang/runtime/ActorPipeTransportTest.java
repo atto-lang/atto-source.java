@@ -152,6 +152,39 @@ final class ActorPipeTransportTest {
     }
 
     @Test
+    void enforcesExactSignedBigIntegerPayloadByteBudget() {
+        String integerType = java.math.BigInteger.class.getName();
+        var integerStages = List.of(
+                new ActorPipelineContract.Stage("BigSource",
+                        ActorPipelineContract.Role.READABLE, null, integerType),
+                new ActorPipelineContract.Stage("BigSink",
+                        ActorPipelineContract.Role.WRITABLE, integerType, null));
+        int limitBits = 1_048_576 * 8;
+        java.math.BigInteger fits = java.math.BigInteger.ONE.shiftLeft(limitBits - 2);
+        java.math.BigInteger oversize = java.math.BigInteger.ONE.shiftLeft(limitBits - 1);
+        java.math.BigInteger negativeOversize =
+                oversize.negate().subtract(java.math.BigInteger.ONE);
+        assertEquals(1_048_576, fits.toByteArray().length);
+        assertEquals(1_048_577, oversize.toByteArray().length);
+        assertEquals(1_048_577, negativeOversize.toByteArray().length);
+        try (ActorRuntime runtime = new ActorRuntime();
+             ActorPipeTransport pipe = ActorPipeTransport.open(runtime,
+                     runtime.rootSupervisor(), integerStages,
+                     List.of(java.math.BigInteger.class), 1)) {
+            var writer = pipe.writer(0, java.math.BigInteger.class);
+            var reader = pipe.reader(0, java.math.BigInteger.class);
+            assertTrue(writer.tryWrite(fits), "exact 1 MiB signed scalar is permitted");
+            assertEquals(fits, reader.tryRead().orElseThrow());
+            assertThrows(IllegalArgumentException.class,
+                    () -> writer.tryWrite(oversize),
+                    "positive scalar requiring 1 MiB plus one sign byte must be rejected");
+            assertThrows(IllegalArgumentException.class,
+                    () -> writer.tryWrite(negativeOversize),
+                    "negative scalar requiring 1 MiB plus one byte must be rejected");
+        }
+    }
+
+    @Test
     void keepsForwardAndReverseAuthorityDistinct() {
         try (ActorRuntime runtime = new ActorRuntime();
              var pipe = ActorPipeTransport.open(runtime, runtime.rootSupervisor(),

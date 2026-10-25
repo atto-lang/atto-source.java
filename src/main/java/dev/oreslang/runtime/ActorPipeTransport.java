@@ -149,7 +149,10 @@ public final class ActorPipeTransport implements AutoCloseable {
                         || value.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > MAX_PAYLOAD_BYTES))
                 throw new IllegalArgumentException("actor pipe payload exceeds byte budget");
             if (message instanceof java.math.BigInteger value
-                    && value.bitLength() > MAX_PAYLOAD_BYTES * 8L)
+                    // Minimal two's-complement encoding requires one sign byte
+                    // whenever the bit length is divisible by eight. Counting
+                    // bits alone admits a MAX+1-byte positive BigInteger.
+                    && (value.bitLength() / 8L + 1L) > MAX_PAYLOAD_BYTES)
                 throw new IllegalArgumentException("actor pipe payload exceeds byte budget");
             if (message instanceof java.math.BigDecimal value) {
                 // An extremely large positive or negative scale can describe
