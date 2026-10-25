@@ -71,17 +71,24 @@ final class OptionSafeMemberChainLanguageTest {
     }
 
     @Test
-    void chainedSafeFieldsNeverExecuteAfterNone() throws Exception {
-        String source = """
+    void optionApiStillWorksAfterSafeProjectionButUnknownPayloadFieldsDoNot() {
+        String valid = """
                 define class Node as
                   pub val Option<int> number = Some(7);
                 end
-                fnc pick(Option<Node> value): string {
-                  return value?.number.is_some() ? "yes" : "no";
+                fnc pick(Option<Node> value): bool {
+                  return value?.number.is_some();
                 }
                 """;
-        // Plain dot on the Option produced by ?. is not an implicit payload access.
-        reject(source, "Option member");
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(valid));
+        reject("""
+                define class Node as
+                  pub val Option<int> number = Some(7);
+                end
+                fnc bad(Option<Node> value): bool {
+                  return value?.number.unknown();
+                }
+                """, "Option");
     }
 
     @Test
