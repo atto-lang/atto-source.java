@@ -74,6 +74,47 @@ final class TaskCaptureAdmissionIdentityTest {
     }
 
     @Test
+    void explicitTakeOfCopyCaptureCarriesMoveMode() {
+        Ast.Program checked = OresCompiler.parseAndTypeCheck("""
+                pub async fnc main(): void {
+                  const int token = 41;
+                  let Future<int> child = task {
+                    return rt take token;
+                  };
+                  stdio.stdout.write(await child);
+                  return;
+                }
+                """);
+
+        long epoch = Ast.CheckedTaskCaptures.requireProgramEpoch(checked);
+        assertEquals(
+                java.util.Map.of(
+                        "token", Ast.TaskCaptureTransfer.MOVE),
+                Ast.CheckedTaskCaptures.require(
+                        checked,
+                        firstTask(checked),
+                        epoch).captureTransfers());
+    }
+
+    @Test
+    void explicitTakeOfCopyCaptureMovesParentAtTaskSubmission() {
+        var failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub async fnc main(): void {
+                          const int token = 41;
+                          let Future<int> child = task {
+                            return rt take token;
+                          };
+                          stdio.stdout.write(token);
+                          stdio.stdout.write(await child);
+                          return;
+                        }
+                        """));
+        assertTrue(failure.getMessage().contains("moved"), failure::getMessage);
+    }
+
+    @Test
     void affineCaptureAdmissionCarriesMoveMode() {
         Ast.Program checked = OresCompiler.parseAndTypeCheck("""
                 define class Box as
