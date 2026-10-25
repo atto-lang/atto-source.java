@@ -315,7 +315,10 @@ pipeline_stage  = IDENT [ call_suffix ]
    are lowered to instance combinators, all others pass the LHS as argument 1.
    The left operand is evaluated once, and pipeline stages associate leftwards. *)
 
-conditional     = logic_or [ "?" assignment ":" conditional ] ;
+conditional     = coalesce [ "?" assignment ":" conditional ] ;
+coalesce        = logic_or [ "??" coalesce ] ;
+(* The RHS of ?? is lazy. ?. projects only a checked Option data field,
+   joins the generated Option layer once, and cannot be assigned to. *)
 logic_or        = equality { "|" equality } ;
 equality        = comparison { ( "eq" | "neq" | "!eq" | "==" | "!=" | "is" ) comparison } ;
 comparison      = additive
@@ -339,7 +342,7 @@ postfix         = primary { call_suffix | member_suffix | index_suffix } ;
 call_suffix     = "(" [ call_argument_list ] ")" ;
 call_argument_list = call_argument { "," call_argument } ;
 call_argument   = [ "..." ] expression ;
-member_suffix   = "." member_name ;
+member_suffix   = ( "." | "::" | "?." ) member_name ;
 member_name     = IDENT | "stop" | "do" | "done"
                 | "match" | "matches" | "eq" | "neq" | "is" | "when"
                 | "case" | "default" | "first" | "switch"

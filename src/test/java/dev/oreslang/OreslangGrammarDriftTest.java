@@ -32,7 +32,7 @@ final class OreslangGrammarDriftTest {
             try_stmt select_stmt select_wait_mode select_policy select_arm select_arm_keyword
             select_default for_stmt c_for_head for_init for_update for_of_head
             for_of_binding for_of_pattern for_of_destructure_item for_of_rest_item loop_body expression
-            assignment conditional logic_or equality comparison additive
+            assignment conditional coalesce logic_or equality comparison additive
             multiplicative unary channel_expr channel_wait_mode postfix call_suffix
             call_argument_list call_argument member_suffix member_name index_suffix argument_list
             primary lambda pipe_lambda lambda_param typed_legacy_lambda lambda_body
