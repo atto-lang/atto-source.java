@@ -3549,11 +3549,11 @@ public final class ActorRuntime implements AutoCloseable {
             }
             // Runtime resources are fenced immediately; this must happen
             // without authorityLock and failures must not strand other hooks.
-            RuntimeException infrastructureFailure = null;
+            Throwable infrastructureFailure = null;
             for (Runnable closure : infrastructureClosures) {
                 try {
                     closure.run();
-                } catch (RuntimeException failure) {
+                } catch (RuntimeException | Error failure) {
                     if (infrastructureFailure == null) infrastructureFailure = failure;
                     else infrastructureFailure.addSuppressed(failure);
                 }
@@ -3625,7 +3625,9 @@ public final class ActorRuntime implements AutoCloseable {
             if (infrastructureFailure != null) {
                 if (cancellationFailure != null)
                     infrastructureFailure.addSuppressed(cancellationFailure);
-                throw infrastructureFailure;
+                if (infrastructureFailure instanceof RuntimeException runtimeFailure)
+                    throw runtimeFailure;
+                throw (Error) infrastructureFailure;
             }
             if (cancellationFailure != null) throw cancellationFailure;
         }
