@@ -180,6 +180,19 @@ public final class ActorRuntime implements AutoCloseable {
         return current == null ? Optional.empty() : Optional.of(current.actorId());
     }
 
+    /**
+     * Internal exact-incarnation identity for actor-owned runtime resources.
+     * ActorId alone is insufficient because a restarted actor may reuse the
+     * same logical id at a newer generation.
+     */
+    static ActorRef<?> currentActorRef() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        if (current == null) return null;
+        ActorCell<?> cell = current.runtime().currentActor.get();
+        if (cell == null || !cell.ref.id().equals(current.actorId())) return null;
+        return cell.ref;
+    }
+
     public static Object currentExecutionDomain() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
         return current == null ? Thread.currentThread() : current.executionDomain();
@@ -2586,7 +2599,7 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (cell.lifecycleLock) {
                 if (!revoked.compareAndSet(false, true)) return firstFatal;
 
-                ActorShardColumns shard = attachedShard;
+                ActorShardBacking shard = attachedShard;
                 attachedShard = null;
                 cell.shardLeases.remove(this);
 
