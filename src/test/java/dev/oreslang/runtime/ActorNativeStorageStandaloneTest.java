@@ -125,6 +125,51 @@ final class ActorNativeStorageStandaloneTest {
     }
 
     @Test
+    void crossPageWordWriteFailsAtomicallyWhileSecondPageIsLeased() {
+        AtomicLong charged = new AtomicLong();
+        AtomicBoolean owner = new AtomicBoolean(true);
+        try (ActorNativeArena a = arena(256 * 1024, charged, owner)) {
+            ActorLinearMemory mem = a.linearMemory(2, 2);
+            long boundary = ActorLinearMemory.PAGE_BYTES - 4L;
+            mem.writeLong(boundary, 0x0102030405060708L);
+            try (var lease = mem.leaseReadOnlyPage(1, 0, 4)) {
+                assertThrows(IllegalStateException.class,
+                        () -> mem.writeLong(boundary, 0x1020304050607080L));
+                assertEquals(0x0102030405060708L, mem.readLong(boundary),
+                        "preflight must reject before writing any bytes");
+            }
+            mem.writeLong(boundary, 0x1020304050607080L);
+            assertEquals(0x1020304050607080L, mem.readLong(boundary));
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
+    void bulkCopyPreflightsEveryDestinationPageBeforeMutation() {
+        AtomicLong charged = new AtomicLong();
+        AtomicBoolean owner = new AtomicBoolean(true);
+        try (ActorNativeArena a = arena(256 * 1024, charged, owner)) {
+            ActorLinearMemory mem = a.linearMemory(2, 2);
+            long destination = ActorLinearMemory.PAGE_BYTES - 8L;
+            mem.fill(0, 16, (byte) 91);
+            mem.fill(destination, 16, (byte) 13);
+            try (var lease = mem.leaseReadOnlyPage(1, 0, 8)) {
+                assertThrows(IllegalStateException.class,
+                        () -> mem.copy(destination, 0, 16));
+                for (int index = 0; index < 16; index++) {
+                    assertEquals(13, mem.readUnsignedByte(destination + index),
+                            "leased second page must prevent partial first-page writes");
+                }
+            }
+            mem.copy(destination, 0, 16);
+            for (int index = 0; index < 16; index++) {
+                assertEquals(91, mem.readUnsignedByte(destination + index));
+            }
+        }
+        assertEquals(0, charged.get());
+    }
+
+    @Test
     void failedGrowLeavesOriginalPagesAndBudgetUnchanged() {
         AtomicLong charged = new AtomicLong();
         AtomicBoolean owner = new AtomicBoolean(true);
