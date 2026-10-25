@@ -4454,7 +4454,13 @@ public final class OwnershipChecker {
     }
 
     private boolean isCopyType(Ast.TypeRef type) {
-        if (type == null || type.isBorrow()) return false;
+        // Inference markers and compiler-only unverified shapes carry no
+        // structural Copy proof. Task Send already rejects them; Copy must
+        // not silently certify the same unresolved nominal metadata.
+        if (type == null || type.isBorrow() || type.inferArguments()
+                || type.isComplement() || type.isSequenceShape()
+                || type.isRepeatExact() || type.isRepeatMany()
+                || type.isNamedParameter()) return false;
         if (type.isUnion()) return !type.arguments().isEmpty()
                 && type.arguments().stream().allMatch(this::isCopyType);
         if (type.isTupleType()) return type.arguments().stream().allMatch(this::isCopyType);
