@@ -3813,7 +3813,11 @@ public final class OwnershipChecker {
             perArm.add(captures);
 
             for (Capture capture : captures.values.values()) {
-                union.add(capture.name, capture.source, capture.write);
+                union.add(
+                        capture.name,
+                        capture.source,
+                        capture.write,
+                        capture.consume);
             }
         }
 
@@ -4770,6 +4774,13 @@ public final class OwnershipChecker {
 
     private record StateSnapshot(boolean moved, int immutableBorrows, boolean mutableBorrowed) { }
 
+    /**
+     * Capture effects are intentionally orthogonal: write means mutation of
+     * the captured binding/referent; consume means an explicit ownership take.
+     * Deferred Tasks/select callbacks honor both at eager registration. Ordinary
+     * lexical closure capture keeps its existing timing semantics and only uses
+     * write plus the source value kind.
+     */
     private record Capture(
             String name, VarState source, boolean write, boolean consume) { }
 
