@@ -115,6 +115,70 @@ final class HttpGenerationDrainV1Test {
         assertThrows(IllegalArgumentException.class, () -> new HttpGenerationDrainV1(1, 1, 0));
     }
 
+    @Test void oldCodeReferencesSurviveMultipleNewDeploysWithoutForcedPurge() {
+        var first = new HttpGenerationDrainV1(1, 1, 2);
+        var requestV1 = first.admit();
+        var pendingCallback = requestV1.pin(HttpGenerationDrainV1.ResourceKind.CALLBACK);
+        first.beginDrain();
+
+        var second = new HttpGenerationDrainV1(2, 1, 2);
+        var requestV2 = second.admit();
+        second.beginDrain();
+        var third = new HttpGenerationDrainV1(3, 1, 2);
+        var requestV3 = third.admit();
+
+        requestV1.handlerQuiescent();
+        requestV1.transportQuiescent();
+        requestV2.handlerQuiescent();
+        requestV2.transportQuiescent();
+        assertFalse(first.readyToRetire(), "never forcibly purge a pinned V1 image");
+        assertTrue(second.readyToRetire(), "V2 may retire independently of V1");
+        assertEquals(1, pendingCallback.generation());
+        assertEquals(3, requestV3.generation());
+        assertEquals(1, first.status().resourcePins());
+        assertEquals(1, first.status().resourcesByKind()
+                .get(HttpGenerationDrainV1.ResourceKind.CALLBACK));
+        pendingCallback.close();
+        assertTrue(first.readyToRetire());
+        requestV3.handlerQuiescent();
+        requestV3.transportQuiescent();
+    }
+
+    @Test void aTimedOutRequestIsNotProofOfPhysicalRelease() {
+        var ledger = new HttpGenerationDrainV1(10, 1, 2);
+        var request = ledger.admit();
+        var nativePin = request.pin(HttpGenerationDrainV1.ResourceKind.FFI_CALL);
+        ledger.beginDrain();
+        request.requestCancellation();
+        request.transportQuiescent();
+        assertFalse(ledger.readyToRetire(), "response abort cannot kill in-process FFI");
+        request.handlerQuiescent();
+        assertFalse(ledger.readyToRetire(), "cancellation is not an FFI return");
+        var blockers = ledger.status();
+        assertEquals(0, blockers.exchanges());
+        assertEquals(1, blockers.resourcePins());
+        assertEquals(1, blockers.resourcesByKind().get(
+                HttpGenerationDrainV1.ResourceKind.FFI_CALL));
+        nativePin.close();
+        assertTrue(ledger.readyToRetire());
+    }
+
+    @Test void immutableDiagnosticSnapshotCannotClearOutstandingPins() {
+        var ledger = new HttpGenerationDrainV1(12, 1, 3);
+        var request = ledger.admit();
+        var lease = request.pin(HttpGenerationDrainV1.ResourceKind.SUSPENDED_TASK);
+        var original = ledger.status();
+        assertThrows(UnsupportedOperationException.class, () ->
+                original.resourcesByKind().clear());
+        lease.close();
+        assertEquals(1, original.resourcePins());
+        assertEquals(0, ledger.status().resourcePins());
+        request.handlerQuiescent();
+        request.transportQuiescent();
+        ledger.beginDrain();
+        assertTrue(ledger.status().readyToRetire());
+    }
+
     @Test void admissionAndDrainShareALinearizationPoint() throws Exception {
         var ledger = new HttpGenerationDrainV1(19, 1, 8);
         var ready = new CountDownLatch(1);
