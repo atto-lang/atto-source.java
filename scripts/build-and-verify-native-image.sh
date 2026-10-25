@@ -64,8 +64,19 @@ case "$description" in
   *) echo "artifact is not an OS-native executable" >&2; exit 1 ;;
 esac
 
-info="$("$executable" --build-info)"
-printf '%s\n' "$info"
+# Preserve raw stdout/stderr: command substitution discards trailing newlines,
+# allowing extra blank output and stderr warnings to masquerade as a clean manifest.
+build_info_stdout="$(mktemp)"
+build_info_stderr="$(mktemp)"
+build_info_expected="$(mktemp)"
+trap 'rm -f "$build_info_stdout" "$build_info_stderr" "$build_info_expected"' 0
+build_info_status=0
+"$executable" --build-info >"$build_info_stdout" 2>"$build_info_stderr" || build_info_status=$?
+if [ "$build_info_status" -ne 0 ] || [ -s "$build_info_stderr" ]; then
+  echo "native --build-info failed or emitted stderr diagnostics" >&2
+  if [ -s "$build_info_stderr" ]; then cat "$build_info_stderr" >&2; fi
+  exit 1
+fi
 # Requiring the complete, canonical manifest prevents substring or warning-line
 # matches from certifying a wrong build mode/reference encoding.
 case "$mode" in
@@ -73,10 +84,15 @@ case "$mode" in
   hybrid) guest_execution=runtime-selected ;;
 esac
 expected="{\"build_mode\":\"$mode\",\"default_execution_mode\":\"$mode\",\"managed_reference_mode\":\"$refs\",\"guest_execution\":\"$guest_execution\"}"
-if [ "$info" != "$expected" ]; then
-  echo "native build-info does not match canonical $mode/$refs manifest" >&2
-  exit 1
+printf '%s' "$expected" >"$build_info_expected"
+if ! cmp -s "$build_info_stdout" "$build_info_expected"; then
+  printf '\n' >>"$build_info_expected"
+  if ! cmp -s "$build_info_stdout" "$build_info_expected"; then
+    echo "native build-info does not match canonical $mode/$refs manifest" >&2
+    exit 1
+  fi
 fi
+cat "$build_info_stdout"
 
 # Native guest smokes must have clean stderr as well as the expected stdout.
 # A zero exit plus correct stdout must not hide a runtime diagnostic on stderr.
@@ -85,7 +101,7 @@ guest_stderr="$(mktemp)"
 guest_stdout="$(mktemp)"
 guest_exact_actual="$(mktemp)"
 guest_expected="$(mktemp)"
-trap 'rm -f "$guest_stderr" "$guest_stdout" "$guest_exact_actual" "$guest_expected"' 0
+trap 'rm -f "$build_info_stdout" "$build_info_stderr" "$build_info_expected" "$guest_stderr" "$guest_stdout" "$guest_exact_actual" "$guest_expected"' 0
 run_clean_guest() {
   : > "$guest_stderr"
   : > "$guest_stdout"
