@@ -1196,7 +1196,7 @@ public final class TypeChecker {
                     !(field.initializer() instanceof Ast.LiteralExpr));
         }
         if (expr instanceof Ast.MemberExpr member)
-            return fieldInitializerMaySuspend(member.receiver());
+            return member.optional() || fieldInitializerMaySuspend(member.receiver());
         if (expr instanceof Ast.IndexExpr) {
             // Even pure operands do not establish a safe indexing operation.
             // Bounds failure (and any future index dispatch) may unwind after
@@ -2718,6 +2718,24 @@ public final class TypeChecker {
             return operand;
         }
         if (expr instanceof Ast.BinaryExpr binary) {
+            if (binary.operator().equals("??")) {
+                Type carrier = deref(typeOf(binary.left(), env, generics, self));
+                if (!(carrier instanceof Named option)
+                        || !option.name().equals("Option")
+                        || option.arguments().size() != 1) {
+                    throw new IllegalArgumentException("?? requires an Option<T> left operand");
+                }
+                Type payload = option.arguments().getFirst();
+                if (payload == Unknown.INSTANCE || payload instanceof Borrow
+                        || payload == Primitive.VOID) {
+                    throw new IllegalArgumentException("?? requires a concrete owned Option payload");
+                }
+                Map<Env.Binding, Set<String>> afterLeft = env.initializationSnapshot();
+                Type fallback = typeOf(binary.right(), env, generics, self);
+                requireAssignable(fallback, payload, "?? fallback");
+                env.restoreInitialization(afterLeft);
+                return payload;
+            }
             if (binary.operator().equals("pipe")) {
                 checkPipeTopology(binary, env, generics, self);
                 // Still fail closed: the current actor mailbox send() is void
@@ -3764,6 +3782,34 @@ public final class TypeChecker {
             return fn.result();
         }
         if (expr instanceof Ast.MemberExpr member) {
+            if (member.optional()) {
+                Type receiver = deref(typeOf(member.receiver(), env, generics, self));
+                if (!(receiver instanceof Named option)
+                        || !option.name().equals("Option")
+                        || option.arguments().size() != 1) {
+                    throw new IllegalArgumentException("?. requires an Option<T> receiver");
+                }
+                Type payload = option.arguments().getFirst();
+                if (payload == Unknown.INSTANCE || payload instanceof Borrow
+                        || payload == Primitive.VOID) {
+                    throw new IllegalArgumentException("?. requires a concrete owned Option payload");
+                }
+                Env projected = new Env(env);
+                // An unspellable compiler binding preserves ordinary property
+                // lookup, visibility and class-generic substitution rules.
+                String slot = "$ores_safe_member_payload";
+                projected.define(slot, payload, Ast.BindingKind.VAL);
+                Type field = typeOf(new Ast.MemberExpr(
+                        new Ast.NameExpr(slot), member.member()), projected, generics, self);
+                if (field == Unknown.INSTANCE || field == Primitive.VOID
+                        || field instanceof Borrow || field instanceof Function) {
+                    throw new IllegalArgumentException(
+                            "?. requires a statically typed owned data field: " + member.member());
+                }
+                if (field instanceof Named inner && inner.name().equals("Option")
+                        && inner.arguments().size() == 1) return field;
+                return new Named("Option", List.of(field));
+            }
             if (member.receiver() instanceof Ast.NameExpr namespace
                     && namespace.name().equals("BooleanOps")
                     && !modules.containsKey("BooleanOps")
@@ -5699,6 +5745,9 @@ public final class TypeChecker {
             Set<String> generics,
             Type self,
             boolean writing) {
+        if (member.optional()) {
+            throw new IllegalArgumentException("?. cannot appear on an assignment target");
+        }
         Type rawReceiver;
         if (member.receiver() instanceof Ast.NameExpr name && env.lookup(name.name()) != null) {
             Env.Binding binding = env.lookup(name.name());
