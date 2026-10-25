@@ -149,6 +149,34 @@ final class ConstraintValidationBridgeTest {
     }
 
     @Test
+    void evidenceConsumptionRechecksActiveCatalogAndAliasIdentity() {
+        TypeConstraintDescriptors.Catalog original = catalog();
+        Ast.Expr checked = new Ast.LiteralExpr(3);
+        ConstraintValidationBridge.validateAndRecord(checked, original, "Code", 3);
+
+        assertEquals("Code", ConstraintValidationBridge.requireCompatible(
+                checked, original, "Code").qualifiedTypeName());
+
+        IllegalStateException wrongAlias = assertThrows(
+                IllegalStateException.class,
+                () -> ConstraintValidationBridge.requireCompatible(
+                        checked, original, "Other"));
+        assertTrue(wrongAlias.getMessage().startsWith(
+                "CONSTRAINT_PROVENANCE_TYPE_MISMATCH"));
+
+        TypeConstraintDescriptors.Catalog changed =
+                TypeChecker.checkTypesWithDiagnostics(Parser.parse("""
+                        declare type Code = int with min 0 and max 6;
+                        """)).constraintDescriptors();
+        IllegalArgumentException stale = assertThrows(
+                IllegalArgumentException.class,
+                () -> ConstraintValidationBridge.requireCompatible(
+                        checked, changed, "Code"));
+        assertTrue(stale.getMessage().startsWith(
+                "CONSTRAINT_IMPORT_FINGERPRINT_MISMATCH"));
+    }
+
+    @Test
     void existingRuntimeFenceRemainsUntilCheckedConversionIsIntegrated() {
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class,
