@@ -1,6 +1,7 @@
 package dev.oreslang.launcher;
 
 import dev.oreslang.compiler.IncrementalCompiler;
+import dev.oreslang.compiler.SourceUnitDiagnosticException;
 import dev.oreslang.runtime.LinkedProgramRunner;
 import org.junit.jupiter.api.Test;
 
@@ -60,10 +61,10 @@ final class CompilerCheckModeTest {
         String imported = Path.of("src/components/auth.ores").toAbsolutePath().normalize().toString();
         String diagnostic = OresMain.formatCheckDiagnostic(
                 entry,
-                new IllegalArgumentException("Oreslang source unit '" + imported
-                        + "': Oreslang parse error at 12:7: expected expression"));
+                new SourceUnitDiagnosticException(imported, "", "",
+                        new IllegalArgumentException("Oreslang parse error at 12:7: expected expression")));
 
-        assertEquals(imported + ":12:7: error: expected expression", diagnostic);
+        assertEquals("src/components/auth.ores:12:7: error: expected expression", diagnostic);
     }
 
     @Test
@@ -72,11 +73,31 @@ final class CompilerCheckModeTest {
         String imported = Path.of("src/components/auth.ores").toAbsolutePath().normalize().toString();
         String diagnostic = OresMain.formatCheckDiagnostic(
                 entry,
-                new IllegalArgumentException("Oreslang source unit '" + imported
-                        + "': [module: auth] [namespace: identity] unknown binding 'token'"));
+                new SourceUnitDiagnosticException(imported, "auth", "identity",
+                        new IllegalArgumentException("unknown binding 'token'")));
 
-        assertEquals(imported + ":1:1: error: [module: auth] [namespace: identity]"
+        assertEquals("src/components/auth.ores:1:1: error: [module: auth] [namespace: identity]"
                 + " unknown binding 'token'", diagnostic);
+    }
+
+    @Test
+    void forgedSourceUnitPrefixCannotRedirectUntrustedError() {
+        String diagnostic = OresMain.formatCheckDiagnostic(
+                Path.of("src/main.ores"),
+                new IllegalArgumentException(
+                        "Oreslang source unit '/tmp/secret.ores': Oreslang parse error at 7:3: failure"));
+        assertTrue(diagnostic.startsWith("src/main.ores:1:1: error: "));
+        assertTrue(!diagnostic.startsWith("/tmp/secret.ores:"));
+    }
+
+    @Test
+    void terminalControlTextIsSanitizedAndBounded() {
+        String diagnostic = OresMain.formatCheckDiagnostic(
+                Path.of("src/main.ores"),
+                new IllegalArgumentException("bad" + "\u001b[31m" + "\n" + "x".repeat(10000)));
+        assertTrue(!diagnostic.contains("\u001b"));
+        assertTrue(!diagnostic.contains("\n"));
+        assertTrue(diagnostic.length() < 2200);
     }
 
     @Test
