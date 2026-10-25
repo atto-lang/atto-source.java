@@ -141,6 +141,10 @@ int main(int argc, char **argv) {
                     puts("ORES_TEST|PASS|core/extra/false-positive|");
                 if (getenv("MOCK_EXTRA_TEST_FAIL"))
                     puts("ORES_TEST|FAIL|core/failure|unexpected failure");
+                if (getenv("MOCK_STRAY_STDOUT"))
+                    puts("FATAL: unexpected native test output");
+                if (getenv("MOCK_BLANK_STDOUT_LINE"))
+                    puts("");
                 if (getenv("MOCK_BAD_TEST_SUMMARY"))
                     puts("ORES_TEST|SUMMARY|total=4|passed=0|failed=4|skipped=0|filtered=0");
                 else
@@ -370,6 +374,16 @@ assert_case 'valid summary without actual PASS/SKIP records' failure aot compres
 assert_case 'duplicate valid summary' failure aot compressed32 MOCK_DUPLICATE_TEST_SUMMARY=1
 assert_case 'valid plus conflicting summary' failure aot compressed32 MOCK_CONFLICTING_TEST_SUMMARY=1
 assert_case 'valid summary alongside FAIL event' failure aot compressed32 MOCK_EXTRA_TEST_FAIL=1
+assert_case 'stray stdout with valid test events and summary' failure aot compressed32 MOCK_STRAY_STDOUT=1
+grep -Fx 'native executable did not produce the exact unique PASS/SKIP guest tests and summary' "$tmp/stderr" >/dev/null || {
+  echo 'FAILED: stray stdout was rejected by the wrong native gate' >&2
+  exit 1
+}
+assert_case 'unexpected blank stdout record' failure aot compressed32 MOCK_BLANK_STDOUT_LINE=1
+grep -Fx 'native executable did not produce the exact unique PASS/SKIP guest tests and summary' "$tmp/stderr" >/dev/null || {
+  echo 'FAILED: blank stdout record was rejected by the wrong native gate' >&2
+  exit 1
+}
 assert_case 'valid summary alongside excess PASS event' failure aot compressed32 MOCK_EXTRA_TEST_PASS=1
 assert_case 'duplicated PASS replacing missing PASS' failure aot compressed32 MOCK_REPLACE_FLOAT_WITH_ARITHMETIC_PASS=1
 assert_case 'duplicate arithmetic PASS identity' failure aot compressed32 MOCK_DUPLICATE_TEST_PASS_ID=1
