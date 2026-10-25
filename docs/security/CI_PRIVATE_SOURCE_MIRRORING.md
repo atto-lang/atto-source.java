@@ -18,38 +18,42 @@ carrier workflow blob, and exact test-plan blob/PR sets. Carrier `main`
 advance, repository delete/recreate, workflow change, or test-plan change
 fails closed until the source policy is reviewed again.
 
-V3 supports two fail-closed source-governance modes:
+V3 requires **protected source `main` for every private-source export**.
+If GitHub reports source `main protected: true`, V3 delegates to the legacy
+protected-origin verifier. It requires CODEOWNER review, stale-review dismissal,
+at least one approval, strict non-empty required status checks, administrator
+enforcement, no review bypasses, no force pushes, and no branch deletion.
 
-1. **Protected-main mode.** If GitHub reports source `main protected: true`,
-   V3 delegates to the legacy protected-origin verifier. It requires CODEOWNER
-   review, stale-review dismissal, at least one approval, strict non-empty
-   required status checks, administrator enforcement, no review bypasses,
-   no force pushes, and no branch deletion.
-2. **Exact review-attested mode.** On a private-repository plan where those
-   protection features are unavailable, V3 requires authority PR #1724 to be
-   merged to source `main`. The latest review from immutable reviewer ID
-   `11139560` / login `ORESoftware` must be `APPROVED` on the authority
-   PR's exact head and must predate the merge. The authority PR author must be
-   a different account. V3 then compares every export-critical governance
-   Git entry and file byte-for-byte between that reviewed head and current
-   source `main`, including CODEOWNERS, destination policy, carrier contract,
-   preflight workflow, destination guard/launcher, and both publishers.
-   Policy digest and numeric destination repository ID must also match the
-   local checkout exactly.
+There is deliberately no review-attested fallback for the source repository.
+A reviewed governance PR, CODEOWNERS text, or successful source-free carrier
+run cannot substitute for live source-main protection. If source `main`
+reports `protected: false` or the required protection cannot be verified,
+private export is denied.
 
-The review-attested fallback does **not** make unprotected `main` generally
-trusted. It authorizes only governance bytes that still exactly match the
-independently reviewed #1724 head. Any later edit, mode/type change, stale or
-revoked review, reviewer identity mismatch, repository-ID mismatch, or review
-history ambiguity fails closed. V3 repeats the authority check immediately
-before publication and again in the inert payload window before creating the
-one-use authorization ref. The legacy publisher remains protected-main-only.
+Carrier `main` has a separate fail-closed choice: the unprotected fallback
+is bound by the **carrier contract**, not by an implicit trusted branch. If the
+carrier reports `protected: true`, V3 requires CODEOWNER review, stale-review
+dismissal, at least one approval, administrator enforcement, no review
+bypasses, no force pushes, no deletion, and the exact security CODEOWNERS file.
+If those private-repository protections are unavailable, the protected source
+contract must include an exact positive `review_pr`. That PR must be a
+same-repository PR merged to carrier `main`, authored by an account other than
+immutable reviewer ID `11139560` / login `ORESoftware`, and the latest
+review from that reviewer must be `APPROVED` on the PR's exact head before
+merge. V3 then requires the **entire final carrier main root-tree SHA** to equal
+the reviewed PR head root-tree SHA and requires the exact carrier CODEOWNERS
+bytes. Thus path, Git mode, or blob drift after review fails closed.
+
+The exact carrier-main SHA is rechecked before every source-bearing destination
+write. Full carrier review/tree attestation is repeated at initial admission,
+immediately before executable refs, and again while the source-bearing payload
+ref is still inert before creating the one-use authorization ref.
 
 At the 2026-10-20 audit, source `main` still reported `protected: false`,
 and GitHub reported private-repository rulesets unavailable on the current
-plan. Therefore real V3 export must use the exact review-attested path unless
-the repository plan/protection state changes. Source-free tests remain
-permissible while the independent review is pending.
+plan. Therefore real V3 export is blocked until source-main protection is
+enabled and independently verifiable. Source-free carrier tests remain
+permissible while that governance blocker is unresolved.
 
 Do **not** accept a CI destination allowlist from environment variables or
 unreviewed workflow inputs: a caller must not be able to grant its own approval.
@@ -212,7 +216,8 @@ API operations. V3 tests additionally prove protected carrier-contract parsing,
 source-free base enforcement, exact open-PR binding, receipt construction,
 tree-derived branch naming, and dispatcher-authorization ref creation. The
 real allowlist remains empty and **no destination is authorized** unless
-separately reviewed and protected-main enforcement is active.
+separately reviewed and either protected-main enforcement or the exact-tree
+review-attested carrier mode is satisfied.
 
 ## Active disclosure incident
 
