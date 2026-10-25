@@ -1107,16 +1107,13 @@ public final class OwnershipChecker {
                     if (argument instanceof Ast.IndexExpr) {
                         throw error("rt take cannot move an indexed projection until projection-level move tracking is available; move the containing owner or use a read/borrow");
                     }
-                    if (argument instanceof Ast.MemberExpr member) {
-                        Ast.ClassDecl ownerClass = classOfReceiver(member.receiver(), scope);
-                        if (ownerClass != null) {
-                            Ast.FieldDecl slot = findField(
-                                    ownerClass, member.member(), new LinkedHashSet<>());
-                            if (slot != null && slot.bindingKind() != Ast.BindingKind.LET) {
-                                throw error("cannot rt take immutable/final class field '"
-                                        + ownerClass.name() + "." + member.member() + "'");
-                            }
-                        }
+                    if (argument instanceof Ast.MemberExpr) {
+                        // Runtime take returns the same JVM handle and relies on
+                        // static ownership invalidation. Until field-sensitive
+                        // partial-move state exists, consuming a member would
+                        // leave the original slot readable and could duplicate
+                        // authority for move-only values.
+                        throw error("rt take cannot move a field projection until projection-level move tracking is available; move the containing owner or use a read/borrow");
                     }
                     ValueInfo taken = checkExpr(argument, scope, true);
                     if (taken.kind == ValueKind.IMM_BORROW || taken.kind == ValueKind.MUT_BORROW

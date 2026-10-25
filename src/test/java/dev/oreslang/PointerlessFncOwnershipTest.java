@@ -74,6 +74,47 @@ final class PointerlessFncOwnershipTest {
     }
 
     @Test
+    void rtTakeFieldProjectionFailsClosedWithoutPartialMoveTracking() {
+        IllegalArgumentException copyField = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 7;
+                        end
+
+                        fnc bad(): void {
+                          let Box box = new Box();
+                          val int moved = rt take box.value;
+                          stdio.println(moved);
+                          return;
+                        }
+                        """)));
+        assertTrue(copyField.getMessage().contains("field projection"),
+                copyField.getMessage());
+
+        IllegalArgumentException ownedField = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 7;
+                        end
+
+                        define class Holder as
+                          pub let Box child = new Box();
+                        end
+
+                        fnc bad(): void {
+                          let Holder holder = new Holder();
+                          val Box moved = rt take holder.child;
+                          stdio.println(moved.value);
+                          return;
+                        }
+                        """)));
+        assertTrue(ownedField.getMessage().contains("field projection"),
+                ownedField.getMessage());
+    }
+
+    @Test
     void rtCopyAndRtShareAreSafeForCopyValues() throws Exception {
         String output = run("""
                 pub routine main(): void {
