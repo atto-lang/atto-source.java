@@ -575,12 +575,20 @@ final class TaskBorrowBoundaryV2Test {
                                 java.util.List.of(scalar), false)), false);
         var fabricatedUnion = new dev.oreslang.ast.Ast.TypeRef(
                 "$union$", java.util.List.of(), false);
+        var unresolvedPrimitive = new dev.oreslang.ast.Ast.TypeRef(
+                "int", java.util.List.of(), true);
+        var shape = dev.oreslang.ast.Ast.TypeRef.sequenceShape(
+                java.util.List.of(scalar));
+        var repeated = dev.oreslang.ast.Ast.TypeRef.repeatExact("2", scalar);
+        var namedParameter = dev.oreslang.ast.Ast.TypeRef.namedParameter(
+                "value", scalar);
         for (var candidate : java.util.List.of(
-                fabricatedScalar, fabricatedUnion)) {
+                fabricatedScalar, fabricatedUnion,
+                unresolvedPrimitive, shape, repeated, namedParameter)) {
             assertFalse((Boolean) copy.invoke(checker, candidate),
-                    "malformed type must not gain Copy authority");
+                    "malformed/unresolved type must not gain Copy authority");
             assertTrue((Boolean) send.invoke(checker, candidate),
-                    "malformed type must not gain Task Send authority");
+                    "malformed/unresolved type must not gain Task Send authority");
         }
     }
 
