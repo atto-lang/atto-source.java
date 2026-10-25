@@ -33,93 +33,68 @@ public final class AsyncNativeIo implements AutoCloseable {
         return submit(operation, work);
     }
 
-    /** Submit host I/O after checking an actor-local capability. Guest conversion
-     * must finish before submission; workers execute only trusted host I/O. */
-    public <T> OresFuture<T> submitCapability(OresContext context,
-            IsolatePolicy.Capability capability, String operation, Callable<T> work) {
-        context.requireCapability(capability, operation);
-        return submit(operation, work);
-    }
-
     public <T> OresFuture<T> submitClose(OresContext context, Callable<T> work) {
         context.requireCapability(IsolatePolicy.Capability.NETWORK, "socket.close_async");
         return submitControl("socket.close_async", work);
     }
 
-    <T> OresFuture<T> submitControl(String operation, Callable<T> work) {
+    synchronized <T> OresFuture<T> submitControl(String operation, Callable<T> work) {
         return submit(operation, work, controls, 16);
     }
 
-    <T> OresFuture<T> submit(String operation, Callable<T> work) {
+    synchronized <T> OresFuture<T> submit(String operation, Callable<T> work) {
         return submit(operation, work, pending, capacity);
     }
 
     private <T> OresFuture<T> submit(String operation, Callable<T> work,
             Set<OresFuture<?>> admitted, int limit) {
-        // Each operation has one context-owned terminal decision. The monitor
-        // orders admission, completion, and close, but Future settlement must
-        // be outside the monitor: settlement synchronously notifies runtime
-        // observers and their host CONTROL plumbing must never run locked.
+        // Cancellation cannot promise rollback of a filesystem mutation. The
+        // operation remains owned by the context until completion or context close.
         OresFuture<T> result = new OresFuture<>(() -> false, () -> { });
-        RuntimeException rejected = null;
-        synchronized (this) {
-            if (closed || admitted.size() >= limit) {
-                rejected = new RejectedExecutionException(
-                        closed ? "I/O context closed" : "I/O admission capacity exhausted");
-            } else {
-                admitted.add(result);
-                long queued = CorePerf.start();
-                try {
-                    workers.execute(() -> {
-                        CorePerf.end(CorePerf.ASYNC_IO_QUEUE, queued);
-                        long workPerf = CorePerf.start();
-                        T value = null;
-                        Throwable failure = null;
-                        try {
-                            value = work.call();
-                        } catch (Throwable caught) {
-                            failure = caught;
-                            SourceBoundaryTrace.record(caught, "native:io", operation, "I/O");
-                        } finally {
-                            CorePerf.end(CorePerf.ASYNC_IO_WORK, workPerf);
-                        }
-                        // Removing the admitted operation under this monitor
-                        // irrevocably selects the worker outcome. If close()
-                        // gets the lock first, it selects failure instead.
-                        // Only the winner publishes, AFTER unlocking.
-                        final boolean winner;
-                        synchronized (AsyncNativeIo.this) {
-                            winner = admitted.remove(result);
-                        }
-                        if (winner) {
-                            if (failure == null) result.completeFromRuntime(value);
-                            else result.failFromRuntime(failure);
-                        }
-                        if (failure instanceof VirtualMachineError fatal) throw fatal;
-                        if (failure instanceof ThreadDeath fatal) throw fatal;
-                        if (failure instanceof LinkageError fatal) throw fatal;
-                    });
-                } catch (RuntimeException failure) {
-                    admitted.remove(result);
-                    rejected = failure;
-                }
-            }
+        if (closed || admitted.size() >= limit) {
+            CoreLog.record(CoreLog.Level.WARN, CoreLog.ASYNC_IO_REJECTED, 1L);
+            result.failFromRuntime(new RejectedExecutionException(
+                    closed ? "I/O context closed" : "I/O admission capacity exhausted"));
+            return result;
         }
-        if (rejected != null) result.failFromRuntime(rejected);
+        admitted.add(result);
+        long queued = CorePerf.start();
+        try {
+            workers.execute(() -> {
+                CorePerf.end(CorePerf.ASYNC_IO_QUEUE, queued);
+                long workPerf = CorePerf.start();
+                T value;
+                try {
+                    value = work.call();
+                } catch (Throwable failure) {
+                    CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_FAILED, 1L);
+                    synchronized (this) { admitted.remove(result); }
+                    SourceBoundaryTrace.record(failure, "native:io", operation, "I/O");
+                    result.failFromRuntime(failure);
+                    if (failure instanceof VirtualMachineError fatal) throw fatal;
+                    if (failure instanceof ThreadDeath fatal) throw fatal;
+                    if (failure instanceof LinkageError fatal) throw fatal;
+                    return;
+                } finally {
+                    CorePerf.end(CorePerf.ASYNC_IO_WORK, workPerf);
+                }
+                synchronized (this) { admitted.remove(result); }
+                result.completeFromRuntime(value);
+            });
+        } catch (RuntimeException failure) {
+            CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_REJECTED, 1L);
+            admitted.remove(result);
+            result.failFromRuntime(failure);
+        }
         return result;
     }
 
-    void register(AutoCloseable resource) throws Exception {
-        // Resource.close() can block or reenter runtime plumbing, so never
-        // invoke third-party teardown while holding the admission monitor.
-        synchronized (this) {
-            if (!closed) {
-                resources.add(resource);
-                return;
-            }
+    synchronized void register(AutoCloseable resource) throws Exception {
+        if (closed) {
+            resource.close();
+            throw new IllegalStateException("I/O context closed");
         }
-        resource.close();
-        throw new IllegalStateException("I/O context closed");
+        resources.add(resource);
     }
 
     synchronized void unregister(AutoCloseable resource) { resources.remove(resource); }
@@ -136,15 +111,12 @@ public final class AsyncNativeIo implements AutoCloseable {
             failing.addAll(controls);
             controls.clear();
             pending.clear();
-            // Clearing admission makes teardown's terminal decision
-            // authoritative; publish failures only after releasing the monitor
-            // so registered runtime observers cannot reenter under the lock.
         }
-        for (OresFuture<?> future : failing)
-            future.failFromRuntime(new IllegalStateException("I/O context closed"));
         workers.shutdownNow();
         for (AutoCloseable resource : closing) {
             try { resource.close(); } catch (Exception ignored) { /* best-effort shutdown */ }
         }
+        for (OresFuture<?> future : failing)
+            future.failFromRuntime(new IllegalStateException("I/O context closed"));
     }
 }

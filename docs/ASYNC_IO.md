@@ -3,16 +3,7 @@
 The async APIs return native Oreslang `Future<T>` values. `await` suspends the
 source continuation and releases its actor/root execution carrier. Completion
 resumes through the owning scheduler; I/O workers never execute guest callbacks.
-Existing synchronous APIs remain available for compatibility, but bare
-synchronous I/O names are **legacy**: canonical source-visible native Oreslang
-blocking I/O operations **must** end in `_blocking`, while async I/O operations
-**may** end in `_async`. Java/Graal supports an opt-in strict compiler naming gate via
-`-Dores.compiler.strictNativeIo=true`; legacy bare names remain accepted
-by default until downstream migration completes. See the [shared native I/O naming contract](https://github.com/ores-truffle-oreslang/oreslang-common-source/blob/main/docs/NATIVE_IO_NAMING.md).
-
-This migration must add canonical blocking entry points, migrate callers,
-check method/alias paths and test actual blocking/async behavior and capability
-denials before removing compatibility names. The `_blocking` suffix means synchronous *source-level* return semantics, not OS-thread blocking. Its implementation **must** submit native I/O through an async I/O engine, suspend and later resume the guest continuation on the owning scheduler, and immediately free the actor carrier. Bare synchronous Java I/O methods must not be renamed without implementing this lowering.
+Existing synchronous APIs remain available for compatibility.
 
 | API | Awaited result |
 | --- | --- |
@@ -72,18 +63,11 @@ workers, closes tracked sockets and settles pending futures. A filesystem syscal
 that ignores interruption may still finish after context closure. Await outstanding
 writes when their completion matters; closing a socket interrupts its pending read.
 Close TCP sockets explicitly when finished; context shutdown is a fallback.
-Pending Future settlement and context closure are serialized so a worker
-cannot remove an unsettled operation just before shutdown. A Future failed
-by closure remains failed even if its host worker finishes late. Resource
-cleanup and best-effort interruption **do not promise** that an interrupted
-write is rolled back or that no external side effects occur after close.
 
 The server-side HTTP API already returns futures for accept, body reads, response
 writes and graceful shutdown. Listener setup and synchronous abort/close control
-remain separate operations. The existing explicitly async I/O APIs do not add
-`stdio.*_async` operations; the subsequent cooperative `_blocking` migration
-covers console output and stdin with SourceTask suspension. This implementation
-does not add physical actor heap isolation.
+remain separate operations. Stdout/console export and stdin are not migrated by
+this change. This implementation does not add physical actor heap isolation.
 
 ## Validation
 
@@ -95,45 +79,6 @@ carrier**, proving that the first actor's pending read does not occupy that carr
 EOF, errors and future results travel through normal continuation lowering.
 
 Run `mvn -Dtest=AsyncNativeIoTest test` with JDK 25.
-
-## Async-backed `_blocking` I/O migration (Java/Graal PR #522)
-
-The feature branch now introduces `*_blocking` entry points for filesystem reads/writes, filesystem metadata, TCP connect/socket read/write/close, HTTP client requests, console output, and stdin. These calls are **synchronous only to Oreslang source**: they yield a SourceTask continuation and submit host I/O to `AsyncNativeIo`. The I/O worker is not a scheduler carrier. Java/Graal's continuation path detects `_blocking` calls and automatically awaits the returned host future without exposing it to Oreslang source.
-
-Canonical shape:
-
-```ores
-pub routine main(): void {
-  fs.write_text_atomic_blocking("./message.txt", "hello");
-  val String text = fs.read_text_blocking("./message.txt");
-  stdio.println_blocking(text);
-  return;
-}
-```
-
-`*_async` retains `Future<T>` return semantics. Naming and Java implementation are not evidence of LLVM support. Existing bare entry points remain **legacy compatibility aliases**. Set `-Dores.compiler.strictNativeIo=true` during Java/Graal compilation to reject registered bare filesystem, TCP/network, HTTP-client and stdio I/O names. Strict mode is not yet the default. Native `_blocking` method extraction as a first-class callable is now rejected even without strict mode: the compiler does not yet support implicit suspension effects on indirect calls. The final release gate remains caller conversion, default strict enforcement, and full cross-backend verification.
-
-Native `_blocking` calls must not park an actor carrier, call `Future.get()/join()` on that carrier, or execute guest callbacks on I/O workers. All capability checks and bounded I/O admission remain mandatory.
-
-
-
-Existing API names below describe the **currently implemented** Java/Graal
-behavior and are not canonical names under the new language rule. Required
-canonical replacements include `fs.list_dir_blocking`,
-`fs.is_dir_blocking`, `fs.is_symlink_blocking` and
-`fs.write_text_atomic_blocking`. `stdio.println` and any other synchronous
-file/console/network I/O builtins must also be audited and either renamed with
-`_blocking` or implemented with a verified async contract. The already
-documented `*_async` functions remain correctly named; the suffix is optional
-for genuinely async calls.
-
-The Java/Graal PR #522 and CLI PR #12 feature branches now contain those
-replacement functions and the migrated CLI source. This does **not** mean
-the current combined heads are release-validated: their latest CI jobs did
-not execute any test steps, and the original passing mirrors cover earlier
-snapshots only. Migration must check qualified methods and
-aliases, explicit capability gating, diagnostics for legacy bare calls,
-and two-actor **single-carrier** tests proving `_blocking` calls do not occupy the carrier, plus the existing explicit-`await` async tests. `_blocking` returns `T` directly in source; `*_async` returns `Future<T>`. Neither may use host `join()`/`get()` on the actor carrier.
 
 ## Synchronous directory operations (Oreslang stack CLI)
 

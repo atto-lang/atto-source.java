@@ -110,130 +110,51 @@ class AsyncNativeIoTest {
         }
     }
 
-    @Test void closingContextWinsOverLateWorkerSuccessAndFailure() throws Exception {
-        for (boolean throwLate : new boolean[] {false, true}) {
-            try (var io = new AsyncNativeIo(1)) {
-                CountDownLatch entered = new CountDownLatch(1);
-                CountDownLatch workerExited = new CountDownLatch(1);
-                var pending = io.submit("interrupt-resistant-host-io", () -> {
-                    entered.countDown();
-                    try {
-                        new CountDownLatch(1).await();
-                    } catch (InterruptedException ignored) {
-                        // Some host operations complete rather than abort after
-                        // close interrupts the worker. They must not revive an
-                        // already-closed Oreslang context.
-                    }
-                    workerExited.countDown();
-                    if (throwLate) throw new IOException("late host failure");
-                    return 123;
-                });
-                assertTrue(entered.await(2, TimeUnit.SECONDS));
-                io.close();
-                assertTrue(workerExited.await(2, TimeUnit.SECONDS));
-                ExecutionException failure = assertThrows(ExecutionException.class,
-                        () -> pending.get(2, TimeUnit.SECONDS));
-                assertInstanceOf(IllegalStateException.class, failure.getCause());
-                assertEquals("I/O context closed", failure.getCause().getMessage());
-            }
-        }
-    }
-
-    @Test void rejectedResourceCleanupNeverRunsUnderAdmissionLock() throws Exception {
+    @Test void coreNumericLoggingDoesNotChangeIoFailuresOrLeakGuestExceptionText() throws Exception {
+        CoreLog.configure(CoreLog.Level.OFF);
+        CoreLog.configure(CoreLog.Level.WARN);
+        var started = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
         try (var io = new AsyncNativeIo(1)) {
-            io.close();
-            java.util.concurrent.atomic.AtomicBoolean resourceClosed =
-                    new java.util.concurrent.atomic.AtomicBoolean();
-            java.util.concurrent.atomic.AtomicBoolean heldAdmissionMonitor =
-                    new java.util.concurrent.atomic.AtomicBoolean(true);
-            IllegalStateException failure = assertThrows(IllegalStateException.class,
-                    () -> io.register(() -> {
-                        heldAdmissionMonitor.set(Thread.holdsLock(io));
-                        resourceClosed.set(true);
-                    }));
-            assertEquals("I/O context closed", failure.getMessage());
-            assertTrue(resourceClosed.get());
-            assertFalse(heldAdmissionMonitor.get(),
-                    "host resource.close must never run under I/O admission lock");
-        }
-    }
-
-    @Test void workerCompletionNeverInvokesObserverUnderAdmissionLock() throws Exception {
-        try (var io = new AsyncNativeIo(1)) {
-            CountDownLatch workStarted = new CountDownLatch(1);
-            CountDownLatch finishWork = new CountDownLatch(1);
-            CountDownLatch callbackCalled = new CountDownLatch(1);
-            java.util.concurrent.atomic.AtomicBoolean monitorHeld =
-                    new java.util.concurrent.atomic.AtomicBoolean(true);
-            var operation = io.submit("completed-with-observer", () -> {
-                workStarted.countDown();
-                assertTrue(finishWork.await(2, TimeUnit.SECONDS));
-                return 42;
-            });
-            assertTrue(workStarted.await(2, TimeUnit.SECONDS));
-            operation.whenCompleteRuntime((value, failure) -> {
-                monitorHeld.set(Thread.holdsLock(io));
-                assertNull(failure);
-                assertEquals(42, value);
-                callbackCalled.countDown();
-            });
-            finishWork.countDown();
-            assertEquals(42, operation.get(2, TimeUnit.SECONDS));
-            assertTrue(callbackCalled.await(2, TimeUnit.SECONDS));
-            assertFalse(monitorHeld.get(), "host completion callback must run after unlocking admission");
-        }
-    }
-
-    @Test void closeCallbacksNeverRunUnderAdmissionLock() throws Exception {
-        try (var io = new AsyncNativeIo(1)) {
-            CountDownLatch started = new CountDownLatch(1);
-            var operation = io.submit("pending-through-close", () -> {
+            var blocked = io.submit("slow", () -> {
                 started.countDown();
-                try {
-                    new CountDownLatch(1).await();
-                } catch (InterruptedException expected) {
-                    Thread.currentThread().interrupt();
-                }
-                return 99;
+                release.await();
+                return 19;
             });
             assertTrue(started.await(2, TimeUnit.SECONDS));
-            java.util.concurrent.atomic.AtomicBoolean callbackHeldLock =
-                    new java.util.concurrent.atomic.AtomicBoolean(true);
-            CountDownLatch called = new CountDownLatch(1);
-            operation.whenCompleteRuntime((value, failure) -> {
-                callbackHeldLock.set(Thread.holdsLock(io));
-                assertNotNull(failure);
-                called.countDown();
-            });
-            io.close();
-            assertTrue(called.await(2, TimeUnit.SECONDS));
-            assertFalse(callbackHeldLock.get(),
-                    "teardown callback must run after unlocking admission");
-            ExecutionException closed = assertThrows(ExecutionException.class,
-                    () -> operation.get(2, TimeUnit.SECONDS));
-            assertEquals("I/O context closed", closed.getCause().getMessage());
-        }
-    }
-
-    @Test void observerMayReenterAdmissionAfterCompletionWithoutMonitorOwnership() throws Exception {
-        try (var io = new AsyncNativeIo(1)) {
-            CountDownLatch release = new CountDownLatch(1);
-            var initial = io.submit("initial", () -> {
-                assertTrue(release.await(2, TimeUnit.SECONDS));
-                return 1;
-            });
-            CountDownLatch done = new CountDownLatch(1);
-            java.util.concurrent.atomic.AtomicReference<OresFuture<Integer>> nested =
-                    new java.util.concurrent.atomic.AtomicReference<>();
-            initial.whenCompleteRuntime((value, failure) -> {
-                assertFalse(Thread.holdsLock(io));
-                nested.set(io.submit("nested", () -> 2));
-                done.countDown();
-            });
+            var rejected = io.submit("private-operation-name", () -> fail("must not run"));
+            assertInstanceOf(RejectedExecutionException.class,
+                    assertThrows(ExecutionException.class,
+                            () -> rejected.get(2, TimeUnit.SECONDS)).getCause());
             release.countDown();
-            assertTrue(done.await(2, TimeUnit.SECONDS));
-            assertEquals(2, nested.get().get(2, TimeUnit.SECONDS));
+            assertEquals(19, blocked.get(2, TimeUnit.SECONDS));
+
+            var failed = io.submit("another-secret-operation", () -> {
+                throw new IllegalStateException("PRIVATE-GUEST-EXCEPTION-TEXT");
+            });
+            assertInstanceOf(IllegalStateException.class,
+                    assertThrows(ExecutionException.class,
+                            () -> failed.get(2, TimeUnit.SECONDS)).getCause());
+            assertEquals(7, io.submit("normal", () -> 7).get(2, TimeUnit.SECONDS),
+                    "diagnostic publication must not change later admissions");
+
+            var output = new ByteArrayOutputStream();
+            CoreLog.dumpRetained(new PrintStream(output, true, java.nio.charset.StandardCharsets.UTF_8));
+            String json = output.toString(java.nio.charset.StandardCharsets.UTF_8);
+            assertTrue(json.contains("\"event\":\"async.io.rejected\""));
+            assertTrue(json.contains("\"event\":\"async.io.failed\""));
+            assertFalse(json.contains("PRIVATE-GUEST-EXCEPTION-TEXT"));
+            assertFalse(json.contains("private-operation-name"));
+            assertFalse(json.contains("another-secret-operation"));
+            assertFalse(json.contains("\"value\":0"));
+        } finally {
+            release.countDown();
+            CoreLog.configure(CoreLog.Level.OFF);
         }
+        var afterDisable = new ByteArrayOutputStream();
+        CoreLog.dumpRetained(new PrintStream(afterDisable));
+        assertEquals("", afterDisable.toString(),
+                "explicitly disabled diagnostics must not export prior I/O events");
     }
 
     @Test void delayedTcpReadReleasesSingleActorCarrierAndSupportsWriteAndEof() throws Exception {

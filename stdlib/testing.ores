@@ -1,4 +1,4 @@
-define module testing
+define module testing as
 // Oreslang-native test framework.
 //
 // The framework intentionally contains no Java implementation code.

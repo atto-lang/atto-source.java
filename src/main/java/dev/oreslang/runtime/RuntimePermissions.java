@@ -125,9 +125,22 @@ public final class RuntimePermissions {
             else builder.allow(permission, value);
         }
 
-        return sawPermissionArgument
-                ? builder.build()
-                : fromCapabilities(isolatePolicy.capabilities());
+        if (!sawPermissionArgument)
+            return fromCapabilities(isolatePolicy.capabilities());
+
+        RuntimePermissions explicit = builder.build();
+        // Scoped rules ATTENUATE isolate authority; they must never add a
+        // coarse capability omitted by the host's isolation boundary. The
+        // OresContext.requirePermission path also checks the coarse policy,
+        // but standalone embedders must not receive an over-granting object.
+        for (Permission permission : Permission.values()) {
+            if (explicit.grantsAnything(permission)
+                    && !isolatePolicy.capabilities().contains(permission.capability())) {
+                throw new SecurityException("permission " + permission.cliName()
+                        + " exceeds isolate capability " + permission.capability());
+            }
+        }
+        return explicit;
     }
 
     public String[] applicationArguments() {
@@ -328,8 +341,13 @@ public final class RuntimePermissions {
         }
 
         public Builder allow(Permission permission, String scope) {
+            // Empty filesystem scopes previously normalized to "" and matched
+            // EVERY absolute Unix path via resource.startsWith("/").
+            // A missing scope must never become a root-wide capability.
+            if (scope == null || scope.isBlank())
+                throw new IllegalArgumentException("empty allow scope for " + permission);
             MutableRule rule = rules.computeIfAbsent(permission, ignored -> new MutableRule());
-            if ("*".equals(scope == null ? null : scope.trim())) rule.allowAll = true;
+            if ("*".equals(scope.trim())) rule.allowAll = true;
             else rule.allowed.add(normalize(permission, scope));
             return this;
         }
@@ -350,8 +368,12 @@ public final class RuntimePermissions {
         }
 
         public Builder deny(Permission permission, String scope) {
+            // Denials must not accept an ambiguous empty resource either;
+            // malformed serialized arguments should fail, not be reinterpreted.
+            if (scope == null || scope.isBlank())
+                throw new IllegalArgumentException("empty deny scope for " + permission);
             MutableRule rule = rules.computeIfAbsent(permission, ignored -> new MutableRule());
-            if ("*".equals(scope == null ? null : scope.trim())) rule.denyAll = true;
+            if ("*".equals(scope.trim())) rule.denyAll = true;
             else rule.denied.add(normalize(permission, scope));
             return this;
         }
