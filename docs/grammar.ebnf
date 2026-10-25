@@ -21,7 +21,9 @@ top_level_item  = annotated_module_decl
                 | callable_decl
                 | class_decl
                 | interface_decl
+                | trait_decl
                 | type_decl
+                | forward_type_decl
                 | binding_decl ;
 
 annotated_module_decl = { annotation } "define" "module" IDENT [ "conforms" type_ref { "," type_ref } ]
@@ -33,7 +35,9 @@ module_member   = contract_decl
                 | callable_decl
                 | class_decl
                 | interface_decl
+                | trait_decl
                 | type_decl
+                | forward_type_decl
                 | binding_decl ;
 
 visibility      = [ "pub" | "private" ] ;
@@ -104,15 +108,30 @@ static_function_decl
                 = { annotation } visibility "static" { "async" | "structural" } "fnc" callable_name [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
 
-contract_decl   = "define" "contract" IDENT [ generic_params ]
+contract_decl   = visibility "define" "contract" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ] interface_body ;
 
 interface_decl  = visibility "interface" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
                   interface_body
-                | "define" "interface" IDENT [ generic_params ]
+                | "define" visibility "interface" IDENT [ generic_params ]
+                  [ "extends" type_ref { "," type_ref } ]
+                  interface_body
+                | visibility "define" "interface" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
                   interface_body ;
+
+trait_decl      = visibility [ "define" ] "trait" IDENT [ generic_params ]
+                  [ "extends" type_ref { "," type_ref } ] interface_body
+                | "define" visibility "trait" IDENT [ generic_params ]
+                  [ "extends" type_ref { "," type_ref } ] interface_body ;
+
+(* 'declare' is contextual at declaration start: this grammar is NOT
+   an authorization for cross-file linker stubs or runtime type values.
+   Every forward must resolve to a unique same-scope definition with the
+   same declaration kind, visibility and generic parameters. *)
+forward_type_decl = "declare" visibility ( "type" | "trait" | "interface" )
+                    IDENT [ generic_params ] ";" ;
 
 interface_body  = "{" { interface_member } "}"
                 | { interface_member } "end" ;
@@ -121,7 +140,11 @@ interface_member= { annotation } [ "structural" ] "fnc" IDENT [ generic_params ]
                 | IDENT ":" type_ref member_terminator
                 | [ binding_kind ] type_ref IDENT member_terminator ;
 
-type_decl       = "type" IDENT [ generic_params ] "=" type_ref stmt_terminator ;
+type_decl       = [ "define" ] visibility "type"
+                  ( IDENT [ generic_params ] "=" type_ref
+                  | "alias" IDENT [ generic_params ] "as" type_ref )
+                  stmt_terminator
+                | visibility "define" "type" IDENT [ generic_params ] "=" type_ref stmt_terminator ;
 
 annotation      = "@" IDENT [ "<" [ annotation_args ] ">" | "(" [ annotation_args ] ")" ] ;
 annotation_args = annotation_arg { "," annotation_arg } ;
@@ -137,6 +160,7 @@ param           = type_ref [ "mut" ] IDENT
                 | IDENT "structural" type_ref ;
 
 binding_decl    = named_inferred_binding
+                | "const" "fnc" IDENT "=" lambda stmt_terminator
                 | { annotation } binding_kind
                   ( IDENT ":" type_ref
                   | [ type_ref ] IDENT )
@@ -147,9 +171,12 @@ named_inferred_binding
 named_inferred_literal
                 = "infer" "<" IDENT ">" (
                     "struct" "{" [ struct_value_field { "," struct_value_field } ] "}"
+                  | "record" "{" [ struct_value_field { "," struct_value_field } ] "}"
                   | "tuple" "(" expression { "," expression } ")" ) ;
 (* The first type IDENT of named_inferred_binding must equal the IDENT after infer<...>.
-   Named inference is currently a local immutable binding, not an arbitrary expression. *)
+   Named inference captures a lexical compile-time type alias; it does not create a
+   runtime type object. infer struct captures an exact closed struct shape. Record
+   aliases remain structural. Binding/referent mutability is independent of infer. *)
 
 destructure_stmt= [ binding_kind ] sequence_pattern "=" expression stmt_terminator
                 | [ binding_kind ] object_pattern "=" expression stmt_terminator ;
@@ -193,14 +220,14 @@ block_stmt      = "block" block ;
 break_stmt      = "break" stmt_terminator ;
 continue_stmt   = "continue" stmt_terminator ;
 loop_stmt       = "loop" block ;
-while_stmt      = "while" ( "(" condition ")" | condition ) [ ";" ] loop_body ;
+while_stmt      = "while" ( "(" condition_head ")" | condition_head ) [ ";" ] loop_body ;
 
-if_stmt         = "if" condition
+if_stmt         = "if" condition_head
                   ( block
-                    { conditional_branch condition block }
+                    { conditional_branch condition_head block }
                     [ "else" block ]
                   | [ ";" ] ( "then" | deprecated_if_do ) { statement }
-                    { conditional_branch condition [ ";" ] ( "then" | deprecated_if_do ) { statement } }
+                    { conditional_branch condition_head [ ";" ] ( "then" | deprecated_if_do ) { statement } }
                     [ "else" { statement } ]
                   )
                   "fi" ;
@@ -210,19 +237,29 @@ conditional_branch
                 | "else" "if" ;            (* accepted alias; one fi closes the chain *)
 deprecated_if_do
                 = "do" ;                   (* accepted for migration; canonical spelling is then *)
+condition_head  = condition
+                | logic_or "as" "let" IDENT "when" condition
+                | "(" logic_or "as" "let" IDENT "when" condition ")" ;
 condition       = condition_and { "|" condition_and } ;
 condition_and   = equality { "," equality } ;
 
-match_stmt      = "match" [ "first" ] expression [ ";" ]
-                  match_arm { match_arm } "end" ;
+match_stmt      = [ "do" ] "match" [ "first" ] expression
+                  ( "over"
+                    ( "{" canonical_match_arm { canonical_match_arm } "}"
+                    | canonical_match_arm { canonical_match_arm } "end" )
+                  | [ ";" ] match_arm { match_arm } "end" ) ;
+canonical_match_arm
+                = "on" pattern [ "when" expression ] [ "->" ] block ;
 match_arm       = ( pattern | "else" ) [ "when" expression ] "->" block ;
+(* "over" is reserved. "on" and "when" remain contextual arm words.
+   "structural" remains contextual and is consumed only where grammar requires it. *)
 pattern         = "_"
                 | literal
                 | IDENT
                 | IDENT "(" [ pattern { "," pattern } ] ")"
                 | "is" type_ref [ IDENT ] ;
 
-switch_stmt     = "switch" expression [ ";" ]
+switch_stmt     = [ "do" ] "switch" expression [ ";" ]
                   { switch_case } [ switch_default ] "end" ;
 switch_case     = "case" expression { "," expression } "->" block ;
 switch_default  = "default" "->" block ;
@@ -270,7 +307,14 @@ for_of_destructure_item
 for_of_rest_item= [ for_of_binding ] "..." IDENT ;
 loop_body       = block | "do" { statement } "done" ;
 expression      = assignment ;
-assignment      = conditional [ "=" assignment ] ;
+assignment      = pipeline [ "=" assignment ] ;
+pipeline        = conditional { "|>" pipeline_stage } ;
+pipeline_stage  = IDENT [ call_suffix ]
+                | ( "Option" | "Result" ) "." IDENT call_suffix ;
+(* A pipeline stage is a named callable or call; Option.* and Result.* stages
+   are lowered to instance combinators, all others pass the LHS as argument 1.
+   The left operand is evaluated once, and pipeline stages associate leftwards. *)
+
 conditional     = logic_or [ "?" assignment ":" conditional ] ;
 logic_or        = equality { "|" equality } ;
 equality        = comparison { ( "eq" | "neq" | "!eq" | "==" | "!=" | "is" ) comparison } ;
@@ -301,6 +345,11 @@ member_name     = IDENT | "stop" | "do" | "done"
                 | "case" | "default" | "first" | "switch"
                 | "nb" | "select" | "readch" | "writech" ;
 index_suffix    = "[" expression "]" ;
+(* Index semantics are receiver-directed: Array/List/Tuple use integer indexes;
+   closed record/struct/class data fields use string keys. Exact compile-time
+   keys preserve the selected field/slot type; dynamic fixed-product access
+   yields the union of possible field/slot types. This never enables open-ended
+   property insertion, private-field reflection, method lookup, or tuple writes. *)
 argument_list   = expression { "," expression } ;
 
 primary         = literal
@@ -311,13 +360,16 @@ primary         = literal
                 | tuple_literal
                 | array_literal
                 | legacy_array_literal
+                | record_literal
                 | inferred_struct_literal
+                | inferred_record_literal
                 | explicit_struct_literal
                 | "(" expression ")" ;
 
 lambda          = [ "nlex" ] ( pipe_lambda | typed_legacy_lambda ) ;
 pipe_lambda     = "|" [ lambda_param { "," lambda_param } ] "|" "->" lambda_body ;
-lambda_param    = IDENT | type_ref IDENT ;
+(* "const fnc name = |...| -> ...;" declares an immutable inferred callable binding. *)
+lambda_param    = IDENT | type_ref IDENT | IDENT ":" type_ref ;
 typed_legacy_lambda
                 = "(" [ param_list ] ")" "->" lambda_body ;
 lambda_body     = block | expression ;
@@ -326,9 +378,19 @@ tuple_literal   = "tuple" "(" [ argument_list ] ")"
                 | "(" expression "," expression { "," expression } ")" ;
 array_literal   = "arr" "[" [ expression { "," expression } ] "]" ;
 legacy_array_literal = "[" [ expression { "," expression } ] "]" ;
+record_literal  = "record"
+                  "{" [ struct_value_field { "," struct_value_field } ] "}" ;
 inferred_struct_literal
                 = "infer" "struct"
                   "{" [ struct_value_field { "," struct_value_field } ] "}" ;
+inferred_record_literal
+                = "infer" "record"
+                  "{" [ struct_value_field { "," struct_value_field } ] "}" ;
+(* Canonical anonymous record syntax is record {...}; it carries no type-capture
+   intent. infer record {...} remains accepted for compatibility and explicit
+   infer<T> record may capture a structural alias. Records are structural readonly
+   values. Inferred/explicit structs are a distinct concrete closed-shape category;
+   no implicit record<->struct erasure. *)
 explicit_struct_literal
                 = "struct" "{"
                   [ struct_field_spec { "," struct_field_spec } ]
@@ -407,19 +469,21 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
 
    Semantic restrictions:
    - Channel/select waiting has three distinct modes. Plain readch/writech/select
-     is suspending; nb registers and returns a Future/arms a detached static
-     select continuation; try probes once without leaving a waiter. "do select"
-     and "do nb select" mark static, no-result dispatch explicitly; dynamic
-     "select from" remains an Option-valued expression, and dynamic "nb select
-     from" remains Future<Option<SelectResult>>. "cb select" and "nb cb select"
-     are rejected; nb cb writech retains its separate literal callback syntax.
-     Static
-     select defaults to deterministic fair rotation. "select first" is strict
-     lexical priority and "select random" is explicit opt-in randomness.
-     Static nb-select arms are detached void continuation scopes: return exits
-     only the selected arm and break/continue cannot target an already-
-     continued outer loop. Dynamic selection uses "select from cases" and
-     lowers to the same SelectSet primitive as static select.
+     is suspending; nb registers and returns a Future or arms a legacy detached
+     static continuation; try probes once without leaving a waiter.
+     Blocking "do select" is procedural: a selected arm's return exits the
+     containing callable and a valid break/continue targets its outer loop.
+     Legacy "do nb select" instead runs in a detached continuation scope:
+     arm returns cannot escape the caller, which has already continued.
+     Static result-producing select and Future<T> lowering remain distinct
+     unimplemented milestones. Dynamic "select from" remains an Option-valued
+     expression, and dynamic "nb select from" returns Future<Option<SelectResult>>.
+     "cb select" and "nb cb select" are rejected; nb cb writech retains
+     its separate literal callback syntax. Static select defaults to deterministic
+     fair rotation. "select first" is strict lexical priority and "select random"
+     is explicit opt-in randomness. Nonblocking arms cannot break/continue
+     an already-continued enclosing loop. Dynamic selection uses the same
+     runtime SelectSet primitive as static selection.
    - In collection type syntax, '[...]' describes element/sequence shape,
      '<name=value>' describes compile-time type/storage metadata, and '(...)'
      remains runtime construction/instance state. Named metadata parameters are
@@ -479,6 +543,10 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      branch introducer; deprecated "do" remains accepted for migration and may
      be mixed with "then" across branches. Canonical "elif" accepts "elseif"
      and single-fi "else if" as aliases. All forms lower to the same semantics.
+   - if_stmt is statement-only and never appears in expression. Branch bodies do
+     not synthesize values from their last expression statement. Use the ternary
+     conditional expression for value selection, or explicit return statements
+     inside a callable for multi-statement conditional return paths.
    - "loop" and "block" are contextual statement keywords: outside the
      statement-plus-"{" form they remain legal callable names/references.
    - Single- and double-quoted struct keys are equivalent static field names.
@@ -486,6 +554,13 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - Anonymous structs always have a closed compile-time-known field set.
      infer struct{...} is canonical; whitespace before the initializer is optional.
      Computed/backtick struct keys are rejected.
+   - Type aliases are transparent and erased: type Pair = Entry and
+     define type alias Pair as Entry denote the same alias declaration.
+     Generic aliases substitute types recursively, without introducing a
+     nominal runtime tag, constructor or extra actor wire representation.
+     "alias" remains a contextual marker; a legacy type named alias is legal.
+     Entry/Pair are not implicit built-in primitives just because these names
+     appear in an alias; the target must be declared/imported by the program.
    - Local const T value = infer<T> struct{...} binds a compiler-only inferred
      type name T (a closed struct type, NOT structural{...}); const T value =
      infer<T> tuple (...) does the same for a finite positional tuple.
@@ -654,3 +729,9 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - Class fields declared val/const are immutable; field mutation requires let
      plus mutable owner access.
 *)
+
+(* Inline condition bindings lower to scoped BindingStmt + IfStmt/ForStmt.
+   Initializers evaluate once per reached test; when requires bool. While
+   rebinds before every test, including after continue. If bindings cover
+   their predicate and remaining branch chain, but do not escape the if.
+   See VALUE_BOUNDARIES.md for aggregate ordering and unsupported surfaces. *)

@@ -16,7 +16,9 @@ import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class NativeHttpTest {
-    @Test void pooledActorsReuseMailboxWithoutRetainingExchangeAdmission() throws Exception {
+    @org.junit.jupiter.api.RepeatedTest(5)
+    @org.junit.jupiter.api.Timeout(30)
+    void pooledActorsReuseMailboxWithoutRetainingExchangeAdmission() throws Exception {
         for (String kind : List.of("actor", "isoactor")) {
             String output = run("""
                 define %s Worker as
@@ -59,11 +61,14 @@ class NativeHttpTest {
                         assertEquals(200, response.statusCode());
                         assertEquals(i > 1 ? "yes" : "no", response.headers().firstValue("X-Reused").orElseThrow());
                     }
-                });
+                }, 8);
             assertFalse(output.contains("ACCEPTED"), output);
             assertEquals(7, output.split("stale-rejected", -1).length - 1, output);
             assertEquals(8, output.split("closed-rejected", -1).length - 1, output);
-            assertTrue(output.contains("1\n7\n0\n"), output);
+            // Supervisor counters may interleave with post-response diagnostics.
+            var numbers = output.lines().filter(line -> line.matches("[0-9]+")).toList();
+            assertEquals(4, numbers.size(), output); // port plus three counters
+            assertEquals(List.of("1", "7", "0"), numbers.subList(1, 4), output);
         }
     }
 
@@ -256,6 +261,139 @@ class NativeHttpTest {
         assertTrue(output.contains("504"), output);
     }
 
+    @Test void guestResponseDraftIsTypedAndTransferredToRealHttp11Exchange() throws Exception {
+        for (String kind : List.of("actor", "isoactor")) {
+            String output = run("""
+                define %s Hello as
+                  receive(ActorMail<String> mail): void {
+                    val request = http.claim(mail.value);
+                    val response = http.response(201, "text/plain; charset=utf-8", "hello from Oreslang");
+                    await request.respond_response(response);
+                    try {
+                      await request.respond_response(response);
+                      stdio.println("DUPLICATE RESPONSE ACCEPTED");
+                    } catch (failure) {
+                      stdio.println("duplicate-response-rejected");
+                    }
+                    self.end();
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
+                  stdio.println(server.port);
+                  val request = await server.accept();
+                  val done = request.completion;
+                  http.handler("Hello").dispatch(rt borrow mut request);
+                  stdio.println(await done);
+                  await server.shutdown(0);
+                  return;
+                }
+                """.formatted(kind), port -> {
+                    var response = request(port, "GET", "/", "");
+                    assertEquals(201, response.statusCode());
+                    assertEquals("hello from Oreslang", response.body());
+                    assertEquals("text/plain; charset=utf-8",
+                            response.headers().firstValue("Content-Type").orElseThrow());
+                });
+            assertFalse(output.contains("DUPLICATE RESPONSE ACCEPTED"), output);
+            assertTrue(output.contains("duplicate-response-rejected"), output);
+            assertTrue(output.contains("201"), output);
+        }
+    }
+
+    @Test void guestNominalHttpResponseConstructorHandlesTextAndEmptyBody() throws Exception {
+        String output = run("""
+            define actor Hello as
+              receive(ActorMail<String> mail): void {
+                val request = http.claim(mail.value);
+                if request.target == "/empty"; then
+                  val response = new HttpResponse();
+                  await request.respond_response(response);
+                elif request.target == "/no-content"; then
+                  val response = http.response_empty(204);
+                  await request.respond_response(response);
+                else
+                  val response = new HttpResponse("hello from Oreslang");
+                  await request.respond_response(response);
+                fi
+                self.end();
+                return;
+              }
+            end
+            pub async routine main(): void {
+              val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
+              stdio.println(server.port);
+              for (let int i = 0; i < 3; i = i + 1) {
+                val request = await server.accept();
+                val completion = request.completion;
+                http.handler("Hello").dispatch(rt borrow mut request);
+                await completion;
+              }
+              await server.shutdown(0);
+              return;
+            }
+            """, port -> {
+                var response = request(port, "GET", "/text", "");
+                assertEquals(200, response.statusCode());
+                assertEquals("hello from Oreslang", response.body());
+                assertEquals("text/plain; charset=utf-8",
+                        response.headers().firstValue("Content-Type").orElseThrow());
+                var empty = request(port, "GET", "/empty", "");
+                assertEquals(200, empty.statusCode());
+                assertEquals("", empty.body());
+                var noContent = request(port, "GET", "/no-content", "");
+                assertEquals(204, noContent.statusCode());
+                assertEquals("", noContent.body());
+            });
+        assertFalse(output.contains("exception"), output);
+    }
+
+    @Test void guestHttpResponseConstructorRejectsUnimplementedOptionsAndWrongTypes() {
+        String template = """
+            define actor A as
+              receive(ActorMail<String> mail): void {
+                val reply = %s;
+                return;
+              }
+            end
+            """;
+        for (String rejected : List.of(
+                "new HttpResponse(100)",
+                "new HttpResponse(\"ok\", 201)",
+                "new HttpResponse<unknown>(\"ok\")")) {
+            assertThrows(Exception.class,
+                    () -> OresCompiler.parseAndTypeCheck(template.formatted(rejected)),
+                    rejected);
+        }
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(
+                template.formatted("new HttpResponse(\"ok\")")));
+    }
+
+    @Test void httpResponseNominalTypeCannotBeSpoofedOrMailedBetweenActors() {
+        for (String declaration : List.of(
+                "define class HttpResponse as end",
+                "type HttpResponse = int;",
+                "define actor Bad as receive(ActorMail<HttpResponse> mail): void { return; } end")) {
+            assertThrows(Exception.class, () -> OresCompiler.parseAndTypeCheck(declaration), declaration);
+        }
+    }
+
+    @Test void guestResponseDraftRejectsInvalidStatusAndBodylessStatus() {
+        String valid = """
+            define actor A as
+              receive(ActorMail<String> mail): void {
+                val response = http.response(200, "text/plain", "ok");
+                return;
+              }
+            end
+            """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(valid));
+        String invalid = valid.replace("http.response(200, \"text/plain\", \"ok\")",
+                "http.response(\"200\", \"text/plain\", \"ok\")");
+        assertThrows(Exception.class, () -> OresCompiler.parseAndTypeCheck(invalid));
+    }
+
     @Test void sharedHandlerStreamsWithoutBlockingTheActorCarrier() throws Exception {
         run("""
             define actor Stream as
@@ -313,13 +451,33 @@ class NativeHttpTest {
         }
     }
     private static String run(String program, Client client) throws Exception {
+        return run(program, client, 0);
+    }
+
+    private static String run(String program, Client client, int expectedPostResponseDiagnostics)
+            throws Exception {
         CompletableFuture<Integer> port = new CompletableFuture<>();
+        CompletableFuture<Void> diagnosticBarrier = new CompletableFuture<>();
+        CompletableFuture<Void> supervisorFooterBarrier = new CompletableFuture<>();
         ByteArrayOutputStream output = new ByteArrayOutputStream() {
             @Override public synchronized void write(byte[] b, int off, int len) {
                 super.write(b, off, len);
                 String text = toString(StandardCharsets.UTF_8);
                 int end = text.indexOf('\n');
                 if (end >= 0 && !port.isDone()) port.complete(Integer.parseInt(text.substring(0, end).trim()));
+                // HTTP response completion can precede the actor's final
+                // post-response duplicate-rejection check. Keep the context
+                // alive until the diagnostic has actually been emitted, not
+                // merely until the supervisor's response Future completes.
+                if (expectedPostResponseDiagnostics > 0
+                        && text.split("closed-rejected", -1).length - 1
+                                >= expectedPostResponseDiagnostics) {
+                    diagnosticBarrier.complete(null);
+                }
+                if (expectedPostResponseDiagnostics > 0
+                        && text.lines().filter(line -> line.matches("[0-9]+")).count() >= 4) {
+                    supervisorFooterBarrier.complete(null);
+                }
             }
         };
         try (Context context = IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.NETWORK)
@@ -332,9 +490,35 @@ class NativeHttpTest {
             try {
                 context.eval(Source.newBuilder(OresLanguage.ID, program, "native-http-test.ores").build());
                 clientWork.get(10, TimeUnit.SECONDS);
+                // A bounded actor-output completion barrier closes the race
+                // between response transport completion and receive cleanup.
+                // If a duplicate rejection never occurs, the test fails
+                // rather than silently reducing its expected assertion count.
+                if (expectedPostResponseDiagnostics > 0) {
+                    CompletableFuture.allOf(diagnosticBarrier, supervisorFooterBarrier)
+                            .get(8, TimeUnit.SECONDS);
+                    closeWhenQuiescent(context);
+                }
             } finally { clientWork.cancel(true); }
 
         }
         return output.toString(StandardCharsets.UTF_8);
+    }
+
+    private static void closeWhenQuiescent(Context context) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        while (true) {
+            try {
+                context.close(false);
+                return;
+            } catch (IllegalStateException busy) {
+                if (busy.getMessage() == null
+                        || !busy.getMessage().contains("currently executing on another thread")
+                        || System.nanoTime() >= deadline) {
+                    throw busy;
+                }
+                Thread.sleep(5);
+            }
+        }
     }
 }

@@ -1,0 +1,32 @@
+name: InvertedArray bounded formal model
+on:
+  pull_request:
+    paths:
+      - 'formal/inverted_array_model.py'
+      - 'formal/test_inverted_array_model.py'
+      - 'formal/INVERTED_ARRAY_MODEL.md'
+      - '.github/workflows/inverted-array-formal.yml'
+      - 'docs/INVERTED_CLASS_DOP_V1.md'
+  push:
+    branches: [main]
+    paths:
+      - 'formal/inverted_array_model.py'
+      - 'formal/test_inverted_array_model.py'
+      - 'formal/INVERTED_ARRAY_MODEL.md'
+      - '.github/workflows/inverted-array-formal.yml'
+permissions:
+  contents: read
+jobs:
+  bounded-model:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Exhaustive reachable-state and negative mutant gates
+        working-directory: formal
+        run: |
+          set -euo pipefail
+          python3 -m unittest -v test_inverted_array_model
+          python3 inverted_array_model.py

@@ -1,0 +1,13 @@
+Reviewed Orestra source. Copied through GitHub connector with exact original blob SHAs. Compiler org jobs may lack Actions minutes; mirror verification runs in private Orestra CI.
+orestra/orestra/src/scheduler/placement.ores efdfad9083d07a9e0bb0797a915f9d3ac40354cf src/test/resources/orestra-mirror/orestra/src/scheduler/placement.ores
+orestra/orestra/src/controllers/deployment.ores c704214067c110d9ff8a8737df56d3d30b5477e8 src/test/resources/orestra-mirror/orestra/src/controllers/deployment.ores
+orestra/orestra/src/controllers/node.ores 3eff700dacd58810f9ea9e46234748b78b772626 src/test/resources/orestra-mirror/orestra/src/controllers/node.ores
+orestra/orestra/src/controllers/leases.ores 711fe64a65ab99876cbfb4c865cd1dfb23222ecf src/test/resources/orestra-mirror/orestra/src/controllers/leases.ores
+orestra/orestra/src/controllers/workload_state.ores 6551ea386a4a8fff3208d752cd1687718d2910b7 src/test/resources/orestra-mirror/orestra/src/controllers/workload_state.ores
+orestra/orestra/examples/placement-smoke.ores eb57557b7f9dae84451a093c09f5873459235c8c src/test/resources/orestra-mirror/orestra/examples/placement-smoke.ores
+orestra/orestra/examples/edge-guards.ores 455c5a8b5d44686ff331cacb72d52004f7e8e169 src/test/resources/orestra-mirror/orestra/examples/edge-guards.ores
+orestra/orestra/examples/workload-state-smoke.ores a3f25075d8339ac5068f3ec45810b1a001c15153 src/test/resources/orestra-mirror/orestra/examples/workload-state-smoke.ores
+orestra/orestra-sdk/src/retry.ores 4994da96c2f25cb6e922a8fc7bf3330d4762e908 src/test/resources/orestra-mirror/sdk/src/retry.ores
+orestra/orestra-sdk/src/quantity.ores 5caa1d1a7dbd17b312816b982702f5cf91068036 src/test/resources/orestra-mirror/sdk/src/quantity.ores
+orestra/orestra-sdk/src/resource.ores 4e5c30a5275a94a915cfada9de1ca81d6fb39986 src/test/resources/orestra-mirror/sdk/src/resource.ores
+orestra/orestra-sdk/examples/sdk-smoke.ores de09c1599ba555ff0f7e25b0310ba866b2bfd6a0 src/test/resources/orestra-mirror/sdk/examples/sdk-smoke.ores

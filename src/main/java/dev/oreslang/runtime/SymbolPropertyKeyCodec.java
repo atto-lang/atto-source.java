@@ -36,32 +36,56 @@ public final class SymbolPropertyKeyCodec {
 
     private SymbolPropertyKeyCodec() { }
 
-    /** Return independent UTF-8 bytes; never leak a Symbol table/handle ID. */
-    public static byte[] encode(Object key) {
-        final byte kind;
-        final String value;
-        final int limit;
-        if (key instanceof String text) {
-            kind = TEXT;
-            value = text;
-            limit = MAX_TEXT_KEY_BYTES;
-        } else if (key instanceof OresSymbol symbol) {
-            kind = symbol.kind() == OresSymbol.Kind.PROCESS
-                    ? PROCESS_SYMBOL : STABLE_SYMBOL;
-            value = symbol.name();
-            limit = MAX_SYMBOL_KEY_BYTES;
-        } else {
-            throw new IllegalArgumentException(
-                    "key codec accepts only String or Symbol");
-        }
+    private record KeyParts(byte kind, String value, int limit) { }
 
-        byte[] utf8 = strictEncode(value);
-        if (utf8.length > limit || kind != TEXT && utf8.length == 0) {
+    private static KeyParts keyParts(Object key) {
+        if (key instanceof String text) {
+            return new KeyParts(TEXT, text, MAX_TEXT_KEY_BYTES);
+        }
+        if (key instanceof OresSymbol symbol) {
+            return new KeyParts(
+                    symbol.kind() == OresSymbol.Kind.PROCESS
+                            ? PROCESS_SYMBOL : STABLE_SYMBOL,
+                    symbol.name(),
+                    MAX_SYMBOL_KEY_BYTES);
+        }
+        throw new IllegalArgumentException(
+                "key codec accepts only String or Symbol");
+    }
+
+    /**
+     * Return the exact v1 wire size without allocating an encoded frame.
+     * Package-private so OresKeyedMap can enforce quotas on hot lookup/write
+     * paths without constructing throwaway UTF-8 buffers.
+     */
+    static int encodedWireLength(Object key) {
+        KeyParts parts = keyParts(key);
+        String value = parts.value();
+
+        // A valid UTF-8 key cannot use fewer bytes than UTF-16 code units.
+        // Reject obviously oversized input before scanning every code point.
+        if (value.length() > parts.limit()) {
             throw new IllegalArgumentException("key exceeds tagged wire length budget");
         }
-        ByteBuffer wire = ByteBuffer.allocate(HEADER_LENGTH + utf8.length);
+        int utf8Bytes = strictUtf8Length(value);
+        if (utf8Bytes > parts.limit()
+                || parts.kind() != TEXT && utf8Bytes == 0) {
+            throw new IllegalArgumentException("key exceeds tagged wire length budget");
+        }
+        return HEADER_LENGTH + utf8Bytes;
+    }
+
+    /** Return independent UTF-8 bytes; never leak a Symbol table/handle ID. */
+    public static byte[] encode(Object key) {
+        KeyParts parts = keyParts(key);
+        int wireLength = encodedWireLength(key);
+        byte[] utf8 = strictEncode(parts.value());
+        if (wireLength != HEADER_LENGTH + utf8.length) {
+            throw new IllegalStateException("UTF-8 key length preflight disagrees with encoder");
+        }
+        ByteBuffer wire = ByteBuffer.allocate(wireLength);
         wire.put((byte) 'O').put((byte) 'K').put((byte) VERSION)
-                .put(kind).putShort((short) utf8.length).put(utf8);
+                .put(parts.kind()).putShort((short) utf8.length).put(utf8);
         return wire.array();
     }
 
@@ -124,21 +148,60 @@ public final class SymbolPropertyKeyCodec {
 
         ExportManifest(java.util.Map<AdmissionScope, Set<OresSymbol>> source) {
             Objects.requireNonNull(source, "export manifest");
+            // Configuration is still an input boundary. IdentityHashMap and
+            // identity-backed Sets can contain logically equal scope/Symbol
+            // objects, and Set.copyOf would silently collapse those entries.
+            // Check reported AND actual cardinality before sealing the policy.
+            int reportedScopes = source.size();
+            if (reportedScopes < 0 || reportedScopes > MAX_KEYS_PER_OBJECT) {
+                throw new IllegalArgumentException("too many Symbol export scopes");
+            }
             java.util.Map<AdmissionScope, Set<OresSymbol>> frozen =
                     new java.util.LinkedHashMap<>();
+            int visitedScopes = 0;
+            long totalExports = 0L;
             for (var entry : source.entrySet()) {
-                AdmissionScope scope = Objects.requireNonNull(entry.getKey(), "export scope");
-                Set<OresSymbol> exports = Set.copyOf(
-                        Objects.requireNonNull(entry.getValue(), "Symbol exports"));
-                // Reject invalid manifests at configuration time, not merely
-                // when an untrusted message eventually uses one of the keys.
-                for (OresSymbol symbol : exports) {
+                if (++visitedScopes > MAX_KEYS_PER_OBJECT) {
+                    throw new IllegalArgumentException("too many Symbol export scopes");
+                }
+                AdmissionScope scope = Objects.requireNonNull(
+                        Objects.requireNonNull(entry, "export entry").getKey(), "export scope");
+                Set<OresSymbol> incoming = Objects.requireNonNull(
+                        entry.getValue(), "Symbol exports");
+                int reportedExports = incoming.size();
+                if (reportedExports < 0 || reportedExports > MAX_KEYS_PER_OBJECT
+                        || reportedExports > MAX_KEYS_PER_OBJECT - totalExports) {
+                    throw new IllegalArgumentException("too many exported Symbols");
+                }
+                Set<OresSymbol> detached = new HashSet<>();
+                int visitedExports = 0;
+                for (OresSymbol symbol : incoming) {
+                    if (++visitedExports > MAX_KEYS_PER_OBJECT
+                            || ++totalExports > MAX_KEYS_PER_OBJECT) {
+                        throw new IllegalArgumentException("too many exported Symbols");
+                    }
+                    Objects.requireNonNull(symbol, "exported Symbol");
                     if (symbol.kind() != OresSymbol.Kind.PROCESS) {
                         throw new IllegalArgumentException(
                                 "v1 untrusted Symbol exports must be PROCESS identities");
                     }
+                    if (!detached.add(symbol)) {
+                        throw new IllegalArgumentException(
+                                "duplicate logical Symbol in export manifest");
+                    }
                 }
-                frozen.put(scope, exports);
+                if (visitedExports != reportedExports) {
+                    throw new IllegalArgumentException(
+                            "Symbol export set size changed during snapshot");
+                }
+                if (frozen.putIfAbsent(scope, Set.copyOf(detached)) != null) {
+                    throw new IllegalArgumentException(
+                            "duplicate logical export scope in manifest");
+                }
+            }
+            if (visitedScopes != reportedScopes) {
+                throw new IllegalArgumentException(
+                        "export manifest scope count changed during snapshot");
             }
             this.scopes = java.util.Map.copyOf(frozen);
         }
@@ -206,18 +269,23 @@ public final class SymbolPropertyKeyCodec {
     private static List<Object> decodeDistinctKeysChecked(
             List<byte[]> encodedKeys, Function<byte[], Object> decodeKey) {
         Objects.requireNonNull(encodedKeys, "encoded keys");
-        if (encodedKeys.size() > MAX_KEYS_PER_OBJECT) {
+        // Do not pass an untrusted Collection into List.copyOf(): a custom
+        // List can lie about size() and supply unbounded entries from its
+        // iterator, forcing unbounded toArray() growth before our quota check.
+        int reportedCount = encodedKeys.size();
+        if (reportedCount < 0 || reportedCount > MAX_KEYS_PER_OBJECT) {
             throw new IllegalArgumentException("too many tagged keys");
         }
         // Detach ALL frames before decoding or checking duplicate identities.
-        // Otherwise a caller may mutate later frames while earlier ones are
-        // being decoded, producing a key set from several source revisions.
-        // Concurrent mutation DURING a byte[] clone is still not an atomic
-        // snapshot: actor/network ingress must enforce buffer ownership.
-        List<byte[]> sourceFrames = List.copyOf(encodedKeys);
+        // Caller-owned frames may change across iterations; an atomic snapshot
+        // requires transport-level ownership or synchronization as well.
         long total = 0L;
-        java.util.ArrayList<byte[]> frames = new java.util.ArrayList<>(sourceFrames.size());
-        for (byte[] source : sourceFrames) {
+        java.util.ArrayList<byte[]> frames = new java.util.ArrayList<>(reportedCount);
+        for (byte[] source : encodedKeys) {
+            if (frames.size() >= MAX_KEYS_PER_OBJECT) {
+                throw new IllegalArgumentException("too many tagged keys");
+            }
+            Objects.requireNonNull(source, "tagged key entry");
             int size = source.length;
             if (size < HEADER_LENGTH || size > HEADER_LENGTH + MAX_TEXT_KEY_BYTES) {
                 throw new IllegalArgumentException("invalid tagged key frame size");
@@ -227,6 +295,10 @@ public final class SymbolPropertyKeyCodec {
                 throw new IllegalArgumentException("tagged key collection exceeds byte budget");
             }
             frames.add(source.clone());
+        }
+        if (frames.size() != reportedCount) {
+            throw new IllegalArgumentException(
+                    "tagged key collection size changed during snapshot");
         }
 
         Set<Object> distinct = new HashSet<>();
@@ -245,6 +317,30 @@ public final class SymbolPropertyKeyCodec {
     /** Backward-compatible validation helper; prefer decodeDistinctKeys. */
     public static void requireDistinct(List<byte[]> encodedKeys) {
         decodeDistinctKeys(encodedKeys);
+    }
+
+    private static int strictUtf8Length(String text) {
+        int bytes = 0;
+        for (int i = 0; i < text.length(); i++) {
+            char ch = text.charAt(i);
+            if (ch <= 0x7f) {
+                bytes += 1;
+            } else if (ch <= 0x7ff) {
+                bytes += 2;
+            } else if (Character.isHighSurrogate(ch)) {
+                if (i + 1 >= text.length()
+                        || !Character.isLowSurrogate(text.charAt(i + 1))) {
+                    throw new IllegalArgumentException("invalid Unicode key");
+                }
+                bytes += 4;
+                i++;
+            } else if (Character.isLowSurrogate(ch)) {
+                throw new IllegalArgumentException("invalid Unicode key");
+            } else {
+                bytes += 3;
+            }
+        }
+        return bytes;
     }
 
     private static byte[] strictEncode(String text) {

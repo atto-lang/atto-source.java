@@ -75,6 +75,13 @@ final class SymbolPropertyKeyCodecTest {
                 () -> SymbolPropertyKeyCodec.encode("\ud800"));
         assertThrows(IllegalArgumentException.class,
                 () -> SymbolPropertyKeyCodec.encode("x".repeat(16_385)));
+        // The codec must reject an oversized UTF-16 input before allocating
+        // a potentially much larger UTF-8 encoding buffer.
+        assertThrows(IllegalArgumentException.class,
+                () -> SymbolPropertyKeyCodec.encode("r".repeat(2_000_000)));
+        assertArrayEquals(
+                new byte[]{'O', 'K', 1, 0, 0, 2, (byte) 0xc3, (byte) 0xa9},
+                SymbolPropertyKeyCodec.encode("é"));
         assertThrows(IllegalArgumentException.class,
                 () -> SymbolPropertyKeyCodec.decode(new byte[100_000]));
     }
@@ -112,6 +119,67 @@ final class SymbolPropertyKeyCodecTest {
         assertEquals("tenant-a/private",
                 SymbolPropertyKeyCodec.decodeForUntrusted(
                         SymbolPropertyKeyCodec.encode("tenant-a/private")));
+    }
+
+    @Test void manifestRejectsIdentityBackedDuplicateLogicalScopesAndSymbols() {
+        var scopeA = new SymbolPropertyKeyCodec.AdmissionScope("tenant", "actor", "v1");
+        var scopeB = new SymbolPropertyKeyCodec.AdmissionScope("tenant", "actor", "v1");
+        assertNotSame(scopeA, scopeB);
+        var scoped = new java.util.IdentityHashMap<
+                SymbolPropertyKeyCodec.AdmissionScope, Set<OresSymbol>>();
+        scoped.put(scopeA, Set.of(OresSymbol.process("one")));
+        scoped.put(scopeB, Set.of(OresSymbol.process("two")));
+        IllegalArgumentException duplicateScope = assertThrows(
+                IllegalArgumentException.class,
+                () -> new SymbolPropertyKeyCodec.ExportManifest(scoped));
+        assertTrue(duplicateScope.getMessage().contains("duplicate logical export scope"));
+
+        Set<OresSymbol> identities = java.util.Collections.newSetFromMap(
+                new java.util.IdentityHashMap<OresSymbol, Boolean>());
+        identities.add(OresSymbol.process("café"));
+        identities.add(OresSymbol.process("cafe\u0301"));
+        assertEquals(2, identities.size());
+        IllegalArgumentException duplicateSymbol = assertThrows(
+                IllegalArgumentException.class,
+                () -> new SymbolPropertyKeyCodec.ExportManifest(
+                        java.util.Map.of(scopeA, identities)));
+        assertTrue(duplicateSymbol.getMessage().contains("duplicate logical Symbol"));
+    }
+
+    @Test void manifestRejectsHostileCardinalityAndBoundsBeforeSetCopy() {
+        var scope = new SymbolPropertyKeyCodec.AdmissionScope("tenant", "actor", "v1");
+        Set<OresSymbol> giant = new java.util.AbstractSet<>() {
+            @Override public int size() { return Integer.MAX_VALUE; }
+            @Override public java.util.Iterator<OresSymbol> iterator() {
+                throw new AssertionError("oversized export set must not be traversed");
+            }
+        };
+        assertThrows(IllegalArgumentException.class,
+                () -> new SymbolPropertyKeyCodec.ExportManifest(
+                        java.util.Map.of(scope, giant)));
+
+        Set<OresSymbol> dishonest = new java.util.AbstractSet<>() {
+            @Override public int size() { return 0; }
+            @Override public java.util.Iterator<OresSymbol> iterator() {
+                return Set.of(OresSymbol.process("late")).iterator();
+            }
+        };
+        IllegalArgumentException mismatch = assertThrows(
+                IllegalArgumentException.class,
+                () -> new SymbolPropertyKeyCodec.ExportManifest(
+                        java.util.Map.of(scope, dishonest)));
+        assertTrue(mismatch.getMessage().contains("size changed"));
+
+        var hugeScopeMap = new java.util.AbstractMap<
+                SymbolPropertyKeyCodec.AdmissionScope, Set<OresSymbol>>() {
+            @Override public int size() { return Integer.MAX_VALUE; }
+            @Override public Set<Entry<
+                    SymbolPropertyKeyCodec.AdmissionScope, Set<OresSymbol>>> entrySet() {
+                throw new AssertionError("oversized scope Map must not be traversed");
+            }
+        };
+        assertThrows(IllegalArgumentException.class,
+                () -> new SymbolPropertyKeyCodec.ExportManifest(hugeScopeMap));
     }
 
     @Test void scopedUntrustedAdmissionCannotLaunderStableSymbols() {
@@ -178,6 +246,59 @@ final class SymbolPropertyKeyCodecTest {
                 () -> SymbolPropertyKeyCodec.requireDistinct(tooMany));
     }
 
+    @Test void hostileListReportedSizeCannotTriggerUnboundedCopy() {
+        List<byte[]> huge = new java.util.AbstractList<>() {
+            @Override public int size() { return Integer.MAX_VALUE; }
+            @Override public byte[] get(int index) {
+                throw new AssertionError("oversized list must not be copied");
+            }
+        };
+        assertThrows(IllegalArgumentException.class, () ->
+                SymbolPropertyKeyCodec.decodeDistinctKeys(huge));
+    }
+
+    @Test void dishonestListIteratorCannotBypassKeyCountQuota() {
+        byte[] key = SymbolPropertyKeyCodec.encode("k");
+        List<byte[]> liar = new java.util.AbstractList<>() {
+            @Override public int size() { return 0; }
+            @Override public byte[] get(int index) {
+                throw new AssertionError("bulk admission must use bounded iteration");
+            }
+            @Override public java.util.Iterator<byte[]> iterator() {
+                return new java.util.Iterator<>() {
+                    private int emitted;
+                    @Override public boolean hasNext() {
+                        return emitted <= SymbolPropertyKeyCodec.MAX_KEYS_PER_OBJECT;
+                    }
+                    @Override public byte[] next() {
+                        if (!hasNext()) throw new java.util.NoSuchElementException();
+                        emitted++;
+                        return key;
+                    }
+                };
+            }
+        };
+        assertThrows(IllegalArgumentException.class, () ->
+                SymbolPropertyKeyCodec.decodeDistinctKeys(liar));
+    }
+
+    @Test void inconsistentHostListSizeCannotSilentlyChangeDecodedKeySet() {
+        byte[] encoded = SymbolPropertyKeyCodec.encode("smuggled");
+        List<byte[]> inconsistent = new java.util.AbstractList<>() {
+            @Override public int size() { return 0; }
+            @Override public byte[] get(int index) {
+                throw new AssertionError("test uses a custom iterator");
+            }
+            @Override public java.util.Iterator<byte[]> iterator() {
+                return List.of(encoded).iterator();
+            }
+        };
+        IllegalArgumentException denied = assertThrows(
+                IllegalArgumentException.class,
+                () -> SymbolPropertyKeyCodec.decodeDistinctKeys(inconsistent));
+        assertTrue(denied.getMessage().contains("size changed"));
+    }
+
     @Test void validatedKeyCollectionIsImmutableAndDoesNotAliasWireArrays() {
         byte[] wire = SymbolPropertyKeyCodec.encode(OresSymbol.process("ready"));
         List<Object> decoded = SymbolPropertyKeyCodec.decodeDistinctKeys(List.of(wire));
@@ -228,6 +349,30 @@ final class SymbolPropertyKeyCodecTest {
         assertEquals(OresSymbol.process("ready"), decoded);
         assertNotEquals("ready", decoded);
     }
+
+    @Test void encodedWireLengthMatchesActualEncodingAcrossKeyKinds() {
+        List<Object> keys = List.of(
+                "",
+                "plain",
+                "é",
+                "🚀",
+                OresSymbol.process("ready"),
+                OresSymbol.process("café"),
+                OresSymbol.stable("550e8400-e29b-41d4-a716-446655440000"));
+        for (Object key : keys) {
+            assertEquals(
+                    SymbolPropertyKeyCodec.encode(key).length,
+                    SymbolPropertyKeyCodec.encodedWireLength(key),
+                    key.toString());
+        }
+
+        assertThrows(IllegalArgumentException.class,
+                () -> SymbolPropertyKeyCodec.encodedWireLength("\ud800"));
+        assertThrows(IllegalArgumentException.class,
+                () -> SymbolPropertyKeyCodec.encodedWireLength(
+                        "x".repeat(SymbolPropertyKeyCodec.MAX_TEXT_KEY_BYTES + 1)));
+    }
+
 
     private static byte[] wire(int kind, byte[] name) {
         return ByteBuffer.allocate(6 + name.length)
