@@ -1481,12 +1481,19 @@ public final class Ast {
 
             java.util.IdentityHashMap<TaskExpr, TaskCaptureAdmission> normalized =
                     new java.util.IdentityHashMap<>();
+            java.util.Set<TaskExpr> programTasks =
+                    TaskCaptureNames.taskIdentitiesIn(program);
             for (java.util.Map.Entry<
                     TaskExpr,
                     java.util.Map<String, TaskCaptureTransfer>> entry
                     : staged.entrySet()) {
                 TaskExpr task = java.util.Objects.requireNonNull(
                         entry.getKey(), "checked Task expression");
+                if (!programTasks.contains(task)) {
+                    throw new IllegalArgumentException(
+                            "Task capture admission references a TaskExpr not contained "
+                                    + "by identity in the exact Program AST");
+                }
                 java.util.Map<String, TaskCaptureTransfer> transfers =
                         validateTransfers(entry.getValue());
                 // An admission may name only free variables actually used

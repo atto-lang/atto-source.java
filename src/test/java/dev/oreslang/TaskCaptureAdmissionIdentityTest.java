@@ -317,6 +317,52 @@ final class TaskCaptureAdmissionIdentityTest {
     }
 
     @Test
+    void structurallyEqualTaskOutsideProgramCannotMintAdmission() {
+        Ast.Program checked = OresCompiler.parseAndTypeCheck("""
+                pub async fnc main(): void {
+                  const int value = 41;
+                  let Future<int> child = task { return value + 1; };
+                  stdio.stdout.write(await child);
+                  return;
+                }
+                """);
+        Ast.TaskExpr task = firstTask(checked);
+        Ast.TaskExpr clone =
+                new Ast.TaskExpr(task.domain(), task.body(), task.legacyNb());
+        assertNotSame(task, clone);
+        assertEquals(task, clone,
+                "fixture requires a structurally equal but distinct TaskExpr");
+
+        long revoked = Ast.CheckedTaskCaptures.requireProgramEpoch(checked);
+        long attempt = Ast.CheckedTaskCaptures.newCheckEpoch();
+        Ast.CheckedTaskCaptures.beginCheck(checked, attempt);
+
+        var forged = java.util.Map.of(
+                clone,
+                java.util.Map.of("value", Ast.TaskCaptureTransfer.COPY));
+        var failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> Ast.CheckedTaskCaptures.publish(
+                        checked, attempt, forged));
+        assertTrue(failure.getMessage().contains("not contained"),
+                failure::getMessage);
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedTaskCaptures.requireProgramEpoch(checked));
+        assertThrows(IllegalStateException.class,
+                () -> Ast.CheckedTaskCaptures.require(
+                        checked, task, revoked));
+
+        var exact = java.util.Map.of(
+                task,
+                java.util.Map.of("value", Ast.TaskCaptureTransfer.COPY));
+        Ast.CheckedTaskCaptures.publish(checked, attempt, exact);
+        assertEquals(
+                exact.get(task),
+                Ast.CheckedTaskCaptures.require(
+                        checked, task, attempt).captureTransfers());
+    }
+
+    @Test
     void supersededConcurrentCheckerCannotRepublishStaleTaskAuthority() {
         Ast.Program checked = OresCompiler.parseAndTypeCheck("""
                 pub async fnc main(): void {

@@ -255,4 +255,212 @@ public final class TaskCaptureNames {
                     + expr.getClass().getName());
         }
     }
+
+    /**
+     * Return every TaskExpr physically contained in this exact Program object
+     * graph. The returned set uses identity, not record equality, so a reparsed
+     * or structurally cloned Task cannot be substituted during publication.
+     *
+     * Unknown AST forms fail closed: this inventory is part of the admission
+     * boundary and must be extended whenever executable AST variants grow.
+     */
+    public static Set<Ast.TaskExpr> taskIdentitiesIn(Ast.Program program) {
+        java.util.Objects.requireNonNull(program, "Task program");
+        Set<Ast.TaskExpr> tasks =
+                java.util.Collections.newSetFromMap(
+                        new java.util.IdentityHashMap<>());
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                collectTasks(declaration, tasks);
+            }
+        }
+        return java.util.Collections.unmodifiableSet(tasks);
+    }
+
+    private static void collectTasks(
+            Ast.Decl declaration, Set<Ast.TaskExpr> tasks) {
+        if (declaration instanceof Ast.FunctionDecl function) {
+            collectTasks(function.body(), tasks);
+        } else if (declaration instanceof Ast.ClassDecl klass) {
+            for (Ast.FieldDecl field : klass.fields()) {
+                collectTasks(field.initializer(), tasks);
+            }
+            if (klass.constructor() != null) {
+                collectTasks(klass.constructor().body(), tasks);
+            }
+            for (Ast.MethodDecl method : klass.methods()) {
+                collectTasks(method.body(), tasks);
+            }
+        } else if (declaration instanceof Ast.FieldDecl field) {
+            collectTasks(field.initializer(), tasks);
+        } else if (!(declaration instanceof Ast.InterfaceDecl
+                || declaration instanceof Ast.TypeAliasDecl)) {
+            throw new IllegalStateException(
+                    "unsupported Task membership declaration: "
+                            + declaration.getClass().getName());
+        }
+    }
+
+    private static void collectTasks(
+            List<Ast.Stmt> body, Set<Ast.TaskExpr> tasks) {
+        if (body == null) return;
+        for (Ast.Stmt statement : body) collectTasks(statement, tasks);
+    }
+
+    private static void collectTasks(
+            Ast.Stmt statement, Set<Ast.TaskExpr> tasks) {
+        if (statement == null) return;
+        if (statement instanceof Ast.BindingStmt s) {
+            collectTasks(s.initializer(), tasks);
+        } else if (statement instanceof Ast.DestructureStmt s) {
+            collectTasks(s.initializer(), tasks);
+        } else if (statement instanceof Ast.ReturnStmt s) {
+            collectTasks(s.value(), tasks);
+        } else if (statement instanceof Ast.YieldStmt s) {
+            collectTasks(s.value(), tasks);
+        } else if (statement instanceof Ast.ExprStmt s) {
+            collectTasks(s.expression(), tasks);
+        } else if (statement instanceof Ast.DeferStmt s) {
+            collectTasks(s.expression(), tasks);
+        } else if (statement instanceof Ast.BlockStmt s) {
+            collectTasks(s.body(), tasks);
+        } else if (statement instanceof Ast.TaskScopeStmt s) {
+            collectTasks(s.body(), tasks);
+        } else if (statement instanceof Ast.IfStmt s) {
+            for (Ast.IfBranch branch : s.branches()) {
+                collectTasks(branch.condition(), tasks);
+                collectTasks(branch.body(), tasks);
+            }
+            collectTasks(s.elseBody(), tasks);
+        } else if (statement instanceof Ast.MatchStmt s) {
+            collectTasks(s.subject(), tasks);
+            for (Ast.MatchArm arm : s.arms()) {
+                collectTasks(arm.guard(), tasks);
+                collectTasks(arm.body(), tasks);
+            }
+        } else if (statement instanceof Ast.SwitchStmt s) {
+            collectTasks(s.subject(), tasks);
+            for (Ast.SwitchCase arm : s.cases()) {
+                for (Ast.Expr constant : arm.constants()) {
+                    collectTasks(constant, tasks);
+                }
+                collectTasks(arm.body(), tasks);
+            }
+            collectTasks(s.defaultBody(), tasks);
+        } else if (statement instanceof Ast.TryStmt s) {
+            collectTasks(s.body(), tasks);
+            collectTasks(s.catchBody(), tasks);
+            collectTasks(s.finallyBody(), tasks);
+        } else if (statement instanceof Ast.ForOfStmt s) {
+            collectTasks(s.iterable(), tasks);
+            collectTasks(s.body(), tasks);
+        } else if (statement instanceof Ast.ForOfDestructureStmt s) {
+            collectTasks(s.iterable(), tasks);
+            collectTasks(s.body(), tasks);
+        } else if (statement instanceof Ast.ForStmt s) {
+            collectTasks(s.initializer(), tasks);
+            collectTasks(s.condition(), tasks);
+            collectTasks(s.update(), tasks);
+            collectTasks(s.body(), tasks);
+        } else if (statement instanceof Ast.DoWhileStmt s) {
+            collectTasks(s.body(), tasks);
+            collectTasks(s.condition(), tasks);
+        } else if (statement instanceof Ast.LoopStmt s) {
+            collectTasks(s.body(), tasks);
+        } else if (statement instanceof Ast.SelectStmt s) {
+            for (Ast.SelectArm arm : s.arms()) {
+                collectTasks(arm.channel(), tasks);
+                collectTasks(arm.value(), tasks);
+                collectTasks(arm.body(), tasks);
+            }
+        } else if (!(statement instanceof Ast.BreakStmt
+                || statement instanceof Ast.ContinueStmt)) {
+            throw new IllegalStateException(
+                    "unsupported Task membership statement: "
+                            + statement.getClass().getName());
+        }
+    }
+
+    private static void collectTasks(
+            Ast.Expr expression, Set<Ast.TaskExpr> tasks) {
+        if (expression == null
+                || expression instanceof Ast.NameExpr
+                || expression instanceof Ast.LiteralExpr) {
+            return;
+        }
+        if (expression instanceof Ast.TaskExpr task) {
+            tasks.add(task);
+            collectTasks(task.body(), tasks);
+        } else if (expression instanceof Ast.BinaryExpr s) {
+            collectTasks(s.left(), tasks);
+            collectTasks(s.right(), tasks);
+        } else if (expression instanceof Ast.UnaryExpr s) {
+            collectTasks(s.operand(), tasks);
+        } else if (expression instanceof Ast.AssignExpr s) {
+            collectTasks(s.target(), tasks);
+            collectTasks(s.value(), tasks);
+        } else if (expression instanceof Ast.ConditionalExpr s) {
+            collectTasks(s.condition(), tasks);
+            collectTasks(s.whenTrue(), tasks);
+            collectTasks(s.whenFalse(), tasks);
+        } else if (expression instanceof Ast.MatchExpr s) {
+            collectTasks(s.subject(), tasks);
+            for (Ast.MatchValueArm arm : s.arms()) {
+                collectTasks(arm.guard(), tasks);
+                collectTasks(arm.value(), tasks);
+            }
+        } else if (expression instanceof Ast.TypeTestExpr s) {
+            collectTasks(s.value(), tasks);
+        } else if (expression instanceof Ast.PatternTestExpr s) {
+            collectTasks(s.value(), tasks);
+        } else if (expression instanceof Ast.CastExpr s) {
+            collectTasks(s.value(), tasks);
+        } else if (expression instanceof Ast.SpreadExpr s) {
+            collectTasks(s.expression(), tasks);
+        } else if (expression instanceof Ast.CallExpr s) {
+            collectTasks(s.callee(), tasks);
+            for (Ast.Expr argument : s.arguments()) {
+                collectTasks(argument, tasks);
+            }
+        } else if (expression instanceof Ast.RuntimeCallExpr s) {
+            for (Ast.Expr argument : s.arguments()) {
+                collectTasks(argument, tasks);
+            }
+        } else if (expression instanceof Ast.MemberExpr s) {
+            collectTasks(s.receiver(), tasks);
+        } else if (expression instanceof Ast.IndexExpr s) {
+            collectTasks(s.receiver(), tasks);
+            collectTasks(s.index(), tasks);
+        } else if (expression instanceof Ast.NewExpr s) {
+            for (Ast.Expr argument : s.arguments()) {
+                collectTasks(argument, tasks);
+            }
+        } else if (expression instanceof Ast.AwaitExpr s) {
+            collectTasks(s.expression(), tasks);
+        } else if (expression instanceof Ast.TrapExpr s) {
+            collectTasks(s.expression(), tasks);
+        } else if (expression instanceof Ast.ChannelOpExpr s) {
+            collectTasks(s.channel(), tasks);
+            collectTasks(s.value(), tasks);
+            collectTasks(s.callbackBody(), tasks);
+        } else if (expression instanceof Ast.DynamicSelectExpr s) {
+            collectTasks(s.cases(), tasks);
+        } else if (expression instanceof Ast.ListExpr s) {
+            for (Ast.Expr item : s.elements()) collectTasks(item, tasks);
+        } else if (expression instanceof Ast.TupleExpr s) {
+            for (Ast.Expr item : s.elements()) collectTasks(item, tasks);
+        } else if (expression instanceof Ast.ObjectExpr s) {
+            for (Ast.ObjectField field : s.fields()) {
+                collectTasks(field.value(), tasks);
+            }
+        } else if (expression instanceof Ast.LambdaExpr s) {
+            collectTasks(s.expressionBody(), tasks);
+            collectTasks(s.blockBody(), tasks);
+        } else {
+            throw new IllegalStateException(
+                    "unsupported Task membership expression: "
+                            + expression.getClass().getName());
+        }
+    }
+
 }
