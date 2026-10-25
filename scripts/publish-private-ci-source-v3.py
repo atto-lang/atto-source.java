@@ -41,7 +41,7 @@ SAFE_EXECUTABLE = re.compile(
     r"^(?:python3|mvn|cmake|ctest|g\\+\\+|clang\\+\\+|/tmp/ores-[A-Za-z0-9_.-]+)$"
 )
 HANDOFF_REF = re.compile(
-    r"^ci/(?:oreslang-[A-Za-z0-9][A-Za-z0-9_.-]{0,70}|authorized-[0-9a-f]{40})$"
+    r"^ci/(?:oreslang-[0-9a-f]{40}|authorized-[0-9a-f]{40})$"
 )
 CONTRACT_PATH = ".github/private-ci-carrier-contracts.json"
 REVIEW_AUTHORITY_PR = 1724
@@ -110,9 +110,13 @@ def safe_policy_path(value, prefix, suffix):
     if not isinstance(value, str):
         raise Denied("invalid protected carrier path")
     parts = PurePosixPath(value).parts
-    if (not value.startswith(prefix) or not value.endswith(suffix)
-            or not parts or ".." in parts or ".git" in parts
-            or "\\" in value or value.startswith("/")):
+    if (not re.fullmatch(r"[A-Za-z0-9._/-]+", value)
+            or PurePosixPath(value).as_posix() != value
+            or not value.startswith(prefix) or not value.endswith(suffix)
+            or not parts or value.startswith("/")
+            or any(part in (".", "..") for part in parts)
+            or any(part.casefold() == ".git" for part in parts)
+            or "\\" in value):
         raise Denied("invalid protected carrier path")
     return value
 
