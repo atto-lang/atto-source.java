@@ -124,6 +124,8 @@ class RawWorktreeSecurityTests(unittest.TestCase):
         shutil.copy2(SRC / 'nio_verify_raw_worktree.py',
                      self.root / 'scripts' / 'nio_verify_raw_worktree.py')
         (self.root / 'source.txt').write_text('trusted source\n')
+        (self.root / 'nested').mkdir()
+        (self.root / 'nested' / 'source.txt').write_text('nested trusted source\n')
         for argv in (['git', 'init', '-q'],
                      ['git', 'config', 'user.email', 'fixture@example.invalid'],
                      ['git', 'config', 'user.name', 'Source-free CI'],
@@ -164,6 +166,19 @@ class RawWorktreeSecurityTests(unittest.TestCase):
         external.unlink()
         result = self.gate()
         self.assertEqual(0, result.returncode, result.stderr + result.stdout)
+
+
+    def test_parent_directory_symlink_is_rejected(self):
+        original = self.root / 'nested'
+        external = Path(self.tmp.name) / 'external-nested'
+        original.rename(external)
+        original.symlink_to(external, target_is_directory=True)
+        # The tracked leaf bytes are still identical through the symlink; the
+        # exact-tree gate must reject the path topology rather than hash it.
+        status = call(['git', 'status', '--porcelain=v1'], cwd=self.root)
+        self.assertEqual('', status.stdout, status.stderr)
+        result = self.gate()
+        self.assertEqual(77, result.returncode, result.stderr + result.stdout)
 
 
 if __name__ == '__main__':
