@@ -37,6 +37,31 @@ def raw_digest(fd: int, size: int) -> bytes:
     return digest.hexdigest().encode('ascii')
 
 
+def open_tracked_leaf(path: bytes, nofollow: int, nonblock: int) -> int:
+    """Open a tracked leaf beneath cwd without following any path symlink."""
+    parts = path.split(b'/')
+    if not parts or any(part in (b'', b'.', b'..') for part in parts):
+        raise ValueError('invalid tracked path: ' + repr(path[:120]))
+    directory_flag = getattr(os, 'O_DIRECTORY', None)
+    if (not isinstance(directory_flag, int) or isinstance(directory_flag, bool)
+            or directory_flag <= 0
+            or (directory_flag & nofollow) != 0
+            or (directory_flag & nonblock) != 0):
+        raise ValueError('platform cannot safely traverse tracked source paths')
+    dir_fd = os.open(b'.', os.O_RDONLY | directory_flag | nofollow)
+    try:
+        for component in parts[:-1]:
+            next_fd = os.open(component,
+                              os.O_RDONLY | directory_flag | nofollow,
+                              dir_fd=dir_fd)
+            os.close(dir_fd)
+            dir_fd = next_fd
+        return os.open(parts[-1], os.O_RDONLY | nofollow | nonblock,
+                       dir_fd=dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
 def verify(commit: str, tree: str) -> int:
     if not SHA1.fullmatch(commit) or not SHA1.fullmatch(tree):
         raise ValueError('expected commit/tree must be canonical SHA-1')
@@ -86,7 +111,7 @@ def verify(commit: str, tree: str) -> int:
                     or isinstance(nonblock, bool) or nonblock <= 0
                     or (nofollow & nonblock) != 0):
                 raise ValueError('platform cannot safely inspect tracked source files')
-            fd = os.open(path, os.O_RDONLY | nofollow | nonblock)
+            fd = open_tracked_leaf(path, nofollow, nonblock)
             try:
                 st = os.fstat(fd)
                 if not stat.S_ISREG(st.st_mode):
