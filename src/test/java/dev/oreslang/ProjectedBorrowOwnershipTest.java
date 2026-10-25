@@ -91,6 +91,45 @@ final class ProjectedBorrowOwnershipTest {
     }
 
     @Test
+    void forOfCannotMintOwnedAliasesFromMoveOnlySequenceElements() {
+        IllegalArgumentException synchronous = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(TYPES + """
+                        fnc bad(Holder holder): void {
+                          for const item of holder.items {
+                            stdio.stdout.write(item.number);
+                          }
+                          return;
+                        }
+                        """)));
+        assertTrue(synchronous.getMessage().contains("aliasing sequence"),
+                synchronous.getMessage());
+
+        IllegalArgumentException asynchronousAdapter = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(TYPES + """
+                        async fnc bad(Holder holder): void {
+                          for await const item of holder.items {
+                            stdio.stdout.write(item.number);
+                          }
+                          return;
+                        }
+                        """)));
+        assertTrue(asynchronousAdapter.getMessage().contains("aliasing sequence"),
+                asynchronousAdapter.getMessage());
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc ok(List<int> values): int {
+                  let int total = 0;
+                  for const value of values {
+                    total = total + value;
+                  }
+                  return total;
+                }
+                """)));
+    }
+
+    @Test
     void storedProjectionGuardsEntireOwnerAgainstMove() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(TYPES + """

@@ -763,6 +763,7 @@ public final class OwnershipChecker {
             }
             ValueInfo iterable = checkExpr(loop.iterable(), scope, false);
             Ast.TypeRef elementType = iterableElementType(iterable.type, loop.asyncIteration());
+            rejectAffineAliasingIteration(iterable.type, elementType);
             Map<VarState,Boolean> before = movedSnapshot(scope);
             Scope loopScope = new Scope(scope);
             for (int i = 0; i < loop.bindings().size(); i++) {
@@ -788,6 +789,7 @@ public final class OwnershipChecker {
             }
             ValueInfo iterable = checkExpr(loop.iterable(), scope, false);
             Ast.TypeRef elementType = iterableElementType(iterable.type, loop.asyncIteration());
+            rejectAffineAliasingIteration(iterable.type, elementType);
             Map<VarState,Boolean> before = movedSnapshot(scope);
             Scope loopScope = new Scope(scope);
             loopScope.define(loop.bindingName(), new VarState(
@@ -4511,6 +4513,30 @@ public final class OwnershipChecker {
             }
         }
         return result;
+    }
+
+    private void rejectAffineAliasingIteration(
+            Ast.TypeRef iterableType, Ast.TypeRef elementType) {
+        if (iterableType == null) return;
+        Ast.TypeRef concrete = iterableType.isBorrow()
+                ? iterableType.borrowedTarget() : iterableType;
+        boolean aliasesStoredElements =
+                concrete.name().equals("Array")
+                        || concrete.name().equals("List")
+                        || concrete.isTupleType();
+        if (!aliasesStoredElements) return;
+
+        // Runtime List/Array/tuple iteration binds the same stored object
+        // reference into each loop activation; it does not remove the slot
+        // from the container. Without path-sensitive partial-move state, an
+        // owned MOVE_ONLY loop binding would duplicate affine authority.
+        if (elementType == null
+                || elementType.name().equals("$infer$")
+                || kindOfType(elementType) != ValueKind.COPY) {
+            throw error("for-of cannot bind a move-only or unresolved element "
+                    + "from an aliasing sequence; borrow indexed elements explicitly "
+                    + "or iterate an ownership-producing Generator/Iterator");
+        }
     }
 
     private Ast.TypeRef iterableElementType(Ast.TypeRef iterableType, boolean asyncIteration) {
