@@ -91,6 +91,7 @@ int main(int argc, char **argv) {
                 if (getenv("MOCK_BAD_CALLABLES")) puts("120:9:12");
                 else puts("120:9:13");
             }
+            if (getenv("MOCK_TRAILING_BLANK_CALLABLES")) puts("");
         }
         if (strstr(argv[2], "native-channel-select-smoke.ores") != NULL) {
             if (!getenv("MOCK_EMPTY_CHANNEL_OUTPUT")) {
@@ -98,18 +99,21 @@ int main(int argc, char **argv) {
                 else if (getenv("MOCK_LOST_CHANNEL_MESSAGE")) puts("first:7:");
                 else puts("first:7:9");
             }
+            if (getenv("MOCK_TRAILING_BLANK_CHANNEL")) puts("");
         }
         if (strstr(argv[2], "native-future-select-smoke.ores") != NULL) {
             if (!getenv("MOCK_EMPTY_FUTURE_OUTPUT")) {
                 if (getenv("MOCK_WRONG_FUTURE_OUTPUT")) puts("channel:0");
                 else puts("future:4");
             }
+            if (getenv("MOCK_TRAILING_BLANK_FUTURE")) puts("");
         }
         if (strstr(argv[2], "strict-root-await.ores") != NULL) {
             if (!getenv("MOCK_EMPTY_AWAIT_OUTPUT")) {
                 if (getenv("MOCK_WRONG_AWAIT_OUTPUT")) puts("41");
                 else puts("42");
             }
+            if (getenv("MOCK_TRAILING_BLANK_AWAIT")) puts("");
         }
         if (strstr(argv[2], "native-core-library.ores") != NULL) {
             if (!getenv("MOCK_EMPTY_CORE_OUTPUT")) {
@@ -118,6 +122,7 @@ int main(int argc, char **argv) {
                 else
                     puts("9007199254740992|-999999999999999999|10");
             }
+            if (getenv("MOCK_TRAILING_BLANK_CORE")) puts("");
         }
         if (strstr(argv[2], "native-testing.ores") != NULL) {
             if (!getenv("MOCK_EMPTY_TEST_OUTPUT")) {
@@ -259,7 +264,7 @@ assert_case() {
       'source execution failure') expected_status=13 ;;
       'check-only mistakenly executes guest'|'check-only reports stderr diagnostic with zero exit')
         expected_diagnostic='native --check unexpectedly emitted diagnostics or guest output' ;;
-      'silent callables guest execution'|'incorrect lexical closure result')
+      'silent callables guest execution'|'incorrect lexical closure result'|'trailing blank callables stdout')
         expected_diagnostic='native callables guest output differs from expected value' ;;
       'guest stderr despite correct stdout')
         expected_diagnostic='native guest unexpectedly emitted stderr diagnostics' ;;
@@ -272,13 +277,14 @@ assert_case() {
         expected_diagnostic='private actor negative fixture failed without a capability-denial diagnostic' ;;
       'actor check-only emitted guest output'|'actor check-only reports stderr diagnostic with zero exit')
         expected_diagnostic='native actor --check unexpectedly emitted diagnostics or guest output' ;;
-      'silent fake image without guest-core output'|'wrong native core numeric result')
+      'silent fake image without guest-core output'|'wrong native core numeric result'|'trailing blank core stdout')
         expected_diagnostic='native Oreslang core-library output differs from expected value' ;;
-      'silent native channel execution'|'wrong native channel select winner'|'lost unselected native channel message')
+      'silent native channel execution'|'wrong native channel select winner'|\
+      'lost unselected native channel message'|'trailing blank channel stdout')
         expected_diagnostic='native channel/select result differs from expected first-winner and retained-message output' ;;
-      'silent native Future/select execution'|'incorrect native Future/select result')
+      'silent native Future/select execution'|'incorrect native Future/select result'|'trailing blank Future/select stdout')
         expected_diagnostic='native Future/select output differs from expected result' ;;
-      'silent native root-await execution'|'incorrect native root-await result')
+      'silent native root-await execution'|'incorrect native root-await result'|'trailing blank root-await stdout')
         expected_diagnostic='native root-await result differs from expected value' ;;
       'silent fake image without guest-test output'|'guest test reports failures'|\
       'valid summary without actual PASS/SKIP records'|'duplicate valid summary'|\
@@ -343,6 +349,7 @@ grep -Fx 'native --check unexpectedly emitted diagnostics or guest output' "$tmp
 }
 assert_case 'silent callables guest execution' failure aot compressed32 MOCK_SILENT_CALLABLES=1
 assert_case 'incorrect lexical closure result' failure aot compressed32 MOCK_BAD_CALLABLES=1
+assert_case 'trailing blank callables stdout' failure aot compressed32 MOCK_TRAILING_BLANK_CALLABLES=1
 assert_case 'guest stderr despite correct stdout' failure aot compressed32 MOCK_GUEST_STDERR=1
 assert_case 'private actor capability violation admitted' failure aot compressed32 MOCK_ACCEPT_INVALID_PRIVATE_ACTOR=1
 assert_case 'private actor denial uses wrong CLI exit status' failure aot compressed32 MOCK_BAD_DENIAL_STATUS=1
@@ -365,13 +372,17 @@ grep -Fx 'native actor --check unexpectedly emitted diagnostics or guest output'
 }
 assert_case 'silent fake image without guest-core output' failure aot compressed32 MOCK_EMPTY_CORE_OUTPUT=1
 assert_case 'wrong native core numeric result' failure aot compressed32 MOCK_BAD_CORE_OUTPUT=1
+assert_case 'trailing blank core stdout' failure aot compressed32 MOCK_TRAILING_BLANK_CORE=1
 assert_case 'silent native channel execution' failure aot compressed32 MOCK_EMPTY_CHANNEL_OUTPUT=1
 assert_case 'wrong native channel select winner' failure aot compressed32 MOCK_WRONG_CHANNEL_WINNER=1
 assert_case 'lost unselected native channel message' failure aot compressed32 MOCK_LOST_CHANNEL_MESSAGE=1
+assert_case 'trailing blank channel stdout' failure aot compressed32 MOCK_TRAILING_BLANK_CHANNEL=1
 assert_case 'silent native Future/select execution' failure aot compressed32 MOCK_EMPTY_FUTURE_OUTPUT=1
 assert_case 'incorrect native Future/select result' failure aot compressed32 MOCK_WRONG_FUTURE_OUTPUT=1
+assert_case 'trailing blank Future/select stdout' failure aot compressed32 MOCK_TRAILING_BLANK_FUTURE=1
 assert_case 'silent native root-await execution' failure aot compressed32 MOCK_EMPTY_AWAIT_OUTPUT=1
 assert_case 'incorrect native root-await result' failure aot compressed32 MOCK_WRONG_AWAIT_OUTPUT=1
+assert_case 'trailing blank root-await stdout' failure aot compressed32 MOCK_TRAILING_BLANK_AWAIT=1
 assert_case 'silent fake image without guest-test output' failure aot compressed32 MOCK_EMPTY_TEST_OUTPUT=1
 assert_case 'guest test reports failures' failure aot compressed32 MOCK_BAD_TEST_SUMMARY=1
 assert_case 'valid summary without actual PASS/SKIP records' failure aot compressed32 MOCK_MISSING_TEST_EVENTS=1
