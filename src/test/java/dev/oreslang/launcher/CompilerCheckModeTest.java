@@ -55,6 +55,31 @@ final class CompilerCheckModeTest {
     }
 
     @Test
+    void linkedParserErrorNamesTheImportedSourceUnit() {
+        Path entry = Path.of("src/main.ores");
+        String imported = Path.of("src/components/auth.ores").toAbsolutePath().normalize().toString();
+        String diagnostic = OresMain.formatCheckDiagnostic(
+                entry,
+                new IllegalArgumentException("Oreslang source unit '" + imported
+                        + "': Oreslang parse error at 12:7: expected expression"));
+
+        assertEquals(imported + ":12:7: error: expected expression", diagnostic);
+    }
+
+    @Test
+    void linkedSemanticErrorPreservesModuleAndNamespaceContext() {
+        Path entry = Path.of("src/main.ores");
+        String imported = Path.of("src/components/auth.ores").toAbsolutePath().normalize().toString();
+        String diagnostic = OresMain.formatCheckDiagnostic(
+                entry,
+                new IllegalArgumentException("Oreslang source unit '" + imported
+                        + "': [module: auth] [namespace: identity] unknown binding 'token'"));
+
+        assertEquals(imported + ":1:1: error: [module: auth] [namespace: identity]"
+                + " unknown binding 'token'", diagnostic);
+    }
+
+    @Test
     void unpositionedErrorsFallBackToFileStart() {
         Path source = Path.of("demo.ores");
         String diagnostic = OresMain.formatCheckDiagnostic(
