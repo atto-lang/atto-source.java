@@ -4046,6 +4046,8 @@ public final class Parser {
         Ast.Expr expr = parsePrimary();
         while (true) {
             if (check(LT) && adjacent(previous(), peek()) && looksLikeTypeArgumentCall()) {
+                if (expr instanceof Ast.MemberExpr m && m.optional())
+                    throw error(peek(), "?. supports data fields only; optional method calls are not enabled");
                 List<Ast.TypeRef> typeArguments = parseCallTypeArguments();
                 consume(LPAREN, "expected '(' after call type arguments");
                 List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
