@@ -188,23 +188,24 @@ fi
 # the linked checker reached and enforced the protected actor boundary.
 # OresMain returns status 1 for rejected --check admission. A crash
 # (signal status) or CLI usage failure (2) is not a capability-denial proof.
+: > "$guest_stdout"
+: > "$guest_stderr"
 invalid_actor_status=0
-invalid_actor_diagnostic="$(
+(
   unset JAVA_HOME CLASSPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS
-  "$executable" --check examples/private-actor-sharing-invalid.ores 2>&1
-)" || invalid_actor_status=$?
+  "$executable" --check examples/private-actor-sharing-invalid.ores >"$guest_stdout" 2>"$guest_stderr"
+) || invalid_actor_status=$?
 if [ "$invalid_actor_status" -ne 1 ]; then
   echo "expected private actor capability denial with CLI status 1, got $invalid_actor_status" >&2
   exit 1
 fi
-case "$invalid_actor_diagnostic" in
-  *"Oreslang isolate denies capability SHARED_MEMORY"*|\
-  *"Oreslang isolate denies capability ACTOR_SHARE_READONLY"*) ;;
-  *)
-    echo "private actor negative fixture failed without a capability-denial diagnostic" >&2
-    exit 1
-    ;;
-esac
+# A rejection message on stdout, or a capability phrase embedded in an
+# unrelated parse diagnostic, is not evidence of linked actor admission.
+if [ -s "$guest_stdout" ] ||
+   ! grep -Eq '^Oreslang isolate denies capability (SHARED_MEMORY|ACTOR_SHARE_READONLY)([[:space:]:]|$)' "$guest_stderr"; then
+  echo "private actor negative fixture failed without a capability-denial diagnostic" >&2
+  exit 1
+fi
 
 run_clean_guest "--mode=$mode" examples/together.ores
 
@@ -280,11 +281,13 @@ if ! awk -F '|' -v expected="$expected_summary" '
 fi
 
 # A native executable must never silently switch on JVM JIT at runtime.
+: > "$guest_stdout"
+: > "$guest_stderr"
 jit_status=0
-jit_output="$(
+(
   unset JAVA_HOME CLASSPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS
-  "$executable" --mode=jit --check examples/callables.ores 2>&1
-)" || jit_status=$?
+  "$executable" --mode=jit --check examples/callables.ores >"$guest_stdout" 2>"$guest_stderr"
+) || jit_status=$?
 if [ "$jit_status" -ne 2 ]; then
   echo "expected --mode=jit to be rejected with CLI status 2, got $jit_status" >&2
   exit 1
@@ -293,9 +296,11 @@ case "$mode" in
   aot) expected_jit_reason="This executable was built AOT-only; --mode=jit cannot enable runtime compilation." ;;
   hybrid) expected_jit_reason="Native hybrid executables accept --mode=hybrid or --mode=aot, not JVM --mode=jit" ;;
 esac
-case "$jit_output" in
-  *"$expected_jit_reason"*) ;;
-  *) echo "native executable refused JIT without the required build-mode diagnostic" >&2; exit 1 ;;
-esac
+# Refusal must originate on stderr, never be laundered through stdout.
+if [ -s "$guest_stdout" ] ||
+   ! grep -F "$expected_jit_reason" "$guest_stderr" >/dev/null; then
+  echo "native executable refused JIT without the required build-mode diagnostic" >&2
+  exit 1
+fi
 
 echo "verified GraalVM Native Image: $executable ($mode, $refs)"
