@@ -842,7 +842,7 @@ public final class Parser {
      * versioned hot-code replacement exist in both backends.
      */
     private void rejectUnloweredRuntimeEntityDeclaration() {
-        if (isAtEnd()) return;
+        if (check(EOF)) return;
         String name = peek().lexeme();
         if (name.equals("readable") || name.equals("transform")
                 || name.equals("writable") || name.equals("duplex")) {
