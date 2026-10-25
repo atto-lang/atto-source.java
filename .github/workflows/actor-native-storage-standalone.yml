@@ -1,0 +1,78 @@
+name: Native arena standalone JDK25 and JNI evidence
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/ActorNativeArena.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorLinearMemory.java'
+      - 'src/main/c/oresarena.c'
+      - 'src/test/java/dev/oreslang/runtime/ActorNativeStorageStandaloneTest.java'
+      - 'scripts/build-native-thread.sh'
+      - 'scripts/check-native-arena-abi.sh'
+      - '.github/workflows/actor-native-storage-standalone.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  storage-jdk25-jni:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact source head, never GitHub's generated PR merge
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify immutable checked-out source head
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain)"
+          echo "SOURCE_TREE_SHA=$(git rev-parse 'HEAD^{tree}')"
+
+      - name: Set up JDK 25 for Java 21 source compatibility
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - name: Execute standalone native JNI ABI probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/check-native-arena-abi.sh
+
+      - name: Compile the actual native carrier and arena JNI library
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh scripts/build-native-thread.sh
+          test -f target/native/liboresthread.so
+          nm -D target/native/liboresthread.so |
+            grep -F 'Java_dev_oreslang_runtime_ActorNativeArena_allocateNative'
+          nm -D target/native/liboresthread.so |
+            grep -F 'Java_dev_oreslang_runtime_ActorNativeArena_releaseNative'
+
+      - name: Execute independent arena and linear-memory storage JUnit suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -q -Dtest=ActorNativeStorageStandaloneTest test
+          echo 'PASS isolated native arena storage tests (not ActorRuntime or guest parity)'
+
+      - name: Record exact source and native binary evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(git status --porcelain)"
+          echo "HEAD=$(git rev-parse HEAD)"
+          echo "ROOT_TREE=$(git rev-parse 'HEAD^{tree}')"
+          sha256sum target/native/liboresthread.so
+          git hash-object src/main/c/oresarena.c
