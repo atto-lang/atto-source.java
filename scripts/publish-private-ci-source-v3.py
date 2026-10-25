@@ -288,7 +288,7 @@ def governance_tree_entries(commit_sha):
 
 def review_attested_main_sha(
         repository, expected_policy_digest, expected_repository_id):
-    """Authorize only governance blobs exactly reviewed on merged authority PR."""
+    """Validate reviewed governance evidence; this is not export authorization."""
     origin = legacy.gh_api(f"repos/{legacy.SOURCE_REPO}")
     if (origin.get("id") != SOURCE_REPOSITORY_ID
             or origin.get("full_name") != legacy.SOURCE_REPO
@@ -397,17 +397,15 @@ def review_attested_main_sha(
 
 def authorized_main_sha(
         repository, expected_policy_digest, expected_repository_id):
-    """Prefer enforced protected-main governance; otherwise exact review attestation."""
+    """Require enforced protected-main governance for every source export."""
     branch = legacy.gh_api(
         f"repos/{legacy.SOURCE_REPO}/branches/{legacy.SOURCE_PROTECTED_BRANCH}"
     )
     if branch.get("name") != legacy.SOURCE_PROTECTED_BRANCH:
         raise Denied("source main branch identity changed")
-    if branch.get("protected") is True:
-        return legacy.verify_protected_origin(
-            repository, expected_policy_digest, expected_repository_id
-        )
-    return review_attested_main_sha(
+    if branch.get("protected") is not True:
+        raise Denied("source main is not protected; private export denied")
+    return legacy.verify_protected_origin(
         repository, expected_policy_digest, expected_repository_id
     )
 
