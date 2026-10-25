@@ -65,7 +65,7 @@ public final class ActorPipeTransport implements AutoCloseable {
             group.registerInfrastructureClose(this::closeChannelsFromGroup);
         } catch (RuntimeException | Error failure) {
             closeChannelsFromGroup();
-            try { group.close(); } catch (RuntimeException closeFailure) {
+            try { group.close(); } catch (RuntimeException | Error closeFailure) {
                 failure.addSuppressed(closeFailure);
             }
             throw failure;
