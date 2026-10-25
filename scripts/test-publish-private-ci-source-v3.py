@@ -915,6 +915,58 @@ class PrivateCiV3Test(unittest.TestCase):
                     Path("."), "trusted/ci", POLICY, carrier)
             checked_repo.assert_not_called()
 
+    def test_authorize_write_rechecks_exact_carrier_main_each_write(self):
+        carrier = contract()
+        eligible = {
+            "id": carrier["repository_id"],
+            "full_name": "trusted/ci",
+            "private": True,
+            "visibility": "private",
+            "archived": False,
+            "disabled": False,
+            "fork": False,
+            "default_branch": "main",
+        }
+
+        def good_api(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/branches/main":
+                return {
+                    "name": "main",
+                    "commit": {"sha": carrier["base_sha"]},
+                }
+            raise AssertionError(route)
+
+        with (
+            patch.object(v3.legacy, "require_resolved_blocking_incidents"),
+            patch.object(
+                v3.legacy, "checked_policy_approval",
+                return_value=(POLICY, carrier["repository_id"]),
+            ),
+            patch.object(v3.legacy, "checked_repo", return_value=eligible),
+            patch.object(v3.legacy, "gh_api", side_effect=good_api),
+        ):
+            v3.authorize_write(Path("."), "trusted/ci", POLICY, carrier)
+
+        def drift_api(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/branches/main":
+                return {
+                    "name": "main",
+                    "commit": {"sha": "9" * 40},
+                }
+            raise AssertionError(route)
+
+        with (
+            patch.object(v3.legacy, "require_resolved_blocking_incidents"),
+            patch.object(
+                v3.legacy, "checked_policy_approval",
+                return_value=(POLICY, carrier["repository_id"]),
+            ),
+            patch.object(v3.legacy, "checked_repo", return_value=eligible),
+            patch.object(v3.legacy, "gh_api", side_effect=drift_api),
+        ):
+            with self.assertRaisesRegex(v3.Denied, "main changed"):
+                v3.authorize_write(Path("."), "trusted/ci", POLICY, carrier)
+
     def test_authorize_write_rejects_reopened_incident_before_api_or_blob(self):
         """Fail closed when a P0 changes after preflight but before a write."""
         carrier = contract()
