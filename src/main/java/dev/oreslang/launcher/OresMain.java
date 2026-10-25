@@ -57,12 +57,12 @@ public final class OresMain {
             }
             return status;
         } catch (UsageException failure) {
-            System.err.println("oreslang: " + failure.getMessage());
+            System.err.println("oreslang: " + safeDiagnosticText(failure.getMessage()));
             return 2;
         } catch (Exception failure) {
             String message = failure.getMessage();
-            System.err.println("oreslang: " +
-                    ((message == null || message.isBlank())
+            System.err.println("oreslang: " + safeDiagnosticText(
+                    message == null || message.isBlank()
                             ? failure.getClass().getSimpleName() : message));
             return 1;
         }
@@ -259,9 +259,13 @@ public final class OresMain {
             Map<String, String> defines = BuildOptions.mergeDefines(System.getenv(), buildDefines);
             Set<String> entries = buildEntryPoints.isEmpty() ? Set.of("main") : Set.copyOf(buildEntryPoints);
             BuildOptions buildOptions = new BuildOptions(defines, entries, false);
-            TreeShaker.Result result = OresCompiler.compileForBuild(
-                    directOresSource,
-                    buildOptions);
+            final TreeShaker.Result result;
+            try {
+                result = OresCompiler.compileForBuild(directOresSource, buildOptions);
+            } catch (IllegalArgumentException error) {
+                System.err.println(formatCheckDiagnostic(path, error));
+                return 1;
+            }
 
             if (reachabilityReportPath != null) {
                 final Path reportPath;
