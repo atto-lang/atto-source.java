@@ -1489,6 +1489,15 @@ public final class Ast {
                         entry.getKey(), "checked Task expression");
                 java.util.Map<String, TaskCaptureTransfer> transfers =
                         validateTransfers(entry.getValue());
+                // An admission may name only free variables actually used
+                // by this exact Task. Extra staged captures would otherwise
+                // grant MOVE/COPY authority to unrelated parent bindings.
+                java.util.Set<String> referenced =
+                        TaskCaptureNames.referencedIn(task.body());
+                if (!referenced.containsAll(transfers.keySet())) {
+                    throw new IllegalArgumentException(
+                            "Task capture admission includes unreferenced bindings");
+                }
                 normalized.put(
                         task,
                         new TaskCaptureAdmission(
