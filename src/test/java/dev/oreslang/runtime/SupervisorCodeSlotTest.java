@@ -56,6 +56,31 @@ final class SupervisorCodeSlotTest {
         assertEquals(3, freed.get());
     }
 
+    @Test void reclaimFailureAfterUpgradeReportsCommittedRevision() {
+        AtomicInteger failedCleanup = new AtomicInteger();
+        try (var slot = new SupervisorCodeSlot<>("abi", "old", () -> {
+            failedCleanup.incrementAndGet();
+            throw new IllegalArgumentException("reclamation failed");
+        }, 2)) {
+            var failure = assertThrows(
+                    SupervisorCodeSlot.PostCommitReclamationException.class,
+                    () -> slot.activate(1, "abi", "next", () -> { }));
+            assertEquals(2L, failure.committed().revision(),
+                    "the activation actually committed before old cleanup failed");
+            assertEquals("abi", failure.committed().abi());
+            assertInstanceOf(IllegalArgumentException.class, failure.getCause());
+            assertEquals(1, failedCleanup.get(), "old cleanup invoked exactly once");
+            assertEquals(2L, slot.current().revision());
+            assertThrows(IllegalStateException.class,
+                    () -> slot.activate(1, "abi", "retry", () -> { }),
+                    "caller must not retry the already committed old revision");
+            try (var lease = slot.acquire()) {
+                assertEquals("next", lease.code());
+            }
+        }
+        assertEquals(1, failedCleanup.get());
+    }
+
     @Test void closeFencesNewAcquisitionsButWaitsForPinnedCleanup() {
         AtomicInteger freed = new AtomicInteger();
         var slot = new SupervisorCodeSlot<>("v1", "running", freed::incrementAndGet, 2);

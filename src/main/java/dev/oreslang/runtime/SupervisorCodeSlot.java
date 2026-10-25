@@ -46,6 +46,23 @@ public final class SupervisorCodeSlot<P> implements AutoCloseable {
         }
     }
 
+    /**
+     * Cleanup failed after the new revision was already made visible. Callers
+     * must use {@link #committed()} rather than retrying the old revision.
+     */
+    public static final class PostCommitReclamationException extends IllegalStateException {
+        private static final long serialVersionUID = 1L;
+        private final long committedRevision;
+        private final String committedAbi;
+        private PostCommitReclamationException(Descriptor committed, RuntimeException cause) {
+            super("supervisor code revision " + committed.revision()
+                    + " committed, but retired-policy reclamation failed", cause);
+            this.committedRevision = committed.revision();
+            this.committedAbi = committed.abi();
+        }
+        public Descriptor committed() { return new Descriptor(committedRevision, committedAbi); }
+    }
+
     public final class Lease implements AutoCloseable {
         private Generation<P> generation;
         private Lease(Generation<P> generation) {
@@ -162,7 +179,15 @@ public final class SupervisorCodeSlot<P> implements AutoCloseable {
             live.add(next);
             result = new Descriptor(next.revision, next.abi);
         }
-        if (cleanup != null) cleanup.run();
+        if (cleanup != null) {
+            try {
+                cleanup.run();
+            } catch (RuntimeException failure) {
+                // Activation has already committed under lock; never report a
+                // generic failure that invites retrying the previous revision.
+                throw new PostCommitReclamationException(result, failure);
+            }
+        }
         return result;
     }
 
