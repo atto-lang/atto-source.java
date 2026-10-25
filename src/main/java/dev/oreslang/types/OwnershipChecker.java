@@ -2804,7 +2804,12 @@ public final class OwnershipChecker {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.IfStmt s) {
                 for (Ast.IfBranch b : s.branches()) {
-                    scanExpr(b.condition(), blockLocals, outer, recursiveBinding, captures, false);
+                    scanConditionExpr(
+                            b.condition(),
+                            blockLocals,
+                            outer,
+                            recursiveBinding,
+                            captures);
                     Set<String> branchLocals = new HashSet<>(blockLocals);
                     collectConditionBindingNames(b.condition(), branchLocals);
                     scanStatements(b.body(), branchLocals, outer, recursiveBinding, captures);
@@ -2815,7 +2820,14 @@ public final class OwnershipChecker {
                 for (Ast.MatchArm arm : s.arms()) {
                     Set<String> armLocals = new HashSet<>(blockLocals);
                     collectPatternBindingNames(arm.pattern(), armLocals);
-                    if (arm.guard() != null) scanExpr(arm.guard(), armLocals, outer, recursiveBinding, captures, false);
+                    if (arm.guard() != null) {
+                        scanConditionExpr(
+                                arm.guard(),
+                                armLocals,
+                                outer,
+                                recursiveBinding,
+                                captures);
+                    }
                     scanStatements(arm.body(), armLocals, outer, recursiveBinding, captures);
                 }
             } else if (stmt instanceof Ast.SwitchStmt s) {
@@ -3213,6 +3225,45 @@ public final class OwnershipChecker {
         }
 
         return target;
+    }
+
+    /**
+     * Mirror TypeChecker.typeOfCondition lexical refinement flow: bindings
+     * introduced by the left operand of && are visible while scanning the
+     * right operand. Without this, a same-named parent binding can be falsely
+     * classified as a Task capture and moved at submission.
+     */
+    private void scanConditionExpr(
+            Ast.Expr condition,
+            Set<String> locals,
+            Scope outer,
+            String recursiveBinding,
+            CaptureSet captures) {
+        if (condition instanceof Ast.BinaryExpr binary
+                && binary.operator().equals("&&")) {
+            scanConditionExpr(
+                    binary.left(),
+                    locals,
+                    outer,
+                    recursiveBinding,
+                    captures);
+            Set<String> rightLocals = new HashSet<>(locals);
+            collectConditionBindingNames(binary.left(), rightLocals);
+            scanConditionExpr(
+                    binary.right(),
+                    rightLocals,
+                    outer,
+                    recursiveBinding,
+                    captures);
+            return;
+        }
+        scanExpr(
+                condition,
+                locals,
+                outer,
+                recursiveBinding,
+                captures,
+                false);
     }
 
     private void collectConditionBindingNames(Ast.Expr condition, Set<String> names) {
