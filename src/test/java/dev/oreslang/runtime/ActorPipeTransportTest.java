@@ -139,6 +139,15 @@ final class ActorPipeTransportTest {
                         "huge negative decimal scale must not bypass payload budget");
                 assertTrue(writer.tryWrite(new java.math.BigDecimal("12.50")),
                         "ordinary immutable decimal scalars should still pass");
+                assertEquals(new java.math.BigDecimal("12.50"),
+                        decimalPipe.reader(0, java.math.BigDecimal.class).tryRead().orElseThrow());
+                assertTrue(writer.tryWrite(new java.math.BigDecimal(java.math.BigInteger.ONE,
+                                1_048_574)),
+                        "exactly 1 MiB of plain decimal digits should be accepted");
+                assertThrows(IllegalArgumentException.class,
+                        () -> writer.tryWrite(new java.math.BigDecimal(java.math.BigInteger.ONE,
+                                1_048_575)),
+                        "one byte beyond the plain decimal limit must be rejected");
             }
     }
 
