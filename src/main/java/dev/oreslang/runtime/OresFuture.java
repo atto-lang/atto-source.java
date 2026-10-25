@@ -115,6 +115,15 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      * a cancellation hook registers another waiter on its own Future.
      */
     private final AtomicBoolean cancelRevocationComplete = new AtomicBoolean();
+    // Only scheduler-owned cleanup-aware Task Futures use deferred cancellation.
+    // An observer's cancel() requests the runtime to unwind without exposing
+    // a false terminal state while guest defer/finally and arena loans remain.
+    private final boolean deferredCancellation;
+    // Only short terminal-admission arbitration is synchronized. Neither
+    // revocation nor subscribers may execute while this lock is held.
+    private final Object deferredAdmissionLock = new Object();
+    private final AtomicReference<CancellationException> requestedCancellation =
+            new AtomicReference<>();
     private final AtomicReference<Object> state = new AtomicReference<>(PENDING);
     private final ConcurrentLinkedQueue<RuntimeWaiterRegistration<T>> waiters = new ConcurrentLinkedQueue<>();
 
@@ -145,6 +154,12 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
     OresFuture(BooleanSupplier cancelAdmission, Runnable cancelHook,
             Runnable onNotificationDrained) {
+        this(cancelAdmission, cancelHook, onNotificationDrained, false);
+    }
+
+    OresFuture(BooleanSupplier cancelAdmission, Runnable cancelHook,
+            Runnable onNotificationDrained, boolean deferredCancellation) {
+        this.deferredCancellation = deferredCancellation;
         this.cancelAdmission = Objects.requireNonNull(
                 cancelAdmission, "cancelAdmission");
         this.cancelHook = new AtomicReference<>(
@@ -489,11 +504,46 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
         CancellationException cancelled =
                 new CancellationException("OresFuture was cancelled");
+        if (deferredCancellation) {
+            // This request is not terminal. The owner must dispatch its
+            // authenticated unwind continuation before publication.
+            synchronized (deferredAdmissionLock) {
+                if (state.get() != PENDING || requestedCancellation.get() != null) {
+                    return false;
+                }
+                requestedCancellation.set(cancelled);
+            }
+            invokeCancelHook();
+            return true;
+        }
         // Revoke the owning operation BEFORE any synchronous subscriber can
         // block terminal notification. isCancelled() becomes visible at the
         // successful state CAS; guest/producer authority must then be removed
         // before ordinary host completion callbacks are entered.
         return settle(new Cancelled(cancelled), this::invokeCancelHook);
+    }
+
+    /** Trusted scheduler-only observation of a pending terminal-unwind request. */
+    CancellationException deferredCancellationCause() {
+        return requestedCancellation.get();
+    }
+
+    /** Settle cancelled ONLY after the cleanup continuation physically exits. */
+    boolean completeDeferredCancellationFromRuntime() {
+        CancellationException cause = requestedCancellation.get();
+        if (!deferredCancellation || cause == null) {
+            throw new IllegalStateException("no deferred cancellation to complete");
+        }
+        return settle(new Cancelled(cause), () -> { }, true);
+    }
+
+    /** Cleanup lane unavailable: terminal error is not a safe cleanup receipt. */
+    boolean failDeferredCleanupFromRuntime(Throwable failure) {
+        if (!deferredCancellation || requestedCancellation.get() == null) {
+            throw new IllegalStateException("no deferred cancellation to fail");
+        }
+        return settle(new Failure(Objects.requireNonNull(failure, "failure")),
+                () -> { }, true);
     }
 
     @Override
@@ -647,7 +697,20 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     }
 
     private boolean settle(Object terminal, Runnable afterStateClaimed) {
-        if (!state.compareAndSet(PENDING, terminal)) return false;
+        return settle(terminal, afterStateClaimed, false);
+    }
+
+    private boolean settle(Object terminal, Runnable afterStateClaimed,
+            boolean cleanupAuthority) {
+        if (deferredCancellation) {
+            synchronized (deferredAdmissionLock) {
+                // Once cancellation was requested, only its authenticated
+                // cleanup terminator may settle the result. A concurrent
+                // ordinary success/failure must not silently defeat unwind.
+                if (requestedCancellation.get() != null && !cleanupAuthority) return false;
+                if (!state.compareAndSet(PENDING, terminal)) return false;
+            }
+        } else if (!state.compareAndSet(PENDING, terminal)) return false;
 
         // The operation has irrevocably settled. The admission predicate may
         // capture a SelectRegistration, its cases, channels and write values;

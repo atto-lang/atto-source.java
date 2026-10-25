@@ -1158,7 +1158,22 @@ public final class OresEvalRootNode extends RootNode {
          * current continuation is stored here and OresScheduler.Task returns
          * Await to unwind the carrier completely.
          */
-        private final class SourceTask implements OresScheduler.Task<Object> {
+        @FunctionalInterface
+        private interface SourceCleanupAction {
+            void unwind(SourceTask task, SourceFlowCont continuation);
+        }
+
+        /** Lexically registered, once-disarmed source cleanup capability. */
+        private static final class SourceCleanupFrame {
+            private final SourceCleanupAction action;
+            private boolean disarmed;
+
+            private SourceCleanupFrame(SourceCleanupAction action) {
+                this.action = Objects.requireNonNull(action, "action");
+            }
+        }
+
+        private final class SourceTask implements OresScheduler.CleanupAwareTask<Object> {
             // The trampoline prevents recursive loop iterations from retaining
             // interpreter Java frames until a quantum is exhausted.
             // The reduction counter and clock belong to the heap-owned
@@ -1180,6 +1195,15 @@ public final class OresEvalRootNode extends RootNode {
             private boolean taskLaunchConsumed;
 
             private SourceValueCont awaitingContinuation;
+            // Heap-owned cancellation unwind state survives suspension and
+            // never exposes the internal cancellation marker to catch/trap.
+            private final ArrayDeque<SourceCleanupFrame> activeCleanup =
+                    new ArrayDeque<>();
+            private boolean cancellationUnwinding;
+            private boolean drainingCancellationCleanup;
+            private boolean cancellationCleanupNeedsAdvance;
+            private java.util.concurrent.CancellationException cancellationCause;
+            private Throwable fatalCleanupFailure;
             private OresScheduler.Step<Object> nextStep;
 
             private SourceTask(
@@ -1236,8 +1260,8 @@ public final class OresEvalRootNode extends RootNode {
                     initialBlockEnv = null;
                     // Preserve control/authority failures even when a future
                     // or resumed continuation wraps the original exception.
-                    if (function != null && function.trapped()
-                            && isTrappableFailure(failure)) {
+                    if (!cancellationUnwinding && function != null
+                            && function.trapped() && isTrappableFailure(failure)) {
                         return OresScheduler.done(new OptionValue(false, null));
                     }
                     throw dev.oreslang.runtime.SourceBoundaryTrace.record(failure, codeUnitId,
@@ -1329,6 +1353,19 @@ public final class OresEvalRootNode extends RootNode {
                             body,
                             params,
                             this::finishSourceFlow);
+                } else if (!cancellationUnwinding
+                        && resume.failure() instanceof java.util.concurrent.CancellationException
+                        && OresScheduler.cancellationCleanupTurn()) {
+                    // Only the scheduler's authenticated cleanup dispatch
+                    // may switch a source Task into terminal unwind. Do not
+                    // forward this into an expression/guest catch callback.
+                    cancellationUnwinding = true;
+                    cancellationCause =
+                            (java.util.concurrent.CancellationException) resume.failure();
+                    awaitingContinuation = null;
+                    pendingLoopContinuation = null;
+                    pendingLoopGuardEnv = null;
+                    unwindCancelledSource();
                 } else {
                     SourceValueCont continuation = awaitingContinuation;
                     awaitingContinuation = null;
@@ -1354,6 +1391,92 @@ public final class OresEvalRootNode extends RootNode {
                 OresScheduler.Step<Object> result = nextStep;
                 nextStep = null;
                 return result;
+            }
+
+            private SourceCleanupFrame registerSourceCleanup(SourceCleanupAction action) {
+                SourceCleanupFrame frame = new SourceCleanupFrame(action);
+                activeCleanup.addLast(frame);
+                return frame;
+            }
+
+            private void disarmSourceCleanup(SourceCleanupFrame frame) {
+                if (frame.disarmed) return;
+                frame.disarmed = true;
+                // A frame completed on the owning Task turn. Removing it by
+                // identity allows ordinary nested finally to unwind itself
+                // without accidentally removing its parent's frame.
+                if (!activeCleanup.removeLastOccurrence(frame)) {
+                    if (!cancellationUnwinding) {
+                        throw new IllegalStateException("source cleanup frame lost");
+                    }
+                }
+            }
+
+            private void noteCancelledCleanupFailure(Throwable failed) {
+                if (failed == cancellationCause) return;
+                if (fatalCleanupFailure == null && (failed instanceof Error
+                        || failed instanceof dev.oreslang.runtime.UntrappableTaskFailure
+                        || failed instanceof java.util.concurrent.RejectedExecutionException)) {
+                    fatalCleanupFailure = failed;
+                }
+                if (cancellationCause != null
+                        && cancellationCause.getSuppressed().length < 64) {
+                    cancellationCause.addSuppressed(failed);
+                }
+            }
+
+            private void unwindCancelledSource() {
+                if (drainingCancellationCleanup) {
+                    // An immediately settled defer may complete synchronously.
+                    // Retain its advance request rather than recursively
+                    // consuming the next heap frame on the same Java stack.
+                    cancellationCleanupNeedsAdvance = true;
+                    return;
+                }
+                drainingCancellationCleanup = true;
+                try {
+                    do {
+                        cancellationCleanupNeedsAdvance = false;
+                        while (!activeCleanup.isEmpty()
+                                && activeCleanup.peekLast().disarmed) {
+                            activeCleanup.removeLast();
+                        }
+                        SourceCleanupFrame frame = activeCleanup.pollLast();
+                        if (frame == null) {
+                            // The scheduler publishes cancellation only after
+                            // this entire cleanup turn physically unwinds.
+                            if (fatalCleanupFailure instanceof Error fatal) throw fatal;
+                            if (fatalCleanupFailure instanceof RuntimeException fatal)
+                                throw fatal;
+                            done(null);
+                            return;
+                        }
+                        frame.disarmed = true;
+                        boolean[] delivered = { false };
+                        try {
+                            frame.action.unwind(this, (t, flow) -> {
+                                if (delivered[0]) {
+                                    throw new IllegalStateException(
+                                            "source cleanup frame delivered twice");
+                                }
+                                delivered[0] = true;
+                                if (flow.kind() == SourceFlowKind.THROW
+                                        && flow.failure() != cancellationCause) {
+                                    noteCancelledCleanupFailure(flow.failure());
+                                }
+                                t.unwindCancelledSource();
+                            });
+                        } catch (RuntimeException | Error failed) {
+                            if (delivered[0]) throw failed;
+                            noteCancelledCleanupFailure(failed);
+                            cancellationCleanupNeedsAdvance = true;
+                        }
+                        // A suspended deferred Future owns the continuation
+                        // until its next scheduler dispatch; no busy waiting.
+                    } while (cancellationCleanupNeedsAdvance && nextStep == null);
+                } finally {
+                    drainingCancellationCleanup = false;
+                }
             }
 
             private void scheduleLoopContinuation(
@@ -2056,9 +2179,16 @@ public final class OresEvalRootNode extends RootNode {
                 SourceFlowCont continuation) {
             Env env = new Env(parent);
             ArrayDeque<Ast.Expr> defers = new ArrayDeque<>();
-            // runStatements owns terminal finalization for this block.
-            // A second finishBlock would release the same environment twice.
-            runStatements(task, statements, env, defers, 0, continuation);
+            SourceCleanupFrame cleanup = task.registerSourceCleanup(
+                    (owner, finished) -> runOneDefer(
+                            owner, env, defers,
+                            SourceFlow.throwing(owner.cancellationCause), finished));
+            // runStatements owns normal terminal finalization. Its wrapper
+            // disarms the heap-owned cancellation frame exactly once.
+            runStatements(task, statements, env, defers, 0, (owner, flow) -> {
+                owner.disarmSourceCleanup(cleanup);
+                continuation.accept(owner, flow);
+            });
         }
 
         /**
@@ -2211,12 +2341,32 @@ public final class OresEvalRootNode extends RootNode {
         private SourceFlow mergeCleanupFailure(SourceFlow currentFlow, Throwable cleanupFailure) {
             Throwable earlier = currentFlow.failure();
             if (earlier == cleanupFailure) return currentFlow; // no self-suppression
-            if (earlier != null && (isUnmaskableFailure(earlier)
-                    || cleanupFailure instanceof ProcessExitSignal)) {
+            // The first genuine failure is the PRIMARY cause of the Task.
+            // Defer/finally/guard failures are secondary diagnostics and must
+            // never erase the original THROW, RAISE, PANIC or cancellation.
+            // In particular ProcessExitSignal from a defer cannot replace a
+            // pending error. Preserve original identity for source and actor
+            // supervisor attribution.
+            if (earlier != null) {
+                // An untrappable panic/authority failure in cleanup must
+                // still escape an earlier ordinary THROW. Otherwise catch or
+                // trap could swallow a fatal cleanup panic. A deferred
+                // process-exit never replaces an already pending failure.
+                if (!(cleanupFailure instanceof ProcessExitSignal)
+                        && isUnmaskableFailure(cleanupFailure)
+                        && (!isUnmaskableFailure(earlier)
+                            || (earlier instanceof java.util.concurrent.CancellationException
+                                && cleanupFailure instanceof
+                                    dev.oreslang.runtime.UntrappableTaskFailure))) {
+                    suppressCleanupFailure(cleanupFailure, earlier);
+                    return SourceFlow.throwing(cleanupFailure);
+                }
+                // Two ordinary failures: the original Task error wins.
+                // Any already-fatal primary also remains authoritative.
                 suppressCleanupFailure(earlier, cleanupFailure);
                 return currentFlow;
             }
-            if (earlier != null) suppressCleanupFailure(cleanupFailure, earlier);
+            // A cleanup failure after a normal return still fails the Task.
             return SourceFlow.throwing(cleanupFailure);
         }
 
@@ -2572,11 +2722,18 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (stmt instanceof Ast.TryStmt attempted) {
+                    SourceCleanupFrame pendingFinally = task.registerSourceCleanup(
+                            (owner, finished) ->
+                                    runBlock(owner, attempted.finallyBody(), env, finished));
                     runBlock(
                             task,
                             attempted.body(),
                             env,
                             (t, flow) -> {
+                                // Normal throw/return path explicitly owns
+                                // finally below. Cancellation of a suspended
+                                // try body owns it via the heap cleanup stack.
+                                t.disarmSourceCleanup(pendingFinally);
                                 if (flow.kind() == SourceFlowKind.THROW
                                         && isGuestCatchableFailure(flow.failure())) {
                                     Env caught = new Env(env);
@@ -2667,6 +2824,13 @@ public final class OresEvalRootNode extends RootNode {
                                     return;
                                 }
                                 Iterable<?> values = iterableValues(iterable, env);
+                                SourceOwnedClose closer = values instanceof AutoCloseable
+                                        ? new SourceOwnedClose(() -> closeIterable(values)) : null;
+                                SourceCleanupFrame registered = closer == null ? null
+                                        : t.registerSourceCleanup((owner, finished) ->
+                                                finishSourceIterable(owner, closer,
+                                                        SourceFlow.throwing(owner.cancellationCause),
+                                                        finished));
                                 runForOfIteration(
                                         t,
                                         loop,
@@ -2674,7 +2838,11 @@ public final class OresEvalRootNode extends RootNode {
                                         values.iterator(),
                                         0,
                                         (completed, flow) -> finishSourceIterable(
-                                                completed, values, flow, continuation));
+                                                completed, closer, flow, (owner, closed) -> {
+                                                    if (registered != null)
+                                                        owner.disarmSourceCleanup(registered);
+                                                    continuation.accept(owner, closed);
+                                                }));
                             });
                     return;
                 }
@@ -2707,6 +2875,13 @@ public final class OresEvalRootNode extends RootNode {
                                     return;
                                 }
                                 Iterable<?> values = iterableValues(iterable, env);
+                                SourceOwnedClose closer = values instanceof AutoCloseable
+                                        ? new SourceOwnedClose(() -> closeIterable(values)) : null;
+                                SourceCleanupFrame registered = closer == null ? null
+                                        : t.registerSourceCleanup((owner, finished) ->
+                                                finishSourceIterable(owner, closer,
+                                                        SourceFlow.throwing(owner.cancellationCause),
+                                                        finished));
                                 runForOfDestructureIteration(
                                         t,
                                         loop,
@@ -2714,7 +2889,11 @@ public final class OresEvalRootNode extends RootNode {
                                         values.iterator(),
                                         0,
                                         (completed, flow) -> finishSourceIterable(
-                                                completed, values, flow, continuation));
+                                                completed, closer, flow, (owner, closed) -> {
+                                                    if (registered != null)
+                                                        owner.disarmSourceCleanup(registered);
+                                                    continuation.accept(owner, closed);
+                                                }));
                             });
                     return;
                 }
@@ -3211,8 +3390,15 @@ public final class OresEvalRootNode extends RootNode {
                             if (loop.update() == null) {
                                 t.scheduleLoopContinuation(
                                         loopEnv,
-                                        (resumed, ignored, failure) -> runForIteration(
-                                                resumed, loop, loopEnv, continuation));
+                                        (resumed, ignored, failure) -> {
+                                            if (failure != null) {
+                                                continuation.accept(
+                                                        resumed, SourceFlow.throwing(failure));
+                                            } else {
+                                                runForIteration(
+                                                        resumed, loop, loopEnv, continuation);
+                                            }
+                                        });
                             } else {
                                 evalSuspendableExpr(
                                         t,
@@ -3227,8 +3413,15 @@ public final class OresEvalRootNode extends RootNode {
                                             } else {
                                                 t2.scheduleLoopContinuation(
                                                         loopEnv,
-                                                        (resumed, ignoredResumeValue, failure2) -> runForIteration(
-                                                                resumed, loop, loopEnv, continuation));
+                                                        (resumed, ignoredResumeValue, failure2) -> {
+                                                            if (failure2 != null) {
+                                                                continuation.accept(
+                                                                        resumed, SourceFlow.throwing(failure2));
+                                                            } else {
+                                                                runForIteration(
+                                                                        resumed, loop, loopEnv, continuation);
+                                                            }
+                                                        });
                                             }
                                         });
                             }
@@ -3313,8 +3506,15 @@ public final class OresEvalRootNode extends RootNode {
                         } else {
                             t.scheduleLoopContinuation(
                                     env,
-                                    (resumed, ignored, failure) -> runLoopSuspendable(
-                                            resumed, loop, env, continuation));
+                                    (resumed, ignored, failure) -> {
+                                        if (failure != null) {
+                                            continuation.accept(
+                                                    resumed, SourceFlow.throwing(failure));
+                                        } else {
+                                            runLoopSuspendable(
+                                                    resumed, loop, env, continuation);
+                                        }
+                                    });
                         }
                     });
         }
@@ -3362,62 +3562,91 @@ public final class OresEvalRootNode extends RootNode {
             });
         }
 
+        /**
+         * A generator/iterator close is requested at most once. Ordinary
+         * completion and cancellation may race while close() itself is
+         * asynchronous; both await the SAME physical producer finalizer.
+         */
+        private final class SourceOwnedClose {
+            private final Runnable release;
+            private OresFuture<Void> closing;
+
+            SourceOwnedClose(Runnable release) {
+                this.release = Objects.requireNonNull(release, "release");
+            }
+
+            synchronized OresFuture<Void> closeOnce() {
+                if (closing == null) {
+                    closing = context.asyncRuntime().submit(() -> {
+                        release.run();
+                        return null;
+                    });
+                }
+                return closing;
+            }
+        }
+
         private void runAsyncForOf(SourceTask task, Object value, Env env,
                 List<Ast.Stmt> body, java.util.function.BiConsumer<Env, Object> bind,
                 SourceFlowCont continuation) {
-            runAsyncForOfIteration(task, sourceAsyncGenerator(value, env), env, body, bind, continuation);
+            GeneratorRuntime.AsyncGenerator<?> generator = sourceAsyncGenerator(value, env);
+            SourceOwnedClose closer = new SourceOwnedClose(generator::close);
+            SourceCleanupFrame registered = task.registerSourceCleanup(
+                    (owner, completed) -> finishAsyncForOf(owner, closer,
+                            SourceFlow.throwing(owner.cancellationCause), completed));
+            runAsyncForOfIteration(task, generator, closer, env, body, bind,
+                    (owner, flow) -> {
+                        owner.disarmSourceCleanup(registered);
+                        continuation.accept(owner, flow);
+                    });
         }
 
-        private void finishSourceIterable(SourceTask task, Iterable<?> values,
+        private void finishSourceIterable(SourceTask task, SourceOwnedClose closer,
                 SourceFlow flow, SourceFlowCont continuation) {
-            if (!(values instanceof AutoCloseable)) {
+            if (closer == null) {
                 continuation.accept(task, flow);
                 return;
             }
-            task.suspend(context.asyncRuntime().submit(() -> {
-                closeIterable(values);
-                return null;
-            }), (t, ignored, failure) -> continuation.accept(t,
-                    failure == null ? flow : SourceFlow.throwing(failure)));
+            task.suspend(closer.closeOnce(), (t, ignored, failure) ->
+                    continuation.accept(t,
+                            failure == null ? flow : mergeCleanupFailure(flow, failure)));
         }
 
-        private void finishAsyncForOf(SourceTask task, GeneratorRuntime.AsyncGenerator<?> generator,
+        private void finishAsyncForOf(SourceTask task, SourceOwnedClose closer,
                 SourceFlow flow, SourceFlowCont continuation) {
-            // Closing waits for producer cleanup, so it also runs off the bounded carrier.
-            task.suspend(context.asyncRuntime().submit(() -> {
-                generator.close();
-                return null;
-            }), (t, ignored, failure) -> continuation.accept(t,
-                    failure == null ? flow : SourceFlow.throwing(failure)));
+            task.suspend(closer.closeOnce(), (t, ignored, failure) ->
+                    continuation.accept(t,
+                            failure == null ? flow : mergeCleanupFailure(flow, failure)));
         }
 
         private void runAsyncForOfIteration(SourceTask task, GeneratorRuntime.AsyncGenerator<?> generator,
-                Env env, List<Ast.Stmt> body, java.util.function.BiConsumer<Env, Object> bind,
+                SourceOwnedClose closer, Env env, List<Ast.Stmt> body,
+                java.util.function.BiConsumer<Env, Object> bind,
                 SourceFlowCont continuation) {
             task.suspend(generator.nextStep(), (t, value, failure) -> {
                 if (failure != null) {
-                    finishAsyncForOf(t, generator, SourceFlow.throwing(failure), continuation);
+                    finishAsyncForOf(t, closer, SourceFlow.throwing(failure), continuation);
                     return;
                 }
                 GeneratorRuntime.Step<?> step = (GeneratorRuntime.Step<?>) value;
                 if (step.done()) {
-                    finishAsyncForOf(t, generator, SourceFlow.normal(), continuation);
+                    finishAsyncForOf(t, closer, SourceFlow.normal(), continuation);
                     return;
                 }
                 Env iteration = new Env(env);
                 try {
                     bind.accept(iteration, step.value());
                 } catch (RuntimeException | Error bindingFailure) {
-                    finishAsyncForOf(t, generator, SourceFlow.throwing(bindingFailure), continuation);
+                    finishAsyncForOf(t, closer, SourceFlow.throwing(bindingFailure), continuation);
                     return;
                 }
                 runBlock(t, body, iteration, (t2, flow) -> {
                     if (flow.kind() == SourceFlowKind.BREAK) {
-                        finishAsyncForOf(t2, generator, SourceFlow.normal(), continuation);
+                        finishAsyncForOf(t2, closer, SourceFlow.normal(), continuation);
                     } else if (flow.kind() == SourceFlowKind.RETURN || flow.kind() == SourceFlowKind.THROW) {
-                        finishAsyncForOf(t2, generator, flow, continuation);
+                        finishAsyncForOf(t2, closer, flow, continuation);
                     } else {
-                        runAsyncForOfIteration(t2, generator, env, body, bind, continuation);
+                        runAsyncForOfIteration(t2, generator, closer, env, body, bind, continuation);
                     }
                 });
             });
@@ -3454,8 +3683,16 @@ public final class OresEvalRootNode extends RootNode {
                         } else {
                             t.scheduleLoopContinuation(
                                     env,
-                                    (resumed, ignored, failure) -> runForOfIteration(
-                                            resumed, loop, env, items, index + 1, continuation));
+                                    (resumed, ignored, failure) -> {
+                                        if (failure != null) {
+                                            continuation.accept(
+                                                    resumed, SourceFlow.throwing(failure));
+                                        } else {
+                                            runForOfIteration(
+                                                    resumed, loop, env, items, index + 1,
+                                                    continuation);
+                                        }
+                                    });
                         }
                     });
         }
@@ -3506,8 +3743,16 @@ public final class OresEvalRootNode extends RootNode {
                         } else {
                             t.scheduleLoopContinuation(
                                     env,
-                                    (resumed, ignored, failure) -> runForOfDestructureIteration(
-                                            resumed, loop, env, items, index + 1, continuation));
+                                    (resumed, ignored, failure) -> {
+                                        if (failure != null) {
+                                            continuation.accept(
+                                                    resumed, SourceFlow.throwing(failure));
+                                        } else {
+                                            runForOfDestructureIteration(
+                                                    resumed, loop, env, items, index + 1,
+                                                    continuation);
+                                        }
+                                    });
                         }
                     });
         }
@@ -10395,31 +10640,76 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private void releaseMutexGuards(boolean failed) {
-            Set<Object> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
-            for (Slot slot : slots.values()) releaseMutexGuardsInValue(slot.value, failed, seen);
+            Set<Object> seen = java.util.Collections.newSetFromMap(
+                    new java.util.IdentityHashMap<>());
+            ArrayList<Throwable> releaseErrors = new ArrayList<>();
+            for (Slot slot : slots.values()) {
+                try {
+                    releaseMutexGuardsInValue(slot.value, failed, seen, releaseErrors);
+                } catch (RuntimeException | Error traversalFailure) {
+                    // A broken aggregate traversal must not prevent another
+                    // independent lexical slot's guards from being retired.
+                    releaseErrors.add(traversalFailure);
+                }
+            }
+            if (releaseErrors.isEmpty()) return;
+
+            // Panic/host fatal errors must not be downgraded behind an earlier
+            // ordinary release error. Keep every remaining release failure
+            // separately as suppressed diagnostics.
+            Throwable primary = releaseErrors.get(0);
+            for (Throwable failure : releaseErrors) {
+                if ((failure instanceof OresPanic || failure instanceof Error)
+                        && !(primary instanceof OresPanic || primary instanceof Error)) {
+                    primary = failure;
+                    break;
+                }
+            }
+            for (Throwable failure : releaseErrors) {
+                if (failure != primary) primary.addSuppressed(failure);
+            }
+            if (primary instanceof RuntimeException runtime) throw runtime;
+            if (primary instanceof Error error) throw error;
+            throw new IllegalStateException("unexpected checked lock cleanup failure", primary);
         }
 
-        private static void releaseMutexGuardsInValue(Object value, boolean failed, Set<Object> seen) {
+        private static void releaseMutexGuardsInValue(
+                Object value, boolean failed, Set<Object> seen,
+                ArrayList<Throwable> releaseErrors) {
             if (value == null) return;
             if (value instanceof OresMutex.Guard<?> guard) {
+                // Even a throwing release must never be attempted twice when
+                // another field/Option/list aliases the same guard.
+                if (!seen.add(guard)) return;
                 if (!guard.released()) {
-                    if (failed) guard.fail();
-                    else guard.release();
+                    try {
+                        if (failed) guard.fail();
+                        else guard.release();
+                    } catch (RuntimeException | Error releaseFailure) {
+                        releaseErrors.add(releaseFailure);
+                    }
                 }
                 return;
             }
             if (!seen.add(value)) return;
 
             if (value instanceof OptionValue option) {
-                if (option.present()) releaseMutexGuardsInValue(option.value(), failed, seen);
+                if (option.present()) {
+                    releaseMutexGuardsInValue(
+                            option.value(), failed, seen, releaseErrors);
+                }
                 return;
             }
             if (value instanceof ResultValue result) {
-                releaseMutexGuardsInValue(result.value(), failed, seen);
+                releaseMutexGuardsInValue(
+                        result.value(), failed, seen, releaseErrors);
                 return;
             }
             if (value instanceof GeneratorRuntime.Step<?> step) {
-                if (!step.done()) releaseMutexGuardsInValue(step.value(), failed, seen);
+                if (!step.done()) {
+                    releaseMutexGuardsInValue(
+                            step.value(), failed, seen, releaseErrors);
+                }
                 return;
             }
             if (value instanceof OresMutex.GuardFuture<?> future) {
@@ -10428,33 +10718,46 @@ public final class OresEvalRootNode extends RootNode {
                     return;
                 }
                 if (!future.isCancelled() && !future.isCompletedExceptionally()) {
-                    releaseMutexGuardsInValue(future.getNow(null), failed, seen);
+                    releaseMutexGuardsInValue(
+                            future.getNow(null), failed, seen, releaseErrors);
                 }
                 return;
             }
             if (value instanceof OresObject object) {
                 for (Object field : object.fields.values()) {
-                    releaseMutexGuardsInValue(field, failed, seen);
+                    releaseMutexGuardsInValue(
+                            field, failed, seen, releaseErrors);
                 }
                 return;
             }
             if (value instanceof List<?> list) {
-                for (Object item : list) releaseMutexGuardsInValue(item, failed, seen);
+                for (Object item : list) {
+                    releaseMutexGuardsInValue(
+                            item, failed, seen, releaseErrors);
+                }
                 return;
             }
             if (value instanceof Set<?> set) {
-                for (Object item : set) releaseMutexGuardsInValue(item, failed, seen);
+                for (Object item : set) {
+                    releaseMutexGuardsInValue(
+                            item, failed, seen, releaseErrors);
+                }
                 return;
             }
             if (value instanceof Map<?, ?> map) {
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
-                    releaseMutexGuardsInValue(entry.getKey(), failed, seen);
-                    releaseMutexGuardsInValue(entry.getValue(), failed, seen);
+                    releaseMutexGuardsInValue(
+                            entry.getKey(), failed, seen, releaseErrors);
+                    releaseMutexGuardsInValue(
+                            entry.getValue(), failed, seen, releaseErrors);
                 }
                 return;
             }
             if (value instanceof Object[] array) {
-                for (Object item : array) releaseMutexGuardsInValue(item, failed, seen);
+                for (Object item : array) {
+                    releaseMutexGuardsInValue(
+                            item, failed, seen, releaseErrors);
+                }
             }
         }
     }
@@ -10857,7 +11160,8 @@ public final class OresEvalRootNode extends RootNode {
     private record OptionUnwrapError(String reason) {
         @Override public String toString(){return "OptionUnwrapError(" + reason + ")";}
     }
-    private static final class OresPanic extends RuntimeException {
+    private static final class OresPanic extends RuntimeException
+            implements dev.oreslang.runtime.UntrappableTaskFailure {
         private OresPanic(String message) { super(message, null, true, false); }
     }
     private static final class OresCastError extends RuntimeException {

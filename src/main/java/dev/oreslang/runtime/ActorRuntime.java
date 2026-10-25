@@ -2039,9 +2039,10 @@ public final class ActorRuntime implements AutoCloseable {
             terminalSubscribersDrained.set(true);
             releaseTimedWhenSafe.run();
         };
-        OresFuture<T> future;
-        try {
-            future = cell.sourceScheduler().startWithWallDeadline(resume -> {
+        // Preserve the source's verified terminal-unwind contract through
+        // budget wrappers: a plain lambda erases CleanupAwareTask and would
+        // bypass defer/finally when an untrusted actor Task is cancelled.
+        OresScheduler.Task<T> quotaTurn = resume -> {
                 UntrustedLogicalQuota previous = CURRENT_UNTRUSTED_QUOTA.get();
                 CURRENT_UNTRUSTED_QUOTA.set(quota);
                 boolean entered = false;
@@ -2060,7 +2061,15 @@ public final class ActorRuntime implements AutoCloseable {
                         else CURRENT_UNTRUSTED_QUOTA.set(previous);
                     }
                 }
-            }, retireOnce, quota.remainingWallNanos(),
+            };
+        OresScheduler.Task<T> quotaChecked =
+                task instanceof OresScheduler.CleanupAwareTask<?>
+                        ? (OresScheduler.CleanupAwareTask<T>) quotaTurn::resume
+                        : quotaTurn;
+        OresFuture<T> future;
+        try {
+            future = cell.sourceScheduler().startWithWallDeadline(
+                    quotaChecked, retireOnce, quota.remainingWallNanos(),
                     new UntrustedActorQuotaExceededException(
                             UntrustedActorQuotaExceededException.Resource.WALL_TIME,
                             "untrusted logical task exceeded wall-time budget while suspended"),
@@ -7141,6 +7150,12 @@ public final class ActorRuntime implements AutoCloseable {
          */
         private boolean sourceHandoffRequested;
         private OresScheduler sourceScheduler;
+        // Source-scheduler shutdown must not invoke arbitrary synchronous
+        // Future/cancellation callbacks while holding lifecycleLock.
+        // guarded by lifecycleLock; only one close worker per actor.
+        private boolean sourceSchedulerClosing;
+        private boolean sourceSchedulerCloseFinished;
+        private Throwable sourceSchedulerCloseFailure;
         /** self.end()/self.endWithCleanup(...) lifecycle state; guarded by lifecycleLock. */
         private boolean endRequested;
         private Runnable finalCleanup;
@@ -7471,30 +7486,74 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        private void closeSourceSchedulerOutsideLock(OresScheduler scheduler) {
+            Throwable failure = null;
+            try {
+                scheduler.close();
+            } catch (VirtualMachineError | ThreadDeath fatal) {
+                failure = fatal;
+            } catch (Throwable closeFailure) {
+                failure = closeFailure;
+            } finally {
+                synchronized (lifecycleLock) {
+                    if (sourceScheduler != scheduler) {
+                        failure = new IllegalStateException(
+                                "actor source scheduler identity changed during close");
+                    }
+                    sourceSchedulerCloseFailure = failure;
+                    sourceSchedulerCloseFinished = true;
+                    sourceSchedulerClosing = false;
+                    if (stopped.get()) finalizeStopLocked();
+                    lifecycleLock.notifyAll();
+                }
+            }
+            if (failure instanceof VirtualMachineError fatal) throw fatal;
+            if (failure instanceof ThreadDeath fatal) throw fatal;
+            if (failure instanceof LinkageError fatal) throw fatal;
+        }
+
         private void finalizeStopLocked() {
             // External termination is not observable until the dispatcher has
             // fully crossed back out of the TurnExecutor boundary. For
             // Truffle-backed runtimes that boundary owns context enter/leave.
             if (finalized
+                    || sourceSchedulerClosing
                     || activeTurns != 0
                     || scheduled.get()
                     || carrierActive
                     || gracefulTeardownPending
                     || !children.isEmpty()) return;
-            finalized = true;
+
             OresScheduler scheduler = sourceScheduler;
-            sourceScheduler = null;
             if (scheduler != null) {
-                try {
-                    scheduler.close();
-                } catch (VirtualMachineError | ThreadDeath fatal) {
-                    throw fatal;
-                } catch (Throwable closeFailure) {
-                    // Closing a source scheduler may leave work or native
-                    // captures outstanding. Do not report successful done.
-                    recordFinalizationFailure(closeFailure);
+                if (!sourceSchedulerCloseFinished) {
+                    sourceSchedulerClosing = true;
+                    try {
+                        Thread.ofVirtual()
+                                .name("ores-actor-" + ref.id() + "-scheduler-close")
+                                .start(() -> closeSourceSchedulerOutsideLock(scheduler));
+                    } catch (VirtualMachineError | ThreadDeath fatal) {
+                        sourceSchedulerClosing = false;
+                        throw fatal;
+                    } catch (Throwable schedulingFailure) {
+                        sourceSchedulerCloseFailure = schedulingFailure;
+                        sourceSchedulerCloseFinished = true;
+                        sourceSchedulerClosing = false;
+                    }
+                    if (!sourceSchedulerCloseFinished) return;
+                }
+                if (sourceSchedulerCloseFailure != null
+                        || scheduler.hasIncompleteCleanup()) {
+                    recordFinalizationFailure(new OresScheduler.CleanupIncompleteError(
+                            "actor source cleanup incomplete; quarantine arena",
+                            sourceSchedulerCloseFailure));
+                    lifecycleLock.notifyAll();
+                    return;
                 }
             }
+
+            finalized = true;
+            sourceScheduler = null;
             try {
                 drainMailboxReservations();
             } catch (VirtualMachineError | ThreadDeath fatal) {
@@ -7537,14 +7596,8 @@ public final class ActorRuntime implements AutoCloseable {
             } catch (VirtualMachineError | ThreadDeath fatal) {
                 throw fatal;
             } catch (Throwable exitFailure) {
-                // A failed trusted exit hook may leave an isolate resource
-                // reachable. Its failure must be observable from actor.done.
                 recordFinalizationFailure(exitFailure);
             }
-            // Neither ActorGroup deregistration nor parent bookkeeping may
-            // strand the runtime-owned done observer after we already
-            // irreversibly committed finalized=true. Preserve the failure
-            // and continue remaining retirement notification steps.
             try {
                 unregisterActor(this);
             } catch (VirtualMachineError | ThreadDeath fatal) {
@@ -7563,9 +7616,6 @@ public final class ActorRuntime implements AutoCloseable {
             }
             Throwable terminal = ref.terminationCause.get();
             if (!ref.readyFuture.isDone()) {
-                // Preserve the initializer failure as the direct cause of
-                // readiness rejection. Only a graceful stop-before-ready has
-                // no underlying failure and needs a synthesized marker.
                 ref.readyFuture.failFromRuntime(
                         terminal == null
                                 ? new ActorTerminatedException(ref.id(), kind, null)
