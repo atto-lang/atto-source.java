@@ -44,7 +44,7 @@ HANDOFF_REF = re.compile(
     r"^ci/(?:oreslang-[0-9a-f]{40}|authorized-[0-9a-f]{40})$"
 )
 CONTRACT_PATH = ".github/private-ci-carrier-contracts.json"
-REVIEW_AUTHORITY_PR = 1724
+REVIEW_AUTHORITY_PR = 2010
 REVIEW_AUTHORITY_LOGIN = "ORESoftware"
 REVIEW_AUTHORITY_USER_ID = 11139560
 CARRIER_REVIEW_LOGIN = "ORESoftware"
@@ -55,6 +55,7 @@ REVIEWED_GOVERNANCE_PATHS = (
     ".github/private-ci-approved-repositories.txt",
     ".github/private-ci-carrier-contracts.json",
     ".github/workflows/private-ci-mirror-preflight.yml",
+    "docs/security/CI_PRIVATE_SOURCE_MIRRORING.md",
     "scripts/check-private-ci-destination.sh",
     "scripts/run-in-private-ci-destination.sh",
     "scripts/publish-private-ci-source.py",
