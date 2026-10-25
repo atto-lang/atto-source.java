@@ -62,6 +62,44 @@ def open_tracked_leaf(path: bytes, nofollow: int, nonblock: int) -> int:
         os.close(dir_fd)
 
 
+def read_tracked_symlink(path: bytes, nofollow: int) -> bytes:
+    """Read a tracked symlink through no-follow parent directory descriptors."""
+    parts = path.split(b'/')
+    if not parts or any(part in (b'', b'.', b'..') for part in parts):
+        raise ValueError('invalid tracked path: ' + repr(path[:120]))
+    directory_flag = getattr(os, 'O_DIRECTORY', None)
+    if (not isinstance(directory_flag, int) or isinstance(directory_flag, bool)
+            or directory_flag <= 0 or (directory_flag & nofollow) != 0):
+        raise ValueError('platform cannot safely traverse tracked symlink paths')
+    dir_fd = os.open(b'.', os.O_RDONLY | directory_flag | nofollow)
+    try:
+        for component in parts[:-1]:
+            next_fd = os.open(component,
+                              os.O_RDONLY | directory_flag | nofollow,
+                              dir_fd=dir_fd)
+            os.close(dir_fd)
+            dir_fd = next_fd
+        leaf = parts[-1]
+        before = os.stat(leaf, dir_fd=dir_fd, follow_symlinks=False)
+        if not stat.S_ISLNK(before.st_mode):
+            raise ValueError('tracked symbolic link changed type: ' + repr(path[:120]))
+        if before.st_nlink != 1:
+            raise ValueError('multiply-linked tracked symbolic link: ' + repr(path[:120]))
+        target = os.readlink(leaf, dir_fd=dir_fd)
+        if isinstance(target, str):
+            target = os.fsencode(target)
+        after = os.stat(leaf, dir_fd=dir_fd, follow_symlinks=False)
+        if (before.st_size, before.st_mtime_ns, before.st_ctime_ns,
+                before.st_ino, before.st_dev, before.st_nlink) != (
+                after.st_size, after.st_mtime_ns, after.st_ctime_ns,
+                after.st_ino, after.st_dev, after.st_nlink):
+            raise ValueError('tracked symbolic link changed during verification: '
+                             + repr(path[:120]))
+        return target
+    finally:
+        os.close(dir_fd)
+
+
 def verify(commit: str, tree: str) -> int:
     if not SHA1.fullmatch(commit) or not SHA1.fullmatch(tree):
         raise ValueError('expected commit/tree must be canonical SHA-1')
@@ -132,12 +170,11 @@ def verify(commit: str, tree: str) -> int:
             finally:
                 os.close(fd)
         elif mode == b'120000':
-            st = os.lstat(path)
-            if not stat.S_ISLNK(st.st_mode):
-                raise ValueError('tracked symbolic link changed type: ' + repr(path[:120]))
-            target = os.readlink(path)
-            if isinstance(target, str):
-                target = os.fsencode(target)
+            nofollow = getattr(os, 'O_NOFOLLOW', None)
+            if (not isinstance(nofollow, int) or isinstance(nofollow, bool)
+                    or nofollow <= 0):
+                raise ValueError('platform cannot safely inspect tracked symbolic links')
+            target = read_tracked_symlink(path, nofollow)
             actual_blob = hashlib.sha1(b'blob ' + str(len(target)).encode('ascii')
                                        + b'\0' + target).hexdigest().encode('ascii')
         else:
