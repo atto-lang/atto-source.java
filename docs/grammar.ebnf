@@ -315,7 +315,8 @@ pipeline_stage  = IDENT [ call_suffix ]
    are lowered to instance combinators, all others pass the LHS as argument 1.
    The left operand is evaluated once, and pipeline stages associate leftwards. *)
 
-conditional     = logic_or [ "?" assignment ":" conditional ] ;
+conditional     = coalescing [ "?" assignment ":" conditional ] ;
+coalescing      = logic_or [ "??" coalescing ] ;
 logic_or        = equality { "|" equality } ;
 equality        = comparison { ( "eq" | "neq" | "!eq" | "==" | "!=" | "is" ) comparison } ;
 comparison      = additive
@@ -336,6 +337,8 @@ channel_expr    = [ channel_wait_mode ] "readch" unary
 channel_wait_mode
                 = "nb" | "try" ;
 postfix         = primary { call_suffix | member_suffix | index_suffix } ;
+(* member_suffix includes the Option-only safe-member spelling "?."
+   as distinct from "." and "::"; "??" is lazy Option fallback. *)
 call_suffix     = "(" [ call_argument_list ] ")" ;
 call_argument_list = call_argument { "," call_argument } ;
 call_argument   = [ "..." ] expression ;
