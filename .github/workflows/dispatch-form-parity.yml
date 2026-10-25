@@ -5,6 +5,9 @@ on:
     paths:
       - 'src/main/java/dev/oreslang/ast/Ast.java'
       - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/types/OwnershipChecker.java'
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
       - 'src/test/java/dev/oreslang/DispatchFormParityTest.java'
       - '.github/workflows/dispatch-form-parity.yml'
 
