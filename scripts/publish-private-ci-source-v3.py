@@ -381,17 +381,17 @@ def review_attested_main_sha(
 
 def authorized_main_sha(
         repository, expected_policy_digest, expected_repository_id):
-    """Prefer enforced protected-main governance; otherwise exact review attestation."""
+    """Require enforced protected-main governance for any private-source export."""
     branch = legacy.gh_api(
         f"repos/{legacy.SOURCE_REPO}/branches/{legacy.SOURCE_PROTECTED_BRANCH}"
     )
     if branch.get("name") != legacy.SOURCE_PROTECTED_BRANCH:
         raise Denied("source main branch identity changed")
-    if branch.get("protected") is True:
-        return legacy.verify_protected_origin(
-            repository, expected_policy_digest, expected_repository_id
+    if branch.get("protected") is not True:
+        raise Denied(
+            "source main is not protected; review attestation alone cannot authorize export"
         )
-    return review_attested_main_sha(
+    return legacy.verify_protected_origin(
         repository, expected_policy_digest, expected_repository_id
     )
 
