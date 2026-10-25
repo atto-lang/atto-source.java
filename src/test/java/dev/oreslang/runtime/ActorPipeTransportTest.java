@@ -119,7 +119,6 @@ final class ActorPipeTransportTest {
                         () -> pipe.writer(0, String.class).writeAsync("x".repeat(1_048_577)),
                         "oversized string cannot allocate unbounded cross-actor payload storage");
             }
-        }
             String decimalType = java.math.BigDecimal.class.getName();
             var decimalStages = List.of(
                     new ActorPipelineContract.Stage("DecimalSource",
