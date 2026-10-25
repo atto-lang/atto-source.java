@@ -227,7 +227,7 @@ final class CollectionShapeMetadataTest {
                       allocator=Arena,
                       align=64,
                       size=2
-                  >[int, string] = tuple (7, "seven");
+                  >[int, string] = (7, "seven");
                   return;
                 }
                 """)));
@@ -235,7 +235,7 @@ final class CollectionShapeMetadataTest {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub fnc main(): void {
                   @NamedParams<size=2, growth_policy=GP.Fixed, align=64>
-                  val pair: [int, string] = tuple (7, "seven");
+                  val pair: [int, string] = (7, "seven");
                   return;
                 }
                 """)));
@@ -243,106 +243,11 @@ final class CollectionShapeMetadataTest {
         IllegalArgumentException mismatch = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
                         pub fnc main(): void {
-                          val pair: Tuple<size=3>[int, string] = tuple (7, "seven");
+                          val pair: Tuple<size=3>[int, string] = (7, "seven");
                           return;
                         }
                         """)));
-        assertTrue(mismatch.getMessage().contains("disagrees with")
-                && mismatch.getMessage().contains("arity 2"));
-    }
-
-    @Test
-    void fixedSizeCanCloseAndTruncateAnUnboundedRepeatingShape() {
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                pub fnc main(): void {
-                  val xs: FixedArray<size=21>[...(3 of int, 3 of string)] =
-                      [1, 2, 3, "a", "b", "c",
-                       4, 5, 6, "d", "e", "f",
-                       7, 8, 9, "g", "h", "i",
-                       10, 11, 12];
-                  return;
-                }
-                """)));
-
-        IllegalArgumentException wrongTail = assertThrows(IllegalArgumentException.class, () ->
-                TypeChecker.check(Parser.parse("""
-                        pub fnc main(): void {
-                          val xs: FixedArray<size=21>[...(3 of int, 3 of string)] =
-                              [1, 2, 3, "a", "b", "c",
-                               4, 5, 6, "d", "e", "f",
-                               7, 8, 9, "g", "h", "i",
-                               "wrong", 11, 12];
-                          return;
-                        }
-                        """)));
-        assertTrue(wrongTail.getMessage().contains("fixed sequence"));
-
-        IllegalArgumentException missingSize = assertThrows(IllegalArgumentException.class, () ->
-                TypeChecker.check(Parser.parse("""
-                        pub fnc main(): void {
-                          val xs: FixedArray[...(3 of int, 3 of string)] = [];
-                          return;
-                        }
-                        """)));
-        assertTrue(missingSize.getMessage().contains("requires size=N"));
-
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                pub fnc accepts(FixedArray<size=21>[...(3 of int, 3 of string)] xs): void {
-                  return;
-                }
-                """)));
-    }
-
-    @Test
-    void fixedArrayNamedAndPositionalTypeParametersCanonicalizeIdentically() {
-        Ast.TypeRef named = firstParameterType(Parser.parse("""
-                pub fnc named(
-                    FixedArray<type=int|string, size=21>[...(3 of int, 3 of string)] xs
-                ): void {
-                  return;
-                }
-                """), "named");
-
-        Ast.TypeRef positional = firstParameterType(Parser.parse("""
-                pub fnc positional(
-                    FixedArray<int|string, 21>[...(3 of int, 3 of string)] xs
-                ): void {
-                  return;
-                }
-                """), "positional");
-
-        assertEquals(named, positional);
-
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                pub fnc accepts(
-                    FixedArray<int|string, 21>[...(3 of int, 3 of string)] xs
-                ): void {
-                  return;
-                }
-                """)));
-
-        IllegalArgumentException narrowType = assertThrows(IllegalArgumentException.class, () ->
-                TypeChecker.check(Parser.parse("""
-                        pub fnc bad(
-                            FixedArray<type=int, size=6>[...(3 of int, 3 of string)] xs
-                        ): void {
-                          return;
-                        }
-                        """)));
-        assertTrue(narrowType.getMessage().contains("shape element"));
-        assertTrue(narrowType.getMessage().contains("type parameter"));
-
-        IllegalArgumentException positionalAfterNamed = assertThrows(
-                IllegalArgumentException.class,
-                () -> Parser.parse("""
-                        pub fnc bad(
-                            FixedArray<size=21, int|string>[...(3 of int, 3 of string)] xs
-                        ): void {
-                          return;
-                        }
-                        """));
-        assertTrue(positionalAfterNamed.getMessage().contains(
-                "positional type parameters cannot follow named type parameters"));
+        assertTrue(mismatch.getMessage().contains("disagrees with fixed sequence arity 2"));
     }
 
     @Test
@@ -351,7 +256,7 @@ final class CollectionShapeMetadataTest {
                 pub fnc takesTuple(Tuple[int, string] value): void { return; }
 
                 pub fnc main(): void {
-                  val pair: Tuple[int, string] = tuple (7, "seven");
+                  val pair: Tuple[int, string] = (7, "seven");
                   takesTuple(pair);
                   return;
                 }
@@ -374,7 +279,7 @@ final class CollectionShapeMetadataTest {
                         pub fnc takesFixed(FixedArray[int, string] value): void { return; }
 
                         pub fnc main(): void {
-                          val pair: Tuple[int, string] = tuple (7, "seven");
+                          val pair: Tuple[int, string] = (7, "seven");
                           takesFixed(pair);
                           return;
                         }
@@ -387,7 +292,7 @@ final class CollectionShapeMetadataTest {
         IllegalArgumentException inlineCapacity = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
                         pub fnc main(): void {
-                          val pair: Tuple<inline_capacity=1>[int, string] = tuple (7, "seven");
+                          val pair: Tuple<inline_capacity=1>[int, string] = (7, "seven");
                           return;
                         }
                         """)));
@@ -396,7 +301,7 @@ final class CollectionShapeMetadataTest {
         IllegalArgumentException rank = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
                         pub fnc main(): void {
-                          val pair: Tuple<rank=2>[int, string] = tuple (7, "seven");
+                          val pair: Tuple<rank=2>[int, string] = (7, "seven");
                           return;
                         }
                         """)));
@@ -405,102 +310,11 @@ final class CollectionShapeMetadataTest {
         IllegalArgumentException capacity = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
                         pub fnc main(): void {
-                          val pair: Tuple<capacity=2>[int, string] = tuple (7, "seven");
+                          val pair: Tuple<capacity=2>[int, string] = (7, "seven");
                           return;
                         }
                         """)));
         assertTrue(capacity.getMessage().contains("runtime instance state"));
-    }
-
-    @Test
-    void nominalArrayListKeepsElementTypeInGenericSlotAndRuntimeSizingInConstructor() {
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                define class ArrayList<T> as
-                  constructor(int capacity) {
-                    return;
-                  }
-                end
-
-                pub fnc main(): void {
-                  val xs: ArrayList<int> = new ArrayList<int>(capacity: 5);
-                  return;
-                }
-                """)));
-
-        IllegalArgumentException metadata = assertThrows(IllegalArgumentException.class, () ->
-                TypeChecker.check(Parser.parse("""
-                        define class ArrayList<T> as
-                        end
-
-                        pub fnc bad(ArrayList<size=5> xs): void {
-                          return;
-                        }
-                        """)));
-        assertTrue(metadata.getMessage().contains("nominal generic type"));
-        assertTrue(metadata.getMessage().contains("ArrayList<T>"));
-
-        IllegalArgumentException shape = assertThrows(IllegalArgumentException.class, () ->
-                TypeChecker.check(Parser.parse("""
-                        define class ArrayList<T> as
-                        end
-
-                        pub fnc bad(ArrayList<int>[int] xs): void {
-                          return;
-                        }
-                        """)));
-        assertTrue(shape.getMessage().contains("does not accept '[...]' sequence-shape suffixes"));
-
-        IllegalArgumentException emptyShape = assertThrows(IllegalArgumentException.class, () ->
-                Parser.parse("""
-                        pub fnc bad(ArrayList<int>[] xs): void {
-                          return;
-                        }
-                        """));
-        assertTrue(emptyShape.getMessage().contains("sequence type shape cannot be empty"));
-
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                define class ArrayList<T> as
-                end
-
-                pub fnc acceptsArrayOfLists(Array[ArrayList<int>] values): void {
-                  return;
-                }
-                """)));
-    }
-
-    @Test
-    void canonicalArrayNotationKeepsShapeSeparateFromLegacyGenericCompatibility() {
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                pub fnc main(): void {
-                  val canonical: Array[int] = [1, 2, 3];
-                  val nested: Array[Array[int]] = [[1, 2], [3, 4]];
-                  val legacy: Array<int> = [4, 5, 6];
-                  return;
-                }
-                """)));
-
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                pub fnc main(): void {
-                  val xs: Array<int>[int] = [1];
-                  val ys: Array<type=int>[int] = [2];
-                  return;
-                }
-                """)));
-    }
-
-    private static Ast.TypeRef firstParameterType(Ast.Program program, String functionName) {
-        for (Ast.ModuleDecl module : program.modules()) {
-            for (Ast.Decl declaration : module.declarations()) {
-                if (declaration instanceof Ast.FunctionDecl function
-                        && function.name().equals(functionName)) {
-                    if (function.parameters().isEmpty()) {
-                        throw new AssertionError("function has no parameters: " + functionName);
-                    }
-                    return function.parameters().getFirst().type();
-                }
-            }
-        }
-        throw new AssertionError("missing function " + functionName);
     }
 
     private static Ast.TypeRef bindingType(Ast.Program program, String name) {

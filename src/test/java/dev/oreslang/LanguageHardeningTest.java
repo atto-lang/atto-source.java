@@ -54,6 +54,7 @@ final class LanguageHardeningTest {
     @Test
     void modulesAreTypedNamespacesAndCanConformToContracts() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+
                 define module contracts
                   define contract MathApi as
                     fnc add(int a, int b) => int;
@@ -498,14 +499,14 @@ final class LanguageHardeningTest {
     }
 
     @Test
-    void objArrTupleIndexAndLetAssignmentAreStaticallyChecked() {
+    void structArrTupleIndexAndLetAssignmentAreStaticallyChecked() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module app
                   pub fnc main(): void {
-                    val person = obj{name: "ore", age: 1};
+                    const person = infer struct{name: "ore", age: 1};
                     val values = arr[10, 20, 30];
                     val first = values[0];
-                    [const left, let right] = tuple (1, "two");
+                    [const left, let right] = (1, "two");
                     let n = first;
                     n = 99;
                     stdio.println(person.name);
@@ -705,7 +706,7 @@ final class LanguageHardeningTest {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define module app
                   fnc f(): int {
-                    [_, const value] = tuple (1, 2);
+                    [_, const value] = (1, 2);
                     return _;
                   }
                 end
@@ -719,8 +720,8 @@ final class LanguageHardeningTest {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module app
                   fnc f(): int {
-                    [const _, let value] = tuple (1, 2);
-                    [let _, const next] = tuple (3, 4);
+                    [const _, let value] = (1, 2);
+                    [let _, const next] = (3, 4);
                     return value + next;
                   }
                 end

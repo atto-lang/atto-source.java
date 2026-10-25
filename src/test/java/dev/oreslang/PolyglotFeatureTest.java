@@ -13,6 +13,7 @@ final class PolyglotFeatureTest {
     @Test
     void executesNamespacesCollectionsAssignmentAndInheritedMethods() throws Exception {
         String program = """
+
                 define module math
                   pub fnc add(int a, int b): int { return a + b; }
                 end
@@ -30,7 +31,7 @@ final class PolyglotFeatureTest {
                     let answer = math.add(1, 2);
                     answer = answer + 4;
                     val values = arr[answer, 9];
-                    val person = obj{name: "ores"};
+                    const person = infer struct{name: "ores"};
                     val inherited = new B();
                     stdio.println(values[0]);
                     stdio.println(person.name);
@@ -62,9 +63,9 @@ final class PolyglotFeatureTest {
         String program = """
                 define module app
                   pub fnc main(): void {
-                    [const foo, _, let bar] = tuple (1, 200, 3);
-                    [const z, _, let y] = tuple (4, 500, 6);
-                    [_, _, const tail] = tuple (700, 800, 9);
+                    [const foo, _, let bar] = (1, 200, 3);
+                    [const z, _, let y] = (4, 500, 6);
+                    [_, _, const tail] = (700, 800, 9);
                     stdio.println(foo + bar + z + y + tail);
                     return;
                   }

@@ -1,0 +1,51 @@
+name: Actor proxy slab exact-head JVM evidence
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/ActorProxyRequestSlab.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorShardBacking.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorProxyRequestSlabTest.java'
+      - '.github/workflows/actor-proxy-slab-exact-head.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  actor-slab:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exactly the PR head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify source identity
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git rev-parse HEAD^{tree}
+      - name: Set up GraalVM JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Verify focused actor-owned SoA/AoSoA lifecycle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=ActorProxyRequestSlabTest -DfailIfNoTests=true test
+          test -s target/surefire-reports/TEST-dev.oreslang.runtime.ActorProxyRequestSlabTest.xml
+          ! grep -Eq 'failures="[1-9]|errors="[1-9]|skipped="[1-9]' target/surefire-reports/TEST-dev.oreslang.runtime.ActorProxyRequestSlabTest.xml
+      - name: Record exact-head provenance
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "HEAD=$(git rev-parse HEAD)"
+          echo "TREE=$(git rev-parse 'HEAD^{tree}')"
+          git hash-object src/main/java/dev/oreslang/runtime/ActorProxyRequestSlab.java
