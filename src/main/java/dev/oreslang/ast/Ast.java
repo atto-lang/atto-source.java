@@ -852,7 +852,16 @@ public final class Ast {
         }
     }
 
-    public record SwitchStmt(Expr subject, List<SwitchCase> cases, List<Stmt> defaultBody) implements Stmt {
+    /**
+     * Statement-form switch provenance. Canonical `do switch` is procedural;
+     * the three-argument constructor preserves the legacy bare-statement AST
+     * during migration without pretending it is the value-producing form.
+     */
+    public record SwitchStmt(
+            Expr subject, List<SwitchCase> cases, List<Stmt> defaultBody, boolean procedural) implements Stmt {
+        public SwitchStmt(Expr subject, List<SwitchCase> cases, List<Stmt> defaultBody) {
+            this(subject, cases, defaultBody, false);
+        }
         public SwitchStmt {
             cases = List.copyOf(cases);
             defaultBody = List.copyOf(defaultBody);
