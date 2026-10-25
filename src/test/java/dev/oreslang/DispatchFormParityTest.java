@@ -93,6 +93,19 @@ final class DispatchFormParityTest {
               return result;
             }
 
+            async fnc viaDoMatch(): int {
+              val Channel<int> values = Channel.new<int>(0);
+              val writer = nb writech values, 41;
+              do match true over
+                on true -> {
+                  val int result = await (nb readch values);
+                  await writer;
+                  return result + 1;
+                }
+                on false -> { return 0; }
+              end
+            }
+
             async fnc viaSwitch(): int {
               val Channel<int> values = Channel.new<int>(0);
               val writer = nb writech values, 41;
@@ -108,6 +121,7 @@ final class DispatchFormParityTest {
 
             pub async routine main(): void {
               stdio.println(await viaMatch());
+              stdio.println(await viaDoMatch());
               stdio.println(await viaSwitch());
               return;
             }
@@ -129,7 +143,7 @@ final class DispatchFormParityTest {
         }
 
         assertEquals(
-                "42\n42",
+                "42\n42\n42",
                 output.toString(StandardCharsets.UTF_8)
                         .trim()
                         .replace("\r", ""));
