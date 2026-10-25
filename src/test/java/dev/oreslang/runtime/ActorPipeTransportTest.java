@@ -148,6 +148,7 @@ final class ActorPipeTransportTest {
                                 1_048_575)),
                         "one byte beyond the plain decimal limit must be rejected");
             }
+        }
     }
 
     @Test
