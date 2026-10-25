@@ -8,7 +8,8 @@ their current admissions, not an enabled end-user language feature.
 
 - Parser and AST preserve `define inverted class` in root/module scope.
 - A nominal `InvertedArray.Schema` can be derived from the parsed class and
-  maps **only directly declared fields** to physical columns; never recursively\n  splits the members of a nested value struct.
+  maps **only directly declared fields** to physical columns; never recursively
+  splits the members of a nested value struct.
 - `InvertedArray` owns the actual column memory, creates opaque generation-checked
   handles, provides transient row views, and permits bind-once fixed-column access.
 - A restricted `InvertedRowMethod` compiles a source method's AST into a
@@ -96,7 +97,10 @@ TypeChecker until ownership/effects/parity are proven.
 
 ## Layout and lifecycle
 
-Current primitive physical kinds: `i32`, `i64`, `f32`, `f64`, `bool`.\nAn additional fixed-stride RECORD column stores packed, AoS-formatted structural\nvalue elements, one per row, using an explicit verified codec. The record's\nmembers are **not** promoted to sibling SoA columns.
+Current primitive physical kinds: `i32`, `i64`, `f32`, `f64`, `bool`.
+An additional fixed-stride RECORD column stores packed, AoS-formatted structural
+value elements, one per row, using an explicit verified codec. The record's
+members are **not** promoted to sibling SoA columns.
 The aliases `int` and `float` must be mapped only after the Java/LLVM
 target ABI and signedness/width agreement. Generic classes, parent classes,
 interfaces, constructors, annotations, and initialized/resource-owning fields
@@ -104,7 +108,8 @@ are not admitted to this lowering target. The existing type checker continues
 to reject *all* executable inverted-class guest code, including classes whose
 AST the host reference can model.
 
-The backing Java store uses contiguous little-endian per-field byte arrays,\nwith record elements encoded at a fixed byte stride.
+The backing Java store uses contiguous little-endian per-field byte arrays,
+with record elements encoded at a fixed byte stride.
 Handles use opaque store-issued issuer identity, slot and monotonically advanced
 generation. Reuse after deletion cannot revive old handles; deleted physical
 tail bytes and closed backing arrays are cleared. Bounded row transforms
