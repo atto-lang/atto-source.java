@@ -280,18 +280,115 @@ class PrivateCiV3Test(unittest.TestCase):
             v3.validate_test_plan(raw, 1482)
 
         pom = b"<project/>\n"
-        base["required_source_blobs"] = {"pom.xml": v3.git_blob_sha(pom)}
+        pom_sha = v3.git_blob_sha(pom)
+        base["maven_pom_blob_sha"] = pom_sha
+        base["maven_prefetch_artifacts"] = [
+            "org.apache.maven.surefire:surefire-junit-platform:3.5.2",
+            "org.junit.platform:junit-platform-launcher:1.11.4",
+        ]
         raw = (json.dumps(base) + "\n").encode()
         meta = v3.validate_test_plan(raw, 1482)
         self.assertTrue(meta["uses_maven"])
+        self.assertEqual(meta["maven_pom_blob_sha"], pom_sha)
+        self.assertEqual(meta["required_source_blobs"]["pom.xml"], pom_sha)
         self.assertEqual(
-            meta["required_source_blobs"]["pom.xml"],
-            v3.git_blob_sha(pom),
+            meta["maven_prefetch_artifacts"],
+            base["maven_prefetch_artifacts"],
         )
         v3.verify_required_source_blobs(
             [("pom.xml", pom, "100644")],
             meta["required_source_blobs"],
         )
+
+        # Preserve compatibility with already-reviewed v1 plans that used
+        # required_source_blobs rather than maven_pom_blob_sha.
+        legacy_plan = dict(base)
+        legacy_plan.pop("maven_pom_blob_sha")
+        legacy_plan.pop("maven_prefetch_artifacts")
+        legacy_plan["required_source_blobs"] = {"pom.xml": pom_sha}
+        meta = v3.validate_test_plan(
+            (json.dumps(legacy_plan) + "\n").encode(), 1482
+        )
+        self.assertEqual(meta["maven_pom_blob_sha"], pom_sha)
+
+    def test_maven_plan_rejects_conflicting_or_unsafe_dependency_controls(self):
+        pom = v3.git_blob_sha(b"<project/>\n")
+        base = {
+            "schema": "ores-private-ci-test-plan-v1",
+            "source_repo": v3.legacy.SOURCE_REPO,
+            "allowed_prs": [1482],
+            "maven_pom_blob_sha": pom,
+            "commands": [{
+                "argv": ["mvn", "-o", "-B", "test"],
+                "cwd": ".",
+                "timeout_seconds": 300,
+            }],
+        }
+
+        for arg in (
+            "-s/tmp/settings.xml",
+            "--settings=/tmp/settings.xml",
+            "-Dmaven.repo.local=/tmp/m2",
+            "-DskipTests",
+            "-Dmaven.test.skip=true",
+            "-DskipITs=true",
+        ):
+            with self.subTest(arg=arg):
+                doc = json.loads(json.dumps(base))
+                doc["commands"][0]["argv"].insert(2, arg)
+                with self.assertRaisesRegex(v3.Denied, "trusted build controls"):
+                    v3.validate_test_plan(
+                        (json.dumps(doc) + "\n").encode(), 1482
+                    )
+
+        conflict = json.loads(json.dumps(base))
+        conflict["required_source_blobs"] = {"pom.xml": "0" * 40}
+        with self.assertRaisesRegex(v3.Denied, "pins disagree"):
+            v3.validate_test_plan(
+                (json.dumps(conflict) + "\n").encode(), 1482
+            )
+
+    def test_maven_prefetch_artifacts_are_exact_bounded_and_maven_only(self):
+        pom = v3.git_blob_sha(b"<project/>\n")
+        base = {
+            "schema": "ores-private-ci-test-plan-v1",
+            "source_repo": v3.legacy.SOURCE_REPO,
+            "allowed_prs": [1482],
+            "maven_pom_blob_sha": pom,
+            "commands": [{
+                "argv": ["mvn", "-o", "test"],
+                "cwd": ".",
+                "timeout_seconds": 300,
+            }],
+        }
+        invalids = [
+            ["bad"],
+            ["g:a:v:jar:classifier:extra"],
+            ["g:a:v", "g:a:v"],
+            ["g:a:v"] * (v3.MAX_MAVEN_PREFETCH_ARTIFACTS + 1),
+        ]
+        for extras in invalids:
+            with self.subTest(extras=extras):
+                doc = json.loads(json.dumps(base))
+                doc["maven_prefetch_artifacts"] = extras
+                with self.assertRaisesRegex(v3.Denied, "prefetch artifacts"):
+                    v3.validate_test_plan(
+                        (json.dumps(doc) + "\n").encode(), 1482
+                    )
+
+        non_maven = json.loads(PLAN)
+        non_maven["maven_prefetch_artifacts"] = ["g:a:v"]
+        with self.assertRaisesRegex(v3.Denied, "non-Maven"):
+            v3.validate_test_plan(
+                (json.dumps(non_maven) + "\n").encode(), 1482
+            )
+
+        non_maven = json.loads(PLAN)
+        non_maven["maven_pom_blob_sha"] = pom
+        with self.assertRaisesRegex(v3.Denied, "non-Maven"):
+            v3.validate_test_plan(
+                (json.dumps(non_maven) + "\n").encode(), 1482
+            )
 
     def test_required_source_blob_mismatch_fails_before_upload(self):
         expected = v3.git_blob_sha(b"reviewed pom\n")
