@@ -35,6 +35,9 @@ MAVEN_ARTIFACT = re.compile(
     r"(?::[A-Za-z0-9_.-]+(?::[A-Za-z0-9_.-]+)?)?$"
 )
 MAX_MAVEN_PREFETCH_ARTIFACTS = 16
+SAFE_EXECUTABLE = re.compile(
+    r"^(?:python3|mvn|cmake|ctest|g\\+\\+|clang\\+\\+|/tmp/ores-[A-Za-z0-9_.-]+)$"
+)
 HANDOFF_REF = re.compile(
     r"^ci/(?:oreslang-[A-Za-z0-9][A-Za-z0-9_.-]{0,70}|authorized-[0-9a-f]{40})$"
 )
@@ -669,20 +672,30 @@ def validate_test_plan(plan_bytes, source_pr):
         raise Denied("reviewed test plan commands missing or excessive")
     uses_maven = False
     for command in commands:
-        if (not isinstance(command, dict)
-                or set(command) != {"argv", "cwd", "timeout_seconds"}):
+        if not isinstance(command, dict):
+            raise Denied("reviewed test plan command shape invalid")
+        if (not {"argv", "cwd", "timeout_seconds"}.issubset(command)
+                or not set(command).issubset({
+                    "argv", "cwd", "timeout_seconds", "stdout_contains",
+                })):
             raise Denied("reviewed test plan command shape invalid")
         argv = command.get("argv")
         cwd = command.get("cwd")
         timeout = command.get("timeout_seconds")
-        if (not isinstance(argv, list) or not argv or len(argv) > 32
-                or any(not isinstance(arg, str) or not arg or len(arg) > 512
-                       for arg in argv)
+        expected = command.get("stdout_contains")
+        if (not isinstance(argv, list) or not argv or len(argv) > 64
+                or any(not isinstance(arg, str) or not arg or len(arg) > 4096
+                       or "\x00" in arg for arg in argv)
+                or not SAFE_EXECUTABLE.fullmatch(argv[0])
                 or not isinstance(cwd, str) or not cwd
                 or cwd.startswith("/") or "\\" in cwd
                 or ".." in PurePosixPath(cwd).parts
+                or ".git" in PurePosixPath(cwd).parts
                 or not isinstance(timeout, int) or isinstance(timeout, bool)
-                or not 1 <= timeout <= 3600):
+                or not 1 <= timeout <= 1800
+                or (expected is not None
+                    and (not isinstance(expected, str)
+                         or not expected or len(expected) > 4096))):
             raise Denied("reviewed test plan command invalid")
         if argv[0] == "mvn":
             uses_maven = True
