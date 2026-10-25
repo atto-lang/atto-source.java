@@ -44,6 +44,7 @@ final class SupervisorCodeSlotTest {
             var old = slot.acquire();
             slot.activate(1, "a", "two", freed::incrementAndGet);
             try (var current = slot.acquire()) {
+                assertEquals("two", current.code(), "active code remains pinned during bounded reload");
                 assertThrows(IllegalStateException.class,
                         () -> slot.activate(2, "a", "three", freed::incrementAndGet));
                 assertEquals(2, slot.liveRevisions());
