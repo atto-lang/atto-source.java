@@ -26,7 +26,7 @@ V3 supports two fail-closed source-governance modes:
    required status checks, administrator enforcement, no review bypasses,
    no force pushes, and no branch deletion.
 2. **Exact review-attested mode.** On a private-repository plan where those
-   protection features are unavailable, V3 requires authority PR #1724 to be
+   protection features are unavailable, V3 requires authority PR #2010 to be
    merged to source `main`. The latest review from immutable reviewer ID
    `11139560` / login `ORESoftware` must be `APPROVED` on the authority
    PR's exact head and must predate the merge. The authority PR author must be
@@ -39,7 +39,7 @@ V3 supports two fail-closed source-governance modes:
 
 The review-attested fallback does **not** make unprotected `main` generally
 trusted. It authorizes only governance bytes that still exactly match the
-independently reviewed #1724 head. Any later edit, mode/type change, stale or
+independently reviewed #2010 head. Any later edit, mode/type change, stale or
 revoked review, reviewer identity mismatch, repository-ID mismatch, or review
 history ambiguity fails closed. V3 repeats the authority check immediately
 before publication and again in the inert payload window before creating the
