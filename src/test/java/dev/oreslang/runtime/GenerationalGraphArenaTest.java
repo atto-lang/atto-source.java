@@ -9,6 +9,11 @@ import static org.junit.jupiter.api.Assertions.*;
 final class GenerationalGraphArenaTest {
 
     @Test
+    void adjacencySlotColumnIsCompact32BitStorage() {
+        assertEquals(Integer.BYTES, GenerationalGraphArena.edgeSlotStorageBytes());
+    }
+
+    @Test
     void directSelfCycleDoesNotNeedReferenceCountingOrRecursiveDrop() {
         try (GenerationalGraphArena<String> graph = new GenerationalGraphArena<>(2, 2)) {
             var node = graph.add("self");
