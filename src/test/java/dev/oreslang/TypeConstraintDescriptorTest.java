@@ -185,6 +185,8 @@ final class TypeConstraintDescriptorTest {
                 golden.getProperty("constraint.schema"));
         assertEquals(TypeConstraintDescriptors.REPRESENTATION_I64,
                 golden.getProperty("constraint.representation"));
+        assertEquals("true",
+                golden.getProperty("constraint.validation_required"));
 
         record Case(String source, String qualifiedName, String key) { }
         for (Case item : new Case[]{
@@ -202,6 +204,7 @@ final class TypeConstraintDescriptorTest {
                     TypeChecker.checkTypesWithDiagnostics(Parser.parse(item.source()))
                             .constraintDescriptors().find(item.qualifiedName());
             assertNotNull(descriptor, item.qualifiedName());
+            assertTrue(descriptor.validationRequired(), item.qualifiedName());
             assertEquals(
                     golden.getProperty("constraint." + item.key() + ".canonical"),
                     TypeConstraintDescriptors.canonicalForm(
