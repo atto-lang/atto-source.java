@@ -204,6 +204,13 @@ public final class OresScheduler implements AutoCloseable {
     /** Linearizes new task admission with scheduler shutdown. */
     private final Object taskAdmissionLock = new Object();
     private final AtomicBoolean closed = new AtomicBoolean();
+    /** Actor STOP seals task admission without closing the cleanup executor. */
+    private final AtomicBoolean actorStopSealed = new AtomicBoolean();
+    private final AtomicInteger retiringPhysicalCallbacks = new AtomicInteger();
+    /** Tracks terminal subscriber drains even after a Task leaves the live set. */
+    private final AtomicInteger pendingTerminalNotifications = new AtomicInteger();
+    private final AtomicReference<Throwable> physicalRetirementFailure = new AtomicReference<>();
+    private volatile Runnable actorStopQuiescenceListener;
     private final AtomicLong watchdogOverruns = new AtomicLong();
 
     /**
@@ -430,9 +437,11 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     /**
-     * Source interpreter only: true while the scheduler delivers the first
-     * authenticated terminal-cleanup resume. It is NOT a caller-provided
-     * CancellationException classifier and never grants cancellation rights.
+     * Source interpreter only: true during every scheduler-authenticated
+     * terminal-cleanup turn, including subsequent awaited defer/iterator-close
+     * resumptions. Cancellation is injected exactly once, but its cleanup
+     * authority persists until the Task physically retires. This is NOT a
+     * caller-provided CancellationException classifier or general guest right.
      */
     public static boolean cancellationCleanupTurn() {
         return Boolean.TRUE.equals(CURRENT_CANCELLATION_CLEANUP.get());
@@ -478,7 +487,7 @@ public final class OresScheduler implements AutoCloseable {
      */
     public TaskScope newTaskScope() {
         synchronized (taskAdmissionLock) {
-            ensureOpen();
+            ensureTaskAdmissionOpen();
             return new TaskScope(this);
         }
     }
@@ -516,8 +525,51 @@ public final class OresScheduler implements AutoCloseable {
      * The actor must never interpret Future.isDone() as a heap release proof.
      */
     public boolean hasIncompleteCleanup() {
-        return !tasks.isEmpty();
+        return physicalRetirementFailure.get() != null
+                || !tasks.isEmpty()
+                || retiringPhysicalCallbacks.get() != 0
+                || pendingTerminalNotifications.get() != 0;
     }
+    boolean actorStopPhysicallyQuiescent() {
+        return tasks.isEmpty() && retiringPhysicalCallbacks.get() == 0
+                && pendingTerminalNotifications.get() == 0;
+    }
+
+    Runnable sealActorStopAdmission(Runnable onPhysicallyQuiescent) {
+        Objects.requireNonNull(onPhysicallyQuiescent, "onPhysicallyQuiescent");
+        final Set<TaskRunner<?>> snapshot;
+        synchronized (taskAdmissionLock) {
+            if (!actorStopSealed.compareAndSet(false, true)) return () -> { };
+            actorStopQuiescenceListener = onPhysicallyQuiescent;
+            snapshot = Set.copyOf(tasks);
+        }
+        AtomicBoolean cancellationPublished = new AtomicBoolean();
+        return () -> {
+            if (!cancellationPublished.compareAndSet(false, true)) return;
+            Throwable firstFailure = null;
+            try {
+                for (TaskRunner<?> runner : snapshot) {
+                    try { runner.completion.cancel(false); }
+                    catch (RuntimeException | Error failure) {
+                        if (firstFailure == null) firstFailure = failure;
+                        else if (firstFailure != failure) firstFailure.addSuppressed(failure);
+                    }
+                }
+            } finally {
+                notifyActorStopQuiescent();
+            }
+            if (firstFailure instanceof RuntimeException runtime) throw runtime;
+            if (firstFailure instanceof Error fatal) throw fatal;
+        };
+    }
+
+    private void notifyActorStopQuiescent() {
+        Runnable listener = actorStopQuiescenceListener;
+        if (listener != null && actorStopSealed.get() && actorStopPhysicallyQuiescent()) {
+            listener.run();
+        }
+    }
+
 
     /** Called only after the winning Future's terminal callbacks have drained. */
     <T> OresFuture<T> startWithWallDeadline(
@@ -542,7 +594,7 @@ public final class OresScheduler implements AutoCloseable {
         TaskRunner<T> runner = new TaskRunner<>(task, onQuiescent,
                 deadlineFailure != null, onNotificationDrained);
         synchronized (taskAdmissionLock) {
-            ensureOpen();
+            ensureTaskAdmissionOpen();
             if (deadlineFailure != null) {
                 if (!WALL_DEADLINE_ADMISSIONS.tryAcquire()) {
                     throw new RejectedExecutionException(
@@ -552,6 +604,7 @@ public final class OresScheduler implements AutoCloseable {
             }
             try {
                 tasks.add(runner);
+                pendingTerminalNotifications.incrementAndGet();
             } catch (RuntimeException | Error failure) {
                 runner.releaseUnusedDeadlineSlot();
                 throw failure;
@@ -652,6 +705,14 @@ public final class OresScheduler implements AutoCloseable {
         });
     }
 
+    private void ensureTaskAdmissionOpen() {
+        ensureOpen();
+        if (actorStopSealed.get()) {
+            throw new RejectedExecutionException(
+                    "OresScheduler " + name + " sealed for actor cleanup");
+        }
+    }
+
     private void ensureOpen() {
         if (closed.get()) {
             throw new RejectedExecutionException(
@@ -747,6 +808,7 @@ public final class OresScheduler implements AutoCloseable {
         private final AtomicBoolean deadlineSlotReserved = new AtomicBoolean();
         private final AtomicBoolean deadlineSlotReleased = new AtomicBoolean();
         private final AtomicBoolean deadlineNotificationDrained = new AtomicBoolean();
+        private final AtomicBoolean terminalNotificationRetired = new AtomicBoolean();
         private final AtomicBoolean deadlineQuiescenceRetired = new AtomicBoolean();
         private final AtomicReference<ScheduledFuture<?>> wallDeadline =
                 new AtomicReference<>();
@@ -773,13 +835,28 @@ public final class OresScheduler implements AutoCloseable {
 
         private void notificationDrained() {
             try {
-                // Logical actor-level admission remains reserved through the
-                // Future's synchronous subscriber drain, independently of the
-                // physical task quota's earlier quiescence callback.
+                // Terminal is visible before synchronous callbacks finish.
+                // An actor's memory must never be reclaimed while one such
+                // subscriber still owns host/FFI retirement references.
                 onNotificationDrained.run();
+            } catch (RuntimeException | Error failure) {
+                physicalRetirementFailure.compareAndSet(null, failure);
+                throw failure;
             } finally {
                 deadlineNotificationDrained.set(true);
-                releaseDeadlineSlotIfRetired();
+                try {
+                    releaseDeadlineSlotIfRetired();
+                } finally {
+                    if (terminalNotificationRetired.compareAndSet(false, true)) {
+                        int remaining = pendingTerminalNotifications.decrementAndGet();
+                        if (remaining < 0) {
+                            physicalRetirementFailure.compareAndSet(null,
+                                    new IllegalStateException(
+                                            "scheduler terminal notification receipt underflow"));
+                        }
+                        notifyActorStopQuiescent();
+                    }
+                }
             }
         }
 
@@ -879,7 +956,6 @@ public final class OresScheduler implements AutoCloseable {
                 // saved lexical continuation rather than clearing it. Only
                 // one resume is injected; later awaits belong to shielded
                 // cleanup, and must be allowed to complete normally.
-                boolean injectedCleanup = false;
                 java.util.concurrent.CancellationException requested =
                         completion.deferredCancellationCause();
                 if (requested != null && !cleanupCancellationInjected.get()
@@ -889,7 +965,6 @@ public final class OresScheduler implements AutoCloseable {
                         return;
                     }
                     cleanupCancellationInjected.set(true);
-                    injectedCleanup = true;
                     resume = Resume.completed(null, requested);
                 }
 
