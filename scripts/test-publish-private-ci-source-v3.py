@@ -300,6 +300,11 @@ class PrivateCiV3Test(unittest.TestCase):
 
         base["commands"][0]["argv"] = ["mvn", "-o", "-B", "test"]
         raw = (json.dumps(base) + "\n").encode()
+        with self.assertRaisesRegex(v3.Denied, "strict checksums"):
+            v3.validate_test_plan(raw, 1482)
+
+        base["commands"][0]["argv"] = ["mvn", "-o", "-C", "-B", "test"]
+        raw = (json.dumps(base) + "\n").encode()
         with self.assertRaisesRegex(v3.Denied, "bind exact pom.xml"):
             v3.validate_test_plan(raw, 1482)
 
@@ -343,7 +348,7 @@ class PrivateCiV3Test(unittest.TestCase):
             "allowed_prs": [1482],
             "maven_pom_blob_sha": pom,
             "commands": [{
-                "argv": ["mvn", "-o", "-B", "test"],
+                "argv": ["mvn", "-o", "-C", "-B", "test"],
                 "cwd": ".",
                 "timeout_seconds": 300,
             }],
