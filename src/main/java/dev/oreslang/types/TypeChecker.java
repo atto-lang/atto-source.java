@@ -2866,23 +2866,23 @@ public final class TypeChecker {
                             env, generics, self);
                 }
             }
-if (call.callee() instanceof Ast.MemberExpr console
-        && console.receiver() instanceof Ast.NameExpr namespace
-        && namespace.name().equals("stdio") && env.lookup("stdio") == null
-        && (console.member().equals("print") || console.member().equals("println"))) {
-    if (call.typeArgumentsPresent() || call.arguments().isEmpty()
-            || call.arguments().size() > 32) {
-        throw new IllegalArgumentException("stdio." + console.member()
-                + " requires 1 to 32 positional values and no type arguments");
-    }
-    for (Ast.Expr argument : call.arguments()) {
-        if (argument instanceof Ast.SpreadExpr) {
-            throw new IllegalArgumentException("stdio console spread is unsupported; use stdio.stdout.log");
-        }
-        typeOf(argument, env, generics, self);
-    }
-    return Primitive.VOID;
-}
+            if (call.callee() instanceof Ast.MemberExpr console
+                    && console.receiver() instanceof Ast.NameExpr namespace
+                    && namespace.name().equals("stdio") && env.lookup("stdio") == null
+                    && (console.member().equals("print") || console.member().equals("println"))) {
+                if (call.typeArgumentsPresent() || call.arguments().isEmpty()
+                        || call.arguments().size() > 32) {
+                    throw new IllegalArgumentException("stdio." + console.member()
+                            + " requires 1 to 32 positional values and no type arguments");
+                }
+                for (Ast.Expr argument : call.arguments()) {
+                    if (argument instanceof Ast.SpreadExpr) {
+                        throw new IllegalArgumentException("stdio console spread is unsupported; use stdio.stdout.log");
+                    }
+                    typeOf(argument, env, generics, self);
+                }
+                return Primitive.VOID;
+            }
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
