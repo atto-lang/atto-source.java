@@ -252,12 +252,20 @@ mock_real_mktemp="$(command -v mktemp)"
 cat > "$tmp/bin/mktemp" <<'MOCK_MKTEMP'
 #!/bin/sh
 set -eu
+allocation_count="$(cat "$MOCK_MKTEMP_COUNT_LOG")"
+allocation_count=$((allocation_count + 1))
+printf '%s\n' "$allocation_count" > "$MOCK_MKTEMP_COUNT_LOG"
+if [ "$allocation_count" -eq "${MOCK_MKTEMP_FAIL_AT:-0}" ]; then
+  echo "mock mktemp refused allocation $allocation_count" >&2
+  exit 39
+fi
 made="$("$MOCK_REAL_MKTEMP" "$@")"
 printf '%s\n' "$made" >> "$MOCK_MKTEMP_LOG"
 printf '%s\n' "$made"
 MOCK_MKTEMP
 chmod +x "$tmp/bin/mktemp"
 export MOCK_REAL_MKTEMP="$mock_real_mktemp" MOCK_MKTEMP_LOG="$tmp/mktemp-created.log"
+export MOCK_MKTEMP_COUNT_LOG="$tmp/mktemp-allocation-count.log"
 
 export JAVA_HOME="$tmp/graal" PATH="$tmp/bin:$PATH"
 export MOCK_BINARY="$tmp/native-fixture" MOCK_MVN_LOG="$tmp/mvn.log"
@@ -268,6 +276,7 @@ assert_case() {
   name="$1"; expected="$2"; mode="$3"; refs="$4"
   shift 4
   : > "$MOCK_MKTEMP_LOG"
+  printf '0\n' > "$MOCK_MKTEMP_COUNT_LOG"
   if (cd "$tmp/work" && env "$@" sh "$script" "$mode" "$refs") > "$tmp/stdout" 2> "$tmp/stderr"; then
     result=0
   else
@@ -294,6 +303,9 @@ assert_case() {
     expected_status=1
     expected_diagnostic=
     case "$name" in
+      'mktemp failure at allocation '*)
+        expected_status=39
+        expected_diagnostic="mock mktemp refused allocation ${name##* }" ;;
       'invalid offline mode denied') expected_status=2; expected_diagnostic='ORES_NATIVE_IMAGE_OFFLINE must be 0 or 1' ;;
       'invalid mode') expected_status=2; expected_diagnostic='invalid image mode: invalid' ;;
       'invalid refs') expected_status=2; expected_diagnostic='invalid reference mode: invalid' ;;
@@ -379,6 +391,16 @@ assert_case 'hybrid compressed32' success hybrid compressed32 MOCK_EMBEDDED_MODE
 assert_case 'hybrid native64' success hybrid native64 MOCK_EMBEDDED_MODE=hybrid MOCK_EMBEDDED_REFS=native64 MOCK_EXPECT_PROFILE_REFS=native64
 assert_case 'AOT forced-offline carrier build' success aot compressed32 ORES_NATIVE_IMAGE_OFFLINE=1 MOCK_EXPECT_OFFLINE=yes
 assert_case 'hybrid ref64 forced-offline carrier build' success hybrid native64 ORES_NATIVE_IMAGE_OFFLINE=1 MOCK_EXPECT_OFFLINE=yes MOCK_EMBEDDED_MODE=hybrid MOCK_EMBEDDED_REFS=native64 MOCK_EXPECT_PROFILE_REFS=native64
+# Inject allocation failure at every of the verifier's eight allocations. All
+# previously allocated temporary paths must be removed by the exit trap.
+assert_case 'mktemp failure at allocation 1' failure aot compressed32 MOCK_MKTEMP_FAIL_AT=1
+assert_case 'mktemp failure at allocation 2' failure aot compressed32 MOCK_MKTEMP_FAIL_AT=2
+assert_case 'mktemp failure at allocation 3' failure aot compressed32 MOCK_MKTEMP_FAIL_AT=3
+assert_case 'mktemp failure at allocation 4' failure aot compressed32 MOCK_MKTEMP_FAIL_AT=4
+assert_case 'mktemp failure at allocation 5' failure aot compressed32 MOCK_MKTEMP_FAIL_AT=5
+assert_case 'mktemp failure at allocation 6' failure aot compressed32 MOCK_MKTEMP_FAIL_AT=6
+assert_case 'mktemp failure at allocation 7' failure aot compressed32 MOCK_MKTEMP_FAIL_AT=7
+assert_case 'mktemp failure at allocation 8' failure aot compressed32 MOCK_MKTEMP_FAIL_AT=8
 assert_case 'invalid offline mode denied' failure aot compressed32 ORES_NATIVE_IMAGE_OFFLINE=sometimes
 assert_case 'invalid mode' failure invalid compressed32
 assert_case 'invalid refs' failure aot invalid
