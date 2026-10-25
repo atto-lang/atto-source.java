@@ -389,7 +389,14 @@ public final class LinkedProgramRunner {
         units.put(id, mixed);
         if (!mixed.hasOresSource()) return;
 
-        Ast.Program program = Parser.parse(mixed.oresSource());
+        final Ast.Program program;
+        try {
+            program = Parser.parse(mixed.oresSource());
+        } catch (IllegalArgumentException malformedSource) {
+            throw new IllegalArgumentException(
+                    "Oreslang source unit '" + id + "': " + malformedSource.getMessage(),
+                    malformedSource);
+        }
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
             if (ImportRules.isJavaPath(imported.path())) continue;
