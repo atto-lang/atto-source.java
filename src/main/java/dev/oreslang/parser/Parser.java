@@ -161,6 +161,7 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                rejectUnloweredRuntimeEntityDeclaration();
                 ActorPrefix actorPrefix = parseActorPrefix();
                 if (match(ACTOR, ISOACTOR)) {
                     rootDeclarations.add(parseDefinedActorClass(previous(), modifiers, annotations, actorPrefix));
@@ -382,6 +383,7 @@ public final class Parser {
 
         if (match(DEFINE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
+            rejectUnloweredRuntimeEntityDeclaration();
             ActorPrefix actorPrefix = parseActorPrefix();
             if (match(ACTOR, ISOACTOR)) {
                 return parseDefinedActorClass(previous(), modifiers, annotations, actorPrefix);
@@ -832,6 +834,33 @@ public final class Parser {
         rejectCallableStructuralAnnotation(annotations, "actor class declarations");
         rejectDiscardedDeclarationAnnotations(annotations, "actor class declarations");
         return parseActorClass(kind, modifiers.visibility, prefix);
+    }
+
+    /**
+     * Do not treat supervision, proxying, scheduling or mail routing as a
+     * class/actor alias before compiler-enforced CONTROL, isolation and
+     * versioned hot-code replacement exist in both backends.
+     */
+    private void rejectUnloweredRuntimeEntityDeclaration() {
+        if (check(EOF)) return;
+        String name = peek().lexeme();
+        if (name.equals("readable") || name.equals("transform")
+                || name.equals("writable") || name.equals("duplex")) {
+            if (current + 2 < tokens.size()
+                    && tokens.get(current + 1).lexeme().equals("pipe")
+                    && tokens.get(current + 2).type() == ACTOR) {
+                throw error(peek(), "source " + name + " pipe actor declarations "
+                        + "require compiler-checked pipe role typing, bounded "
+                        + "edge transport and cross-backend lowering; not yet enabled");
+            }
+            return;
+        }
+        if (!name.equals("supervisor") && !name.equals("mailman")
+                && !name.equals("scheduler") && !name.equals("proxy")
+                && !name.equals("pipe")) return;
+        throw error(peek(), "source " + name + " declarations require "
+                + "compiler-checked runtime entity lowering, supervisor "
+                + "CONTROL admission and cross-backend parity; not yet enabled");
     }
 
     private boolean matchContextualIdentifier(String lexeme) {
@@ -3604,6 +3633,11 @@ public final class Parser {
 
     private Ast.Expr parseAssignment() {
         Ast.Expr expr = parsePipeline();
+        if (isContextualIdentifier("pipe")) {
+            throw error(peek(), "actor pipe expressions require compiler-checked "
+                    + "source/transform/sink role typing, supervisor exclusion, "
+                    + "bounded edge transport and Java/LLVM lowering; not yet enabled");
+        }
         if (match(EQUAL)) {
             if (!(expr instanceof Ast.NameExpr) && !(expr instanceof Ast.MemberExpr) && !(expr instanceof Ast.IndexExpr)) {
                 throw error(previous(), "assignment target must be a local, field, or index");
@@ -3629,6 +3663,11 @@ public final class Parser {
             boolean actorPipe = !functional && matchContextualKeyword("pipe");
             if (!functional && !actorPipe) break;
             Token operator = previous();
+            if (actorPipe) {
+                throw error(operator, "actor pipe expressions require compiler-checked "
+                        + "source/transform/sink role typing, supervisor exclusion, "
+                        + "bounded edge transport and Java/LLVM lowering; not yet enabled");
+            }
             if (++stages > 128) {
                 throw error(operator, "pipeline exceeds 128 stages");
             }

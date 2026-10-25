@@ -366,6 +366,12 @@ public final class ActorRuntime implements AutoCloseable {
         public static ActorGroupId create() { return new ActorGroupId(UUID.randomUUID()); }
     }
 
+    /** Stable identity, not a bearer capability or guest supervisor authority. */
+    public record SupervisorId(UUID value) {
+        public SupervisorId { Objects.requireNonNull(value); }
+        public static SupervisorId create() { return new SupervisorId(UUID.randomUUID()); }
+    }
+
     /** Stable machine-readable causes for synchronous mailbox admission failure. */
     public interface SendError {
         enum Reason {
@@ -468,6 +474,9 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicLong nextActorGeneration = new AtomicLong(1);
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
+    private final ActorSupervisor rootSupervisor = new ActorSupervisor(SupervisorId.create(), null);
+    private final Map<SupervisorId, ActorSupervisor> supervisors =
+            new ConcurrentHashMap<>(Map.of(rootSupervisor.id(), rootSupervisor));
     /**
      * Reverse cooperation-membership index. All mutations to this map AND an
      * ActorGroup.members set are serialized on groupMembershipLock. This is
@@ -2803,6 +2812,177 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * Host/runtime registration of a supervisor's advisory scope. Registration
+     * alone confers no guest actor control capabilities, and membership in an
+     * advised ActorGroup never confers supervision authority.
+     *
+     * The source-level 'define supervisor' entity and its CONTROL handlers
+     * require separate checked compiler lowering. This immutable association
+     * is the substrate for that work.
+     */
+    public final class ActorSupervisor {
+        private final SupervisorId id;
+        // Immutable parent prevents cycles and prevents a hot-policy upgrade
+        // from silently reparenting an existing supervisory domain.
+        private final ActorSupervisor parent;
+        private volatile SupervisorCodeSlot<?> codeSlot;
+
+        private ActorSupervisor(SupervisorId id, ActorSupervisor parent) {
+            this.id = Objects.requireNonNull(id, "id");
+            this.parent = parent;
+        }
+
+        public SupervisorId id() { return id; }
+
+        /**
+         * Associate exactly one owner CONTROL code slot with this stable
+         * supervisor. Source-level guest policy loading remains compiler-gated.
+         */
+        public void installPolicyCode(SupervisorCodeSlot<?> slot) {
+            requireSupervisorContext("install supervisor policy code");
+            requireCallerRuntimeAffinity("install supervisor policy code");
+            Objects.requireNonNull(slot, "slot");
+            synchronized (runtimeLifecycleLock) {
+                if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+                if (supervisors.get(id) != this)
+                    throw new IllegalArgumentException("foreign supervisor runtime");
+                if (codeSlot != null)
+                    throw new IllegalStateException("supervisor policy code already installed");
+                slot.current();
+                slot.bindToSupervisor(this);
+                codeSlot = slot;
+            }
+        }
+
+        /**
+         * Explicit host/CONTROL bridge to start a worker owned by this
+         * supervisor's existing ActorGroup. The caller receives an ordinary
+         * ActorRef, not a supervisor capability. Source-level start_child,
+         * transactional readiness, panic dispatch and restart policy require
+         * separate compiler/runtime lowering; this method does not provide them.
+         */
+        public <M> ActorRef<M> startChildHost(
+                ActorGroup group,
+                ActorKind kind,
+                IsolatePolicy policy,
+                BehaviorFactory<M> behaviorFactory) {
+            requireSupervisorContext("start a supervised child");
+            requireCallerRuntimeAffinity("start a supervised child");
+            Objects.requireNonNull(group, "group");
+            if (supervisors.get(id) != this) {
+                throw new IllegalArgumentException("foreign supervisor runtime");
+            }
+            // Closing removes a group from the live registry. Check closure
+            // first so a stale same-runtime group is reported as terminated,
+            // not misleadingly as an unauthorized supervisor reassignment.
+            if (group.closed()) {
+                throw new IllegalStateException("ActorGroup is closed");
+            }
+            if (actorGroups.get(group.id()) != group || group.supervisor != this) {
+                throw new IllegalArgumentException(
+                        "ActorGroup is not directly bound to this supervisor");
+            }
+            // spawnWorker retains structured lifecycle authority before B can
+            // become ready; close racing this call fails admission/tears down B.
+            return group.spawnWorker(kind, policy, behaviorFactory);
+        }
+
+        public Optional<SupervisorCodeSlot.Descriptor> policyRevision() {
+            requireSupervisorContext("inspect supervisor policy revision");
+            requireCallerRuntimeAffinity("inspect supervisor policy revision");
+            SupervisorCodeSlot<?> slot = codeSlot;
+            return slot == null ? Optional.empty() : Optional.of(slot.current());
+        }
+
+        private void retireCodeFromRuntime() {
+            SupervisorCodeSlot<?> slot = codeSlot;
+            if (slot != null) slot.close();
+        }
+
+        public Optional<SupervisorId> parentId() {
+            requireSupervisorContext("inspect supervisor parent");
+            requireCallerRuntimeAffinity("inspect supervisor parent");
+            return Optional.ofNullable(parent).map(ActorSupervisor::id);
+        }
+
+        /** Directly supervised child supervisors. */
+        public Set<SupervisorId> childSupervisorIds() {
+            requireSupervisorContext("inspect child supervisors");
+            requireCallerRuntimeAffinity("inspect child supervisors");
+            return Set.copyOf(supervisors.values().stream()
+                    .filter(candidate -> candidate.parent == this)
+                    .map(ActorSupervisor::id)
+                    .toList());
+        }
+
+        private boolean isDescendantOf(ActorSupervisor ancestor) {
+            for (ActorSupervisor cursor = this; cursor != null; cursor = cursor.parent) {
+                if (cursor == ancestor) return true;
+            }
+            return false;
+        }
+
+        /** Read-only snapshot; closed groups disappear from the association. */
+        public Set<ActorGroupId> advisedGroupIds() {
+            requireSupervisorContext("inspect supervisor ActorGroups");
+            requireCallerRuntimeAffinity("inspect supervisor ActorGroups");
+            return Set.copyOf(actorGroups.values().stream()
+                    .filter(group -> group.supervisor == this && !group.closed())
+                    .map(ActorGroup::id)
+                    .toList());
+        }
+
+        /** Groups directly or transitively supervised by this node. */
+        public Set<ActorGroupId> subtreeGroupIds() {
+            requireSupervisorContext("inspect supervisor subtree ActorGroups");
+            requireCallerRuntimeAffinity("inspect supervisor subtree ActorGroups");
+            return Set.copyOf(actorGroups.values().stream()
+                    .filter(group -> !group.closed()
+                            && group.supervisor.isDescendantOf(this))
+                    .map(ActorGroup::id)
+                    .toList());
+        }
+    }
+
+    /** The runtime's non-null fallback supervisor for legacy group creation. */
+    public ActorSupervisor rootSupervisor() {
+        requireSupervisorContext("inspect the root ActorSupervisor");
+        return rootSupervisor;
+    }
+
+    /** Register a supervisor immediately below the runtime root. */
+    public ActorSupervisor createSupervisor() {
+        return createChildSupervisor(rootSupervisor);
+    }
+
+    /**
+     * Create a supervisor whose parent is another same-runtime supervisor.
+     * Parentage is fixed for the lifetime of this supervisor identity.
+     * A logical supervisor will eventually execute as a CONTROL-lane actor,
+     * not as a dedicated thread or mandatory OS process.
+     */
+    public ActorSupervisor createChildSupervisor(ActorSupervisor parent) {
+        requireSupervisorContext("create a child ActorSupervisor");
+        requireCallerRuntimeAffinity("create a child ActorSupervisor");
+        Objects.requireNonNull(parent, "parent");
+        synchronized (runtimeLifecycleLock) {
+            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            if (supervisors.get(parent.id()) != parent)
+                throw new IllegalArgumentException(
+                        "parent ActorSupervisor belongs to another ActorRuntime");
+            if (supervisors.size() >= dispatcherConfig.maxActors())
+                throw new IllegalStateException(
+                        "ActorSupervisor runtime limit exceeded: maximum "
+                                + dispatcherConfig.maxActors());
+            while (true) {
+                ActorSupervisor child = new ActorSupervisor(SupervisorId.create(), parent);
+                if (supervisors.putIfAbsent(child.id(), child) == null)
+                    return child;
+            }
+        }
+    }
+
+    /**
      * Cooperation domain orthogonal to the supervision tree.
      *
      * <p>An ActorGroup owns membership/capability state and one runtime event
@@ -2812,6 +2992,7 @@ public final class ActorRuntime implements AutoCloseable {
     public final class ActorGroup implements AutoCloseable {
         private final ActorGroupId id;
         private final ActorId creator;
+        private final ActorSupervisor supervisor;
         private final int memberLimit;
         private final int eventTopicLimit;
         private final Set<ActorId> members = ConcurrentHashMap.newKeySet();
@@ -2827,6 +3008,10 @@ public final class ActorRuntime implements AutoCloseable {
         private final OresFuture<Void> closedWorkersDone =
                 new OresFuture<>(() -> false, () -> { });
         private final Object authorityLock = new Object();
+        // Trusted runtime resource closures, not guest callbacks. Invoked
+        // outside authorityLock after the group is fenced but before worker
+        // cancellation and event-bus teardown.
+        private final Set<Runnable> infrastructureCloseHooks = new LinkedHashSet<>();
         private final ActorEventBus eventBus;
         private final AtomicReference<GroupMailmanState<?>> mailmanState = new AtomicReference<>();
         private UUID joinSecret = UUID.randomUUID();
@@ -2834,9 +3019,11 @@ public final class ActorRuntime implements AutoCloseable {
         private ActorGroup(
                 ActorGroupId id,
                 ActorId creator,
-                IsolatePolicy creatorPolicy) {
+                IsolatePolicy creatorPolicy,
+                ActorSupervisor supervisor) {
             this.id = Objects.requireNonNull(id, "id");
             this.creator = creator;
+            this.supervisor = Objects.requireNonNull(supervisor, "supervisor");
             Objects.requireNonNull(creatorPolicy, "creatorPolicy");
             this.memberLimit = Math.max(
                     1,
@@ -2854,12 +3041,26 @@ public final class ActorRuntime implements AutoCloseable {
 
         public ActorGroupId id() { return id; }
 
+        /** Public identity only; this does not expose the supervisor capability. */
+        public SupervisorId supervisorId() {
+            requireObserver("inspect ActorGroup supervisor");
+            return supervisor.id();
+        }
+
         public Optional<ActorId> creatorId() {
             requireObserver("inspect ActorGroup creator");
             return Optional.ofNullable(creator);
         }
 
         public boolean closed() { return groupClosed.get(); }
+
+        void registerInfrastructureClose(Runnable hook) {
+            Objects.requireNonNull(hook, "hook");
+            synchronized (authorityLock) {
+                requireOpen();
+                infrastructureCloseHooks.add(hook);
+            }
+        }
 
         public int memberCount() {
             requireObserver("inspect ActorGroup membership");
@@ -2921,25 +3122,34 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         /**
-         * Spawn, then register the worker before any readiness/mailbox work is
-         * scheduled. A registration failure cancels the newly spawned actor.
+         * Spawn and install lifecycle ownership in one group admission turn.
+         * The authority lock serializes with closeFromRuntime, so close never
+         * snapshots managedWorkers between a spawn and its registration.
+         * No user behavior factory executes during spawnInternal: actor
+         * initialization is deferred until its dispatcher is scheduled.
+         *
+         * Invariant: successful return has an owner, or concurrent close has
+         * already revoked it and requested cancellation. A failed admission
+         * must cancel the unexposed actor before propagating the error.
          */
         public <M> ActorRef<M> spawnWorker(
                 ActorKind kind,
                 IsolatePolicy policy,
                 BehaviorFactory<M> behaviorFactory) {
             requireManager("spawn an ActorGroup worker");
-            requireOpen();
-            ActorRef<M> worker = ActorRuntime.this.spawn(kind, policy, behaviorFactory);
-            try {
-                return manageWorker(worker);
-            } catch (RuntimeException | Error failure) {
+            synchronized (authorityLock) {
+                requireOpen();
+                ActorRef<M> worker = ActorRuntime.this.spawn(kind, policy, behaviorFactory);
                 try {
-                    worker.cancel();
-                } catch (RuntimeException cleanup) {
-                    failure.addSuppressed(cleanup);
+                    return manageWorker(worker);
+                } catch (RuntimeException | Error failure) {
+                    try {
+                        worker.cancel();
+                    } catch (RuntimeException cleanup) {
+                        failure.addSuppressed(cleanup);
+                    }
+                    throw failure;
                 }
-                throw failure;
             }
         }
 
@@ -3325,14 +3535,28 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void closeFromRuntime() {
             List<ActorRef<?>> owned;
+            List<Runnable> infrastructureClosures;
             synchronized (authorityLock) {
                 if (!groupClosed.compareAndSet(false, true)) return;
                 // Revocation is part of close: even a capability held by code
                 // racing teardown can no longer pass validation.
                 joinSecret = UUID.randomUUID();
                 owned = List.copyOf(managedWorkers.values());
+                infrastructureClosures = List.copyOf(infrastructureCloseHooks);
+                infrastructureCloseHooks.clear();
                 managedWorkers.clear();
                 stoppingWorkers.clear();
+            }
+            // Runtime resources are fenced immediately; this must happen
+            // without authorityLock and failures must not strand other hooks.
+            Throwable infrastructureFailure = null;
+            for (Runnable closure : infrastructureClosures) {
+                try {
+                    closure.run();
+                } catch (RuntimeException | Error failure) {
+                    if (infrastructureFailure == null) infrastructureFailure = failure;
+                    else infrastructureFailure.addSuppressed(failure);
+                }
             }
             // Revoke every membership before asynchronous worker cleanup. A
             // room close frees membership quota without stopping unrelated
@@ -3397,6 +3621,13 @@ public final class ActorRuntime implements AutoCloseable {
                 } finally {
                     actorGroups.remove(id, this);
                 }
+            }
+            if (infrastructureFailure != null) {
+                if (cancellationFailure != null)
+                    infrastructureFailure.addSuppressed(cancellationFailure);
+                if (infrastructureFailure instanceof RuntimeException runtimeFailure)
+                    throw runtimeFailure;
+                throw (Error) infrastructureFailure;
             }
             if (cancellationFailure != null) throw cancellationFailure;
         }
@@ -4000,6 +4231,23 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public ActorGroup createActorGroup() {
+        return createActorGroupInternal(rootSupervisor);
+    }
+
+    /**
+     * Bind an ActorGroup to an explicit registered supervisor at construction.
+     * An ordinary actor may still create a group through the root-supervised
+     * overload; it may not impersonate or choose a host supervisor.
+     */
+    public ActorGroup createActorGroup(ActorSupervisor supervisor) {
+        requireSupervisorContext("assign an ActorGroup supervisor");
+        Objects.requireNonNull(supervisor, "supervisor");
+        if (supervisors.get(supervisor.id()) != supervisor)
+            throw new IllegalArgumentException("ActorSupervisor belongs to another ActorRuntime");
+        return createActorGroupInternal(supervisor);
+    }
+
+    private ActorGroup createActorGroupInternal(ActorSupervisor supervisor) {
         requireCallerRuntimeAffinity("create an ActorGroup");
         requireNotActorGroupMailman("create an ActorGroup");
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
@@ -4051,7 +4299,7 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 while (true) {
                     ActorGroupId id = ActorGroupId.create();
-                    ActorGroup group = new ActorGroup(id, creator, creatorPolicy);
+                    ActorGroup group = new ActorGroup(id, creator, creatorPolicy, supervisor);
                     if (actorGroups.putIfAbsent(id, group) == null) {
                         if (joined != null) {
                             joined.add(id);
@@ -7149,6 +7397,17 @@ public final class ActorRuntime implements AutoCloseable {
         // shared/actor-group registries or erase their resource ownership.
         for (ActorGroup group : List.copyOf(actorGroups.values())) group.closeFromRuntime();
         actorGroups.clear();
+        // Supervisor policy images retire only AFTER physical actor/carrier exit
+        // and actor-group shutdown, so outstanding CONTROL turns keep their leases.
+        RuntimeException policyCleanupFailure = null;
+        for (ActorSupervisor supervisor : List.copyOf(supervisors.values())) {
+            try {
+                supervisor.retireCodeFromRuntime();
+            } catch (RuntimeException failure) {
+                if (policyCleanupFailure == null) policyCleanupFailure = failure;
+                else policyCleanupFailure.addSuppressed(failure);
+            }
+        }
         for (ActorOutputStream<?> stream : List.copyOf(actorOutputStreams)) {
             stream.closeAndDrainFromRuntime();
         }
@@ -7160,6 +7419,7 @@ public final class ActorRuntime implements AutoCloseable {
         sharedMemoryBytes.set(0L);
         actors.clear();
         actorCount.set(0);
+        if (policyCleanupFailure != null) throw policyCleanupFailure;
     }
 
     private ExecutorService dispatcherFor(ActorKind kind) {
