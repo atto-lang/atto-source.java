@@ -44,11 +44,24 @@ public final class OwnershipChecker {
     private final Set<String> ambiguousClasses = new HashSet<>();
     /** Only bindings admitted as new short aliases by the type checker. */
     private final Map<Ast.BindingStmt, String> validatedShortAliases;
+    /** Exact immutable Program identity checked by this ownership pass. */
+    private final Ast.Program checkedProgram;
+    /** Monotonic epoch published only if this whole ownership pass succeeds. */
+    private final long taskCheckEpoch;
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
     /** Every active try records outer roots transferred anywhere inside its body. */
     private final List<Set<VarState>> tryMoveObservers = new ArrayList<>();
+    /**
+     * Exact Task capture admissions are staged during checking and published
+     * only after the complete ownership pass succeeds. This prevents a Task
+     * from retaining executable authority when a later statement/declaration
+     * makes the enclosing program invalid.
+     */
+    private final IdentityHashMap<
+            Ast.TaskExpr, Map<String, Ast.TaskCaptureTransfer>> pendingTaskCaptures =
+            new IdentityHashMap<>();
 
     private OwnershipChecker(Ast.Program program) {
         this(program, Map.of());
@@ -58,6 +71,12 @@ public final class OwnershipChecker {
             Ast.Program program, Map<Ast.BindingStmt, String> validatedShortAliases) {
         // Preserve AST declaration identity: equality-based maps can merge
         // separate bindings with identical syntax in different scopes.
+        this.checkedProgram =
+                java.util.Objects.requireNonNull(program, "ownership program");
+        this.taskCheckEpoch = Ast.CheckedTaskCaptures.newCheckEpoch();
+        // Rechecking an existing immutable Program immediately invalidates
+        // older executable Task proofs. A failed check must fail closed.
+        Ast.CheckedTaskCaptures.beginCheck(checkedProgram, taskCheckEpoch);
         this.validatedShortAliases = new IdentityHashMap<>(validatedShortAliases);
         index(program);
     }
@@ -71,6 +90,7 @@ public final class OwnershipChecker {
             Ast.Program program, Map<Ast.BindingStmt, String> validatedShortAliases) {
         OwnershipChecker checker = new OwnershipChecker(program, validatedShortAliases);
         checker.validate(program);
+        checker.publishTaskAdmissions();
         return program;
     }
 
@@ -94,9 +114,19 @@ public final class OwnershipChecker {
                     || declaration.visibility() != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("invalid linked ownership class: " + name);
             }
+            // A checked actor signature is transport/protocol metadata, not
+            // a transferable actor instance. Link it only through an exact
+            // named actor import; class imports cannot silently reclassify
+            // actor objects as mailbox-safe references (or vice versa).
+            Ast.ImportKind expectedKind = declaration.actorKind()
+                    == Ast.ActorKind.NONE
+                    ? Ast.ImportKind.CLASS
+                    : Ast.ImportKind.ACTOR;
             boolean imported = program.imports().stream().anyMatch(use ->
-                    use.kind() == Ast.ImportKind.CLASS && !use.wildcard()
-                            && use.names().contains(name));
+                    use.kind() == expectedKind && !use.wildcard()
+                            && use.names().contains(name)
+                            && (use.namespace() == null
+                                    || use.namespace().equals(name)));
             if (!imported || checker.classes.containsKey(name)
                     || checker.ambiguousClasses.contains(name)) {
                 throw new IllegalArgumentException(
@@ -105,7 +135,15 @@ public final class OwnershipChecker {
             checker.classes.put(name, declaration);
         }
         checker.validate(program);
+        checker.publishTaskAdmissions();
         return program;
+    }
+
+    private void publishTaskAdmissions() {
+        Ast.CheckedTaskCaptures.publish(
+                checkedProgram,
+                taskCheckEpoch,
+                pendingTaskCaptures);
     }
 
     private void index(Ast.Program program) {
@@ -407,6 +445,15 @@ public final class OwnershipChecker {
         }
         if (stmt instanceof Ast.BlockStmt block) {
             checkBlock(block.body(), scope, returnType);
+            return;
+        }
+        if (stmt instanceof Ast.TaskScopeStmt taskScope) {
+            checkBlock(taskScope.body(), scope, returnType);
+            // Structured scope exit is an implicit asynchronous wait for
+            // physical child quiescence. Until exact scoped READ proof is
+            // attached to a capture, every ordinary borrow/guard must end
+            // before this hidden suspension boundary.
+            checkSuspensionBorrows(scope, "task scope exit");
             return;
         }
         if (stmt instanceof Ast.BreakStmt) {
@@ -1221,17 +1268,6 @@ public final class OwnershipChecker {
             if (concreteReceiver != null && concreteReceiver.isBorrow()) {
                 concreteReceiver = concreteReceiver.borrowedTarget();
             }
-            concreteReceiver = ownershipAggregateType(concreteReceiver);
-            if (concreteReceiver != null
-                    && concreteReceiver.name().equals("Entry")
-                    && concreteReceiver.arguments().size() == 2) {
-                Ast.TypeRef valueType = switch (member.member()) {
-                    case "key" -> concreteReceiver.arguments().get(0);
-                    case "value" -> concreteReceiver.arguments().get(1);
-                    default -> throw error("unknown Entry member '" + member.member() + "'");
-                };
-                return new ValueInfo(valueType, kindOfType(valueType), null);
-            }
             if (concreteReceiver != null && concreteReceiver.isClosedAggregateType()) {
                 Ast.TypeRef valueType = concreteReceiver.aggregateMembers().get(member.member());
                 if (valueType == null) {
@@ -1278,10 +1314,6 @@ public final class OwnershipChecker {
             return new ValueInfo(elementType, elementKind, null);
         }
         if (expr instanceof Ast.NewExpr created) {
-            if (created.type().name().equals("Entry")) {
-                throw error(
-                        "Entry<K,V> is an immutable value product and has no constructor; use Entry.of(key, value)");
-            }
             List<Ast.TypeRef> argumentTypes = new ArrayList<>(created.arguments().size());
             for (Ast.Expr arg : created.arguments()) {
                 ValueInfo info = checkExpr(arg, scope, true);
@@ -1292,6 +1324,75 @@ public final class OwnershipChecker {
             }
             Ast.TypeRef constructedType = inferConstructedType(created, argumentTypes);
             return new ValueInfo(constructedType, ValueKind.MOVE_ONLY, null);
+        }
+        if (expr instanceof Ast.TaskExpr task) {
+            if (task.domain() == Ast.ExecutionDomain.GPU) {
+                throw error("gpu task cannot pass ownership lowering without a physical GPU provider");
+            }
+            CaptureSet captured = new CaptureSet();
+            scanStatements(task.body(), Set.of(), scope, null, captured);
+            // Deferred select/channel callbacks execute under the owning
+            // mailbox continuation and may retain its exact self capability.
+            // A new Task is independently scheduled: it must never inherit
+            // mailbox self or mutate actor state outside the actor turn.
+            for (Capture capture : captured.values.values()) {
+                if (isDirectActorSelfCapture(capture)
+                        && isActorConfinedBorrow(capture.source)) {
+                    throw error("independent task cannot capture actor self; send a message or pass owned data instead");
+                }
+            }
+            // Generic deferred callbacks are not a complete Task Send proof:
+            // they may run under a mailbox's existing authority. A new Task
+            // needs a compiler-derived Send proof from the canonical
+            // AutoTraitRules lattice. Task-specific runtime seams are limited
+            // to affine Future<T> MOVE and synchronized Channel<T> handles;
+            // guards, Rc and foreign/scheduler authority remain non-Send.
+            for (Capture capture : captured.values.values()) {
+                if (!capture.source.type.isBorrow()
+                        && forbiddenTaskCapability(capture.source.type)) {
+                    throw error("independent task capture '" + capture.name
+                            + "' contains a non-Send execution capability; "
+                            + "pass owned values or an explicit Channel<T> instead");
+                }
+            }
+            validateDeferredCaptures(captured);
+            Scope taskScope = deferredSelectArmScope(captured);
+            int savedLoopDepth = loopDepth;
+            boolean savedDiscard = discardingSelectReturn;
+            loopDepth = 0;
+            discardingSelectReturn = false;
+            try {
+                checkBlock(task.body(), taskScope, Ast.TypeRef.inferred());
+            } finally {
+                loopDepth = savedLoopDepth;
+                discardingSelectReturn = savedDiscard;
+                taskScope.close();
+            }
+            LinkedHashMap<String, Ast.TaskCaptureTransfer> admitted =
+                    new LinkedHashMap<>();
+            for (Capture capture : captured.values.values()) {
+                Ast.TaskCaptureTransfer transfer =
+                        !capture.write
+                                && !capture.consume
+                                && capture.source.kind == ValueKind.COPY
+                                ? Ast.TaskCaptureTransfer.COPY
+                                : Ast.TaskCaptureTransfer.MOVE;
+                admitted.put(capture.name, transfer);
+            }
+            Map<String, Ast.TaskCaptureTransfer> immutableAdmission =
+                    java.util.Collections.unmodifiableMap(
+                            new LinkedHashMap<>(admitted));
+            Map<String, Ast.TaskCaptureTransfer> previousAdmission =
+                    pendingTaskCaptures.putIfAbsent(
+                            task, immutableAdmission);
+            if (previousAdmission != null
+                    && !previousAdmission.equals(immutableAdmission)) {
+                throw error(
+                        "same Task expression produced inconsistent capture admission");
+            }
+            Ast.TypeRef result = new Ast.TypeRef(
+                    "Future", List.of(Ast.TypeRef.inferred()), false);
+            return new ValueInfo(result, kindOfType(result), null);
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
             checkSuspensionBorrows(scope, "await");
@@ -1534,47 +1635,6 @@ public final class OwnershipChecker {
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
             }
-        }
-
-        if (call.callee() instanceof Ast.NameExpr tupleName
-                && tupleName.name().equals("tuple")
-                && scope.lookup("tuple") == null
-                && !functions.containsKey("tuple")
-                && !ambiguousFunctions.contains("tuple")) {
-            if (call.typeArgumentsPresent()) {
-                throw error("builtin tuple(...) does not accept call-site type arguments");
-            }
-            List<ValueInfo> slots = checkOwnedProductArguments(
-                    call.arguments(), scope, "tuple");
-            return new ValueInfo(
-                    Ast.TypeRef.tupleType(slots.stream().map(info -> info.type).toList()),
-                    slots.stream().allMatch(info -> info.kind == ValueKind.COPY)
-                            ? ValueKind.COPY : ValueKind.MOVE_ONLY,
-                    null);
-        }
-
-        if (call.callee() instanceof Ast.MemberExpr entryCall
-                && entryCall.receiver() instanceof Ast.NameExpr entryFactory
-                && entryFactory.name().equals("Entry")
-                && scope.lookup("Entry") == null
-                && entryCall.member().equals("of")) {
-            if (call.typeArgumentsPresent()) {
-                throw error("Entry.of infers K and V and does not accept call-site type arguments");
-            }
-            List<ValueInfo> fields = checkOwnedProductArguments(
-                    call.arguments(), scope, "Entry.of");
-            if (fields.size() != 2) {
-                throw error("Entry.of expects exactly two arguments: key, value");
-            }
-            Ast.TypeRef entryType = new Ast.TypeRef(
-                    "Entry",
-                    List.of(fields.get(0).type, fields.get(1).type),
-                    false);
-            return new ValueInfo(
-                    entryType,
-                    fields.stream().allMatch(info -> info.kind == ValueKind.COPY)
-                            ? ValueKind.COPY : ValueKind.MOVE_ONLY,
-                    null);
         }
 
         if (call.callee() instanceof Ast.MemberExpr qualified
@@ -1820,7 +1880,7 @@ public final class OwnershipChecker {
                         && scope.lookup(receiverName.name()) != null) {
                     // The implicit mutable receiver is the first live exclusive
                     // argument, even though it is not in call.arguments().
-                    // Otherwise q.method(rt borrow mut q) aliases a writable
+                    // Otherwise q.method(rt mut borrow q) aliases a writable
                     // receiver within one invocation.
                     VarState receiver = requireState(scope, receiverName.name());
                     beginPersistentBorrow(receiver, true);
@@ -1905,55 +1965,6 @@ public final class OwnershipChecker {
             }
         }
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
-    }
-
-    private List<ValueInfo> checkOwnedProductArguments(
-            List<Ast.Expr> arguments,
-            Scope scope,
-            String label) {
-        ArrayList<ValueInfo> values = new ArrayList<>();
-        for (Ast.Expr argument : arguments) {
-            if (argument instanceof Ast.SpreadExpr spread) {
-                ValueInfo aggregate = checkExpr(spread.expression(), scope, true);
-                if (isBorrowValue(aggregate)) {
-                    throw error(label
-                            + " cannot spread a borrowed tuple into an owned product");
-                }
-                if (containsMutexGuardType(aggregate.type)) {
-                    throw error(label + " cannot store or spread a MutexGuard");
-                }
-                Ast.TypeRef aggregateType = aggregate.type;
-                if (aggregateType == null || !aggregateType.isTupleType()) {
-                    throw error(label
-                            + " spread requires a statically known tuple");
-                }
-                for (Ast.TypeRef slot : aggregateType.arguments()) {
-                    if (slot.isBorrow()) {
-                        throw error(label
-                                + " cannot store borrowed tuple elements");
-                    }
-                    if (containsMutexGuardType(slot)) {
-                        throw error(label + " cannot store a MutexGuard");
-                    }
-                    values.add(new ValueInfo(
-                            slot,
-                            kindOfType(slot),
-                            null));
-                }
-                continue;
-            }
-
-            ValueInfo value = checkExpr(argument, scope, true);
-            if (isBorrowValue(value)) {
-                throw error(label
-                        + " cannot store a borrowed value without an explicit lifetime");
-            }
-            if (containsMutexGuardType(value.type)) {
-                throw error(label + " cannot store a MutexGuard");
-            }
-            values.add(value);
-        }
-        return List.copyOf(values);
     }
 
     private boolean isBooleanIntrinsicCall(Ast.CallExpr call, Scope scope) {
@@ -2045,7 +2056,9 @@ public final class OwnershipChecker {
                 || member.member().equals("is_ok") || member.member().equals("is_err");
         boolean extracting = member.member().equals("unwrap") || member.member().equals("unwrap_safe")
                 || member.member().equals("unwrap_all") || member.member().equals("flatten")
-                || member.member().equals("expect") || member.member().equals("unwrap_or");
+                || member.member().equals("expect") || member.member().equals("unwrap_or")
+                || member.member().equals("unwrap_or_else")
+                || member.member().equals("or_else") || member.member().equals("ok_or");
         if (!query && !extracting) return null;
         // A nested call has no reliably resolved result type in this checker
         // until TypeChecker supplies its typed IR. Do not inspect it here and
@@ -2154,6 +2167,20 @@ public final class OwnershipChecker {
         }
 
         Ast.TypeRef okType = option ? receiverType.arguments().getFirst() : receiverType.arguments().get(0);
+        // The first ergonomic API slice deliberately admits only Copy values.
+        // Affine payloads and error values require branch-sensitive closure
+        // ownership/drop proofs before lazy callbacks may carry them.
+        // Result.or_else predates Option.or_else and is an affine-consuming
+        // Result combinator, not a Copy-only Option fallback. In particular
+        // Result<Box,E>.or_else must not be silently rejected or checked twice.
+        boolean newCopyOnlyFallback = member.member().equals("unwrap_or_else")
+                || member.member().equals("ok_or")
+                || (option && member.member().equals("or_else"));
+        if (newCopyOnlyFallback && (!isCopyType(okType)
+                || (result && !isCopyType(receiverType.arguments().get(1))))) {
+            throw error(member.member()
+                    + " requires Copy Option/Result payloads until affine fallback ownership is proven");
+        }
         if (okType.isBorrow()) {
             throw error(member.member()
                     + " cannot extract a borrow from an owned Option/Result until explicit lifetime parameters are supported");
@@ -2179,11 +2206,32 @@ public final class OwnershipChecker {
         if (member.member().equals("unwrap_or") && containsMutexGuardType(okType)) {
             throw error("unwrap_or cannot eagerly discard a MutexGuard fallback; use explicit branching so every guard is released");
         }
+        Ast.TypeRef okOrErrorType = null;
         for (Ast.Expr argument : arguments) {
             ValueInfo arg = checkExpr(argument, scope, true);
             if (containsMutexGuardType(arg.type) && !member.member().equals("unwrap_or")) {
                 throw error(member.member() + " argument cannot contain MutexGuard");
             }
+            if (member.member().equals("ok_or")) {
+                if (arg.type == null || arg.type.isBorrow() || !isCopyType(arg.type)) {
+                    throw error("Option.ok_or eager error must be a concrete owned Copy value");
+                }
+                okOrErrorType = arg.type;
+            }
+        }
+        if (member.member().equals("ok_or")) {
+            if (!option || okOrErrorType == null) {
+                throw error("Option.ok_or requires one eager error value");
+            }
+            Ast.TypeRef resultType = new Ast.TypeRef(
+                    "Result", List.of(okType, okOrErrorType), false);
+            return new ValueInfo(resultType, kindOfType(resultType), null);
+        }
+        if (member.member().equals("or_else")) {
+            // Both Option.or_else and Result.or_else keep the sum carrier.
+            // Never return null after checking/consuming the receiver: the
+            // ordinary member-call path would evaluate and consume it again.
+            return new ValueInfo(receiverType, kindOfType(receiverType), null);
         }
 
         if (member.member().equals("unwrap_safe")) {
@@ -2342,7 +2390,7 @@ public final class OwnershipChecker {
             boolean mutable = param.type().mutableBorrow();
             if (arg instanceof Ast.UnaryExpr unary && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
                 if (mutable && !unary.operator().equals("&mut")) {
-                    throw error(callable + " argument " + position + " requires rt borrow mut");
+                    throw error(callable + " argument " + position + " requires rt mut borrow");
                 }
                 BorrowPlace place = borrowPlace(unary.operand(), scope);
                 if (mutable && !(unary.operand() instanceof Ast.NameExpr)) {
@@ -2400,12 +2448,6 @@ public final class OwnershipChecker {
             return;
         }
         if (target instanceof Ast.MemberExpr member) {
-            Ast.TypeRef receiverType = receiverType(member.receiver(), scope);
-            if (receiverType != null
-                    && receiverType.name().equals("Entry")
-                    && receiverType.arguments().size() == 2) {
-                throw error("Entry<K,V> is immutable; member assignment is not allowed");
-            }
             Ast.ClassDecl klass = classOfReceiver(member.receiver(), scope);
             if (klass != null) {
                 Ast.FieldDecl field = findField(klass, member.member(), new LinkedHashSet<>());
@@ -2431,12 +2473,6 @@ public final class OwnershipChecker {
             return;
         }
         if (target instanceof Ast.IndexExpr indexed) {
-            Ast.TypeRef receiverType = receiverType(indexed.receiver(), scope);
-            if (receiverType != null
-                    && receiverType.name().equals("Entry")
-                    && receiverType.arguments().size() == 2) {
-                throw error("Entry<K,V> is immutable; indexed assignment is not allowed");
-            }
             ensureMutableReceiver(indexed.receiver(), scope, "indexed value");
             checkExpr(indexed.index(), scope, false);
             return;
@@ -2510,13 +2546,7 @@ public final class OwnershipChecker {
             Ast.TypeRef type = receiver.type();
             if (type.isBorrow()) type = type.borrowedTarget();
             Ast.TypeRef fieldType = null;
-            if (type.name().equals("Entry") && type.arguments().size() == 2) {
-                fieldType = switch (member.member()) {
-                    case "key" -> type.arguments().get(0);
-                    case "value" -> type.arguments().get(1);
-                    default -> null;
-                };
-            } else if (type.isClosedAggregateType()) {
+            if (type.isClosedAggregateType()) {
                 fieldType = type.aggregateMembers().get(member.member());
             } else {
                 Ast.ClassDecl klass = findClass(type.name());
@@ -2761,26 +2791,63 @@ public final class OwnershipChecker {
         Set<String> blockLocals = new HashSet<>(locals);
         for (Ast.Stmt stmt : statements) {
             if (stmt instanceof Ast.BindingStmt binding) {
-                scanExpr(binding.initializer(), blockLocals, outer, recursiveBinding, captures, false);
+                // A lambda binding is recursive: its own name is local inside
+                // the lambda initializer. Without this shadowing rule, a Task
+                // can falsely capture/move an unrelated outer value with the
+                // same name.
+                if (binding.initializer() instanceof Ast.LambdaExpr) {
+                    Set<String> initializerLocals = new HashSet<>(blockLocals);
+                    initializerLocals.add(binding.name());
+                    scanExpr(
+                            binding.initializer(),
+                            initializerLocals,
+                            outer,
+                            recursiveBinding,
+                            captures,
+                            false);
+                } else {
+                    scanExpr(
+                            binding.initializer(),
+                            blockLocals,
+                            outer,
+                            recursiveBinding,
+                            captures,
+                            false);
+                }
                 blockLocals.add(binding.name());
             } else if (stmt instanceof Ast.DestructureStmt destructure) {
                 scanExpr(destructure.initializer(), blockLocals, outer, recursiveBinding, captures, false);
                 for (Ast.DestructureBinding binding : destructure.bindings()) {
                     if (!binding.isDiscard()) blockLocals.add(binding.name());
                 }
-            } else if (stmt instanceof Ast.ReturnStmt ret && ret.value() != null) {
-                scanExpr(ret.value(), blockLocals, outer, recursiveBinding, captures, false);
+            } else if (stmt instanceof Ast.ReturnStmt ret) {
+                if (ret.value() != null) {
+                    scanExpr(
+                            ret.value(),
+                            blockLocals,
+                            outer,
+                            recursiveBinding,
+                            captures,
+                            false);
+                }
             } else if (stmt instanceof Ast.YieldStmt yielded) {
                 scanExpr(yielded.value(), blockLocals, outer, recursiveBinding, captures, false);
             } else if (stmt instanceof Ast.ExprStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
             else if (stmt instanceof Ast.DeferStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
             else if (stmt instanceof Ast.BlockStmt s) {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
+            } else if (stmt instanceof Ast.TaskScopeStmt s) {
+                scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.LoopStmt s) {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.IfStmt s) {
                 for (Ast.IfBranch b : s.branches()) {
-                    scanExpr(b.condition(), blockLocals, outer, recursiveBinding, captures, false);
+                    scanConditionExpr(
+                            b.condition(),
+                            blockLocals,
+                            outer,
+                            recursiveBinding,
+                            captures);
                     Set<String> branchLocals = new HashSet<>(blockLocals);
                     collectConditionBindingNames(b.condition(), branchLocals);
                     scanStatements(b.body(), branchLocals, outer, recursiveBinding, captures);
@@ -2791,7 +2858,14 @@ public final class OwnershipChecker {
                 for (Ast.MatchArm arm : s.arms()) {
                     Set<String> armLocals = new HashSet<>(blockLocals);
                     collectPatternBindingNames(arm.pattern(), armLocals);
-                    if (arm.guard() != null) scanExpr(arm.guard(), armLocals, outer, recursiveBinding, captures, false);
+                    if (arm.guard() != null) {
+                        scanConditionExpr(
+                                arm.guard(),
+                                armLocals,
+                                outer,
+                                recursiveBinding,
+                                captures);
+                    }
                     scanStatements(arm.body(), armLocals, outer, recursiveBinding, captures);
                 }
             } else if (stmt instanceof Ast.SwitchStmt s) {
@@ -2851,18 +2925,59 @@ public final class OwnershipChecker {
                 loop.add(s.bindingName());
                 scanStatements(s.body(), loop, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.ForStmt s) {
-                if (s.initializer() instanceof Ast.ExprStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
-                if (s.condition() != null) scanExpr(s.condition(), blockLocals, outer, recursiveBinding, captures, false);
-                if (s.update() != null) scanExpr(s.update(), blockLocals, outer, recursiveBinding, captures, false);
-                scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
+                // A classic for-loop initializer may declare a loop-local
+                // binding. Its initializer executes in the enclosing scope and
+                // can therefore capture/move an outer Task value, while the
+                // declared name itself shadows any outer binding for the
+                // condition, update and body.
+                Set<String> loop = new HashSet<>(blockLocals);
+                if (s.initializer() instanceof Ast.BindingStmt binding) {
+                    Set<String> initializerLocals = blockLocals;
+                    if (binding.initializer() instanceof Ast.LambdaExpr) {
+                        initializerLocals = new HashSet<>(blockLocals);
+                        initializerLocals.add(binding.name());
+                    }
+                    scanExpr(
+                            binding.initializer(),
+                            initializerLocals,
+                            outer,
+                            recursiveBinding,
+                            captures,
+                            false);
+                    loop.add(binding.name());
+                } else if (s.initializer() instanceof Ast.ExprStmt e) {
+                    scanExpr(
+                            e.expression(),
+                            blockLocals,
+                            outer,
+                            recursiveBinding,
+                            captures,
+                            false);
+                }
+                if (s.condition() != null) {
+                    scanExpr(s.condition(), loop, outer, recursiveBinding, captures, false);
+                }
+                if (s.update() != null) {
+                    scanExpr(s.update(), loop, outer, recursiveBinding, captures, false);
+                }
+                scanStatements(s.body(), loop, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.DoWhileStmt s) {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
                 scanExpr(s.condition(), blockLocals, outer, recursiveBinding, captures, false);
+            } else if (stmt instanceof Ast.BreakStmt
+                    || stmt instanceof Ast.ContinueStmt) {
+                // No values referenced by loop-control statements.
+            } else {
+                throw error(
+                        "unsupported Task capture statement '"
+                                + stmt.getClass().getName()
+                                + "'; capture analysis must fail closed");
             }
         }
     }
 
     private void scanExpr(Ast.Expr expr, Set<String> locals, Scope outer, String recursiveBinding, CaptureSet captures, boolean write) {
+        if (expr == null || expr instanceof Ast.LiteralExpr) return;
         if (expr instanceof Ast.NameExpr name) {
             if (name.name().equals(recursiveBinding)) return;
             if (!locals.contains(name.name())) {
@@ -2874,6 +2989,33 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.AssignExpr assignment) {
             scanExpr(assignment.target(), locals, outer, recursiveBinding, captures, true);
             scanExpr(assignment.value(), locals, outer, recursiveBinding, captures, false);
+        } else if (expr instanceof Ast.MatchExpr match) {
+            scanExpr(
+                    match.subject(),
+                    locals,
+                    outer,
+                    recursiveBinding,
+                    captures,
+                    false);
+            for (Ast.MatchValueArm arm : match.arms()) {
+                Set<String> armLocals = new HashSet<>(locals);
+                collectPatternBindingNames(arm.pattern(), armLocals);
+                if (arm.guard() != null) {
+                    scanConditionExpr(
+                            arm.guard(),
+                            armLocals,
+                            outer,
+                            recursiveBinding,
+                            captures);
+                }
+                scanExpr(
+                        arm.value(),
+                        armLocals,
+                        outer,
+                        recursiveBinding,
+                        captures,
+                        false);
+            }
         } else if (expr instanceof Ast.TypeTestExpr e) {
             scanExpr(e.value(), locals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.PatternTestExpr e) {
@@ -2892,6 +3034,18 @@ public final class OwnershipChecker {
         } else if (expr instanceof Ast.RuntimeCallExpr e) {
             for (Ast.Expr arg : e.arguments()) {
                 scanExpr(arg, locals, outer, recursiveBinding, captures, false);
+                // rt take is ownership consumption, not mutation. A direct
+                // free-name take must therefore force MOVE admission even for
+                // otherwise-Copy values, without requiring a mutable binding.
+                if (e.operation().equals("take")
+                        && arg instanceof Ast.NameExpr name
+                        && !name.name().equals(recursiveBinding)
+                        && !locals.contains(name.name())) {
+                    VarState state = outer.lookup(name.name());
+                    if (state != null) {
+                        captures.add(name.name(), state, false, true);
+                    }
+                }
             }
         } else if (expr instanceof Ast.CallExpr e) {
             scanExpr(e.callee(), locals, outer, recursiveBinding, captures, false);
@@ -2904,6 +3058,9 @@ public final class OwnershipChecker {
             scanExpr(e.index(), locals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.NewExpr e) for (Ast.Expr arg : e.arguments()) scanExpr(arg, locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.AwaitExpr e) scanExpr(e.expression(), locals, outer, recursiveBinding, captures, false);
+        else if (expr instanceof Ast.TaskExpr e) {
+            scanStatements(e.body(), locals, outer, recursiveBinding, captures);
+        }
         else if (expr instanceof Ast.ChannelOpExpr e) {
             scanExpr(e.channel(), locals, outer, recursiveBinding, captures, false);
             if (e.value() != null) {
@@ -2957,6 +3114,11 @@ public final class OwnershipChecker {
                         recursiveBinding,
                         captures);
             }
+        } else {
+            throw error(
+                    "unsupported Task capture expression '"
+                            + expr.getClass().getName()
+                            + "'; capture analysis must fail closed");
         }
     }
 
@@ -3114,6 +3276,45 @@ public final class OwnershipChecker {
         return target;
     }
 
+    /**
+     * Mirror TypeChecker.typeOfCondition lexical refinement flow: bindings
+     * introduced by the left operand of && are visible while scanning the
+     * right operand. Without this, a same-named parent binding can be falsely
+     * classified as a Task capture and moved at submission.
+     */
+    private void scanConditionExpr(
+            Ast.Expr condition,
+            Set<String> locals,
+            Scope outer,
+            String recursiveBinding,
+            CaptureSet captures) {
+        if (condition instanceof Ast.BinaryExpr binary
+                && binary.operator().equals("&&")) {
+            scanConditionExpr(
+                    binary.left(),
+                    locals,
+                    outer,
+                    recursiveBinding,
+                    captures);
+            Set<String> rightLocals = new HashSet<>(locals);
+            collectConditionBindingNames(binary.left(), rightLocals);
+            scanConditionExpr(
+                    binary.right(),
+                    rightLocals,
+                    outer,
+                    recursiveBinding,
+                    captures);
+            return;
+        }
+        scanExpr(
+                condition,
+                locals,
+                outer,
+                recursiveBinding,
+                captures,
+                false);
+    }
+
     private void collectConditionBindingNames(Ast.Expr condition, Set<String> names) {
         if (condition instanceof Ast.TypeTestExpr test && test.binding() != null) names.add(test.binding());
         else if (condition instanceof Ast.PatternTestExpr test) collectPatternBindingNames(test.pattern(), names);
@@ -3157,7 +3358,7 @@ public final class OwnershipChecker {
         if (type == null) return null;
         if (type.isBorrow()) type = type.borrowedTarget();
         if (isMutexGuardType(type)) type = type.arguments().getFirst();
-        return ownershipAggregateType(type);
+        return type;
     }
 
     private Ast.ClassDecl classOfReceiver(Ast.Expr receiver, Scope scope) {
@@ -3666,6 +3867,311 @@ public final class OwnershipChecker {
                 && capture.source.kind == ValueKind.MUT_BORROW;
     }
 
+    /**
+     * Minimal explicit forbidden-capability backstop for independently
+     * scheduled Tasks. This is NOT a full nominal Send derivation. Future<T>
+     * is intentionally not on this list: OresFuture is runtime-thread-safe,
+     * cross-scheduler await is supported, and Future is affine so Task capture
+     * transfers it with MOVE rather than copying cancellation/consumer authority.
+     */
+    /**
+     * Conservative compiler-derived Send backstop for independently scheduled
+     * Tasks. Owned data may move only when every statically visible component
+     * is safe to transfer. Unknown/inferred values and first-class closures
+     * remain fail-closed until they carry explicit Send provenance.
+     *
+     * <p>Future<T> is intentionally allowed: OresFuture is runtime-thread-safe,
+     * the await graph is VM-wide, and Future is affine so Task capture uses
+     * MOVE rather than duplicating cancellation/consumer authority.
+     */
+    private boolean forbiddenTaskCapability(Ast.TypeRef type) {
+        return !taskCaptureCapabilities(
+                type,
+                java.util.Collections.newSetFromMap(
+                        new IdentityHashMap<>())).send();
+    }
+
+    /**
+     * Task-specific adapter over the language's canonical Send/Sync/Share
+     * lattice. This keeps ownership capture admission aligned with
+     * AutoTraitRules without weakening the stricter generic async-callable
+     * boundary policy in TypeChecker.
+     *
+     * <p>Two runtime-owned handles intentionally differ from the closed
+     * TypeAutoTraits table here:
+     * <ul>
+     *   <li>Future&lt;T&gt; is affine and may MOVE between Tasks when T is
+     *       itself task-Send (Future&lt;void&gt; carries no payload).</li>
+     *   <li>Channel&lt;T&gt; is an explicitly synchronized Copy handle and may
+     *       cross Tasks when T is task-Send.</li>
+     * </ul>
+     * Unknown nominal/generic provenance fails closed.
+     */
+    private AutoTraitRules.Capabilities taskCaptureCapabilities(
+            Ast.TypeRef type,
+            Set<Ast.ClassDecl> visitingClasses) {
+        AutoTraitRules.Capabilities none =
+                new AutoTraitRules.Capabilities(false, false, false);
+        AutoTraitRules.Capabilities scalar =
+                AutoTraitRules.infer(AutoTraitRules.TypeModel.scalar());
+
+        if (type == null || type.isBorrow() || type.inferArguments()
+                || type.name().equals("$infer$")
+                || type.isComplement()
+                || type.isSequenceShape()
+                || type.isRepeatExact()
+                || type.isRepeatMany()
+                || type.isNamedParameter()) {
+            return none;
+        }
+
+        if (type.isStringLiteral() || type.isIntLiteral()
+                || type.isBoolLiteral()) {
+            // Literal metadata is compiler-created and never generic.
+            // A fabricated $string$/$int$/$bool$ wrapper containing a
+            // non-Send argument must not inherit scalar Send authority.
+            return type.arguments().isEmpty() && !type.inferArguments()
+                    ? scalar : none;
+        }
+
+        if (type.isUnion() || type.isTupleType()) {
+            // A compiler-made union always has members. A synthetic,
+            // zero-member union must not derive Send by vacuous truth.
+            if (type.isUnion() && type.arguments().isEmpty()) return none;
+            boolean send = true;
+            boolean sync = true;
+            boolean share = true;
+            for (Ast.TypeRef member : type.arguments()) {
+                AutoTraitRules.Capabilities child =
+                        taskCaptureCapabilities(member, visitingClasses);
+                send &= child.send();
+                sync &= child.sync();
+                share &= child.share();
+            }
+            return new AutoTraitRules.Capabilities(send, sync, share);
+        }
+
+        if (type.isClosedAggregateType()) {
+            boolean send = true;
+            boolean sync = true;
+            boolean share = true;
+            for (Ast.TypeRef member : type.aggregateMembers().values()) {
+                AutoTraitRules.Capabilities child =
+                        taskCaptureCapabilities(member, visitingClasses);
+                send &= child.send();
+                sync &= child.sync();
+                share &= child.share();
+            }
+            boolean immutable = type.isReadonlyRecordType();
+            return new AutoTraitRules.Capabilities(
+                    send,
+                    immutable && sync,
+                    immutable && share);
+        }
+
+        String name = type.name();
+        if (hasLocalTypeAliasNamed(name)) return none;
+        Ast.ClassDecl declaredClass = findClass(name);
+        if (declaredClass != null && java.util.Set.of(
+                "ActorRef", "Future", "Channel", "SharedMutex",
+                "Option", "Result", "IteratorResult",
+                "Array", "List", "Vector", "Slice",
+                "FixedArray", "FixedList",
+                "i8", "i16", "i32", "i64",
+                "u8", "u16", "u32", "u64",
+                "int", "uint", "bigint",
+                "f32", "f64", "float", "decimal",
+                "complex64", "complex128", "complex",
+                "bool", "Bool", "string", "String",
+                "Symbol", "$builtin$Symbol",
+                "ActorId", "ActorKind",
+                "OptionUnwrapError").contains(name)) return none;
+
+        if (switch (name) {
+            case "i8", "i16", "i32", "i64",
+                    "u8", "u16", "u32", "u64",
+                    "int", "uint", "bigint",
+                    "f32", "f64", "float", "decimal",
+                    "complex64", "complex128", "complex",
+                    "bool", "Bool", "string", "String",
+                    "Symbol", "$builtin$Symbol",
+                    "ActorId", "ActorKind",
+                    "OptionUnwrapError" -> true;
+            default -> false;
+        }) {
+            return type.arguments().isEmpty() ? scalar : none;
+        }
+
+        if (name.equals("void") || name.equals("null")) {
+            return none;
+        }
+
+        // ActorRef<T> is an explicit runtime-synchronized mailbox capability.
+        // T is routing/protocol metadata, not embedded actor state.
+        if (name.equals("ActorRef")) {
+            return isVerifiedActorReference(type) ? scalar : none;
+        }
+
+        // Task-owned authority and actor-turn/foreign capabilities do not
+        // become Send merely by being wrapped in an owned binding.
+        if (switch (name) {
+            case "Task", "TaskHandle", "TaskScope",
+                    "MutexGuard",
+                    "Fnc", "Function",
+                    "ActorMail", "ActorOutput", "ActorOutputStream",
+                    "TcpConnection", "HttpExchange", "HttpServer",
+                    "HttpHandler", "HttpResponse", "HttpResponseDraft",
+                    "SelectCase", "SelectSet", "SelectResult",
+                    "Iterator", "AsyncIterator" -> true;
+            default -> false;
+        }) {
+            return none;
+        }
+
+        if (name.equals("Option") || name.equals("IteratorResult")) {
+            return type.arguments().size() == 1
+                    ? taskCaptureCapabilities(
+                            type.arguments().getFirst(), visitingClasses)
+                    : none;
+        }
+        if (name.equals("Result")) {
+            if (type.arguments().size() != 2) return none;
+            AutoTraitRules.Capabilities left =
+                    taskCaptureCapabilities(
+                            type.arguments().get(0), visitingClasses);
+            AutoTraitRules.Capabilities right =
+                    taskCaptureCapabilities(
+                            type.arguments().get(1), visitingClasses);
+            return new AutoTraitRules.Capabilities(
+                    left.send() && right.send(),
+                    left.sync() && right.sync(),
+                    left.share() && right.share());
+        }
+
+        if (name.equals("Future")) {
+            if (type.arguments().size() != 1) return none;
+            Ast.TypeRef payload = type.arguments().getFirst();
+            // Only the exact unshadowed void primitive is an empty result.
+            // Malformed void<T> or aliased/nominal "void" is not proof of
+            // an empty, Send-safe payload.
+            boolean emptyPayload = payload.name().equals("void")
+                    && payload.arguments().isEmpty()
+                    && !payload.inferArguments()
+                    && !hasLocalTypeAliasNamed("void")
+                    && findClass("void") == null;
+            boolean payloadSend = emptyPayload
+                    || taskCaptureCapabilities(
+                            payload, visitingClasses).send();
+            return new AutoTraitRules.Capabilities(
+                    payloadSend, false, false);
+        }
+
+        if (name.equals("Channel")) {
+            if (type.arguments().size() != 1) return none;
+            AutoTraitRules.Capabilities payload =
+                    taskCaptureCapabilities(
+                            type.arguments().getFirst(), visitingClasses);
+            return payload.send()
+                    ? new AutoTraitRules.Capabilities(true, true, true)
+                    : none;
+        }
+
+        if (name.equals("SharedMutex")) {
+            if (type.arguments().size() != 1) return none;
+            AutoTraitRules.Capabilities payload =
+                    taskCaptureCapabilities(
+                            type.arguments().getFirst(), visitingClasses);
+            return payload.send()
+                    ? new AutoTraitRules.Capabilities(true, true, true)
+                    : none;
+        }
+
+        // User classes with builtin-looking names follow their declared class
+        // layout where TypeChecker permits that shadowing (Box/Arc/etc.).
+        AutoTraitRules.Kind wrapperKind = switch (name) {
+            case "Box" -> AutoTraitRules.Kind.BOX;
+            case "Arc" -> AutoTraitRules.Kind.ARC;
+            case "Weak" -> AutoTraitRules.Kind.WEAK;
+            case "Rc" -> AutoTraitRules.Kind.RC;
+            case "RefCell" -> AutoTraitRules.Kind.REFCELL;
+            case "Mutex" -> AutoTraitRules.Kind.MUTEX;
+            case "RwLock" -> AutoTraitRules.Kind.RWLOCK;
+            default -> null;
+        };
+        if (wrapperKind != null && declaredClass == null) {
+            if (type.arguments().size() != 1) return none;
+            AutoTraitRules.Capabilities child =
+                    taskCaptureCapabilities(
+                            type.arguments().getFirst(), visitingClasses);
+            AutoTraitRules.TypeModel childModel =
+                    TypeAutoTraits.modelFromCapabilities(child);
+            boolean shareableDomain =
+                    wrapperKind == AutoTraitRules.Kind.ARC
+                            || wrapperKind == AutoTraitRules.Kind.WEAK;
+            return AutoTraitRules.infer(
+                    AutoTraitRules.TypeModel.wrapped(
+                            wrapperKind,
+                            childModel,
+                            shareableDomain));
+        }
+
+        if (switch (name) {
+            case "Array", "List", "Vector",
+                    "Slice", "FixedArray", "FixedList" -> true;
+            default -> false;
+        }) {
+            if (type.arguments().size() != 1) return none;
+            AutoTraitRules.Capabilities element =
+                    taskCaptureCapabilities(
+                            type.arguments().getFirst(), visitingClasses);
+            // Mutable sequence ownership may move when elements are Send, but
+            // the sequence itself is not implicitly Sync/Share.
+            return new AutoTraitRules.Capabilities(
+                    element.send(), false, false);
+        }
+
+        Ast.ClassDecl klass = declaredClass;
+        if (klass == null || klass.actorKind() != Ast.ActorKind.NONE) {
+            // Includes unresolved generic parameters (for example T), opaque
+            // imported/foreign nominals without linked layout, and actor
+            // instances. All require explicit provenance before Task transfer.
+            return none;
+        }
+
+        if (!visitingClasses.add(klass)) {
+            // A nominal cycle is not a Send proof. In particular, a generic
+            // recursion can revisit the SAME declaration with DIFFERENT
+            // type arguments and hide a nested non-Send capability:
+            // Node<T> -> Node<Rc<T>>. Until we have a coinductive proof
+            // keyed by fully substituted nominal instantiations, reject.
+            // Recursive values may still be represented via checked
+            // indirections; never infer safety from class identity alone.
+            return none;
+        }
+        try {
+            if (type.arguments().size()
+                    != klass.genericParameters().size()) {
+                return none;
+            }
+
+            for (ResolvedField field : effectiveFieldTargets(
+                    klass, type, new LinkedHashSet<>())) {
+                Ast.TypeRef fieldType = substituteType(
+                        ownershipFieldType(field.field()),
+                        genericBindings(
+                                field.owner().genericParameters(),
+                                field.ownerType().arguments()));
+                if (!taskCaptureCapabilities(
+                        fieldType, visitingClasses).send()) {
+                    return none;
+                }
+            }
+            return new AutoTraitRules.Capabilities(true, false, false);
+        } finally {
+            visitingClasses.remove(klass);
+        }
+    }
+
     private void validateDeferredCaptures(CaptureSet union) {
         for (Capture capture : union.values.values()) {
             VarState source = capture.source;
@@ -3679,27 +4185,29 @@ public final class OwnershipChecker {
             if (source.kind == ValueKind.IMM_BORROW
                     || source.kind == ValueKind.MUT_BORROW
                     || source.type.isBorrow()) {
-                throw error("nb select continuation cannot capture borrowed value '"
+                throw error("deferred task/continuation cannot capture borrowed value '"
                         + capture.name
                         + "'; capture owned data or actor self instead");
             }
             if (containsMutexGuardType(source.type)) {
-                throw error("nb select continuation cannot capture guard-bearing value '"
+                throw error("deferred task/continuation cannot capture guard-bearing value '"
                         + capture.name + "'");
             }
 
             if (capture.write) {
                 if (!source.mutable && !source.rebindable) {
-                    throw error("nb select continuation cannot write read-only capture '"
+                    throw error("deferred task/continuation cannot write read-only capture '"
                             + capture.name + "'");
                 }
                 if (source.immutableBorrows > 0 || source.mutableBorrowed) {
-                    throw error("nb select continuation cannot capture '"
+                    throw error("deferred task/continuation cannot capture '"
                             + capture.name + "' mutably while borrowed");
                 }
                 move(source, capture.name);
-            } else if (source.kind == ValueKind.MOVE_ONLY) {
-                // Registration owns this value from this point forward.
+            } else if (capture.consume || source.kind == ValueKind.MOVE_ONLY) {
+                // Registration owns an explicitly consumed value immediately,
+                // including Copy values named by rt take. Consumption is not a
+                // write, so fixed/const bindings remain valid transfer sources.
                 move(source, capture.name);
             }
         }
@@ -3752,20 +4260,8 @@ public final class OwnershipChecker {
         if (receiverType == null) return Ast.TypeRef.inferred();
         Ast.TypeRef concrete = receiverType.isBorrow()
                 ? receiverType.borrowedTarget() : receiverType;
-        concrete = ownershipAggregateType(concrete);
 
         Object constantIndex = computedIndexConstant(indexed.index(), scope);
-
-        if (concrete.name().equals("Entry") && concrete.arguments().size() == 2) {
-            if (constantIndex instanceof String key) {
-                return switch (key) {
-                    case "key" -> concrete.arguments().get(0);
-                    case "value" -> concrete.arguments().get(1);
-                    default -> Ast.TypeRef.inferred();
-                };
-            }
-            return Ast.TypeRef.union(concrete.arguments());
-        }
 
         if (concrete.isClosedAggregateType()) {
             Map<String, Ast.TypeRef> members = concrete.aggregateMembers();
@@ -3924,7 +4420,6 @@ public final class OwnershipChecker {
 
     private Ast.TypeRef objectRestBindingType(Ast.TypeRef source, List<Ast.DestructureBinding> bindings) {
         Ast.TypeRef concrete = source.isBorrow() ? source.borrowedTarget() : source;
-        concrete = ownershipAggregateType(concrete);
         if (!concrete.isClosedAggregateType()) return Ast.TypeRef.inferred();
 
         Map<String, Ast.TypeRef> remainder = new LinkedHashMap<>(concrete.aggregateMembers());
@@ -3940,14 +4435,6 @@ public final class OwnershipChecker {
 
     private Ast.TypeRef objectMemberBindingType(Ast.TypeRef concrete, String name) {
         if (concrete.isBorrow()) concrete = concrete.borrowedTarget();
-        concrete = ownershipAggregateType(concrete);
-        if (concrete.name().equals("Entry") && concrete.arguments().size() == 2) {
-            return switch (name) {
-                case "key" -> concrete.arguments().get(0);
-                case "value" -> concrete.arguments().get(1);
-                default -> Ast.TypeRef.inferred();
-            };
-        }
         if (concrete.isClosedAggregateType()) {
             Ast.TypeRef member = concrete.aggregateMembers().get(name);
             if (member != null) return member;
@@ -4008,15 +4495,11 @@ public final class OwnershipChecker {
             Ast.TypeRef first = concrete.arguments().getFirst();
             return concrete.arguments().stream().allMatch(first::equals)
                     ? first
-                    : Ast.TypeRef.union(concrete.arguments());
+                    : Ast.TypeRef.inferred();
         }
         Ast.TypeRef sequence = sequenceDestructureSourceType(concrete);
         if (!sequence.equals(concrete)) return iterableElementType(sequence, asyncIteration);
         return Ast.TypeRef.inferred();
-    }
-
-    private Ast.TypeRef ownershipAggregateType(Ast.TypeRef type) {
-        return type;
     }
 
     private Ast.TypeRef joinConditionalType(Ast.TypeRef left, Ast.TypeRef right) {
@@ -4034,19 +4517,71 @@ public final class OwnershipChecker {
         return isCopyType(type) ? ValueKind.COPY : ValueKind.MOVE_ONLY;
     }
 
+    /**
+     * A mailbox handle's nominal type is Copy/Send only when the target is
+     * a linked or locally checked actor declaration, never merely because
+     * the identifier is spelled ActorRef. Used identically for the base
+     * ownership Copy classifier and the independent Task Send proof.
+     */
+    private boolean hasLocalTypeAliasNamed(String name) {
+        for (Ast.ModuleDecl module : checkedProgram.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.TypeAliasDecl alias
+                        && alias.name().equals(name)) return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isVerifiedActorReference(Ast.TypeRef type) {
+        if (type == null || type.isBorrow()
+                || !type.name().equals("ActorRef")
+                || type.inferArguments()
+                || type.arguments().size() != 1
+                || findClass("ActorRef") != null
+                || hasLocalTypeAliasNamed("ActorRef")) {
+            return false;
+        }
+        Ast.TypeRef target = type.arguments().getFirst();
+        if (target.isBorrow() || target.inferArguments()
+                || !target.arguments().isEmpty()
+                || target.isComplement() || target.isUnion()
+                || target.isTupleType() || target.isClosedAggregateType()) {
+            return false;
+        }
+        if (hasLocalTypeAliasNamed(target.name())) return false;
+        Ast.ClassDecl actorTarget = findClass(target.name());
+        return actorTarget != null
+                && actorTarget.actorKind() != Ast.ActorKind.NONE;
+    }
+
     private boolean isCopyType(Ast.TypeRef type) {
-        if (type == null || type.isBorrow()) return false;
-        if (type.isUnion()) return type.arguments().stream().allMatch(this::isCopyType);
+        // Inference markers and compiler-only unverified shapes carry no
+        // structural Copy proof. Task Send already rejects them; Copy must
+        // not silently certify the same unresolved nominal metadata.
+        if (type == null || type.isBorrow() || type.inferArguments()
+                || type.isComplement() || type.isSequenceShape()
+                || type.isRepeatExact() || type.isRepeatMany()
+                || type.isNamedParameter()) return false;
+        if (type.isUnion()) return !type.arguments().isEmpty()
+                && type.arguments().stream().allMatch(this::isCopyType);
         if (type.isTupleType()) return type.arguments().stream().allMatch(this::isCopyType);
+        if (hasLocalTypeAliasNamed(type.name())) return false;
+        // Same spelling is not enough to bestow a runtime wrapper's Copy
+        // semantics on a locally declared nominal class.
+        // A locally declared class is never certified as a builtin Copy
+        // scalar by sharing its name (including ActorId, Symbol and String).
+        // Ordinary user classes remain move-only by default.
+        if (findClass(type.name()) != null) return false;
         return switch (type.name()) {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
-                    "bool","Bool","string","String","void","SharedMutex",
-                    "Channel","SelectCase","SelectSet","OptionUnwrapError" -> true;
+                    "bool","Bool","string","String","void",
+                    "SelectCase","SelectSet","OptionUnwrapError"
+                    -> type.arguments().isEmpty();
+            case "SharedMutex", "Channel" -> type.arguments().size() == 1;
+            case "ActorRef" -> isVerifiedActorReference(type);
             case "Option" -> type.arguments().size() == 1 && isCopyType(type.arguments().getFirst());
-            case "Entry" -> type.arguments().size() == 2
-                    && isCopyType(type.arguments().get(0))
-                    && isCopyType(type.arguments().get(1));
             case "Result" -> type.arguments().size() == 2
                     && isCopyType(type.arguments().get(0))
                     && isCopyType(type.arguments().get(1));
@@ -4272,14 +4807,28 @@ public final class OwnershipChecker {
 
     private record StateSnapshot(boolean moved, int immutableBorrows, boolean mutableBorrowed) { }
 
-    private record Capture(String name, VarState source, boolean write) { }
+    private record Capture(
+            String name, VarState source, boolean write, boolean consume) { }
 
     private static final class CaptureSet {
         private final Map<String,Capture> values = new LinkedHashMap<>();
+
         private void add(String name, VarState state, boolean write) {
+            add(name, state, write, false);
+        }
+
+        private void add(
+                String name, VarState state, boolean write, boolean consume) {
             Capture existing = values.get(name);
-            values.put(name, existing == null ? new Capture(name, state, write)
-                    : new Capture(name, state, existing.write() || write));
+            values.put(
+                    name,
+                    existing == null
+                            ? new Capture(name, state, write, consume)
+                            : new Capture(
+                                    name,
+                                    state,
+                                    existing.write() || write,
+                                    existing.consume() || consume));
         }
     }
 }
