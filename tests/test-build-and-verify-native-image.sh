@@ -44,7 +44,11 @@ int main(int argc, char **argv) {
     if (argc >= 2 && strcmp(argv[1], "--mode=jit") == 0) {
         int status = atoi(env_or("MOCK_JIT_STATUS", "2"));
         if (status == 2) {
-            if (getenv("MOCK_JIT_UNRELATED_USAGE_ERROR"))
+            if (getenv("MOCK_JIT_STDOUT_SPOOF")) {
+                puts("This executable was built AOT-only; --mode=jit cannot enable runtime compilation.");
+                fputs("oreslang: unknown CLI option\n", stderr);
+            }
+            else if (getenv("MOCK_JIT_UNRELATED_USAGE_ERROR"))
                 fputs("oreslang: unknown CLI option\n", stderr);
             else if (getenv("MOCK_JIT_WRONG_MODE_REASON"))
                 fputs("oreslang: unrelated runtime compilation setting\n", stderr);
@@ -65,7 +69,13 @@ int main(int argc, char **argv) {
         if (access(argv[2], F_OK) != 0) return 9;
         if (strstr(argv[2], "private-actor-sharing-invalid.ores") != NULL) {
             if (getenv("MOCK_ACCEPT_INVALID_PRIVATE_ACTOR")) return 0;
-            if (getenv("MOCK_WRONG_ACTOR_REJECTION"))
+            if (getenv("MOCK_ACTOR_STDOUT_SPOOF")) {
+                puts("Oreslang isolate denies capability SHARED_MEMORY required by SharedMutex<T>");
+                fputs("Oreslang parse error at 1:1: unexpected token\n", stderr);
+            }
+            else if (getenv("MOCK_ACTOR_DENIAL_EMBEDDED"))
+                fputs("Oreslang parse error: Oreslang isolate denies capability SHARED_MEMORY\n", stderr);
+            else if (getenv("MOCK_WRONG_ACTOR_REJECTION"))
                 fputs("Oreslang parse error at 1:1: unexpected token\n", stderr);
             else if (getenv("MOCK_WRONG_ACTOR_CAPABILITY"))
                 fputs("Oreslang isolate denies capability NETWORK required by actor\n", stderr);
@@ -307,7 +317,8 @@ assert_case() {
       'private actor denial uses wrong CLI exit status')
         expected_diagnostic='expected private actor capability denial with CLI status 1, got 2' ;;
       'valid shared/private actor rejected') : ;;
-      'actor rejected for unrelated parse error'|'actor rejected for unrelated network capability')
+      'actor rejected for unrelated parse error'|'actor rejected for unrelated network capability'|\
+      'actor denial spoofed on stdout'|'actor denial embedded in parse error')
         expected_diagnostic='private actor negative fixture failed without a capability-denial diagnostic' ;;
       'actor check-only emitted guest output'|'actor check-only reports stderr diagnostic with zero exit'|\
       'actor check-only emits NUL stdout'|'actor check-only emits NUL stderr')
@@ -330,7 +341,8 @@ assert_case() {
       'trailing blank stdout after valid summary')
         expected_diagnostic='native executable did not produce the exact unique PASS/SKIP guest tests and summary' ;;
       'unrelated CLI error impersonates AOT JIT rejection'|\
-      'wrong AOT JIT refusal reason'|'wrong hybrid JIT refusal reason')
+      'wrong AOT JIT refusal reason'|'wrong hybrid JIT refusal reason'|\
+      'JIT reason spoofed on stdout')
         expected_diagnostic='native executable refused JIT without the required build-mode diagnostic' ;;
       'native image accepting JVM JIT')
         expected_diagnostic='expected --mode=jit to be rejected with CLI status 2, got 0' ;;
@@ -401,6 +413,8 @@ grep -Fx 'private actor negative fixture failed without a capability-denial diag
   exit 1
 }
 assert_case 'actor rejected for unrelated network capability' failure aot compressed32 MOCK_WRONG_ACTOR_CAPABILITY=1
+assert_case 'actor denial spoofed on stdout' failure aot compressed32 MOCK_ACTOR_STDOUT_SPOOF=1
+assert_case 'actor denial embedded in parse error' failure aot compressed32 MOCK_ACTOR_DENIAL_EMBEDDED=1
 grep -Fx 'private actor negative fixture failed without a capability-denial diagnostic' "$tmp/stderr" >/dev/null || {
   echo 'FAILED: unrelated network capability was not rejected at the actor capability gate' >&2
   exit 1
@@ -458,6 +472,7 @@ grep -Fx 'native executable refused JIT without the required build-mode diagnost
   exit 1
 }
 assert_case 'wrong AOT JIT refusal reason' failure aot compressed32 MOCK_JIT_WRONG_MODE_REASON=1
+assert_case 'JIT reason spoofed on stdout' failure aot compressed32 MOCK_JIT_STDOUT_SPOOF=1
 grep -Fx 'native executable refused JIT without the required build-mode diagnostic' "$tmp/stderr" >/dev/null || {
   echo 'FAILED: JIT-related negative case did not reach the mode-specific refusal check' >&2
   exit 1
