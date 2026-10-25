@@ -10,6 +10,7 @@ import dev.oreslang.interop.MixedJavaCompiler;
 import dev.oreslang.interop.MixedSourceUnit;
 import dev.oreslang.nodes.OresEvalRootNode;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.stdlib.CoreLibrarySources;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
@@ -38,6 +39,9 @@ import java.util.Set;
 public final class LinkedProgramRunner {
     private LinkedProgramRunner() { }
 
+    /** Host-owned exit status: embedding callers must never be forcibly terminated. */
+    public record RunResult(IncrementalCompiler.BuildResult build, int exitStatus) { }
+
     /** Parses/type-checks the reachable Ores graph and javac-checks mixed Java source. */
     public static IncrementalCompiler.BuildResult validate(Path entryFile) throws IOException {
         return validate(entryFile, System.getenv());
@@ -60,7 +64,8 @@ public final class LinkedProgramRunner {
         OresProjectConfig projectConfig = OresProjectConfig.discover(entry, environment);
         LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
-        collectImportClosure(entry, units, projectConfig, importResolutions);
+        collectImportClosure(entry, units, projectConfig, importResolutions,
+                new SourceAdmissionBudget(), 0);
         ensureJavaEntryContainsOres(entry, units);
 
         if (policy != null) {
@@ -144,13 +149,39 @@ public final class LinkedProgramRunner {
             Map<String, String> environment,
             OutputStream out,
             OutputStream err) throws IOException {
+        return runWithExitStatus(entryFile, policy, permissions, permissionCheckMode,
+                executionProfile, allowedHostClasses, environment, out, err).build();
+    }
+
+    public static RunResult runWithExitStatus(
+            Path entryFile,
+            IsolatePolicy policy,
+            ExecutionProfile profile,
+            OutputStream out,
+            OutputStream err) throws IOException {
+        return runWithExitStatus(entryFile, policy,
+                RuntimePermissions.fromCapabilities(policy.capabilities()),
+                PermissionCheckMode.COMPILE, profile, Set.of(), System.getenv(), out, err);
+    }
+
+    public static RunResult runWithExitStatus(
+            Path entryFile,
+            IsolatePolicy policy,
+            RuntimePermissions permissions,
+            PermissionCheckMode permissionCheckMode,
+            ExecutionProfile executionProfile,
+            Set<String> allowedHostClasses,
+            Map<String, String> environment,
+            OutputStream out,
+            OutputStream err) throws IOException {
         Path entry = entryFile.toAbsolutePath().normalize();
         if (!Files.isRegularFile(entry)) throw new IllegalArgumentException("not a file: " + entry);
 
         OresProjectConfig projectConfig = OresProjectConfig.discover(entry, environment);
         LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
-        collectImportClosure(entry, units, projectConfig, importResolutions);
+        collectImportClosure(entry, units, projectConfig, importResolutions,
+                new SourceAdmissionBudget(), 0);
         ensureJavaEntryContainsOres(entry, units);
         boolean hasJavaSource = units.values().stream().anyMatch(MixedSourceUnit::hasJavaSource);
         if (hasJavaSource) {
@@ -166,6 +197,7 @@ public final class LinkedProgramRunner {
         IncrementalCompiler.BuildResult build =
                 new IncrementalCompiler().compile(sources, importResolutions);
         Map<String, Ast.Program> programs = parsePrograms(sources);
+        int exitStatus = 0;
         String entryId = unitId(entry);
         MixedSourceUnit entryUnit = units.get(entryId);
         if (entryUnit == null) throw new IllegalStateException("entry source unit was not collected: " + entryId);
@@ -196,7 +228,11 @@ public final class LinkedProgramRunner {
                         Source source = Source.newBuilder(OresLanguage.ID, unit.sourceText(), id)
                                 .mimeType(OresLanguage.MIME_TYPE)
                                 .buildLiteral();
-                        parsedUnits.put(id, context.parse(source));
+                        try (OresLanguage.PrecheckedProgramScope ignored =
+                                OresLanguage.openPrecheckedProgram(
+                                        id, unit.sourceText(), unit.program())) {
+                            parsedUnits.put(id, context.parse(source));
+                        }
                     }
 
                     for (Map.Entry<String, Map<String, String>> importer : importResolutions.entrySet()) {
@@ -233,7 +269,7 @@ public final class LinkedProgramRunner {
                         } else {
                             Value entryPoint = parsedUnits.get(entryId);
                             if (entryPoint == null) throw new IllegalStateException("entry unit was not linked: " + entryId);
-                            entryPoint.execute(OresEvalRootNode.MAIN_ONLY_COMMAND);
+                            exitStatus = requireExitStatus(entryPoint.execute(OresEvalRootNode.MAIN_ONLY_COMMAND));
                         }
                     }
                 }
@@ -241,7 +277,19 @@ public final class LinkedProgramRunner {
                 currentThread.setContextClassLoader(previousLoader);
             }
         }
-        return build;
+        return new RunResult(build, exitStatus);
+    }
+
+    private static int requireExitStatus(Value value) {
+        if (value == null || value.isNull()) return 0;
+        if (!value.fitsInInt()) {
+            throw new IllegalArgumentException("Oreslang main() exit status must be an int");
+        }
+        int code = value.asInt();
+        if (code < 0 || code > 255) {
+            throw new IllegalArgumentException("Oreslang process exit status must be in 0..255: " + code);
+        }
+        return code;
     }
 
     /**
@@ -310,7 +358,9 @@ public final class LinkedProgramRunner {
 
     private static Map<String, Ast.Program> parsePrograms(Map<String, String> sources) {
         LinkedHashMap<String, Ast.Program> programs = new LinkedHashMap<>();
-        for (Map.Entry<String, String> source : sources.entrySet()) programs.put(source.getKey(), Parser.parse(source.getValue()));
+        for (Map.Entry<String, String> source : sources.entrySet()) {
+            programs.put(source.getKey(), Parser.parse(source.getValue()));
+        }
         return programs;
     }
 
@@ -324,18 +374,33 @@ public final class LinkedProgramRunner {
             Path unit,
             Map<String, MixedSourceUnit> units,
             OresProjectConfig projectConfig,
-            Map<String, Map<String, String>> importResolutions) throws IOException {
+            Map<String, Map<String, String>> importResolutions,
+            SourceAdmissionBudget budget,
+            int depth) throws IOException {
         Path normalized = unit.toAbsolutePath().normalize();
         String id = unitId(normalized);
         if (units.containsKey(id)) return;
+        // Fail before any file I/O or parsing when import recursion is too deep.
+        budget.checkCanAdmitUnit(depth);
 
-        MixedSourceUnit mixed = MixedSourceUnit.parse(normalized, Files.readString(normalized));
+        BoundedSourceReader.ReadResult source = BoundedSourceReader.readWithByteCount(normalized);
+        budget.admit(source.byteCount(), depth);
+        MixedSourceUnit mixed = MixedSourceUnit.parse(normalized, source.text());
         units.put(id, mixed);
         if (!mixed.hasOresSource()) return;
 
         Ast.Program program = Parser.parse(mixed.oresSource());
         for (Ast.ImportDecl imported : program.imports()) {
+            ImportRules.validate(imported);
             if (ImportRules.isJavaPath(imported.path())) continue;
+
+            if (CoreLibrarySources.isCoreImport(imported.path())) {
+                String targetId = CoreLibrarySources.unitId(imported.path());
+                recordImportResolution(importResolutions, id, imported.path(), targetId);
+                collectCoreImportClosure(imported.path(), units, importResolutions,
+                        budget, depth + 1);
+                continue;
+            }
 
             String raw = imported.path().replace('\\', '/');
             java.util.Optional<Path> target = projectConfig.resolveImport(normalized, imported.path());
@@ -349,9 +414,67 @@ public final class LinkedProgramRunner {
                 continue;
             }
 
-            String targetId = unitId(target.get());
+            Path resolvedTarget = target.get().toAbsolutePath().normalize();
+            if (Files.isSameFile(normalized, resolvedTarget)) {
+                throw new IllegalArgumentException(
+                        "source unit '" + id + "' cannot import itself via '" + imported.path() + "'");
+            }
+
+            String targetId = unitId(resolvedTarget);
             recordImportResolution(importResolutions, id, imported.path(), targetId);
-            collectImportClosure(target.get(), units, projectConfig, importResolutions);
+            collectImportClosure(resolvedTarget, units, projectConfig, importResolutions,
+                    budget, depth + 1);
+        }
+    }
+
+
+    /**
+     * Collects only compiler-owned Oreslang sources under the reserved std/
+     * namespace. Neither the project manifest nor ORESLANG_PATH can override it.
+     */
+    private static void collectCoreImportClosure(
+            String importPath,
+            Map<String, MixedSourceUnit> units,
+            Map<String, Map<String, String>> importResolutions,
+            SourceAdmissionBudget budget,
+            int depth) throws IOException {
+        String id = CoreLibrarySources.unitId(importPath);
+        if (units.containsKey(id)) return;
+        budget.checkCanAdmitUnit(depth);
+
+        String coreSource = CoreLibrarySources.source(importPath);
+        budget.admit(coreSource.getBytes(java.nio.charset.StandardCharsets.UTF_8).length, depth);
+        MixedSourceUnit mixed = MixedSourceUnit.parse(
+                id,
+                CoreLibrarySources.fileName(importPath),
+                coreSource);
+        if (mixed.hasJavaSource()) {
+            throw new SecurityException(
+                    "packaged std/* modules must be native Oreslang, not Java source islands: "
+                            + importPath);
+        }
+
+        Ast.Program program = Parser.parse(mixed.oresSource());
+        // Validate the whole source before admitting any unit to the closure.
+        for (Ast.ImportDecl imported : program.imports()) {
+            ImportRules.validate(imported);
+            if (ImportRules.isJavaPath(imported.path())) {
+                throw new SecurityException("std/* cannot import Java host classes: "
+                        + importPath + " -> " + imported.path());
+            }
+            if (!CoreLibrarySources.isCoreImport(imported.path())) {
+                throw new IllegalArgumentException("std/* cannot import project or ambient modules: "
+                        + importPath + " -> " + imported.path());
+            }
+            CoreLibrarySources.unitId(imported.path());
+        }
+
+        units.put(id, mixed);
+        for (Ast.ImportDecl imported : program.imports()) {
+            String targetId = CoreLibrarySources.unitId(imported.path());
+            recordImportResolution(importResolutions, id, imported.path(), targetId);
+            collectCoreImportClosure(imported.path(), units, importResolutions,
+                    budget, depth + 1);
         }
     }
 
