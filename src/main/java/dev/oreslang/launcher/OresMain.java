@@ -437,7 +437,10 @@ public final class OresMain {
         StringBuilder safe = new StringBuilder(Math.min(2048, value.length()));
         for (int i = 0; i < value.length() && safe.length() < 2048; i++) {
             char ch = value.charAt(i);
-            safe.append(Character.isISOControl(ch) ? '?' : ch);
+            // Reject ASCII/C1 controls and Unicode format controls (including
+            // bidi overrides and zero-width reordering) in untrusted text.
+            safe.append(Character.isISOControl(ch)
+                    || Character.getType(ch) == Character.FORMAT ? '?' : ch);
         }
         if (value.length() > 2048) safe.append("...");
         return safe.toString();
