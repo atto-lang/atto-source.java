@@ -4,55 +4,39 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Oreslang's immutable, nominal Entry<K,V> value carrier.
+ * Immutable nominal runtime representation of the built-in Entry<K,V> value.
  *
- * <p>The host representation intentionally uses identity equality/hash rather
- * than recursive component equality. Guest equality is implemented by the
- * Oreslang evaluator and recursively compares key/value according to Oreslang
- * value semantics. Host equality and hashing must never substitute for the
- * guest contract, particularly for cyclic mutable host graphs, mixed numeric
- * domains, Symbols, and future typed-Map keys.</p>
- *
- * <p>Standalone guest null is not an Entry component value. Optional absence
- * is represented by Option<T>; rejecting Java null here keeps host-created
- * Entry carriers aligned with the source type contract.</p>
+ * <p>Entry is deliberately not represented as a Map/record: preserving this
+ * tag prevents a structural {key,value} record from masquerading as an Entry
+ * and lets actor transport retain the nominal product across copy/freeze.</p>
  */
-public final class OresEntry implements OresMutex.SharedState {
-    private final Object key;
-    private final Object value;
-
-    public OresEntry(Object key, Object value) {
-        this.key = Objects.requireNonNull(key, "Entry key");
-        this.value = Objects.requireNonNull(value, "Entry value");
-    }
-
-    public Object key() {
-        return key;
-    }
-
-    public Object value() {
-        return value;
+public record OresEntry(Object key, Object value) implements OresMutex.SharedState {
+    public OresEntry {
+        Objects.requireNonNull(key, "Entry key");
+        Objects.requireNonNull(value, "Entry value");
     }
 
     /**
-     * Java host identity is not Oreslang value equality.
+     * Host equality is intentionally identity-only. Oreslang `==` performs
+     * its own bounded, nominal, recursive value comparison in the evaluator.
+     * Java record component equality is not the language's key-domain or
+     * equality contract: it may invoke arbitrary host equals() implementations,
+     * silently collapse entries in a host Set/Map, or recurse forever through
+     * mutable payload cycles.
      */
     @Override
     public boolean equals(Object other) {
         return this == other;
     }
 
-    /**
-     * Keep host hash semantics aligned with host identity equality.
-     */
     @Override
     public int hashCode() {
         return System.identityHashCode(this);
     }
 
     /**
-     * Host diagnostics must not recursively stringify or disclose payloads.
-     * Guest formatting uses the evaluator's bounded, cycle-aware renderer.
+     * Logging must not recursively render untrusted/cyclic payloads or leak
+     * their contents. Guest formatting uses the bounded CycleSafeDisplay path.
      */
     @Override
     public String toString() {

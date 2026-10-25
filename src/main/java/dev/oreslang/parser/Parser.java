@@ -70,16 +70,31 @@ public final class Parser {
     }
 
     public Ast.Program parseProgram() {
-        // Fail closed for the entire compilation unit, including declarations,
-        // expressions and nested blocks. Until a typed host/device execution
-        // graph exists, interpreting these markers as CPU expressions or
-        // silently skipping their bodies would violate placement semantics.
-        // A token preflight also covers paths not reached by the normal parser.
-        for (Token token : tokens) {
-            if (token.type() == GPU || token.type() == CPU || token.type() == QUANTUM) {
-                throw error(token, "execution domain '" + token.lexeme()
-                        + "' requires typed effect/ownership checking and explicit backend lowering;"
-                        + " nested cpu/gpu blocks are not yet enabled; no implicit CPU fallback");
+        // CPU/GPU Task v2 has a real source AST. Keep unsupported synchronous
+        // execution regions and quantum fail-closed, but allow canonical task
+        // forms (plus legacy nb aliases) to reach typed lowering. GPU task is
+        // deliberately rejected later until a physical device provider exists.
+        for (int i = 0; i < tokens.size(); i++) {
+            Token token = tokens.get(i);
+            if (token.type() == QUANTUM) {
+                throw error(token, "quantum execution requires explicit backend lowering; no implicit CPU fallback");
+            }
+            if (token.type() == CPU || token.type() == GPU) {
+                boolean canonicalTask =
+                        i + 2 < tokens.size()
+                                && tokens.get(i + 1).type() == IDENT
+                                && tokens.get(i + 1).lexeme().equals("task")
+                                && tokens.get(i + 2).type() == LBRACE;
+                boolean legacyNbTask =
+                        i > 0 && tokens.get(i - 1).type() == NB
+                                && i + 1 < tokens.size()
+                                && tokens.get(i + 1).type() == LBRACE;
+                if (!canonicalTask && !legacyNbTask) {
+                    throw error(token, "synchronous execution domain '" + token.lexeme()
+                            + " { ... }' is reserved but not production-lowered yet;"
+                            + " use '" + token.lexeme() + " task { ... }' for asynchronous work;"
+                            + " no implicit CPU fallback");
+                }
             }
         }
         String namespace = null;
@@ -1919,9 +1934,13 @@ public final class Parser {
             return marked;
         }
 
-        if (matchContextualKeyword("borrow") || match(AMP)) {
+        if (matchContextualKeyword("borrow")) {
             boolean mutable = match(MUT);
             return Ast.TypeRef.borrowed(parseTypeAtom(), mutable);
+        }
+        if (match(AMP)) {
+            throw error(previous(),
+                    "borrowed types use 'borrow T' or 'borrow mut T'; pointer sigils are not Oreslang source syntax");
         }
         if (match(STRING)) return Ast.TypeRef.stringLiteral(previous().lexeme());
 
@@ -2283,6 +2302,18 @@ public final class Parser {
             return new Ast.ForStmt(null, new Ast.LiteralExpr(true), null, turn);
         }
         if (match(IF)) return parseIf();
+        if ((check(NB)
+                || (check(IDENT) && peek().lexeme().equals("task")))
+                && current + 2 < tokens.size()
+                && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 1).lexeme().equals("scope")
+                && tokens.get(current + 2).type() == LBRACE) {
+            advance(); // nb or contextual task
+            advance(); // contextual scope
+            Ast.Stmt scoped = new Ast.TaskScopeStmt(parseBlock());
+            match(SEMICOLON);
+            return scoped;
+        }
         if (check(DO) && checkNext(LBRACE)) {
             advance();
             return parseDoWhile();
@@ -3803,16 +3834,45 @@ public final class Parser {
         }
         if (match(BANG, TILDE, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
         if (match(AMP)) {
-            boolean mutable = match(MUT);
-            return new Ast.UnaryExpr(mutable ? "&mut" : "&", parseUnary());
+            throw error(previous(), "use rt borrow or rt mut borrow; unary pointer syntax is not supported");
         }
         if (match(AWAIT)) return new Ast.AwaitExpr(parseUnary());
+
+        // task is contextual: task(...) and identifiers named task remain legal.
+        if (check(IDENT) && peek().lexeme().equals("task") && checkNext(LBRACE)) {
+            advance();
+            return new Ast.TaskExpr(Ast.ExecutionDomain.CPU, parseBlock(), false);
+        }
+        if (match(CPU, GPU)) {
+            Token domainToken = previous();
+            Ast.ExecutionDomain domain = domainToken.type() == CPU
+                    ? Ast.ExecutionDomain.CPU : Ast.ExecutionDomain.GPU;
+            if (!matchContextualKeyword("task")) {
+                throw error(domainToken,
+                        "synchronous " + domainToken.lexeme()
+                                + " { ... } lowering is not enabled yet; use "
+                                + domainToken.lexeme() + " task { ... }");
+            }
+            return new Ast.TaskExpr(domain, parseBlock(), false);
+        }
+
         // Expression-level trap is a typed Option boundary; the declaration
         // modifier "trap fnc" remains a distinct grammar production.
         if (match(TRAP)) return new Ast.TrapExpr(parseUnary());
         if (match(RT)) return parseRuntimeExpression();
 
         if (match(NB)) {
+            if (check(LBRACE)) {
+                return new Ast.TaskExpr(Ast.ExecutionDomain.CPU, parseBlock(), true);
+            }
+            if (match(CPU, GPU)) {
+                Ast.ExecutionDomain domain = previous().type() == CPU
+                        ? Ast.ExecutionDomain.CPU : Ast.ExecutionDomain.GPU;
+                if (!check(LBRACE)) {
+                    throw error(peek(), "legacy 'nb cpu/gpu' task form requires a block");
+                }
+                return new Ast.TaskExpr(domain, parseBlock(), true);
+            }
             if (match(CB)) {
                 if (!match(WRITECH)) {
                     throw error(previous(), "'nb cb' must prefix writech");
@@ -3866,7 +3926,7 @@ public final class Parser {
 
         String name = operation.lexeme();
         if (mutableBorrow && !name.equals("borrow")) {
-            throw error(operation, "expected borrow after 'rt mut'");
+            throw error(operation, "'rt mut' may only modify borrow; use 'rt mut borrow value'");
         }
         if (operation.type() == YIELD || name.equals("yield") || name.equals("cooperate")) {
             if (match(LPAREN)) {
@@ -3886,10 +3946,9 @@ public final class Parser {
                             + "'; supported operations are cooperate, copy, take, borrow, share, and fail");
         }
 
-        // Mutable borrows use the same ownership checks as the legacy spelling.
-        if (name.equals("borrow") && match(MUT)) {
-            if (mutableBorrow) throw error(previous(), "duplicate mut borrow qualifier");
-            return new Ast.UnaryExpr("&mut", parseUnary());
+        if (name.equals("borrow") && check(MUT)) {
+            throw error(peek(),
+                    "legacy 'rt borrow mut value' is not accepted; use 'rt mut borrow value'");
         }
         Ast.Expr argument;
         if (match(LPAREN)) {
