@@ -16,9 +16,11 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import resource
 import stat
 import subprocess
 import sys
+import tempfile
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 LEGACY_PATH = SCRIPT_DIR / "publish-private-ci-source.py"
@@ -70,6 +72,7 @@ CONTROL_PLANE_PATHS = (
     "scripts/publish-private-ci-source-v3.py",
 )
 MAX_CONTROL_PLANE_FILE = 512 * 1024
+MAX_GH_API_RESPONSE_BYTES = 24 * 1024 * 1024
 
 
 def valid_sha(value, label="invalid SHA"):
@@ -777,6 +780,88 @@ def authorize_write(root, repository, approved_policy, contract):
         raise Denied("carrier identity/state changed during transfer")
 
 
+def trusted_github_cli():
+    """Resolve ref API access only through a root-controlled OS binary."""
+    target = "/usr/bin/gh"
+    for directory in ("/", "/usr", "/usr/bin"):
+        try:
+            info = os.lstat(directory)
+        except OSError as exc:
+            raise Denied("trusted GitHub CLI directory is unavailable") from exc
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0
+                or info.st_mode & 0o022):
+            raise Denied("trusted GitHub CLI directory is not root-controlled")
+    try:
+        info = os.lstat(target)
+    except OSError as exc:
+        raise Denied("trusted GitHub CLI is unavailable") from exc
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0
+            or info.st_mode & 0o6022 or not info.st_mode & 0o111):
+        raise Denied("trusted GitHub CLI executable is not root-controlled")
+    return target
+
+
+def github_api_environment():
+    """Use one explicit token and no ambient credential/config environment."""
+    provided = [
+        name for name in ("GH_TOKEN", "GITHUB_TOKEN")
+        if os.environ.get(name)
+    ]
+    if len(provided) != 1:
+        raise Denied("exactly one explicit GitHub API token is required")
+    return {
+        provided[0]: os.environ[provided[0]],
+        "GH_HOST": "github.com",
+        "GH_PROMPT_DISABLED": "1",
+        "PATH": "/usr/bin:/bin",
+        "HOME": "/",
+        "XDG_CONFIG_HOME": "/nonexistent",
+        "LC_ALL": "C.UTF-8",
+    }
+
+
+def run_bounded_gh(argv, *, env, timeout=30):
+    """Run GitHub CLI with bounded output and an isolated process session."""
+    limit = MAX_GH_API_RESPONSE_BYTES
+    if (not hasattr(resource, "RLIMIT_FSIZE")
+            or not isinstance(limit, int) or isinstance(limit, bool)
+            or limit < 2):
+        raise Denied("OS cannot safely bound GitHub CLI output")
+
+    def limit_child_files():
+        resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
+
+    try:
+        with tempfile.TemporaryFile(mode="w+b") as stdout_file, \
+                tempfile.TemporaryFile(mode="w+b") as stderr_file:
+            proc = subprocess.run(
+                argv,
+                stdin=subprocess.DEVNULL,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                env=env,
+                timeout=timeout,
+                check=False,
+                start_new_session=True,
+                preexec_fn=limit_child_files,
+            )
+            stdout_file.seek(0)
+            stderr_file.seek(0)
+            stdout_bytes = stdout_file.read(limit + 1)
+            stderr_bytes = stderr_file.read(limit + 1)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise Denied("carrier ref GitHub request is unavailable") from exc
+
+    if len(stdout_bytes) >= limit or len(stderr_bytes) >= limit:
+        raise Denied("carrier ref GitHub response exceeds size limit")
+    try:
+        stdout = stdout_bytes.decode("utf-8")
+        stderr = stderr_bytes.decode("utf-8")
+    except UnicodeError as exc:
+        raise Denied("carrier ref GitHub response is not UTF-8") from exc
+    return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
+
+
 def _gh_ref_request(repository, ref_name, method):
     if not isinstance(ref_name, str) or not HANDOFF_REF.fullmatch(ref_name):
         raise Denied("ref cleanup target is invalid")
@@ -785,30 +870,38 @@ def _gh_ref_request(repository, ref_name, method):
     encoded = ref_name.replace("/", "%2F")
     family = "ref" if method == "GET" else "refs"
     argv = [
-        "gh", "api", "--method", method,
+        trusted_github_cli(), "api", "--method", method,
         f"repos/{repository}/git/{family}/heads/{encoded}",
         "--header", "Accept: application/vnd.github+json",
     ]
-    env = dict(os.environ, GH_HOST="github.com", GH_PROMPT_DISABLED="1")
-    try:
-        return subprocess.run(
-            argv, capture_output=True, text=True, env=env,
-            timeout=30, check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise Denied("carrier ref rollback is unavailable") from exc
+    return run_bounded_gh(
+        argv,
+        env=github_api_environment(),
+        timeout=30,
+    )
+
+
+def _is_http_status(stderr, status):
+    if not isinstance(stderr, str):
+        return False
+    first_line = stderr.split("\n", 1)[0]
+    return re.fullmatch(
+        rf"gh: [^\r\n]{{1,4096}} \(HTTP {status}\)", first_line
+    ) is not None
 
 
 def live_ref_sha(repository, ref_name, expected_repository_id):
     repo = legacy.checked_repo(repository, expected_repository_id)
-    if repo.get("id") != expected_repository_id:
+    if (repo.get("id") != expected_repository_id
+            or repo.get("full_name") != repository
+            or repo.get("private") is not True
+            or repo.get("visibility") != "private"):
         raise Denied("carrier repository identity changed during ref verification")
     result = _gh_ref_request(repository, ref_name, "GET")
     if result.returncode != 0:
-        if "HTTP 404" in result.stderr:
-            # GitHub can mask private-resource authorization failures as 404.
-            # The numeric carrier identity was just revalidated above, so this
-            # 404 can be treated as evidence that this exact ref is absent.
+        if _is_http_status(result.stderr, 404):
+            # Private-resource 404 is accepted only after the exact numeric
+            # repository identity/privacy was revalidated above.
             return None
         raise Denied("carrier ref lookup failed")
     try:
@@ -840,7 +933,7 @@ def delete_exact_ref(repository, ref_name, expected_sha, expected_repository_id)
         raise Denied("carrier ref moved; refusing rollback")
 
     result = _gh_ref_request(repository, ref_name, "DELETE")
-    if result.returncode != 0 and "HTTP 404" not in result.stderr:
+    if result.returncode != 0 and not _is_http_status(result.stderr, 404):
         raise Denied("carrier ref rollback failed")
     if live_ref_sha(repository, ref_name, expected_repository_id) is not None:
         raise Denied("carrier ref still exists after rollback")
