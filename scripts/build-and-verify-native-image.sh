@@ -67,9 +67,27 @@ esac
 # Preserve raw stdout/stderr: command substitution discards trailing newlines,
 # allowing extra blank output and stderr warnings to masquerade as a clean manifest.
 build_info_stdout="$(mktemp)"
+# Install cleanup after the first successful allocation. A later mktemp
+# failure triggers set -e before the previous late trap could be registered.
+# One trap covers every stage, including partially allocated later stages.
+cleanup_native_image_verifier() {
+  for verifier_tmp in \
+    "$build_info_stdout" \
+    "${build_info_stderr:-}" \
+    "${build_info_expected:-}" \
+    "${guest_stderr:-}" \
+    "${guest_stdout:-}" \
+    "${guest_exact_actual:-}" \
+    "${guest_expected:-}" \
+    "${test_output_file:-}"; do
+    if [ -n "$verifier_tmp" ]; then
+      rm -f "$verifier_tmp"
+    fi
+  done
+}
+trap 'cleanup_native_image_verifier' 0
 build_info_stderr="$(mktemp)"
 build_info_expected="$(mktemp)"
-trap 'rm -f "$build_info_stdout" "$build_info_stderr" "$build_info_expected"' 0
 build_info_status=0
 "$executable" --build-info >"$build_info_stdout" 2>"$build_info_stderr" || build_info_status=$?
 if [ "$build_info_status" -ne 0 ] || [ -s "$build_info_stderr" ]; then
@@ -101,7 +119,6 @@ guest_stderr="$(mktemp)"
 guest_stdout="$(mktemp)"
 guest_exact_actual="$(mktemp)"
 guest_expected="$(mktemp)"
-trap 'rm -f "$build_info_stdout" "$build_info_stderr" "$build_info_expected" "$guest_stderr" "$guest_stdout" "$guest_exact_actual" "$guest_expected"' 0
 run_clean_guest() {
   : > "$guest_stderr"
   : > "$guest_stdout"
@@ -234,9 +251,7 @@ run_exact_guest '42' 'native root-await result differs from expected value' "--m
 # trims trailing newlines, which could hide an extra blank record after an
 # otherwise correct test summary and falsely certify the native executable.
 test_output_file="$(mktemp)"
-# Keep every temporary file in the final EXIT trap. Replacing the trap
-# without the earlier manifest files leaks their contents on every build.
-trap 'rm -f "$build_info_stdout" "$build_info_stderr" "$build_info_expected" "$guest_stderr" "$guest_stdout" "$guest_exact_actual" "$guest_expected" "$test_output_file"' 0
+# The initial cleanup trap also owns this final output file.
 : > "$guest_stderr"
 test_guest_status=0
 (
