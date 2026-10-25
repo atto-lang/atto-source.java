@@ -2291,7 +2291,14 @@ public final class Parser {
         // distinction in the AST instead of relying on source spelling later.
         if (match(DO)) {
             if (match(MATCH)) return parseMatch(true);
-            if (match(SWITCH)) return parseSwitch();
+            if (match(SWITCH)) {
+                Ast.SwitchStmt statement = parseSwitch();
+                return new Ast.SwitchStmt(
+                        statement.subject(),
+                        statement.cases(),
+                        statement.defaultBody(),
+                        true);
+            }
             throw error(previous(), "'do' requires match, switch, or a braced select");
         }
         // Legacy statement syntax remains accepted during migration.
@@ -3390,15 +3397,80 @@ public final class Parser {
         Ast.MatchStmt parsed = parseMatch(true);
         List<Ast.MatchValueArm> valueArms = new ArrayList<>();
         for (Ast.MatchArm arm : parsed.arms()) {
-            if (arm.body().size() != 1
-                    || !(arm.body().getFirst() instanceof Ast.ReturnStmt returned)
-                    || returned.value() == null) {
-                throw error(previous(),
-                        "value match arms require exactly one 'return expression;' and no other statements");
-            }
-            valueArms.add(new Ast.MatchValueArm(arm.pattern(), arm.guard(), returned.value()));
+            valueArms.add(new Ast.MatchValueArm(
+                    arm.pattern(),
+                    arm.guard(),
+                    parseValueDispatchArm(arm.body(), "value match")));
         }
         return new Ast.MatchExpr(parsed.subject(), valueArms, declaredResult);
+    }
+
+    private Ast.SwitchExpr parseValueSwitch() {
+        Ast.Expr subject = parseExpression();
+        match(SEMICOLON);
+
+        List<Ast.SwitchValueCase> cases = new ArrayList<>();
+        Ast.Expr defaultValue = null;
+        boolean sawDefault = false;
+
+        while (!check(END) && !check(EOF)) {
+            if (matchContextualKeyword("case")) {
+                if (sawDefault) {
+                    throw error(previous(), "switch case cannot appear after default");
+                }
+                List<Ast.Expr> constants = new ArrayList<>();
+                do constants.add(parseExpression()); while (match(COMMA));
+                if (check(FAT_ARROW)) {
+                    throw error(peek(),
+                            "switch implementations use the slim arrow '->'; '=>' is reserved for type definitions");
+                }
+                consume(ARROW, "switch cases use the slim arrow '->'");
+                List<Ast.Stmt> body = parseBlock();
+                cases.add(new Ast.SwitchValueCase(
+                        constants,
+                        parseValueDispatchArm(body, "value switch")));
+                continue;
+            }
+            if (match(DEFAULT)) {
+                if (sawDefault) {
+                    throw error(previous(), "switch can contain only one default arm");
+                }
+                sawDefault = true;
+                if (check(FAT_ARROW)) {
+                    throw error(peek(),
+                            "switch implementations use the slim arrow '->'; '=>' is reserved for type definitions");
+                }
+                consume(ARROW, "switch default uses the slim arrow '->'");
+                defaultValue = parseValueDispatchArm(parseBlock(), "value switch");
+                continue;
+            }
+            throw error(peek(), "expected 'case', 'default', or 'end' in value switch");
+        }
+
+        consume(END, "expected 'end' to close switch");
+        if (defaultValue == null) {
+            throw error(previous(),
+                    "value switch requires a default arm so the expression is exhaustive");
+        }
+        return new Ast.SwitchExpr(subject, cases, defaultValue);
+    }
+
+    private Ast.Expr parseValueDispatchArm(List<Ast.Stmt> body, String construct) {
+        if (body.size() != 1) {
+            throw error(previous(),
+                    construct + " arms require exactly one result expression and no other statements");
+        }
+        Ast.Stmt statement = body.getFirst();
+        if (statement instanceof Ast.ExprStmt expression) {
+            return expression.expression();
+        }
+        if (statement instanceof Ast.ReturnStmt returned && returned.value() != null) {
+            // Compatibility spelling: in an expression dispatch arm, return
+            // targets the arm result, never the enclosing callable.
+            return returned.value();
+        }
+        throw error(previous(),
+                construct + " arms require exactly one result expression");
     }
 
     private Ast.Pattern parsePattern() {
@@ -3808,6 +3880,11 @@ public final class Parser {
         if (match(RT)) return parseRuntimeExpression();
 
         if (match(NB)) {
+            if (check(MATCH) || check(SWITCH)) {
+                throw error(peek(),
+                        "'nb match' and 'nb switch' are invalid; "
+                                + "await in a dispatch arm is governed by the enclosing suspending context");
+            }
             if (match(CB)) {
                 if (!match(WRITECH)) {
                     throw error(previous(), "'nb cb' must prefix writech");
@@ -4100,6 +4177,7 @@ public final class Parser {
 
     private Ast.Expr parsePrimary() {
         if (match(MATCH)) return parseValueMatch();
+        if (match(SWITCH)) return parseValueSwitch();
         if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(IMAG)) {

@@ -852,7 +852,16 @@ public final class Ast {
         }
     }
 
-    public record SwitchStmt(Expr subject, List<SwitchCase> cases, List<Stmt> defaultBody) implements Stmt {
+    /**
+     * Statement-form switch provenance. Canonical `do switch` is procedural;
+     * the three-argument constructor preserves the legacy bare-statement AST
+     * during migration without pretending it is the value-producing form.
+     */
+    public record SwitchStmt(
+            Expr subject, List<SwitchCase> cases, List<Stmt> defaultBody, boolean procedural) implements Stmt {
+        public SwitchStmt(Expr subject, List<SwitchCase> cases, List<Stmt> defaultBody) {
+            this(subject, cases, defaultBody, false);
+        }
         public SwitchStmt {
             cases = List.copyOf(cases);
             defaultBody = List.copyOf(defaultBody);
@@ -1028,7 +1037,7 @@ public final class Ast {
     }
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
-            MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
+            MatchExpr, SwitchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
@@ -1063,6 +1072,30 @@ public final class Ast {
         /** Backwards-compatible inferred-result expression. */
         public MatchExpr(Expr subject, List<MatchValueArm> arms) {
             this(subject, arms, null);
+        }
+    }
+
+    /**
+     * Expression-form switch. Case labels are compile-time constants and each
+     * selected arm publishes exactly one value to the switch expression.
+     */
+    public record SwitchValueCase(List<Expr> constants, Expr value) {
+        public SwitchValueCase {
+            constants = List.copyOf(constants);
+            if (constants.isEmpty()) {
+                throw new IllegalArgumentException("value switch case requires at least one constant");
+            }
+            java.util.Objects.requireNonNull(value, "value switch arm result");
+        }
+    }
+    public record SwitchExpr(
+            Expr subject, List<SwitchValueCase> cases, Expr defaultValue) implements Expr {
+        public SwitchExpr {
+            java.util.Objects.requireNonNull(subject, "value switch subject");
+            cases = List.copyOf(cases);
+            java.util.Objects.requireNonNull(
+                    defaultValue,
+                    "value switch requires a default arm for exhaustiveness");
         }
     }
 

@@ -4383,6 +4383,70 @@ public final class TypeChecker {
                 env.restoreInitialization(before);
             }
         }
+        if (expr instanceof Ast.SwitchExpr valueSwitch) {
+            Type subject = deref(typeOf(valueSwitch.subject(), env, generics, self));
+            Type result = null;
+            Set<Object> seen = new HashSet<>();
+            Map<Env.Binding, Set<String>> before = env.initializationSnapshot();
+            try {
+                for (Ast.SwitchValueCase arm : valueSwitch.cases()) {
+                    env.restoreInitialization(before);
+                    for (Ast.Expr constant : arm.constants()) {
+                        if (!constant(constant)) {
+                            throw new IllegalArgumentException(
+                                    "value switch case must be a compile-time constant");
+                        }
+                        Type actualCase = typeOf(constant, env, generics, self);
+                        if (!assignable(actualCase, subject) && !assignable(subject, actualCase)) {
+                            throw new IllegalArgumentException(
+                                    "value switch case type " + actualCase
+                                            + " is incompatible with " + subject);
+                        }
+                        Object key = constant instanceof Ast.LiteralExpr literal
+                                ? new SwitchLiteralCaseKey(
+                                        literal.value().getClass(), literal.value())
+                                : constant.toString();
+                        if (!seen.add(key)) {
+                            throw new IllegalArgumentException(
+                                    "duplicate value switch case: " + constant);
+                        }
+                    }
+                    Type actual = typeOf(arm.value(), env, generics, self);
+                    if (actual == Primitive.VOID || actual == Unknown.INSTANCE) {
+                        throw new IllegalArgumentException(
+                                "value switch arms must produce a statically known non-void value");
+                    }
+                    if (result == null) {
+                        result = actual;
+                    } else {
+                        requireReadonlyCapabilityPreserved(
+                                actual, result, "value switch arm");
+                        requireAssignable(actual, result, "value switch arm");
+                        requireAssignable(result, actual, "value switch arm");
+                    }
+                }
+
+                env.restoreInitialization(before);
+                Type fallback = typeOf(valueSwitch.defaultValue(), env, generics, self);
+                if (fallback == Primitive.VOID || fallback == Unknown.INSTANCE) {
+                    throw new IllegalArgumentException(
+                            "value switch default must produce a statically known non-void value");
+                }
+                if (result == null) {
+                    result = fallback;
+                } else {
+                    requireReadonlyCapabilityPreserved(
+                            fallback, result, "value switch default");
+                    requireAssignable(fallback, result, "value switch default");
+                    requireAssignable(result, fallback, "value switch default");
+                }
+                return result;
+            } finally {
+                // Exactly one arm executes; checking all alternatives cannot
+                // establish outer definite-initialization facts.
+                env.restoreInitialization(before);
+            }
+        }
         if (expr instanceof Ast.DynamicSelectExpr selected) {
             // Dynamic select accepts a SelectSet directly or a runtime
             // list/map of SelectCase values. The exact case element type may
@@ -6934,6 +6998,15 @@ public final class TypeChecker {
                 if ((arm.guard() != null && hasSuspendingSumCallbackSyntax(arm.guard()))
                         || hasSuspendingSumCallbackSyntax(arm.value())) return true;
             return false;
+        }
+        if (expr instanceof Ast.SwitchExpr switched) {
+            if (hasSuspendingSumCallbackSyntax(switched.subject())) return true;
+            for (Ast.SwitchValueCase arm : switched.cases()) {
+                for (Ast.Expr constant : arm.constants())
+                    if (hasSuspendingSumCallbackSyntax(constant)) return true;
+                if (hasSuspendingSumCallbackSyntax(arm.value())) return true;
+            }
+            return hasSuspendingSumCallbackSyntax(switched.defaultValue());
         }
         if (expr instanceof Ast.TypeTestExpr test)
             return hasSuspendingSumCallbackSyntax(test.value());

@@ -1765,6 +1765,14 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return false;
             }
+            if (expr instanceof Ast.SwitchExpr switched) {
+                if (expressionContainsPotentialSuspension(switched.subject(), seen)) return true;
+                for (Ast.SwitchValueCase arm : switched.cases()) {
+                    if (expressionContainsPotentialSuspension(arm.value(), seen)) return true;
+                }
+                return expressionContainsPotentialSuspension(
+                        switched.defaultValue(), seen);
+            }
             if (expr instanceof Ast.RuntimeCallExpr runtime) {
                 if (runtime.operation().equals("cooperate")) return true;
                 return runtime.arguments().stream()
@@ -3407,6 +3415,24 @@ public final class OresEvalRootNode extends RootNode {
                     return;
                 }
 
+                if (expr instanceof Ast.SwitchExpr switched) {
+                    // Case labels are compile-time constants. Evaluate the
+                    // subject once, then suspend only in the selected result.
+                    evalSuspendableExpr(
+                            task,
+                            switched.subject(),
+                            env,
+                            (t, value, failure) -> {
+                                if (failure != null) {
+                                    continuation.accept(t, null, failure);
+                                } else {
+                                    evalSuspendableValueSwitch(
+                                            t, switched, value, env, continuation);
+                                }
+                            });
+                    return;
+                }
+
                 if (expr instanceof Ast.AwaitExpr awaited) {
                     evalSuspendableExpr(
                             task,
@@ -4035,6 +4061,34 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(t, null, guardFailure);
                         }
                     });
+        }
+
+        private void evalSuspendableValueSwitch(
+                SourceTask task,
+                Ast.SwitchExpr switched,
+                Object subject,
+                Env env,
+                SourceValueCont continuation) {
+            try {
+                for (Ast.SwitchValueCase arm : switched.cases()) {
+                    boolean selected = false;
+                    for (Ast.Expr constant : arm.constants()) {
+                        if (valueEquals(subject, eval(constant, env))) {
+                            selected = true;
+                            break;
+                        }
+                    }
+                    if (selected) {
+                        evalSuspendableExpr(
+                                task, arm.value(), env, continuation);
+                        return;
+                    }
+                }
+                evalSuspendableExpr(
+                        task, switched.defaultValue(), env, continuation);
+            } catch (RuntimeException | Error failure) {
+                continuation.accept(task, null, failure);
+            }
         }
 
         private void evalSuspendableArguments(
@@ -6730,6 +6784,17 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 throw new IllegalStateException(
                         "exhaustive value match invariant violated at runtime");
+            }
+            if (expr instanceof Ast.SwitchExpr valueSwitch) {
+                Object subject = eval(valueSwitch.subject(), env);
+                for (Ast.SwitchValueCase arm : valueSwitch.cases()) {
+                    for (Ast.Expr constant : arm.constants()) {
+                        if (valueEquals(subject, eval(constant, env))) {
+                            return eval(arm.value(), env);
+                        }
+                    }
+                }
+                return eval(valueSwitch.defaultValue(), env);
             }
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
