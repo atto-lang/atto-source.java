@@ -127,7 +127,8 @@ final class ScopedTaskReadAuthorityV2Test {
                 () -> authority.require(program, task, epoch, 13, 6));
 
         OwnershipChecker.check(program);
-        assertThrows(IllegalArgumentException.class,
+        // Rechecking revokes the Program's prior ownership admission epoch.
+        assertThrows(IllegalStateException.class,
                 () -> authority.require(program, task, epoch, 13, 5));
 
         assertThrows(IllegalArgumentException.class,
