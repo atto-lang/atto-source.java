@@ -2205,11 +2205,9 @@ public final class TypeChecker {
                     if (!assignable(actual, subject) && !assignable(subject, actual)) {
                         throw new IllegalArgumentException("switch case type " + actual + " is incompatible with " + subject);
                     }
-                    // Display text cannot be used for identity: String "#x" and
-                    // Symbol #x can render alike, while #x and #"x" are equal.
-                    Object key = constant instanceof Ast.LiteralExpr literal
-                            ? new SwitchLiteralCaseKey(literal.value().getClass(), literal.value())
-                            : constant.toString();
+                    // Use immutable AST value equality for case identity.
+                    // Diagnostic rendering is not a semantic identity contract.
+                    Object key = constant;
                     if (!seen.add(key)) throw new IllegalArgumentException("duplicate switch case: " + constant);
                 }
                 checkBlock(arm.body(), env, generics, expectedReturn, self);
@@ -4439,10 +4437,9 @@ public final class TypeChecker {
                                     "value switch case type " + actualCase
                                             + " is incompatible with " + subject);
                         }
-                        Object key = constant instanceof Ast.LiteralExpr literal
-                                ? new SwitchLiteralCaseKey(
-                                        literal.value().getClass(), literal.value())
-                                : constant.toString();
+                        // Keep duplicate identity structural and independent of
+                        // diagnostic rendering, matching statement-form switch.
+                        Object key = constant;
                         if (!seen.add(key)) {
                             throw new IllegalArgumentException(
                                     "duplicate value switch case: " + constant);
@@ -10042,8 +10039,6 @@ public final class TypeChecker {
         }
         return result;
     }
-
-    private record SwitchLiteralCaseKey(Class<?> nominalType, Object value) { }
 
     private boolean constant(Ast.Expr expr) {
         if (expr instanceof Ast.LiteralExpr) return true;
