@@ -216,8 +216,14 @@ public final class CapabilityChecker {
             Ast.ActorKind kind,
             IsolatePolicy parent) {
         return switch (kind) {
-            case NONE, SHARED -> parent;
+            case NONE -> parent;
+            // Process exit is root-only authority. It must never flow from a
+            // privileged parent process into any actor's static effect graph.
+            // The ProcessFacade also denies it dynamically for actor turns.
+            case SHARED -> parent.withoutCapabilities(
+                    IsolatePolicy.Capability.PROCESS_EXIT);
             case PRIVATE -> parent.withoutCapabilities(
+                    IsolatePolicy.Capability.PROCESS_EXIT,
                     IsolatePolicy.Capability.SHARED_MEMORY,
                     IsolatePolicy.Capability.ACTOR_SHARE_READONLY,
                     IsolatePolicy.Capability.JAVA_INTEROP,
@@ -384,9 +390,26 @@ public final class CapabilityChecker {
             if (referenced != null) checkReferencedFunction(referenced, policy);
         }
         else if (expr instanceof Ast.RuntimeCallExpr runtime) {
-            if (!Set.of("copy", "take", "borrow", "share").contains(runtime.operation())) {
+            if (runtime.operation().equals("spawn")) {
+                // Parser-only encoding for source `spawn Actor()`. There is no
+                // guest-visible `rt spawn` spelling: admission is the actor
+                // spawn capability plus normal checks of the encoded target.
+                require(
+                        policy,
+                        IsolatePolicy.Capability.ACTOR_SPAWN,
+                        "source actor spawn");
+                for (Ast.Expr argument : runtime.arguments()) {
+                    checkExpr(argument, policy);
+                }
+                return;
+            }
+            if (!Set.of("copy", "take", "borrow", "share", "cooperate", "fail").contains(runtime.operation())) {
                 throw new SecurityException(
                         "runtime intrinsic 'rt " + runtime.operation() + "' is not admitted on this compiler head");
+            }
+            if (runtime.operation().equals("cooperate") && isZeroAuthorityAdversarial(policy)) {
+                throw new SecurityException(
+                        "untrusted actor cannot use rt cooperate until continuation quota state survives scheduler handoffs");
             }
             for (Ast.Expr argument : runtime.arguments()) checkExpr(argument, policy);
         }
@@ -420,6 +443,7 @@ public final class CapabilityChecker {
                 Ast.MethodDecl staticValue = findUniqueStaticMethodValue(m);
                 if (staticValue != null) checkReferencedMethod(staticValue, policy);
                 if (path.startsWith("stdio.") || path.equals("stdio")) require(policy, IsolatePolicy.Capability.STDOUT, path);
+                if (path.equals("std.process.exit") || path.equals("process.exit")) require(policy, IsolatePolicy.Capability.PROCESS_EXIT, path);
                 if (path.startsWith("process.descriptor") || path.equals("process.context_id")) require(policy, IsolatePolicy.Capability.PROCESS_INFO, path);
                 if (path.startsWith("process.share_readonly")) require(policy, IsolatePolicy.Capability.ACTOR_SHARE_READONLY, path);
                 if (path.equals("process.gc") || path.startsWith("process.gc.")) require(policy, IsolatePolicy.Capability.GC_CONTROL, path);
@@ -429,6 +453,9 @@ public final class CapabilityChecker {
                 }
                 if (path.startsWith("fs.read")
                         || path.startsWith("fs.exists")
+                        || path.startsWith("fs.list_dir")
+                        || path.startsWith("fs.is_dir")
+                        || path.startsWith("fs.is_symlink")
                         || path.startsWith("fs.stat")
                         || path.startsWith("File.read")
                         || path.startsWith("File.exists")
@@ -476,7 +503,6 @@ public final class CapabilityChecker {
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr a : e.elements()) checkExpr(a, policy);
         else if (expr instanceof Ast.ObjectExpr e) {
             for (Ast.ObjectField f : e.fields()) {
-                if (f.isDynamic()) checkExpr(f.dynamicName(), policy);
                 checkExpr(f.value(), policy);
             }
         }
@@ -492,7 +518,7 @@ public final class CapabilityChecker {
 
     private static boolean isRestrictedFacadeRoot(String name) {
         return switch (name) {
-            case "stdio", "process", "actor", "network", "ipc", "gpu",
+            case "stdio", "std", "process", "actor", "network", "ipc", "gpu",
                     "fs", "env", "ffi", "polyglot", "thread",
                     "SharedMutex", "print" -> true;
             default -> false;

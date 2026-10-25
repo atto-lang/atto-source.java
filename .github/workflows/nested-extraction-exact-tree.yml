@@ -1,0 +1,187 @@
+name: Nested Option/Future exact-tree conformance
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'pom.xml'
+      - 'tools/run-nested-extraction-exact-tree.sh'
+      - 'tools/test-run-nested-extraction-exact-tree.sh'
+      - 'tools/verify-exact-source-tree.sh'
+      - 'tools/test-verify-exact-source-tree.sh'
+      - '.github/workflows/nested-extraction-exact-tree.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nested-extraction-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  targeted:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Resolve independent commit-to-tree evidence
+        id: tree
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          expected="$(GH_HOST=github.com gh api "repos/${GITHUB_REPOSITORY}/git/commits/${EXPECTED_COMMIT}" --jq '.tree.sha')"
+          [[ "$expected" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse 'HEAD^{tree}')" = "$expected"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          # git status omits ignored build inputs; independently reject those.
+          test -z "$(git ls-files --others -- .)"
+          echo "sha=$expected" >> "$GITHUB_OUTPUT"
+          printf 'commit=%s\ntree=%s\nsource_repo=%s\n' "$EXPECTED_COMMIT" "$expected" "$GITHUB_REPOSITORY" > "$RUNNER_TEMP/nested-provenance.txt"
+      - name: Offline byte-level source-tree integrity adversarial tests
+        run: bash tools/test-verify-exact-source-tree.sh
+      - name: Offline CI gate adversarial tests
+        run: bash tools/test-run-nested-extraction-exact-tree.sh
+      - name: Setup GraalVM JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ github.token }}
+          cache: maven
+      - name: Run targeted nested extraction and scheduler regressions
+        run: bash tools/run-nested-extraction-exact-tree.sh "${{ steps.tree.outputs.sha }}" . targeted
+      - name: Hash actual targeted JUnit XML reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          find target/surefire-reports -type f -name 'TEST-*.xml' -print0 | sort -z | xargs -0 -r sha256sum > "$RUNNER_TEMP/nested-junit-sha256.txt"
+          test -s "$RUNNER_TEMP/nested-junit-sha256.txt"
+      - name: Upload real targeted JUnit reports and tree evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: nested-targeted-evidence
+          path: |
+            ${{ runner.temp }}/nested-provenance.txt
+            ${{ runner.temp }}/nested-junit-sha256.txt
+            target/surefire-reports/**
+          retention-days: 7
+          if-no-files-found: error
+
+  full:
+    needs: targeted
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Resolve independent tree evidence
+        id: tree
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          expected="$(GH_HOST=github.com gh api "repos/${GITHUB_REPOSITORY}/git/commits/${EXPECTED_COMMIT}" --jq '.tree.sha')"
+          [[ "$expected" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse 'HEAD^{tree}')" = "$expected"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          # git status omits ignored build inputs; independently reject those.
+          test -z "$(git ls-files --others -- .)"
+          echo "sha=$expected" >> "$GITHUB_OUTPUT"
+          printf 'commit=%s\ntree=%s\nsource_repo=%s\n' "$EXPECTED_COMMIT" "$expected" "$GITHUB_REPOSITORY" > "$RUNNER_TEMP/nested-provenance.txt"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ github.token }}
+          cache: maven
+      - name: Full Maven verification on the same exact source tree
+        run: bash tools/run-nested-extraction-exact-tree.sh "${{ steps.tree.outputs.sha }}" . full
+      - name: Hash actual full-suite JUnit XML reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          find target/surefire-reports -type f -name 'TEST-*.xml' -print0 | sort -z | xargs -0 -r sha256sum > "$RUNNER_TEMP/nested-junit-sha256.txt"
+          test -s "$RUNNER_TEMP/nested-junit-sha256.txt"
+      - name: Upload full Maven JUnit reports and tree evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: nested-full-evidence
+          path: |
+            ${{ runner.temp }}/nested-provenance.txt
+            ${{ runner.temp }}/nested-junit-sha256.txt
+            target/surefire-reports/**
+          retention-days: 7
+          if-no-files-found: error
+
+  native-image:
+    needs: full
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        phase: [native-aot, native-hybrid]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Resolve independent tree evidence
+        id: tree
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          expected="$(GH_HOST=github.com gh api "repos/${GITHUB_REPOSITORY}/git/commits/${EXPECTED_COMMIT}" --jq '.tree.sha')"
+          [[ "$expected" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse 'HEAD^{tree}')" = "$expected"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          # git status omits ignored build inputs; independently reject those.
+          test -z "$(git ls-files --others -- .)"
+          echo "sha=$expected" >> "$GITHUB_OUTPUT"
+          printf 'commit=%s\ntree=%s\nsource_repo=%s\n' "$EXPECTED_COMMIT" "$expected" "$GITHUB_REPOSITORY" > "$RUNNER_TEMP/nested-provenance.txt"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ github.token }}
+          cache: maven
+      - name: Native Image smoke with verified tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tools/run-nested-extraction-exact-tree.sh "${{ steps.tree.outputs.sha }}" . "${{ matrix.phase }}" | tee "$RUNNER_TEMP/nested-${{ matrix.phase }}.log"
+          grep -F "NESTED_EXTRACTION_CI|PHASE_PASS|${{ matrix.phase }}|${{ steps.tree.outputs.sha }}" "$RUNNER_TEMP/nested-${{ matrix.phase }}.log"
+          sha256sum "$RUNNER_TEMP/nested-${{ matrix.phase }}.log" > "$RUNNER_TEMP/nested-native-sha256.txt"
+      - name: Upload native provenance and executed smoke logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: nested-${{ matrix.phase }}-evidence
+          path: |
+            ${{ runner.temp }}/nested-provenance.txt
+            ${{ runner.temp }}/nested-${{ matrix.phase }}.log
+            ${{ runner.temp }}/nested-native-sha256.txt
+          retention-days: 7
+          if-no-files-found: error

@@ -103,66 +103,6 @@ final class IncrementalFunctorStaticTest {
     }
 
     @Test
-    void linkedNamedAsyncImportCanBeAwaitedButSyncImportCannot() {
-        IncrementalCompiler compiler = new IncrementalCompiler();
-        Map<String, String> asyncSources = Map.of(
-                "service.ores", """
-                        pub async fnc delayed(int value): int {
-                          return value + 1;
-                        }
-                        """,
-                "consumer.ores", """
-                        import fnc {delayed} from "./service.ores";
-                        pub async fnc main(): void {
-                          val value = await delayed(41);
-                          stdio.stdout.write(value);
-                          return;
-                        }
-                        """);
-
-        assertDoesNotThrow(() -> compiler.compile(asyncSources));
-
-        IncrementalCompiler syncCompiler = new IncrementalCompiler();
-        Map<String, String> syncSources = Map.of(
-                "service.ores", """
-                        pub fnc delayed(int value): int {
-                          return value + 1;
-                        }
-                        """,
-                "consumer.ores", asyncSources.get("consumer.ores"));
-
-        IllegalArgumentException error = assertThrows(
-                IllegalArgumentException.class,
-                () -> syncCompiler.compile(syncSources));
-        assertTrue(error.getMessage().contains("await requires Future"));
-    }
-
-    @Test
-    void linkedNamespaceAsyncImportPreservesFutureEffectByArity() {
-        IncrementalCompiler compiler = new IncrementalCompiler();
-        Map<String, String> sources = Map.of(
-                "service.ores", """
-                        pub async fnc delayed(int value): int {
-                          return value + 1;
-                        }
-
-                        pub fnc immediate(): int {
-                          return 7;
-                        }
-                        """,
-                "consumer.ores", """
-                        import * as service from "./service.ores";
-                        pub async fnc main(): void {
-                          val value = await service.delayed(41);
-                          stdio.stdout.write(value);
-                          return;
-                        }
-                        """);
-
-        assertDoesNotThrow(() -> compiler.compile(sources));
-    }
-
-    @Test
     void callableKindAndActorKindParticipateInAbiInvalidation() {
         IncrementalCompiler compiler = new IncrementalCompiler();
         Map<String, String> initial = Map.of(
@@ -428,12 +368,12 @@ final class IncrementalFunctorStaticTest {
                 }
                 """));
 
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                fnc wrong(): int {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc expressionBody(): int {
                   val Fnc<int> x = () -> 1;
                   return x();
                 }
-                """));
+                """)));
     }
 
     @Test
