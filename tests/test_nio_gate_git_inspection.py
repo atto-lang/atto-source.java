@@ -173,10 +173,9 @@ class RawWorktreeSecurityTests(unittest.TestCase):
         external = Path(self.tmp.name) / 'external-nested'
         original.rename(external)
         original.symlink_to(external, target_is_directory=True)
-        # The tracked leaf bytes are still identical through the symlink; the
-        # exact-tree gate must reject the path topology rather than hash it.
-        status = call(['git', 'status', '--porcelain=v1'], cwd=self.root)
-        self.assertEqual('', status.stdout, status.stderr)
+        # The tracked leaf bytes remain reachable through the symlink. Git
+        # porcelain also notices this topology change, but the raw verifier
+        # must independently reject it without relying on porcelain status.
         result = self.gate()
         self.assertEqual(77, result.returncode, result.stderr + result.stdout)
 
