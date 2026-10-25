@@ -68,6 +68,33 @@ final class OptionErgonomicsLanguageTest {
     }
 
     @Test
+    void orElseContextuallyTypesLiteralNoneWithoutErasingOptionElementType() throws Exception {
+        String source = """
+                pub fnc main(): void {
+                  val Option<int> absent = None;
+                  val Option<int> still_absent = absent.or_else(() -> None);
+                  stdio.stdout.write(still_absent.is_none());
+                  stdio.stdout.write(":");
+                  val Option<int> present = Some(9);
+                  val Option<int> unchanged = present.or_else(() -> None);
+                  stdio.stdout.write(unchanged.unwrap());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("true:9", run(source));
+    }
+
+    @Test
+    void orElseNeverWidenOptionElementFromWrongSomePayload() {
+        assertRejects("""
+                fnc bad(Option<int> original): Option<int> {
+                  return original.or_else(() -> Some("not-an-int"));
+                }
+                """, "Option.or_else fallback");
+    }
+
+    @Test
     void rejectsIncorrectCallbacksAndAffinelyOwnedFallbacks() {
         assertRejects("""
                 fnc bad(Option<int> value): int {
@@ -91,6 +118,50 @@ final class OptionErgonomicsLanguageTest {
                   return value.ok_or();
                 }
                 """, "one eager error value");
+    }
+
+    @Test
+    void resultOrElseSkipsOkAndInvokesErrFallbackExactlyOnce() throws Exception {
+        String program = """
+                fnc recover_value(String reason): Result<int, String> {
+                  stdio.stdout.write("R");
+                  return Ok(33);
+                }
+                pub fnc main(): void {
+                  val Result<int, String> good = Ok(7);
+                  val Result<int, String> bad = Err("missing");
+                  val first = good.or_else((String reason) -> recover_value(reason));
+                  stdio.stdout.write(first.unwrap());
+                  stdio.stdout.write(":");
+                  val second = bad.or_else((String reason) -> recover_value(reason));
+                  stdio.stdout.write(second.unwrap());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("7:R33", run(program));
+    }
+
+    @Test
+    void resultOrElsePreservesAffinePayloadAndChecksItsReceiverOnce() {
+        String legal = """
+                define class Box as
+                end
+                fnc recover_value(Result<Box, String> value): Result<Box, String> {
+                  return value.or_else((String reason) -> Err(reason));
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(legal));
+
+        assertRejects("""
+                define class Box as
+                end
+                fnc misuse(Result<Box, String> value): void {
+                  val first = value.or_else((String reason) -> Err(reason));
+                  val second = value.or_else((String reason) -> Err(reason));
+                  return;
+                }
+                """, "moved value");
     }
 
     private static void assertRejects(String source, String message) {

@@ -7082,9 +7082,12 @@ public final class ActorRuntime implements AutoCloseable {
          */
         private boolean sourceHandoffRequested;
         private OresScheduler sourceScheduler;
-        // Do not reenter finalization from scheduler close/Task callbacks
-        // while cleanup receipts are being checked under lifecycleLock.
+        // Source-scheduler shutdown must not invoke arbitrary synchronous
+        // Future/cancellation callbacks while holding lifecycleLock.
+        // guarded by lifecycleLock; only one close worker per actor.
         private boolean sourceSchedulerClosing;
+        private boolean sourceSchedulerCloseFinished;
+        private Throwable sourceSchedulerCloseFailure;
         /** self.end()/self.endWithCleanup(...) lifecycle state; guarded by lifecycleLock. */
         private boolean endRequested;
         private Runnable finalCleanup;
@@ -7376,6 +7379,37 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        private void closeSourceSchedulerOutsideLock(OresScheduler scheduler) {
+            Throwable failure = null;
+            try {
+                // This may run arbitrary Future callbacks, including callbacks
+                // that acquire this actor's lifecycleLock or cancel children.
+                // Do not hold that monitor while entering this method.
+                scheduler.close();
+            } catch (Throwable closeFailure) {
+                failure = closeFailure;
+            } finally {
+                synchronized (lifecycleLock) {
+                    // Revalidate the identity; a close receipt from any other
+                    // scheduler must never authorize actor heap reclamation.
+                    if (sourceScheduler != scheduler) {
+                        failure = new IllegalStateException(
+                                "actor source scheduler identity changed during close");
+                    }
+                    sourceSchedulerCloseFailure = failure;
+                    sourceSchedulerCloseFinished = true;
+                    sourceSchedulerClosing = false;
+                    // finalizeStopLocked rechecks stopped, carrier, children,
+                    // task quiescence and arena ownership under this monitor.
+                    if (stopped.get()) finalizeStopLocked();
+                    lifecycleLock.notifyAll();
+                }
+            }
+            if (failure instanceof VirtualMachineError fatal) throw fatal;
+            if (failure instanceof ThreadDeath fatal) throw fatal;
+            if (failure instanceof LinkageError fatal) throw fatal;
+        }
+
         private void finalizeStopLocked() {
             // External termination is not observable until the dispatcher has
             // fully crossed back out of the TurnExecutor boundary. For
@@ -7388,24 +7422,39 @@ public final class ActorRuntime implements AutoCloseable {
                     || !children.isEmpty()) return;
             OresScheduler scheduler = sourceScheduler;
             if (scheduler != null) {
-                Throwable closeFailure = null;
-                sourceSchedulerClosing = true;
-                try {
-                    scheduler.close();
-                } catch (RuntimeException failure) {
-                    closeFailure = failure;
-                } finally {
-                    sourceSchedulerClosing = false;
+                if (!sourceSchedulerCloseFinished) {
+                    if (!sourceSchedulerClosing) {
+                        // Claim close responsibility under the actor monitor,
+                        // but run the scheduler's user-notifying callbacks
+                        // outside that monitor. Close has at-most-one issuer.
+                        sourceSchedulerClosing = true;
+                        try {
+                            Thread.ofVirtual()
+                                    .name("ores-actor-" + ref.id() + "-scheduler-close")
+                                    .start(() -> closeSourceSchedulerOutsideLock(scheduler));
+                        } catch (Throwable schedulingFailure) {
+                            // No close executor is available. Do not retry a
+                            // possibly partially scheduled close or free arena
+                            // storage without a physical retirement witness.
+                            sourceSchedulerCloseFailure = schedulingFailure;
+                            sourceSchedulerCloseFinished = true;
+                            sourceSchedulerClosing = false;
+                            if (schedulingFailure instanceof VirtualMachineError fatal) throw fatal;
+                            if (schedulingFailure instanceof ThreadDeath fatal) throw fatal;
+                            if (schedulingFailure instanceof LinkageError fatal) throw fatal;
+                        }
+                    }
+                    if (!sourceSchedulerCloseFinished) return;
                 }
-                if (closeFailure != null || scheduler.hasIncompleteCleanup()) {
-                    // A cancelled/suspended source frame may still own defer
-                    // state, mutex guards or native loans. Keep ActorCell and
-                    // memorySlice strongly reachable in the runtime's actor
-                    // registry: no heap reclamation and no false actor-done.
+                if (sourceSchedulerCloseFailure != null
+                        || scheduler.hasIncompleteCleanup()) {
+                    // A suspended frame, active retirement callback or failed
+                    // native loan means that DONE must stay pending and the
+                    // ActorCell and heap must remain strongly reachable.
                     ref.terminationCause.compareAndSet(null,
                             new OresScheduler.CleanupIncompleteError(
                                     "actor source cleanup incomplete; quarantine arena",
-                                    closeFailure));
+                                    sourceSchedulerCloseFailure));
                     lifecycleLock.notifyAll();
                     return;
                 }
