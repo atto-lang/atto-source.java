@@ -118,8 +118,10 @@ final class CompilerCheckModeTest {
     void terminalControlTextIsSanitizedAndBounded() {
         String diagnostic = OresMain.formatCheckDiagnostic(
                 Path.of("src/main.ores"),
-                new IllegalArgumentException("bad" + "\u001b[31m" + "\n" + "x".repeat(10000)));
+                new IllegalArgumentException("bad" + "\u001b[31m" + "\n"
+                        + "\u202e" + "x".repeat(10000)));
         assertTrue(!diagnostic.contains("\u001b"));
+        assertTrue(!diagnostic.contains("\u202e"));
         assertTrue(!diagnostic.contains("\n"));
         assertTrue(diagnostic.length() < 2200);
     }
