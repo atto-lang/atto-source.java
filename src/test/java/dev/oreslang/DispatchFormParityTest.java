@@ -365,6 +365,33 @@ final class DispatchFormParityTest {
               end;
             }
             """)));
+
+        var foldedValueDuplicate = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                    fnc bad(int x): int {
+                      return switch x
+                        case 1 + 1 -> { 1; }
+                        case 2 -> { 2; }
+                        default -> { 0; }
+                      end;
+                    }
+                    """)));
+        assertTrue(foldedValueDuplicate.getMessage().contains("duplicate value switch case"));
+
+        var foldedStatementDuplicate = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                    fnc bad(int x): int {
+                      switch x
+                        case 1 + 1 -> { return 1; }
+                        case 2 -> { return 2; }
+                        default -> { return 0; }
+                      end
+                    }
+                    """)));
+        assertTrue(foldedStatementDuplicate.getMessage().contains("duplicate switch case"));
+
     }
 
     @Test
