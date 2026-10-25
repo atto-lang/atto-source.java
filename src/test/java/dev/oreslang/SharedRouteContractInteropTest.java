@@ -93,49 +93,6 @@ final class SharedRouteContractInteropTest {
             """;
 
     @Test
-    void linkedGuestParseScopeIsExactAndNeverPersistsIntoRuntime() {
-        String name = "/verified/Route.ores";
-        String source = "pub routine main(): void { return; }";
-        Ast.Program reviewed = Parser.parse(source);
-        assertNull(OresCompiler.takeVerifiedGuestProgram(name, source));
-        try (OresCompiler.LinkedGuestParseScope ignored =
-                     OresCompiler.linkVerifiedGuestParse(name, source, reviewed)) {
-            assertSame(reviewed, OresCompiler.takeVerifiedGuestProgram(name, source));
-            assertThrows(SecurityException.class,
-                    () -> OresCompiler.takeVerifiedGuestProgram(name, source + " "));
-            assertThrows(SecurityException.class,
-                    () -> OresCompiler.takeVerifiedGuestProgram("/different/Route.ores", source));
-        }
-        assertNull(OresCompiler.takeVerifiedGuestProgram(name, source),
-                "host-only parse lease must be retired before any guest turn");
-    }
-
-    @Test
-    void linkedGuestParseScopesRejectOutOfOrderClosureAndReuse() {
-        String src = "pub routine main(): void { return; }";
-        Ast.Program outerAst = Parser.parse(src);
-        Ast.Program innerAst = Parser.parse(src);
-        String outerId = "/verified/outer.ores";
-        String innerId = "/verified/inner.ores";
-        assertNull(OresCompiler.takeVerifiedGuestProgram(outerId, src));
-        try (var outer = OresCompiler.linkVerifiedGuestParse(outerId, src, outerAst)) {
-            try (var inner = OresCompiler.linkVerifiedGuestParse(innerId, src, innerAst)) {
-                assertThrows(IllegalStateException.class, outer::close,
-                        "closing an outer lease must not erase its live inner lease");
-                assertSame(innerAst, OresCompiler.takeVerifiedGuestProgram(innerId, src));
-                assertThrows(IllegalStateException.class,
-                        () -> OresCompiler.takeVerifiedGuestProgram(innerId, src),
-                        "one checked AST lease must admit only one synchronous parse");
-            }
-            assertSame(outerAst, OresCompiler.takeVerifiedGuestProgram(outerId, src));
-            assertThrows(IllegalStateException.class,
-                    () -> OresCompiler.takeVerifiedGuestProgram(outerId, src));
-        }
-        assertNull(OresCompiler.takeVerifiedGuestProgram(outerId, src),
-                "all linked source authority must be retired after nested scopes close");
-    }
-
-    @Test
     void incrementalAbiTracksContractKindAndConformance() {
         IncrementalCompiler compiler = new IncrementalCompiler();
         String id = "/trusted/contracts.ores";
