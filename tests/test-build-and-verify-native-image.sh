@@ -35,6 +35,10 @@ int main(int argc, char **argv) {
         printf("{\"build_mode\":\"%s\",\"default_execution_mode\":\"%s\",\"managed_reference_mode\":\"%s\",\"guest_execution\":\"%s\"}\n",
                mode, mode, refs, guest);
         if (getenv("MOCK_EXTRA_BUILD_INFO")) puts("unexpected extra output");
+        if (getenv("MOCK_BUILD_INFO_STDERR")) fputs("unexpected manifest diagnostic\n", stderr);
+        if (getenv("MOCK_BUILD_INFO_TRAILING_BLANK")) puts("");
+        if (getenv("MOCK_BUILD_INFO_NUL")) fputc(0, stdout);
+        if (getenv("MOCK_BUILD_INFO_NONZERO")) return 17;
         return 0;
     }
     if (argc >= 2 && strcmp(argv[1], "--mode=jit") == 0) {
@@ -263,8 +267,11 @@ assert_case() {
       'invalid refs') expected_status=2; expected_diagnostic='invalid reference mode: invalid' ;;
       'Maven failure') expected_status=19 ;;
       'script wrapper rather than native binary') expected_diagnostic='artifact is not an OS-native executable' ;;
-      'wrong baked reference mode'|'wrong baked image mode'|'extra build-info lines')
+      'wrong baked reference mode'|'wrong baked image mode'|'extra build-info lines'|\
+      'manifest trailing blank stdout'|'manifest NUL stdout')
         expected_diagnostic='native build-info does not match canonical' ;;
+      'manifest stderr diagnostic'|'manifest command nonzero exit')
+        expected_diagnostic='native --build-info failed or emitted stderr diagnostics' ;;
       'source execution failure') expected_status=13 ;;
       'check-only mistakenly executes guest'|'check-only reports stderr diagnostic with zero exit'|\
       'check-only emits NUL stdout'|'check-only emits NUL stderr')
@@ -346,6 +353,10 @@ assert_case 'script wrapper rather than native binary' failure aot compressed32 
 assert_case 'wrong baked reference mode' failure aot compressed32 MOCK_EMBEDDED_MODE=aot MOCK_EMBEDDED_REFS=native64
 assert_case 'wrong baked image mode' failure aot compressed32 MOCK_EMBEDDED_MODE=hybrid
 assert_case 'extra build-info lines' failure aot compressed32 MOCK_EXTRA_BUILD_INFO=1
+assert_case 'manifest stderr diagnostic' failure aot compressed32 MOCK_BUILD_INFO_STDERR=1
+assert_case 'manifest trailing blank stdout' failure aot compressed32 MOCK_BUILD_INFO_TRAILING_BLANK=1
+assert_case 'manifest NUL stdout' failure aot compressed32 MOCK_BUILD_INFO_NUL=1
+assert_case 'manifest command nonzero exit' failure aot compressed32 MOCK_BUILD_INFO_NONZERO=1
 assert_case 'source execution failure' failure aot compressed32 MOCK_BAD_PROGRAM_STATUS=1
 assert_case 'check-only mistakenly executes guest' failure aot compressed32 MOCK_CHECK_EXECUTES_GUEST=1
 assert_case 'check-only reports stderr diagnostic with zero exit' failure aot compressed32 MOCK_CHECK_STDERR=1
