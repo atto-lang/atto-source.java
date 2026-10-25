@@ -1573,14 +1573,8 @@ public final class OwnershipChecker {
             }
             return new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
         }
-        if (isBuiltinStdoutCall(call, "log", scope) || isBuiltinStdoutCall(call, "logList", scope)) {
-            for (Ast.Expr argument : call.arguments()) {
-                Ast.Expr value = argument instanceof Ast.SpreadExpr spread ? spread.expression() : argument;
-                ValueInfo info = checkExpr(value, scope, false);
-                if (containsMutexGuardType(info.type)) {
-                    throw error("MutexGuard cannot be formatted or logged");
-                }
-            }
+        if (isBuiltinFormattingCall(call, scope)) {
+            checkFormattingArguments(call.arguments(), scope);
             return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
         }
         if (call.callee() instanceof Ast.MemberExpr factoryCall
@@ -1984,6 +1978,138 @@ public final class OwnershipChecker {
 
     private static boolean isBooleanIntrinsicName(String name) {
         return name.equals("And") || name.equals("Or") || name.equals("Xor");
+    }
+
+    private static boolean isBuiltinFormattingCall(Ast.CallExpr call, Scope scope) {
+        if (!(call.callee() instanceof Ast.MemberExpr member)) return false;
+        if (member.receiver() instanceof Ast.NameExpr namespace
+                && namespace.name().equals("stdio") && scope.lookup("stdio") == null) {
+            return member.member().equals("print") || member.member().equals("println");
+        }
+        return isBuiltinStdoutCall(call, "write", scope)
+                || isBuiltinStdoutCall(call, "println", scope)
+                || isBuiltinStdoutCall(call, "log", scope)
+                || isBuiltinStdoutCall(call, "logList", scope);
+    }
+
+    private void checkFormattingArguments(List<Ast.Expr> arguments, Scope scope) {
+        List<VarState> loans = new ArrayList<>();
+        try {
+            for (Ast.Expr argument : arguments) {
+                Ast.Expr value = argument instanceof Ast.SpreadExpr spread ? spread.expression() : argument;
+                int prefixLoans = loans.size();
+                Ast.TypeRef element = formattingCollectionElement(value, scope);
+                if (element != null && value instanceof Ast.CallExpr call
+                        && call.callee() instanceof Ast.MemberExpr member) {
+                    Set<VarState> receivers = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+                    collectFormattingRoots(member.receiver(), scope, receivers);
+                    for (VarState receiver : receivers) {
+                        beginPersistentBorrow(receiver, false);
+                        loans.add(receiver);
+                    }
+                }
+                ValueInfo info = checkExpr(value, scope, false);
+                // The generic host-call fallback cannot distinguish Copy
+                // collection elements from views. Use the checked element type
+                // for formatting without changing collection transfer rules.
+                if (element != null) info = new ValueInfo(element, kindOfType(element), null);
+                if (containsMutexGuardType(info.type))
+                    throw error("MutexGuard cannot be formatted or logged");
+                if (info.kind == ValueKind.COPY && info.borrowSource == null) {
+                    releaseFormattingLoans(loans, prefixLoans);
+                    continue;
+                }
+                Set<VarState> roots = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+                collectFormattingRoots(value, scope, roots);
+                if (roots.isEmpty() && info.borrowSource != null)
+                    roots.add(ownershipRoot(info.borrowSource));
+                if (roots.isEmpty() && isBorrowValue(info))
+                    throw error("formatting a borrowed result requires proven lifetime provenance");
+                for (VarState root : roots) {
+                    beginPersistentBorrow(root, false);
+                    loans.add(root);
+                }
+            }
+        } finally {
+            // The evaluator retains all argument values before formatting.
+            // Keep earlier values frozen across later argument effects, and
+            // release temporary loans on both success and validation failure.
+            releaseFormattingLoans(loans, 0);
+        }
+    }
+
+    private static void releaseFormattingLoans(List<VarState> loans, int prefix) {
+        while (loans.size() > prefix) {
+            VarState root = loans.removeLast();
+            if (root.immutableBorrows <= 0)
+                throw new IllegalStateException("missing formatting argument loan");
+            --root.immutableBorrows;
+        }
+    }
+
+    private Ast.TypeRef formattingCollectionElement(Ast.Expr value, Scope scope) {
+        if (!(value instanceof Ast.CallExpr call)
+                || !(call.callee() instanceof Ast.MemberExpr member)
+                || !member.member().equals("get") || call.arguments().size() != 1) return null;
+        Ast.TypeRef receiver = receiverType(member.receiver(), scope);
+        if (receiver == null && (member.receiver() instanceof Ast.MemberExpr
+                || member.receiver() instanceof Ast.IndexExpr)) {
+            receiver = borrowPlace(member.receiver(), scope).type();
+            if (receiver.isBorrow()) receiver = receiver.borrowedTarget();
+        }
+        if (receiver == null || receiver.arguments().size() != 1
+                || !(receiver.name().equals("Array") || receiver.name().equals("List"))) return null;
+        return receiver.arguments().getFirst();
+    }
+
+    private void collectFormattingRoots(Ast.Expr value, Scope scope, Set<VarState> roots) {
+        if (value instanceof Ast.ConditionalExpr conditional) {
+            collectFormattingRoots(conditional.whenTrue(), scope, roots);
+            collectFormattingRoots(conditional.whenFalse(), scope, roots);
+        } else if (value instanceof Ast.MatchExpr match) {
+            if (!isCopyType(syntacticType(match.subject(), scope)))
+                collectFormattingRoots(match.subject(), scope, roots);
+            for (Ast.MatchValueArm arm : match.arms())
+                collectFormattingRoots(arm.value(), scope, roots);
+        } else if (value instanceof Ast.AssignExpr assignment) {
+            // Assignment evaluates to the newly installed value, which can
+            // alias its target while later format arguments are evaluated.
+            collectFormattingRoots(assignment.target(), scope, roots);
+        } else if (value instanceof Ast.CastExpr cast) {
+            collectFormattingRoots(cast.value(), scope, roots);
+        } else if (value instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr member) {
+                Set<VarState> receivers = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+                collectFormattingRoots(member.receiver(), scope, receivers);
+                Ast.TypeRef receiver = receiverType(member.receiver(), scope);
+                for (VarState root : receivers) {
+                    // Owned sum/Future extraction can consume the carrier;
+                    // its returned value no longer borrows that dead slot.
+                    if (root.moved && receiver != null
+                            && Set.of("Option", "Result", "Future").contains(receiver.name())) continue;
+                    roots.add(root);
+                }
+            } else {
+                collectFormattingRoots(call.callee(), scope, roots);
+            }
+            for (Ast.Expr argument : call.arguments()) {
+                if (argument instanceof Ast.RuntimeCallExpr runtime && runtime.operation().equals("borrow")
+                        || argument instanceof Ast.UnaryExpr unary
+                            && (unary.operator().equals("&") || unary.operator().equals("&mut"))
+                        || syntacticType(argument, scope).isBorrow()) {
+                    collectFormattingRoots(argument, scope, roots);
+                }
+            }
+        } else if (value instanceof Ast.NameExpr name) {
+            VarState state = scope.lookup(name.name());
+            if (state != null) roots.add(ownershipRoot(state));
+        } else if (value instanceof Ast.MemberExpr || value instanceof Ast.IndexExpr) {
+            // Only a stable, checked projection may borrow an existing owner.
+            roots.add(ownershipRoot(borrowPlace(value, scope).owner()));
+        } else {
+            VarState root = invocationLoanRoot(value, scope);
+            if (root != null) roots.add(root);
+        }
     }
 
     private static boolean isBuiltinStdoutCall(Ast.CallExpr call, String memberName, Scope scope) {
