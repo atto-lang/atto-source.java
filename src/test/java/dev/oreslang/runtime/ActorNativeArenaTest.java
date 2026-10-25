@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.*;
@@ -724,6 +725,63 @@ final class ActorNativeArenaTest {
     }
 
     @Test
+    void eachFailedSlabMetadataAppendRollsBackNativeBytesAndLogicalOffset() {
+        // Fail immediately AFTER each append; quota-denial tests only cover
+        // failure BEFORE the first append and cannot establish rollback.
+        for (int failureStage = 1; failureStage <= 3; failureStage++) {
+            for (int failureKind = 0; failureKind < 2; failureKind++) {
+                final int expectedStage = failureStage;
+                final boolean fatal = failureKind == 1;
+                AtomicLong charged = new AtomicLong();
+                AtomicInteger armed = new AtomicInteger(0);
+                Object marker = new Object();
+                try (ActorNativeArena arena = new ActorNativeArena(8192, () -> {}, bytes -> {
+                    charged.addAndGet(bytes);
+                    return () -> charged.addAndGet(-bytes);
+                }, stage -> {
+                    if (stage == armed.get()) {
+                        armed.set(0); // fail precisely once, then permit retry
+                        if (fatal) throw new OutOfMemoryError("synthetic metadata append stage " + stage);
+                        throw new IllegalStateException("synthetic metadata append stage " + stage);
+                    }
+                })) {
+                    ActorNativeArena.ValueCell first = null;
+                    ActorNativeArena.ValueCell last = null;
+                    for (int index = 0; index < 170; index++) {
+                        last = arena.valueCell((long) index, marker);
+                        if (first == null) first = last;
+                    }
+                    assertEquals(4096, arena.committedBytes());
+                    assertEquals(4080, arena.allocatedBytes());
+                    assertEquals(4096, charged.get());
+                    assertEquals(0L, first.nativeOffset());
+                    armed.set(expectedStage);
+                    if (fatal) {
+                        assertThrows(OutOfMemoryError.class, () -> arena.valueCell(170L, marker));
+                    } else {
+                        assertThrows(IllegalStateException.class, () -> arena.valueCell(170L, marker));
+                    }
+                    assertEquals(0, armed.get(), "only the selected append must throw");
+                    assertEquals(4096, arena.committedBytes(), "no failed slab is published");
+                    assertEquals(4080, arena.allocatedBytes(), "logical bytes unchanged");
+                    assertEquals(4096, charged.get(), "failed slab quota refunded");
+                    assertEquals(0L, first.get());
+                    assertEquals(169L, last.get());
+
+                    ActorNativeArena.ValueCell resumed = arena.valueCell(170L, marker);
+                    assertEquals(4096L, resumed.nativeOffset(),
+                            "failure may not consume or recycle native logical offsets");
+                    assertEquals(170L, resumed.get());
+                    assertEquals(8192, charged.get());
+                }
+                assertEquals(0L, charged.get(),
+                        "actor teardown must refund every surviving slab (stage "
+                                + expectedStage + ", fatal=" + fatal + ")");
+            }
+        }
+    }
+
+    @Test
     void nativeObjectsRegionsAndLinearPagesShareOneNonRecycledActorOffsetSpace() {
         AtomicLong charged = new AtomicLong();
         Object marker = new Object();
@@ -934,3 +992,4 @@ final class ActorNativeArenaTest {
         });
     }
 }
+
