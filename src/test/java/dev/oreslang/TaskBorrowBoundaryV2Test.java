@@ -345,10 +345,11 @@ final class TaskBorrowBoundaryV2Test {
     void sendSafeCapabilityMayMoveThroughOwnedClass() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(BOX + """
                 define class SendWrapper as
-                  pub let Mutex<Box> lock = Mutex.new(new Box());
+                  pub let Mutex<Box> lock;
+                  constructor(Mutex<Box> lock) { self.lock = lock; }
                 end
                 pub async fnc main(): void {
-                  let SendWrapper wrapper = new SendWrapper();
+                  let SendWrapper wrapper = new SendWrapper(Mutex.new(new Box()));
                   let Future<int> child = task {
                     let SendWrapper moved = wrapper;
                     return 1;
