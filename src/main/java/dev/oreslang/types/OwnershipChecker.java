@@ -438,6 +438,10 @@ public final class OwnershipChecker {
                     }
                 }
                 ValueInfo returned = checkExpr(ret.value(), scope, true);
+                if (containsTypedMapType(returned.type)) {
+                    throw error(
+                            "typed Map or aggregate containing one cannot be returned until move/borrow lifetimes are implemented");
+                }
                 if (containsMutexGuardType(returned.type)) {
                     throw error("MutexGuard values are lexical and cannot be returned from a function/routine");
                 }
@@ -844,6 +848,12 @@ public final class OwnershipChecker {
             placeholder.kind = value.kind;
             placeholder.borrowSource = value.borrowSource;
             return;
+        }
+
+        if (containsTypedMapType(value.type)
+                && !isFreshTypedMapConstruction(binding.initializer())) {
+            throw error(
+                    "typed Map bindings must own a fresh new Map<K,V>() value; aliases are not implemented");
         }
 
         boolean readonlyRecord = value.type.isReadonlyRecordType();
@@ -1542,6 +1552,41 @@ public final class OwnershipChecker {
         }
 
         if (call.callee() instanceof Ast.MemberExpr member) {
+            Ast.TypeRef mapReceiver = receiverType(member.receiver(), scope);
+            Ast.TypeRef concreteMapReceiver = mapReceiver != null && mapReceiver.isBorrow()
+                    ? mapReceiver.borrowedTarget() : mapReceiver;
+            if (isTypedMapType(concreteMapReceiver)) {
+                String operation = member.member();
+                if (!Set.of("has", "get", "take", "remove").contains(operation)) {
+                    throw error("unknown typed Map operation '" + operation + "'");
+                }
+                if (call.arguments().size() != 1) {
+                    throw error("Map." + operation + " expects exactly one key argument");
+                }
+                checkExpr(call.arguments().getFirst(), scope, false);
+                if (operation.equals("take") || operation.equals("remove")) {
+                    if (!(member.receiver() instanceof Ast.NameExpr owner)) {
+                        throw error(
+                                "Map." + operation + " requires a directly owned mutable binding");
+                    }
+                    VarState state = requireState(scope, owner.name());
+                    requireUsable(state, owner.name(), true);
+                    if (!state.mutable) {
+                        throw error(
+                                "Map." + operation + " requires let mut or val binding");
+                    }
+                }
+                Ast.TypeRef value = concreteMapReceiver.arguments().get(1);
+                Ast.TypeRef result = switch (operation) {
+                    case "has", "remove" -> Ast.TypeRef.simple("bool");
+                    case "get", "take" -> new Ast.TypeRef(
+                            "Option", List.of(value), false);
+                    default -> throw new IllegalStateException(
+                            "unreachable typed Map operation");
+                };
+                return new ValueInfo(result, kindOfType(result), null);
+            }
+
             ValueInfo sumCall = checkBuiltinSumCall(member, call.arguments(), scope);
             if (sumCall != null) return sumCall;
             ValueInfo stringCall = checkBuiltinStringCall(member, call.arguments(), scope);
@@ -2129,6 +2174,10 @@ public final class OwnershipChecker {
                     }
 
                     ValueInfo aggregate = checkExpr(spread.expression(), scope, true);
+                    if (containsTypedMapType(aggregate.type)) {
+                        throw error(
+                                callable + " spread cannot consume typed Map values without move/borrow semantics");
+                    }
                     if (containsMutexGuardType(aggregate.type)) {
                         throw error(callable + " spread cannot consume a guard-bearing tuple");
                     }
@@ -2266,6 +2315,11 @@ public final class OwnershipChecker {
             throw error(callable + " argument " + position + " must be an explicit borrow");
         }
         ValueInfo argument = checkExpr(arg, scope, true);
+        if (containsTypedMapType(argument.type)) {
+            throw error(
+                    callable + " argument " + position
+                            + " cannot consume typed Map values without move/borrow semantics");
+        }
         if (containsMutexGuardType(argument.type)) {
             throw error(callable + " argument " + position + " cannot consume a guard-bearing value");
         }
@@ -2274,6 +2328,10 @@ public final class OwnershipChecker {
     private void checkAssignmentTarget(Ast.Expr target, Scope scope) {
         if (target instanceof Ast.NameExpr name) {
             VarState state = requireState(scope, name.name());
+            if (isTypedMapType(state.type)) {
+                throw error(
+                        "typed Map rebinding is disabled until exclusive move semantics are implemented");
+            }
             if (!state.rebindable) throw error("cannot reassign fixed binding '" + name.name() + "'; use let or let mut");
             VarState root = ownershipRoot(state);
             if (root.moved) {
@@ -2320,6 +2378,23 @@ public final class OwnershipChecker {
             return;
         }
         if (target instanceof Ast.IndexExpr indexed) {
+            Ast.TypeRef receiver = syntacticType(indexed.receiver(), scope);
+            Ast.TypeRef concrete = receiver.isBorrow()
+                    ? receiver.borrowedTarget() : receiver;
+            if (isTypedMapType(concrete)) {
+                if (!(indexed.receiver() instanceof Ast.NameExpr owner)) {
+                    throw error(
+                            "typed Map indexed write requires a directly owned mutable binding");
+                }
+                VarState state = requireState(scope, owner.name());
+                requireUsable(state, owner.name(), true);
+                if (!state.mutable) {
+                    throw error(
+                            "typed Map indexed write requires let mut or val binding");
+                }
+                checkExpr(indexed.index(), scope, false);
+                return;
+            }
             ensureMutableReceiver(indexed.receiver(), scope, "indexed value");
             checkExpr(indexed.index(), scope, false);
             return;
@@ -2568,6 +2643,11 @@ public final class OwnershipChecker {
             }
             if (containsMutexGuardType(source.type)) {
                 throw error("closure cannot capture guard-bearing value '" + capture.name + "'; MutexGuard values are lexical");
+            }
+            if (containsTypedMapType(source.type)) {
+                throw error(
+                        "closure cannot capture typed Map '" + capture.name
+                                + "' without a borrow lifetime proof");
             }
 
             if (capture.write) {
@@ -3650,6 +3730,10 @@ public final class OwnershipChecker {
             return Ast.TypeRef.union(concrete.arguments());
         }
 
+        if (isTypedMapType(concrete)) {
+            return concrete.arguments().get(1);
+        }
+
         if ((concrete.name().equals("Array") || concrete.name().equals("List"))
                 && concrete.arguments().size() == 1) {
             return concrete.arguments().getFirst();
@@ -3878,6 +3962,34 @@ public final class OwnershipChecker {
         if (left.name().equals("$infer$")) return right;
         if (right.name().equals("$infer$")) return left;
         return Ast.TypeRef.union(List.of(left, right));
+    }
+
+    private boolean isTypedMapType(Ast.TypeRef type) {
+        if (type == null) return false;
+        Ast.TypeRef concrete = type.isBorrow() ? type.borrowedTarget() : type;
+        return concrete.name().equals("Map")
+                && !concrete.inferArguments()
+                && concrete.arguments().size() == 2;
+    }
+
+    private boolean containsTypedMapType(Ast.TypeRef type) {
+        if (type == null) return false;
+        if (isTypedMapType(type)) return true;
+        if (type.isBorrow()) return containsTypedMapType(type.borrowedTarget());
+        if (type.isUnion() || type.isTupleType()) {
+            return type.arguments().stream().anyMatch(this::containsTypedMapType);
+        }
+        if (type.isClosedAggregateType()) {
+            return type.aggregateMembers().values().stream()
+                    .anyMatch(this::containsTypedMapType);
+        }
+        return type.arguments().stream().anyMatch(this::containsTypedMapType);
+    }
+
+    private boolean isFreshTypedMapConstruction(Ast.Expr expression) {
+        return expression instanceof Ast.NewExpr created
+                && created.type().name().equals("Map")
+                && created.type().arguments().size() == 2;
     }
 
     private ValueKind kindOfType(Ast.TypeRef type) {
