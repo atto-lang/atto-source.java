@@ -17,6 +17,31 @@ import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class StdioLogAndSpreadTest {
+@Test
+void consoleValuesEvaluateBeforeOneConcatenatedOutput() throws Exception {
+    assertEquals("ababc\n", run("""
+            fnc mark(string s):string { stdio.print(s); return s; }
+            pub routine main():void {
+              stdio.println(mark("a"), mark("b"), "c");
+              return;
+            }
+            """));
+}
+
+@Test
+void consoleRejectsUnboundedAndEmptyArgumentLists() {
+    for (String arguments : java.util.List.of("", String.join(",", java.util.Collections.nCopies(33, "1")))) {
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("pub fnc main():void{stdio.println(" + arguments + ");return;}"));
+        assertTrue(failure.getMessage().contains("1 to 32"));
+    }
+}
+
+@Test
+void consolePreservesUtf8AndEmbeddedNul() throws Exception {
+    assertEquals("A\0é", run("pub fnc main():void{stdio.print(\"A\",\"\\u0000\",\"é\");return;}"));
+}
+
     @Test
     void stdoutLogConcatenatesArgumentsAndAppendsOneNewline() throws Exception {
         String output = run("""

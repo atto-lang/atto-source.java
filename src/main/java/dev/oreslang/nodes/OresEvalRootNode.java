@@ -11259,12 +11259,29 @@ public final class OresEvalRootNode extends RootNode {
 
     private record StdioFacade(OresContext context) {
         private Object print(List<Object> args) {
-            return emitStdout(context, args, "stdio.print", false);
+            return emitConsole(context, args, "stdio.print", false);
         }
         private Object println(List<Object> args) {
-            return emitStdout(context, args, "stdio.println", true);
+            return emitConsole(context, args, "stdio.println", true);
         }
     }
+private static Object emitConsole(OresContext context, List<Object> args, String operation, boolean newline) {
+    context.requireCapability(IsolatePolicy.Capability.STDOUT, operation);
+    if (args.isEmpty() || args.size() > 32)
+        throw new IllegalArgumentException(operation + " requires 1 to 32 values");
+    // The evaluator has already evaluated every argument in source order.
+    // Render the complete record before publishing one output operation.
+    StringBuilder text = new StringBuilder();
+    for (Object argument : args) text.append(CycleSafeDisplay.render(argument));
+    long started = dev.oreslang.runtime.CorePerf.start();
+    try {
+        if (newline) context.output().println(text);
+        else { context.output().print(text); context.output().flush(); }
+    } finally {
+        dev.oreslang.runtime.CorePerf.end(dev.oreslang.runtime.CorePerf.STDIO_WRITE, started);
+    }
+    return null;
+}
     private static Object emitStdout(OresContext context, List<Object> args, String operation, boolean newline) {
         context.requireCapability(IsolatePolicy.Capability.STDOUT, operation);
         requireOne(args, operation);
