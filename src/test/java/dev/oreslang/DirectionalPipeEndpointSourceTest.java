@@ -141,6 +141,61 @@ final class DirectionalPipeEndpointSourceTest {
     }
 
     @Test
+    void genericAndInheritedEndpointProtocolsConcretizeBeforePipeChecking() {
+        IllegalArgumentException bridge = rejects("""
+                define class GenericSource<T> implements HasOutputChannel<T> as
+                    pub output: ReadChannel<T>;
+                end
+
+                define class IntSource extends GenericSource<int> as
+                end
+
+                define class IntSink implements HasInputChannel<int> as
+                    pub input: WriteChannel<int>;
+                end
+
+                pub fnc connect(IntSource source, IntSink sink): void {
+                    val graph = source pipe sink;
+                    return;
+                }
+                """);
+        assertTrue(bridge.getMessage().contains(
+                        "non-actor pipe transport requires bounded stream/channel bridge lowering"),
+                bridge::toString);
+    }
+
+    @Test
+    void endpointProtocolCannotBeSatisfiedByGetterMethod() {
+        IllegalArgumentException getter = rejects("""
+                define class MethodSource implements HasOutputChannel<int> as
+                    pub output(): ReadChannel<int> {
+                        val Channel<int> channel = Channel.new<int>(1);
+                        return channel.output;
+                    }
+                end
+                """);
+        assertTrue(getter.getMessage().contains("public stable property 'output"),
+                getter::toString);
+    }
+
+    @Test
+    void directionalViewsCannotWidenBackToFullOrOppositeChannelCapabilities() {
+        IllegalArgumentException full = rejects("""
+                pub fnc widen(ReadChannel<int> source): Channel<int> {
+                    return source;
+                }
+                """);
+        assertTrue(full.getMessage().contains("return"), full::toString);
+
+        IllegalArgumentException opposite = rejects("""
+                pub fnc reverse(WriteChannel<int> sink): ReadChannel<int> {
+                    return sink;
+                }
+                """);
+        assertTrue(opposite.getMessage().contains("return"), opposite::toString);
+    }
+
+    @Test
     void heterogeneousTransformChecksAdjacentDomainsBeforeTransportLowering() {
         IllegalArgumentException bridge = rejects("""
                 define class Source implements HasOutputChannel<int> as
