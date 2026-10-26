@@ -96,6 +96,31 @@ public final class FuturePipelineTypingCheck {
             throw new AssertionError("rewritten Future stage inherited stale lowering proof");
         }
 
+        Ast.Program becomesAsync = TypeChecker.check(Parser.parse("""
+                async fnc start_async(int value): int {
+                  rt cooperate;
+                  return value + 1;
+                }
+                fnc twice(int value): int { return value * 2; }
+                fnc main(): void {
+                  val Future<int> pending = 21 |> start_async() |> twice();
+                  val int result = await pending;
+                  return;
+                }
+                """));
+        Ast.FunctionDecl becomesAsyncMain = (Ast.FunctionDecl)
+                becomesAsync.modules().getFirst().declarations().get(2);
+        Ast.CallExpr liftedAfterAsync = (Ast.CallExpr)
+                ((Ast.BindingStmt) becomesAsyncMain.body().getFirst()).initializer();
+        if (!TypeChecker.CheckedPureFuturePipe.lookup(liftedAfterAsync)) {
+            throw new AssertionError("pipeline did not lift after scalar prefix became async");
+        }
+        Ast.CallExpr eagerAsyncPrefix = (Ast.CallExpr)
+                liftedAfterAsync.arguments().getFirst();
+        if (TypeChecker.CheckedPureFuturePipe.lookup(eagerAsyncPrefix)) {
+            throw new AssertionError("scalar prefix was incorrectly converted into a deferred stage");
+        }
+
         Ast.Program asyncLifted = TypeChecker.check(Parser.parse("""
                 async fnc source(): int { return 21; }
                 async fnc delayed_identity(int value): int {
