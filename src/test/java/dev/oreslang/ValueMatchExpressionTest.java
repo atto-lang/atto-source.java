@@ -159,9 +159,9 @@ final class ValueMatchExpressionTest {
         assertEquals(2, match.arms().size());
         assertTrue(match.arms().getFirst().prefixStatements().isEmpty());
         assertEquals(1, match.arms().get(1).prefixStatements().size());
-        assertEquals(2, match.arms().get(1).body().size());
-        assertInstanceOf(Ast.ReturnStmt.class,
-                match.arms().get(1).body().getLast());
+        assertInstanceOf(Ast.NameExpr.class, match.arms().get(1).value());
+        assertTrue(match.arms().get(1).prefixStatements().stream()
+                .noneMatch(Ast.ReturnStmt.class::isInstance));
     }
 
     @Test
@@ -234,9 +234,8 @@ final class ValueMatchExpressionTest {
                 new Ast.MatchValueArm(
                         new Ast.WildcardPattern(),
                         null,
-                        java.util.List.of(
-                                early,
-                                new Ast.ReturnStmt(new Ast.LiteralExpr(2L)))));
+                        java.util.List.of(early),
+                        new Ast.LiteralExpr(2L)));
     }
 
     @Test
