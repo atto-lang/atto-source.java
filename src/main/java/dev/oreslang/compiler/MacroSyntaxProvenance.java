@@ -21,7 +21,9 @@ public final class MacroSyntaxProvenance {
     public enum EmissionKind {
         CALL_SITE_SPLICE,
         CONST_QUOTE,
-        TEMPLATE_QUOTE
+        TEMPLATE_QUOTE,
+        HYGIENIC_IDENTIFIER,
+        CHECKED_CAPTURE
     }
 
     public record HygieneIdentity(
