@@ -76,8 +76,8 @@ final class RuntimePermissionsTest {
     @Test
     void compileModeRejectsForbiddenIoButRuntimeModeDefersIt() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
-                pub fnc main(): void {
-                  val text = fs.read_text("/tmp/blocked.txt");
+                pub async fnc main(): void {
+                  val text = await fs.read_text("/tmp/blocked.txt");
                   return;
                 }
                 """));
@@ -104,8 +104,8 @@ final class RuntimePermissionsTest {
         Path denied = Files.createTempFile("ores-native-denied-", ".txt").toRealPath();
 
         Files.writeString(source, """
-                pub fnc main(): void {
-                  fs.write_text("%s", "allowed");
+                pub async fnc main(): void {
+                  await fs.write_text("%s", "allowed");
                   return;
                 }
                 """.formatted(escape(allowed)));
@@ -129,8 +129,8 @@ final class RuntimePermissionsTest {
         assertEquals("allowed", Files.readString(allowed));
 
         Files.writeString(source, """
-                pub fnc main(): void {
-                  fs.write_text("%s", "blocked");
+                pub async fnc main(): void {
+                  await fs.write_text("%s", "blocked");
                   return;
                 }
                 """.formatted(escape(denied)));
