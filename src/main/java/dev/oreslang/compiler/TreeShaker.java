@@ -581,7 +581,8 @@ public final class TreeShaker {
                         function.returnType(),
                         function.annotations(),
                         rewriteStatements(function.body(), module, locals),
-                        function.genericSpecs());
+                        function.genericSpecs(),
+                        function.effects());
             }
             if (declaration instanceof Ast.FieldDecl field) {
                 Ast.Expr initializer = rewriteExpression(field.initializer(), module, Map.of());
@@ -628,13 +629,15 @@ public final class TreeShaker {
                             method.isStatic(),
                             method.isAbstract(),
                             method.async(),
+                            method.suspends(),
                             method.structural(),
                             method.explicitReceiverType(),
                             method.genericParameters(),
                             method.parameters(),
                             method.returnType(),
                             method.annotations(),
-                            rewriteStatements(method.body(), module, locals)));
+                            rewriteStatements(method.body(), module, locals),
+                            method.effects()));
                 }
                 return new Ast.ClassDecl(
                         klass.name(),
@@ -646,7 +649,8 @@ public final class TreeShaker {
                         klass.interfaces(),
                         fields,
                         constructor,
-                        methods);
+                        methods,
+                        klass.actorConcurrency());
             }
             return declaration;
         }
@@ -1183,6 +1187,7 @@ public final class TreeShaker {
                 for (Ast.GenericParameter spec : function.genericSpecs()) {
                     scanType(spec.defaultType());
                 }
+                scanEffects(function.effects());
                 for (Ast.Annotation annotation : function.annotations()) scanAnnotation(annotation);
                 LinkedHashSet<String> locals = new LinkedHashSet<>();
                 for (Ast.Param parameter : function.parameters()) locals.add(parameter.name());
@@ -1214,6 +1219,7 @@ public final class TreeShaker {
                     scanType(method.explicitReceiverType());
                     scanType(method.returnType());
                     for (Ast.Param parameter : method.parameters()) scanType(parameter.type());
+                    scanEffects(method.effects());
                     for (Ast.Annotation annotation : method.annotations()) scanAnnotation(annotation);
                     LinkedHashSet<String> locals = new LinkedHashSet<>();
                     locals.add("self");
@@ -1228,6 +1234,7 @@ public final class TreeShaker {
                     if (member instanceof Ast.InterfaceFunctionDecl fn) {
                         scanType(fn.returnType());
                         for (Ast.Param parameter : fn.parameters()) scanType(parameter.type());
+                        scanEffects(fn.effects());
                     } else if (member instanceof Ast.InterfaceFieldDecl field) {
                         scanType(field.type());
                     }
@@ -1237,6 +1244,12 @@ public final class TreeShaker {
             if (declaration instanceof Ast.TypeAliasDecl alias) {
                 scanType(alias.target());
             }
+        }
+
+        private void scanEffects(Ast.EffectSpec effects) {
+            for (Ast.TypeRef type : effects.throwsTypes()) scanType(type);
+            for (Ast.TypeRef type : effects.raisesTypes()) scanType(type);
+            for (Ast.TypeRef type : effects.panicsTypes()) scanType(type);
         }
 
         private void scanAnnotation(Ast.Annotation annotation) {
