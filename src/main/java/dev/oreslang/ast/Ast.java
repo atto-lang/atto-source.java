@@ -1,10 +1,70 @@
 package dev.oreslang.ast;
 
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.HashSet;
 
 public final class Ast {
+    private static final String INTERNAL_MODULE_REFERENCE_PREFIX = "$module$";
+    private static final int MAX_INTERNAL_MODULE_NAME_CHARS = 4_096;
+
     private Ast() { }
+
+    /**
+     * Compiler-lowered, source-unspellable module reference used after an
+     * authority-sensitive name has already been resolved. The module spelling
+     * is encoded losslessly rather than hashed, so collisions cannot redirect
+     * the reference.
+     */
+    public static String internalModuleReference(String module) {
+        if (module == null || module.isBlank()
+                || module.length() > MAX_INTERNAL_MODULE_NAME_CHARS) {
+            throw new IllegalArgumentException("invalid internal module reference");
+        }
+        return INTERNAL_MODULE_REFERENCE_PREFIX
+                + HexFormat.of().formatHex(module.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * Returns the exact module carried by a compiler-internal reference, or
+     * null for an ordinary source name. Malformed internal references fail
+     * closed instead of falling back to normal name lookup.
+     */
+    public static String internalModuleReferenceTarget(String name) {
+        if (name == null || !name.startsWith(INTERNAL_MODULE_REFERENCE_PREFIX)) {
+            return null;
+        }
+        String hex = name.substring(INTERNAL_MODULE_REFERENCE_PREFIX.length());
+        if (hex.isEmpty() || (hex.length() & 1) != 0) {
+            throw new IllegalArgumentException("malformed internal module reference");
+        }
+        final byte[] bytes;
+        try {
+            bytes = HexFormat.of().parseHex(hex);
+        } catch (IllegalArgumentException malformed) {
+            throw new IllegalArgumentException(
+                    "malformed internal module reference", malformed);
+        }
+        final String module;
+        try {
+            module = StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(bytes))
+                    .toString();
+        } catch (CharacterCodingException malformed) {
+            throw new IllegalArgumentException(
+                    "malformed internal module reference", malformed);
+        }
+        if (module.isBlank() || module.length() > MAX_INTERNAL_MODULE_NAME_CHARS) {
+            throw new IllegalArgumentException("malformed internal module reference");
+        }
+        return module;
+    }
 
     /** Shared guest AST admission rule for closed structural field keys. */
     private static String requireStaticFieldName(String name) {
