@@ -137,7 +137,7 @@ final class HttpGenerationDrainV1Test {
         assertEquals(3, requestV3.generation());
         assertEquals(1, first.status().resourcePins());
         assertEquals(1, first.status().resourcesByKind()
-                .get(HttpGenerationDrainV1.ResourceKind.CALLBACK));
+                .get(HttpGenerationDrainV1.ResourceKind.CALLBACK).intValue());
         pendingCallback.close();
         assertTrue(first.readyToRetire());
         requestV3.handlerQuiescent();
@@ -158,7 +158,7 @@ final class HttpGenerationDrainV1Test {
         assertEquals(0, blockers.exchanges());
         assertEquals(1, blockers.resourcePins());
         assertEquals(1, blockers.resourcesByKind().get(
-                HttpGenerationDrainV1.ResourceKind.FFI_CALL));
+                HttpGenerationDrainV1.ResourceKind.FFI_CALL).intValue());
         nativePin.close();
         assertTrue(ledger.readyToRetire());
     }
