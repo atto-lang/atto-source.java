@@ -3506,7 +3506,7 @@ public final class Parser {
                     throw error(previous(),
                             "legacy braced value match arms require exactly one 'return expression;'");
                 }
-                valueArms.add(new Ast.MatchValueArm(pattern, guard, body));
+                valueArms.add(new Ast.MatchValueArm(pattern, guard, List.of(), returned.value()));
                 continue;
             }
 
@@ -3540,7 +3540,7 @@ public final class Parser {
                     throw error(previous(),
                             "legacy braced value match arms require exactly one 'return expression;'");
                 }
-                valueArms.add(new Ast.MatchValueArm(pattern, guard, body));
+                valueArms.add(new Ast.MatchValueArm(pattern, guard, List.of(), returned.value()));
                 continue;
             }
 
