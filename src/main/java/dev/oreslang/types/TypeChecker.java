@@ -1582,9 +1582,10 @@ public final class TypeChecker {
                         "async instance method '" + klass.name() + "." + method.name()
                                 + "' requires moving/borrowing the receiver into the task; use an async static fnc for now");
             }
-            if (method.async() && !method.genericParameters().isEmpty()) {
+            if ((method.async() || method.generator() && method.suspends())
+                    && !method.genericParameters().isEmpty()) {
                 throw new IllegalArgumentException(
-                        "generic async static functions require an explicit task-safe/sendable generic bound");
+                        "generic async/suspend-generator static functions require an explicit task-safe/sendable generic bound");
             }
             Set<String> generics = new HashSet<>();
             if (!method.isStatic()) generics.addAll(classGenerics);
