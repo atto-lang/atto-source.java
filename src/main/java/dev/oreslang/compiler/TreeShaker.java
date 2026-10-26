@@ -548,9 +548,20 @@ public final class TreeShaker {
                 for (Ast.Decl declaration : module.declarations()) {
                     declarations.add(rewriteDeclaration(module.name(), declaration));
                 }
-                modules.add(new Ast.ModuleDecl(module.name(), module.annotations(), module.contracts(), declarations));
+                modules.add(new Ast.ModuleDecl(
+                        module.name(),
+                        module.annotations(),
+                        module.contracts(),
+                        declarations,
+                        module.exports(),
+                        module.declarationMetadata()));
             }
-            return new Ast.Program(program.namespace(), program.imports(), modules);
+            return new Ast.Program(
+                    program.namespace(),
+                    program.imports(),
+                    modules,
+                    program.exports(),
+                    program.declarationMetadata());
         }
 
         private Ast.Decl rewriteDeclaration(String module, Ast.Decl declaration) {
@@ -1066,6 +1077,20 @@ public final class TreeShaker {
                 for (Symbol symbol : symbols.values()) {
                     if (isPublicApi(symbol.declaration())) markRoot(symbol.id());
                 }
+
+                // Explicit source exports are API roots even when the local
+                // declaration uses default-private source visibility. Until
+                // package/file domain-aware whole-program pruning lands,
+                // retain all explicit export scopes conservatively; this can
+                // keep extra code but cannot erase an authorized source API.
+                ExportResolver.Result exports = ExportResolver.resolve(rewritten);
+                for (List<ExportResolver.ExportBinding> namespace :
+                        exports.namespaces().values()) {
+                    for (ExportResolver.ExportBinding binding : namespace) {
+                        if (binding.localKind() == Ast.ExportKind.MODULE) continue;
+                        markRoot(qualify(binding.ownerNamespaceId(), binding.localName()));
+                    }
+                }
             }
 
             for (String requested : options.entryPoints()) {
@@ -1481,16 +1506,34 @@ public final class TreeShaker {
 
         private Ast.Program pruneProgram(Ast.Program program) {
             List<Ast.ModuleDecl> modules = new ArrayList<>();
+            List<Ast.DeclarationMetadata> rootMetadata = List.of();
             for (Ast.ModuleDecl module : program.modules()) {
                 List<Ast.Decl> declarations = new ArrayList<>();
-                for (Ast.Decl declaration : module.declarations()) {
+                List<Ast.DeclarationMetadata> metadata = new ArrayList<>();
+                boolean alignedMetadata =
+                        module.declarationMetadata().size() == module.declarations().size();
+
+                for (int i = 0; i < module.declarations().size(); i++) {
+                    Ast.Decl declaration = module.declarations().get(i);
                     String name = declarationName(declaration);
                     if (name != null && retained.contains(qualify(module.name(), name))) {
                         declarations.add(declaration);
+                        if (alignedMetadata) metadata.add(module.declarationMetadata().get(i));
                     }
                 }
+
                 if (!declarations.isEmpty()) {
-                    modules.add(new Ast.ModuleDecl(module.name(), module.annotations(), module.contracts(), declarations));
+                    Ast.ModuleDecl prunedModule = new Ast.ModuleDecl(
+                            module.name(),
+                            module.annotations(),
+                            module.contracts(),
+                            declarations,
+                            module.exports(),
+                            alignedMetadata ? metadata : List.of());
+                    modules.add(prunedModule);
+                    if (module.name().equals(Parser.ROOT_MODULE)) {
+                        rootMetadata = prunedModule.declarationMetadata();
+                    }
                 }
             }
 
@@ -1498,7 +1541,12 @@ public final class TreeShaker {
             for (Ast.ImportDecl imported : program.imports()) {
                 if (importIsUsed(imported)) imports.add(imported);
             }
-            return new Ast.Program(program.namespace(), imports, modules);
+            return new Ast.Program(
+                    program.namespace(),
+                    imports,
+                    modules,
+                    program.exports(),
+                    rootMetadata);
         }
 
         private boolean importIsUsed(Ast.ImportDecl imported) {
