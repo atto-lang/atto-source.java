@@ -2,6 +2,7 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.BuildOptions;
+import dev.oreslang.compiler.ExportMetadataCollector;
 import dev.oreslang.compiler.ExportResolver;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.compiler.TreeShaker;
@@ -267,6 +268,64 @@ final class ExplicitExportSyntaxTest {
                 pub fnc f(): int { return 1; }
                 fnc f(int value): int { return value; }
                 """, "EXPORT_OVERLOAD_VISIBILITY_CONFLICT");
+    }
+
+    @Test
+    void exportMetadataCarriesIdentityScopeOriginAndStableSignatureDigest() {
+        List<ExportMetadataCollector.Entry> entries =
+                OresCompiler.collectExportMetadata(Parser.parse("""
+                        export fnc internal as public_api;
+
+                        fnc internal(int value): int {
+                          return value + 1;
+                        }
+                        """));
+
+        assertEquals(1, entries.size());
+        ExportMetadataCollector.Entry entry = entries.getFirst();
+        assertEquals("public_api", entry.externalName());
+        assertEquals(Ast.ExportScope.PUBLIC, entry.scope());
+        assertEquals(ExportResolver.BindingOrigin.EXPLICIT_EXPORT, entry.origin());
+        assertTrue(entry.localSymbolId().contains("::fnc::internal"));
+        assertEquals(64, entry.signatureAbiSha256().length());
+
+        String bodyOnlyChanged =
+                OresCompiler.collectExportMetadata(Parser.parse("""
+                        export fnc internal as public_api;
+
+                        fnc internal(int value): int {
+                          return value + 2;
+                        }
+                        """)).getFirst().signatureAbiSha256();
+        assertEquals(entry.signatureAbiSha256(), bodyOnlyChanged,
+                "implementation-only body changes must not perturb the source ABI digest");
+
+        String signatureChanged =
+                OresCompiler.collectExportMetadata(Parser.parse("""
+                        export fnc internal as public_api;
+
+                        fnc internal(string value): int {
+                          return 1;
+                        }
+                        """)).getFirst().signatureAbiSha256();
+        assertNotEquals(entry.signatureAbiSha256(), signatureChanged);
+    }
+
+    @Test
+    void multipleAliasesShareLocalIdentityAndSignatureDigest() {
+        List<ExportMetadataCollector.Entry> entries =
+                OresCompiler.collectExportMetadata(Parser.parse("""
+                        export class Internal as First;
+                        export class Internal as Second;
+
+                        define class Internal as
+                        end
+                        """));
+
+        assertEquals(2, entries.size());
+        assertEquals(entries.get(0).localSymbolId(), entries.get(1).localSymbolId());
+        assertEquals(entries.get(0).signatureAbiSha256(), entries.get(1).signatureAbiSha256());
+        assertNotEquals(entries.get(0).externalName(), entries.get(1).externalName());
     }
 
     @Test
