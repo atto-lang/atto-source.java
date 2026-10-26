@@ -28,7 +28,12 @@ public final class WebSocketFrameCodec {
 
     public record Frame(boolean fin, int opcode, byte[] payload) {
         public Frame {
+            if (payload == null) {
+                throw new IllegalArgumentException("WebSocket payload is required");
+            }
             requireOpcode(opcode);
+            validateFrameShape(fin, opcode, payload.length, Integer.MAX_VALUE);
+            validateTerminalPayload(fin, opcode, payload);
             payload = Arrays.copyOf(payload, payload.length);
         }
 
@@ -50,6 +55,12 @@ public final class WebSocketFrameCodec {
         public Message {
             if (opcode != OPCODE_TEXT && opcode != OPCODE_BINARY) {
                 throw new IllegalArgumentException("WebSocket message opcode must be text or binary");
+            }
+            if (payload == null) {
+                throw new IllegalArgumentException("WebSocket message payload is required");
+            }
+            if (opcode == OPCODE_TEXT) {
+                validateUtf8(payload, "WebSocket text message");
             }
             payload = Arrays.copyOf(payload, payload.length);
         }
