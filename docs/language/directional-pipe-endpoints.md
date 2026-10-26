@@ -17,11 +17,21 @@ end
 ```
 
 The names above describe two *directional protocols*, not concrete Java
-`ChannelRuntime.Channel` allocations. A source implements only output; a
-sink implements only input; a transform implements both with independently
-resolved types. A complete implementation must settle actual Oreslang
-interface syntax, nominal privilege rules, ownership and compiler lowering
-before making these declarations builtin.
+`ChannelRuntime.Channel` allocations. `WriteChannel<T>` and `ReadChannel<T>`
+are the intended source-level directional views already called out by the
+stdio/channel roadmap; they are not yet public aliases on this branch. They
+must be views over the existing bounded channel substrate, not independent
+queues. A raw bidirectional `Channel<T>` must not be returned here because
+that would let a caller regain the wrong direction. A source implements only
+output; a sink implements only input; a transform implements both with
+independently resolved types.
+
+Once the directional views exist, `Channel<T>` itself can satisfy both
+protocols by exposing its write view as the default input endpoint and its
+read view as the default output endpoint. `ReadableStream<T>` is output-only;
+`WritableStream<T>` is input-only. `ActorRef<A>` receives compiler-synthesized
+protocol conformance for its logical default ports; user-declared conformance
+never grants actor route authority.
 
 ```oreslang
 // Target, not currently executable:
@@ -74,9 +84,20 @@ message domains.
 authenticated scheduler queues, even if their storage uses channels.
 `actor.input`, `actor.output`, `actor.errors`, and `actor.events` are
 future *logical*, directional, channel-compatible port capabilities, not
-automatic aliases of the raw mailbox. Application errors and trusted runtime
-lifecycle events must remain separate. Multi-reader `events` observation
-requires explicit reliable/latest/lossy subscription semantics and quotas.
+automatic aliases of the raw mailbox. `actor.input` is the default
+`HasInputChannel<T>` endpoint and `actor.output` is the default
+`HasOutputChannel<T>` endpoint. `errors` and `events` are explicit output-only
+side ports and are never implicitly connected by `actorA pipe actorB`.
+Application errors and trusted runtime lifecycle events must remain separate.
+Multi-reader `events` observation requires explicit reliable/latest/lossy
+subscription semantics and quotas.
+
+For an all-actor chain, the expression result remains the existing
+`ActorStream<T>` and retains its authenticated reverse path and whole-route
+`get_done()` barrier. Do not change that return type merely to introduce the
+endpoint protocols. A future mixed source/transform/sink graph may receive a
+separate graph/connection handle only when its cancellation, EOF, error and
+physical completion contract is specified and implemented.
 
 ## Remaining implementation gates
 
