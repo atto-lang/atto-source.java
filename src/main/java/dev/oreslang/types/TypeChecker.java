@@ -2,6 +2,7 @@ package dev.oreslang.types;
 
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.MacroExpander;
 import dev.oreslang.compiler.MacroExpansionPlanner;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
@@ -223,6 +224,7 @@ public final class TypeChecker {
     }
 
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
+        program = MacroExpander.expand(program);
         rejectPendingMacroInvocations(program);
         rejectUnexpandedMacros(program);
         rejectUnloweredCheckedEffects(program);
@@ -272,6 +274,7 @@ public final class TypeChecker {
         if (linkedClasses == null || linkedAliases == null) {
             throw new IllegalArgumentException("linked public classes/aliases cannot be null");
         }
+        program = MacroExpander.expand(program);
         rejectPendingMacroInvocations(program);
         rejectUnexpandedMacros(program);
         rejectUnloweredCheckedEffects(program);
