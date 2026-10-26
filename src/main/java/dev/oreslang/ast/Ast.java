@@ -258,9 +258,9 @@ public final class Ast {
             boolean optionTypeSugar) {
         public Param {
             java.util.Objects.requireNonNull(type, "parameter type");
-            if (name == null || name.isBlank() || name.equals("self")) {
+            if (name == null || name.isBlank()) {
                 throw new IllegalArgumentException(
-                        "ordinary parameter name must not be self or blank");
+                        "parameter name must not be blank");
             }
             if (omittable && (structural || mutable)) {
                 throw new IllegalArgumentException(
