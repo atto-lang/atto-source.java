@@ -275,6 +275,33 @@ final class NativeNioFutureReactorTest {
         }
     }
 
+    @Test void cpuDispatchErrorSettlesGuestFutureWithoutKillingReactor() throws Exception {
+        // OresFuture runtime waiter delivery swallows host callback Errors.
+        // If CPU dispatch throws one, the guest Future must still settle.
+        try (var reactor = NativeNioFutureReactor.loopback(
+                0, 8, 1, 8, task -> {
+                    throw new AssertionError("simulated CPU dispatch failure");
+                })) {
+            var accepted = reactor.acceptAsync();
+            try (var peer = new Socket(InetAddress.getLoopbackAddress(), reactor.localPort())) {
+                var connection = accepted.get(3, TimeUnit.SECONDS);
+                var mapped = connection.readBytesAsync(1);
+                peer.getOutputStream().write(27);
+                var error = assertThrows(ExecutionException.class,
+                        () -> mapped.get(3, TimeUnit.SECONDS),
+                        "host dispatch failure must not strand guest await");
+                assertInstanceOf(AssertionError.class, error.getCause());
+
+                // Failure is local to guest conversion, not the socket/read loop.
+                var next = connection.readAsync(1);
+                peer.getOutputStream().write(28);
+                assertArrayEquals(new byte[] {28}, next.get(3, TimeUnit.SECONDS));
+                connection.closeAsync().get(3, TimeUnit.SECONDS);
+                assertEquals(0, reactor.outstandingFutures());
+            }
+        }
+    }
+
     @Test void accidentalInlineCpuExecutorIsRejectedWithoutRunningGuestMapping() throws Exception {
         // A host accidentally supplies Runnable::run. The reactor must reject
         // guest byte-array conversion instead of running it on the I/O loop.
