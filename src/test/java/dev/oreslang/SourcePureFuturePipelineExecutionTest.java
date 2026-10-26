@@ -97,6 +97,41 @@ final class SourcePureFuturePipelineExecutionTest {
     }
 
     @Test
+    void pipelinePlanSupportsDifferentConcreteInputAndOutputTypes() throws Exception {
+        assertEquals("ok", run("""
+                async fnc source(): int { return 21; }
+                fnc render(int value): String { return "ok"; }
+                pub async routine main(): void {
+                  val Future<String> pending = source() |> render();
+                  val String result = await pending;
+                  stdio.stdout.write(result);
+                  return;
+                }
+                """, "future-pipe-int-to-string.ores"));
+    }
+
+    @Test
+    void synchronousFutureReturningStageFlattensExactlyOneLayer() throws Exception {
+        assertEquals("44", run("""
+                async fnc source(): int { return 21; }
+                async fnc delayed_increment(int value): int {
+                  rt cooperate;
+                  return value + 1;
+                }
+                fnc start_async(int value): Future<int> {
+                  return delayed_increment(value);
+                }
+                fnc twice(int value): int { return value * 2; }
+                pub async routine main(): void {
+                  val Future<int> pending = source() |> start_async() |> twice();
+                  val int result = await pending;
+                  stdio.stdout.write(result);
+                  return;
+                }
+                """, "future-pipe-sync-future-stage.ores"));
+    }
+
+    @Test
     void directFutureArgumentIsNotImplicitlyLifted() throws Exception {
         assertEquals("7", run("""
                 async fnc source(): int { return 21; }
@@ -173,10 +208,10 @@ final class SourcePureFuturePipelineExecutionTest {
         Ast.FunctionDecl main = (Ast.FunctionDecl) typed.modules().getFirst()
                 .declarations().get(2);
         Ast.CallExpr pipe = (Ast.CallExpr) ((Ast.BindingStmt) main.body().getFirst()).initializer();
-        assertTrue(TypeChecker.CheckedPureFuturePipe.lookup(pipe));
+        assertTrue(TypeChecker.CheckedFuturePipe.lookup(pipe));
         Ast.CallExpr rebuilt = pipe.rewrite(pipe.callee(), pipe.typeArguments(),
                 pipe.typeArgumentsPresent(), pipe.arguments());
-        assertFalse(TypeChecker.CheckedPureFuturePipe.lookup(rebuilt));
+        assertFalse(TypeChecker.CheckedFuturePipe.lookup(rebuilt));
     }
 
     private static String run(String program, String name) throws Exception {
