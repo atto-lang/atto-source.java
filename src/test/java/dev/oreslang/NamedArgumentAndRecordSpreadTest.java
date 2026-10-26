@@ -104,6 +104,55 @@ final class NamedArgumentAndRecordSpreadTest {
     }
 
     @Test
+    void tupleSpreadProjectionThenNamedTailPreservesRawCallItemOrder()
+            throws Exception {
+        String code = """
+                fnc first(): int {
+                    stdio.stdout.write("A");
+                    return 1;
+                }
+
+                fnc second(): int {
+                    stdio.stdout.write("B");
+                    return 2;
+                }
+
+                fnc third(): int {
+                    stdio.stdout.write("C");
+                    return 3;
+                }
+
+                fnc encode(int a, int b, int c): int {
+                    return a * 100 + b * 10 + c;
+                }
+
+                pub routine main(): void {
+                    stdio.stdout.write(
+                            encode(...(first(), second()), c: third()));
+                    return;
+                }
+                """;
+
+        assertEquals("ABC123", checkedExecution(code));
+    }
+
+    @Test
+    void explicitNamedValueCannotCollideWithRecordSpreadProjection() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc add(int a, int b): int { return a + b; }
+
+                        pub routine main(): void {
+                            stdio.stdout.write(
+                                    add(...record{a: 19}, a: 23));
+                            return;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("duplicate"), failure.getMessage());
+    }
+
+    @Test
     void inlineReadonlyRecordSpreadBindsFieldsByName() throws Exception {
         String code = """
                 fnc encode(int a, int b): int {
