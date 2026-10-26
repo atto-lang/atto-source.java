@@ -17,6 +17,13 @@
 /.github/workflows/ @ORESoftware
 /scripts/ @ORESoftware
 /pom.xml @ORESoftware
+
+# Compiler/runtime trust boundary and language-contract surfaces.
+/src/ @ORESoftware
+/contracts/ @ORESoftware
+/stdlib/ @ORESoftware
+/integration/ @ORESoftware
+/.oreslang/ @ORESoftware
 /tools/verify-exact-source-tree.sh @ORESoftware
 /tools/test-verify-exact-source-tree.sh @ORESoftware
 /tests/private-ci-v3-codeowners.test.mjs @ORESoftware
