@@ -174,6 +174,95 @@ final class ExplicitExportResolverTest {
     }
 
     @Test
+    void publicFunctionCannotLeakUnexportedLocalType() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> resolve("""
+                        export fnc expose;
+
+                        define type Hidden = int;
+
+                        fnc expose(Hidden value): Hidden {
+                          return value;
+                        }
+                        """));
+        assertTrue(failure.getMessage().contains("leaks non-public local type 'Hidden'"), failure.getMessage());
+    }
+
+    @Test
+    void publicFunctionMayUseSeparatelyExportedLocalType() {
+        List<ExplicitExportResolver.ExportBinding> bindings = rootBindings("""
+                export type Hidden;
+                export fnc expose;
+
+                define type Hidden = int;
+
+                fnc expose(Hidden value): Hidden {
+                  return value;
+                }
+                """);
+
+        assertEquals(
+                List.of("Hidden", "expose"),
+                bindings.stream()
+                        .map(ExplicitExportResolver.ExportBinding::externalName)
+                        .sorted()
+                        .toList());
+    }
+
+    @Test
+    void publicClassMethodCannotLeakUnexportedLocalType() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> resolve("""
+                        export class Api;
+
+                        define type Hidden = int;
+
+                        define class Api as
+                          pub get(): Hidden {
+                            return 1;
+                          }
+                        end
+                        """));
+        assertTrue(failure.getMessage().contains("leaks non-public local type 'Hidden'"), failure.getMessage());
+    }
+
+    @Test
+    void privateClassMemberDoesNotBecomePartOfExportedApiSurface() {
+        assertDoesNotThrow(() -> resolve("""
+                export class Api;
+
+                define type Hidden = int;
+
+                define class Api as
+                  private get(): Hidden {
+                    return 1;
+                  }
+                end
+                """));
+    }
+
+    @Test
+    void aliasedTypeExportSatisfiesVisibilityOfTheLocalTypeIdentity() {
+        List<ExplicitExportResolver.ExportBinding> bindings = rootBindings("""
+                export type Hidden as PublicHidden;
+                export fnc expose;
+
+                define type Hidden = int;
+
+                fnc expose(Hidden value): Hidden {
+                  return value;
+                }
+                """);
+
+        assertEquals(2, bindings.size());
+        assertTrue(bindings.stream().anyMatch(binding ->
+                binding.localName().equals("Hidden")
+                        && binding.externalName().equals("PublicHidden")));
+    }
+
+    @Test
     void packageAndFileScopesRemainFailClosedUntilJavaVisibilityParityLands() {
         for (String scope : List.of("[pkg]", "[file]")) {
             IllegalArgumentException failure = assertThrows(
