@@ -7791,95 +7791,91 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof FileSystemFacade fs) {
                 return switch (name) {
-                    case "read_text" -> (Invokable) fs::readText;
-                    case "read_text_async" -> (Invokable) args -> {
+                    case "read_text", "read_text_blocking" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.READ,
-                                "fs.read_text_async", () -> fs.readText(values));
+                                "fs." + name, () -> fs.readText(values));
                     };
-                    case "write_text" -> (Invokable) fs::writeText;
-                    case "write_text_atomic" -> (Invokable) fs::writeTextAtomic;
-                    case "write_text_async" -> (Invokable) args -> {
+                    case "write_text", "write_text_blocking" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
-                                "fs.write_text_async", () -> fs.writeText(values));
+                                "fs." + name, () -> fs.writeText(values));
                     };
-                    case "append_text" -> (Invokable) fs::appendText;
-                    case "append_text_async" -> (Invokable) args -> {
+                    case "write_text_atomic", "write_text_atomic_blocking" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
-                                "fs.append_text_async", () -> fs.appendText(values));
+                                "fs." + name, () -> fs.writeTextAtomic(values));
                     };
-                    case "list_dir" -> (Invokable) fs::listDir;
-                    case "is_dir" -> (Invokable) fs::isDir;
-                    case "is_symlink" -> (Invokable) fs::isSymlink;
-                    case "exists" -> (Invokable) fs::exists;
-                    case "exists_async" -> (Invokable) args -> {
+                    case "append_text", "append_text_blocking" -> (Invokable) args -> {
+                        List<Object> values = immutableIoStrings(args);
+                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
+                                "fs." + name, () -> fs.appendText(values));
+                    };
+                    case "list_dir", "list_dir_blocking" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.READ,
-                                "fs.exists_async", () -> fs.exists(values));
+                                "fs." + name, () -> fs.listDir(values));
                     };
-                    case "remove" -> (Invokable) fs::remove;
-                    case "remove_async" -> (Invokable) args -> {
+                    case "is_dir", "is_dir_blocking" -> (Invokable) args -> {
+                        List<Object> values = immutableIoStrings(args);
+                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.READ,
+                                "fs." + name, () -> fs.isDir(values));
+                    };
+                    case "is_symlink", "is_symlink_blocking" -> (Invokable) args -> {
+                        List<Object> values = immutableIoStrings(args);
+                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.READ,
+                                "fs." + name, () -> fs.isSymlink(values));
+                    };
+                    case "exists", "exists_blocking" -> (Invokable) args -> {
+                        List<Object> values = immutableIoStrings(args);
+                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.READ,
+                                "fs." + name, () -> fs.exists(values));
+                    };
+                    case "remove", "remove_blocking" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
-                                "fs.remove_async", () -> fs.remove(values));
+                                "fs." + name, () -> fs.remove(values));
                     };
-                    case "mkdir_all" -> (Invokable) fs::mkdirAll;
-                    case "mkdir_all_async" -> (Invokable) args -> {
+                    case "mkdir_all", "mkdir_all_blocking" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
-                                "fs.mkdir_all_async", () -> fs.mkdirAll(values));
+                                "fs." + name, () -> fs.mkdirAll(values));
                     };
                     default -> throw new IllegalArgumentException("unknown filesystem member " + name);
                 };
             }
             if (receiver instanceof NetworkFacade network) {
                 return switch (name) {
-                    case "connect" -> (Invokable) network::connect;
-                    case "connect_async" -> (Invokable) args -> {
-                        requireTwo(args, "network.connect_async");
+                    case "connect", "connect_blocking" -> (Invokable) args -> {
+                        requireTwo(args, "network." + name);
                         String host = requireString(args.get(0), "host");
                         if (!(args.get(1) instanceof Number port)) throw new IllegalArgumentException("port must be an integer");
                         List<Object> values = List.of(host, port.intValue());
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
-                                "network.connect_async", () -> network.connect(values));
+                                "network." + name, () -> network.connect(values));
                     };
                     default -> throw new IllegalArgumentException("unknown network member " + name);
                 };
             }
             if (receiver instanceof NativeIo.TcpConnection socket) {
                 return switch (name) {
-                    case "read_line_async" -> (Invokable) args -> {
-                        requireZero(args, "socket.read_line_async");
+                    case "read_line", "read_line_blocking" -> (Invokable) args -> {
+                        requireZero(args, "socket." + name);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
-                                "socket.read_line_async", () -> {
+                                "socket." + name, () -> {
                                     String value = socket.readLine();
                                     return new OptionValue(value != null, value);
                                 });
                     };
-                    case "write_text_async" -> (Invokable) args -> {
-                        String value = requireStringArg(args, "socket.write_text_async");
+                    case "write_text", "write_text_blocking" -> (Invokable) args -> {
+                        String value = requireStringArg(args, "socket." + name);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
-                                "socket.write_text_async", () -> { socket.writeText(value); return null; });
+                                "socket." + name, () -> { socket.writeText(value); return null; });
                     };
-                    case "close_async" -> (Invokable) args -> {
-                        requireZero(args, "socket.close_async");
-                        return context.nativeIo().submitClose(context, () -> { socket.close(); return null; });
-                    };
-                    case "read_line" -> (Invokable) args -> {
-                        requireZero(args, "network.socket.read_line");
-                        String value = socket.readLine();
-                        return value == null ? new OptionValue(false, null) : new OptionValue(true, value);
-                    };
-                    case "write_text" -> (Invokable) args -> {
-                        socket.writeText(requireStringArg(args, "network.socket.write_text"));
-                        return null;
-                    };
-                    case "close" -> (Invokable) args -> {
-                        requireZero(args, "network.socket.close");
-                        socket.close();
-                        return null;
+                    case "close", "close_blocking" -> (Invokable) args -> {
+                        requireZero(args, "socket." + name);
+                        return context.nativeIo().submitClose(
+                                context, "socket." + name, () -> { socket.close(); return null; });
                     };
                     default -> throw new IllegalArgumentException("unknown network socket member " + name);
                 };
@@ -8031,17 +8027,15 @@ public final class OresEvalRootNode extends RootNode {
                         return HttpResponseDraft.text(body, (int) code,
                                 List.of(Map.entry("Content-Type", contentType)));
                     };
-                    case "get_text" -> (Invokable) http::getText;
-                    case "get_text_async" -> (Invokable) args -> {
+                    case "get_text", "get_text_blocking" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
-                                "http.get_text_async", () -> http.getText(values));
+                                "http." + name, () -> http.getText(values));
                     };
-                    case "post_text" -> (Invokable) http::postText;
-                    case "post_text_async" -> (Invokable) args -> {
+                    case "post_text", "post_text_blocking" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.NET,
-                                "http.post_text_async", () -> http.postText(values));
+                                "http." + name, () -> http.postText(values));
                     };
                     default -> throw new IllegalArgumentException("unknown http member " + name);
                 };
