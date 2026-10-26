@@ -192,10 +192,11 @@ public final class TaskPipeline {
             List<? extends Stage> stages) {
         Objects.requireNonNull(starter, "starter");
         Objects.requireNonNull(input, "input");
-        List<Stage> chain = List.copyOf(Objects.requireNonNull(stages, "stages"));
-        if (chain.size() > 128) {
+        Objects.requireNonNull(stages, "stages");
+        if (stages.size() > 128) {
             throw new IllegalArgumentException("pipeline exceeds 128 stages");
         }
+        List<Stage> chain = List.copyOf(stages);
 
         AtomicReference<OresFuture<?>> ownedStage = new AtomicReference<>();
         // A scheduler may dispatch the child inline. Publish the exposed bridge
