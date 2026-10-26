@@ -33,9 +33,13 @@ BLOCKING_INCIDENT_IDS = {
     22: 5832921751,
     77: 5904679716,
     127: 5935338521,
+    171: 6042555082,  # recovery/runtime source-bearing private carrier; pending classification
 }
-BLOCKING_INCIDENTS = (22, 77, 127)
-QUARANTINED_DESTINATIONS = ("zed-pkg-test/java-app",)
+BLOCKING_INCIDENTS = (22, 77, 127, 171)
+QUARANTINED_DESTINATIONS = (
+    "zed-pkg-test/java-app",
+    "agent-pontifex-test/agent-pontifex-e2e-tests",
+)
 SOURCE_PROTECTED_BRANCH = "main"
 POLICY_PATH = ".github/private-ci-approved-repositories.txt"
 CODEOWNERS_PATH = ".github/CODEOWNERS"
