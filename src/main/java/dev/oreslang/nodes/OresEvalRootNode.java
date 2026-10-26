@@ -1396,18 +1396,18 @@ public final class OresEvalRootNode extends RootNode {
         private OresFuture<Object> startSourceFunctionTask(
                 Ast.FunctionDecl function,
                 List<?> arguments) {
-            SourceTask task = new SourceTask(function, arguments);
-            OresFuture<Object> future;
-            if (ActorRuntime.inActorExecution()) {
-                future = context.actors().startActorTask(task);
-                context.actors().ownCurrentActorFuture(future);
-            } else {
-                OresScheduler current = OresScheduler.current();
-                future = (current != null
-                        ? current
-                        : context.vm().rootScheduler()).start(task);
-            }
-            return future;
+            return startSourceFunctionTask(function, arguments, null, null);
+        }
+
+        private OresFuture<Object> startSourceFunctionTask(
+                Ast.FunctionDecl function,
+                List<?> arguments,
+                TaskScope taskScope,
+                TaskScope.Registration taskScopeParent) {
+            return startSourceCallableTask(
+                    new SourceTask(function, arguments),
+                    taskScope,
+                    taskScopeParent);
         }
 
         private OresFuture<Object> startSourceBlockTask(
@@ -1562,16 +1562,77 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.MethodDecl method,
                 OresObject receiver,
                 List<?> arguments) {
-            SourceTask task = new SourceTask(method, receiver, arguments);
-            OresFuture<Object> future;
-            if (ActorRuntime.inActorExecution()) {
-                future = context.actors().startActorTask(task);
-                context.actors().ownCurrentActorFuture(future);
+            return startSourceMethodTask(
+                    method, receiver, arguments, null, null);
+        }
+
+        private OresFuture<Object> startSourceMethodTask(
+                Ast.MethodDecl method,
+                OresObject receiver,
+                List<?> arguments,
+                TaskScope taskScope,
+                TaskScope.Registration taskScopeParent) {
+            return startSourceCallableTask(
+                    new SourceTask(method, receiver, arguments),
+                    taskScope,
+                    taskScopeParent);
+        }
+
+        private OresFuture<Object> startSourceCallableTask(
+                SourceTask task,
+                TaskScope taskScope,
+                TaskScope.Registration taskScopeParent) {
+            Objects.requireNonNull(task, "source callable Task");
+            if (taskScope != null && ActorRuntime.inActorExecution()) {
+                throw new IllegalStateException(
+                        "scoped callable Task execution inside actors is disabled until actor quota/hot-reload integration is proven");
+            }
+
+            final TaskScope.Registration child;
+            if (taskScope == null) {
+                child = null;
             } else {
-                OresScheduler current = OresScheduler.current();
-                future = (current != null
-                        ? current
-                        : context.vm().rootScheduler()).start(task);
+                // The helper itself is a structured child. This is essential
+                // for async helpers that are not immediately awaited: scope
+                // close must still revoke/join the helper before reclamation.
+                child = taskScope.reserve(taskScopeParent);
+                task.inheritedTaskScope = taskScope;
+                task.scopeRegistration = child;
+            }
+
+            final OresFuture<Object> future;
+            try {
+                if (ActorRuntime.inActorExecution()) {
+                    future = context.actors().startActorTask(task);
+                    context.actors().ownCurrentActorFuture(future);
+                } else {
+                    OresScheduler current = OresScheduler.current();
+                    OresScheduler scheduler =
+                            current != null
+                                    ? current
+                                    : context.vm().rootScheduler();
+                    future = child == null
+                            ? scheduler.start(task)
+                            : scheduler.startCompilerAdmittedTask(
+                                    task,
+                                    child::quiesced,
+                                    child::terminalReady);
+                }
+            } catch (RuntimeException | Error failure) {
+                if (child != null) child.failedAdmission(failure);
+                throw failure;
+            }
+
+            if (child != null) {
+                try {
+                    child.attach(future);
+                } catch (RuntimeException | Error attachFailure) {
+                    // A scheduler Future already owns physical retirement.
+                    // Cancellation is the only safe rollback; never reclassify
+                    // this as a never-started admission.
+                    future.cancel(false);
+                    throw attachFailure;
+                }
             }
             return future;
         }
