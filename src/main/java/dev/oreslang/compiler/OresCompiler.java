@@ -56,6 +56,17 @@ public final class OresCompiler {
     }
 
     /**
+     * Collect deterministic source-interface metadata after normal compiler
+     * admission. This remains source-only metadata and does not publish host or
+     * native ABI symbols.
+     */
+    public static java.util.List<ExportMetadataCollector.Entry> collectExportMetadata(
+            Ast.Program program) {
+        Ast.Program checked = analyze(program);
+        return ExportMetadataCollector.collect(checked);
+    }
+
+    /**
      * Opt-in RT primitive subset: perform the full existing type/ownership check
      * before admitting any source-level resource bounds or lowering to Java 8.
      * This is not a verified no-heap runtime or WCET proof. Consumers must run
