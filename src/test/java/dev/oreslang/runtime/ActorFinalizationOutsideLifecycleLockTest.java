@@ -69,6 +69,51 @@ final class ActorFinalizationOutsideLifecycleLockTest {
     }
 
     @Test
+    void lateCancellationCannotRewriteWinningGracefulStop() throws Exception {
+        CountDownLatch exitEntered = new CountDownLatch(1);
+        CountDownLatch releaseExit = new CountDownLatch(1);
+        AtomicReference<Throwable> stopFailure = new AtomicReference<>();
+
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 8, 8))) {
+            runtime.setActorExitHook(ignored -> {
+                exitEntered.countDown();
+                awaitUninterruptibly(releaseExit);
+            });
+
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> { });
+            actor.getReady().get(2, TimeUnit.SECONDS);
+
+            Thread stopper = Thread.ofPlatform().start(() -> {
+                try {
+                    actor.stop();
+                } catch (Throwable failure) {
+                    stopFailure.set(failure);
+                }
+            });
+
+            assertTrue(exitEntered.await(2, TimeUnit.SECONDS));
+
+            // STOP already owns terminal admission. A later cancellation may
+            // observe the actor mid-retirement, but it must not replace the
+            // winning graceful terminal cause.
+            actor.cancel();
+            assertTrue(actor.failure().isEmpty());
+
+            releaseExit.countDown();
+            stopper.join(2000);
+
+            assertFalse(stopper.isAlive());
+            assertNull(stopFailure.get());
+            assertTrue(actor.failure().isEmpty());
+            assertDoesNotThrow(() -> actor.getDone().get(2, TimeUnit.SECONDS));
+        } finally {
+            releaseExit.countDown();
+        }
+    }
+
+    @Test
     void blockingDoneSubscriberDoesNotBlockHostStopOrTerminationObservation() throws Exception {
         CountDownLatch doneCallbackEntered = new CountDownLatch(1);
         CountDownLatch releaseDoneCallback = new CountDownLatch(1);
