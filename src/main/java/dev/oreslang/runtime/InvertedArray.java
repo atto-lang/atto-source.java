@@ -281,6 +281,21 @@ public final class InvertedArray implements AutoCloseable {
     }
 
     /**
+     * Checked source-bracket lowering target for {@code array[index]}.
+     *
+     * <p>The parser already represents {@code []} as an {@link Ast.IndexExpr};
+     * this runtime primitive is intentionally not a textual macro. A compiler
+     * lowering must evaluate the receiver and index exactly once, then call
+     * this operation only after static admission has established that the
+     * receiver is this nominal inverted-array type. The returned projection
+     * carries a stable generation-checked logical handle rather than a raw
+     * physical row offset.
+     */
+    public RowView index(int rowIndex) {
+        return new RowView(store.handleAt(rowIndex));
+    }
+
+    /**
      * Compile-time name resolution target. A guest field site will bind one
      * accessor once and use its fixed column index thereafter; every access
      * still validates the opaque row handle and active borrow permissions.
