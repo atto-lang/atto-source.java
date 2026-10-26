@@ -1231,6 +1231,9 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.SpreadExpr spread) {
             return checkExpr(spread.expression(), scope, consuming);
         }
+        if (expr instanceof Ast.NamedArgExpr) {
+            throw error("named arguments are only valid on supported call surfaces");
+        }
         if (expr instanceof Ast.CallExpr call) {
             return checkCall(call, scope);
         }
@@ -3356,6 +3359,8 @@ public final class OwnershipChecker {
             for (Ast.Expr arg : e.arguments()) scanExpr(arg, locals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.SpreadExpr e) {
             scanExpr(e.expression(), locals, outer, recursiveBinding, captures, false);
+        } else if (expr instanceof Ast.NamedArgExpr e) {
+            scanExpr(e.value(), locals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.MemberExpr e) scanExpr(e.receiver(), locals, outer, recursiveBinding, captures, write);
         else if (expr instanceof Ast.IndexExpr e) {
             scanExpr(e.receiver(), locals, outer, recursiveBinding, captures, write);
