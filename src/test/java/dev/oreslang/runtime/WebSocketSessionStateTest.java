@@ -11,6 +11,29 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 final class WebSocketSessionStateTest {
 
     @Test
+    void queueConfigurationAndLocallyGeneratedCloseCodesFailClosed() {
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> new WebSocketSessionState(
+                        WebSocketSessionState.MAX_USER_QUEUE_CAPACITY + 1,
+                        1024));
+
+        for (int reserved : new int[] {1004, 1005, 1006, 1015, 2000, 2999}) {
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    IllegalArgumentException.class,
+                    () -> WebSocketSessionState.closePayload(reserved, "x"),
+                    "reserved close code " + reserved);
+        }
+
+        assertEquals(
+                2,
+                WebSocketSessionState.closePayload(1000, "").length);
+        assertEquals(
+                2,
+                WebSocketSessionState.closePayload(3000, "").length);
+    }
+
+    @Test
     void controlFramesRemainProcessableWhenUserQueueIsFull() {
         WebSocketSessionState session = new WebSocketSessionState(1, 1024);
 
