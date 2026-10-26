@@ -226,7 +226,70 @@ final class MacroInvocationPlannerTest {
     }
 
     @Test
-    void boundInvocationStillCannotFallBackToRuntimeExecution() {
+    void expandsHygienicSyntaxExprPassthroughBeforeOrdinaryTypeChecking() {
+        Ast.Program checked = assertDoesNotThrow(
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro identity(Syntax<Expr> value) -> Syntax<Expr> {
+                            return value;
+                        }
+                        fnc answer() -> int {
+                            return identity!(syntax expr 40 + 2);
+                        }
+                        """));
+
+        assertEquals(1, checked.modules().getFirst().declarations().size());
+        Ast.FunctionDecl fn = assertInstanceOf(
+                Ast.FunctionDecl.class,
+                checked.modules().getFirst().declarations().getFirst());
+        Ast.ReturnStmt returned = assertInstanceOf(
+                Ast.ReturnStmt.class, fn.body().getFirst());
+        Ast.BinaryExpr expanded = assertInstanceOf(
+                Ast.BinaryExpr.class, returned.value());
+        assertEquals("+", expanded.operator());
+        assertFalse(containsMacroInvocation(expanded));
+    }
+
+    @Test
+    void expandedSyntaxReentersOrdinaryTypeChecking() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro identity(Syntax<Expr> value) -> Syntax<Expr> {
+                            return value;
+                        }
+                        fnc answer() -> int {
+                            return identity!(syntax expr "not-an-int");
+                        }
+                        """));
+
+        assertFalse(failure.getMessage().contains("macro evaluator"), failure::toString);
+    }
+
+    @Test
+    void nestedPassthroughExpansionTerminatesAndEliminatesAllInvocations() {
+        Ast.Program checked = assertDoesNotThrow(
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro identity(Syntax<Expr> value) -> Syntax<Expr> {
+                            return value;
+                        }
+                        fnc answer() -> int {
+                            return identity!(
+                                syntax expr identity!(syntax expr 42)
+                            );
+                        }
+                        """));
+
+        Ast.FunctionDecl fn = assertInstanceOf(
+                Ast.FunctionDecl.class,
+                checked.modules().getFirst().declarations().getFirst());
+        Ast.ReturnStmt returned = assertInstanceOf(
+                Ast.ReturnStmt.class, fn.body().getFirst());
+        assertInstanceOf(Ast.LiteralExpr.class, returned.value());
+        assertFalse(containsMacroInvocation(returned.value()));
+    }
+
+    @Test
+    void unsupportedMacroBodyCannotFallBackToRuntimeExecution() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
@@ -238,9 +301,23 @@ final class MacroInvocationPlannerTest {
                         }
                         """));
 
-        assertTrue(failure.getMessage().contains("deterministic macro evaluator/expander"),
+        assertTrue(failure.getMessage().contains("first evaluator slice"),
                 failure::toString);
-        assertTrue(failure.getMessage().contains("runtime fallback is forbidden"),
+        assertTrue(failure.getMessage().contains("runtime/JIT/source-string fallback is forbidden"),
                 failure::toString);
+    }
+
+    private static boolean containsMacroInvocation(Ast.Expr expression) {
+        if (expression instanceof Ast.MacroInvocationExpr) return true;
+        if (expression instanceof Ast.BinaryExpr e) {
+            return containsMacroInvocation(e.left()) || containsMacroInvocation(e.right());
+        }
+        if (expression instanceof Ast.UnaryExpr e) return containsMacroInvocation(e.operand());
+        if (expression instanceof Ast.ConditionalExpr e) {
+            return containsMacroInvocation(e.condition())
+                    || containsMacroInvocation(e.whenTrue())
+                    || containsMacroInvocation(e.whenFalse());
+        }
+        return false;
     }
 }
