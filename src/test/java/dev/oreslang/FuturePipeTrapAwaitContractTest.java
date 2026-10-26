@@ -14,8 +14,8 @@ import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Executable trap/await precedence, plus a fail-closed guard for asynchronous
- * Future-returning stages outside the first pure-int lowering slice.
+ * Executable trap/await precedence, including checked pure asynchronous
+ * Future-pipeline stages and one-level Future flattening.
  */
 final class FuturePipeTrapAwaitContractTest {
     @Test
@@ -87,20 +87,24 @@ final class FuturePipeTrapAwaitContractTest {
     }
 
     @Test
-    void futurePipelineCannotSilentlyPassFutureAsSynchronousStageInput() {
+    void trapAwaitCoversCheckedAsyncPipelineStageAndFlattensItsFuture() throws Exception {
         String source = """
-                async fnc answer(): int { return 21; }
-                async fnc save(int value): int { return value + 1; }
+                async fnc answer(): int {
+                  rt cooperate;
+                  return 21;
+                }
+                async fnc save(int value): int {
+                  rt cooperate;
+                  return value + 1;
+                }
                 pub fnc main(): void {
                   val Option<int> result = trap await (answer() |> save());
+                  stdio.stdout.write(result.unwrap());
                   return;
                 }
                 """;
-        // A Future-returning stage requires a checked ownership and effect plan.
-        // The first source lowering only admits synchronous, pure int -> int
-        // stages; this async stage must remain rejected.
-        assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse(source)));
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("22", run(source));
     }
 
     private static String run(String code) throws Exception {
