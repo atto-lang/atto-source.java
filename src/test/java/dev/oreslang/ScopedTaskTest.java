@@ -288,36 +288,45 @@ final class ScopedTaskTest {
 
 
     @Test
-    void generatorActivationInsideTaskScopeFailsClosedUntilProducerRetirementIsIntegrated() {
+    void partiallyConsumedGeneratorClosesAndPhysicallyRetiresBeforeScopeExit()
+            throws Exception {
         String source = """
                 async generator fnc values(): int {
-                    yield 1;
+                    try {
+                        yield 1;
+                        yield 2;
+                    } finally {
+                        stdio.stdout.write(":closed");
+                    }
                     return;
                 }
 
-                pub routine main(): void {
+                pub async routine main(): void {
                     task scope {
                         val AsyncIterator<int> iterator = values();
+                        val IteratorResult<int> first = await iterator.next();
+                        stdio.stdout.write(first.value.unwrap());
                     }
-                    stdio.stdout.write("MUST_NOT_PRINT");
+                    stdio.stdout.write("|after");
                     return;
                 }
                 """;
 
-        IllegalArgumentException failure =
-                assertThrows(
-                        IllegalArgumentException.class,
-                        () -> OresCompiler.parseAndTypeCheck(source));
-        String message = failure.getMessage();
-        assertTrue(message.contains("generator activation"), message);
-        assertTrue(message.contains("task scope"), message);
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("1:closed|after", run(source));
     }
 
     @Test
-    void asyncIteratorProtocolCannotEraseScopeBeforeGeneratorGate() {
+    void asyncIteratorProtocolPreservesStructuredGeneratorRetirement()
+            throws Exception {
         String source = """
                 async generator fnc stream(): int {
-                    yield 1;
+                    try {
+                        yield 1;
+                        yield 2;
+                    } finally {
+                        stdio.stdout.write(":closed");
+                    }
                     return;
                 }
 
@@ -332,7 +341,34 @@ final class ScopedTaskTest {
                         val bag = new Bag();
                         for await const value of bag {
                             stdio.stdout.write(value);
+                            break;
                         }
+                    }
+                    stdio.stdout.write("|after");
+                    return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("1:closed|after", run(source));
+    }
+
+    @Test
+    void generatorSpawnedChildFailureReachesLexicalScope() {
+        String source = """
+                async generator fnc values(): int {
+                    do nb {
+                        rt fail "generator-child-failed";
+                    };
+                    yield 1;
+                    return;
+                }
+
+                pub async routine main(): void {
+                    task scope {
+                        val AsyncIterator<int> iterator = values();
+                        val IteratorResult<int> first = await iterator.next();
+                        stdio.stdout.write(first.value.unwrap());
                     }
                     stdio.stdout.write("MUST_NOT_PRINT");
                     return;
@@ -342,10 +378,11 @@ final class ScopedTaskTest {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
         RuntimeException failure =
                 assertThrows(RuntimeException.class, () -> run(source));
-        String message = failure.toString()
-                + (failure.getCause() == null ? "" : " " + failure.getCause());
-        assertTrue(message.contains("generator activation"), message);
-        assertTrue(message.contains("TaskScope"), message);
+        assertTrue(
+                failure.toString().contains("generator-child-failed")
+                        || (failure.getCause() != null
+                                && failure.getCause().toString()
+                                        .contains("generator-child-failed")));
     }
 
 
