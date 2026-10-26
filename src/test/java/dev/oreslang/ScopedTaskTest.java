@@ -129,6 +129,36 @@ final class ScopedTaskTest {
     }
 
     @Test
+    void synchronousHelperThatOnlySpawnsTaskCannotDropScopeLineage() {
+        String source = """
+                fnc spawn_child_sync(): void {
+                    do nb {
+                        rt fail "sync-helper-child-failed";
+                    };
+                    return;
+                }
+
+                pub routine main(): void {
+                    task scope {
+                        spawn_child_sync();
+                    }
+                    stdio.stdout.write("MUST_NOT_PRINT");
+                    return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        RuntimeException failure =
+                assertThrows(RuntimeException.class, () -> run(source));
+        assertTrue(
+                failure.toString().contains("sync-helper-child-failed")
+                        || (failure.getCause() != null
+                                && failure.getCause().toString()
+                                        .contains("sync-helper-child-failed")));
+    }
+
+
+    @Test
     void suspendingHelperChildFailureCannotEscapeCallingScope() {
         String source = """
                 suspends fnc spawn_child(): void {
