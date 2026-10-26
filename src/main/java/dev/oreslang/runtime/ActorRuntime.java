@@ -757,9 +757,9 @@ public final class ActorRuntime implements AutoCloseable {
         if (!ref.ownedBy(this)) {
             throw new IllegalArgumentException("ActorRef belongs to another runtime");
         }
-        ActorCell<?> cell = actors.get(ref.id());
+        ActorCell<?> cell = exactCell(ref);
         if (cell == null) {
-            throw new IllegalStateException("actor was not found or has finalized");
+            throw new IllegalStateException("actor incarnation was not found or has finalized");
         }
         boolean ownerCheckedRegion = cell.memorySlice != null;
         return new ActorHeapStatus(
@@ -808,7 +808,7 @@ public final class ActorRuntime implements AutoCloseable {
         requireSupervisorContext("inspect actor placement");
         Objects.requireNonNull(ref);
         if (!ref.ownedBy(this)) throw new IllegalArgumentException("ActorRef belongs to another runtime");
-        ActorCell<?> cell = actors.get(ref.id());
+        ActorCell<?> cell = exactCell(ref);
         if (cell == null) return Optional.empty();
         if (dispatcherFor(cell.kind) instanceof ActorAffinityDispatcher lanes) {
             int cpu = lanes.cpuForLane(cell.dispatchLane);
@@ -954,18 +954,18 @@ public final class ActorRuntime implements AutoCloseable {
      * this same contract to a physically separate heap/arena.
      */
     public final class ActorMemorySlice implements AutoCloseable {
-        private final ActorId owner;
+        private final ActorRef<?> ownerRef;
         private final long limitBytes;
         private final AtomicLong usedBytes = new AtomicLong();
         private final AtomicBoolean sliceClosed = new AtomicBoolean();
         private final Set<PrivateMemoryBlock> blocks = ConcurrentHashMap.newKeySet();
 
-        private ActorMemorySlice(ActorId owner, long limitBytes) {
-            this.owner = Objects.requireNonNull(owner);
+        private ActorMemorySlice(ActorRef<?> ownerRef, long limitBytes) {
+            this.ownerRef = Objects.requireNonNull(ownerRef);
             this.limitBytes = limitBytes;
         }
 
-        public ActorId owner() { return owner; }
+        public ActorId owner() { return ownerRef.id(); }
         public long limitBytes() { return limitBytes; }
         public long usedBytes() { return usedBytes.get(); }
         public long remainingBytes() { return Math.max(0L, limitBytes - usedBytes.get()); }
@@ -1018,20 +1018,20 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalStateException(purpose + " accounting overflow");
             }
             if (next > limitBytes) {
-                throw new IllegalStateException(purpose + " limit exceeded for " + owner
+                throw new IllegalStateException(purpose + " limit exceeded for " + owner()
                         + ": requested=" + bytes + " used=" + current + " limit=" + limitBytes);
             }
 
-            reservePrivateRuntimeBytes(bytes, owner, purpose);
+            reservePrivateRuntimeBytes(bytes, owner(), purpose);
             usedBytes.set(next);
             return new MemoryReservation(this, bytes);
         }
 
         private void requireCurrentOwner() {
             ActorCell<?> cell = currentActor.get();
-            if (cell == null || !isPrivateKind(cell.kind) || !cell.ref.id().equals(owner)) {
+            if (cell == null || !isPrivateKind(cell.kind) || cell.ref != ownerRef) {
                 throw new IllegalStateException(
-                        "private actor memory slice may only be reserved by its owning actor");
+                        "private actor memory slice may only be reserved by its exact owning actor incarnation");
             }
         }
 
@@ -1040,10 +1040,10 @@ public final class ActorRuntime implements AutoCloseable {
             long remaining = usedBytes.addAndGet(-bytes);
             if (remaining < 0) {
                 usedBytes.addAndGet(bytes);
-                throw new IllegalStateException("private actor memory accounting underflow for " + owner);
+                throw new IllegalStateException("private actor memory accounting underflow for " + owner());
             }
             try {
-                releasePrivateRuntimeBytes(bytes, owner);
+                releasePrivateRuntimeBytes(bytes, owner());
             } catch (RuntimeException failure) {
                 usedBytes.addAndGet(bytes);
                 throw failure;
@@ -1056,7 +1056,7 @@ public final class ActorRuntime implements AutoCloseable {
             for (PrivateMemoryBlock block : List.copyOf(blocks)) block.invalidateFromSlice();
             blocks.clear();
             long bytes = usedBytes.getAndSet(0);
-            if (bytes != 0) releasePrivateRuntimeBytes(bytes, owner);
+            if (bytes != 0) releasePrivateRuntimeBytes(bytes, owner());
         }
 
         private void unregister(PrivateMemoryBlock block) {
@@ -2516,7 +2516,7 @@ public final class ActorRuntime implements AutoCloseable {
          * Constructor/factory failures complete this Future exceptionally.
          */
         public OresFuture<Void> ready() {
-            ActorCell<?> cell = actors.get(id);
+            ActorCell<?> cell = exactCell(this);
             if (cell != null && !cell.stopped.get()) cell.schedule();
             return readyFuture;
         }
@@ -2568,7 +2568,7 @@ public final class ActorRuntime implements AutoCloseable {
                     "synchronously wait for actor termination");
             Objects.requireNonNull(unit);
             if (timeout < 0) throw new IllegalArgumentException("timeout must be non-negative");
-            ActorCell<?> cell = actors.get(id);
+            ActorCell<?> cell = exactCell(this);
             if (cell == null) return true;
             cell.awaitFinalized(unit.toNanos(timeout));
             return cell.finalized();
@@ -2623,14 +2623,14 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public Optional<ActorId> parentId() {
-            ActorCell<?> cell = actors.get(id);
+            ActorCell<?> cell = exactCell(this);
             return cell == null || cell.parent == null
                     ? Optional.empty()
                     : Optional.of(cell.parent.ref.id());
         }
 
         public List<ActorId> childIds() {
-            ActorCell<?> cell = actors.get(id);
+            ActorCell<?> cell = exactCell(this);
             if (cell == null) return List.of();
             return cell.children.stream().map(child -> child.ref.id()).toList();
         }
@@ -2706,14 +2706,14 @@ public final class ActorRuntime implements AutoCloseable {
         public Optional<Throwable> failure() { return ref.failure(); }
 
         public Optional<ActorId> parentId() {
-            ActorCell<?> cell = actors.get(ref.id());
+            ActorCell<?> cell = exactCell(ref);
             return cell == null || cell.parent == null
                     ? Optional.empty()
                     : Optional.of(cell.parent.ref.id());
         }
 
         public List<ActorId> childIds() {
-            ActorCell<?> cell = actors.get(ref.id());
+            ActorCell<?> cell = exactCell(ref);
             return cell == null
                     ? List.of()
                     : cell.children.stream()
@@ -2761,6 +2761,10 @@ public final class ActorRuntime implements AutoCloseable {
         if (!ref.ownedBy(this)) {
             throw new IllegalArgumentException(
                     "ActorRef belongs to a different ActorRuntime");
+        }
+        if (exactCell(ref) == null) {
+            throw new IllegalArgumentException(
+                    "ActorRef does not name the live exact actor incarnation");
         }
         return new ActorControlHandle(ref);
     }
@@ -4432,13 +4436,18 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    private ActorCell<?> exactCell(ActorRef<?> ref) {
+        ActorCell<?> cell = actors.get(ref.id());
+        return cell != null && cell.ref == ref ? cell : null;
+    }
+
     private void requireActorLifecycleAuthority(
             ActorRef<?> target,
             String operation) {
         ActorCell<?> caller = currentActor.get();
         if (caller == null) return;
 
-        ActorCell<?> targetCell = actors.get(target.id());
+        ActorCell<?> targetCell = exactCell(target);
         if (targetCell == null) return;
         if (caller == targetCell) return;
 
@@ -5477,7 +5486,7 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalStateException(purpose + " aggregate accounting overflow");
             }
             if (total > policyCeiling.maxHeapBytes()) {
-                throw new IllegalStateException(purpose + " aggregate runtime limit exceeded for " + owner
+                throw new IllegalStateException(purpose + " aggregate runtime limit exceeded for " + owner()
                         + ": requested=" + bytes + " privateUsed=" + privateBytes
                         + " sharedUsed=" + sharedBytes + " runtimeLimit=" + policyCeiling.maxHeapBytes());
             }
@@ -5558,7 +5567,7 @@ public final class ActorRuntime implements AutoCloseable {
     public boolean isAlive(ActorRef<?> ref) {
         Objects.requireNonNull(ref);
         if (!ref.ownedBy(this)) return false;
-        ActorCell<?> cell = actors.get(ref.id());
+        ActorCell<?> cell = exactCell(ref);
         return cell != null && !cell.stopped.get();
     }
 
@@ -5572,10 +5581,10 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<?> caller = currentActor.get();
         if (caller != null
                 && caller.kind == ActorKind.UNTRUSTED
-                && !caller.ref.id().equals(ref.id())) {
+                && caller.ref != ref) {
             throw new SecurityException("untrusted actors cannot stop other actors");
         }
-        ActorCell<?> cell = actors.get(ref.id());
+        ActorCell<?> cell = exactCell(ref);
         if (cell == null) return;
 
         cell.stop();
@@ -5623,7 +5632,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         requireActorLifecycleAuthority(ref, "cancel");
-        ActorCell<?> cell = actors.get(ref.id());
+        ActorCell<?> cell = exactCell(ref);
         if (cell == null || cell.finalized()) return false;
 
         cell.cancel(new ActorCancelledException(
@@ -5633,7 +5642,7 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private boolean forceCancelInternal(ActorRef<?> ref) {
-        ActorCell<?> cell = actors.get(ref.id());
+        ActorCell<?> cell = exactCell(ref);
         if (cell == null || cell.finalized()) return false;
 
         ForceCancellationAttempt attempt =
@@ -5763,7 +5772,7 @@ public final class ActorRuntime implements AutoCloseable {
             throw new ActorInvalidReferenceException(
                     "ActorRef belongs to a different ActorRuntime");
         }
-        ActorCell<?> cell = actors.get(ref.id());
+        ActorCell<?> cell = exactCell(ref);
         if (cell == null) return OresFuture.failed(terminated(ref));
         return cell.drainAcceptedMessages();
     }
@@ -5778,7 +5787,7 @@ public final class ActorRuntime implements AutoCloseable {
                     "ActorRef belongs to a different ActorRuntime");
         }
         requireActorLifecycleAuthority(ref, "gracefulStop");
-        ActorCell<?> cell = actors.get(ref.id());
+        ActorCell<?> cell = exactCell(ref);
         if (cell == null) return ref.done();
         final OresFuture<Void> barrier;
         synchronized (cell.lifecycleLock) {
@@ -5807,7 +5816,7 @@ public final class ActorRuntime implements AutoCloseable {
             throw new ActorInvalidReferenceException(
                     "ActorRef belongs to a different ActorRuntime");
         }
-        ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
+        ActorCell<M> cell = (ActorCell<M>) exactCell(ref);
         if (cell == null || cell.stopped.get()) throw terminated(ref);
         synchronized (cell.lifecycleLock) {
             if (cell.stopped.get() || cell.finalized) throw terminated(ref);
@@ -7712,7 +7721,7 @@ public final class ActorRuntime implements AutoCloseable {
             ref.outputStream = outputStream;
             actorOutputStreams.add(outputStream);
             this.memorySlice = isPrivateKind(kind)
-                    ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
+                    ? new ActorMemorySlice(ref, policy.maxHeapBytes())
                     : null;
         }
 
