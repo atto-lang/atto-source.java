@@ -117,7 +117,10 @@ public final class ChannelRuntime {
             return channel.isClosed();
         }
 
-        public Channel<T> backingChannel() {
+        // Only the trusted coordinator may recover the full channel.
+        // Public Java callers holding a directional view must not regain
+        // read/write/close authority through a backing-channel accessor.
+        private Channel<T> backingChannel() {
             return channel;
         }
     }
@@ -145,7 +148,10 @@ public final class ChannelRuntime {
             return channel.isClosed();
         }
 
-        public Channel<T> backingChannel() {
+        // Only the trusted coordinator may recover the full channel.
+        // Public Java callers holding a directional view must not regain
+        // read/write/close authority through a backing-channel accessor.
+        private Channel<T> backingChannel() {
             return channel;
         }
     }
@@ -375,19 +381,32 @@ public final class ChannelRuntime {
 
     public sealed interface SelectCase permits ReadCase, WriteCase, FutureCase, DefaultCase { }
 
-    public record ReadCase<T>(Channel<T> channel) implements SelectCase {
+    /**
+     * Public select descriptors expose only their directional endpoint.
+     * Returning the full Channel from record accessors would let callers
+     * turn a read-only or write-only capability into a close-capable one.
+     */
+    public record ReadCase<T>(ReadChannel<T> channel) implements SelectCase {
         public ReadCase {
             Objects.requireNonNull(channel, "channel");
         }
+
+        public ReadCase(Channel<T> channel) {
+            this(Objects.requireNonNull(channel, "channel").output());
+        }
     }
 
-    public record WriteCase<T>(Channel<T> channel, T value)
+    public record WriteCase<T>(WriteChannel<T> channel, T value)
             implements SelectCase {
         public WriteCase {
             Objects.requireNonNull(channel, "channel");
             Objects.requireNonNull(
                     value,
                     "Oreslang channels cannot carry null; use Option<T>");
+        }
+
+        public WriteCase(Channel<T> channel, T value) {
+            this(Objects.requireNonNull(channel, "channel").input(), value);
         }
     }
 
@@ -689,8 +708,8 @@ public final class ChannelRuntime {
         }
 
         private Channel<?> channel() {
-            if (selectCase instanceof ReadCase<?> read) return read.channel();
-            if (selectCase instanceof WriteCase<?> write) return write.channel();
+            if (selectCase instanceof ReadCase<?> read) return read.channel().backingChannel();
+            if (selectCase instanceof WriteCase<?> write) return write.channel().backingChannel();
             throw new IllegalStateException(
                     "only channel cases have channel registrations");
         }
@@ -1374,8 +1393,8 @@ public final class ChannelRuntime {
     }
 
     private static Channel<?> channelOf(SelectCase selectCase) {
-        if (selectCase instanceof ReadCase<?> read) return read.channel();
-        if (selectCase instanceof WriteCase<?> write) return write.channel();
+        if (selectCase instanceof ReadCase<?> read) return read.channel().backingChannel();
+        if (selectCase instanceof WriteCase<?> write) return write.channel().backingChannel();
         throw new IllegalArgumentException(
                 "default select case has no channel");
     }
