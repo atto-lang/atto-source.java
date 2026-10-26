@@ -219,7 +219,11 @@ fnc fixed(): [int, bool, string] {
 }
 
 fnc named(): {foo: int, bar: string} {
-  return infer struct{foo: 5, bar: "x"};
+  return record{foo: 5, bar: "x"};
+}
+
+fnc concrete(): struct{foo: int, bar: string} {
+  return struct{foo: int, bar: string}{foo: 5, bar: "x"};
 }
 ```
 
@@ -649,6 +653,24 @@ stats.ready = true;
 
 Explicit structs are still closed: only fields declared in the shape may ever
 exist.
+
+The same distinction is preserved in type position. Bare `{field: Type}` and
+`record{field: Type}` denote readonly structural record types, while
+`struct{field: Type}` denotes a concrete exact-shape struct type. A function
+may therefore return a concrete anonymous struct without erasing it to a record:
+
+```ores
+fnc point(): struct{x: int, y: int} {
+  return struct{x: int, y: int}{x: 3, y: 4};
+}
+
+const {x, y} = point();
+```
+
+Record and struct values never silently convert just because their fields have
+the same names and types. A `Map<K,V>` is a keyed collection and is not a
+record/struct product: runtime map keys do not become compile-time product
+fields or callable parameter labels.
 
 Inline array:
 
