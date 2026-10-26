@@ -1796,7 +1796,7 @@ public final class OwnershipChecker {
 
             Ast.ClassDecl staticClass = classNamespaceOf(member.receiver(), scope);
             if (staticClass != null) {
-                List<FixedProductCallPlan.InputSlot> staticInputs =
+                List<CheckedCallPlan.InputSlot> staticInputs =
                         callInputSlots(
                                 call.arguments(),
                                 scope,
@@ -1965,7 +1965,7 @@ public final class OwnershipChecker {
                     concreteReceiver == null
                             ? null
                             : findClass(concreteReceiver.name());
-            List<FixedProductCallPlan.InputSlot> methodInputs =
+            List<CheckedCallPlan.InputSlot> methodInputs =
                     klass == null
                             ? List.of()
                             : callInputSlots(
@@ -2575,7 +2575,7 @@ public final class OwnershipChecker {
             Scope scope,
             String callable,
             boolean permitLabeledProducts) {
-        List<FixedProductCallPlan.InputSlot> inputs =
+        List<CheckedCallPlan.InputSlot> inputs =
                 callInputSlots(
                         arguments,
                         scope,
@@ -4012,18 +4012,18 @@ public final class OwnershipChecker {
         return false;
     }
 
-    private List<FixedProductCallPlan.InputSlot> callInputSlots(
+    private List<CheckedCallPlan.InputSlot> callInputSlots(
             List<Ast.Expr> arguments,
             Scope scope) {
         return callInputSlots(arguments, scope, true, "fixed call");
     }
 
-    private List<FixedProductCallPlan.InputSlot> callInputSlots(
+    private List<CheckedCallPlan.InputSlot> callInputSlots(
             List<Ast.Expr> arguments,
             Scope scope,
             boolean permitLabeledProducts,
             String callable) {
-        ArrayList<FixedProductCallPlan.InputSlot> result =
+        ArrayList<CheckedCallPlan.InputSlot> result =
                 new ArrayList<>();
         for (int callItemIndex = 0;
                 callItemIndex < arguments.size();
@@ -4035,7 +4035,7 @@ public final class OwnershipChecker {
                             + " does not support named arguments on this callable surface");
                 }
                 result.add(
-                        FixedProductCallPlan.InputSlot.named(
+                        CheckedCallPlan.InputSlot.named(
                                 named.name(), callItemIndex));
                 continue;
             }
@@ -4052,7 +4052,7 @@ public final class OwnershipChecker {
                     int projectionIndex = 0;
                     for (Ast.ObjectField field : object.fields()) {
                         result.add(
-                                FixedProductCallPlan.InputSlot.namedProjection(
+                                CheckedCallPlan.InputSlot.namedProjection(
                                         field.name(),
                                         callItemIndex,
                                         projectionIndex++));
@@ -4064,7 +4064,7 @@ public final class OwnershipChecker {
                             projectionIndex < type.arguments().size();
                             projectionIndex++) {
                         result.add(
-                                FixedProductCallPlan.InputSlot.positionalProjection(
+                                CheckedCallPlan.InputSlot.positionalProjection(
                                         callItemIndex,
                                         projectionIndex));
                     }
@@ -4076,7 +4076,7 @@ public final class OwnershipChecker {
                                 + "or supported direct closed record pack");
             }
             result.add(
-                    FixedProductCallPlan.InputSlot.positional(callItemIndex));
+                    CheckedCallPlan.InputSlot.positional(callItemIndex));
         }
         return List.copyOf(result);
     }
@@ -4089,7 +4089,7 @@ public final class OwnershipChecker {
         Map<Integer, Ast.FunctionDecl> family =
                 familyKey == null ? null : functions.get(familyKey);
         if (family == null) return null;
-        List<FixedProductCallPlan.InputSlot> inputs =
+        List<CheckedCallPlan.InputSlot> inputs =
                 callInputSlots(arguments, scope);
 
         Ast.FunctionDecl exact = family.get(inputs.size());
@@ -4205,7 +4205,7 @@ public final class OwnershipChecker {
         fixed.addAll(bound.explicitTypes().keySet());
         List<Ast.TypeRef> actualTypes =
                 syntacticCallArgumentTypes(call.arguments(), scope);
-        List<FixedProductCallPlan.InputSlot> inputSlots =
+        List<CheckedCallPlan.InputSlot> inputSlots =
                 callInputSlots(call.arguments(), scope, true, "generic call");
         if (inputSlots.size() != actualTypes.size()) {
             throw error("generic call expansion and source provenance disagree");
