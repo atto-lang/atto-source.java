@@ -304,13 +304,13 @@ final class ScopedTaskTest {
                 }
                 """;
 
-        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
-        RuntimeException failure =
-                assertThrows(RuntimeException.class, () -> run(source));
-        String message = failure.toString()
-                + (failure.getCause() == null ? "" : " " + failure.getCause());
+        IllegalArgumentException failure =
+                assertThrows(
+                        IllegalArgumentException.class,
+                        () -> OresCompiler.parseAndTypeCheck(source));
+        String message = failure.getMessage();
         assertTrue(message.contains("generator activation"), message);
-        assertTrue(message.contains("TaskScope"), message);
+        assertTrue(message.contains("task scope"), message);
     }
 
     @Test
