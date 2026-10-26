@@ -986,11 +986,11 @@ public final class Parser {
             throw error(keyword,
                     "constructors accept only private/pub visibility; callable/actor modifiers are not permitted");
         }
-        if (mods.visibility == Ast.Visibility.PUBLIC
-                && (filePrivateScope || classVisibility != Ast.Visibility.PUBLIC)) {
-            throw error(keyword,
-                    "a public constructor requires a public class; private file-root or module classes cannot export constructors");
-        }
+        // Constructor visibility is independent of declaration-site class
+        // visibility. A default-private class may later acquire PUBLIC source
+        // authority through an order-independent export binding. Explicitly
+        // private classes remain non-exportable in ExportResolver, and runtime
+        // construction still enforces the constructor's own visibility.
 
         consume(LPAREN, "expected '(' after constructor");
         List<Ast.Param> params = parseParametersUntil(RPAREN);
