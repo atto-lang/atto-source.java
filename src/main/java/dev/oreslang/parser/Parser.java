@@ -1231,13 +1231,18 @@ public final class Parser {
 
     private Ast.InterfaceDecl parseContract(Ast.Visibility visibility) {
         Ast.InterfaceDecl iface = parseInterface(visibility, true);
-        return new Ast.InterfaceDecl(iface.name(), iface.visibility(), iface.genericParameters(), iface.parents(), iface.members(), true);
+        return new Ast.InterfaceDecl(iface.name(), iface.visibility(), iface.genericParameters(),
+                iface.parents(), iface.members(), true, Ast.ExportKind.CONTRACT);
     }
 
     private Ast.InterfaceDecl parseDefinedInterface(Ast.Visibility visibility, Token.Type kind) {
         Ast.InterfaceDecl declaration = parseInterface(visibility);
-        interfaceKinds.put(declaration, kind);
-        return declaration;
+        Ast.ExportKind declarationKind = kind == TRAIT ? Ast.ExportKind.TRAIT : Ast.ExportKind.INTERFACE;
+        Ast.InterfaceDecl typed = new Ast.InterfaceDecl(
+                declaration.name(), declaration.visibility(), declaration.genericParameters(),
+                declaration.parents(), declaration.members(), false, declarationKind);
+        interfaceKinds.put(typed, kind);
+        return typed;
     }
 
     private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility) { return parseInterface(visibility, false); }
