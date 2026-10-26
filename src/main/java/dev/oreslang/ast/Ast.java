@@ -252,9 +252,11 @@ public final class Ast {
      * and visibility before generated syntax can use that binding.
      */
     public record MacroIdentifierArgument(String name, SourceSite site) implements MacroArgument {
+        public static final int MAX_NAME_CHARS = 1_024;
+
         public MacroIdentifierArgument {
             if (name == null || name.isBlank() || name.equals("_") || name.startsWith("$")
-                    || name.length() > 1024) {
+                    || name.length() > MAX_NAME_CHARS) {
                 throw new IllegalArgumentException("invalid macro identifier argument");
             }
             java.util.Objects.requireNonNull(site, "macro identifier call site");
