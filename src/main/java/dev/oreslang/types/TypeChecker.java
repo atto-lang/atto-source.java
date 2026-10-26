@@ -5575,55 +5575,88 @@ public final class TypeChecker {
 
     private static Type builtinIoMember(Type receiver, String name) {
         if (!(receiver instanceof Named named)) return null;
-        if (named.name().equals("fs") || named.name().equals("File")) {
-            Type string = Primitive.STRING;
-            Type booleanType = Primitive.BOOL;
-            switch (name) {
-                case "list_dir": return new Function(List.of(string), new ListType(string));
-                case "is_dir", "is_symlink", "exists": return new Function(List.of(string), booleanType);
-                case "read_text": return new Function(List.of(string), string);
-                case "write_text", "write_text_atomic", "append_text":
-                    return new Function(List.of(string, string), Primitive.VOID);
-                case "remove", "mkdir_all": return new Function(List.of(string), Primitive.VOID);
-                default: break;
-            }
-        }
+
+        // I/O is awaitable by default. Natural names are canonical and return
+        // Future<T>. Explicit *_sync names describe a synchronous/blocking host
+        // implementation but still return Future<T>: they must never park an
+        // actor/root carrier. Historical *_async spellings remain compatibility
+        // aliases during the migration window.
         if (named.name().equals("env")) {
-            switch (name) {
-                case "get": return new Function(List.of(Primitive.STRING),
+            return switch (name) {
+                case "get" -> new Function(List.of(Primitive.STRING),
                         new Named("Option", List.of(Primitive.STRING)));
-                case "has": return new Function(List.of(Primitive.STRING), Primitive.BOOL);
-                default: break;
-            }
+                case "has" -> new Function(List.of(Primitive.STRING), Primitive.BOOL);
+                default -> null;
+            };
         }
+
         Type result;
         List<Type> parameters;
         switch (named.name()) {
             case "fs", "File" -> {
                 switch (name) {
-                    case "read_text_async" -> { result = Primitive.STRING; parameters = List.of(Primitive.STRING); }
-                    case "exists_async" -> { result = Primitive.BOOL; parameters = List.of(Primitive.STRING); }
-                    case "write_text_async", "append_text_async" -> { result = Primitive.VOID; parameters = List.of(Primitive.STRING, Primitive.STRING); }
-                    case "remove_async", "mkdir_all_async" -> { result = Primitive.VOID; parameters = List.of(Primitive.STRING); }
+                    case "list_dir", "list_dir_sync" -> {
+                        result = new ListType(Primitive.STRING);
+                        parameters = List.of(Primitive.STRING);
+                    }
+                    case "is_dir", "is_dir_sync",
+                            "is_symlink", "is_symlink_sync",
+                            "exists", "exists_sync", "exists_async" -> {
+                        result = Primitive.BOOL;
+                        parameters = List.of(Primitive.STRING);
+                    }
+                    case "read_text", "read_text_sync", "read_text_async" -> {
+                        result = Primitive.STRING;
+                        parameters = List.of(Primitive.STRING);
+                    }
+                    case "write_text", "write_text_sync", "write_text_async",
+                            "write_text_atomic", "write_text_atomic_sync",
+                            "append_text", "append_text_sync", "append_text_async" -> {
+                        result = Primitive.VOID;
+                        parameters = List.of(Primitive.STRING, Primitive.STRING);
+                    }
+                    case "remove", "remove_sync", "remove_async",
+                            "mkdir_all", "mkdir_all_sync", "mkdir_all_async" -> {
+                        result = Primitive.VOID;
+                        parameters = List.of(Primitive.STRING);
+                    }
                     default -> { return null; }
                 }
             }
             case "network", "net" -> {
-                if (!name.equals("connect_async")) return null;
-                result = new Named("TcpConnection", List.of()); parameters = List.of(Primitive.STRING, Primitive.INT);
+                if (!(name.equals("connect")
+                        || name.equals("connect_sync")
+                        || name.equals("connect_async"))) return null;
+                result = new Named("TcpConnection", List.of());
+                parameters = List.of(Primitive.STRING, Primitive.INT);
             }
             case "TcpConnection" -> {
                 switch (name) {
-                    case "read_line_async" -> { result = new Named("Option", List.of(Primitive.STRING)); parameters = List.of(); }
-                    case "write_text_async" -> { result = Primitive.VOID; parameters = List.of(Primitive.STRING); }
-                    case "close_async" -> { result = Primitive.VOID; parameters = List.of(); }
+                    case "read_line", "read_line_sync", "read_line_async" -> {
+                        result = new Named("Option", List.of(Primitive.STRING));
+                        parameters = List.of();
+                    }
+                    case "write_text", "write_text_sync", "write_text_async" -> {
+                        result = Primitive.VOID;
+                        parameters = List.of(Primitive.STRING);
+                    }
+                    case "close", "close_sync", "close_async" -> {
+                        result = Primitive.VOID;
+                        parameters = List.of();
+                    }
                     default -> { return null; }
                 }
             }
             case "http" -> {
                 switch (name) {
-                    case "get_text_async" -> { result = Primitive.STRING; parameters = List.of(Primitive.STRING); }
-                    case "post_text_async" -> { result = Primitive.STRING; parameters = List.of(Primitive.STRING, Primitive.STRING); }
+                    case "get_text", "get_text_sync", "get_text_async" -> {
+                        result = Primitive.STRING;
+                        parameters = List.of(Primitive.STRING);
+                    }
+                    case "post_text", "post_text_sync", "post_text_async" -> {
+                        result = Primitive.STRING;
+                        parameters = List.of(Primitive.STRING, Primitive.STRING);
+                    }
                     default -> { return null; }
                 }
             }
