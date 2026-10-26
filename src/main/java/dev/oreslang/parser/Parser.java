@@ -259,45 +259,51 @@ public final class Parser {
 
         if (match(LBRACKET) || match(LPAREN)) {
             Token.Type close = previous().type() == LBRACKET ? RBRACKET : RPAREN;
-            Token scopeToken = consume(IDENT, "[UNKNOWN_EXPORT_SCOPE] expected file, pkg, or package export scope");
+            Token scopeToken = consume(IDENT, "[EXPORT_UNKNOWN_SCOPE] expected file, pkg, or package export scope");
             scope = switch (scopeToken.lexeme()) {
                 case "file" -> Ast.ExportScope.FILE;
                 case "pkg", "package" -> Ast.ExportScope.PACKAGE;
-                default -> throw error(scopeToken, "[UNKNOWN_EXPORT_SCOPE] expected file, pkg, or package export scope");
+                default -> throw error(scopeToken, "[EXPORT_UNKNOWN_SCOPE] expected file, pkg, or package export scope");
             };
             consume(close, "[MALFORMED_EXPORT_SCOPE] unterminated export scope");
             if (check(LBRACKET) || check(LPAREN)) {
-                throw error(peek(), "[MULTIPLE_EXPORT_SCOPES] an export declaration has exactly one scope");
+                throw error(peek(), "[EXPORT_MULTIPLE_SCOPES] an export declaration has exactly one scope");
             }
         }
 
         if (check(STAR)) {
             throw error(peek(), checkNext(FROM)
-                    ? "[REEXPORT_UNSUPPORTED] wildcard re-export is reserved for a future explicit re-export contract"
-                    : "[WILDCARD_EXPORT_UNSUPPORTED] wildcard local export is not part of export v1");
+                    ? "[EXPORT_REEXPORT_UNSUPPORTED] wildcard re-export is reserved for a future explicit re-export contract"
+                    : "[EXPORT_WILDCARD_UNSUPPORTED] wildcard local export is not part of export v1");
         }
         if (check(FROM)) {
-            throw error(peek(), "[REEXPORT_UNSUPPORTED] export from is reserved for a future explicit re-export contract");
+            throw error(peek(), "[EXPORT_REEXPORT_UNSUPPORTED] export from is reserved for a future explicit re-export contract");
         }
 
         Ast.ExportKind kind = parseOptionalExportKind();
         if (kind == null && check(IDENT) && isRuntimeTypeWord(peek().lexeme()) && checkNext(IDENT)) {
-            throw error(peek(), "[UNKNOWN_EXPORT_DECLARATION_KIND] typed exports use declaration families, not runtime value types");
+            throw error(peek(), "[EXPORT_UNKNOWN_DECLARATION_KIND] typed exports use declaration families, not runtime value types");
         }
 
         List<Ast.ExportItem> items = new ArrayList<>();
         if (match(LBRACE)) {
-            if (check(RBRACE)) throw error(peek(), "[EMPTY_EXPORT_GROUP] export group cannot be empty");
+            if (check(RBRACE)) throw error(peek(), "[EXPORT_EMPTY_GROUP] export group cannot be empty");
             while (true) {
+                if (check(COMMA)) {
+                    throw error(peek(), "[EXPORT_MALFORMED_LIST] leading or repeated comma in export group");
+                }
+                if (check(LBRACE)) {
+                    throw error(peek(), "[EXPORT_NESTED_GROUP] nested export groups are not part of export v1");
+                }
                 if (isExportKindStart()) {
-                    throw error(peek(), "[KIND_PREFIX_IN_GROUP] typed export kind belongs before the group, not on each item");
+                    throw error(peek(), "[EXPORT_KIND_PREFIX_IN_GROUP] typed export kind belongs before the group, not on each item");
                 }
                 items.add(parseExportItem(kind));
                 if (!match(COMMA)) break;
                 if (check(RBRACE)) break; // one trailing comma is canonical-compatible
-                if (check(COMMA)) throw error(peek(), "[MALFORMED_EXPORT_LIST] repeated comma in export group");
+                if (check(COMMA)) throw error(peek(), "[EXPORT_MALFORMED_LIST] repeated comma in export group");
             }
-            consume(RBRACE, "[MALFORMED_EXPORT_LIST] expected '}' after export group");
+            consume(RBRACE, "[EXPORT_MALFORMED_LIST] expected '}' after export group");
         } else {
             items.add(parseExportItem(kind));
         }
@@ -352,40 +358,40 @@ public final class Parser {
                     Token target = advance();
                     String external = "#" + target.lexeme();
                     if (!local.equals(external)) {
-                        throw error(target, "[SYMBOL_IDENTITY_MISMATCH] Symbol export cannot substitute a different nominal identity");
+                        throw error(target, "[EXPORT_SYMBOL_IDENTITY_MISMATCH] Symbol export cannot substitute a different nominal identity");
                     }
                     return new Ast.ExportItem(local, external, true, true);
                 }
                 if (check(IDENT)) {
-                    throw error(peek(), "[SYMBOL_BINDING_ALIAS_UNSUPPORTED] Symbol exports cannot be renamed to identifier bindings in v1");
+                    throw error(peek(), "[EXPORT_SYMBOL_BINDING_ALIAS_UNSUPPORTED] Symbol exports cannot be renamed to identifier bindings in v1");
                 }
                 throw error(peek(), "[MALFORMED_EXPORT_ALIAS] expected the same Symbol identity after 'as'");
             }
             return new Ast.ExportItem(local, local, true, false);
         }
 
-        if (check(STAR)) throw error(peek(), "[WILDCARD_EXPORT_UNSUPPORTED] wildcard local export is not part of export v1");
-        if (check(FROM)) throw error(peek(), "[REEXPORT_UNSUPPORTED] export from is reserved for a future explicit re-export contract");
+        if (check(STAR)) throw error(peek(), "[EXPORT_WILDCARD_UNSUPPORTED] wildcard local export is not part of export v1");
+        if (check(FROM)) throw error(peek(), "[EXPORT_REEXPORT_UNSUPPORTED] export from is reserved for a future explicit re-export contract");
         Token localToken = consume(IDENT, "[MALFORMED_EXPORT_TARGET] expected local declaration name or Symbol literal");
         String local = localToken.lexeme();
 
         if (check(DOT) || check(DOUBLE_COLON) || check(SLASH)) {
-            throw error(peek(), "[QUALIFIED_EXPORT_UNSUPPORTED] local export targets must be simple names");
+            throw error(peek(), "[EXPORT_QUALIFIED_TARGET_UNSUPPORTED] local export targets must be simple names");
         }
         if (check(LT)) {
-            throw error(peek(), "[GENERIC_EXPORT_TARGET_UNSUPPORTED] export the generic declaration family, not an instantiation");
+            throw error(peek(), "[EXPORT_GENERIC_TARGET_UNSUPPORTED] export the generic declaration family, not an instantiation");
         }
         if (check(LPAREN)) {
-            throw error(peek(), "[CALLABLE_SIGNATURE_EXPORT_UNSUPPORTED] export a callable overload family by name");
+            throw error(peek(), "[EXPORT_CALLABLE_SIGNATURE_UNSUPPORTED] export a callable overload family by name");
         }
 
         String external = local;
         if (match(AS)) {
             if (check(SYMBOL_LITERAL)) {
-                throw error(peek(), "[SYMBOL_IDENTITY_TARGET_REQUIRES_SYMBOL_SOURCE] only a Symbol source can use Symbol self-identity syntax");
+                throw error(peek(), "[EXPORT_SYMBOL_IDENTITY_TARGET_REQUIRES_SYMBOL_SOURCE] only a Symbol source can use Symbol self-identity syntax");
             }
             if (check(STRING)) {
-                throw error(peek(), "[LITERAL_EXPORT_ALIAS_UNSUPPORTED] export aliases are source binding identifiers, not runtime literals");
+                throw error(peek(), "[EXPORT_LITERAL_ALIAS_UNSUPPORTED] export aliases are source binding identifiers, not runtime literals");
             }
             external = consume(IDENT, "[MALFORMED_EXPORT_ALIAS] export alias must be an identifier").lexeme();
         }
