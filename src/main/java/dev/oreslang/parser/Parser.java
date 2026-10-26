@@ -241,8 +241,10 @@ public final class Parser {
         }
 
         validateForwardTypes(rootForwards, rootDeclarations, "file root");
+        List<Ast.DeclarationMetadata> rootMetadata = declarationMetadata(rootDeclarations);
         if (!rootDeclarations.isEmpty()) {
-            modules.add(new Ast.ModuleDecl(ROOT_MODULE, List.of(), List.of(), rootDeclarations));
+            modules.add(new Ast.ModuleDecl(
+                    ROOT_MODULE, List.of(), List.of(), rootDeclarations, List.of(), rootMetadata));
         }
         if (modules.isEmpty()) throw error(peek(), "a source file must define at least one module or top-level declaration");
         return new Ast.Program(
@@ -250,7 +252,7 @@ public final class Parser {
                 imports,
                 modules,
                 rootExports,
-                declarationMetadata(rootDeclarations));
+                rootMetadata);
     }
 
     private Ast.ExportDecl parseExportDecl() {
