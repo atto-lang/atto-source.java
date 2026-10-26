@@ -32,6 +32,8 @@ jobs:
           cache: maven
       - name: Verify offline named-call binding plan
         run: bash scripts/check-named-call-binding.sh
+      - name: Verify focused named-call and aggregate regressions
+        run: mvn -B -ntp -Dtest=NamedCallBindingPlanTest,NamedValueCallGuestTest,AggregateCallBoundaryHardeningTest,ArgumentsTupleSpreadTest,ReturnedDestructuringTest test
       - name: Verify compiler/runtime tests
         run: mvn -B -ntp -Dores.runtime.carriers=native verify
       - name: Run examples
