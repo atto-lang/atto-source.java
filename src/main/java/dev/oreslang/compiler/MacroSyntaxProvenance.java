@@ -63,8 +63,8 @@ public final class MacroSyntaxProvenance {
 
     private static final ReferenceQueue<Ast.Expr> CLEARED = new ReferenceQueue<>();
     private static final Map<IdentityKey, List<Origin>> ORIGINS = new HashMap<>();
-    private static final int MAX_PROVENANCE_NODES = 65_536;
-    private static final int MAX_PROVENANCE_DEPTH = 256;
+    static final int MAX_PROVENANCE_NODES = 65_536;
+    static final int MAX_PROVENANCE_DEPTH = 256;
     private static final ThreadLocal<PendingTree> PENDING = new ThreadLocal<>();
 
     private static final class PendingTree {
