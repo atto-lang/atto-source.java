@@ -45,6 +45,23 @@ public final class ExportMetadataCollector {
     }
 
     public static List<Entry> collect(Ast.Program program) {
+        return collect(program, null);
+    }
+
+    /**
+     * Incremental dependency invalidation only: exported constants currently
+     * have no portable, canonical compile-time value encoding. Rather than
+     * disabling incremental compilation for existing public constants, make
+     * any change in their complete source unit conservatively change its ABI.
+     * This MUST NOT be used for emitted source-interface metadata: the strict
+     * collect(program) method continues to fail closed for constants.
+     */
+    public static List<Entry> collectForIncrementalAbi(
+            Ast.Program program, String completeSource) {
+        return collect(program, Objects.requireNonNull(completeSource, "complete source"));
+    }
+
+    private static List<Entry> collect(Ast.Program program, String completeSource) {
         ExportResolver.Result resolved = ExportResolver.resolve(program);
         Map<String, Ast.ModuleDecl> modules = new LinkedHashMap<>();
         for (Ast.ModuleDecl module : program.modules()) modules.put(module.name(), module);
@@ -59,7 +76,9 @@ public final class ExportMetadataCollector {
                         binding.localKind(),
                         binding.externalName(),
                         binding.scope(),
-                        digestFamily(program, modules, binding),
+                        binding.localKind() == Ast.ExportKind.CONST && completeSource != null
+                                ? sha256("conservative-incremental-const-source-v1\\n" + completeSource)
+                                : digestFamily(program, modules, binding),
                         binding.origin()));
             }
         }
