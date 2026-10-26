@@ -99,6 +99,62 @@ final class InvertedClassParserAdmissionTest {
     }
 
     @Test
+    void actorPrefixedInvertedDeclarationsCannotSneakThrough() {
+        for (String source : new String[] {
+                "define shared inverted class Bad as x: i32; end",
+                "define untrusted inverted class Bad as x: i32; end",
+                "define inverted actor Bad as end",
+                "define inverted isoactor Bad as end",
+                "define actor inverted class Bad as end",
+                "define isoactor inverted class Bad as end"
+        }) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
+        }
+
+        for (Ast.ActorKind kind : new Ast.ActorKind[] {
+                Ast.ActorKind.SHARED, Ast.ActorKind.PRIVATE, Ast.ActorKind.UNTRUSTED
+        }) {
+            assertThrows(IllegalArgumentException.class, () -> new Ast.ClassDecl(
+                    "Bad" + kind, Ast.Visibility.PRIVATE, false, kind,
+                    java.util.List.of(), java.util.List.of(), java.util.List.of(),
+                    java.util.List.of(), null, java.util.List.of(),
+                    Ast.ActorConcurrency.serial(Ast.ActorTransport.GENERIC), true));
+        }
+    }
+
+    @Test
+    void reconstructedInvertedAstCannotBypassAnyTypeCheckerEntrypoint() {
+        Ast.ClassDecl parsed = (Ast.ClassDecl) Parser.parse("""
+                define inverted class DirectSoa as
+                    x: i32;
+                end
+                """).modules().getFirst().declarations().getFirst();
+
+        Ast.ClassDecl reconstructed = new Ast.ClassDecl(
+                parsed.name(), parsed.visibility(), parsed.isAbstract(), parsed.actorKind(),
+                parsed.genericParameters(), parsed.parents(), parsed.interfaces(),
+                parsed.fields(), parsed.constructor(), parsed.methods(),
+                parsed.actorConcurrency(), true);
+        Ast.Program direct = new Ast.Program(java.util.List.of(
+                new Ast.ModuleDecl("Direct", java.util.List.of(reconstructed))));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(direct));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(direct));
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.checkTypesWithDiagnostics(direct));
+
+        Ast.Program ordinary = Parser.parse("""
+                define class Ordinary as
+                    x: i32;
+                end
+                """);
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.checkTypesWithImportedClasses(
+                        ordinary, java.util.Map.of("DirectSoa", reconstructed),
+                        java.util.Map.of()));
+    }
+
+    @Test
     void annotationExpansionCannotEraseInvertedLayoutAndCheckerEntrypointsRejectIt() {
         Ast.Program original = Parser.parse("""
                 define inverted class Particle as

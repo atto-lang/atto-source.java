@@ -176,6 +176,79 @@ final class InvertedOneLevelLayoutTest {
     }
 
     @Test
+    void modernTypeRefAndAliasShapesFailClosedAtSchemaBoundary() {
+        Ast.ClassDecl base = klass("""
+                define inverted class Shape as
+                    value: i32;
+                end
+                """);
+        java.util.function.Function<Ast.TypeRef, Ast.ClassDecl> withType = type -> {
+            Ast.FieldDecl original = base.fields().getFirst();
+            Ast.FieldDecl field = new Ast.FieldDecl(
+                    original.name(), original.visibility(), original.bindingKind(), type,
+                    original.annotations(), null, original.mutableReferent());
+            return new Ast.ClassDecl(
+                    base.name(), base.visibility(), base.isAbstract(), base.actorKind(),
+                    base.genericParameters(), base.parents(), base.interfaces(),
+                    java.util.List.of(field), base.constructor(), base.methods(),
+                    base.actorConcurrency(), true);
+        };
+
+        for (Ast.TypeRef unsupported : java.util.List.of(
+                Ast.TypeRef.inferred(),
+                Ast.TypeRef.simple("T"),
+                new Ast.TypeRef("Array", java.util.List.of(Ast.TypeRef.simple("i32")), false),
+                new Ast.TypeRef("Mystery", java.util.List.of(), true),
+                Ast.TypeRef.tupleType(java.util.List.of(
+                        Ast.TypeRef.simple("i32"), Ast.TypeRef.simple("i32"))),
+                Ast.TypeRef.union(java.util.List.of(
+                        Ast.TypeRef.simple("i32"), Ast.TypeRef.simple("f64"))),
+                Ast.TypeRef.borrowed(Ast.TypeRef.simple("i32"), false),
+                Ast.TypeRef.structType(Map.of("x", Ast.TypeRef.simple("i32"))))) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> InvertedArray.Schema.fromClass(withType.apply(unsupported)),
+                    unsupported.toString());
+        }
+
+        Ast.TypeRef readonlyRecord = Ast.TypeRef.readonlyRecordType(
+                Map.of("x", Ast.TypeRef.simple("i32")));
+        assertEquals(InvertedColumnStore.Kind.RECORD,
+                InvertedArray.Schema.fromClass(withType.apply(readonlyRecord))
+                        .fields().getFirst().kind());
+
+        Ast.ClassDecl aliasField = withType.apply(Ast.TypeRef.simple("Alias"));
+        assertThrows(IllegalArgumentException.class, () ->
+                InvertedArray.Schema.fromClass(aliasField, Map.of(
+                        "Alias", Ast.TypeRef.structType(
+                                Map.of("x", Ast.TypeRef.simple("i32"))))));
+        assertThrows(IllegalArgumentException.class, () ->
+                InvertedArray.Schema.fromClass(aliasField, Map.of(
+                        "Alias", Ast.TypeRef.readonlyRecordType(Map.of(
+                                "nested", Ast.TypeRef.readonlyRecordType(
+                                        Map.of("x", Ast.TypeRef.simple("i32"))))))));
+
+        Ast.ClassDecl genericAliasUse = withType.apply(new Ast.TypeRef(
+                "Alias", java.util.List.of(Ast.TypeRef.simple("i32")), false));
+        assertThrows(IllegalArgumentException.class, () ->
+                InvertedArray.Schema.fromClass(genericAliasUse, Map.of(
+                        "Alias", readonlyRecord)));
+
+        Ast.FieldDecl original = base.fields().getFirst();
+        Ast.FieldDecl annotated = new Ast.FieldDecl(
+                original.name(), original.visibility(), original.bindingKind(),
+                original.type(), java.util.List.of(
+                        new Ast.Annotation("layout", java.util.List.of())),
+                null, original.mutableReferent());
+        Ast.ClassDecl annotatedClass = new Ast.ClassDecl(
+                base.name(), base.visibility(), base.isAbstract(), base.actorKind(),
+                base.genericParameters(), base.parents(), base.interfaces(),
+                java.util.List.of(annotated), base.constructor(), base.methods(),
+                base.actorConcurrency(), true);
+        assertThrows(IllegalArgumentException.class,
+                () -> InvertedArray.Schema.fromClass(annotatedClass));
+    }
+
+    @Test
     void sharedJavaLlvmFixtureLocksExactPackedBytesAndSignedZero() {
         Ast.TypeRef positionType = Ast.TypeRef.recordType(Map.of(
                 "alive", Ast.TypeRef.simple("bool"),
