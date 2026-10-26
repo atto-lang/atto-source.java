@@ -253,7 +253,13 @@ public final class GeneratorRuntime {
                             ? runtime.submit(() -> runProducer(null))
                             : runtime.submitStructured(
                                     () -> runProducer(structured),
-                                    structured::terminalReady,
+                                    terminal -> {
+                                        if (closed.get() && terminal.isCancelled()) {
+                                            structured.terminalReadyAsSuccessfulClose(terminal);
+                                        } else {
+                                            structured.terminalReady(terminal);
+                                        }
+                                    },
                                     structured::quiesced);
                 } catch (RuntimeException | Error admissionFailure) {
                     if (structured != null) {
