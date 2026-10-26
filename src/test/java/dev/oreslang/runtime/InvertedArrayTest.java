@@ -187,6 +187,9 @@ final class InvertedArrayTest {
             var row = a.pushValues(0.0, 0.0, 0.0, 0.0, false);
             assertThrows(IllegalArgumentException.class, () -> b.read(row, "x"));
             assertThrows(IllegalArgumentException.class, () -> b.row(row));
+            assertThrows(IllegalArgumentException.class, () -> b.at(row));
+            assertThrows(IllegalArgumentException.class, () ->
+                    a.at((InvertedColumnStore.Handle) null));
             assertThrows(IllegalArgumentException.class, () -> b.updateRow(row,
                     Map.of("x", 3.0, "y", 2.0, "vx", 1.0, "vy", 4.0, "ready", true)));
             assertThrows(IllegalArgumentException.class, () -> b.bindField("x").get(row));
