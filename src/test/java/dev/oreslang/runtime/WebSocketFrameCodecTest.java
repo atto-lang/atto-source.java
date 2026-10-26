@@ -50,6 +50,24 @@ final class WebSocketFrameCodecTest {
     }
 
     @Test
+    void publicFrameConstructorCannotBypassIntrinsicProtocolRules() {
+        assertThrows(IllegalArgumentException.class, () ->
+                new WebSocketFrameCodec.Frame(
+                        false, WebSocketFrameCodec.OPCODE_PING, new byte[] {1}));
+        assertThrows(IllegalArgumentException.class, () ->
+                new WebSocketFrameCodec.Frame(
+                        true, WebSocketFrameCodec.OPCODE_PONG, new byte[126]));
+        assertThrows(IllegalArgumentException.class, () ->
+                new WebSocketFrameCodec.Frame(
+                        true, WebSocketFrameCodec.OPCODE_TEXT,
+                        new byte[] {(byte) 0xc3, 0x28}));
+        assertThrows(IllegalArgumentException.class, () ->
+                new WebSocketFrameCodec.Message(
+                        WebSocketFrameCodec.OPCODE_TEXT,
+                        new byte[] {(byte) 0xc3, 0x28}));
+    }
+
+    @Test
     void rejectsControlFrameViolationsAndInvalidClosePayloads() {
         byte[] fragmentedPing =
                 maskedFrame(false, WebSocketFrameCodec.OPCODE_PING, new byte[] {1});
