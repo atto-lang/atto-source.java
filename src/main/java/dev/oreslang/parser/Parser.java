@@ -38,6 +38,8 @@ public final class Parser {
     // interface declarations to substitute for one another silently.
     private final java.util.IdentityHashMap<Ast.InterfaceDecl, Token.Type> interfaceKinds =
             new java.util.IdentityHashMap<>();
+    private final java.util.IdentityHashMap<Ast.Decl, Boolean> explicitVisibility =
+            new java.util.IdentityHashMap<>();
 
     public Parser(List<Token> tokens) {
         this.tokens = List.copyOf(tokens);
@@ -105,12 +107,27 @@ public final class Parser {
         }
 
         List<Ast.ImportDecl> imports = new ArrayList<>();
-        while (match(IMPORT)) imports.add(parseImport());
-
         List<Ast.ModuleDecl> modules = new ArrayList<>();
         List<Ast.Decl> rootDeclarations = new ArrayList<>();
+        List<Ast.ExportDecl> rootExports = new ArrayList<>();
+        boolean realDeclarationSeen = false;
 
         while (!check(EOF)) {
+            if (isContextualIdentifier("export")) {
+                rootExports.add(parseExportDecl());
+                continue;
+            }
+            if (match(IMPORT)) {
+                if (realDeclarationSeen) {
+                    throw error(previous(),
+                            "[EXPORT_IMPORT_PRELUDE] imports must precede real declarations; "
+                                    + "export metadata does not close the import prelude");
+                }
+                imports.add(parseImport());
+                continue;
+            }
+
+            realDeclarationSeen = true;
             rejectUnsupportedAcceleratorSyntax();
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers modifiers = parseModifiers();
@@ -128,10 +145,10 @@ public final class Parser {
                 rejectCallableStructuralAnnotation(annotations, "class declarations");
                 rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
                 validateClassModifiers(modifiers);
-                rootDeclarations.add(parseClass(
+                rootDeclarations.add(trackDeclaration(parseClass(
                         modifiers.visibility,
                         modifiers.isAbstract,
-                        modifiers.visibility != Ast.Visibility.PUBLIC));
+                        modifiers.visibility != Ast.Visibility.PUBLIC), modifiers));
                 continue;
             }
 
@@ -143,7 +160,7 @@ public final class Parser {
                 validateOnlyVisibilityModifiers(modifiers, "contracts");
                 rejectCallableStructuralAnnotation(annotations, "contract declarations");
                 rejectDiscardedDeclarationAnnotations(annotations, "contract declarations");
-                rootDeclarations.add(parseContract(modifiers.visibility));
+                rootDeclarations.add(trackDeclaration(parseContract(modifiers.visibility), modifiers));
                 continue;
             }
 
@@ -155,7 +172,7 @@ public final class Parser {
                 validateOnlyVisibilityModifiers(modifiers, "interfaces");
                 rejectCallableStructuralAnnotation(annotations, "interface declarations");
                 rejectDiscardedDeclarationAnnotations(annotations, "interface declarations");
-                rootDeclarations.add(parseDefinedInterface(modifiers.visibility, INTERFACE));
+                rootDeclarations.add(trackDeclaration(parseDefinedInterface(modifiers.visibility, INTERFACE), modifiers));
                 continue;
             }
 
@@ -164,7 +181,7 @@ public final class Parser {
                 rejectUnloweredRuntimeEntityDeclaration();
                 ActorPrefix actorPrefix = parseActorPrefix();
                 if (match(ACTOR, ISOACTOR)) {
-                    rootDeclarations.add(parseDefinedActorClass(previous(), modifiers, annotations, actorPrefix));
+                    rootDeclarations.add(trackDeclaration(parseDefinedActorClass(previous(), modifiers, annotations, actorPrefix), modifiers));
                     continue;
                 }
                 if (modifiers.shared) {
@@ -184,7 +201,7 @@ public final class Parser {
                     validateOnlyVisibilityModifiers(modifiers, "contracts");
                     rejectCallableStructuralAnnotation(annotations, "contract declarations");
                     rejectDiscardedDeclarationAnnotations(annotations, "contract declarations");
-                    rootDeclarations.add(parseContract(modifiers.visibility));
+                    rootDeclarations.add(trackDeclaration(parseContract(modifiers.visibility), modifiers));
                     continue;
                 }
                 if (match(CLASS)) {
@@ -192,10 +209,10 @@ public final class Parser {
                     rejectCallableStructuralAnnotation(annotations, "class declarations");
                     rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
                     validateClassModifiers(modifiers);
-                    rootDeclarations.add(parseClass(
+                    rootDeclarations.add(trackDeclaration(parseClass(
                             modifiers.visibility,
                             modifiers.isAbstract,
-                            modifiers.visibility != Ast.Visibility.PUBLIC));
+                            modifiers.visibility != Ast.Visibility.PUBLIC), modifiers));
                     continue;
                 }
                 if (match(INTERFACE, TRAIT)) {
@@ -204,7 +221,7 @@ public final class Parser {
                     validateOnlyVisibilityModifiers(modifiers, "interfaces/traits");
                     rejectCallableStructuralAnnotation(annotations, "interface declarations");
                     rejectDiscardedDeclarationAnnotations(annotations, "interface declarations");
-                    rootDeclarations.add(parseDefinedInterface(modifiers.visibility, declarationKind));
+                    rootDeclarations.add(trackDeclaration(parseDefinedInterface(modifiers.visibility, declarationKind), modifiers));
                     continue;
                 }
                 if (match(TYPE)) {
@@ -212,7 +229,7 @@ public final class Parser {
                     validateOnlyVisibilityModifiers(modifiers, "type aliases");
                     rejectCallableStructuralAnnotation(annotations, "type aliases");
                     rejectDiscardedDeclarationAnnotations(annotations, "type aliases");
-                    rootDeclarations.add(parseTypeAlias(modifiers.visibility));
+                    rootDeclarations.add(trackDeclaration(parseTypeAlias(modifiers.visibility), modifiers));
                     continue;
                 }
                 throw error(previous(), "expected module, class, interface, trait, or type after 'define'");
@@ -220,7 +237,7 @@ public final class Parser {
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
             if (declaration == null) throw error(peek(), "expected module or top-level declaration");
-            rootDeclarations.add(declaration);
+            rootDeclarations.add(trackDeclaration(declaration, modifiers));
         }
 
         validateForwardTypes(rootForwards, rootDeclarations, "file root");
@@ -228,7 +245,12 @@ public final class Parser {
             modules.add(new Ast.ModuleDecl(ROOT_MODULE, List.of(), List.of(), rootDeclarations));
         }
         if (modules.isEmpty()) throw error(peek(), "a source file must define at least one module or top-level declaration");
-        return new Ast.Program(namespace, imports, modules);
+        return new Ast.Program(
+                namespace,
+                imports,
+                modules,
+                rootExports,
+                declarationMetadata(rootDeclarations));
     }
 
     private Ast.ImportDecl parseImport() {
@@ -314,11 +336,16 @@ public final class Parser {
         // Keep the pre-"as" spelling accepted while existing source migrates.
         match(AS);
         List<Ast.Decl> declarations = new ArrayList<>();
+        List<Ast.ExportDecl> exports = new ArrayList<>();
         List<ForwardType> enclosing = moduleForwards;
         List<ForwardType> forwards = new ArrayList<>();
         moduleForwards = forwards;
         try {
             while (!check(END) && !check(EOF)) {
+                if (isContextualIdentifier("export")) {
+                    exports.add(parseExportDecl());
+                    continue;
+                }
                 Ast.Decl declaration = parseModuleMember();
                 if (declaration != null) declarations.add(declaration);
             }
@@ -327,7 +354,8 @@ public final class Parser {
         } finally {
             moduleForwards = enclosing;
         }
-        return new Ast.ModuleDecl(name, annotations, contracts, declarations);
+        return new Ast.ModuleDecl(
+                name, annotations, contracts, declarations, exports, declarationMetadata(declarations));
     }
 
     private void rejectUnsupportedAcceleratorSyntax() {
