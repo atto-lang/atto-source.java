@@ -102,6 +102,52 @@ final class TaskPipelineTest {
     }
 
     @Test
+    void hostileStageAccessRejectsBeforeAdmissionAndRevokesOnlyMovedInputs() {
+        AssertionError accessFailure = new AssertionError("host stage get failed");
+        List<TaskPipeline.Stage> throwsDuringSnapshot = new java.util.AbstractList<>() {
+            @Override public int size() { return 1; }
+
+            @Override public TaskPipeline.Stage get(int index) {
+                throw accessFailure;
+            }
+        };
+        List<TaskPipeline.Stage> invalidNegativeSize = new java.util.AbstractList<>() {
+            @Override public int size() { return -1; }
+
+            @Override public TaskPipeline.Stage get(int index) {
+                throw new AssertionError("negative list size must be rejected before get");
+            }
+        };
+
+        OresFuture<Integer> borrowed = new OresFuture<>();
+        OresFuture<Integer> moved = new OresFuture<>();
+        OresFuture<Integer> negativeMoved = new OresFuture<>();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            assertSame(accessFailure, assertThrows(AssertionError.class,
+                    () -> TaskPipeline.startTracked(
+                            scheduler, borrowed, throwsDuringSnapshot)));
+            assertFalse(borrowed.isDone(),
+                    "host list access failure must preserve borrowed producer");
+            assertEquals(0, borrowed.pendingRuntimeWaiterCount());
+
+            assertSame(accessFailure, assertThrows(AssertionError.class,
+                    () -> TaskPipeline.startOwnedInCurrentTaskOrRoot(
+                            scheduler, moved, throwsDuringSnapshot)));
+            assertTrue(moved.isCancelled(),
+                    "host list access failure must revoke a transferred producer");
+            assertEquals(0, moved.pendingRuntimeWaiterCount());
+
+            IllegalArgumentException negative = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TaskPipeline.startOwnedInCurrentTaskOrRoot(
+                            scheduler, negativeMoved, invalidNegativeSize));
+            assertTrue(negative.getMessage().contains("negative"));
+            assertTrue(negativeMoved.isCancelled(),
+                    "a forged negative list size must revoke a moved producer");
+        }
+    }
+
+    @Test
     void admittedStageSnapshotIsIsolatedFromLaterCallerMutation() throws Exception {
         OresFuture<Integer> source = new OresFuture<>();
         AtomicInteger maliciousInvocations = new AtomicInteger();
