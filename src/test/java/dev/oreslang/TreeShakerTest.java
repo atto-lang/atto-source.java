@@ -217,6 +217,19 @@ final class TreeShakerTest {
     }
 
     @Test
+    void libraryBuildPreservesExplicitlyExportedEmptyModuleNamespace() {
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                export module Service;
+                define module Service as
+                end
+                """, BuildOptions.library(Map.of()));
+
+        assertTrue(result.program().modules().stream()
+                .anyMatch(module -> module.name().equals("Service")),
+                "an explicitly exported module is a source API root even with no retained declarations");
+    }
+
+    @Test
     void defineMustTargetAConstDeclaration() {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.compileForBuild("""
                 pub val bool use_a = false;
