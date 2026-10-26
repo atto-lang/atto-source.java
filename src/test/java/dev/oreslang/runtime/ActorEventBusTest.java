@@ -556,6 +556,62 @@ final class ActorEventBusTest {
     }
 
     @Test
+    void staleSameIdTeardownCannotCloseLiveIncarnationSubscription() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability capability = group.joinCapability();
+            ActorEventBus bus = group.events();
+            bus.defineTopic("exact-owner", ActorEventBus.DeliveryPolicy.LATEST, 1);
+
+            CountDownLatch subscribed = new CountDownLatch(1);
+            CountDownLatch read = new CountDownLatch(1);
+            AtomicReference<ActorEventBus.Subscription<Integer>> subscription =
+                    new AtomicReference<>();
+            AtomicReference<Integer> observed = new AtomicReference<>();
+
+            ActorRuntime.ActorRef<String> live = runtime.spawnShared(
+                    () -> (message, context) -> {
+                        if ("subscribe".equals(message)) {
+                            capability.join();
+                            subscription.set(bus.subscribe("exact-owner"));
+                            subscribed.countDown();
+                            return;
+                        }
+                        observed.set(subscription.get().tryRead().orElseThrow().value());
+                        read.countDown();
+                    });
+
+            live.send("subscribe");
+            assertTrue(subscribed.await(5, TimeUnit.SECONDS));
+            assertFalse(subscription.get().closed());
+
+            var constructor = live.getClass().getDeclaredConstructor(
+                    ActorRuntime.class,
+                    ActorRuntime.ActorId.class,
+                    ActorRuntime.ActorKind.class,
+                    long.class);
+            constructor.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            ActorRuntime.ActorRef<String> stale =
+                    (ActorRuntime.ActorRef<String>) constructor.newInstance(
+                            runtime, live.id(), live.kind(), live.generation());
+
+            bus.removeActor(stale);
+            assertFalse(subscription.get().closed(),
+                    "stale same-id teardown must not close the live exact-ref subscription");
+            assertEquals(1, bus.topics().getFirst().subscribers());
+
+            bus.publishSystem("exact-owner", 42);
+            live.send("read");
+            assertTrue(read.await(5, TimeUnit.SECONDS));
+            assertEquals(42, observed.get());
+
+            live.stop();
+            assertTrue(live.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void actorCreatedGroupClosesWithItsCreator() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             AtomicReference<ActorRuntime.ActorGroupId> groupId = new AtomicReference<>();
