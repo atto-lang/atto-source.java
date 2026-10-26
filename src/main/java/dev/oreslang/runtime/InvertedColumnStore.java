@@ -172,6 +172,26 @@ public final class InvertedColumnStore implements AutoCloseable {
 
     public synchronized int fieldCount() { open(); return kinds.length; }
 
+    /**
+     * Checked []-lowering target: a numeric index selects the CURRENT dense
+     * physical position, not a stable logical row identity. The returned
+     * issued capability follows its logical row through swap-delete; deleted
+     * handles are revoked. Check a wide signed index BEFORE narrowing it.
+     */
+    public synchronized Handle handleAt(long index) {
+        open();
+        if (index < 0 || index >= length) {
+            throw new IndexOutOfBoundsException(
+                    "inverted row index " + index + " outside [0, " + length + ")");
+        }
+        int row = (int) index; // proven within the live int-indexed range
+        int slot = rowSlots[row];
+        if (slot < 0 || slot >= slotCount || !live[slot] || slotRows[slot] != row) {
+            throw new IllegalStateException("inverted dense row mapping is invalid");
+        }
+        return new Handle(capability, owner, slot, generations[slot]);
+    }
+
     /** All allocations complete before publishing any new backing columns. */
     public synchronized void reserve(int required) {
         open();
