@@ -2275,6 +2275,12 @@ public final class TypeChecker {
         if (named.name().equals("WriteChannel") && named.arguments().size() == 1) {
             return PipeEndpointContracts.sink(named.arguments().getFirst());
         }
+        if (named.name().equals("HasInputChannel") && named.arguments().size() == 1) {
+            return PipeEndpointContracts.sink(named.arguments().getFirst());
+        }
+        if (named.name().equals("HasOutputChannel") && named.arguments().size() == 1) {
+            return PipeEndpointContracts.source(named.arguments().getFirst());
+        }
         if (named.name().equals("ActorRef") && named.arguments().size() == 1) {
             Ast.ClassDecl actorClass = actorClassForRef(named);
             if (actorClass.actorKind() != Ast.ActorKind.SHARED) {
