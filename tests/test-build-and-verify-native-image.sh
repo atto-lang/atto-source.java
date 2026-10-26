@@ -144,8 +144,11 @@ int main(int argc, char **argv) {
         }
         if (strstr(argv[2], "native-testing.ores") != NULL) {
             if (!getenv("MOCK_EMPTY_TEST_OUTPUT")) {
+                if (getenv("MOCK_EARLY_TEST_SUMMARY"))
+                    puts("ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0");
                 if (!getenv("MOCK_MISSING_TEST_EVENTS")) {
-                    puts("ORES_TEST|PASS|core/arithmetic/adds|");
+                    if (!getenv("MOCK_LATE_ARITHMETIC_PASS"))
+                        puts("ORES_TEST|PASS|core/arithmetic/adds|");
                     if (getenv("MOCK_REPLACE_FLOAT_WITH_ARITHMETIC_PASS"))
                         puts("ORES_TEST|PASS|core/arithmetic/adds|");
                     else
@@ -170,8 +173,10 @@ int main(int argc, char **argv) {
                     puts("");
                 if (getenv("MOCK_BAD_TEST_SUMMARY"))
                     puts("ORES_TEST|SUMMARY|total=4|passed=0|failed=4|skipped=0|filtered=0");
-                else
+                else if (!getenv("MOCK_EARLY_TEST_SUMMARY"))
                     puts("ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0");
+                if (getenv("MOCK_LATE_ARITHMETIC_PASS"))
+                    puts("ORES_TEST|PASS|core/arithmetic/adds|");
                 if (getenv("MOCK_DUPLICATE_TEST_SUMMARY"))
                     puts("ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0");
                 if (getenv("MOCK_CONFLICTING_TEST_SUMMARY"))
@@ -349,6 +354,7 @@ assert_case() {
       'valid plus conflicting summary'|'valid summary alongside FAIL event'|\
       'valid summary alongside excess PASS event'|'duplicated PASS replacing missing PASS'|\
       'duplicate arithmetic PASS identity'|'wrong SKIP test identity'|'duplicate SKIP identity'|\
+      'summary emitted before test events'|'PASS emitted after final summary'|\
       'stray stdout with valid test events and summary'|'unexpected blank stdout record'|\
       'trailing blank stdout after valid summary')
         expected_diagnostic='native executable did not produce the exact unique PASS/SKIP guest tests and summary' ;;
@@ -488,6 +494,8 @@ assert_case 'duplicated PASS replacing missing PASS' failure aot compressed32 MO
 assert_case 'duplicate arithmetic PASS identity' failure aot compressed32 MOCK_DUPLICATE_TEST_PASS_ID=1
 assert_case 'wrong SKIP test identity' failure aot compressed32 MOCK_WRONG_SKIP_ID=1
 assert_case 'duplicate SKIP identity' failure aot compressed32 MOCK_DUPLICATE_TEST_SKIP_ID=1
+assert_case 'summary emitted before test events' failure aot compressed32 MOCK_EARLY_TEST_SUMMARY=1
+assert_case 'PASS emitted after final summary' failure aot compressed32 MOCK_LATE_ARITHMETIC_PASS=1
 assert_case 'unrelated CLI error impersonates AOT JIT rejection' failure aot compressed32 MOCK_JIT_UNRELATED_USAGE_ERROR=1
 grep -Fx 'native executable refused JIT without the required build-mode diagnostic' "$tmp/stderr" >/dev/null || {
   echo 'FAILED: JIT-related negative case did not reach the mode-specific refusal check' >&2
