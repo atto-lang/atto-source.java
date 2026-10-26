@@ -553,6 +553,8 @@ public final class CapabilityChecker {
             return resolvedModule == null ? n.name() : resolvedModule;
         }
         if (expr instanceof Ast.MemberExpr m) {
+            dev.oreslang.compiler.MacroIdentifierHygiene
+                    .authorizedCapturedFunction(m);
             String parent = memberPath(m.receiver());
             return parent == null ? null : parent + "." + m.member();
         }
