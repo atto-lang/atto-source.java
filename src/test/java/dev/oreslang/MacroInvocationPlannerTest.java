@@ -1039,6 +1039,82 @@ final class MacroInvocationPlannerTest {
                 failure::toString);
     }
 
+    @Test
+    void templateRejectsUnusedQuotedInputBeforeTypeOrOwnershipChecks() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro discard(Syntax<Expr> value) -> Syntax<Expr> {
+                            return quote(42);
+                        }
+                        fnc next() -> int { return 7; }
+                        fnc answer() -> int {
+                            return discard!(syntax expr next());
+                        }
+                        """));
+        assertTrue(failure.getMessage().contains("first evaluator slice")
+                        || failure.getMessage().contains("discarded before semantic checking"),
+                failure::toString);
+        assertTrue(failure.getMessage().contains("runtime fallback is forbidden"),
+                failure::toString);
+    }
+
+    @Test
+    void templateRejectsRepeatedSideEffectfulExpressionSplicing() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro twice(Syntax<Expr> value) -> Syntax<Expr> {
+                            return quote(unquote(value) + unquote(value));
+                        }
+                        fnc next() -> int { return 7; }
+                        fnc answer() -> int {
+                            return twice!(syntax expr next());
+                        }
+                        """));
+        assertTrue(failure.getMessage().contains("may duplicate effects or ownership transfers"),
+                failure::toString);
+        assertTrue(failure.getMessage().contains("runtime fallback is forbidden"),
+                failure::toString);
+    }
+
+    @Test
+    void templateRejectsRepeatedOwnershipOperationBeforeExpansion() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro twice(Syntax<Expr> value) -> Syntax<Expr> {
+                            return quote(unquote(value) + unquote(value));
+                        }
+                        fnc answer() -> int {
+                            let int amount = 7;
+                            return twice!(syntax expr rt take amount);
+                        }
+                        """));
+        assertTrue(failure.getMessage().contains("may duplicate effects or ownership transfers"),
+                failure::toString);
+    }
+
+    @Test
+    void templateRejectsExcessiveGeneratedStructureDeterministically() {
+        String entries = String.join(", ", java.util.Collections.nCopies(2050, "1"));
+        String source = """
+                define macro values() -> Syntax<Expr> {
+                    return quote([%s]);
+                }
+                fnc answer() -> List<int> {
+                    return values!();
+                }
+                """.formatted(entries);
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(failure.getMessage().contains("template budget exceeded"),
+                failure::toString);
+        assertTrue(failure.getMessage().contains("runtime fallback is forbidden"),
+                failure::toString);
+    }
+
     private static boolean containsMacroInvocation(Ast.Expr expression) {
         if (expression instanceof Ast.MacroInvocationExpr) return true;
         if (expression instanceof Ast.BinaryExpr e) {
