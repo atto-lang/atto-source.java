@@ -943,6 +943,10 @@ class PrivateCiV3Test(unittest.TestCase):
             patch.object(v3.legacy, "checked_repo", return_value=eligible),
             patch.object(v3.legacy, "gh_api", side_effect=good_api),
             patch.object(
+                v3, "checked_carrier_main",
+                return_value=carrier["base_sha"],
+            ) as carrier_guard,
+            patch.object(
                 v3, "verify_source_pr",
                 return_value=v3.SOURCE_REPOSITORY_ID,
             ),
@@ -952,6 +956,7 @@ class PrivateCiV3Test(unittest.TestCase):
                 Path("."), "trusted/ci", POLICY, carrier,
                 1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED
             )
+            carrier_guard.assert_called_once_with("trusted/ci", carrier)
             governance.assert_called_once_with(
                 Path("."), "trusted/ci", POLICY, carrier, 1482, PROTECTED
             )
@@ -975,6 +980,50 @@ class PrivateCiV3Test(unittest.TestCase):
             patch.object(v3, "verify_source_pr") as source_pr_check,
         ):
             with self.assertRaisesRegex(v3.Denied, "main changed"):
+                v3.authorize_write(
+                    Path("."), "trusted/ci", POLICY, carrier,
+                    1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED
+                )
+            source_pr_check.assert_not_called()
+
+    def test_authorize_write_rejects_carrier_protection_weakening_each_write(self):
+        carrier = contract()
+        eligible = {
+            "id": carrier["repository_id"],
+            "full_name": "trusted/ci",
+            "private": True,
+            "visibility": "private",
+            "archived": False,
+            "disabled": False,
+            "fork": False,
+            "default_branch": "main",
+        }
+
+        def api(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/branches/main":
+                return {
+                    "name": "main",
+                    "commit": {"sha": carrier["base_sha"]},
+                }
+            raise AssertionError(route)
+
+        with (
+            patch.object(v3.legacy, "require_resolved_blocking_incidents"),
+            patch.object(
+                v3.legacy, "checked_policy_approval",
+                return_value=(POLICY, carrier["repository_id"]),
+            ),
+            patch.object(v3.legacy, "checked_repo", return_value=eligible),
+            patch.object(v3.legacy, "gh_api", side_effect=api),
+            patch.object(
+                v3, "checked_carrier_main",
+                side_effect=v3.Denied(
+                    "carrier main must enforce strict required CI and conversation resolution"
+                ),
+            ),
+            patch.object(v3, "verify_source_pr") as source_pr_check,
+        ):
+            with self.assertRaisesRegex(v3.Denied, "strict required CI"):
                 v3.authorize_write(
                     Path("."), "trusted/ci", POLICY, carrier,
                     1482, "8" * 40, v3.SOURCE_REPOSITORY_ID, PROTECTED
@@ -1010,6 +1059,10 @@ class PrivateCiV3Test(unittest.TestCase):
             patch.object(v3.legacy, "checked_repo", return_value=eligible),
             patch.object(v3.legacy, "gh_api", side_effect=api),
             patch.object(
+                v3, "checked_carrier_main",
+                return_value=carrier["base_sha"],
+            ),
+            patch.object(
                 v3, "verify_source_pr",
                 return_value=v3.SOURCE_REPOSITORY_ID,
             ) as source_pr_check,
@@ -1032,6 +1085,10 @@ class PrivateCiV3Test(unittest.TestCase):
             ),
             patch.object(v3.legacy, "checked_repo", return_value=eligible),
             patch.object(v3.legacy, "gh_api", side_effect=api),
+            patch.object(
+                v3, "checked_carrier_main",
+                return_value=carrier["base_sha"],
+            ),
             patch.object(
                 v3, "verify_source_pr",
                 side_effect=v3.Denied("source PR security owner approval is stale or revoked"),
