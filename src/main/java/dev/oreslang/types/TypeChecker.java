@@ -1571,11 +1571,11 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "actor instance methods cannot be generators because the iterator activation would escape a mailbox turn");
             }
-            if (method.generator() && !method.isStatic() && (method.async() || method.suspends())) {
+            if (method.generator() && !method.isStatic()) {
                 throw new IllegalArgumentException(
-                        "async/suspend instance generator '" + klass.name() + "." + method.name()
-                                + "' requires a pinned owned receiver across pulls; use a synchronous generator method "
-                                + "or an async/suspend static gen* until receiver-lifetime lowering is available");
+                        "instance generator method '" + klass.name() + "." + method.name()
+                                + "' would retain self beyond the call without an iterator-owned receiver-lifetime witness; "
+                                + "use static gen* or return a generator created from explicitly owned data");
             }
             if (method.async() && !method.isStatic()) {
                 throw new IllegalArgumentException(
