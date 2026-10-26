@@ -20,7 +20,8 @@ import java.util.Map;
 public final class MacroSyntaxProvenance {
     public enum EmissionKind {
         CALL_SITE_SPLICE,
-        CONST_QUOTE
+        CONST_QUOTE,
+        TEMPLATE_QUOTE
     }
 
     public record HygieneIdentity(
