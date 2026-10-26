@@ -1,7 +1,9 @@
 package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.compiler.BuildOptions;
+import dev.oreslang.compiler.ExportAbiMetadata;
 import dev.oreslang.compiler.ExportResolver;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
@@ -317,6 +319,82 @@ final class ExplicitExportSyntaxTest {
         assertEquals(Ast.ExportKind.CLASS, binding.localKind());
         // ExportBinding deliberately contains no JVM class name, native symbol,
         // Wasm export index, CLR visibility, or host-interop flag.
+    }
+
+    @Test
+    void contextualSymbolIdentifierIsNotStolenByTypedExportGrammar() {
+        Ast.ExportDecl export = root(Parser.parse("""
+                export symbol as PublicSymbol;
+                const int symbol = 1;
+                """)).exports().getFirst();
+
+        assertNull(export.kind());
+        assertEquals("symbol", export.items().getFirst().localName());
+        assertEquals("PublicSymbol", export.items().getFirst().externalName());
+    }
+
+    @Test
+    void annotationExpansionPreservesExportMetadata() {
+        Ast.Program parsed = Parser.parse("""
+                export class Box as PublicBox;
+                define class Box as
+                end
+                """);
+        Ast.Program expanded = AnnotationExpander.expand(parsed);
+        assertEquals(root(parsed).exports(), root(expanded).exports());
+    }
+
+    @Test
+    void exportMetadataSharesLocalDigestAcrossAliases() {
+        ExportAbiMetadata.Document metadata = OresCompiler.emitExportMetadata("""
+                export class Box as PublicBox;
+                pub define class Box as
+                end
+                """);
+
+        assertEquals(ExportAbiMetadata.VERSION, metadata.version());
+        assertEquals(2, metadata.entries().size());
+        ExportAbiMetadata.Entry original = metadata.entries().stream()
+                .filter(e -> e.externalName().equals("Box")).findFirst().orElseThrow();
+        ExportAbiMetadata.Entry alias = metadata.entries().stream()
+                .filter(e -> e.externalName().equals("PublicBox")).findFirst().orElseThrow();
+
+        assertEquals(original.localSymbolId(), alias.localSymbolId());
+        assertEquals(original.signatureDigest(), alias.signatureDigest());
+        assertEquals(ExportResolver.Origin.IMPLICIT_PUB, original.origin());
+        assertEquals(ExportResolver.Origin.EXPLICIT_EXPORT, alias.origin());
+    }
+
+    @Test
+    void exportMetadataDigestTracksSignatureNotAliasSpelling() {
+        String first = OresCompiler.emitExportMetadata("""
+                export fnc work as first_name;
+                fnc work(int value): int { return value; }
+                """).entries().getFirst().signatureDigest();
+
+        String renamed = OresCompiler.emitExportMetadata("""
+                export fnc work as second_name;
+                fnc work(int value): int { return value; }
+                """).entries().getFirst().signatureDigest();
+
+        String changed = OresCompiler.emitExportMetadata("""
+                export fnc work as second_name;
+                fnc work(bool value): int { return 1; }
+                """).entries().getFirst().signatureDigest();
+
+        assertEquals(first, renamed);
+        assertNotEquals(first, changed);
+    }
+
+    @Test
+    void exportMetadataRejectsInferredPublicSignature() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.emitExportMetadata("""
+                        export const answer;
+                        const answer = 42;
+                        """));
+        assertTrue(failure.getMessage().contains("EXPORT_METADATA_UNRESOLVED_TYPE"), failure.getMessage());
     }
 
     @Test
