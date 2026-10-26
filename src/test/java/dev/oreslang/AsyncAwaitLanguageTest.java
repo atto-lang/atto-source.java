@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -137,6 +138,47 @@ final class AsyncAwaitLanguageTest {
         assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck(program));
     }
+
+
+    @Test
+    void ioNaturalAndSyncExplicitNamesAreBothAwaitableFutures() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                pub async fnc probe(): void {
+                  val String natural = await fs.read_text("./natural.txt");
+                  val String explicit = await fs.read_text_sync("./sync.txt");
+                  val bool exists = await fs.exists("./natural.txt");
+                  val TcpConnection socket = await network.connect("127.0.0.1", 9000);
+                  val Option<String> line = await socket.read_line();
+                  await socket.write_text("ok\\n");
+                  await socket.close();
+                  val String body = await http.get_text("http://127.0.0.1:9000/");
+                  val Option<String> input = await stdio.stdin.read_line();
+                  val Option<String> inputSync = await stdio.stdin.read_line_sync();
+                  stdio.println(natural + explicit + body);
+                  stdio.println(exists);
+                  stdio.println(line);
+                  stdio.println(input);
+                  stdio.println(inputSync);
+                  return;
+                }
+                """));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub fnc bad(): void {
+                          val String text = fs.read_text("./must-await.txt");
+                          return;
+                        }
+                        """));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub fnc bad_sync_spelling(): void {
+                          val String text = fs.read_text_sync("./still-must-await.txt");
+                          return;
+                        }
+                        """));
+    }
+
 
     @Test
     void asyncActorCallableIsRejectedUntilMailboxContinuationLoweringExists() {
