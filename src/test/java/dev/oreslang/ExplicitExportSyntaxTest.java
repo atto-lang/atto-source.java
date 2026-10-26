@@ -450,4 +450,18 @@ final class ExplicitExportSyntaxTest {
                 () -> Parser.parse(exportSource + "\nfnc main(): void { return; }"));
         assertTrue(failure.getMessage().contains(category), failure.getMessage());
     }
+
+    @Test
+    void exportedConstMetadataFailsClosedUntilCanonicalValueEncodingExists() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.collectExportMetadata("""
+                        export const ready;
+                        const string ready = 'ready';
+                        """));
+        assertTrue(
+                failure.getMessage().contains("EXPORT_CONST_ABI_VALUE_UNENCODED"),
+                failure.getMessage());
+    }
+
 }
