@@ -5,8 +5,7 @@ import dev.oreslang.ast.Ast;
 import java.lang.ref.Reference;
 import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
-import java.nio.file.InvalidPathException;
-import java.nio.file.Path;
+import java.util.ArrayDeque;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -57,7 +56,7 @@ public final class MacroSourceUnitIdentity {
 
     public static synchronized Ast.Program attach(Ast.Program program, String unitId) {
         java.util.Objects.requireNonNull(program, "macro source program");
-        String canonical = canonicalize(unitId);
+        String canonical = normalizeUnitId(unitId);
         expunge();
         IdentityKey key = new IdentityKey(program, CLEARED);
         String previous = UNIT_IDS.putIfAbsent(key, canonical);
@@ -68,18 +67,34 @@ public final class MacroSourceUnitIdentity {
         return program;
     }
 
-    private static String canonicalize(String unitId) {
+    static String normalizeUnitId(String unitId) {
         if (unitId == null || unitId.isBlank()) {
             throw new IllegalArgumentException("invalid macro source-unit identity");
         }
         if (unitId.equals(MEMORY_UNIT)) return MEMORY_UNIT;
-        final String canonical;
-        try {
-            canonical = Path.of(unitId).normalize().toString().replace('\\', '/');
-        } catch (InvalidPathException invalid) {
+
+        String logical = unitId.replace('\\', '/');
+        if (logical.startsWith("/")
+                || logical.matches("^[A-Za-z]:/.*")) {
             throw new IllegalArgumentException(
-                    "invalid macro source-unit identity", invalid);
+                    "macro source-unit identity must be a logical relative path");
         }
+
+        ArrayDeque<String> segments = new ArrayDeque<>();
+        for (String segment : logical.split("/+")) {
+            if (segment.isEmpty() || segment.equals(".")) continue;
+            if (segment.equals("..")) {
+                if (segments.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "macro source-unit identity cannot escape its logical root");
+                }
+                segments.removeLast();
+                continue;
+            }
+            segments.addLast(segment);
+        }
+
+        String canonical = String.join("/", segments);
         if (canonical.isBlank() || canonical.length() > MAX_UNIT_ID_CHARS) {
             throw new IllegalArgumentException("invalid macro source-unit identity");
         }
