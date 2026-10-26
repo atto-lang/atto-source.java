@@ -35,6 +35,13 @@ public final class WebSocketOpeningRequest {
             String webSocketKey,
             Optional<String> origin) {
         public Request {
+            requireAsciiToken(method, "HTTP method");
+            requireOriginFormTarget(target);
+            if (!"HTTP/1.1".equals(httpVersion)) {
+                throw new IllegalArgumentException(
+                        "WebSocket upgrade requires HTTP/1.1");
+            }
+            requireHostAuthority(host);
             if (origin == null) origin = Optional.empty();
         }
 
