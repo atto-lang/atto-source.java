@@ -4379,7 +4379,7 @@ public final class TypeChecker {
                                     + constructor.arity() + " argument(s), got "
                                     + expanded.size());
                 }
-                FixedProductCallPlan plan = FixedProductCallPlan.bind(
+                CheckedCallPlan plan = CheckedCallPlan.required(
                         constructor.parameters().stream()
                                 .map(Ast.Param::name)
                                 .toList(),
@@ -9227,30 +9227,15 @@ public final class TypeChecker {
         List<FixedProductCallPlan.InputSlot> inputs =
                 expanded.stream().map(ExpandedCallArgument::inputSlot).toList();
 
-        boolean optional = params.stream().anyMatch(Ast.Param::omittable);
-        List<Integer> sourceToFormal;
-        List<Integer> abiToSource;
-        if (optional) {
-            OptionalCallPlan plan = OptionalCallPlan.bind(
-                    params.stream().map(Ast.Param::name).toList(),
-                    params.stream().map(Ast.Param::omittable).toList(),
-                    inputs);
-            sourceToFormal = plan.sourceOrder().stream()
-                    .map(OptionalCallPlan.BoundSlot::parameterIndex).toList();
-            abiToSource = plan.abiToSource();
-        } else {
-            if (params.size() != expanded.size()) {
-                throw new IllegalArgumentException(
-                        label + " arity mismatch: expected " + params.size()
-                                + " argument(s), got " + expanded.size());
-            }
-            FixedProductCallPlan plan = FixedProductCallPlan.bind(
-                    params.stream().map(Ast.Param::name).toList(),
-                    inputs);
-            sourceToFormal = plan.sourceOrder().stream()
-                    .map(FixedProductCallPlan.BoundSlot::parameterIndex).toList();
-            abiToSource = plan.abiToSource();
-        }
+        CheckedCallPlan plan = CheckedCallPlan.bind(
+                params.stream().map(Ast.Param::name).toList(),
+                params.stream().map(Ast.Param::omittable).toList(),
+                inputs);
+        List<Integer> sourceToFormal =
+                plan.sourceOrder().stream()
+                        .map(CheckedCallPlan.BoundSlot::parameterIndex)
+                        .toList();
+        List<Integer> abiToSource = plan.abiToSource();
 
         Set<String> unique = uniqueGenerics(genericNames, label);
         Map<String, Type> bindings = new HashMap<>(initialBindings);
@@ -10495,21 +10480,12 @@ public final class TypeChecker {
         if (exact != null) {
             // Exact declared arity always wins. Binding errors on this slot
             // are real errors; do not label-fallback to a larger overload.
-            if (exact.parameters().stream().anyMatch(Ast.Param::omittable)) {
-                OptionalCallPlan.bind(
-                        exact.parameters().stream().map(Ast.Param::name).toList(),
-                        exact.parameters().stream().map(Ast.Param::omittable).toList(),
-                        expanded.stream()
-                                .map(ExpandedCallArgument::inputSlot)
-                                .toList());
-            } else if (expanded.stream()
-                    .anyMatch(slot -> slot.label() != null)) {
-                FixedProductCallPlan.bind(
-                        exact.parameters().stream().map(Ast.Param::name).toList(),
-                        expanded.stream()
-                                .map(ExpandedCallArgument::inputSlot)
-                                .toList());
-            }
+            CheckedCallPlan.bind(
+                    exact.parameters().stream().map(Ast.Param::name).toList(),
+                    exact.parameters().stream().map(Ast.Param::omittable).toList(),
+                    expanded.stream()
+                            .map(ExpandedCallArgument::inputSlot)
+                            .toList());
             return exact;
         }
 
@@ -10521,7 +10497,7 @@ public final class TypeChecker {
                 continue;
             }
             try {
-                OptionalCallPlan.bind(
+                CheckedCallPlan.bind(
                         candidate.parameters().stream()
                                 .map(Ast.Param::name)
                                 .toList(),
@@ -10553,7 +10529,7 @@ public final class TypeChecker {
             Set<String> callerGenerics,
             Type callerSelf,
             String label) {
-        OptionalCallPlan plan = OptionalCallPlan.bind(
+        CheckedCallPlan plan = CheckedCallPlan.bind(
                 target.parameters().stream().map(Ast.Param::name).toList(),
                 target.parameters().stream().map(Ast.Param::omittable).toList(),
                 expanded.stream()
