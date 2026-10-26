@@ -124,6 +124,35 @@ final class OptionalCallPlanTest {
     }
 
     @Test
+    void publicConstructorRejectsPositionalOmissionAndReorderingForLegacyPlans() {
+        // A positional argument binds the next leading formal. A forge cannot
+        // omit that formal even when the omitted slot is technically optional.
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new OptionalCallPlan(
+                        List.of(new OptionalCallPlan.BoundSlot(0, 1, null)),
+                        List.of(-1, 0, -1),
+                        List.of(true, false, true)));
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new OptionalCallPlan(
+                        List.of(
+                                new OptionalCallPlan.BoundSlot(0, 0, null),
+                                new OptionalCallPlan.BoundSlot(1, 2, null)),
+                        List.of(0, -1, 1),
+                        List.of(false, true, false)));
+
+        // The identical omission is legal when the caller explicitly names
+        // the last formal, and must preserve ABI/source evaluation order.
+        OptionalCallPlan namedGap = OptionalCallPlan.bind(
+                List.of("a", "b", "c"),
+                List.of(false, true, false),
+                List.of(positional(), named("c")));
+        assertEquals(List.of(0, -1, 1), namedGap.abiToSource());
+    }
+
+    @Test
     void optionalBindingPreservesSpreadProjectionProvenance() {
         OptionalCallPlan plan = OptionalCallPlan.bind(
                 List.of("a", "b", "c"),
