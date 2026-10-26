@@ -4662,7 +4662,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (expr instanceof Ast.NewExpr created) {
-                    evalSuspendableArguments(
+                    evalSuspendableDirectArguments(
                             task,
                             created.arguments(),
                             env,
@@ -6076,16 +6076,31 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object instantiateEvaluated(
                 Ast.NewExpr created,
-                List<Object> args,
+                DirectArguments directArgs,
                 Env env) {
-            if (created.type().name().equals("HttpResponse") && findClass("HttpResponse") == null) {
-                if (created.type().inferArguments() || !created.type().arguments().isEmpty() || args.size() > 1)
-                    throw new IllegalArgumentException("HttpResponse requires zero or one string body");
-                return args.isEmpty() ? HttpResponseDraft.empty()
-                        : HttpResponseDraft.text(requireString(args.getFirst(), "HttpResponse body"));
+            if (created.type().name().equals("HttpResponse")
+                    && findClass("HttpResponse") == null) {
+                List<Object> args =
+                        directArgs.requirePlainPositional(
+                                "HttpResponse constructor");
+                if (created.type().inferArguments()
+                        || !created.type().arguments().isEmpty()
+                        || args.size() > 1) {
+                    throw new IllegalArgumentException(
+                            "HttpResponse requires zero or one string body");
+                }
+                return args.isEmpty()
+                        ? HttpResponseDraft.empty()
+                        : HttpResponseDraft.text(
+                                requireString(
+                                        args.getFirst(),
+                                        "HttpResponse body"));
             }
             if (created.type().name().equals("Array")
                     || created.type().name().equals("List")) {
+                List<Object> args =
+                        directArgs.requirePlainPositional(
+                                created.type().name() + " constructor");
                 if (!args.isEmpty()) {
                     throw new IllegalArgumentException(
                             created.type().name()
@@ -6103,7 +6118,11 @@ public final class OresEvalRootNode extends RootNode {
                 context.requireCapability(
                         IsolatePolicy.Capability.JAVA_INTEROP,
                         "Java host constructor " + hostClass.className());
-                return instantiateHost(hostClass, args);
+                return instantiateHost(
+                        hostClass,
+                        directArgs.requirePlainPositional(
+                                "Java host constructor "
+                                        + hostClass.className()));
             }
             Ast.ClassDecl klass = findClass(created.type().name());
             if (klass != null) requireLexicalClassAccess(env, klass);
@@ -6121,7 +6140,30 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "unknown class " + created.type().name());
             }
-            return owner.instantiate(klass, args, externalConstruction);
+
+            List<Object> args;
+            Ast.ConstructorDecl constructor = klass.constructor();
+            if (constructor != null) {
+                if (!klass.genericParameters().isEmpty()
+                        && directArgs.inputs().stream()
+                                .anyMatch(slot ->
+                                        slot.label() != null
+                                                || slot.projectionIndex() >= 0)) {
+                    throw new IllegalArgumentException(
+                            "constructor " + klass.name()
+                                    + " named/spread binding on generic classes remains fail-closed");
+                }
+                args = directArgs.inAbiOrder(
+                        constructor.parameters(),
+                        "constructor " + klass.name());
+            } else {
+                args = directArgs.requirePlainPositional(
+                        "synthesized constructor " + klass.name());
+            }
+            return owner.instantiate(
+                    klass,
+                    args,
+                    externalConstruction);
         }
 
         private Object callFunctionRaw(Ast.FunctionDecl fn, List<Object> args) {
@@ -8094,49 +8136,12 @@ public final class OresEvalRootNode extends RootNode {
                         indexed.receiver());
             }
             if (expr instanceof Ast.NewExpr created) {
-                if (created.type().name().equals("HttpResponse") && findClass("HttpResponse") == null) {
-                    List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
-                    return instantiateEvaluated(created, args, env);
-                }
-                if (created.type().name().equals("Array")
-                        || created.type().name().equals("List")) {
-                    if (!created.arguments().isEmpty()) {
-                        throw new IllegalArgumentException(
-                                created.type().name()
-                                        + "<T> constructor takes no positional arguments");
-                    }
-                    return new ArrayList<>();
-                }
-                if (created.type().name().equals("DynamicStruct")) {
-                    throw new IllegalArgumentException(
-                            "DynamicStruct has been removed; use infer struct{...} or an explicit closed struct");
-                }
-                HostClassFacade hostClass = hostClasses.get(created.type().name());
-                if (hostClass != null) {
-                    context.requireCapability(IsolatePolicy.Capability.JAVA_INTEROP,
-                            "Java host constructor " + hostClass.className());
-                    if (!hostClass.constructible()) {
-                        throw new IllegalArgumentException(
-                                "Java function namespace '" + created.type().name() + "' is not constructible");
-                    }
-                    List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
-                    return instantiateHost(hostClass, args);
-                }
-
-                Ast.ClassDecl klass = findClass(created.type().name());
-                Evaluator owner = this;
-                boolean externalConstruction = false;
-                if (klass == null) {
-                    Object imported = importedValue(created.type().name());
-                    if (imported instanceof ClassFacade externalClass) {
-                        owner = externalClass.owner();
-                        klass = externalClass.klass();
-                        externalConstruction = true;
-                    }
-                }
-                if (klass == null) throw new IllegalArgumentException("unknown class " + created.type().name());
-                List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
-                return owner.instantiate(klass, args, externalConstruction);
+                return instantiateEvaluated(
+                        created,
+                        evaluateDirectArguments(
+                                created.arguments(),
+                                env),
+                        env);
             }
             if (expr instanceof Ast.TaskExpr task) {
                 if (task.domain() == Ast.ExecutionDomain.GPU) {
