@@ -295,6 +295,7 @@ final class TupleFixedArraySpreadTest {
         assertDoesNotThrow(() -> OwnershipChecker.check(typed));
 
         ByteArrayOutputStream output = new ByteArrayOutputStream();
+        ByteArrayOutputStream diagnostics = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "tuple-spread-once.ores")
                 .mimeType(OresLanguage.MIME_TYPE)
                 .build();
@@ -302,10 +303,12 @@ final class TupleFixedArraySpreadTest {
         try (Context context = Context.newBuilder(OresLanguage.ID)
                 .allowAllAccess(false)
                 .out(output)
+                .err(diagnostics)
                 .build()) {
             context.eval(source);
         }
 
         assertEquals("pair-evaluated:42", output.toString(StandardCharsets.UTF_8));
+        assertEquals("", diagnostics.toString(StandardCharsets.UTF_8), "Unexpected guest stderr diagnostics");
     }
 }
