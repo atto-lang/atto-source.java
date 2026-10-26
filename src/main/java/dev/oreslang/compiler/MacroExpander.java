@@ -304,6 +304,13 @@ public final class MacroExpander {
         return macro;
     }
 
+    private String macroOwnerModule(String callerModule, String invocationName) {
+        int separator = invocationName.lastIndexOf('.');
+        return separator >= 0
+                ? invocationName.substring(0, separator)
+                : callerModule;
+    }
+
     private Ast.Expr expandExpressionInvocation(
             String module,
             Ast.MacroInvocationExpr invocation,
@@ -397,7 +404,8 @@ public final class MacroExpander {
                     new MacroSyntaxProvenance.Origin(
                             new MacroSyntaxProvenance.HygieneIdentity(
                                     module,
-                                    invocation.name(),
+                                    macroOwnerModule(module, invocation.name()),
+                                    macro.name(),
                                     invocation.site(),
                                     expansionOrdinal),
                             constQuote
