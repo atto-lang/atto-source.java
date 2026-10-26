@@ -435,15 +435,18 @@ Oreslang does **not** interpret `name = value` inside a call as a named argument
 Named call arguments use `name: value`, preserve lexical evaluation order, and
 are rebound to declaration-order parameter slots only after their values have
 been evaluated. A positional or spread argument may not follow the first named
-argument. The executable Java/Graal fixed-call surface includes non-generic
-direct source functions, instance methods, static class functions, and explicit
-non-generic guest constructors. Each uses the same checked source-to-ABI plan
-for named values, statically known tuple spread, and the currently admitted
-direct closed readonly Copy-only record-literal spread. Generic labeled calls,
-interface dispatch, imported/qualified-module calls, function-valued fields,
-dynamic callable values, synthesized field constructors, and actor spawn remain
-fail-closed until those dispatch paths consume the same checked binding and
-ownership proof. Maps are never implicit named argument packs.
+argument. The executable Java/Graal fixed-call surface includes direct source
+functions (including generic direct calls), required-parameter instance methods,
+required-parameter static class functions, and explicit non-generic guest
+constructors. Each uses the same checked source-to-ABI plan for named values,
+statically known tuple spread, and the currently admitted direct closed readonly
+Copy-only record-literal spread. Generic direct functions infer from the formal
+slot selected by that plan rather than raw call-item order. Generic member
+methods/static functions, interface dispatch, imported/qualified-module calls,
+function-valued fields, dynamic callable values, synthesized field constructors,
+generic-class named/spread construction, and actor spawn remain fail-closed until
+their later ownership/dispatch contracts are opened. Maps are never implicit
+named argument packs.
 
 ### Option-valued vs omittable parameters
 
@@ -497,10 +500,11 @@ supplied positional/named shape. Multiple viable omission shapes are ambiguous;
 labels never select an overload.
 
 The current executable omission surface is intentionally narrower than parsing:
-direct source functions are supported; generic omittable functions, methods,
-static functions, constructors, interfaces, actor callables and lambdas remain
-fail-closed until their dispatch/ownership ABIs consume the same omission-aware
-plan.
+direct source functions, including generic direct functions whose supplied
+arguments can infer every required generic (or provide it explicitly), consume
+the same omission-aware source-to-ABI plan. Omittable methods, static functions,
+constructors, interfaces, actor callables and lambdas remain fail-closed until
+their dispatch/ownership ABIs carry equivalent presence metadata.
 
 The canonical comparison operators deliberately separate value equality from identity:
 
@@ -1670,10 +1674,12 @@ Record-pack fields bind by label, not initializer order. Their field expressions
 still evaluate exactly once in lexical source order, and the values are
 permuted to declaration-order ABI slots only afterward. This first executable
 record-spread contract is deliberately narrow: the pack must be a direct,
-closed readonly record literal with Copy-safe fields. Concrete structs, Maps,
-widened record views, borrowed/move-only fields, and generic labeled calls are
-not implicit argument packs. Those surfaces fail closed rather than acquiring
-key-order or hidden-move semantics.
+closed readonly record literal with Copy-safe fields. Generic direct source
+functions use the same provenanced record-pack binder, so generic inference
+follows source field order while each field binds by label. Concrete structs,
+Maps, widened record views, borrowed/move-only fields, and generic member
+callables are not implicit argument packs. Those surfaces fail closed rather
+than acquiring key-order or hidden-move semantics.
 
 ## Execution profiles: JIT, AOT, and hybrid
 
