@@ -388,6 +388,47 @@ final class OptionalNamedParameterTest {
     }
 
     @Test
+    void negativeIntegerBooleanAndStringDefaultsMaterializeExactly()
+            throws Exception {
+        String code = """
+                @DefaultArgVals(delta: -2, enabled: true, label: "ok")
+                fnc defaults(int delta?, bool enabled?, string label?): int {
+                    if enabled; then
+                        if label eq "ok"; then
+                            return 44 + delta;
+                        fi
+                    fi
+                    return 0;
+                }
+
+                pub routine main(): void {
+                    stdio.stdout.write(defaults());
+                    return;
+                }
+                """;
+
+        assertEquals("42", checkedExecution(code));
+    }
+
+    @Test
+    void explicitDefaultDoesNotOverrideSuppliedValue()
+            throws Exception {
+        String code = """
+                @DefaultArgVals(value: 2)
+                fnc choose(int value?): int {
+                    return value;
+                }
+
+                pub routine main(): void {
+                    stdio.stdout.write(choose(value: 42));
+                    return;
+                }
+                """;
+
+        assertEquals("42", checkedExecution(code));
+    }
+
+    @Test
     void defaultLiteralTypeMustMatchFormalType() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
