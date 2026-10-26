@@ -829,11 +829,36 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object invokePublic(String name, Object[] arguments) {
-            Invocation invocation = prepareImportedInvocation(
-                    Ast.ImportKind.FUNCTION,
-                    name,
-                    java.util.Arrays.asList(arguments));
-            Object result = invoke(invocation);
+            ExportResolver.ExportBinding binding =
+                    SourceExportTable.resolvePublicCallable(program, name);
+            if (binding == null) {
+                throw new IllegalArgumentException("code unit '" + codeUnitId
+                        + "' does not export public callable '" + name + "'");
+            }
+
+            Ast.FunctionDecl match = null;
+            for (Ast.Decl declaration :
+                    SourceExportTable.localDeclarations(program, binding)) {
+                if (declaration instanceof Ast.FunctionDecl fn
+                        && fn.parameters().size() == arguments.length) {
+                    if (match != null) {
+                        throw new IllegalArgumentException(
+                                "duplicate exported callable slot '" + name
+                                        + "' at arity " + arguments.length);
+                    }
+                    match = fn;
+                }
+            }
+            if (match == null || match.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException("code unit '" + codeUnitId
+                        + "' does not export direct-callable '" + name
+                        + "' at arity " + arguments.length);
+            }
+
+            // The explicit Java/Ores mixed-source bridge historically admits
+            // pub routine as well as pub fnc. It must still bind by the
+            // exported source name rather than exposing local/private names.
+            Object result = callFunction(match, java.util.Arrays.asList(arguments));
             return result instanceof HostObjectFacade host ? host.value() : result;
         }
 
