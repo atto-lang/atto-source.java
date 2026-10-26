@@ -89,6 +89,67 @@ final class DirectionalChannelViewTest {
     }
 
     @Test
+    void rendezvousOnDirectionalViewsHonorsSinglePendingArmBudget() {
+        var channel = new ChannelRuntime.Channel<Integer>(0, 1);
+        var writer = channel.input();
+        var reader = channel.output();
+
+        var pendingWrite = writer.writeAsync(71);
+        assertFalse(pendingWrite.isDone());
+        assertEquals(1, channel.pendingRegistrations());
+
+        // This atomic handoff must not require a second retained waiter
+        // even while the one-slot registration budget is full.
+        var selected = ChannelRuntime.SelectSet.of(ChannelRuntime.read(reader))
+                .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+        assertEquals(ChannelRuntime.SelectOperation.READ, selected.join().operation());
+        assertEquals(71, selected.join().value());
+        pendingWrite.join();
+        assertEquals(0, channel.size());
+        assertEquals(0, channel.pendingRegistrations());
+    }
+
+    @Test
+    void cancelledDirectionalReadCannotStealFutureRendezvous() {
+        var channel = new ChannelRuntime.Channel<Integer>(0, 1);
+        var pendingRead = channel.output().readAsync();
+        assertEquals(1, channel.pendingRegistrations());
+        assertTrue(pendingRead.cancel(false));
+        assertEquals(0, channel.pendingRegistrations());
+
+        // A canceled reader may never consume a later producer's payload.
+        assertFalse(channel.input().tryWrite(83));
+        var nextRead = channel.output().readAsync();
+        assertEquals(1, channel.pendingRegistrations());
+        assertTrue(channel.input().tryWrite(83));
+        assertEquals(83, nextRead.join());
+        assertEquals(0, channel.pendingRegistrations());
+    }
+
+    @Test
+    void closedDirectionalViewsDrainCommittedValuesButRejectNewOperations() {
+        var channel = new ChannelRuntime.Channel<Integer>(1);
+        var writer = channel.input();
+        var reader = channel.output();
+        assertTrue(writer.tryWrite(97));
+        var cause = new IllegalStateException("expected shutdown");
+        channel.close(cause);
+
+        assertTrue(writer.isClosed());
+        assertTrue(reader.isClosed());
+        assertEquals(97, reader.tryRead().orElseThrow());
+        assertEquals(0, channel.size());
+
+        var readFailure = assertThrows(ChannelRuntime.ChannelClosedException.class,
+                () -> reader.readAsync().join());
+        assertSame(cause, readFailure.getCause());
+        var writeFailure = assertThrows(ChannelRuntime.ChannelClosedException.class,
+                () -> writer.writeAsync(99).join());
+        assertSame(cause, writeFailure.getCause());
+        assertEquals(0, channel.pendingRegistrations());
+    }
+
+    @Test
     void closeRemainsOwnedByTheFullChannelCapability() {
         var channel = new ChannelRuntime.Channel<Integer>(1);
         assertFalse(channel.input().isClosed());
