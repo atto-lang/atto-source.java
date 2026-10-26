@@ -204,6 +204,67 @@ final class ExplicitExportLinkedRuntimeTest {
         assertEquals("9", out.toString(StandardCharsets.UTF_8));
     }
 
+
+    @Test
+    void exportedClassDoesNotPublishPrivateConstructor() throws Exception {
+        Path lib = temp.resolve("private-constructor.ores");
+        Path main = temp.resolve("private-constructor-main.ores");
+
+        Files.writeString(lib, """
+                export class InternalBox as Box;
+
+                define class InternalBox as
+                  constructor() {
+                    return;
+                  }
+                end
+                """);
+
+        Files.writeString(main, """
+                import class Box from "./private-constructor.ores";
+
+                pub fnc main(): void {
+                  val Box box = new Box();
+                  return;
+                }
+                """);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(main));
+        assertTrue(
+                failure.getMessage().toLowerCase().contains("constructor"),
+                failure.getMessage());
+    }
+
+    @Test
+    void exportAliasMayBeRenamedAgainByImporter() throws Exception {
+        Path lib = temp.resolve("import-alias.ores");
+        Path main = temp.resolve("import-alias-main.ores");
+
+        Files.writeString(lib, """
+                export class InternalBox as PublicBox;
+
+                define class InternalBox as
+                  pub constructor() {
+                    return;
+                  }
+                end
+                """);
+
+        Files.writeString(main, """
+                import class PublicBox as LocalBox from "./import-alias.ores";
+
+                pub fnc main(): void {
+                  val LocalBox box = new LocalBox();
+                  return;
+                }
+                """);
+
+        LinkedProgramRunner.validate(main);
+    }
+
+
     @Test
     void inlinePubAndExplicitAliasExposeBothNames() throws Exception {
         Path lib = temp.resolve("both.ores");
