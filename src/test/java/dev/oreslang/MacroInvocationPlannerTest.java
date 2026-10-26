@@ -969,12 +969,17 @@ final class MacroInvocationPlannerTest {
         assertTrue(generated.parameters().isEmpty());
         assertEquals("int", generated.returnType().name());
 
-        MacroSyntaxProvenance.Origin origin =
-                MacroDeclarationProvenance.lookup(generated);
-        assertNotNull(origin);
+        MacroDeclarationProvenance.Entry declarationEntry =
+                MacroDeclarationProvenance.lookupEntry(generated);
+        assertNotNull(declarationEntry);
+        MacroSyntaxProvenance.Origin origin = declarationEntry.origin();
         assertEquals(
                 MacroSyntaxProvenance.EmissionKind.DECLARE_FUNCTION,
                 origin.emissionKind());
+        assertEquals("answer", declarationEntry.exposedName().name());
+        assertEquals("declare_fnc", declarationEntry.exposedName().builder());
+        assertTrue(declarationEntry.exposedName().identifierSite().line() > 0);
+        assertTrue(declarationEntry.exposedName().identifierSite().column() > 0);
         assertEquals(MacroSourceUnitIdentity.MEMORY_UNIT,
                 origin.hygiene().sourceUnitId());
         assertEquals("make", origin.hygiene().macroName());
