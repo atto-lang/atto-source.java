@@ -32,7 +32,8 @@ ActorGroupManagedWorkersReconciliationTest blob that proves runtime admission
 sealing does not collapse the active worker-done lifecycle barrier, and the
 exact ActorOutputStreamTest blob that proves shutdown admission sealing wins
 buffered-output publication arbitration when it acquires the lifecycle monitor
-first.
+first. It also distinguishes logical stream completion from physical channel
+drain so buffered envelopes remain registered for runtime teardown.
 
 Current source-free validation receipts:
 - funded private `sonus-auris-test/clients-api-contract` run
@@ -40,14 +41,15 @@ Current source-free validation receipts:
   `actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961`,
   Temurin 25.0.4.1 compile, the actor cleanup/worker-barrier model, and the
   shutdown-vs-buffered-output arbitration model; PASS with
-  `SOURCE_FREE_ACTOR_CLEANUP_PASS` and
-  `SOURCE_FREE_OUTPUT_ARBITRATION_PASS`. The job explicitly asserts no
+  `SOURCE_FREE_ACTOR_CLEANUP_PASS`,
+  `SOURCE_FREE_OUTPUT_ARBITRATION_PASS`, and
+  `SOURCE_FREE_OUTPUT_RETENTION_PASS`. The job explicitly asserts no
   `private-oreslang-source` and no `src/main/java/dev/oreslang` tree;
 - the same funded run, carrier-control job `121739415441`: asserted all seven
   current carrier/control files byte-identical by Git blob SHA to carrier
-  #25 head `b64ba33bd86cde3a434b76278c196694c543adaa`, ran 6/6 carrier
+  #25 head `6e63603f104b65d1d949295ec01154900a8414a1`, ran 6/6 carrier
   verifier regressions and 6/6 trusted-plan runner regressions, and validated
-  current plan blob `7612dee74280443ef95a99890c057ae7938c65a8`
+  current plan blob `99719a8e764705829601fc53ad64c6e9f268a8cf`
   pins ActorRuntime blob `66b9a4ab5ebb4006e65a1caef74e33cc66c3fd5f`
   plus ActorOutputStreamTest blob
   `f9079cdcd2615b3716dd923c640c3a72b568acac`; PASS with
