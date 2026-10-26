@@ -138,6 +138,29 @@ final class IncrementalDiagnosticsTest {
     }
 
     @Test
+    void sixDifferentSemanticSourceUnitsRespectFiveErrorCeiling() {
+        var sources = new LinkedHashMap<String, String>();
+        for (int i = 6; i >= 1; i--) {
+            sources.put("src/unit" + i + ".ores",
+                    "define module mod" + i + " as\n"
+                    + "  pub fnc broken(): int { return \"bad\"; }\n"
+                    + "end\n");
+        }
+        var five = assertThrows(CompilationDiagnosticsException.class,
+                () -> new IncrementalCompiler().compileWithDiagnostics(sources, 5));
+        assertEquals(5, five.diagnostics().size());
+        assertTrue(five.mayHaveMore());
+        assertEquals(List.of("src/unit1.ores", "src/unit2.ores",
+                            "src/unit3.ores", "src/unit4.ores", "src/unit5.ores"),
+                five.diagnostics().stream().map(d -> d.primary().unitId()).toList());
+
+        var all = assertThrows(CompilationDiagnosticsException.class,
+                () -> new IncrementalCompiler().compileWithDiagnostics(sources, 10));
+        assertEquals(6, all.diagnostics().size());
+        assertFalse(all.mayHaveMore());
+    }
+
+    @Test
     void rejectedCompilationNeverCommitsPartialCacheState() {
         var compiler = new IncrementalCompiler();
         assertThrows(CompilationDiagnosticsException.class,
