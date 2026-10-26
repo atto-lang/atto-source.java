@@ -1567,22 +1567,26 @@ public final class OwnershipChecker {
                 }
             }
         }
-        if (TypeChecker.CheckedPureFuturePipe.lookup(call)) {
-            // Compiler-proven pure scalar stages observe, but never take,
-            // the upstream Future. Its task owns only its continuation and
-            // must not cancel the borrowed producer on pipeline cancellation.
+        TypeChecker.PipelinePlan pipelinePlan = TypeChecker.CheckedFuturePipe.plan(call);
+        if (pipelinePlan != null) {
+            // The producer is an observation only. Stage-created Future work
+            // has separate ownership in PipelinePlan and is revoked by the
+            // runtime pipeline rather than by consuming the source Future.
             if (call.arguments().size() != 1
-                    || !(call.callee() instanceof Ast.NameExpr)) {
+                    || !(call.callee() instanceof Ast.NameExpr)
+                    || pipelinePlan.inputOwnership()
+                            != TypeChecker.PipelineInputOwnership.BORROWED_UPSTREAM) {
                 throw error("checked Future stage was rewritten after type checking");
             }
             ValueInfo upstream = checkExpr(call.arguments().getFirst(), scope, false);
             Ast.TypeRef type = upstream.type;
             if (type == null || !type.name().equals("Future")
-                    || type.arguments().size() != 1
-                    || !type.arguments().getFirst().name().equals("int")) {
-                throw error("checked Future stage requires a borrowed Future<int> input");
+                    || type.arguments().size() != 1) {
+                throw error("checked Future stage requires a borrowed Future<T> input");
             }
-            return new ValueInfo(type, kindOfType(type), null);
+            Ast.TypeRef result = new Ast.TypeRef(
+                    "Future", List.of(pipelinePlan.outputTypeRef()), false);
+            return new ValueInfo(result, kindOfType(result), null);
         }
         if (isBooleanIntrinsicCall(call, scope)) {
             for (Ast.Expr argument : call.arguments()) {
