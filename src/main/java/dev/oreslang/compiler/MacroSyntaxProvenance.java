@@ -27,13 +27,15 @@ public final class MacroSyntaxProvenance {
     }
 
     public record HygieneIdentity(
+            String sourceUnitId,
             String callerModule,
             String macroOwnerModule,
             String macroName,
             Ast.SourceSite invocationSite,
             int expansionOrdinal) {
         public HygieneIdentity {
-            if (callerModule == null || callerModule.isBlank()
+            if (sourceUnitId == null || sourceUnitId.isBlank()
+                    || callerModule == null || callerModule.isBlank()
                     || macroOwnerModule == null || macroOwnerModule.isBlank()
                     || macroName == null || macroName.isBlank()
                     || macroName.indexOf('.') >= 0
