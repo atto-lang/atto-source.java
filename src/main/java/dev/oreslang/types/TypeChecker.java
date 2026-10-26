@@ -8905,9 +8905,27 @@ public final class TypeChecker {
     private record ExpandedCallArgument(
             Ast.Expr expression,
             Type staticType,
-            String label) {
-        private ExpandedCallArgument(Ast.Expr expression, Type staticType) {
-            this(expression, staticType, null);
+            String label,
+            int callItemIndex,
+            int projectionIndex) {
+        private ExpandedCallArgument(
+                Ast.Expr expression,
+                Type staticType,
+                int callItemIndex) {
+            this(expression, staticType, null, callItemIndex, -1);
+        }
+
+        private FixedProductCallPlan.InputSlot inputSlot() {
+            if (label == null) {
+                return projectionIndex < 0
+                        ? FixedProductCallPlan.InputSlot.positional(callItemIndex)
+                        : FixedProductCallPlan.InputSlot.positionalProjection(
+                                callItemIndex, projectionIndex);
+            }
+            return projectionIndex < 0
+                    ? FixedProductCallPlan.InputSlot.named(label, callItemIndex)
+                    : FixedProductCallPlan.InputSlot.namedProjection(
+                            label, callItemIndex, projectionIndex);
         }
     }
 
@@ -8942,19 +8960,27 @@ public final class TypeChecker {
             String label,
             boolean permitLabeledProducts) {
         List<ExpandedCallArgument> expanded = new ArrayList<>();
-        for (Ast.Expr argument : arguments) {
+        for (int callItemIndex = 0;
+                callItemIndex < arguments.size();
+                callItemIndex++) {
+            Ast.Expr argument = arguments.get(callItemIndex);
             if (argument instanceof Ast.NamedArgExpr named) {
                 if (!permitLabeledProducts) {
                     throw new IllegalArgumentException(
                             label + " does not support named arguments on this callable surface");
                 }
                 expanded.add(new ExpandedCallArgument(
-                        named.value(), null, named.name()));
+                        named.value(),
+                        null,
+                        named.name(),
+                        callItemIndex,
+                        -1));
                 continue;
             }
 
             if (!(argument instanceof Ast.SpreadExpr spread)) {
-                expanded.add(new ExpandedCallArgument(argument, null));
+                expanded.add(new ExpandedCallArgument(
+                        argument, null, callItemIndex));
                 continue;
             }
 
@@ -8974,9 +9000,14 @@ public final class TypeChecker {
                                     + "Copy-only record literal; structs, Maps, widened "
                                     + "record views and move-only fields are not argument packs");
                 }
+                int projectionIndex = 0;
                 for (Map.Entry<String, Type> field : record.members().entrySet()) {
                     expanded.add(new ExpandedCallArgument(
-                            null, field.getValue(), field.getKey()));
+                            null,
+                            field.getValue(),
+                            field.getKey(),
+                            callItemIndex,
+                            projectionIndex++));
                 }
                 continue;
             }
@@ -8988,8 +9019,14 @@ public final class TypeChecker {
                                 + spreadType
                                 + ". Runtime-length spread arguments require a variadic callable.");
             }
+            int projectionIndex = 0;
             for (Type element : tuple.elements()) {
-                expanded.add(new ExpandedCallArgument(null, element));
+                expanded.add(new ExpandedCallArgument(
+                        null,
+                        element,
+                        null,
+                        callItemIndex,
+                        projectionIndex++));
             }
         }
         return List.copyOf(expanded);
@@ -9132,7 +9169,7 @@ public final class TypeChecker {
             FixedProductCallPlan plan = FixedProductCallPlan.bind(
                     params.stream().map(Ast.Param::name).toList(),
                     expanded.stream()
-                            .map(slot -> new FixedProductCallPlan.InputSlot(slot.label()))
+                            .map(ExpandedCallArgument::inputSlot)
                             .toList());
             List<ExpandedCallArgument> byAbi =
                     new ArrayList<>(expanded.size());
@@ -10381,18 +10418,14 @@ public final class TypeChecker {
                         exact.parameters().stream().map(Ast.Param::name).toList(),
                         exact.parameters().stream().map(Ast.Param::omittable).toList(),
                         expanded.stream()
-                                .map(slot ->
-                                        new FixedProductCallPlan.InputSlot(
-                                                slot.label()))
+                                .map(ExpandedCallArgument::inputSlot)
                                 .toList());
             } else if (expanded.stream()
                     .anyMatch(slot -> slot.label() != null)) {
                 FixedProductCallPlan.bind(
                         exact.parameters().stream().map(Ast.Param::name).toList(),
                         expanded.stream()
-                                .map(slot ->
-                                        new FixedProductCallPlan.InputSlot(
-                                                slot.label()))
+                                .map(ExpandedCallArgument::inputSlot)
                                 .toList());
             }
             return exact;
@@ -10414,9 +10447,7 @@ public final class TypeChecker {
                                 .map(Ast.Param::omittable)
                                 .toList(),
                         expanded.stream()
-                                .map(slot ->
-                                        new FixedProductCallPlan.InputSlot(
-                                                slot.label()))
+                                .map(ExpandedCallArgument::inputSlot)
                                 .toList());
                 matches.add(candidate);
             } catch (IllegalArgumentException ignored) {
@@ -10444,8 +10475,7 @@ public final class TypeChecker {
                 target.parameters().stream().map(Ast.Param::name).toList(),
                 target.parameters().stream().map(Ast.Param::omittable).toList(),
                 expanded.stream()
-                        .map(slot ->
-                                new FixedProductCallPlan.InputSlot(slot.label()))
+                        .map(ExpandedCallArgument::inputSlot)
                         .toList());
         Map<String, Ast.TypeRef> defaults =
                 defaultArgumentValues(target);
