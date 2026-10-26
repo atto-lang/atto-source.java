@@ -162,6 +162,13 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                if (match(ENUM)) {
+                    if (!annotations.isEmpty())
+                        throw error(previous(), "built-in MaxActorThreads enum cannot have annotations");
+                    validateOnlyVisibilityModifiers(modifiers, "built-in MaxActorThreads enum");
+                    parseBuiltInMaxActorThreadsEnum();
+                    continue;
+                }
                 rejectUnloweredRuntimeEntityDeclaration();
                 ActorPrefix actorPrefix = parseActorPrefix();
                 if (match(ACTOR, ISOACTOR)) {
@@ -384,6 +391,13 @@ public final class Parser {
 
         if (match(DEFINE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
+            if (match(ENUM)) {
+                if (!annotations.isEmpty())
+                    throw error(previous(), "built-in MaxActorThreads enum cannot have annotations");
+                validateOnlyVisibilityModifiers(modifiers, "built-in MaxActorThreads enum");
+                parseBuiltInMaxActorThreadsEnum();
+                return null;
+            }
             rejectUnloweredRuntimeEntityDeclaration();
             ActorPrefix actorPrefix = parseActorPrefix();
             if (match(ACTOR, ISOACTOR)) {
@@ -867,8 +881,8 @@ public final class Parser {
                     "actor class declarations accept only visibility and actor-kind modifiers");
         }
         rejectCallableStructuralAnnotation(annotations, "actor class declarations");
-        rejectDiscardedDeclarationAnnotations(annotations, "actor class declarations");
-        return parseActorClass(kind, modifiers.visibility, prefix);
+        Ast.MaxActorThreads maxThreads = actorMaxThreads(annotations);
+        return parseActorClass(kind, modifiers.visibility, prefix, maxThreads);
     }
 
     /**
