@@ -209,26 +209,218 @@ public final class IncrementalCompiler {
                 // not the declaration-site spelling/visibility. Preserve the
                 // original members and constructor visibility so exporting the
                 // class does not export private members or constructors.
-                Ast.ClassDecl linkedView = new Ast.ClassDecl(
-                        localName,
-                        Ast.Visibility.PUBLIC,
-                        resolved.isAbstract(),
-                        resolved.actorKind(),
-                        resolved.genericParameters(),
-                        resolved.parents(),
-                        resolved.interfaces(),
-                        resolved.fields(),
-                        resolved.constructor(),
-                        resolved.methods(),
-                        resolved.actorConcurrency());
+                Ast.ClassDecl linkedView =
+                        importerLocalClassView(resolved, localName);
                 if (linked.putIfAbsent(localName, linkedView) != null) {
                     throw new IllegalArgumentException(
                             "duplicate linked class import binding '" + localName + "'");
                 }
-                aliases.put(localName, Map.copyOf(moduleAliases));
+                aliases.put(
+                        localName,
+                        importerLocalAliases(
+                                moduleAliases,
+                                resolved.name(),
+                                localName));
             }
         }
         return new LinkedClasses(Map.copyOf(linked), Map.copyOf(aliases));
+    }
+
+    private static Ast.ClassDecl importerLocalClassView(
+            Ast.ClassDecl source,
+            String localName) {
+        String sourceName = source.name();
+        Set<String> classGenerics = Set.copyOf(source.genericParameters());
+
+        List<Ast.FieldDecl> fields = source.fields().stream()
+                .map(field -> new Ast.FieldDecl(
+                        field.name(),
+                        field.visibility(),
+                        field.bindingKind(),
+                        rewriteImportedSelfType(
+                                field.type(), sourceName, localName, classGenerics),
+                        rewriteImportedSelfAnnotations(
+                                field.annotations(), sourceName, localName, classGenerics),
+                        field.initializer(),
+                        field.mutableReferent()))
+                .toList();
+
+        Ast.ConstructorDecl constructor = source.constructor();
+        if (constructor != null) {
+            constructor = new Ast.ConstructorDecl(
+                    constructor.visibility(),
+                    rewriteImportedSelfParams(
+                            constructor.parameters(),
+                            sourceName,
+                            localName,
+                            classGenerics),
+                    rewriteImportedSelfAnnotations(
+                            constructor.annotations(),
+                            sourceName,
+                            localName,
+                            classGenerics),
+                    constructor.body());
+        }
+
+        List<Ast.MethodDecl> methods = source.methods().stream()
+                .map(method -> {
+                    LinkedHashSet<String> generics =
+                            new LinkedHashSet<>(classGenerics);
+                    generics.addAll(method.genericParameters());
+                    Set<String> bound = Set.copyOf(generics);
+                    return new Ast.MethodDecl(
+                            method.name(),
+                            method.visibility(),
+                            method.isStatic(),
+                            method.isAbstract(),
+                            method.async(),
+                            method.suspends(),
+                            method.structural(),
+                            rewriteImportedSelfType(
+                                    method.explicitReceiverType(),
+                                    sourceName,
+                                    localName,
+                                    bound),
+                            method.genericParameters(),
+                            rewriteImportedSelfParams(
+                                    method.parameters(),
+                                    sourceName,
+                                    localName,
+                                    bound),
+                            rewriteImportedSelfType(
+                                    method.returnType(),
+                                    sourceName,
+                                    localName,
+                                    bound),
+                            rewriteImportedSelfAnnotations(
+                                    method.annotations(),
+                                    sourceName,
+                                    localName,
+                                    bound),
+                            method.body(),
+                            rewriteImportedSelfEffects(
+                                    method.effects(),
+                                    sourceName,
+                                    localName,
+                                    bound));
+                })
+                .toList();
+
+        return new Ast.ClassDecl(
+                localName,
+                Ast.Visibility.PUBLIC,
+                source.isAbstract(),
+                source.actorKind(),
+                source.genericParameters(),
+                source.parents().stream()
+                        .map(ref -> rewriteImportedSelfType(
+                                ref, sourceName, localName, classGenerics))
+                        .toList(),
+                source.interfaces().stream()
+                        .map(ref -> rewriteImportedSelfType(
+                                ref, sourceName, localName, classGenerics))
+                        .toList(),
+                fields,
+                constructor,
+                methods,
+                source.actorConcurrency());
+    }
+
+    private static Map<String, Ast.TypeAliasDecl> importerLocalAliases(
+            Map<String, Ast.TypeAliasDecl> aliases,
+            String sourceClassName,
+            String localClassName) {
+        LinkedHashMap<String, Ast.TypeAliasDecl> localized = new LinkedHashMap<>();
+        for (Map.Entry<String, Ast.TypeAliasDecl> entry : aliases.entrySet()) {
+            Ast.TypeAliasDecl alias = entry.getValue();
+            Ast.TypeAliasDecl view = new Ast.TypeAliasDecl(
+                    alias.name(),
+                    alias.visibility(),
+                    alias.genericParameters(),
+                    rewriteImportedSelfType(
+                            alias.target(),
+                            sourceClassName,
+                            localClassName,
+                            Set.copyOf(alias.genericParameters())));
+            localized.put(entry.getKey(), view);
+        }
+        return Map.copyOf(localized);
+    }
+
+    private static List<Ast.Param> rewriteImportedSelfParams(
+            List<Ast.Param> parameters,
+            String sourceName,
+            String localName,
+            Set<String> boundGenerics) {
+        return parameters.stream()
+                .map(param -> new Ast.Param(
+                        rewriteImportedSelfType(
+                                param.type(),
+                                sourceName,
+                                localName,
+                                boundGenerics),
+                        param.name(),
+                        param.structural(),
+                        param.mutable()))
+                .toList();
+    }
+
+    private static List<Ast.Annotation> rewriteImportedSelfAnnotations(
+            List<Ast.Annotation> annotations,
+            String sourceName,
+            String localName,
+            Set<String> boundGenerics) {
+        return annotations.stream()
+                .map(annotation -> new Ast.Annotation(
+                        annotation.name(),
+                        annotation.arguments().stream()
+                                .map(ref -> rewriteImportedSelfType(
+                                        ref,
+                                        sourceName,
+                                        localName,
+                                        boundGenerics))
+                                .toList()))
+                .toList();
+    }
+
+    private static Ast.EffectSpec rewriteImportedSelfEffects(
+            Ast.EffectSpec effects,
+            String sourceName,
+            String localName,
+            Set<String> boundGenerics) {
+        return new Ast.EffectSpec(
+                effects.throwsTypes().stream()
+                        .map(ref -> rewriteImportedSelfType(
+                                ref, sourceName, localName, boundGenerics))
+                        .toList(),
+                effects.raisesTypes().stream()
+                        .map(ref -> rewriteImportedSelfType(
+                                ref, sourceName, localName, boundGenerics))
+                        .toList(),
+                effects.panicsTypes().stream()
+                        .map(ref -> rewriteImportedSelfType(
+                                ref, sourceName, localName, boundGenerics))
+                        .toList());
+    }
+
+    private static Ast.TypeRef rewriteImportedSelfType(
+            Ast.TypeRef ref,
+            String sourceName,
+            String localName,
+            Set<String> boundGenerics) {
+        if (ref == null) return null;
+        String name = ref.name();
+        if (name.equals(sourceName) && !boundGenerics.contains(name)) {
+            name = localName;
+        }
+        List<Ast.TypeRef> arguments = ref.arguments().stream()
+                .map(argument -> rewriteImportedSelfType(
+                        argument,
+                        sourceName,
+                        localName,
+                        boundGenerics))
+                .toList();
+        return new Ast.TypeRef(name, arguments, ref.inferArguments());
     }
 
     public synchronized void clear() {
