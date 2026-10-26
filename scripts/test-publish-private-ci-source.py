@@ -544,10 +544,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         )
 
     def verified_origin_api(self, protected=True, policy=b"trusted/ci 246810\n",
-                            codeowners=True, stale=True, admins=True,
-                            approvals=1, force=False, deletions=False,
-                            bypasses=None, strict_checks=True, contexts=None,
-                            named_checks=None, source_id=None, codeowners_file=None):
+                            codeowners=True, stale=True, last_push=True,
+                            conversations=True, admins=True, approvals=1,
+                            force=False, deletions=False, bypasses=None,
+                            strict_checks=True, contexts=None, named_checks=None,
+                            source_id=None, codeowners_file=None):
         routes = []
         if contexts is None:
             contexts = ["private-ci-gate"]
@@ -574,6 +575,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             if route == "repos/"+pub.SOURCE_REPO+"/branches/main/protection":
                 reviews = {"require_code_owner_reviews": codeowners,
                            "dismiss_stale_reviews": stale,
+                           "require_last_push_approval": last_push,
                            "required_approving_review_count": approvals}
                 if bypasses is not None:
                     reviews["bypass_pull_request_allowances"] = bypasses
@@ -585,7 +587,10 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                         },
                         "enforce_admins": {"enabled": admins},
                         "allow_force_pushes": {"enabled": force},
-                        "allow_deletions": {"enabled": deletions}}
+                        "allow_deletions": {"enabled": deletions},
+                        "required_conversation_resolution": {
+                            "enabled": conversations
+                        }}
             if route == ("repos/"+pub.SOURCE_REPO+"/contents/"
                          +pub.POLICY_PATH+"?ref="+A):
                 return {"path": pub.POLICY_PATH, "type": "file",
@@ -665,6 +670,18 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 api, _ = self.verified_origin_api(**options)
                 with patch.object(pub, "gh_api", side_effect=api):
                     with self.assertRaisesRegex(pub.Denied, "strict required CI"):
+                        ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
+
+    def test_origin_requires_last_push_and_conversation_resolution(self):
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
+        for options, message in (
+            ({"last_push": False}, "last-push approval"),
+            ({"conversations": False}, "conversation resolution"),
+        ):
+            with self.subTest(options=options):
+                api, _ = self.verified_origin_api(**options)
+                with patch.object(pub, "gh_api", side_effect=api):
+                    with self.assertRaisesRegex(pub.Denied, message):
                         ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
 
     def test_origin_rejects_author_codeowner_instead_of_independent_security_owner(self):
