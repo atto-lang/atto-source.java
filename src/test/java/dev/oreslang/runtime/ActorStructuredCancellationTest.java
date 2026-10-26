@@ -345,6 +345,46 @@ final class ActorStructuredCancellationTest {
     }
 
     @Test
+    void sameLogicalIdRefCannotControlLiveActorIncarnation()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch delivered = new CountDownLatch(1);
+            ActorRuntime.ActorRef<String> live =
+                    runtime.spawnShared(() -> (message, context) -> delivered.countDown());
+
+            var constructor = live.getClass().getDeclaredConstructor(
+                    ActorRuntime.class,
+                    ActorRuntime.ActorId.class,
+                    ActorRuntime.ActorKind.class,
+                    long.class);
+            constructor.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            ActorRuntime.ActorRef<String> stale =
+                    (ActorRuntime.ActorRef<String>) constructor.newInstance(
+                            runtime, live.id(), live.kind(), live.generation() + 1L);
+
+            assertEquals(live.id(), stale.id());
+            assertNotEquals(live.generation(), stale.generation());
+            assertFalse(stale.isAlive(),
+                    "logical ActorId equality must not alias the live actor cell");
+            assertThrows(ActorRuntime.ActorTerminatedException.class,
+                    () -> stale.send("must-not-deliver"));
+            assertFalse(stale.cancel(),
+                    "a stale same-id ref must not cancel the live actor");
+            stale.stop();
+            assertTrue(live.isAlive(),
+                    "a stale same-id ref must not stop the live actor");
+            assertThrows(IllegalArgumentException.class,
+                    () -> runtime.controlHandle(stale),
+                    "host control handles require the exact live ActorRef");
+
+            live.send("deliver");
+            assertTrue(delivered.await(2, TimeUnit.SECONDS));
+            live.stop();
+        }
+    }
+
+    @Test
     void structuredChildHandleIsParentBoundAndCanSendAndCancel()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
