@@ -5,6 +5,7 @@ import dev.oreslang.compiler.MacroExpansionPlanner;
 import dev.oreslang.compiler.MacroExpander;
 import dev.oreslang.compiler.MacroSyntaxProvenance;
 import dev.oreslang.compiler.MacroIdentifierHygiene;
+import dev.oreslang.compiler.MacroSourceUnitIdentity;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.CapabilityChecker;
@@ -156,6 +157,7 @@ final class MacroInvocationPlannerTest {
                 second.workItems().getFirst().hygieneMark());
         MacroExpansionPlanner.HygieneMark mark =
                 first.workItems().getFirst().hygieneMark();
+        assertEquals(MacroSourceUnitIdentity.MEMORY_UNIT, mark.sourceUnitId());
         assertEquals(Parser.ROOT_MODULE, mark.callerModule());
         assertEquals(Parser.ROOT_MODULE, mark.macroOwnerModule());
         assertEquals("literal", mark.macroName());
@@ -708,6 +710,8 @@ final class MacroInvocationPlannerTest {
                 MacroIdentifierHygiene.Generated.class,
                 MacroIdentifierHygiene.lookup(generated));
         assertEquals("value", identity.hint());
+        assertEquals(MacroSourceUnitIdentity.MEMORY_UNIT,
+                identity.hygiene().sourceUnitId());
         assertEquals(Parser.ROOT_MODULE, identity.hygiene().callerModule());
         assertEquals("fresh", identity.hygiene().macroName());
 
@@ -717,6 +721,58 @@ final class MacroInvocationPlannerTest {
         assertEquals(
                 MacroSyntaxProvenance.EmissionKind.HYGIENIC_IDENTIFIER,
                 origins.getFirst().emissionKind());
+    }
+
+    @Test
+    void sourceUnitIdentitySeparatesOtherwiseIdenticalHygiene() {
+        String source = """
+                define macro fresh(Identifier hint) -> Syntax<Expr> {
+                    return hygienic(hint);
+                }
+                fnc demo() -> int {
+                    return fresh!(ident value);
+                }
+                """;
+
+        Ast.Program firstProgram = MacroSourceUnitIdentity.attach(
+                Parser.parse(source), "pkg/first.ores");
+        Ast.Program secondProgram = MacroSourceUnitIdentity.attach(
+                Parser.parse(source), "pkg/second.ores");
+
+        MacroExpansionPlanner.HygieneMark firstMark =
+                MacroExpansionPlanner.plan(firstProgram).workItems().getFirst().hygieneMark();
+        MacroExpansionPlanner.HygieneMark secondMark =
+                MacroExpansionPlanner.plan(secondProgram).workItems().getFirst().hygieneMark();
+        assertEquals("pkg/first.ores", firstMark.sourceUnitId());
+        assertEquals("pkg/second.ores", secondMark.sourceUnitId());
+        assertNotEquals(firstMark, secondMark,
+                "same module/line/ordinal in different units must not share hygiene identity");
+
+        Ast.NameExpr firstGenerated = assertInstanceOf(
+                Ast.NameExpr.class,
+                assertInstanceOf(
+                        Ast.ReturnStmt.class,
+                        ((Ast.FunctionDecl) MacroExpander.expand(firstProgram)
+                                .modules().getFirst().declarations().getFirst())
+                                .body().getFirst()).value());
+        Ast.NameExpr secondGenerated = assertInstanceOf(
+                Ast.NameExpr.class,
+                assertInstanceOf(
+                        Ast.ReturnStmt.class,
+                        ((Ast.FunctionDecl) MacroExpander.expand(secondProgram)
+                                .modules().getFirst().declarations().getFirst())
+                                .body().getFirst()).value());
+
+        assertNotEquals(firstGenerated.name(), secondGenerated.name(),
+                "compiler-internal generated handles must be collision-free across units");
+        MacroIdentifierHygiene.Generated firstIdentity = assertInstanceOf(
+                MacroIdentifierHygiene.Generated.class,
+                MacroIdentifierHygiene.lookup(firstGenerated));
+        MacroIdentifierHygiene.Generated secondIdentity = assertInstanceOf(
+                MacroIdentifierHygiene.Generated.class,
+                MacroIdentifierHygiene.lookup(secondGenerated));
+        assertEquals("pkg/first.ores", firstIdentity.hygiene().sourceUnitId());
+        assertEquals("pkg/second.ores", secondIdentity.hygiene().sourceUnitId());
     }
 
     @Test
@@ -879,6 +935,8 @@ final class MacroInvocationPlannerTest {
         assertEquals(
                 MacroSyntaxProvenance.EmissionKind.CONST_QUOTE,
                 origin.emissionKind());
+        assertEquals(MacroSourceUnitIdentity.MEMORY_UNIT,
+                origin.hygiene().sourceUnitId());
         assertEquals(Parser.ROOT_MODULE, origin.hygiene().callerModule());
         assertEquals(Parser.ROOT_MODULE, origin.hygiene().macroOwnerModule());
         assertEquals("literal", origin.hygiene().macroName());
