@@ -2880,24 +2880,29 @@ public final class TypeChecker {
                                         + " does not accept call-site type arguments");
                     }
                     return switch (member.member()) {
-                        case "send" -> {
+                        case "send", "send_async" -> {
                             if (call.arguments().size() != 1) {
                                 throw new IllegalArgumentException(
-                                        "ActorRef.send expects exactly one mailbox value");
+                                        "ActorRef." + member.member()
+                                                + " expects exactly one mailbox value");
                             }
                             Type payload = typeOf(
                                     call.arguments().getFirst(), env, generics, self);
+                            String boundary =
+                                    "ActorRef." + member.member() + " mailbox value";
                             validateActorCallableBoundaryType(
                                     payload,
                                     actorClass.actorKind(),
                                     false,
-                                    "ActorRef.send mailbox value");
+                                    boundary);
                             Type expectedPayload = actorMailboxPayloadType(actorRef);
                             requireAssignable(
                                     payload,
                                     expectedPayload,
-                                    "ActorRef.send mailbox value for actor '" + actorClass.name() + "'");
-                            yield Primitive.VOID;
+                                    boundary + " for actor '" + actorClass.name() + "'");
+                            yield member.member().equals("send_async")
+                                    ? new Named("Future", List.of(Primitive.VOID))
+                                    : Primitive.VOID;
                         }
                         case "stop" -> {
                             if (!call.arguments().isEmpty()) {
