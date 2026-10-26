@@ -145,5 +145,17 @@ final class InvertedClassParserAdmissionTest {
                 "Invalid", Ast.Visibility.PRIVATE, true, Ast.ActorKind.NONE,
                 java.util.List.of(), java.util.List.of(), java.util.List.of(),
                 java.util.List.of(), null, java.util.List.of(), true));
+        assertThrows(IllegalArgumentException.class, () -> new Ast.ClassDecl(
+                "InvalidInterface", Ast.Visibility.PRIVATE, false, Ast.ActorKind.NONE,
+                java.util.List.of(), java.util.List.of(),
+                java.util.List.of(Ast.TypeRef.simple("I")),
+                java.util.List.of(), null, java.util.List.of(), true));
+        Ast.ConstructorDecl ctor = new Ast.ConstructorDecl(
+                Ast.Visibility.PRIVATE, java.util.List.of(),
+                java.util.List.of(), java.util.List.of());
+        assertThrows(IllegalArgumentException.class, () -> new Ast.ClassDecl(
+                "InvalidConstructor", Ast.Visibility.PRIVATE, false, Ast.ActorKind.NONE,
+                java.util.List.of(), java.util.List.of(), java.util.List.of(),
+                java.util.List.of(), ctor, java.util.List.of(), true));
     }
 }
