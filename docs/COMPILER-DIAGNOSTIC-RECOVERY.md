@@ -13,13 +13,13 @@ The real parser reports a token-owned, 1-based location. The collector normalize
 - The compiler recovers only to an independently closed **brace-delimited declaration**. Synchronization uses lexer tokens, not raw text, so braces in strings or comments do not change scope.
 - Unbalanced braces, ambiguous braceless declaration boundaries, parsing outside a recoverable declaration, or the error/resource limit stop recovery and report that additional errors may exist.
 - Partial recovered ASTs are **never** admitted into import linking, type/ownership/effect checking, Java compilation or guest execution.
-- All semantic, ownership, effect and capability checks remain enforced on otherwise valid sources; their errors are currently still fail-fast. No algorithm splits a diagnostic string to fabricate independent errors.
+- Semantic/type/ownership checking can now continue to **different independently compilable source units**, collecting at most one actual unpositioned semantic root failure per unit. Within-unit type/effect/ownership recovery remains fail-fast, and unresolved import/link errors may abort early. The unpositioned unit fallback is explicitly marked as such, never represented as a verified expression span. No algorithm splits a diagnostic string to fabricate independent errors.
 - Existing non-`--check` compilation and runtime paths retain the previous fail-fast parser.
 - The source-unit/diagnostic budget is bounded: max 1,000 errors, 8 related locations per error, 2,048 message characters per record, and bounded scanner resynchronization. The existing source loader's file/depth limits are still enforced.
 
 ## What this PR does not complete
 
-This is **not** general Oreslang diagnostic parity or complete six-error semantic recovery. Grammar-aware resynchronization beyond isolated braced declarations, explicit poison AST nodes, type/effect/borrow sibling recovery, exact related source traces, LLVM parity, native-image check parity, and `build`-mode flag integration remain pending. Codes are provisional until the common contract #151's registry is approved.
+This is **not** general Oreslang diagnostic parity or complete six-error semantic recovery. Grammar-aware resynchronization beyond isolated braced declarations, explicit poison AST nodes, within-unit type/effect/borrow sibling recovery, exact related source traces, LLVM parity, native-image check parity, and `build`-mode flag integration remain pending. Codes are provisional until the common contract #151's registry is approved.
 
 ## Acceptance checklist
 
