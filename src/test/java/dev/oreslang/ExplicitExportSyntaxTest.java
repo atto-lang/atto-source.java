@@ -86,6 +86,31 @@ final class ExplicitExportSyntaxTest {
     }
 
     @Test
+    void rejectsExportsFromExecutableClassActorAndInterfaceScopes() {
+        assertParseError("EXPORT_LOCAL_SCOPE", """
+                fnc bad(): void {
+                  export X;
+                  return;
+                }
+                """);
+        assertParseError("EXPORT_LOCAL_SCOPE", """
+                define class Box as
+                  export X;
+                end
+                """);
+        assertParseError("EXPORT_LOCAL_SCOPE", """
+                actor Worker
+                  export X;
+                end
+                """);
+        assertParseError("EXPORT_LOCAL_SCOPE", """
+                interface Api
+                  export X;
+                end
+                """);
+    }
+
+    @Test
     void resolvesForwardExportAndAliasAfterNamespaceCollection() {
         Ast.Program program = Parser.parse("""
                 export class Internal as Public;
