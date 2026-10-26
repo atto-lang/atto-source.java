@@ -132,6 +132,9 @@ public final class OwnershipChecker {
                 throw new IllegalArgumentException(
                         "linked ownership class was not uniquely imported: " + name);
             }
+            // Imported class layouts are ownership-bearing metadata. Reject
+            // invalid nested loan slots before exposing the class to analysis.
+            checker.rejectBorrowedFields(declaration);
             checker.classes.put(name, declaration);
         }
         checker.validate(program);
@@ -219,13 +222,7 @@ public final class OwnershipChecker {
     private Set<String> constructorFixedFieldWrites;
 
     private void checkClass(Ast.ClassDecl klass) {
-        for (Ast.FieldDecl field : klass.fields()) {
-            Ast.TypeRef fieldType = ownershipFieldType(field);
-            if (fieldType != null && fieldType.isBorrow()) {
-                throw error("field '" + klass.name() + "." + field.name()
-                        + "' cannot store a borrowed reference; class/actor fields must own, copy, share, or proxy their state");
-            }
-        }
+        rejectBorrowedFields(klass);
 
         // An initializer is executable code, not merely a type expression.
         // Historically the checker visited constructors/methods but skipped
@@ -339,6 +336,17 @@ public final class OwnershipChecker {
             defineImplicitArguments(scope, method.parameters());
             checkBlock(method.body(), scope, method.returnType());
             scope.close();
+        }
+    }
+
+    /** No implicit lifetime parameters exist for class or actor storage. */
+    private void rejectBorrowedFields(Ast.ClassDecl klass) {
+        for (Ast.FieldDecl field : klass.fields()) {
+            if (containsBorrowType(ownershipFieldType(field))) {
+                throw error("field '" + klass.name() + "." + field.name()
+                        + "' cannot store a borrowed reference (including a nested borrow); "
+                        + "class/actor fields must own, copy, share, or proxy their state");
+            }
         }
     }
 
@@ -488,6 +496,12 @@ public final class OwnershipChecker {
                 if (containsMutexGuardType(returned.type)) {
                     throw error("MutexGuard values are lexical and cannot be returned from a function/routine");
                 }
+                // A direct return of an incoming loan has a separately checked
+                // provenance rule. An owned wrapper containing a loan does not.
+                if (returned.type != null && !returned.type.isBorrow()
+                        && containsBorrowType(returned.type)) {
+                    throw error("cannot return a nested borrowed reference without an explicit container lifetime");
+                }
                 validateReturnedBorrow(ret.value(), returned);
             }
             return;
@@ -503,6 +517,14 @@ public final class OwnershipChecker {
             Ast.TypeRef exposed = yielded.delegated()
                     ? iterableElementType(value.type, currentAsyncGenerator)
                     : value.type;
+            // Checking live loans *before* evaluating yield is insufficient:
+            // yield rt borrow owner creates a loan after that check. Also keep
+            // nested loans out of delegated iterator element types.
+            if (isBorrowValue(value) || containsBorrowType(value.type)
+                    || containsBorrowType(exposed)) {
+                throw error("cannot yield borrowed references (including nested or delegated borrows); "
+                        + "generator frames require owned output");
+            }
             if (containsMutexGuardType(exposed)) {
                 throw error(yielded.delegated()
                         ? "MutexGuard values cannot cross a yield* delegation boundary"
@@ -836,7 +858,8 @@ public final class OwnershipChecker {
         if (scope.visibleStates().stream().anyMatch(state -> !state.moved
                 && !("self".equals(state.debugName) && isActorConfinedBorrow(state) && state.immutableBorrows == 0 && !state.mutableBorrowed)
                 && (state.kind == ValueKind.IMM_BORROW || state.kind == ValueKind.MUT_BORROW
-                    || state.immutableBorrows > 0 || state.mutableBorrowed))) {
+                    || state.immutableBorrows > 0 || state.mutableBorrowed
+                    || containsBorrowType(state.type)))) {
             throw error("cannot " + operation + " while an ordinary borrow is live; end the lexical borrow before suspension");
         }
     }
@@ -4722,6 +4745,20 @@ public final class OwnershipChecker {
 
     private static boolean isMutexGuardType(Ast.TypeRef type) {
         return type != null && !type.isBorrow() && type.name().equals("MutexGuard") && type.arguments().size() == 1;
+    }
+
+    /**
+     * Compile-time-only transitive loan test. All structural product fields,
+     * tuples, unions and generic arguments are encoded as TypeRef children.
+     * This must not be delegated to interpreter/runtime borrow counters.
+     */
+    private static boolean containsBorrowType(Ast.TypeRef type) {
+        if (type == null) return false;
+        if (type.isBorrow()) return true;
+        for (Ast.TypeRef child : type.arguments()) {
+            if (containsBorrowType(child)) return true;
+        }
+        return false;
     }
 
     private static boolean containsMutexGuardType(Ast.TypeRef type) {
