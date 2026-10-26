@@ -322,11 +322,12 @@ public final class Parser {
         if (match(CONTRACT)) return Ast.ExportKind.CONTRACT;
         if (match(TRAIT)) return Ast.ExportKind.TRAIT;
         if (match(STRUCT)) return Ast.ExportKind.STRUCT;
-        if (match(TYPE, TYPES)) return Ast.ExportKind.TYPE;
+        if (match(TYPE)) return Ast.ExportKind.TYPE;
         if (match(CONST)) return Ast.ExportKind.CONST;
         if (match(VAL)) return Ast.ExportKind.VAL;
         if (match(LET)) return Ast.ExportKind.LET;
-        if (isContextualIdentifier("symbol")) {
+        if (isContextualIdentifier("symbol")
+                && (checkNext(SYMBOL_LITERAL) || checkNext(IDENT) || checkNext(LBRACE))) {
             advance();
             return Ast.ExportKind.SYMBOL;
         }
@@ -336,9 +337,10 @@ public final class Parser {
     private boolean isExportKindStart() {
         return check(MODULE) || check(ACTOR) || check(ISOACTOR) || check(CLASS)
                 || check(FNC) || check(ROUTINE) || check(INTERFACE) || check(CONTRACT)
-                || check(TRAIT) || check(STRUCT) || check(TYPE) || check(TYPES)
+                || check(TRAIT) || check(STRUCT) || check(TYPE)
                 || check(CONST) || check(VAL) || check(LET)
-                || isContextualIdentifier("symbol");
+                || isContextualIdentifier("symbol")
+                        && (checkNext(SYMBOL_LITERAL) || checkNext(IDENT) || checkNext(LBRACE));
     }
 
     private static boolean isRuntimeTypeWord(String text) {
