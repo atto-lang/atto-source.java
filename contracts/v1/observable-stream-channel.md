@@ -71,6 +71,45 @@ cancellation, and supervisor state. The **mailbox layer**, not ordinary
   post-stop resume must be rejected. Physical state deallocation requires
   quiescence of active carriers, loans and transport I/O.
 
+### Awaitable actor-mailbox admission linearization
+
+Awaitable actor send is a bounded mailbox-admission operation, not a retry
+loop and not a second message queue.
+
+- `send(message)` remains fail-fast when the USER lane is full.
+- `send_async(message)` may suspend the logical producer, but the entire
+  pre-publication cohort is finitely bounded before payload traversal/copy.
+- Payload ownership/freeze/copy and retained-byte accounting are established
+  before a producer may remain pending.
+- The full observation, waiter registration, cancellation and USER-credit
+  release share one admission linearization domain; check-then-register lost
+  wakeups are invalid.
+- USER credit transfers directly to one FIFO pending producer and stays charged
+  during handoff, so a racing synchronous sender cannot steal it.
+- Producer cancellation or producer-actor shutdown may withdraw the operation
+  only before credit transfer. After transfer, admission is irrevocable with
+  respect to producer cancellation.
+- Graceful target shutdown must seal new producer admission, wait for every
+  pre-publication loan that predates the seal to either publish or retire, and
+  only then capture its admitted-mail drain watermark. A transferred credit
+  must not disappear between graceful sealing and watermark capture.
+- Abrupt target stop/failure may revoke unpublished work, but must return or
+  transfer every retained credit and payload reservation exactly once.
+- Future settlement and wakeup occur outside mailbox/accounting/lifecycle
+  locks because callbacks may re-enter actor APIs.
+- Pending/transferred producer state is a physical transport loan: actor DONE,
+  arena/heap release and code-generation reclamation remain fenced until it
+  publishes an envelope or releases all retained resources.
+- A serial actor cannot await capacity in its own mailbox when only that same
+  logical lifetime can release the credit; fail with a structured
+  would-deadlock diagnostic.
+- Completion acknowledges mailbox admission only, not handler completion,
+  network flush, peer receipt or physical quiescence.
+
+These are observable semantics. Backends may use different scheduler/credit
+mechanisms, but they may not substitute OS-thread blocking, polling/yield retry
+loops, unbounded waiter retention, or post-cancellation phantom delivery.
+
 A long-lived WebSocket/TCP stream can hold a serial actor's only lease
 indefinitely. The recommended design is a **connection actor** per stream
 with independent bounded queues; a serial coordination actor handles
