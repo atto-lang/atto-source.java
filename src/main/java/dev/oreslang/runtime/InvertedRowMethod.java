@@ -75,28 +75,29 @@ final class InvertedRowMethod {
                     || !(expr.expression() instanceof Ast.AssignExpr assignment)) {
                 throw new IllegalArgumentException("inverted method supports only scalar field assignments");
             }
-            int target = checkedField(assignment.target(), schema);
+            int target = checkedField(assignment.target(), schema, true);
             ScalarExpr rhs = lower(assignment.value(), schema, parameters, 0, remainingNodes);
             result.add(new Assignment(target, rhs));
         }
         return new InvertedRowMethod(method.name(), method.parameters().size(), result);
     }
 
-    private static int checkedField(Ast.Expr expression, InvertedArray.Schema schema) {
+    private static int checkedField(
+            Ast.Expr expression, InvertedArray.Schema schema, boolean requireWritable) {
         if (!(expression instanceof Ast.MemberExpr field)
                 || !(field.receiver() instanceof Ast.NameExpr owner)
                 || !owner.name().equals("self")) {
-            throw new IllegalArgumentException("inverted method may assign only self.<scalar>");
+            throw new IllegalArgumentException("inverted method field access requires self.<scalar>");
         }
         int index = schema.index(field.member());
         InvertedArray.Schema.Field schemaField = schema.fields().get(index);
-        if (!schemaField.writable()) {
+        if (requireWritable && !schemaField.writable()) {
             throw new IllegalArgumentException(
                     "inverted method cannot assign immutable/final field '"
                             + schema.className() + "." + schemaField.name() + "'");
         }
         if (schemaField.kind() != InvertedColumnStore.Kind.F64) {
-            throw new IllegalArgumentException("stage-one inverted method requires f64 target columns");
+            throw new IllegalArgumentException("stage-one inverted method requires f64 columns");
         }
         return index;
     }
@@ -122,7 +123,7 @@ final class InvertedRowMethod {
             return (row, args) -> args[at];
         }
         if (value instanceof Ast.MemberExpr member) {
-            int field = checkedField(member, schema);
+            int field = checkedField(member, schema, false);
             return (row, args) -> (Double) row[field];
         }
         if (value instanceof Ast.UnaryExpr unary && unary.operator().equals("-")) {
