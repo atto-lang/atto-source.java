@@ -11,6 +11,45 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class InvertedColumnStoreTest {
     @Test
+    void fusedTransposeFieldAccessChecksDensePositionsAndBorrowRights() {
+        try (var store = new InvertedColumnStore(InvertedColumnStore.Kind.I32,
+                                                  InvertedColumnStore.Kind.BOOL)) {
+            assertThrows(IndexOutOfBoundsException.class, () -> store.getAt(0, 0));
+            assertThrows(IndexOutOfBoundsException.class, () -> store.setAt(0, 0, 99));
+            var first = store.push(3, false);
+            var last = store.push(7, true);
+            assertEquals(3, store.getAt(0, 0));
+            assertEquals(true, store.getAt(1, 1));
+            store.setAt(1, 0, 17);
+            assertEquals(17, store.get(last, 0));
+            assertThrows(IndexOutOfBoundsException.class, () -> store.getAt(-1L, 0));
+            assertThrows(IndexOutOfBoundsException.class, () -> store.getAt(Long.MAX_VALUE, 0));
+            assertThrows(IndexOutOfBoundsException.class,
+                    () -> store.setAt(Long.MIN_VALUE, 0, 19));
+            assertThrows(IndexOutOfBoundsException.class, () -> store.getAt(2, 0));
+            assertThrows(IndexOutOfBoundsException.class, () -> store.getAt(0, 2));
+            assertThrows(IllegalArgumentException.class, () -> store.setAt(0, 0, 3L));
+
+            // A write loan on another field does not block the selected
+            // column. An active loan on THIS field does block its writer.
+            try (var writer = store.borrowWrite(1);
+                 var reader = store.borrowRead(0)) {
+                assertEquals(3, store.getAt(0, 0));
+                assertThrows(IllegalStateException.class, () -> store.setAt(0, 0, 99));
+                assertThrows(IllegalStateException.class, () -> store.getAt(0, 1));
+                assertThrows(IllegalStateException.class, () -> store.setAt(0, 1, false));
+                assertThrows(IllegalStateException.class, () -> store.eraseSwap(first));
+            }
+            store.eraseSwap(first);
+            assertEquals(17, store.getAt(0, 0));
+            assertEquals(true, store.getAt(0, 1));
+            assertEquals(17, store.get(last, 0));
+            assertThrows(IndexOutOfBoundsException.class, () -> store.getAt(1, 0));
+            assertThrows(IllegalArgumentException.class, () -> store.get(first, 0));
+        }
+    }
+
+    @Test
     void checkedDenseSubscriptsNeverWrapAndTrackSwapDeleteByIdentity() {
         try (var store = new InvertedColumnStore(InvertedColumnStore.Kind.I32)) {
             for (long invalid : new long[]{-1L, 0L, 1L, Long.MIN_VALUE,
