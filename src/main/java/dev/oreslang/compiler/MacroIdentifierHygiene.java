@@ -56,15 +56,13 @@ public final class MacroIdentifierHygiene {
     }
 
     public record CapturedFunction(
-            String callerModule,
-            String macroOwnerModule,
+            MacroSyntaxProvenance.HygieneIdentity hygiene,
             String name,
             Ast.SourceSite identifierSite,
             List<Ast.FunctionDecl> declarations) implements Identity {
         public CapturedFunction {
-            if (callerModule == null || callerModule.isBlank()
-                    || macroOwnerModule == null || macroOwnerModule.isBlank()
-                    || name == null || name.isBlank()
+            java.util.Objects.requireNonNull(hygiene, "checked capture hygiene identity");
+            if (name == null || name.isBlank()
                     || name.equals("_") || name.startsWith("$")) {
                 throw new IllegalArgumentException("invalid checked function capture");
             }
@@ -169,17 +167,16 @@ public final class MacroIdentifierHygiene {
     }
 
     public static Ast.NameExpr capturedFunction(
-            String callerModule,
-            String macroOwnerModule,
+            MacroSyntaxProvenance.HygieneIdentity hygiene,
             Ast.MacroIdentifierArgument identifier,
             List<Ast.FunctionDecl> declarations) {
+        java.util.Objects.requireNonNull(hygiene, "checked capture hygiene identity");
         java.util.Objects.requireNonNull(identifier, "capture identifier");
         Ast.NameExpr expression = new Ast.NameExpr(identifier.name());
         return record(
                 expression,
                 new CapturedFunction(
-                        callerModule,
-                        macroOwnerModule,
+                        hygiene,
                         identifier.name(),
                         identifier.site(),
                         declarations));
