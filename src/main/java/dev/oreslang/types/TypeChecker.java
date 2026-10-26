@@ -146,6 +146,29 @@ public final class TypeChecker {
     }
 
     /**
+     * Parsing physical layout intent is not permission to execute it as an
+     * ordinary AoS class. Reject before annotation expansion, linked-type shape
+     * projection, or ownership analysis can accidentally erase that intent.
+     */
+    private static void rejectUnloweredInvertedClasses(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.ClassDecl klass) {
+                    rejectUnloweredInvertedClass(klass);
+                }
+            }
+        }
+    }
+
+    private static void rejectUnloweredInvertedClass(Ast.ClassDecl klass) {
+        if (klass != null && klass.inverted()) {
+            throw new IllegalArgumentException("inverted class '" + klass.name()
+                    + "' requires typed InvertedArray ownership, columnar field lowering "
+                    + "and checked borrow effects; executable SoA classes are not yet enabled");
+        }
+    }
+
+    /**
      * Parsing effect annotations does not prove effect propagation or handler
      * discharge. Until the nominal Error hierarchy and all call paths carry
      * these rows, reject *before* annotation expansion or linked-type shape
@@ -192,6 +215,7 @@ public final class TypeChecker {
     }
 
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
+        rejectUnloweredInvertedClasses(program);
         rejectUnloweredCheckedEffects(program);
         program = AnnotationExpander.expand(program);
         // Expansion can synthesize declarations; recheck before type or
@@ -237,8 +261,10 @@ public final class TypeChecker {
         if (linkedClasses == null || linkedAliases == null) {
             throw new IllegalArgumentException("linked public classes/aliases cannot be null");
         }
+        rejectUnloweredInvertedClasses(program);
         rejectUnloweredCheckedEffects(program);
         for (Ast.ClassDecl linked : linkedClasses.values()) {
+            rejectUnloweredInvertedClass(linked);
             rejectUnloweredCheckedClassEffects(linked);
         }
         for (Ast.InterfaceDecl linked : linkedContracts.values()) {
@@ -1125,6 +1151,9 @@ public final class TypeChecker {
         }
     }
     private void checkClass(String module, Ast.ClassDecl klass) {
+        // Defensive backstop for internal callers that may bypass the public
+        // preflight entrypoints. Never lower an inverted class as ordinary AoS.
+        rejectUnloweredInvertedClass(klass);
         Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
         lexicalClassOrigin = klass;
         try {
