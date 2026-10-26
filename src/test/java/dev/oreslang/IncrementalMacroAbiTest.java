@@ -97,6 +97,76 @@ final class IncrementalMacroAbiTest {
     }
 
     @Test
+    void publicMacroFormattingOnlyChangeKeepsDependentAbiStable() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+
+        String firstProducer = """
+                define pub macro identity(Syntax<Expr> value) -> Syntax<Expr> {
+                    return value;
+                }
+
+                pub fnc api_value() -> int {
+                    return 1;
+                }
+                """;
+        assertDoesNotThrow(() -> compiler.compile(sources(firstProducer)));
+
+        String formattingOnly = """
+                define   pub   macro identity(
+                    Syntax<Expr> value
+                ) -> Syntax<Expr>
+                {
+                    return      value ;
+                }
+
+                pub fnc api_value() -> int {
+                    return 1;
+                }
+                """;
+        IncrementalCompiler.BuildResult second =
+                assertDoesNotThrow(() -> compiler.compile(sources(formattingOnly)));
+
+        assertTrue(second.rebuilt("producer.ores"),
+                "source edit still rebuilds its own unit");
+        assertTrue(second.reused("consumer.ores"),
+                "canonical public macro identity must ignore formatting-only source changes");
+        assertFalse(second.rebuilt("consumer.ores"));
+    }
+
+    @Test
+    void publicMacroSemanticIntrinsicChangeInvalidatesDependentAbi() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+
+        String firstProducer = """
+                define pub macro reference(Identifier value) -> Syntax<Expr> {
+                    return hygienic(value);
+                }
+
+                pub fnc api_value() -> int {
+                    return 1;
+                }
+                """;
+        assertDoesNotThrow(() -> compiler.compile(sources(firstProducer)));
+
+        String changedProducer = """
+                define pub macro reference(Identifier value) -> Syntax<Expr> {
+                    return capture_fnc(value);
+                }
+
+                pub fnc api_value() -> int {
+                    return 1;
+                }
+                """;
+        IncrementalCompiler.BuildResult second =
+                assertDoesNotThrow(() -> compiler.compile(sources(changedProducer)));
+
+        assertTrue(second.rebuilt("producer.ores"));
+        assertTrue(second.rebuilt("consumer.ores"),
+                "semantic compiler-intrinsic changes must invalidate import dependents");
+        assertFalse(second.reused("consumer.ores"));
+    }
+
+    @Test
     void privateMacroChangeDoesNotInvalidateDependentAbi() {
         IncrementalCompiler compiler = new IncrementalCompiler();
 
