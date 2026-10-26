@@ -432,6 +432,12 @@ Sequence destructuring requires a returned tuple or array/list. Finite tuples ar
 Assignment remains an expression. `lhs = rhs` mutates `lhs` and evaluates to
 the assigned value, including inside call arguments and control-flow expressions.
 Oreslang does **not** interpret `name = value` inside a call as a named argument.
+Named call arguments use `name: value`, preserve lexical evaluation order, and
+are rebound to declaration-order parameter slots only after their values have
+been evaluated. A positional or spread argument may not follow the first named
+argument. The initial executable Java/Graal surface is direct source functions;
+method, imported, callable-value, and qualified-module named calls remain
+fail-closed until those dispatch paths consume the same checked binding plan.
 
 The canonical comparison operators deliberately separate value equality from identity:
 
@@ -1581,7 +1587,30 @@ stdio.stdout.logList(parts);
 
 `stdout.log(...)` stringifies each argument, concatenates the values with no inserted separator, and appends one newline. This makes it a compact replacement for a run of `write(...)` calls followed by `println(...)`. `stdout.logList(sequence)` is exactly the sequence form of the same operation and is equivalent to `stdout.log(...sequence)`.
 
-The `...expression` syntax is an argument-list spread operator. In this initial variadic surface the spread value must be an Array/List/tuple. Oreslang keeps fixed-arity calls statically sound: dynamic spread is rejected for ordinary fixed-arity functions and methods until the language has an explicit variadic callable type.
+The `...expression` syntax is an argument-list spread operator. For ordinary
+fixed-arity calls, a statically known tuple expands positionally and therefore
+changes the effective call arity before overload selection. Dynamic-length
+Array/List spread remains reserved for explicitly variadic surfaces such as
+`stdout.log`.
+
+A direct source function may also receive an inline closed readonly record pack:
+
+```ores
+fnc encode(int a, int b): int {
+  return a * 100 + b;
+}
+
+encode(...record{b: 23, a: 19}); // 1923
+```
+
+Record-pack fields bind by label, not initializer order. Their field expressions
+still evaluate exactly once in lexical source order, and the values are
+permuted to declaration-order ABI slots only afterward. This first executable
+record-spread contract is deliberately narrow: the pack must be a direct,
+closed readonly record literal with Copy-safe fields. Concrete structs, Maps,
+widened record views, borrowed/move-only fields, and generic labeled calls are
+not implicit argument packs. Those surfaces fail closed rather than acquiring
+key-order or hidden-move semantics.
 
 ## Execution profiles: JIT, AOT, and hybrid
 
