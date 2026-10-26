@@ -435,7 +435,12 @@ Oreslang does **not** interpret `name = value` inside a call as a named argument
 Named call arguments use `name: value`, preserve lexical evaluation order, and
 are rebound to declaration-order parameter slots only after their values have
 been evaluated. A positional or spread argument may not follow the first named
-argument. The executable Java/Graal fixed-call surface includes direct source
+argument. Java/Graal normalizes both required and omittable fixed calls through
+one immutable `CheckedCallPlan`: raw call-item/projection provenance stays in
+source order while the plan supplies the declaration-order ABI mapping and marks
+omitted formals with no source value. Type checking, ownership checking, overload
+shape validation, and executable lowering consume this same binding contract.
+The executable Java/Graal fixed-call surface includes direct source
 functions (including generic direct calls), required-parameter instance methods,
 required-parameter static class functions, and explicit non-generic guest
 constructors. Each uses the same checked source-to-ABI plan for named values,
