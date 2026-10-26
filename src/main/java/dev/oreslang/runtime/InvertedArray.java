@@ -296,6 +296,23 @@ public final class InvertedArray implements AutoCloseable {
     }
 
     /**
+     * Wide-integral lowering entrypoint matching the evaluator's checked
+     * sequence-index narrowing. Generated code must never truncate a guest
+     * integer to a physical Java int.
+     */
+    public RowView index(long rowIndex) {
+        final int narrowed;
+        try {
+            narrowed = Math.toIntExact(rowIndex);
+        } catch (ArithmeticException overflow) {
+            throw new IllegalArgumentException(
+                    "inverted row index outside supported signed 32-bit range: " + rowIndex,
+                    overflow);
+        }
+        return index(narrowed);
+    }
+
+    /**
      * Compile-time name resolution target. A guest field site will bind one
      * accessor once and use its fixed column index thereafter; every access
      * still validates the opaque row handle and active borrow permissions.
