@@ -7348,7 +7348,9 @@ public final class OresEvalRootNode extends RootNode {
 
             if (call.callee() instanceof Ast.MemberExpr methodCall) {
                 Object receiver = eval(methodCall.receiver(), env);
-                List<Object> args = evaluateArguments(call.arguments(), env);
+                DirectArguments directArgs =
+                        evaluateDirectArguments(call.arguments(), env);
+                List<Object> args = directArgs.values();
 
                 if (receiver instanceof OptionValue option
                         && methodCall.member().equals("unwrap_all")) {
@@ -7403,7 +7405,10 @@ public final class OresEvalRootNode extends RootNode {
                     }
 
                     Ast.MethodDecl method = object.owner.findMethod(
-                            object.klass, CallableSelector.instance(methodCall.member(), args.size()));
+                            object.klass,
+                            CallableSelector.instance(
+                                    methodCall.member(),
+                                    directArgs.inputs().size()));
                     if (method != null) {
                         object.owner.requireClassMemberVisible(
                                 method.visibility(),
@@ -7411,7 +7416,15 @@ public final class OresEvalRootNode extends RootNode {
                                 env.accessClass(),
                                 "method",
                                 method.name());
-                        return object.owner.methodInvocation(object, method, args);
+                        return object.owner.methodInvocation(
+                                object,
+                                method,
+                                directArgs.inAbiOrder(
+                                        method.parameters(),
+                                        "method "
+                                                + object.klass.name()
+                                                + "."
+                                                + method.name()));
                     }
 
                     OwnedField ownedField = object.owner.findField(
@@ -7431,7 +7444,13 @@ public final class OresEvalRootNode extends RootNode {
                                         + "' is read before constructor initialization");
                     }
                     if (fieldValue instanceof Invokable invokable) {
-                        return object.owner.invokableInvocation(invokable, args);
+                        return object.owner.invokableInvocation(
+                                invokable,
+                                directArgs.requireUnlabeled(
+                                        "function-valued field "
+                                                + object.klass.name()
+                                                + "."
+                                                + methodCall.member()));
                     }
                     if (object.fields.containsKey(methodCall.member())) {
                         throw new IllegalArgumentException(
@@ -7445,7 +7464,10 @@ public final class OresEvalRootNode extends RootNode {
 
                 if (receiver instanceof ClassFacade klass) {
                     Ast.MethodDecl fn = klass.owner().findStaticFunction(
-                            klass.klass(), CallableSelector.staticFunction(methodCall.member(), args.size()));
+                            klass.klass(),
+                            CallableSelector.staticFunction(
+                                    methodCall.member(),
+                                    directArgs.inputs().size()));
                     if (fn == null) {
                         throw new IllegalArgumentException(
                                 "no static function " + klass.klass().name() + "." + methodCall.member()
@@ -7457,12 +7479,22 @@ public final class OresEvalRootNode extends RootNode {
                             env.accessClass(),
                             "static function",
                             fn.name());
-                    return klass.owner().staticFunctionInvocation(fn, args);
+                    return klass.owner().staticFunctionInvocation(
+                            fn,
+                            directArgs.inAbiOrder(
+                                    fn.parameters(),
+                                    "static function "
+                                            + klass.klass().name()
+                                            + "."
+                                            + fn.name()));
                 }
 
                 if (receiver instanceof ModuleFacade module) {
                     return module.owner().prepareModuleInvocation(
-                            module.module(), methodCall.member(), args);
+                            module.module(),
+                            methodCall.member(),
+                            directArgs.requireUnlabeled(
+                                    "module function " + methodCall.member()));
                 }
 
                 if (receiver instanceof OresMutex.Guard<?> guard
@@ -7470,7 +7502,10 @@ public final class OresEvalRootNode extends RootNode {
                         && !methodCall.member().equals("is_released")
                         && guard.value() instanceof OresObject object) {
                     Ast.MethodDecl method = object.owner.findMethod(
-                            object.klass, CallableSelector.instance(methodCall.member(), args.size()));
+                            object.klass,
+                            CallableSelector.instance(
+                                    methodCall.member(),
+                                    directArgs.inputs().size()));
                     if (method != null) {
                         object.owner.requireClassMemberVisible(
                                 method.visibility(),
@@ -7478,20 +7513,34 @@ public final class OresEvalRootNode extends RootNode {
                                 env.accessClass(),
                                 "method",
                                 method.name());
-                        return object.owner.methodInvocation(object, method, args);
+                        return object.owner.methodInvocation(
+                                object,
+                                method,
+                                directArgs.inAbiOrder(
+                                        method.parameters(),
+                                        "method "
+                                                + object.klass.name()
+                                                + "."
+                                                + method.name()));
                     }
                 }
 
                 if (receiver instanceof ImportedNamespace namespace) {
                     return namespace.owner().prepareImportedInvocation(
-                            namespace.kind(), methodCall.member(), args);
+                            namespace.kind(),
+                            methodCall.member(),
+                            directArgs.requireUnlabeled(
+                                    "imported member " + methodCall.member()));
                 }
 
                 Object callee = member(receiver, methodCall.member(), env);
                 if (!(callee instanceof Invokable invokable)) {
                     throw new IllegalArgumentException("value is not callable: " + callee);
                 }
-                return invokableInvocation(invokable, args);
+                return invokableInvocation(
+                        invokable,
+                        directArgs.requireUnlabeled(
+                                "dynamic member " + methodCall.member()));
             }
 
             if (call.callee() instanceof Ast.NameExpr importedName) {
