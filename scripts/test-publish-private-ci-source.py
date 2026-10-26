@@ -328,6 +328,42 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 A,
             )
 
+    def test_origin_rejects_main_move_during_attestation(self):
+        api, _ = self.verified_origin_api(protected=True)
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
+        calls = [0]
+        def moved(route, method="GET", payload=None):
+            if route == "repos/"+pub.SOURCE_REPO+"/branches/main":
+                calls[0] += 1
+                if calls[0] == 2:
+                    return {"name": "main", "protected": True,
+                            "commit": {"sha": B}}
+            return api(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=moved):
+            with self.assertRaisesRegex(pub.Denied, "changed during"):
+                ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
+        self.assertEqual(calls[0], 2)
+
+    def test_origin_rejects_protection_change_during_attestation(self):
+        api, _ = self.verified_origin_api(protected=True, approvals=2)
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
+        calls = [0]
+        def changed(route, method="GET", payload=None):
+            if route.endswith("/branches/main/protection"):
+                calls[0] += 1
+                result = api(route, method, payload)
+                if calls[0] == 2:
+                    result = dict(result)
+                    reviews = dict(result["required_pull_request_reviews"])
+                    reviews["required_approving_review_count"] = 1
+                    result["required_pull_request_reviews"] = reviews
+                return result
+            return api(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=changed):
+            with self.assertRaisesRegex(pub.Denied, "protection changed during"):
+                ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
+        self.assertEqual(calls[0], 2)
+
     def test_origin_rejects_source_repository_id_replacement(self):
         api, _ = self.verified_origin_api(
             source_id=pub.SOURCE_REPOSITORY_ID + 1
@@ -488,9 +524,13 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual((sha, count), (A, 1))
         branch_reads = [r for r in routes
                         if r == "repos/"+pub.SOURCE_REPO+"/branches/main"]
-        # Initial attestation plus one re-attestation before each of the
-        # blob, isolated-tree, root-tree, commit, and ref writes.
-        self.assertEqual(len(branch_reads), 6)
+        # Every attestation reads main twice (start/end), and publish performs
+        # one initial attestation plus one before each of five writes.
+        self.assertEqual(len(branch_reads), 12)
+        protection_reads = [r for r in routes
+                            if r == "repos/"+pub.SOURCE_REPO
+                            +"/branches/main/protection"]
+        self.assertEqual(len(protection_reads), 12)
 
     def test_protected_origin_recheck_rejects_last_minute_revocation(self):
         api, routes = self.verified_origin_api(protected=True)
@@ -498,7 +538,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         def revoke(route, method="GET", payload=None):
             if route == "repos/"+pub.SOURCE_REPO+"/branches/main":
                 calls[0] += 1
-                if calls[0] == 2:
+                # Reads 1-2 are the initial stable attestation. Revoke at the
+                # start of the per-write attestation before the first blob.
+                if calls[0] == 3:
                     return {"name": "main", "protected": False,
                             "commit": {"sha": A}}
             return api(route, method, payload)
@@ -508,7 +550,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 with self.assertRaisesRegex(pub.Denied, "not protected"):
                     pub.publish("trusted/ci", self.source,
                                 "ci/oreslang-test", self.root, A)
-        self.assertEqual(calls[0], 2)
+        self.assertEqual(calls[0], 3)
         self.assertFalse(any(r == "repos/trusted/ci/git/refs"
                              for m, r, _ in self.route_calls if m == "POST"))
 
