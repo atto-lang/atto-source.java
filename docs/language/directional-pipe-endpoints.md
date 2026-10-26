@@ -1,10 +1,13 @@
 # Directional pipe endpoints — incremental compiler contract v1
 
-Status: **DRAFT / internal Java compiler foundation only**. This does not
-expose guest `HasInputChannel`/`HasOutputChannel` declarations, generic
-external stream `pipe`, four actor ports, or multi-flow admission.
+Status: **DRAFT / Java directional-channel + compiler endpoint slice**.
+`ReadChannel<T>`, `WriteChannel<T>`, stable `Channel<T>.input/output`
+views, and compiler-recognized `HasInputChannel<T>` /
+`HasOutputChannel<T>` conformance are implemented on this branch. Generic
+non-actor `pipe` transport, external stream adapters, the four ActorRef ports,
+and multi-flow admission remain fail-closed.
 
-## Source-level target (NOT YET EXECUTABLE)
+## Source-level endpoint contract
 
 ```oreslang
 define interface HasInputChannel<T> as
@@ -21,29 +24,37 @@ The names above describe two *directional protocols*, not concrete Java
 not implicit getter calls: resolving a `pipe` graph must not execute arbitrary
 user code, allocate a fresh endpoint, or observe a different endpoint on a
 second lookup. Implementations used for automatic piping must expose stable,
-fixed channel capabilities for these properties. `WriteChannel<T>` and `ReadChannel<T>`
-are the intended source-level directional views already called out by the
-stdio/channel roadmap; they are not yet public aliases on this branch. They
-must be views over the existing bounded channel substrate, not independent
-queues. A raw bidirectional `Channel<T>` must not be returned here because
+fixed channel capabilities for these properties. `WriteChannel<T>` and
+`ReadChannel<T>` are compiler-recognized source types on this branch and
+runtime zero-copy views over the existing bounded `Channel<T>` substrate,
+not independent queues. A raw bidirectional `Channel<T>` must not be returned here because
 that would let a caller regain the wrong direction. A source implements only
 output; a sink implements only input; a transform implements both with
 independently resolved types.
 
-Once the directional views exist, `Channel<T>` itself can satisfy both
-protocols intrinsically by exposing its write view as the default input
-endpoint and its read view as the default output endpoint; it does not need
-to fabricate wrapper objects on every lookup. `ReadableStream<T>` is output-only;
+`Channel<T>` satisfies both directional roles intrinsically: `.input`
+returns one cached `WriteChannel<T>` view and `.output` returns one cached
+`ReadChannel<T>` view. Both retain the exact same backing channel,
+admission quota, buffer and select coordinator. The views cannot regain the
+opposite direction or close the backing channel. `ReadableStream<T>` is output-only;
 `WritableStream<T>` is input-only. `ActorRef<A>` receives compiler-synthesized
 protocol conformance for its logical default ports; user-declared conformance
 never grants actor route authority.
 
 ```oreslang
-// Target, not currently executable:
+// Directional channel views execute on this branch:
+writech channel.input, value;
+const next = readch channel.output;
+
+// Generic mixed pipe topology is type-checked but transport remains gated:
 inputFile.read_stream() pipe decoder pipe outputFile.write_stream();
-actorA pipe actorB;                     // authenticated actor route
-actorA.errors pipe errorSink;           // explicit side port
-actorA.events pipe telemetry;           // trusted runtime event observation
+
+// Existing authenticated actor route remains the executable actor path:
+actorA pipe actorB;
+
+// Future ActorRef side ports:
+actorA.errors pipe errorSink;
+actorA.events pipe telemetry;
 ```
 
 ## Current executable candidate compatibility
@@ -59,8 +70,12 @@ On the stacked Java ActorStream draft (#1145 -> #1329 -> #1333), both
   mismatches, invalid DATA admission and post-completion replay.
 - Retain existing source-order evaluation and inline-spawn rejection cleanup.
 
-`PipeEndpointContracts` is **compiler-internal**. It models `source`,
-`sink`, `transform` and `authenticatedActor` with input/output types.
+`PipeEndpointContracts` is **compiler-internal**. The type checker now
+recognizes the reserved `HasInputChannel<T>` / `HasOutputChannel<T>`
+protocol names, validates exact public stable `input`/`output` fields on
+ordinary implementing classes, rejects rebindable endpoint slots, and models
+`source`, `sink`, `transform` and `authenticatedActor` with
+input/output types.
 An actor-to-actor pair with exact equal domains chooses
 `AUTHENTICATED_ACTOR`. Every other well-typed pair chooses
 `BRIDGE_REQUIRED`, and `requireExecutable` rejects that transport until
@@ -75,8 +90,10 @@ not let user code mint actor CONTROL/MailFrame capabilities.
 
 `source pipe transform pipe sink` checks each adjacent output/input pair
 separately; `transform` may accept `Bytes` and emit `DecodedMessage`.
-The first implementation deliberately requires *exact* payload type equality
-at each link, not implicit widening, structural coercion or framing.
+The checker validates the complete graph ABI before transport gating, so an
+unimplemented early bridge cannot hide a later type mismatch. The first
+implementation deliberately requires *exact* payload type equality at each
+link, not implicit widening, structural coercion or framing.
 
 A forward `output -> input` edge does **not** model or erase the existing
 authenticated reverse response path. The current actor `self.backward` and
@@ -104,20 +121,35 @@ endpoint protocols. A future mixed source/transform/sink graph may receive a
 separate graph/connection handle only when its cancellation, EOF, error and
 physical completion contract is specified and implemented.
 
+## Implemented slice
+
+1. Reserved compiler-recognized `HasInputChannel<T>` and
+   `HasOutputChannel<T>` protocol types, including ordinary-class
+   conformance and protocol-typed function parameters.
+2. Stable directional `ReadChannel<T>` / `WriteChannel<T>` source types
+   backed by one `Channel<T>`; `readch`, `writech`, static select and
+   `SelectCase` enforce direction in both the checker and evaluator.
+3. `Channel<T>.input` / `.output` return cached zero-copy directional
+   views; async-task argument handoff preserves the exact direction.
+4. Whole mixed-graph endpoint/type validation before the executable transport
+   gate. All-actor graphs continue through the existing authenticated
+   `ActorStream<T>` path.
+5. Endpoint capabilities are rejected from actor mailbox/shared-data
+   boundaries, and actor classes cannot self-assert authenticated pipe
+   authority by implementing the protocols.
+
 ## Remaining implementation gates
 
-1. Compiler-recognized source interfaces and built-in port types:
-   `HasInputChannel<T>` and `HasOutputChannel<T>`. Reject shadowing,
-   ambiguous default ports, unknown/borrowed/unresolved payload types and
-   fabricated actor-route authority.
-2. Whole-graph type resolution and publication: evaluate stage expressions
-   once; check every directional link *before* DATA publication; track
-   inline-created vs pre-existing actor ownership for rollback.
-3. One bounded non-parking stream/channel adapter runtime, backed by
-   actor-serialized admission, per-edge byte and waiter credits, cancellation,
-   EOF, failure, reader leases, cleanup and transport-specific framing.
-4. Actor side ports with stable logical identity across generation upgrades.
-   Preserve in-flight generation leases and authenticated route epochs.
+1. One bounded non-parking non-actor pipe adapter/runtime with explicit
+   ownership, cancellation, EOF/error propagation, per-edge element/byte and
+   waiter credits, reader/writer leases, cleanup and transport-specific framing.
+2. Define the mixed graph lifecycle/result handle before enabling non-actor
+   `pipe` execution; do not infer it from the single-flow `ActorStream<T>`.
+3. ActorRef `input/output/errors/events` logical ports with stable identity
+   across generation upgrades, preserving in-flight generation leases and
+   authenticated route epochs.
+4. Readable/Writable/DuplexStream and HTTP/file/TCP/WS endpoint conformance
+   over the same directional protocol without duplicate buffering systems.
 5. Java/LLVM shared source fixtures for typed source->transform->sink,
    actor->actor legacy forward/backward behavior, file/HTTP stream edges,
    input/output wrong direction, mismatched domains, unknown/borrowed data,
