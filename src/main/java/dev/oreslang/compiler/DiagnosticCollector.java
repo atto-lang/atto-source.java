@@ -65,8 +65,25 @@ public final class DiagnosticCollector {
 
     private static String bounded(String value) {
         Objects.requireNonNull(value, "diagnostic text");
-        return value.length() > MAX_MESSAGE_CHARS
-                ? value.substring(0, MAX_MESSAGE_CHARS - 3) + "..." : value;
+        // A parser diagnostic may quote attacker-controlled source. Remove
+        // terminal controls and bidi override characters before presentation.
+        StringBuilder safe = new StringBuilder(Math.min(MAX_MESSAGE_CHARS, value.length()));
+        for (int i = 0; i < value.length() && safe.length() < MAX_MESSAGE_CHARS; i++) {
+            char ch = value.charAt(i);
+            if (Character.isISOControl(ch) || ch == '\\u202e' || ch == '\\u202d'
+                    || ch == '\\u202a' || ch == '\\u202b' || ch == '\\u202c'
+                    || ch == '\\u2066' || ch == '\\u2067'
+                    || ch == '\\u2068' || ch == '\\u2069') {
+                safe.append('?');
+            } else {
+                safe.append(ch);
+            }
+        }
+        if (value.length() > MAX_MESSAGE_CHARS) {
+            safe.setLength(Math.min(safe.length(), MAX_MESSAGE_CHARS - 3));
+            safe.append("...");
+        }
+        return safe.toString();
     }
 
     private static final Comparator<Diagnostic> SOURCE_ORDER = Comparator
@@ -79,7 +96,11 @@ public final class DiagnosticCollector {
     private final int requestedMaxErrors;
     private final int effectiveMaxErrors;
     private final TreeSet<Diagnostic> ordered = new TreeSet<>(SOURCE_ORDER);
+    // Root identities are scoped to source units, never global message strings.
     private final Map<String, Diagnostic> retainedRoots = new HashMap<>();
+    private static String rootKey(Diagnostic d) {
+        return d.primary().unitId() + "\\0" + d.rootCauseId();
+    }
     private boolean mayHaveMore;
 
     /**
@@ -118,15 +139,16 @@ public final class DiagnosticCollector {
      */
     public boolean add(Diagnostic diagnostic) {
         Objects.requireNonNull(diagnostic, "diagnostic");
-        if (retainedRoots.containsKey(diagnostic.rootCauseId())) return false;
+        String key = rootKey(diagnostic);
+        if (retainedRoots.containsKey(key)) return false;
         if (ordered.size() == effectiveMaxErrors) {
             mayHaveMore = true;
             if (SOURCE_ORDER.compare(diagnostic, ordered.last()) >= 0) return false;
             Diagnostic removed = ordered.pollLast();
-            retainedRoots.remove(removed.rootCauseId());
+            retainedRoots.remove(rootKey(removed));
         }
         if (!ordered.add(diagnostic)) return false;
-        retainedRoots.put(diagnostic.rootCauseId(), diagnostic);
+        retainedRoots.put(key, diagnostic);
         return true;
     }
 
