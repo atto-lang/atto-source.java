@@ -4722,12 +4722,21 @@ public final class TypeChecker {
         final Type prior;
         if (source instanceof Ast.CallExpr candidate
                 && candidate.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT) {
-            // A pipe chain is syntactically nested. Check its inner Future
-            // stage first, then type the outer stage against its result.
-            // The inner stage is checked exactly once on this traversal.
+            // A pipe chain is syntactically nested. Prefer an already-lifted
+            // inner stage, but also allow an eager scalar prefix to *become*
+            // asynchronous. Example:
+            //
+            //   21 |> start_async() |> finish()
+            //
+            // The first pipe keeps ordinary eager semantics and produces a
+            // Future<int>; only the following stage is deferred. Typing the
+            // scalar prefix here is safe because this is static analysis, and
+            // it preserves the syntax-origin distinction from direct
+            // f(Future<T>) calls.
             Type nested = checkedPureFuturePipe(candidate, env, generics, self);
-            if (nested == null) return null;
-            prior = nested;
+            prior = nested != null
+                    ? nested
+                    : typeOf(candidate, env, generics, self);
         } else {
             if (source instanceof Ast.CallExpr candidate) {
                 // Avoid speculative retyping of ordinary scalar producers.
