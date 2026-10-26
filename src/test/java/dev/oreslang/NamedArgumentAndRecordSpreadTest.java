@@ -1,6 +1,8 @@
 package dev.oreslang;
 
 import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.CapabilityChecker;
+import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
@@ -319,6 +321,30 @@ final class NamedArgumentAndRecordSpreadTest {
                 """;
 
         assertEquals("BA1923", checkedExecution(code));
+    }
+
+    @Test
+    void namedArgumentCannotHideRestrictedCapabilityUse() {
+        var program = Parser.parse("""
+                fnc consume(int value): int {
+                    return value;
+                }
+
+                pub routine main(): void {
+                    consume(value: network.connect("127.0.0.1", 80));
+                    return;
+                }
+                """);
+
+        SecurityException failure = assertThrows(
+                SecurityException.class,
+                () -> CapabilityChecker.check(
+                        program,
+                        IsolatePolicy.strictFaas()));
+        assertTrue(
+                failure.getMessage().contains("NETWORK")
+                        || failure.getMessage().contains("network"),
+                failure.getMessage());
     }
 
     @Test
