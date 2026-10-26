@@ -980,12 +980,12 @@ def _gh_ref_request(repository, ref_name, method):
 
 
 def _is_http_status(stderr, status):
-    if not isinstance(stderr, str):
+    if not isinstance(stderr, str) or status != 404:
         return False
-    first_line = stderr.split("\n", 1)[0]
-    return re.fullmatch(
-        rf"gh: [^\r\n]{{1,4096}} \(HTTP {status}\)", first_line
-    ) is not None
+    first_line, separator, _rest = stderr.partition("\n")
+    if not separator:
+        return False
+    return first_line == "gh: Not Found (HTTP 404)"
 
 
 def live_ref_sha(repository, ref_name, expected_repository_id):
