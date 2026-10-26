@@ -5486,7 +5486,7 @@ public final class OresEvalRootNode extends RootNode {
                                 continuation.accept(t, null, failure);
                                 return;
                             }
-                            evalSuspendableArguments(
+                            evalSuspendableDirectArguments(
                                     t,
                                     call.arguments(),
                                     env,
