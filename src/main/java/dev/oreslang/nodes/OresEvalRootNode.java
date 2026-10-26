@@ -10473,7 +10473,9 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object destructureRestObject(Object value, Set<String> selectedMembers) {
-            if (value instanceof Map<?, ?> map) {
+            if (value instanceof ReadonlyRecordValue
+                    || value instanceof MutableStructValue) {
+                Map<?, ?> map = (Map<?, ?>) value;
                 LinkedHashMap<String, Object> remainder = new LinkedHashMap<>();
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
                     if (!(entry.getKey() instanceof String key)) {
@@ -10482,10 +10484,15 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     if (!selectedMembers.contains(key)) remainder.put(key, entry.getValue());
                 }
-                return Map.copyOf(remainder);
+                return new ReadonlyRecordValue(remainder);
+            }
+            if (value instanceof Map<?, ?>) {
+                throw new IllegalArgumentException(
+                        "Map values are keyed collections, not closed product values; "
+                                + "use get()/iteration instead of object destructuring");
             }
             throw new IllegalArgumentException(
-                    "object rest destructuring requires a statically known record value");
+                    "object rest destructuring requires a statically known record/struct value");
         }
 
         private Object destructureMember(Object value, String name, Env env) {
@@ -10505,14 +10512,24 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object destructureMember(Object value, String name) {
-            if (value instanceof Map<?, ?> map) {
-                if (!map.containsKey(name)) throw new IllegalArgumentException("object destructure missing member " + name);
+            if (value instanceof ReadonlyRecordValue
+                    || value instanceof MutableStructValue) {
+                Map<?, ?> map = (Map<?, ?>) value;
+                if (!map.containsKey(name)) {
+                    throw new IllegalArgumentException(
+                            "object destructure missing member " + name);
+                }
                 Object member = map.get(name);
                 if (member == UNINITIALIZED_FIELD) {
                     throw new IllegalArgumentException(
                             "explicit struct field '" + name + "' is destructured before initialization");
                 }
                 return member;
+            }
+            if (value instanceof Map<?, ?>) {
+                throw new IllegalArgumentException(
+                        "Map values are keyed collections, not closed product values; "
+                                + "use get()/iteration instead of object destructuring");
             }
             if (value instanceof OresObject object) {
                 if (!object.fields.containsKey(name)) throw new IllegalArgumentException("object destructure missing field " + name);
