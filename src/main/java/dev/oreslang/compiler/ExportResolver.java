@@ -201,6 +201,17 @@ public final class ExportResolver {
                         resolveFamiliesForName(families, item, export.kind());
 
                 if (matches.isEmpty()) {
+                    if (export.kind() != Ast.ExportKind.UNTYPED) {
+                        boolean sameSpellingDifferentKind = families.stream().anyMatch(
+                                family -> family.name().equals(item.localName()));
+                        if (sameSpellingDifferentKind) {
+                            throw semantic(
+                                    "EXPORT_KIND_MISMATCH",
+                                    "export kind " + export.kind().name().toLowerCase()
+                                            + " does not match local declaration '"
+                                            + displayItem(item) + "'");
+                        }
+                    }
                     if (isImportedLocalName(program, item.localName())) {
                         throw semantic(
                                 "EXPORT_IMPORTED_NAME",
