@@ -351,6 +351,70 @@ final class DirectionalPipeEndpointSourceTest {
     }
 
     @Test
+    void genericInheritedEndpointProtocolsParticipateInOrdinaryAssignability() {
+        typechecks("""
+                define class BaseSource<T> implements HasOutputChannel<T> as
+                    pub output: ReadChannel<T>;
+                end
+
+                define class IntSource extends BaseSource<int> as
+                end
+
+                pub fnc use_output(HasOutputChannel<int> source): void {
+                    val ReadChannel<int> endpoint = source.output;
+                    return;
+                }
+
+                pub fnc pass_derived(IntSource source): void {
+                    use_output(source);
+                    return;
+                }
+                """);
+
+        IllegalArgumentException mismatch = rejects("""
+                define class BaseSource<T> implements HasOutputChannel<T> as
+                    pub output: ReadChannel<T>;
+                end
+
+                define class IntSource extends BaseSource<int> as
+                end
+
+                pub fnc use_output(HasOutputChannel<string> source): void {
+                    return;
+                }
+
+                pub fnc bad(IntSource source): void {
+                    use_output(source);
+                    return;
+                }
+                """);
+        assertTrue(mismatch.getMessage().contains("argument 1"), mismatch::toString);
+    }
+
+    @Test
+    void protocolTypedValuesExposeOnlyTheirDeclaredDirectionalProperty() {
+        IllegalArgumentException wrongProperty = rejects("""
+                pub fnc bad(HasOutputChannel<int> source): void {
+                    val endpoint = source.input;
+                    return;
+                }
+                """);
+        assertTrue(wrongProperty.getMessage().contains(
+                        "unknown HasOutputChannel member 'input'"),
+                wrongProperty::toString);
+
+        IllegalArgumentException wrongProperty2 = rejects("""
+                pub fnc bad(HasInputChannel<int> sink): void {
+                    val endpoint = sink.output;
+                    return;
+                }
+                """);
+        assertTrue(wrongProperty2.getMessage().contains(
+                        "unknown HasInputChannel member 'output'"),
+                wrongProperty2::toString);
+    }
+
+    @Test
     void rawChannelCanParticipateAsBothDirectionalEndpointsButStillNeedsBridgeLowering() {
         IllegalArgumentException bridge = rejects("""
                 pub fnc connect(Channel<int> middle, WriteChannel<int> sink): void {
