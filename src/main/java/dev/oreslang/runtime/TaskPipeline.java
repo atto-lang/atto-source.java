@@ -146,7 +146,7 @@ public final class TaskPipeline {
             OresFuture<?> input,
             List<? extends Stage> stages) {
         Objects.requireNonNull(scheduler, "scheduler");
-        return startInternal(scheduler::startTracked, input, stages);
+        return startInternal(scheduler::startTracked, input, stages, false);
     }
 
     /**
@@ -165,7 +165,27 @@ public final class TaskPipeline {
             throw new IllegalStateException(
                     "implicit pipeline child admission cannot cross scheduler domains");
         }
-        return startInternal(task -> TaskHandle.start(scheduler, task, parent), input, stages);
+        return startInternal(
+                task -> TaskHandle.start(scheduler, task, parent), input, stages, false);
+    }
+
+    /**
+     * Compiler-only consuming admission. The input Future handle has already
+     * been moved by ownership checking, so cancellation owns a still-pending
+     * input as well as pipeline-created descendant work.
+     */
+    public static <T> PipelineHandle<T> startOwnedInCurrentTaskOrRoot(
+            OresScheduler scheduler,
+            OresFuture<?> input,
+            List<? extends Stage> stages) {
+        Objects.requireNonNull(scheduler, "scheduler");
+        TaskCancellation parent = TaskHandle.currentParentForChild();
+        if (parent != null && OresScheduler.current() != scheduler) {
+            throw new IllegalStateException(
+                    "implicit pipeline child admission cannot cross scheduler domains");
+        }
+        return startInternal(
+                task -> TaskHandle.start(scheduler, task, parent), input, stages, true);
     }
 
     /**
@@ -177,7 +197,7 @@ public final class TaskPipeline {
             OresFuture<?> input,
             List<? extends Stage> stages) {
         Objects.requireNonNull(scope, "scope");
-        return startInternal(scope::startTask, input, stages);
+        return startInternal(scope::startTask, input, stages, false);
     }
 
     @FunctionalInterface
@@ -189,7 +209,8 @@ public final class TaskPipeline {
     private static <T> PipelineHandle<T> startInternal(
             TaskStarter<T> starter,
             OresFuture<?> input,
-            List<? extends Stage> stages) {
+            List<? extends Stage> stages,
+            boolean ownsInput) {
         Objects.requireNonNull(starter, "starter");
         Objects.requireNonNull(input, "input");
         Objects.requireNonNull(stages, "stages");
@@ -210,10 +231,13 @@ public final class TaskPipeline {
             if (current != null) current.cancel("pipeline cancelled");
             OresFuture<?> currentOwned = ownedStage.getAndSet(null);
             if (currentOwned != null) currentOwned.cancel(false);
+            if (ownsInput) input.cancel(false);
         });
         exposedRef.set(exposed);
 
-        TaskHandle<T> tracked = starter.start(new OresScheduler.Task<>() {
+        final TaskHandle<T> tracked;
+        try {
+            tracked = starter.start(new OresScheduler.Task<>() {
             private boolean started;
             private int next;
             private OresFuture<?> awaited;
@@ -264,8 +288,9 @@ public final class TaskPipeline {
                                     "pipeline cannot await its own exposed completion Future");
                         }
                         if (child == input) {
-                            throw new IllegalArgumentException(
-                                    "pipeline cannot claim ownership of its borrowed input Future");
+                            throw new IllegalArgumentException(ownsInput
+                                    ? "pipeline cannot re-register its owned input Future as stage-owned work"
+                                    : "pipeline cannot claim ownership of its borrowed input Future");
                         }
                         if (!ownedStage.compareAndSet(null, child)) {
                             throw new IllegalStateException(
@@ -298,7 +323,14 @@ public final class TaskPipeline {
                 }
                 return OresScheduler.done((T) value);
             }
-        });
+            });
+        } catch (RuntimeException | Error admissionFailure) {
+            retirePipelineAwait(exposedRef.get(), null);
+            OresFuture<?> currentOwned = ownedStage.getAndSet(null);
+            if (currentOwned != null) currentOwned.cancel(false);
+            if (ownsInput) input.cancel(false);
+            throw admissionFailure;
+        }
 
         if (!trackedRef.compareAndSet(null, tracked)) {
             throw new IllegalStateException("pipeline task handle bound twice");
