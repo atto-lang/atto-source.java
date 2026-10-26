@@ -4184,7 +4184,17 @@ public final class OwnershipChecker {
                 } else if (spreadType.isReadonlyRecordType()
                         && spread.expression() instanceof Ast.ObjectExpr object
                         && object.structuralRecord()) {
-                    result.addAll(spreadType.recordMembers().values());
+                    Map<String, Ast.TypeRef> members =
+                            spreadType.recordMembers();
+                    for (Ast.ObjectField field : object.fields()) {
+                        Ast.TypeRef fieldType = members.get(field.name());
+                        if (fieldType == null) {
+                            throw error(
+                                    "record spread source/type field provenance disagrees for '"
+                                            + field.name() + "'");
+                        }
+                        result.add(fieldType);
+                    }
                 } else {
                     result.add(Ast.TypeRef.inferred());
                 }
