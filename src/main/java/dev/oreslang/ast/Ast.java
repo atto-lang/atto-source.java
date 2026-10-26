@@ -1395,7 +1395,7 @@ public final class Ast {
                 CheckedStructuralFieldDomain.copy(source, target);
             }
         },
-        PURE_FUTURE_PIPE("CheckedPureFuturePipe") {
+        FUTURE_PIPE_PLAN("CheckedFuturePipe") {
             @Override void copy(Expr source, Expr target) {
                 // Deliberately nontransferable. Stage authority depends on
                 // exact callee, operands, lexical types and effects. Recheck
