@@ -1496,6 +1496,55 @@ public final class Parser {
         List<Ast.Annotation> result = new ArrayList<>();
         while (match(AT)) {
             String name = consume(IDENT, "expected annotation name").lexeme();
+            if (name.equals("DefaultArgVals")) {
+                consume(
+                        LPAREN,
+                        "@DefaultArgVals requires parenthesized 'name: literal' pairs");
+                if (check(RPAREN)) {
+                    throw error(
+                            peek(),
+                            "@DefaultArgVals requires at least one named default");
+                }
+                List<Ast.TypeRef> defaults = new ArrayList<>();
+                java.util.Set<String> names = new java.util.HashSet<>();
+                do {
+                    String parameter = consume(
+                            IDENT,
+                            "@DefaultArgVals requires a parameter name").lexeme();
+                    if (!names.add(parameter)) {
+                        throw error(
+                                previous(),
+                                "duplicate @DefaultArgVals key '" + parameter + "'");
+                    }
+                    consume(
+                            COLON,
+                            "@DefaultArgVals uses 'parameter: literal'");
+                    Ast.TypeRef value;
+                    if (match(MINUS)) {
+                        value = Ast.TypeRef.intLiteral("-" + consume(
+                                INT,
+                                "negative defaults must be integer literals").lexeme());
+                    } else {
+                        value = parseMetaValue();
+                    }
+                    boolean closed = value.isIntLiteral()
+                            || value.isBoolLiteral()
+                            || value.isStringLiteral()
+                            || (value.name().equals("None")
+                                    && value.arguments().isEmpty()
+                                    && !value.inferArguments());
+                    if (!closed) {
+                        throw error(
+                                previous(),
+                                "@DefaultArgVals requires a closed int, bool, string, or None literal");
+                    }
+                    defaults.add(
+                            Ast.TypeRef.namedParameter(parameter, value));
+                } while (match(COMMA));
+                consume(RPAREN, "expected ')' after @DefaultArgVals");
+                result.add(new Ast.Annotation(name, List.copyOf(defaults)));
+                continue;
+            }
             // These names claim code generation, target selection or ABI effects.
             // Until a typed annotation registry and AOT lowering exist, retaining
             // them as inert metadata would silently change program semantics.
@@ -1744,30 +1793,63 @@ public final class Parser {
         return Ast.TypeRef.union(options);
     }
 
+    /** Type-level '?' is Option<T> sugar; only the name-level '?' permits omission. */
+    private record FormalType(Ast.TypeRef type, boolean questionSugar) { }
+
+    private FormalType parseFormalType() {
+        Ast.TypeRef type = parseTypeRef();
+        if (!match(QUESTION)) return new FormalType(type, false);
+        if (type.name().equals("void") || type.name().equals("null")) {
+            throw error(
+                    previous(),
+                    "type-level '?' is only valid on value types");
+        }
+        return new FormalType(
+                new Ast.TypeRef("Option", List.of(type), false),
+                true);
+    }
+
     private List<Ast.Param> parseDeclaredPipeParameters() {
         if (check(PIPE)) return List.of();
         List<Ast.Param> params = new ArrayList<>();
         do {
             boolean structural = matchContextualKeyword("structural");
 
-            // Migration spelling for named-argument-friendly declarations:
-            // |value: Type| is accepted, while oreslang-format emits |Type value|.
             if (!structural && check(IDENT) && checkNext(COLON)) {
                 String name = advance().lexeme();
                 consume(COLON, "expected ':' after compatibility parameter name");
-                Ast.TypeRef type = parsePipeParameterType();
+                FormalType parsed = parseFormalType();
                 boolean mutable = match(MUT);
-                params.add(new Ast.Param(type, name, false, mutable));
+                boolean omittable = match(QUESTION);
+                params.add(new Ast.Param(
+                        parsed.type(),
+                        name,
+                        false,
+                        mutable,
+                        omittable,
+                        parsed.questionSugar()));
                 continue;
             }
 
-            Ast.TypeRef type = parsePipeParameterType();
+            FormalType parsed = parseFormalType();
             boolean mutable = match(MUT);
-            String name = consume(IDENT, "lambda-style callable declaration parameters require canonical 'Type name'").lexeme();
+            String name = consume(
+                    IDENT,
+                    "lambda-style callable declaration parameters require canonical 'Type name'")
+                    .lexeme();
+            boolean omittable = match(QUESTION);
             if (structural && mutable) {
-                throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
+                throw error(
+                        previous(),
+                        "structural parameters are read-only borrowed views and cannot be 'mut'");
             }
-            params.add(new Ast.Param(type, name, structural, mutable));
+            params.add(new Ast.Param(
+                    parsed.type(),
+                    name,
+                    structural,
+                    mutable,
+                    omittable,
+                    parsed.questionSugar()));
         } while (match(COMMA));
         requireDistinctParameterNames(params);
         return List.copyOf(params);
@@ -1827,78 +1909,131 @@ public final class Parser {
         return parseParametersUntil(terminator, java.util.Set.of());
     }
 
-    private List<Ast.Param> parseParametersUntil(Token.Type terminator, java.util.Set<String> annotationStructuralNames) {
+    private List<Ast.Param> parseParametersUntil(
+            Token.Type terminator,
+            java.util.Set<String> annotationStructuralNames) {
         if (check(terminator)) return List.of();
         List<Ast.Param> params = new ArrayList<>();
         do {
             boolean structural = matchContextualKeyword("structural");
 
-            // Canonical type-first structural spelling: structural Foo y
             if (structural) {
-                Ast.TypeRef type = parseTypeRef();
+                FormalType parsed = parseFormalType();
                 boolean mutable = match(MUT);
                 String name = consume(IDENT, "expected parameter name").lexeme();
+                boolean omittable = match(QUESTION);
                 if (mutable) {
-                    throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
+                    throw error(
+                            previous(),
+                            "structural parameters are read-only borrowed views and cannot be 'mut'");
                 }
-                params.add(new Ast.Param(type, name, true, false));
+                params.add(new Ast.Param(
+                        parsed.type(),
+                        name,
+                        true,
+                        false,
+                        omittable,
+                        parsed.questionSugar()));
                 continue;
             }
 
-            // Compatibility name-first structural spelling: y structural Foo
             if (check(IDENT) && checkNextLexeme("structural")) {
                 String name = advance().lexeme();
                 Token marker = consume(IDENT, "expected structural");
-                if (!marker.lexeme().equals("structural")) throw error(marker, "expected structural");
-                Ast.TypeRef type = parseTypeRef();
-                boolean mutable = match(MUT);
-                if (mutable) {
-                    throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
+                if (!marker.lexeme().equals("structural")) {
+                    throw error(marker, "expected structural");
                 }
-                params.add(new Ast.Param(type, name, true, false));
+                FormalType parsed = parseFormalType();
+                boolean mutable = match(MUT);
+                boolean omittable = match(QUESTION);
+                if (mutable) {
+                    throw error(
+                            previous(),
+                            "structural parameters are read-only borrowed views and cannot be 'mut'");
+                }
+                params.add(new Ast.Param(
+                        parsed.type(),
+                        name,
+                        true,
+                        false,
+                        omittable,
+                        parsed.questionSugar()));
                 continue;
             }
 
-            // Function annotation spelling: @AllowStructural(y) fnc x(y Foo)
-            if (check(IDENT) && annotationStructuralNames.contains(peek().lexeme()) && checkNext(IDENT)) {
+            if (check(IDENT)
+                    && annotationStructuralNames.contains(peek().lexeme())
+                    && checkNext(IDENT)) {
                 String name = advance().lexeme();
-                Ast.TypeRef type = parseTypeRef();
+                FormalType parsed = parseFormalType();
                 boolean mutable = match(MUT);
+                boolean omittable = match(QUESTION);
                 if (mutable) {
-                    throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
+                    throw error(
+                            previous(),
+                            "structural parameters are read-only borrowed views and cannot be 'mut'");
                 }
-                params.add(new Ast.Param(type, name, true, false));
+                params.add(new Ast.Param(
+                        parsed.type(),
+                        name,
+                        true,
+                        false,
+                        omittable,
+                        parsed.questionSugar()));
                 continue;
             }
 
-            // Existing type-first compatibility spelling: @Structural Foo y
             if (match(AT)) {
-                String annotation = consume(IDENT, "expected parameter annotation").lexeme();
-                if (!annotation.equals("Structural")) throw error(previous(), "only @Structural is currently supported on parameters");
+                String annotation = consume(
+                        IDENT,
+                        "expected parameter annotation").lexeme();
+                if (!annotation.equals("Structural")) {
+                    throw error(
+                            previous(),
+                            "only @Structural is currently supported on parameters");
+                }
                 structural = true;
             }
 
-            // Temporary compatibility spelling: name: Type. Canonical source
-            // remains Type name so ':' stays available for named call arguments.
             if (!structural && check(IDENT) && checkNext(COLON)) {
                 String name = advance().lexeme();
-                consume(COLON, "expected ':' after compatibility parameter name");
-                Ast.TypeRef type = parseTypeRef();
+                consume(
+                        COLON,
+                        "expected ':' after compatibility parameter name");
+                FormalType parsed = parseFormalType();
                 boolean mutable = match(MUT);
-                params.add(new Ast.Param(type, name, false, mutable));
+                boolean omittable = match(QUESTION);
+                params.add(new Ast.Param(
+                        parsed.type(),
+                        name,
+                        false,
+                        mutable,
+                        omittable,
+                        parsed.questionSugar()));
                 continue;
             }
 
-            Ast.TypeRef type = parseTypeRef();
+            FormalType parsed = parseFormalType();
             boolean mutable = match(MUT);
-            String name = consume(IDENT, "expected parameter name after type").lexeme();
+            String name = consume(
+                    IDENT,
+                    "expected parameter name after type").lexeme();
+            boolean omittable = match(QUESTION);
             if (structural && mutable) {
-                throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
+                throw error(
+                        previous(),
+                        "structural parameters are read-only borrowed views and cannot be 'mut'");
             }
-            params.add(new Ast.Param(type, name, structural, mutable));
+            params.add(new Ast.Param(
+                    parsed.type(),
+                    name,
+                    structural,
+                    mutable,
+                    omittable,
+                    parsed.questionSugar()));
         } while (match(COMMA));
         requireDistinctParameterNames(params);
-        return params;
+        return List.copyOf(params);
     }
 
     private java.util.Set<String> structuralAnnotationNames(List<Ast.Annotation> annotations) {
@@ -1926,7 +2061,13 @@ public final class Parser {
                 throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
             }
             if (allowed.contains(param.name())) found.add(param.name());
-            result.add(new Ast.Param(param.type(), param.name(), structural, param.mutable()));
+            result.add(new Ast.Param(
+                    param.type(),
+                    param.name(),
+                    structural,
+                    param.mutable(),
+                    param.omittable(),
+                    param.optionTypeSugar()));
         }
         if (!found.equals(allowed)) {
             java.util.Set<String> missing = new java.util.HashSet<>(allowed);
