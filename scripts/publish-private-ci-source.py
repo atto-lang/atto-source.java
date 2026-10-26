@@ -59,6 +59,7 @@ SECURITY_CODEOWNER_PATHS = (
 )
 SECURITY_CODEOWNER = "@ORESoftware"
 GITHUB_ACTIONS_APP_ID = 15368
+SOURCE_POLICY_CHECK = "preflight-regressions"
 
 
 class Denied(RuntimeError):
@@ -362,8 +363,11 @@ def checked_policy_fingerprint(root, repository):
     """Compatibility wrapper returning the reviewed policy fingerprint."""
     return checked_policy_approval(root, repository)[0]
 
-def require_issuer_bound_actions_checks(required_checks, label):
-    """Require every mandatory CI context to be bound to GitHub Actions."""
+def require_issuer_bound_actions_checks(required_checks, label, expected_context):
+    """Require every mandatory CI context to be GitHub-Actions-bound and pin the security check."""
+    if (not isinstance(expected_context, str)
+            or not expected_context.strip()):
+        raise Denied(label + " expected required CI context invalid")
     if not isinstance(required_checks, dict):
         raise Denied(label + " required status-check policy missing")
     contexts = required_checks.get("contexts", [])
@@ -393,6 +397,8 @@ def require_issuer_bound_actions_checks(required_checks, label):
 
     if any(name not in seen for name in contexts):
         raise Denied(label + " legacy required status check lacks issuer binding")
+    if expected_context not in seen:
+        raise Denied(label + " required security CI check missing")
     return tuple(sorted(contexts)), tuple(sorted(bound))
 
 
@@ -421,7 +427,7 @@ def _require_strict_source_protection(protection):
             "origin main must enforce CODEOWNER approvals, stale-review dismissal, "
             "strict required CI, administrator protection and deny forced pushes/deletions")
     contexts, named_contract = require_issuer_bound_actions_checks(
-        checks, "origin main"
+        checks, "origin main", SOURCE_POLICY_CHECK
     )
     bypasses = reviews.get("bypass_pull_request_allowances")
     if bypasses is not None:
