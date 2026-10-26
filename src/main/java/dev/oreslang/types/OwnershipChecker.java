@@ -4012,18 +4012,12 @@ public final class OwnershipChecker {
         return false;
     }
 
-    private List<CheckedCallPlan.InputSlot> callInputSlots(
-            List<Ast.Expr> arguments,
-            Scope scope) {
-        return callInputSlots(arguments, scope, true, "fixed call");
-    }
-
-    private List<CheckedCallPlan.InputSlot> callInputSlots(
+    private List<CheckedCallItem> callItems(
             List<Ast.Expr> arguments,
             Scope scope,
             boolean permitLabeledProducts,
             String callable) {
-        ArrayList<CheckedCallPlan.InputSlot> result =
+        ArrayList<CheckedCallItem> result =
                 new ArrayList<>();
         for (int callItemIndex = 0;
                 callItemIndex < arguments.size();
@@ -4035,8 +4029,10 @@ public final class OwnershipChecker {
                             + " does not support named arguments on this callable surface");
                 }
                 result.add(
-                        CheckedCallPlan.InputSlot.named(
-                                named.name(), callItemIndex));
+                        CheckedCallItem.named(
+                                named.value(),
+                                named.name(),
+                                callItemIndex));
                 continue;
             }
             if (argument instanceof Ast.SpreadExpr spread) {
@@ -4052,7 +4048,8 @@ public final class OwnershipChecker {
                     int projectionIndex = 0;
                     for (Ast.ObjectField field : object.fields()) {
                         result.add(
-                                CheckedCallPlan.InputSlot.namedProjection(
+                                CheckedCallItem.recordProjection(
+                                        spread.expression(),
                                         field.name(),
                                         callItemIndex,
                                         projectionIndex++));
@@ -4064,7 +4061,8 @@ public final class OwnershipChecker {
                             projectionIndex < type.arguments().size();
                             projectionIndex++) {
                         result.add(
-                                CheckedCallPlan.InputSlot.positionalProjection(
+                                CheckedCallItem.tupleProjection(
+                                        spread.expression(),
                                         callItemIndex,
                                         projectionIndex));
                     }
@@ -4076,9 +4074,32 @@ public final class OwnershipChecker {
                                 + "or supported direct closed record pack");
             }
             result.add(
-                    CheckedCallPlan.InputSlot.positional(callItemIndex));
+                    CheckedCallItem.positional(
+                            argument,
+                            callItemIndex));
         }
         return List.copyOf(result);
+    }
+
+    private List<CheckedCallPlan.InputSlot> callInputSlots(
+            List<Ast.Expr> arguments,
+            Scope scope) {
+        return callInputSlots(arguments, scope, true, "fixed call");
+    }
+
+    private List<CheckedCallPlan.InputSlot> callInputSlots(
+            List<Ast.Expr> arguments,
+            Scope scope,
+            boolean permitLabeledProducts,
+            String callable) {
+        return callItems(
+                        arguments,
+                        scope,
+                        permitLabeledProducts,
+                        callable)
+                .stream()
+                .map(CheckedCallItem::inputSlot)
+                .toList();
     }
 
     private Ast.FunctionDecl selectDirectFunction(
@@ -4138,40 +4159,56 @@ public final class OwnershipChecker {
     private List<Ast.TypeRef> syntacticCallArgumentTypes(
             List<Ast.Expr> arguments,
             Scope scope) {
-        ArrayList<Ast.TypeRef> result = new ArrayList<>();
-        for (Ast.Expr argument : arguments) {
-            if (argument instanceof Ast.NamedArgExpr named) {
-                result.add(syntacticType(named.value(), scope));
+        List<CheckedCallItem> items =
+                callItems(
+                        arguments,
+                        scope,
+                        true,
+                        "generic call");
+        ArrayList<Ast.TypeRef> result =
+                new ArrayList<>(items.size());
+        for (CheckedCallItem item : items) {
+            if (!item.projected()) {
+                result.add(
+                        syntacticType(
+                                item.sourceExpression(),
+                                scope));
                 continue;
             }
-            if (argument instanceof Ast.SpreadExpr spread) {
-                Ast.TypeRef spreadType =
-                        syntacticType(spread.expression(), scope);
-                if (spreadType.isBorrow()) {
-                    spreadType = spreadType.borrowedTarget();
-                }
-                if (spreadType.isTupleType()) {
-                    result.addAll(spreadType.arguments());
-                } else if (spreadType.isReadonlyRecordType()
-                        && spread.expression() instanceof Ast.ObjectExpr object
-                        && object.structuralRecord()) {
-                    Map<String, Ast.TypeRef> members =
-                            spreadType.recordMembers();
-                    for (Ast.ObjectField field : object.fields()) {
-                        Ast.TypeRef fieldType = members.get(field.name());
-                        if (fieldType == null) {
-                            throw error(
-                                    "record spread source/type field provenance disagrees for '"
-                                            + field.name() + "'");
-                        }
-                        result.add(fieldType);
-                    }
-                } else {
-                    result.add(Ast.TypeRef.inferred());
-                }
-            } else {
-                result.add(syntacticType(argument, scope));
+
+            Ast.TypeRef spreadType =
+                    syntacticType(
+                            item.sourceExpression(),
+                            scope);
+            if (spreadType.isBorrow()) {
+                spreadType = spreadType.borrowedTarget();
             }
+            if (item.projectionKind()
+                    == CheckedCallItem.ProjectionKind.TUPLE) {
+                if (!spreadType.isTupleType()
+                        || item.projectionIndex()
+                                >= spreadType.arguments().size()) {
+                    throw error(
+                            "tuple spread source/type projection provenance disagrees");
+                }
+                result.add(
+                        spreadType.arguments()
+                                .get(item.projectionIndex()));
+                continue;
+            }
+
+            if (!spreadType.isReadonlyRecordType()) {
+                throw error(
+                        "record spread source/type projection provenance disagrees");
+            }
+            Ast.TypeRef fieldType =
+                    spreadType.recordMembers().get(item.label());
+            if (fieldType == null) {
+                throw error(
+                        "record spread source/type field provenance disagrees for '"
+                                + item.label() + "'");
+            }
+            result.add(fieldType);
         }
         return List.copyOf(result);
     }
