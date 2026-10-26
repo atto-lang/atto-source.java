@@ -1553,7 +1553,9 @@ public final class OwnershipChecker {
                     && name.name().equals("self")) {
                 throw error("constructor cannot invoke methods on partially initialized self");
             }
-            for (Ast.Expr argument : call.arguments()) {
+            for (Ast.Expr sourceArgument : call.arguments()) {
+                Ast.Expr argument = sourceArgument instanceof Ast.NamedValueArgumentExpr named
+                        ? named.expression() : sourceArgument;
                 // Some intrinsic and first-class callable paths inspect their
                 // arguments without consuming them. That is appropriate for
                 // fully initialized borrows, but not for the constructor's
@@ -3203,6 +3205,8 @@ public final class OwnershipChecker {
             scanExpr(e.callee(), locals, outer, recursiveBinding, captures, false);
             for (Ast.Expr arg : e.arguments()) scanExpr(arg, locals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.SpreadExpr e) {
+            scanExpr(e.expression(), locals, outer, recursiveBinding, captures, false);
+        } else if (expr instanceof Ast.NamedValueArgumentExpr e) {
             scanExpr(e.expression(), locals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.MemberExpr e) scanExpr(e.receiver(), locals, outer, recursiveBinding, captures, write);
         else if (expr instanceof Ast.IndexExpr e) {
