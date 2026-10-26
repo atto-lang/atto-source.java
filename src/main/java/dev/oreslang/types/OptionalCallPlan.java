@@ -18,13 +18,20 @@ import java.util.Set;
  */
 public record OptionalCallPlan(
         List<OptionalCallPlan.BoundSlot> sourceOrder,
-        List<Integer> abiToSource) {
+        List<Integer> abiToSource,
+        List<Boolean> omittable) {
 
     public record BoundSlot(int sourceIndex, int parameterIndex, String label) { }
 
     public OptionalCallPlan {
         sourceOrder = List.copyOf(sourceOrder);
         abiToSource = List.copyOf(abiToSource);
+        omittable = List.copyOf(omittable);
+
+        if (abiToSource.size() != omittable.size()) {
+            throw new IllegalArgumentException(
+                    "optional call plan formal/defaultability metadata size mismatch");
+        }
 
         boolean[] seenSource = new boolean[sourceOrder.size()];
         boolean[] seenTarget = new boolean[abiToSource.size()];
@@ -78,6 +85,12 @@ public record OptionalCallPlan(
             if ((source == -1) == seenTarget[target]) {
                 throw new IllegalArgumentException(
                         "optional call plan omitted/bound slot bookkeeping disagrees");
+            }
+            Boolean mayOmit = Objects.requireNonNull(
+                    omittable.get(target), "omittable flag");
+            if (source == -1 && !mayOmit) {
+                throw new IllegalArgumentException(
+                        "optional call plan omits required formal slot " + target);
             }
         }
     }
@@ -157,7 +170,7 @@ public record OptionalCallPlan(
             }
         }
 
-        return new OptionalCallPlan(source, List.of(abi));
+        return new OptionalCallPlan(source, List.of(abi), omittable);
     }
 
     public int suppliedCount() {
