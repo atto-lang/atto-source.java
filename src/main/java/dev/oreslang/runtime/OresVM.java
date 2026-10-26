@@ -1,5 +1,6 @@
 package dev.oreslang.runtime;
 
+import java.io.IOException;
 import java.util.Objects;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
@@ -31,6 +32,27 @@ public final class OresVM implements AutoCloseable {
     private static final int DEFAULT_PHYSICAL_STOP_PARALLELISM =
             Math.max(2, Math.min(8, Runtime.getRuntime().availableProcessors()));
     private static final int DEFAULT_PHYSICAL_STOP_QUEUE_CAPACITY = 16_384;
+
+    private static final ThreadLocal<Boolean> ON_CONTROL_CARRIER = new ThreadLocal<>();
+    private static final ThreadLocal<Boolean> ON_NIO_WORKER = new ThreadLocal<>();
+
+    static boolean onControlCarrier() {
+        return Boolean.TRUE.equals(ON_CONTROL_CARRIER.get());
+    }
+
+    static boolean onNioWorker() {
+        return Boolean.TRUE.equals(ON_NIO_WORKER.get());
+    }
+
+    static void runAsNioWorker(Runnable work) {
+        Boolean previous = ON_NIO_WORKER.get();
+        ON_NIO_WORKER.set(Boolean.TRUE);
+        try { work.run(); }
+        finally {
+            if (previous == null) ON_NIO_WORKER.remove();
+            else ON_NIO_WORKER.set(previous);
+        }
+    }
 
     private enum StartupState { NEW, STARTING, STARTED, FAILED, CLOSED }
 
@@ -74,9 +96,12 @@ public final class OresVM implements AutoCloseable {
         }
     }
 
+    private final OresCarrierBudget carrierBudget;
+    private final OresCarrierPermitPool carrierPermitPool;
     private final ThreadPoolExecutor controlExecutor;
     private final ThreadPoolExecutor physicalStopExecutor;
     private final OresScheduler rootScheduler;
+    private final NioReadinessGroup nioReadiness;
     private final AtomicBoolean closed = new AtomicBoolean();
     private volatile StartupState startupState = StartupState.NEW;
 
@@ -97,20 +122,65 @@ public final class OresVM implements AutoCloseable {
             throw new IllegalArgumentException("control parallelism must be positive");
         }
 
-        AtomicInteger carrierId = new AtomicInteger();
-        ThreadFactory factory = runnable -> Thread.ofPlatform()
-                .daemon(true)
-                .name("ores-control-plane-" + carrierId.getAndIncrement())
-                .unstarted(runnable);
+        this.carrierBudget = OresCarrierBudget.configured();
+        if (carrierBudget != null
+                && !OresCarrierBudget.explicitWorkConservingJvmTopology()) {
+            throw new IllegalStateException(
+                    OresCarrierBudget.PROPERTY
+                            + " currently requires -Dores.runtime.carriers=java "
+                            + "and -Dores.actor.affinity=none so every VM-owned "
+                            + "platform execution carrier is governed by the shared permit pool");
+        }
+        this.carrierPermitPool = carrierBudget == null
+                ? null : new OresCarrierPermitPool(carrierBudget.maximum());
 
-        this.controlExecutor = new ThreadPoolExecutor(
-                controlParallelism,
-                controlParallelism,
-                0L,
-                TimeUnit.MILLISECONDS,
-                new ArrayBlockingQueue<>(DEFAULT_QUEUE_CAPACITY),
-                factory,
-                new ThreadPoolExecutor.AbortPolicy());
+        int effectiveControlParallelism = controlParallelism;
+        if (carrierBudget != null) {
+            String explicitControl = System.getProperty("ores.runtime.control.parallelism");
+            if (explicitControl != null
+                    && controlParallelism != carrierBudget.controlReserve()) {
+                throw new IllegalArgumentException(
+                        "global carrier budget reserves exactly "
+                                + carrierBudget.controlReserve()
+                                + " CONTROL carrier; ores.runtime.control.parallelism="
+                                + controlParallelism + " is incompatible");
+            }
+            effectiveControlParallelism = carrierBudget.controlReserve();
+        }
+
+        AtomicInteger carrierId = new AtomicInteger();
+        ThreadFactory factory = carrierPermitPool == null
+                ? runnable -> Thread.ofPlatform()
+                        .daemon(true)
+                        .name("ores-control-plane-" + carrierId.getAndIncrement())
+                        .unstarted(() -> {
+                            ON_CONTROL_CARRIER.set(Boolean.TRUE);
+                            try { runnable.run(); }
+                            finally { ON_CONTROL_CARRIER.remove(); }
+                        })
+                : carrierPermitPool.threadFactory(
+                        OresCarrierPermitPool.Domain.CONTROL,
+                        "ores-control-plane-",
+                        runnable -> () -> {
+                            ON_CONTROL_CARRIER.set(Boolean.TRUE);
+                            try { runnable.run(); }
+                            finally { ON_CONTROL_CARRIER.remove(); }
+                        });
+
+        this.controlExecutor = carrierPermitPool == null
+                ? new ThreadPoolExecutor(
+                        effectiveControlParallelism,
+                        effectiveControlParallelism,
+                        0L,
+                        TimeUnit.MILLISECONDS,
+                        new ArrayBlockingQueue<>(DEFAULT_QUEUE_CAPACITY),
+                        factory,
+                        new ThreadPoolExecutor.AbortPolicy())
+                : new AdaptiveCarrierExecutor(
+                        effectiveControlParallelism,
+                        effectiveControlParallelism,
+                        DEFAULT_QUEUE_CAPACITY,
+                        factory);
 
         // Limits are fixed at VM startup; no mutable global/test properties
         // may affect physical STOP capacity after admission.
@@ -136,7 +206,7 @@ public final class OresVM implements AutoCloseable {
         try {
             initializedRoot = OresScheduler.runtimeOwned(
                     "ores-root-scheduler",
-                    rootAdmission == null ? controlParallelism : 1,
+                    rootAdmission == null ? effectiveControlParallelism : 1,
                     rootAdmission == null ? controlExecutor : rootAdmission,
                     turnExecutor);
         } catch (RuntimeException | Error failure) {
@@ -147,6 +217,20 @@ public final class OresVM implements AutoCloseable {
         this.rootScheduler = initializedRoot;
         try {
             startup();
+            ThreadFactory nioBootstrapFactory = carrierPermitPool == null
+                    ? null
+                    : carrierPermitPool.threadFactory(
+                            OresCarrierPermitPool.Domain.LIFECYCLE,
+                            "ores-nio-completion-",
+                            runnable -> () -> OresVM.runAsNioWorker(runnable));
+            this.nioReadiness = new NioReadinessGroup(
+                    4, 8192, 1024, null, nioBootstrapFactory);
+        } catch (IOException ioFailure) {
+            rootScheduler.close();
+            controlExecutor.shutdownNow();
+            shutdownPhysicalStops();
+            throw new IllegalStateException(
+                    "unable to bootstrap VM NIO readiness domain", ioFailure);
         } catch (RuntimeException | Error failure) {
             rootScheduler.close();
             controlExecutor.shutdownNow();
@@ -339,44 +423,66 @@ public final class OresVM implements AutoCloseable {
         synchronized (this) {
             if (!closed.compareAndSet(false, true)) return;
             startupState = StartupState.CLOSED;
+            RuntimeException failure = null;
+
+            try {
+                nioReadiness.close();
+                if (!nioReadiness.awaitStopped(5, TimeUnit.SECONDS)) {
+                    failure = new IllegalStateException(
+                            "Oreslang NIO readiness domain did not terminate");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                failure = new IllegalStateException(
+                        "interrupted while closing Oreslang NIO readiness domain",
+                        interrupted);
+            } catch (RuntimeException nioFailure) {
+                failure = nioFailure;
+            }
+
             try {
                 rootScheduler.close();
-            } finally {
-                // ActorRuntime has already requested structured closure. A
-                // failed close may leave an actor quarantined; never assume a
-                // dropped queued STOP task is a physical retirement receipt.
-                RuntimeException physicalShutdownFailure = null;
-                try {
-                    shutdownPhysicalStops();
-                } catch (RuntimeException failure) {
-                    physicalShutdownFailure = failure;
-                } finally {
-                    // Even a broken discard observer cannot prevent CONTROL
-                    // carrier teardown or poison later shutdown attempts.
-                    controlExecutor.shutdownNow();
-                }
-                try {
-                    boolean physicalDone =
-                            physicalStopExecutor.awaitTermination(5, TimeUnit.SECONDS);
-                    boolean controlDone =
-                            controlExecutor.awaitTermination(5, TimeUnit.SECONDS);
-                    if (!controlDone || !physicalDone) {
-                        IllegalStateException incomplete = new IllegalStateException(
-                                "Oreslang VM carrier teardown incomplete: control="
-                                        + controlDone + ", physicalStop=" + physicalDone);
-                        if (physicalShutdownFailure != null) {
-                            incomplete.addSuppressed(physicalShutdownFailure);
-                        }
-                        throw incomplete;
-                    }
-                    if (physicalShutdownFailure != null) throw physicalShutdownFailure;
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                    throw new IllegalStateException(
-                            "interrupted while closing Oreslang CONTROL scheduler",
-                            interrupted);
-                }
+            } catch (RuntimeException schedulerFailure) {
+                if (failure == null) failure = schedulerFailure;
+                else if (failure != schedulerFailure) failure.addSuppressed(schedulerFailure);
             }
+
+            RuntimeException physicalShutdownFailure = null;
+            try {
+                shutdownPhysicalStops();
+            } catch (RuntimeException stopFailure) {
+                physicalShutdownFailure = stopFailure;
+                if (failure == null) failure = stopFailure;
+                else if (failure != stopFailure) failure.addSuppressed(stopFailure);
+            } finally {
+                controlExecutor.shutdownNow();
+            }
+
+            try {
+                boolean physicalDone =
+                        physicalStopExecutor.awaitTermination(5, TimeUnit.SECONDS);
+                boolean controlDone =
+                        controlExecutor.awaitTermination(5, TimeUnit.SECONDS);
+                if (!controlDone || !physicalDone) {
+                    IllegalStateException incomplete = new IllegalStateException(
+                            "Oreslang VM carrier teardown incomplete: control="
+                                    + controlDone + ", physicalStop=" + physicalDone);
+                    if (physicalShutdownFailure != null) {
+                        incomplete.addSuppressed(physicalShutdownFailure);
+                    }
+                    if (failure == null) failure = incomplete;
+                    else failure.addSuppressed(incomplete);
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                IllegalStateException interruptedFailure = new IllegalStateException(
+                        "interrupted while closing Oreslang VM carriers",
+                        interrupted);
+                if (failure == null) failure = interruptedFailure;
+                else failure.addSuppressed(interruptedFailure);
+            }
+
+            if (failure != null) throw failure;
         }
     }
 }
