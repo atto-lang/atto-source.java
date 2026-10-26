@@ -152,9 +152,13 @@ final class AsyncAwaitLanguageTest {
                   await socket.write_text("ok\\n");
                   await socket.close();
                   val String body = await http.get_text("http://127.0.0.1:9000/");
+                  val Option<String> input = await stdio.stdin.read_line();
+                  val Option<String> inputSync = await stdio.stdin.read_line_sync();
                   stdio.println(natural + explicit + body);
                   stdio.println(exists);
                   stdio.println(line);
+                  stdio.println(input);
+                  stdio.println(inputSync);
                   return;
                 }
                 """));
