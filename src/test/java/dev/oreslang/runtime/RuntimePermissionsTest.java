@@ -97,6 +97,34 @@ final class RuntimePermissionsTest {
     }
 
     @Test
+    void compileModeRejectsSyncSpellingAndFileMetadataAlias() {
+        for (String source : java.util.List.of(
+                """
+                pub async fnc main(): void {
+                  val String text = await fs.read_text_sync("/tmp/blocked.txt");
+                  return;
+                }
+                """,
+                """
+                pub async fnc main(): void {
+                  val names = await File.list_dir_sync("/tmp");
+                  stdio.println(names);
+                  return;
+                }
+                """)) {
+            Ast.Program program = TypeChecker.check(Parser.parse(source));
+            SecurityException denied = assertThrows(
+                    SecurityException.class,
+                    () -> CapabilityChecker.check(
+                            program,
+                            IsolatePolicy.developer(),
+                            PermissionCheckMode.COMPILE));
+            assertTrue(denied.getMessage().contains("FILESYSTEM_READ"),
+                    denied.getMessage());
+        }
+    }
+
+    @Test
     void runtimeWriteSucceedsOnlyInsideGrantedRoot() throws Exception {
         Path root = Files.createTempDirectory("ores-native-write-").toRealPath();
         Path source = root.resolve("program.ores");
