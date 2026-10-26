@@ -53,6 +53,18 @@ public final class ExportResolver {
             return declarations.isEmpty() ? null : declarations.getFirst();
         }
 
+        void validateFamilyVisibility() {
+            if (kind != Ast.ExportKind.FUNCTION || declarations.size() < 2) return;
+            Ast.Visibility first = visibilityOf(declarations.getFirst());
+            for (Ast.Decl declaration : declarations) {
+                if (visibilityOf(declaration) != first) {
+                    throw new IllegalArgumentException(
+                            "[EXPORT_OVERLOAD_VISIBILITY_CONFLICT] overload family " + name
+                                    + " mixes explicit visibility states");
+                }
+            }
+        }
+
         String symbolId(String owner) {
             return owner + "::" + kind.name().toLowerCase(java.util.Locale.ROOT) + "::" + name;
         }
@@ -132,6 +144,7 @@ public final class ExportResolver {
         // Inline pub is an implicit public export binding.
         for (List<Candidate> sameName : byName.values()) {
             for (Candidate candidate : sameName) {
+                candidate.validateFamilyVisibility();
                 Ast.Decl representative = candidate.representative();
                 if (representative != null && visibilityOf(representative) == Ast.Visibility.PUBLIC) {
                     ExportBinding binding = new ExportBinding(
@@ -162,18 +175,18 @@ public final class ExportResolver {
                 if (named == null || named.isEmpty()) {
                     if (importedNames.contains(item.localName())) {
                         throw new IllegalArgumentException(
-                                "[IMPORTED_BINDING_EXPORT_NOT_ALLOWED] local export cannot re-export imported name "
+                                "[EXPORT_IMPORTED_NAME] local export cannot re-export imported name "
                                         + item.localName());
                     }
                     throw new IllegalArgumentException(
-                            "[UNKNOWN_EXPORT_TARGET] no local declaration named " + item.localName());
+                            "[EXPORT_UNKNOWN_TARGET] no local declaration named " + item.localName());
                 }
 
                 Candidate candidate;
                 if (export.kind() == null) {
                     if (named.size() != 1) {
                         throw new IllegalArgumentException(
-                                "[AMBIGUOUS_EXPORT_TARGET] export " + item.localName()
+                                "[EXPORT_AMBIGUOUS_TARGET] export " + item.localName()
                                         + " resolves to multiple local declaration families; use a typed export");
                     }
                     candidate = named.getFirst();
@@ -255,7 +268,7 @@ public final class ExportResolver {
                 if (localDecl != null && isTypeLike(local.kind())
                         && visibilityOf(localDecl) != Ast.Visibility.PUBLIC) {
                     throw new IllegalArgumentException(
-                            "[EXPORT_API_VISIBILITY_LEAK] public export " + binding.externalName()
+                            "[EXPORT_API_LEAK] public export " + binding.externalName()
                                     + " exposes narrower local type " + name);
                 }
             }
