@@ -23,7 +23,7 @@ public final class DiagnosticCollector {
     private static final int MAX_MESSAGE_CHARS = 2048;
     private static final Pattern CODE = Pattern.compile("[A-Z][A-Z0-9-]{2,63}");
 
-    public enum Phase { LEX, PARSE, IMPORT, TYPE, EFFECT, OWNERSHIP, LOWERING, LINK, ARTIFACT }
+    public enum Phase { LEX, PARSE, IMPORT, TYPE, EFFECT, OWNERSHIP, CHECK, LOWERING, LINK, ARTIFACT }
 
     /** Compiler coordinates are 1-based with a half-open end. */
     public record Span(String unitId, int line, int column, int endLine, int endColumn) {
