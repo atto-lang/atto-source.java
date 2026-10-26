@@ -179,6 +179,7 @@ public final class ExportAbiMetadata {
                     strings(out, fn.genericParameters());
                     params(out, fn.parameters());
                     type(out, fn.returnType());
+                    effects(out, fn.effects());
                 } else if (member instanceof Ast.InterfaceFieldDecl field) {
                     field(out, "field");
                     field(out, field.name());
