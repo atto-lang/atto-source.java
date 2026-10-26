@@ -2,6 +2,9 @@ package dev.oreslang.runtime;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -55,6 +58,78 @@ final class OresSmartPointersTest {
         assertThrows(IllegalStateException.class, arc::retain);
         assertThrows(IllegalStateException.class, arc::downgrade);
         assertDoesNotThrow(arc::close);
+    }
+
+    @Test
+    void arcRetainAndCloseOnSameHandleDoNotResurrectDroppedPayload() throws Exception {
+        var workers = Executors.newFixedThreadPool(2);
+        try {
+            for (int iteration = 0; iteration < 1_024; ++iteration) {
+                var owner = OresSmartPointers.arc(42);
+                var observer = owner.downgrade();
+                var start = new CountDownLatch(1);
+                var retainedFuture = workers.submit(() -> {
+                    start.await();
+                    try {
+                        return owner.retain();
+                    } catch (IllegalStateException closedBeforeRetain) {
+                        return null;
+                    }
+                });
+                var closeFuture = workers.submit(() -> {
+                    start.await();
+                    owner.close();
+                    return null;
+                });
+                start.countDown();
+                var retained = retainedFuture.get(10, TimeUnit.SECONDS);
+                closeFuture.get(10, TimeUnit.SECONDS);
+                if (retained != null) {
+                    assertEquals(42, retained.value());
+                    assertEquals(1, observer.strongCount());
+                    retained.close();
+                }
+                assertEquals(0, observer.strongCount());
+                assertTrue(observer.upgrade().isEmpty());
+                observer.close();
+            }
+        } finally {
+            workers.shutdownNow();
+        }
+    }
+
+    @Test
+    void arcDowngradeAndCloseOnSameHandleAreSerialized() throws Exception {
+        var workers = Executors.newFixedThreadPool(2);
+        try {
+            for (int iteration = 0; iteration < 256; ++iteration) {
+                var owner = OresSmartPointers.arc(42);
+                var start = new CountDownLatch(1);
+                var downgradeFuture = workers.submit(() -> {
+                    start.await();
+                    try {
+                        return owner.downgrade();
+                    } catch (IllegalStateException closedBeforeDowngrade) {
+                        return null;
+                    }
+                });
+                var closeFuture = workers.submit(() -> {
+                    start.await();
+                    owner.close();
+                    return null;
+                });
+                start.countDown();
+                var weak = downgradeFuture.get(10, TimeUnit.SECONDS);
+                closeFuture.get(10, TimeUnit.SECONDS);
+                if (weak != null) {
+                    assertEquals(0, weak.strongCount());
+                    assertTrue(weak.upgrade().isEmpty());
+                    weak.close();
+                }
+            }
+        } finally {
+            workers.shutdownNow();
+        }
     }
 
     @Test
