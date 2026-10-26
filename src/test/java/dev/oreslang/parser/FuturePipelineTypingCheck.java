@@ -77,8 +77,12 @@ public final class FuturePipelineTypingCheck {
         if (!typeOnly.pendingFutureStages().containsKey(typeOnlyPipe)) {
             throw new AssertionError("type-only analysis lost its staged pipeline plan");
         }
-        TypeChecker.check(typeOnly.program());
-        if (!TypeChecker.CheckedFuturePipe.lookup(typeOnlyPipe)) {
+        Ast.Program fullyAdmitted = TypeChecker.check(typeOnly.program());
+        Ast.FunctionDecl fullyAdmittedMain = (Ast.FunctionDecl)
+                fullyAdmitted.modules().getFirst().declarations().get(2);
+        Ast.CallExpr fullyAdmittedPipe = (Ast.CallExpr)
+                ((Ast.BindingStmt) fullyAdmittedMain.body().getFirst()).initializer();
+        if (!TypeChecker.CheckedFuturePipe.lookup(fullyAdmittedPipe)) {
             throw new AssertionError(
                     "full ownership admission did not publish the staged pipeline plan");
         }
