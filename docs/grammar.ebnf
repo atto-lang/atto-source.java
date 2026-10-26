@@ -1,6 +1,8 @@
 (* Oreslang v0.6 concrete grammar. Semantic restrictions are described in LANGUAGE.md. *)
 
-source          = [ namespace_decl ] { import_decl } { top_level_item } EOF ;
+source          = [ namespace_decl ]
+                  { import_decl | export_decl }
+                  { top_level_item | export_decl } EOF ;
 namespace_decl  = "namespace" IDENT ";" ;
 
 import_decl     = "import" import_spec "from" STRING_LITERAL ";" ;
@@ -13,6 +15,26 @@ import_names    = IDENT { "," IDENT } [ "as" IDENT ]
                 | "(" IDENT { "," IDENT } ")"
                 | "{" IDENT { "," IDENT } "}"
                 | "*" "as" IDENT ;
+
+export_decl     = "export" [ export_scope ] [ export_kind ] export_selection ";" ;
+export_scope    = "[" ( "file" | "pkg" | "package" ) "]"
+                | "(" ( "file" | "pkg" | "package" ) ")" ;
+export_kind     = "module" | "actor" | "class" | "fnc" | "routine"
+                | "interface" | "contract" | "trait" | "struct" | "type"
+                | "const" | "val" | "let" | "symbol" | "model" ;
+export_selection
+                = export_item
+                | "{" export_item { "," export_item } [ "," ] "}" ;
+export_item     = IDENT [ "as" IDENT ]
+                | SYMBOL_LITERAL [ "as" SYMBOL_LITERAL ] ;
+
+(* Export is contextual at file/root and named-module declaration positions.
+   The semicolon is mandatory. Empty/nested groups, wildcard/qualified targets,
+   callable signatures, generic instantiations, and export-from are rejected.
+   A Symbol right-hand side is valid only for exact self identity:
+   #ready as #ready. Ordinary source aliases are IDENT -> IDENT.
+   Java currently parses file/pkg scopes but semantic admission remains
+   fail-closed until scoped visibility parity is implemented. *)
 
 top_level_item  = annotated_module_decl
                 | contract_decl
@@ -29,7 +51,8 @@ top_level_item  = annotated_module_decl
 annotated_module_decl = { annotation } "define" "module" IDENT [ "conforms" type_ref { "," type_ref } ]
                         [ "as" ] { module_member } "end" ;
 
-module_member   = contract_decl
+module_member   = export_decl
+                | contract_decl
                 | actor_decl
                 | actor_callable_decl
                 | callable_decl
