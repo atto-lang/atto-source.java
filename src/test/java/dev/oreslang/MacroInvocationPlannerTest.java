@@ -489,6 +489,50 @@ final class MacroInvocationPlannerTest {
     }
 
     @Test
+    void unusedUnsupportedMacroBodyStillFailsClosed() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro literal(Const<int> value) -> Syntax<Expr> {
+                            return generated(value);
+                        }
+                        fnc answer() -> int {
+                            return 42;
+                        }
+                        """));
+
+        assertTrue(failure.getMessage().contains("first evaluator slice"),
+                failure::toString);
+        assertTrue(failure.getMessage().contains("runtime/JIT/source-string fallback is forbidden"),
+                failure::toString);
+    }
+
+    @Test
+    void nestedExpansionDepthIsBoundedDeterministically() {
+        String expression = "42";
+        for (int i = 0; i < 65; i++) {
+            expression = "identity!(syntax expr " + expression + ")";
+        }
+        String source = """
+                define macro identity(Syntax<Expr> value) -> Syntax<Expr> {
+                    return value;
+                }
+                fnc answer() -> int {
+                    return %s;
+                }
+                """.formatted(expression);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+
+        assertTrue(failure.getMessage().contains("macro expansion depth exceeds 64"),
+                failure::toString);
+        assertTrue(failure.getMessage().contains("runtime fallback is forbidden"),
+                failure::toString);
+    }
+
+    @Test
     void unsupportedMacroBodyCannotFallBackToRuntimeExecution() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
