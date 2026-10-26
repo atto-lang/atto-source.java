@@ -1661,6 +1661,18 @@ public final class TypeChecker {
                             + " but must expose public stable property '" + field + ": "
                             + expected + "'; got " + actual);
         }
+
+        ResolvedField endpointField = effectiveFieldTargets(
+                        klass, nominalClassType(klass), new LinkedHashSet<>()).stream()
+                .filter(candidate -> candidate.field().name().equals(field))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "pipe endpoint property '" + field + "' has no concrete field slot"));
+        if (endpointField.field().bindingKind() == Ast.BindingKind.LET) {
+            throw new IllegalArgumentException(
+                    "pipe endpoint property '" + field
+                            + "' must be a stable val/const slot and cannot be rebound");
+        }
     }
 
     /**
