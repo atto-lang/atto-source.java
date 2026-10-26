@@ -176,6 +176,108 @@ final class OptionalNamedParameterTest {
     }
 
     @Test
+    void positionalArgumentsCannotSkipMiddleOptionalSlot()
+            throws Exception {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        @DefaultArgVals(b: 2)
+                        fnc calculate(int a, int b?, int c): int {
+                            return a + b + c;
+                        }
+
+                        pub routine main(): void {
+                            stdio.stdout.write(calculate(10, 30));
+                            return;
+                        }
+                        """)));
+        assertTrue(
+                failure.getMessage().contains("required")
+                        || failure.getMessage().contains("argument")
+                        || failure.getMessage().contains("shape"),
+                failure.getMessage());
+    }
+
+    @Test
+    void tupleSpreadCannotJumpAcrossMiddleOptionalSlot()
+            throws Exception {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        @DefaultArgVals(b: 2)
+                        fnc calculate(int a, int b?, int c): int {
+                            return a + b + c;
+                        }
+
+                        pub routine main(): void {
+                            const prefix = (10, 30);
+                            stdio.stdout.write(calculate(...prefix));
+                            return;
+                        }
+                        """)));
+        assertTrue(
+                failure.getMessage().contains("required")
+                        || failure.getMessage().contains("argument")
+                        || failure.getMessage().contains("shape"),
+                failure.getMessage());
+    }
+
+    @Test
+    void tupleSpreadCanSupplyPrefixAndOmitTrailingDefaults()
+            throws Exception {
+        String code = """
+                @DefaultArgVals(c: 3)
+                fnc calculate(int a, int b, int c?): int {
+                    return a + b + c;
+                }
+
+                pub routine main(): void {
+                    const prefix = (19, 20);
+                    stdio.stdout.write(calculate(...prefix));
+                    return;
+                }
+                """;
+
+        assertEquals("42", checkedExecution(code));
+    }
+
+    @Test
+    void multipleTrailingDefaultsCanAllBeAbsent()
+            throws Exception {
+        String code = """
+                @DefaultArgVals(b: 20, c: 21)
+                fnc calculate(int a, int b?, int c?): int {
+                    return a + b + c;
+                }
+
+                pub routine main(): void {
+                    stdio.stdout.write(calculate(1));
+                    return;
+                }
+                """;
+
+        assertEquals("42", checkedExecution(code));
+    }
+
+    @Test
+    void explicitOptionDefaultNoneMatchesImplicitNoneSemantics()
+            throws Exception {
+        String code = """
+                @DefaultArgVals(value: None)
+                fnc missing(string? value?): bool {
+                    return value.is_none();
+                }
+
+                pub routine main(): void {
+                    stdio.stdout.write(missing());
+                    return;
+                }
+                """;
+
+        assertEquals("true", checkedExecution(code));
+    }
+
+    @Test
     void exactArityLabelFailureDoesNotFallbackToLargerOptionalOverload() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
