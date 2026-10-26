@@ -227,6 +227,10 @@ public final class ExportMetadataCollector {
         }
 
         if (declaration instanceof Ast.FieldDecl field) {
+            if (field.bindingKind() == Ast.BindingKind.CONST) {
+                throw new IllegalArgumentException(
+                        "EXPORT_CONST_ABI_VALUE_UNENCODED: exported const metadata requires canonical compile-time value encoding");
+            }
             field(out, field.bindingKind().name());
             flags(out, field.mutableReferent());
             type(out, field.type());
@@ -285,14 +289,12 @@ public final class ExportMetadataCollector {
     }
 
     private static void annotations(StringBuilder out, List<Ast.Annotation> annotations) {
-        ArrayList<String> values = new ArrayList<>();
+        out.append(annotations.size()).append('[');
         for (Ast.Annotation annotation : annotations) {
-            StringBuilder part = new StringBuilder();
-            field(part, annotation.name());
-            types(part, annotation.arguments());
-            values.add(part.toString());
+            field(out, annotation.name());
+            types(out, annotation.arguments());
         }
-        stringsSorted(out, values);
+        out.append(']');
     }
 
     private static void types(StringBuilder out, List<Ast.TypeRef> types) {
