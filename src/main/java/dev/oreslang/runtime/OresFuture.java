@@ -867,6 +867,10 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
             throw new IllegalStateException(
                     "await would block an actor dispatcher carrier; actor continuation lowering must suspend/resume the mailbox turn");
         }
+        if (ActorRuntime.inActorRetirementCallback()) {
+            throw new IllegalStateException(
+                    "await would block the actor retirement publisher responsible for settling lifecycle receipts");
+        }
     }
 
     @SuppressWarnings("unchecked")
