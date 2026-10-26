@@ -170,6 +170,12 @@ public final class CapabilityChecker {
 
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.MacroDecl macro) {
+                    throw residualMacro("declaration", macro.name());
+                }
+                if (declaration instanceof Ast.MacroInvocationDecl invocation) {
+                    throw residualMacro("declaration invocation", invocation.name());
+                }
                 if (declaration instanceof Ast.FunctionDecl fn) {
                     IsolatePolicy actorPolicy = actorPolicy(fn.actorKind(), policy);
                     if (fn.actorKind() == Ast.ActorKind.SHARED) {
@@ -312,7 +318,15 @@ public final class CapabilityChecker {
             else if (stmt instanceof Ast.DeferStmt s) checkExpr(s.expression(), policy);
             else if (stmt instanceof Ast.BlockStmt s) checkStatements(s.body(), policy);
             else if (stmt instanceof Ast.TaskScopeStmt s) checkStatements(s.body(), policy);
+            else if (stmt instanceof Ast.UsingBorrowStmt s) {
+                checkExpr(s.resource(), policy);
+                checkStatements(s.body(), policy);
+            }
             else if (stmt instanceof Ast.LoopStmt s) checkStatements(s.body(), policy);
+            else if (stmt instanceof Ast.DoWhileStmt s) {
+                checkStatements(s.body(), policy);
+                checkExpr(s.condition(), policy);
+            }
             else if (stmt instanceof Ast.IfStmt s) {
                 for (Ast.IfBranch b : s.branches()) {
                     checkExpr(b.condition(), policy);
@@ -360,6 +374,9 @@ public final class CapabilityChecker {
     }
 
     private void checkExpr(Ast.Expr expr, IsolatePolicy policy) {
+        if (expr instanceof Ast.MacroInvocationExpr invocation) {
+            throw residualMacro("expression invocation", invocation.name());
+        }
         if (expr instanceof Ast.NameExpr javaName) {
             String javaClass = javaImports.get(javaName.name());
             if (javaClass != null) {
@@ -536,6 +553,13 @@ public final class CapabilityChecker {
             return parent == null ? null : parent + "." + m.member();
         }
         return null;
+    }
+
+    private static IllegalArgumentException residualMacro(String kind, String name) {
+        return new IllegalArgumentException(
+                "unexpanded macro " + kind + " '" + name
+                        + "' reached capability admission; compile-time expansion must eliminate "
+                        + "all macro nodes before capability checks; runtime fallback is forbidden");
     }
 
     private void require(IsolatePolicy policy, IsolatePolicy.Capability capability, String api) {
