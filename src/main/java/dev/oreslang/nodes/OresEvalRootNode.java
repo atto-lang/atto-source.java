@@ -9,6 +9,7 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.CheckedCallItem;
 import dev.oreslang.types.CheckedCallPlan;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.ProcessExitSignal;
@@ -521,7 +522,7 @@ public final class OresEvalRootNode extends RootNode {
                         exact.parameters().stream()
                                 .map(Ast.Param::omittable)
                                 .toList(),
-                        inputs);
+                        inputs());
                 return exact;
             }
 
@@ -540,7 +541,7 @@ public final class OresEvalRootNode extends RootNode {
                             candidate.parameters().stream()
                                     .map(Ast.Param::omittable)
                                     .toList(),
-                            inputs);
+                            inputs());
                     matches.add(candidate);
                 } catch (IllegalArgumentException ignored) {
                     // Not a viable omission shape.
@@ -1238,15 +1239,21 @@ public final class OresEvalRootNode extends RootNode {
 
         private record DirectArguments(
                 List<Object> values,
-                List<CheckedCallPlan.InputSlot> inputs) {
+                List<CheckedCallItem> items) {
             private DirectArguments {
                 values = java.util.Collections.unmodifiableList(
                         new ArrayList<>(values));
-                inputs = List.copyOf(inputs);
-                if (values.size() != inputs.size()) {
+                items = List.copyOf(items);
+                if (values.size() != items.size()) {
                     throw new IllegalArgumentException(
-                            "direct product values/labels out of sync");
+                            "direct product values/call-items out of sync");
                 }
+            }
+
+            private List<CheckedCallPlan.InputSlot> inputs() {
+                return items.stream()
+                        .map(CheckedCallItem::inputSlot)
+                        .toList();
             }
 
             private List<Object> inAbiOrder(Ast.FunctionDecl function) {
@@ -1257,7 +1264,7 @@ public final class OresEvalRootNode extends RootNode {
                         function.parameters().stream()
                                 .map(Ast.Param::omittable)
                                 .toList(),
-                        inputs);
+                        inputs());
                 Map<String, Ast.TypeRef> defaults =
                         defaultArgumentValues(function);
                 ArrayList<Object> ordered =
@@ -1293,7 +1300,7 @@ public final class OresEvalRootNode extends RootNode {
                         parameters.stream()
                                 .map(Ast.Param::name)
                                 .toList(),
-                        inputs);
+                        inputs());
                 ArrayList<Object> ordered =
                         new ArrayList<>(values.size());
                 for (int source : plan.abiToSource()) {
@@ -1303,7 +1310,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             private List<Object> requireUnlabeled(String label) {
-                if (inputs.stream().anyMatch(slot -> slot.label() != null)) {
+                if (items.stream().anyMatch(item -> item.label() != null)) {
                     throw new IllegalArgumentException(
                             label + " does not support named/record-spread arguments");
                 }
@@ -1311,8 +1318,8 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             private List<Object> requirePlainPositional(String label) {
-                for (CheckedCallPlan.InputSlot slot : inputs) {
-                    if (slot.label() != null || slot.projectionIndex() >= 0) {
+                for (CheckedCallItem item : items) {
+                    if (item.label() != null || item.projected()) {
                         throw new IllegalArgumentException(
                                 label + " accepts positional scalar arguments only");
                     }
@@ -4803,13 +4810,13 @@ public final class OresEvalRootNode extends RootNode {
                 List<Ast.Expr> expressions,
                 Env env,
                 ArrayList<Object> values,
-                ArrayList<CheckedCallPlan.InputSlot> inputs,
+                ArrayList<CheckedCallItem> items,
                 int index,
                 SourceDirectArgsCont continuation) {
             if (index >= expressions.size()) {
                 continuation.accept(
                         task,
-                        new DirectArguments(values, inputs),
+                        new DirectArguments(values, items),
                         null);
                 return;
             }
@@ -4842,9 +4849,11 @@ public final class OresEvalRootNode extends RootNode {
                         try {
                             if (sourceLabel != null) {
                                 values.add(value);
-                                inputs.add(
-                                        CheckedCallPlan.InputSlot.named(
-                                                sourceLabel, index));
+                                items.add(
+                                        CheckedCallItem.named(
+                                                expression,
+                                                sourceLabel,
+                                                index));
                             } else if (sourceSpread) {
                                 if (value instanceof ReadonlyRecordValue record) {
                                     if (record.isEmpty()) {
@@ -4855,8 +4864,9 @@ public final class OresEvalRootNode extends RootNode {
                                     for (Map.Entry<String, Object> field
                                             : record.entrySet()) {
                                         values.add(field.getValue());
-                                        inputs.add(
-                                                CheckedCallPlan.InputSlot.namedProjection(
+                                        items.add(
+                                                CheckedCallItem.recordProjection(
+                                                        expression,
                                                         field.getKey(),
                                                         index,
                                                         projectionIndex++));
@@ -4874,16 +4884,18 @@ public final class OresEvalRootNode extends RootNode {
                                             projectionIndex < expanded.size();
                                             projectionIndex++) {
                                         values.add(expanded.get(projectionIndex));
-                                        inputs.add(
-                                                CheckedCallPlan.InputSlot.positionalProjection(
+                                        items.add(
+                                                CheckedCallItem.tupleProjection(
+                                                        expression,
                                                         index,
                                                         projectionIndex));
                                     }
                                 }
                             } else {
                                 values.add(value);
-                                inputs.add(
-                                        CheckedCallPlan.InputSlot.positional(
+                                items.add(
+                                        CheckedCallItem.positional(
+                                                expression,
                                                 index));
                             }
                         } catch (RuntimeException | Error expansionFailure) {
@@ -4899,7 +4911,7 @@ public final class OresEvalRootNode extends RootNode {
                                 expressions,
                                 env,
                                 values,
-                                inputs,
+                                items,
                                 index + 1,
                                 continuation);
                     });
@@ -7630,7 +7642,7 @@ public final class OresEvalRootNode extends RootNode {
                 List<Ast.Expr> arguments,
                 Env env) {
             ArrayList<Object> values = new ArrayList<>();
-            ArrayList<CheckedCallPlan.InputSlot> inputs =
+            ArrayList<CheckedCallItem> items =
                     new ArrayList<>();
             for (int callItemIndex = 0;
                     callItemIndex < arguments.size();
@@ -7638,9 +7650,11 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Expr argument = arguments.get(callItemIndex);
                 if (argument instanceof Ast.NamedArgExpr named) {
                     values.add(eval(named.value(), env));
-                    inputs.add(
-                            CheckedCallPlan.InputSlot.named(
-                                    named.name(), callItemIndex));
+                    items.add(
+                            CheckedCallItem.named(
+                                    named.value(),
+                                    named.name(),
+                                    callItemIndex));
                     continue;
                 }
 
@@ -7655,8 +7669,9 @@ public final class OresEvalRootNode extends RootNode {
                         for (Map.Entry<String, Object> field
                                 : record.entrySet()) {
                             values.add(field.getValue());
-                            inputs.add(
-                                    CheckedCallPlan.InputSlot.namedProjection(
+                            items.add(
+                                    CheckedCallItem.recordProjection(
+                                            spread.expression(),
                                             field.getKey(),
                                             callItemIndex,
                                             projectionIndex++));
@@ -7677,8 +7692,9 @@ public final class OresEvalRootNode extends RootNode {
                             projectionIndex < expanded.size();
                             projectionIndex++) {
                         values.add(expanded.get(projectionIndex));
-                        inputs.add(
-                                CheckedCallPlan.InputSlot.positionalProjection(
+                        items.add(
+                                CheckedCallItem.tupleProjection(
+                                        spread.expression(),
                                         callItemIndex,
                                         projectionIndex));
                     }
@@ -7686,11 +7702,12 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 values.add(eval(argument, env));
-                inputs.add(
-                        CheckedCallPlan.InputSlot.positional(
+                items.add(
+                        CheckedCallItem.positional(
+                                argument,
                                 callItemIndex));
             }
-            return new DirectArguments(values, inputs);
+            return new DirectArguments(values, items);
         }
 
         private List<Object> evaluateArguments(List<Ast.Expr> arguments, Env env) {
