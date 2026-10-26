@@ -3155,11 +3155,18 @@ public final class OwnershipChecker {
                             captures);
                 }
                 scanStatements(
-                        arm.body(),
+                        arm.prefixStatements(),
                         armLocals,
                         outer,
                         recursiveBinding,
                         captures);
+                scanExpr(
+                        arm.value(),
+                        armLocals,
+                        outer,
+                        recursiveBinding,
+                        captures,
+                        false);
             }
         } else if (expr instanceof Ast.TypeTestExpr e) {
             scanExpr(e.value(), locals, outer, recursiveBinding, captures, false);
