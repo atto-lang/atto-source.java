@@ -5113,54 +5113,62 @@ public final class OresEvalRootNode extends RootNode {
             boolean ownsInput = rootPlan.inputOwnership()
                     == TypeChecker.PipelineInputOwnership.CONSUMED_UPSTREAM_OWNED_PAYLOAD;
 
-            List<TaskPipeline.Stage> stages = new ArrayList<>(backwards.size());
-            for (int i = backwards.size() - 1; i >= 0; i--) {
-                Ast.CallExpr call = backwards.get(i);
-                if (!(call.callee() instanceof Ast.NameExpr name)
-                        || call.arguments().size() != 1) {
-                    throw new IllegalStateException("checked Future stage shape changed");
-                }
-                TypeChecker.PipelinePlan plan =
-                        TypeChecker.CheckedFuturePipe.plan(call);
-                Ast.FunctionDecl target = plan == null ? null : plan.target();
-                TypeChecker.PipelineInputOwnership expectedOwnership =
-                        i == backwards.size() - 1
-                                ? rootPlan.inputOwnership()
-                                : TypeChecker.PipelineInputOwnership.OWNED_PIPELINE_VALUE;
-                if (target == null || !target.name().equals(name.name())
-                        || target.parameters().size() != 1
-                        || plan.inputOwnership() != expectedOwnership
-                        || !plan.stageEffects().isEmpty()) {
-                    throw new IllegalStateException(
-                            "checked Future stage plan is missing or incompatible");
-                }
-
-                stages.add(value -> {
-                    Object produced = invoke(functionInvocation(target, List.of(value)));
-                    if (plan.producedFutureOwnership()
-                            == TypeChecker.PipelineStageFutureOwnership.OWNED_STAGE_RESULT) {
-                        if (!(produced instanceof OresFuture<?> future)) {
-                            throw new IllegalStateException(
-                                    "checked Future stage did not produce its planned Future");
-                        }
-                        return TaskPipeline.owned(future);
+            try {
+                List<TaskPipeline.Stage> stages = new ArrayList<>(backwards.size());
+                for (int i = backwards.size() - 1; i >= 0; i--) {
+                    Ast.CallExpr call = backwards.get(i);
+                    if (!(call.callee() instanceof Ast.NameExpr name)
+                            || call.arguments().size() != 1) {
+                        throw new IllegalStateException("checked Future stage shape changed");
                     }
-                    if (produced instanceof OresFuture<?>) {
+                    TypeChecker.PipelinePlan plan =
+                            TypeChecker.CheckedFuturePipe.plan(call);
+                    Ast.FunctionDecl target = plan == null ? null : plan.target();
+                    TypeChecker.PipelineInputOwnership expectedOwnership =
+                            i == backwards.size() - 1
+                                    ? rootPlan.inputOwnership()
+                                    : TypeChecker.PipelineInputOwnership.OWNED_PIPELINE_VALUE;
+                    if (target == null || !target.name().equals(name.name())
+                            || target.parameters().size() != 1
+                            || plan.inputOwnership() != expectedOwnership
+                            || !plan.stageEffects().isEmpty()) {
                         throw new IllegalStateException(
-                                "checked scalar pipeline stage unexpectedly produced a Future");
+                                "checked Future stage plan is missing or incompatible");
                     }
-                    return produced;
-                });
+    
+                    stages.add(value -> {
+                        Object produced = invoke(functionInvocation(target, List.of(value)));
+                        if (plan.producedFutureOwnership()
+                                == TypeChecker.PipelineStageFutureOwnership.OWNED_STAGE_RESULT) {
+                            if (!(produced instanceof OresFuture<?> future)) {
+                                throw new IllegalStateException(
+                                        "checked Future stage did not produce its planned Future");
+                            }
+                            return TaskPipeline.owned(future);
+                        }
+                        if (produced instanceof OresFuture<?>) {
+                            throw new IllegalStateException(
+                                    "checked scalar pipeline stage unexpectedly produced a Future");
+                        }
+                        return produced;
+                    });
+                }
+    
+                OresScheduler scheduler = OresScheduler.current();
+                if (scheduler == null) scheduler = context.vm().rootScheduler();
+                return (ownsInput
+                        ? TaskPipeline.<Object>startOwnedInCurrentTaskOrRoot(
+                                scheduler, input, stages)
+                        : TaskPipeline.<Object>startInCurrentTaskOrRoot(
+                                scheduler, input, stages))
+                        .result();
+            } catch (RuntimeException | Error loweringFailure) {
+                // The root rt take has already moved the Future. If the
+                // checked stage chain fails before (or during) Task admission,
+                // its now-unreachable producer must not remain pending.
+                if (ownsInput) input.cancel(false);
+                throw loweringFailure;
             }
-
-            OresScheduler scheduler = OresScheduler.current();
-            if (scheduler == null) scheduler = context.vm().rootScheduler();
-            return (ownsInput
-                    ? TaskPipeline.<Object>startOwnedInCurrentTaskOrRoot(
-                            scheduler, input, stages)
-                    : TaskPipeline.<Object>startInCurrentTaskOrRoot(
-                            scheduler, input, stages))
-                    .result();
         }
 
         private void evalSuspendableCall(
