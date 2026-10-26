@@ -374,7 +374,7 @@ argument_list   = expression { "," expression } ;
 primary         = literal
                 | callable_name
                 | "self"
-                | "new" type_ref "(" [ argument_list ] ")"
+                | "new" type_ref "(" [ call_argument_list ] ")"
                 | lambda
                 | tuple_literal
                 | array_literal
