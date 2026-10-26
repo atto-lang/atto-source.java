@@ -3133,10 +3133,16 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (authorityLock) {
                 requireOpen();
                 ActorCell<?> cell = exactCell(worker);
+                ActorRef<?> existing = managedWorkers.get(worker.id());
                 if (cell == null || cell.stopped.get() || stoppingWorkers.contains(worker.id())) {
-                    throw new IllegalStateException("cannot manage a stopped, stopping or unknown worker");
+                    throw new IllegalStateException(
+                            "cannot manage a stopped, stopping, stale or unknown worker");
                 }
-                if (!managedWorkers.containsKey(worker.id()) && managedWorkers.size() >= memberLimit) {
+                if (existing != null && existing != worker) {
+                    throw new IllegalStateException(
+                            "managed worker id is bound to a different actor incarnation");
+                }
+                if (existing == null && managedWorkers.size() >= memberLimit) {
                     throw new IllegalStateException(
                             "ActorGroup managed worker limit exceeded: maximum " + memberLimit);
                 }
@@ -3155,10 +3161,15 @@ public final class ActorRuntime implements AutoCloseable {
                     throw new IllegalStateException(
                             "actor is already managed by a different ActorGroup");
                 }
-                managedWorkers.putIfAbsent(worker.id(), worker);
-                if (cell.stopped.get()) {
+                ActorRef<?> prior = managedWorkers.putIfAbsent(worker.id(), worker);
+                if (prior != null && prior != worker) {
+                    throw new IllegalStateException(
+                            "managed worker id raced a different actor incarnation");
+                }
+                if (cell.stopped.get() || exactCell(worker) != cell) {
                     managedWorkers.remove(worker.id(), worker);
-                    throw new IllegalStateException("worker stopped during group admission");
+                    throw new IllegalStateException(
+                            "worker stopped or changed incarnation during group admission");
                 }
             }
             return worker;
@@ -3222,10 +3233,16 @@ public final class ActorRuntime implements AutoCloseable {
                     throw new IllegalStateException(
                             "cannot transfer worker after stop/cancellation was admitted");
                 }
-                if (!managedWorkers.containsKey(worker.id())) return false;
+                ActorRef<?> managed = managedWorkers.get(worker.id());
+                if (managed == null) return false;
+                if (managed != worker) {
+                    throw new IllegalStateException(
+                            "cannot transfer a stale actor incarnation");
+                }
                 ActorCell<?> cell = exactCell(worker);
                 if (cell == null || cell.stopped.get()) {
-                    throw new IllegalStateException("cannot transfer a stopped worker");
+                    throw new IllegalStateException(
+                            "cannot transfer a stopped or stale worker");
                 }
                 if (!cell.managedByGroup.compareAndSet(id, null)) {
                     throw new IllegalStateException("worker lifecycle owner changed unexpectedly");
