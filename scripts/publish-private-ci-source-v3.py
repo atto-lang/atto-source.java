@@ -1025,6 +1025,11 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         "expires_at": expires.isoformat().replace("+00:00", "Z"),
         "carrier": {
             "workflow_blob_sha": contract["workflow_blob_sha"],
+            "review_pr": contract.get("review_pr"),
+        },
+        "authority": {
+            "source_main_sha": authority_sha,
+            "approval_policy_sha256": approved_policy.hex(),
         },
         "destination": {
             "repo": repository,
@@ -1044,6 +1049,7 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         },
         "test_plan": {
             "path": contract["test_plan_path"],
+            "blob_sha": contract["test_plan_blob_sha"],
             "sha256": plan_meta["sha256"],
         },
     }
