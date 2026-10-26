@@ -109,6 +109,43 @@ final class ActorGroupManagedWorkerTest {
     }
 
     @Test
+    void staleSameIdRefCannotJoinManageOrReleaseLiveIncarnation() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability capability = group.joinCapability();
+            ActorRuntime.ActorRef<String> live = runtime.spawnShared(
+                    () -> (message, context) -> { });
+
+            var constructor = live.getClass().getDeclaredConstructor(
+                    ActorRuntime.class,
+                    ActorRuntime.ActorId.class,
+                    ActorRuntime.ActorKind.class,
+                    long.class);
+            constructor.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            ActorRuntime.ActorRef<String> stale =
+                    (ActorRuntime.ActorRef<String>) constructor.newInstance(
+                            runtime, live.id(), live.kind(), live.generation() + 1L);
+
+            assertThrows(IllegalStateException.class,
+                    () -> group.join(stale, capability));
+            assertFalse(group.contains(stale),
+                    "membership queries must not alias a same-id stale ref");
+            assertThrows(IllegalStateException.class,
+                    () -> group.manageWorker(stale));
+
+            assertSame(live, group.manageWorker(live));
+            assertThrows(IllegalStateException.class,
+                    () -> group.releaseWorker(stale),
+                    "a stale ref must not release lifecycle ownership of the live worker");
+            assertEquals(1, group.workerCount());
+
+            group.close();
+            assertTrue(live.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void managementRejectsCrossRuntimeRefsAndRequiresActiveActor() throws Exception {
         try (ActorRuntime one = new ActorRuntime();
              ActorRuntime two = new ActorRuntime()) {
