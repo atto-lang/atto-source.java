@@ -130,6 +130,7 @@ public final class WebSocketOpeningRequest {
         }
 
         String host = requireSingleton(singleton, "host", "Host");
+        requireHostAuthority(host);
         String key = requireSingleton(
                 singleton, "sec-websocket-key", "Sec-WebSocket-Key");
         String version = requireSingleton(
@@ -197,11 +198,116 @@ public final class WebSocketOpeningRequest {
     private static void requireOriginFormTarget(String target) {
         if (!target.startsWith("/") || target.startsWith("//")
                 || target.indexOf('#') >= 0
-                || target.indexOf('\r') >= 0
-                || target.indexOf('\n') >= 0
                 || target.indexOf('\\') >= 0) {
             throw new IllegalArgumentException(
                     "WebSocket request target must be canonical origin-form");
+        }
+        for (int i = 0; i < target.length(); i++) {
+            char ch = target.charAt(i);
+            if (ch <= 0x20 || ch == 0x7f || ch > 0x7e) {
+                throw new IllegalArgumentException(
+                        "WebSocket request target contains whitespace/control/non-ASCII data");
+            }
+            if (ch != '%') continue;
+            if (i + 2 >= target.length()) {
+                throw new IllegalArgumentException(
+                        "WebSocket request target contains malformed percent escape");
+            }
+            int high = Character.digit(target.charAt(i + 1), 16);
+            int low = Character.digit(target.charAt(i + 2), 16);
+            if (high < 0 || low < 0) {
+                throw new IllegalArgumentException(
+                        "WebSocket request target contains malformed percent escape");
+            }
+            int decoded = (high << 4) | low;
+            if (decoded == 0 || decoded == '\r' || decoded == '\n'
+                    || decoded == '\\' || decoded == 0x7f) {
+                throw new IllegalArgumentException(
+                        "WebSocket request target encodes forbidden delimiter/control data");
+            }
+            i += 2;
+        }
+    }
+
+    private static void requireHostAuthority(String host) {
+        if (host == null || host.isEmpty()
+                || host.indexOf('/') >= 0 || host.indexOf('\\') >= 0
+                || host.indexOf('?') >= 0 || host.indexOf('#') >= 0
+                || host.indexOf('@') >= 0 || host.indexOf(',') >= 0) {
+            throw new IllegalArgumentException("Host must be a canonical authority");
+        }
+        for (int i = 0; i < host.length(); i++) {
+            char ch = host.charAt(i);
+            if (ch <= 0x20 || ch == 0x7f || ch > 0x7e) {
+                throw new IllegalArgumentException(
+                        "Host contains whitespace/control/non-ASCII data");
+            }
+        }
+
+        if (host.charAt(0) == '[') {
+            int close = host.indexOf(']');
+            if (close <= 1 || host.indexOf('[', 1) >= 0
+                    || host.indexOf(']', close + 1) >= 0) {
+                throw new IllegalArgumentException("Host contains malformed IPv6 authority");
+            }
+            String literal = host.substring(1, close);
+            for (int i = 0; i < literal.length(); i++) {
+                char ch = literal.charAt(i);
+                boolean ok = Character.digit(ch, 16) >= 0 || ch == ':' || ch == '.';
+                if (!ok) {
+                    throw new IllegalArgumentException(
+                            "Host IPv6 literal contains unsupported syntax");
+                }
+            }
+            String suffix = host.substring(close + 1);
+            if (!suffix.isEmpty()) {
+                if (suffix.charAt(0) != ':' || suffix.length() == 1) {
+                    throw new IllegalArgumentException("Host contains malformed port");
+                }
+                requirePort(suffix.substring(1));
+            }
+            return;
+        }
+
+        int colon = host.indexOf(':');
+        if (colon != host.lastIndexOf(':')) {
+            throw new IllegalArgumentException(
+                    "IPv6 Host literals must use brackets");
+        }
+        String name = colon < 0 ? host : host.substring(0, colon);
+        if (name.isEmpty() || name.startsWith(".") || name.endsWith(".")) {
+            throw new IllegalArgumentException("Host name is empty or non-canonical");
+        }
+        for (int i = 0; i < name.length(); i++) {
+            char ch = name.charAt(i);
+            boolean ok = ch >= '0' && ch <= '9'
+                    || ch >= 'A' && ch <= 'Z'
+                    || ch >= 'a' && ch <= 'z'
+                    || ch == '.' || ch == '-';
+            if (!ok) {
+                throw new IllegalArgumentException("Host name contains invalid syntax");
+            }
+        }
+        if (colon >= 0) requirePort(host.substring(colon + 1));
+    }
+
+    private static void requirePort(String rawPort) {
+        if (rawPort.isEmpty()) {
+            throw new IllegalArgumentException("Host port is empty");
+        }
+        int port = 0;
+        for (int i = 0; i < rawPort.length(); i++) {
+            char ch = rawPort.charAt(i);
+            if (ch < '0' || ch > '9') {
+                throw new IllegalArgumentException("Host port must be decimal");
+            }
+            port = Math.addExact(Math.multiplyExact(port, 10), ch - '0');
+            if (port > 65535) {
+                throw new IllegalArgumentException("Host port must be in 1..65535");
+            }
+        }
+        if (port < 1) {
+            throw new IllegalArgumentException("Host port must be in 1..65535");
         }
     }
 
