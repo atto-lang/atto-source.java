@@ -1124,7 +1124,13 @@ class PrivateCiV3Test(unittest.TestCase):
         self.assertEqual(receipt["source"]["root_tree_sha"], SOURCE_TREE)
         self.assertEqual(receipt["mirror"]["root_tree_sha"], SOURCE_TREE)
         self.assertEqual(receipt["destination"]["repo_id"], 1323598177)
+        self.assertEqual(receipt["authority"]["source_main_sha"], PROTECTED)
+        self.assertEqual(receipt["authority"]["approval_policy_sha256"], POLICY.hex())
+        self.assertIsNone(receipt["carrier"]["review_pr"])
         self.assertEqual(receipt["test_plan"]["path"], carrier["test_plan_path"])
+        self.assertEqual(
+            receipt["test_plan"]["blob_sha"], carrier["test_plan_blob_sha"]
+        )
         self.assertEqual(
             receipt["test_plan"]["sha256"], hashlib.sha256(PLAN).hexdigest()
         )
