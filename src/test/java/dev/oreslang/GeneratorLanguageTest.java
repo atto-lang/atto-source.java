@@ -249,7 +249,7 @@ final class GeneratorLanguageTest {
                   return value;
                 }
 
-                fnc gen* sync_values(): Iterator<int> {
+                gen* sync_values(): Iterator<int> {
                   rt cooperate;
                   yield 1;
                   rt yield;
@@ -257,7 +257,7 @@ final class GeneratorLanguageTest {
                   return;
                 }
 
-                async fnc generator* async_values(): AsyncIterator<int> {
+                async gen* async_values(): AsyncIterator<int> {
                   rt cooperate;
                   yield await later(3);
                   rt yield;
@@ -467,15 +467,47 @@ final class GeneratorLanguageTest {
     }
 
     @Test
-    void generatorMethodsAndActorGeneratorsAreRejected() {
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                define class Bad as
-                  pub generator next(): int {
+    void staticGeneratorMethodsUseTheSameIteratorProtocols() throws Exception {
+        assertEquals("1234", run("""
+                define class Source as
+                  pub static gen* sync_values(): Iterator<int> {
                     yield 1;
+                    yield 2;
+                    return;
+                  }
+
+                  pub static suspend gen* async_values(): AsyncIterator<int> {
+                    yield 3;
+                    yield 4;
                     return;
                   }
                 end
+
+                pub async fnc main(): void {
+                  for const value of Source.sync_values() {
+                    stdio.stdout.write(value);
+                  }
+                  for await const value of Source.async_values() {
+                    stdio.stdout.write(value);
+                  }
+                  return;
+                }
                 """));
+    }
+
+    @Test
+    void instanceAndActorGeneratorReceiverEscapesFailClosed() {
+        IllegalArgumentException instance = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define class Bad as
+                          pub gen* next(): Iterator<int> {
+                            yield 1;
+                            return;
+                          }
+                        end
+                        """));
+        assertTrue(instance.getMessage().contains("receiver-lifetime witness"), instance::getMessage);
 
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
                 generator actor fnc bad(): int {
@@ -483,6 +515,26 @@ final class GeneratorLanguageTest {
                   return;
                 }
                 """));
+    }
+
+    @Test
+    void bareAsyncAndSuspendGenStarExposeAsyncIteratorWithoutFutureWrapping() {
+        var asyncProgram = TypeChecker.check(Parser.parse("""
+                async gen* async_values(): AsyncIterator<int> {
+                  yield 1;
+                  return;
+                }
+                suspend gen* suspended_values(): AsyncIterator<int> {
+                  yield 2;
+                  return;
+                }
+                pub async fnc main(): void {
+                  val AsyncIterator<int> a = async_values();
+                  val AsyncIterator<int> b = suspended_values();
+                  return;
+                }
+                """));
+        assertTrue(asyncProgram.program() != null);
     }
 
     @Test
