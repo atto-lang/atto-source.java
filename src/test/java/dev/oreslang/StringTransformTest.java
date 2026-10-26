@@ -48,6 +48,21 @@ final class StringTransformTest {
     }
 
     @Test
+    void embeddedNulIsDataAcrossConcatReplaceAndStdout() {
+        assertEquals("A\u0000B|AXB|A\u0000BC\u0000D", run("""
+                pub routine main(): void {
+                  val string value = "A\\u0000B";
+                  stdio.stdout.write(value);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(value.replace_literal("\\u0000", "X"));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(value + "C\\u0000D");
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void emptyNeedleIsRejected() {
         PolyglotException error = assertThrows(PolyglotException.class,
                 () -> run("""
