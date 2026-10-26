@@ -157,6 +157,52 @@ final class TaskBorrowBoundaryV2Test {
     }
 
     @Test
+    void localBorrowCannotEscapeItsOwnerByReturn() {
+        rejectsWith("""
+                pub fnc leak(): borrow Box {
+                  let Box owner = new Box();
+                  val loan = rt borrow owner;
+                  return loan;
+                }
+                """, "cannot return borrow", "outlive", "owner");
+    }
+
+    @Test
+    void liveSharedLoanBlocksExclusiveLoanAndOwnerMutation() {
+        rejectsWith("""
+                pub fnc main(): void {
+                  let Box owner = new Box();
+                  val shared = rt borrow owner;
+                  val exclusive = rt mut borrow owner;
+                  return;
+                }
+                """, "mutably borrow", "another borrow", "borrow");
+
+        rejectsWith("""
+                pub fnc main(): void {
+                  let Box owner = new Box();
+                  val shared = rt borrow owner;
+                  owner.value = 2;
+                  stdio.stdout.write(shared.value);
+                  return;
+                }
+                """, "mutate", "borrow");
+    }
+
+    @Test
+    void liveLoanBlocksOwnerMoveAndTeardownTransfer() {
+        rejectsWith("""
+                pub fnc main(): void {
+                  let Box owner = new Box();
+                  val loan = rt borrow owner;
+                  let Box moved = rt take owner;
+                  stdio.stdout.write(loan.value);
+                  return;
+                }
+                """, "cannot move", "borrow");
+    }
+
+    @Test
     void sameAffineOwnerCannotBeCapturedTwice() {
         rejectsWith("""
                 pub async fnc main(): void {
