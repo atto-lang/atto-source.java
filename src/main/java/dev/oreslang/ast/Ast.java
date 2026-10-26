@@ -1,5 +1,7 @@
 package dev.oreslang.ast;
 
+import dev.oreslang.types.CheckedCallPlan;
+
 import java.util.List;
 import java.util.HashSet;
 
@@ -1444,6 +1446,11 @@ public final class Ast {
         STRUCTURAL_FIELD_DOMAIN("CheckedStructuralFieldDomain") {
             @Override void copy(Expr source, Expr target) {
                 CheckedStructuralFieldDomain.copy(source, target);
+            }
+        },
+        CALL_PLAN("CheckedCallPlan") {
+            @Override void copy(Expr source, Expr target) {
+                CheckedCallPlan.copyCheckedMetadata(source, target);
             }
         };
 
