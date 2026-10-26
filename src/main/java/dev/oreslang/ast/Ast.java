@@ -1071,6 +1071,12 @@ public final class Ast {
                 throw new IllegalArgumentException(
                         "value match arm must end with explicit 'return value;'");
             }
+            for (Stmt statement : body.subList(0, body.size() - 1)) {
+                if (valueArmPrefixContainsReturn(statement)) {
+                    throw new IllegalArgumentException(
+                            "value match arm v1 permits only its terminal top-level ARM_RESULT return");
+                }
+            }
         }
 
         /** Compatibility constructor for expression arms and historical one-return arms. */
@@ -1089,6 +1095,70 @@ public final class Ast {
             return body.subList(0, body.size() - 1);
         }
     }
+
+    /**
+     * ARM_RESULT return scanning deliberately walks statement control flow but
+     * not expressions. Returns inside nested lambdas/tasks/value-dispatch
+     * expressions belong to their own control-flow domain.
+     */
+    private static boolean valueArmPrefixContainsReturn(Stmt statement) {
+        if (statement instanceof ReturnStmt) return true;
+        if (statement instanceof BlockStmt block) {
+            return block.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof TaskScopeStmt scope) {
+            return scope.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof UsingBorrowStmt loan) {
+            return loan.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof IfStmt conditional) {
+            return conditional.branches().stream()
+                            .anyMatch(branch -> branch.body().stream()
+                                    .anyMatch(Ast::valueArmPrefixContainsReturn))
+                    || conditional.elseBody().stream()
+                            .anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof MatchStmt matched) {
+            return matched.arms().stream()
+                    .anyMatch(arm -> arm.body().stream()
+                            .anyMatch(Ast::valueArmPrefixContainsReturn));
+        }
+        if (statement instanceof SwitchStmt switched) {
+            return switched.cases().stream()
+                            .anyMatch(arm -> arm.body().stream()
+                                    .anyMatch(Ast::valueArmPrefixContainsReturn))
+                    || switched.defaultBody().stream()
+                            .anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof TryStmt attempted) {
+            return attempted.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn)
+                    || attempted.catchBody().stream().anyMatch(Ast::valueArmPrefixContainsReturn)
+                    || attempted.finallyBody().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof ForOfStmt loop) {
+            return loop.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof ForOfDestructureStmt loop) {
+            return loop.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof ForStmt loop) {
+            return loop.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof DoWhileStmt loop) {
+            return loop.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof LoopStmt loop) {
+            return loop.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof SelectStmt selected) {
+            return selected.arms().stream()
+                    .anyMatch(arm -> arm.body().stream()
+                            .anyMatch(Ast::valueArmPrefixContainsReturn));
+        }
+        return false;
+    }
+
     public record MatchExpr(Expr subject, List<MatchValueArm> arms, TypeRef resultType) implements Expr {
         public MatchExpr {
             java.util.Objects.requireNonNull(subject, "value match subject");
