@@ -36,7 +36,12 @@ import java.util.Set;
 public final class TypeChecker {
     /** Ownership of the already-created upstream Future observation. */
     public enum PipelineInputOwnership {
-        BORROWED_UPSTREAM
+        /**
+         * The source Future is not consumed or cancelled by the pipeline.
+         * Therefore its payload must be both Send and Share: a merely-Send
+         * unique value cannot be duplicated through a second observer.
+         */
+        BORROWED_UPSTREAM_SHARED_PAYLOAD
     }
 
     /** Cancellation authority for a Future produced by the deferred stage itself. */
@@ -4987,6 +4992,13 @@ public final class TypeChecker {
         if (!(prior instanceof Named pending) || !pending.name().equals("Future")
                 || pending.arguments().size() != 1) return null;
 
+        Type upstreamPayload = pending.arguments().getFirst();
+        if (!isBorrowedPipelinePayloadSafe(upstreamPayload)) {
+            throw new IllegalArgumentException(
+                    "borrowed Future pipeline input requires a Send + Share payload; "
+                            + "move-only/send-only payloads require an explicit consuming pipeline");
+        }
+
         if (currentActorKind != Ast.ActorKind.NONE) {
             throw new IllegalArgumentException(
                     "Future value-pipe actor scheduling requires a checked actor-affinity plan");
@@ -5017,8 +5029,13 @@ public final class TypeChecker {
 
         Ast.Param param = stage.parameters().getFirst();
         Type input = resolveParam(param, Set.of(), null);
-        requireAssignable(pending.arguments().getFirst(), input,
+        requireAssignable(upstreamPayload, input,
                 "Future pipeline stage " + name.name() + " input");
+        if (!isBorrowedPipelinePayloadSafe(input)) {
+            throw new IllegalArgumentException(
+                    "Future pipeline stage input must preserve Send + Share "
+                            + "for a borrowed upstream payload");
+        }
 
         if (!stage.effects().isEmpty()) {
             // Keep the local boundary explicit even if the global source-effect
@@ -5064,7 +5081,7 @@ public final class TypeChecker {
                 flattensFuture,
                 stageEffects,
                 cumulativeEffects,
-                PipelineInputOwnership.BORROWED_UPSTREAM,
+                PipelineInputOwnership.BORROWED_UPSTREAM_SHARED_PAYLOAD,
                 flattensFuture
                         ? PipelineStageFutureOwnership.OWNED_STAGE_RESULT
                         : PipelineStageFutureOwnership.NONE);
@@ -5076,6 +5093,18 @@ public final class TypeChecker {
                     "Future pipeline stage rebound during type checking");
         }
         return new Named("Future", List.of(output));
+    }
+
+    /**
+     * Borrowing a Future creates an additional observer without consuming the
+     * owner's affine Future handle. A payload crossing that observation edge
+     * therefore needs both scheduler transfer safety (Send) and alias safety
+     * (Share). Unique Send-only data needs a future consuming-pipeline mode.
+     */
+    private boolean isBorrowedPipelinePayloadSafe(Type type) {
+        AutoTraitRules.Capabilities capabilities =
+                inferBoundaryAutoTraits(type, new LinkedHashSet<>(), Map.of());
+        return capabilities.send() && capabilities.share();
     }
 
     /**
