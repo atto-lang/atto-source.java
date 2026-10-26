@@ -355,10 +355,13 @@ public final class IncrementalCompiler {
             if (macro.visibility() != Ast.Visibility.PUBLIC) return;
             abi.append("pub macro ").append(macro.name()).append('(');
             for (Ast.MacroParam parameter : macro.parameters()) {
-                abi.append(macroParamAbi(parameter.type())).append(',');
+                abi.append(macroParamAbi(parameter.type()))
+                        .append(':').append(parameter.name()).append(',');
             }
             abi.append(")=>").append(macroResultAbi(macro.resultKind()))
-                    .append(" body=").append(digest(macro.body().toString()))
+                    .append(" content-format=").append(MacroCanonicalIdentity.FORMAT)
+                    .append(" content=")
+                    .append(digest(MacroCanonicalIdentity.encode(macro)))
                     .append('\n');
             return;
         }
