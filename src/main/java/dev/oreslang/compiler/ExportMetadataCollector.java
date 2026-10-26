@@ -6,6 +6,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -78,10 +79,10 @@ public final class ExportMetadataCollector {
         }
 
         result.sort(Comparator
-                .comparing(Entry::ownerNamespaceId)
-                .thenComparing(Entry::externalName)
+                .comparing(Entry::ownerNamespaceId, ExportMetadataCollector::compareUtf8)
+                .thenComparing(Entry::externalName, ExportMetadataCollector::compareUtf8)
                 .thenComparing(entry -> entry.kind().name())
-                .thenComparing(Entry::localSymbolId)
+                .thenComparing(Entry::localSymbolId, ExportMetadataCollector::compareUtf8)
                 .thenComparing(entry -> entry.scope().name()));
         return List.copyOf(result);
     }
@@ -118,7 +119,7 @@ public final class ExportMetadataCollector {
         for (Ast.Decl declaration : declarations) {
             family.add(canonicalDeclaration(declaration));
         }
-        family.sort(String::compareTo);
+        family.sort(ExportMetadataCollector::compareUtf8);
         out.append(family.size()).append('[');
         for (String signature : family) field(out, signature);
         out.append(']');
@@ -133,7 +134,7 @@ public final class ExportMetadataCollector {
             field(out, fn.actorKind().name());
             flags(out, fn.async(), fn.suspends(), fn.generator(), fn.structural(),
                     fn.nonLexical(), fn.trapped());
-            strings(out, fn.genericParameters());
+            genericSpecs(out, fn.genericParameters(), fn.genericSpecs());
             params(out, fn.parameters());
             type(out, fn.returnType());
             effects(out, fn.effects());
@@ -321,6 +322,21 @@ public final class ExportMetadataCollector {
         out.append(')');
     }
 
+    private static void genericSpecs(
+            StringBuilder out,
+            List<String> names,
+            List<Ast.GenericParameter> specs) {
+        if (names.size() != specs.size()) {
+            throw new IllegalArgumentException("generic export signature lost parameter specifications");
+        }
+        out.append(names.size()).append('[');
+        for (int i = 0; i < names.size(); i++) {
+            field(out, names.get(i));
+            optionalType(out, specs.get(i).defaultType());
+        }
+        out.append(']');
+    }
+
     private static void strings(StringBuilder out, List<String> values) {
         out.append(values.size()).append('[');
         for (String value : values) field(out, value);
@@ -329,7 +345,7 @@ public final class ExportMetadataCollector {
 
     private static void stringsSorted(StringBuilder out, List<String> values) {
         ArrayList<String> copy = new ArrayList<>(values);
-        copy.sort(String::compareTo);
+        copy.sort(ExportMetadataCollector::compareUtf8);
         strings(out, copy);
     }
 
@@ -342,6 +358,12 @@ public final class ExportMetadataCollector {
     private static void field(StringBuilder out, String value) {
         byte[] utf8 = value.getBytes(StandardCharsets.UTF_8);
         out.append(utf8.length).append(':').append(value);
+    }
+
+    private static int compareUtf8(String left, String right) {
+        return Arrays.compareUnsigned(
+                left.getBytes(StandardCharsets.UTF_8),
+                right.getBytes(StandardCharsets.UTF_8));
     }
 
     private static String sha256(String value) {
