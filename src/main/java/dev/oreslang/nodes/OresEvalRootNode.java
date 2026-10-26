@@ -506,14 +506,11 @@ public final class OresEvalRootNode extends RootNode {
 
         private Ast.FunctionDecl selectDirectFunction(
                 String name,
-                List<FixedProductCallPlan.InputSlot> inputs) {
-            if (ambiguousFunctions.contains(name)) {
-                throw new IllegalArgumentException(
-                        "ambiguous function " + name
-                                + "; qualify it with its module");
-            }
+                List<FixedProductCallPlan.InputSlot> inputs,
+                Env env) {
+            String familyKey = resolveUnqualifiedFunctionKey(name, env);
             LinkedHashMap<Integer, Ast.FunctionDecl> family =
-                    functions.get(name);
+                    familyKey == null ? null : functions.get(familyKey);
             if (family == null) return null;
 
             Ast.FunctionDecl exact = family.get(inputs.size());
@@ -569,12 +566,22 @@ public final class OresEvalRootNode extends RootNode {
             return matches.isEmpty() ? null : matches.getFirst();
         }
 
-        private boolean hasFunctionFamily(String name) {
-            if (ambiguousFunctions.contains(name)) {
-                throw new IllegalArgumentException(
-                        "ambiguous function " + name + "; qualify it with its module");
-            }
-            return functions.containsKey(name);
+        private String resolveUnqualifiedFunctionKey(
+                String name,
+                Env env) {
+            String module = env == null || env.lexicalModule() == null
+                    ? Parser.ROOT_MODULE
+                    : env.lexicalModule();
+            String local = module + "." + name;
+            if (functions.containsKey(local)) return local;
+
+            String root = Parser.ROOT_MODULE + "." + name;
+            if (!root.equals(local) && functions.containsKey(root)) return root;
+            return null;
+        }
+
+        private boolean hasFunctionFamily(String name, Env env) {
+            return resolveUnqualifiedFunctionKey(name, env) != null;
         }
 
         private Ast.FunctionDecl findFunction(String name, int arity) {
@@ -586,12 +593,11 @@ public final class OresEvalRootNode extends RootNode {
             return family == null ? null : family.get(arity);
         }
 
-        private Ast.FunctionDecl findSingleFunction(String name) {
-            if (ambiguousFunctions.contains(name)) {
-                throw new IllegalArgumentException(
-                        "ambiguous function " + name + "; qualify it with its module");
-            }
-            return singleFunction(functions.get(name), name);
+        private Ast.FunctionDecl findSingleFunction(String name, Env env) {
+            String key = resolveUnqualifiedFunctionKey(name, env);
+            return singleFunction(
+                    key == null ? null : functions.get(key),
+                    key == null ? name : key);
         }
 
         private Ast.FunctionDecl findQualifiedFunction(String qualifiedName, int arity) {
@@ -7538,7 +7544,7 @@ public final class OresEvalRootNode extends RootNode {
             if (call.callee() instanceof Ast.NameExpr name
                     && isBooleanIntrinsicName(name.name())
                     && env.lookup(name.name()) == Env.MISSING
-                    && !hasFunctionFamily(name.name())) {
+                    && !hasFunctionFamily(name.name(), env)) {
                 return name.name();
             }
             if (call.callee() instanceof Ast.MemberExpr member
@@ -7734,7 +7740,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 Object imported = importedValue(name.name());
                 if (imported != Env.MISSING) return imported;
-                Ast.FunctionDecl fn = findSingleFunction(name.name());
+                Ast.FunctionDecl fn = findSingleFunction(name.name(), env);
                 if (fn != null) {
                     requireExplicitClassCallableImport(env, name.name());
                     if (fn.actorKind() != Ast.ActorKind.NONE) {
