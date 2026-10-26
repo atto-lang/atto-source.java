@@ -1950,10 +1950,13 @@ public final class Parser {
         if (match(BANG)) return Ast.TypeRef.complement(parseTypeAtom());
         if (match(TRUE)) return Ast.TypeRef.boolLiteral(true);
         if (match(FALSE)) return Ast.TypeRef.boolLiteral(false);
-        if ((check(STRUCT) || (check(IDENT) && peek().lexeme().equals("record")))
-                && checkNext(LBRACE)) {
-            advance(); // 'struct' and 'record' denote a structural shape in type position.
-            return parseTypeAtom(); // the existing '{field: Type}' parser owns the braces
+        if (check(STRUCT) && checkNext(LBRACE)) {
+            advance();
+            return parseClosedAggregateType(true);
+        }
+        if (check(IDENT) && peek().lexeme().equals("record") && checkNext(LBRACE)) {
+            advance();
+            return parseClosedAggregateType(false);
         }
         if (match(TYPE)) {
             Ast.TypeRef marked = parseTypeAtom();
@@ -1982,21 +1985,7 @@ public final class Parser {
             return Ast.TypeRef.tupleType(elements);
         }
 
-        if (match(LBRACE)) {
-            java.util.LinkedHashMap<String, Ast.TypeRef> members = new java.util.LinkedHashMap<>();
-            if (!check(RBRACE)) {
-                do {
-                    String field = consumeStaticObjectKeyName("expected record type field name");
-                    consume(COLON, "expected ':' after record type field name");
-                    Ast.TypeRef fieldType = parseTypeRef();
-                    if (members.putIfAbsent(field, fieldType) != null) {
-                        throw error(previous(), "duplicate record type field '" + field + "'");
-                    }
-                } while (match(COMMA));
-            }
-            consume(RBRACE, "expected '}' after record type");
-            return Ast.TypeRef.recordType(members);
-        }
+        if (check(LBRACE)) return parseClosedAggregateType(false);
 
         if (match(TYPEOF)) {
             if (isLegacyFnSpelling()) {
@@ -2063,6 +2052,36 @@ public final class Parser {
             consume(RBRACKET, "expected ']' after sequence type shape");
         }
         return new Ast.TypeRef(name, args, infer);
+    }
+
+    private Ast.TypeRef parseClosedAggregateType(boolean concreteStruct) {
+        consume(LBRACE, concreteStruct
+                ? "expected '{' after struct in type position"
+                : "expected '{' for record type");
+        java.util.LinkedHashMap<String, Ast.TypeRef> members =
+                new java.util.LinkedHashMap<>();
+        if (!check(RBRACE)) {
+            do {
+                String kind = concreteStruct ? "struct" : "record";
+                String field = consumeStaticObjectKeyName(
+                        "expected " + kind + " type field name");
+                consume(COLON, "expected ':' after " + kind + " type field name");
+                Ast.TypeRef fieldType = parseTypeRef();
+                if (members.putIfAbsent(field, fieldType) != null) {
+                    throw error(
+                            previous(),
+                            "duplicate " + kind + " type field '" + field + "'");
+                }
+            } while (match(COMMA));
+        }
+        consume(
+                RBRACE,
+                concreteStruct
+                        ? "expected '}' after struct type"
+                        : "expected '}' after record type");
+        return concreteStruct
+                ? Ast.TypeRef.structType(members)
+                : Ast.TypeRef.recordType(members);
     }
 
     private Ast.TypeRef parseMetaValue() {
