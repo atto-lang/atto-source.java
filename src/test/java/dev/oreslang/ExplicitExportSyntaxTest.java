@@ -223,6 +223,44 @@ final class ExplicitExportSyntaxTest {
     }
 
     @Test
+    void leakageValidationIsOrderIndependentAndUsesCompletedExportScopes() {
+        Ast.Program earlierApi = Parser.parse("""
+                export fnc api;
+                export type Hidden;
+
+                type Hidden = int;
+                fnc api(Hidden value): void { return; }
+                """);
+        assertDoesNotThrow(() -> ExportResolver.resolve(earlierApi));
+
+        Ast.Program laterApi = Parser.parse("""
+                export type Hidden;
+                export fnc api;
+
+                type Hidden = int;
+                fnc api(Hidden value): void { return; }
+                """);
+        assertDoesNotThrow(() -> ExportResolver.resolve(laterApi));
+
+        assertSemanticError("""
+                export[pkg] fnc api;
+                export[file] type Hidden;
+
+                type Hidden = int;
+                fnc api(Hidden value): void { return; }
+                """, "EXPORT_API_LEAK");
+
+        Ast.Program broaderType = Parser.parse("""
+                export[file] fnc api;
+                export[pkg] type Hidden;
+
+                type Hidden = int;
+                fnc api(Hidden value): void { return; }
+                """);
+        assertDoesNotThrow(() -> ExportResolver.resolve(broaderType));
+    }
+
+    @Test
     void rejectsMixedVisibilityOverloadFamily() {
         assertSemanticError("""
                 export fnc f;
