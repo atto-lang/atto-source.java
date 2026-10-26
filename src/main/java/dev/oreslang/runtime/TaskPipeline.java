@@ -178,14 +178,22 @@ public final class TaskPipeline {
             OresScheduler scheduler,
             OresFuture<?> input,
             List<? extends Stage> stages) {
-        Objects.requireNonNull(scheduler, "scheduler");
-        TaskCancellation parent = TaskHandle.currentParentForChild();
-        if (parent != null && OresScheduler.current() != scheduler) {
-            throw new IllegalStateException(
-                    "implicit pipeline child admission cannot cross scheduler domains");
+        Objects.requireNonNull(input, "input");
+        try {
+            Objects.requireNonNull(scheduler, "scheduler");
+            TaskCancellation parent = TaskHandle.currentParentForChild();
+            if (parent != null && OresScheduler.current() != scheduler) {
+                throw new IllegalStateException(
+                        "implicit pipeline child admission cannot cross scheduler domains");
+            }
+            return startInternal(
+                    task -> TaskHandle.start(scheduler, task, parent), input, stages, true);
+        } catch (RuntimeException | Error admissionFailure) {
+            // rt take has transferred this handle before runtime admission.
+            // Revoke it even if rejection precedes stage-list validation.
+            input.cancel(false);
+            throw admissionFailure;
         }
-        return startInternal(
-                task -> TaskHandle.start(scheduler, task, parent), input, stages, true);
     }
 
     /**
