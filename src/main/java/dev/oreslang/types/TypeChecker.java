@@ -3824,6 +3824,8 @@ public final class TypeChecker {
             return fn.result();
         }
         if (expr instanceof Ast.MemberExpr member) {
+            dev.oreslang.compiler.MacroIdentifierHygiene
+                    .authorizedCapturedFunction(member);
             if (member.receiver() instanceof Ast.NameExpr namespace
                     && namespace.name().equals("BooleanOps")
                     && !modules.containsKey("BooleanOps")
