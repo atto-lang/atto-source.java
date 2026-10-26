@@ -295,7 +295,11 @@ public final class GeneratorRuntime {
                 if (!closed.get()) {
                     producer.run(this::emit, registration);
                 }
-                publish(new DoneEvent<>());
+                // Scope/user close may already have published the synthetic
+                // terminal event that releases a concurrent pull. Never block
+                // trying to publish a second terminal event into the one-slot
+                // queue after close.
+                if (!closed.get()) publish(new DoneEvent<>());
                 return null;
             } catch (CancellationException cancelled) {
                 if (!closed.get()) {
