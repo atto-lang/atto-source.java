@@ -3037,7 +3037,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorSupervisor supervisor;
         private final int memberLimit;
         private final int eventTopicLimit;
-        private final Set<ActorId> members = ConcurrentHashMap.newKeySet();
+        private final Map<ActorId, ActorRef<?>> members = new ConcurrentHashMap<>();
         // Explicitly lifecycle-managed workers, distinct from cooperating
         // members: membership never grants cancellation authority.
         private final Map<ActorId, ActorRef<?>> managedWorkers = new ConcurrentHashMap<>();
@@ -3079,7 +3079,7 @@ public final class ActorRuntime implements AutoCloseable {
                             MAX_EVENT_TOPICS_PER_GROUP,
                             creatorPolicy.maxMailboxMessages()));
             this.eventBus = new ActorEventBus(ActorRuntime.this, this);
-            if (creator != null) members.add(creator);
+            if (creatorRef != null) members.put(creator, creatorRef);
         }
 
         public ActorGroupId id() { return id; }
@@ -3112,7 +3112,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         public Set<ActorId> memberIds() {
             requireObserver("inspect ActorGroup membership");
-            return Set.copyOf(members);
+            return Set.copyOf(members.keySet());
         }
 
         /**
@@ -3461,7 +3461,12 @@ public final class ActorRuntime implements AutoCloseable {
                                 "actor incarnation is not alive: "
                                         + actorId + "@" + actorRef.generation());
                     }
-                    if (members.contains(actorId)) return;
+                    ActorRef<?> existingMember = members.get(actorId);
+                    if (existingMember == actorRef) return;
+                    if (existingMember != null) {
+                        throw new IllegalStateException(
+                                "ActorGroup member id is bound to a different actor incarnation");
+                    }
                     if (members.size() >= memberLimit) {
                         throw new IllegalStateException(
                                 "ActorGroup member limit exceeded: maximum " + memberLimit);
@@ -3475,10 +3480,10 @@ public final class ActorRuntime implements AutoCloseable {
                         throw new IllegalStateException(
                                 "actor ActorGroup membership limit exceeded: maximum " + limit);
                     }
-                    members.add(actorId);
+                    members.put(actorId, actorRef);
                     joined.add(id);
-                    if (groupClosed.get() || cell.stopped.get()) {
-                        members.remove(actorId);
+                    if (groupClosed.get() || cell.stopped.get() || exactCell(actorRef) != cell) {
+                        members.remove(actorId, actorRef);
                         joined.remove(id);
                         if (joined.isEmpty()) groupMemberships.remove(actorId);
                         throw new IllegalStateException("ActorGroup or actor closed during join");
@@ -3488,48 +3493,65 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public void leaveCurrent() {
-            ActorId actorId = requireCurrentMember("leave an ActorGroup");
-            leaveId(actorId);
+            ActorRef<?> actorRef = requireCurrentMemberRef("leave an ActorGroup");
+            leaveRef(actorRef);
         }
 
         public boolean contains(ActorRef<?> ref) {
             Objects.requireNonNull(ref, "ref");
             requireObserver("inspect ActorGroup membership");
             if (!ref.ownedBy(ActorRuntime.this) || exactCell(ref) == null) return false;
-            return members.contains(ref.id());
+            return isMember(ref);
         }
 
         private void requireObserver(String operation) {
             requireCallerRuntimeAffinity(operation);
-            ActorId caller = currentActorId().orElse(null);
+            ActorRef<?> caller = ActorRuntime.currentActorRef();
             if (caller != null && !isMember(caller)) {
                 throw new SecurityException(
-                        operation + " requires ActorGroup membership");
+                        operation + " requires exact-incarnation ActorGroup membership");
             }
         }
 
-        boolean isMember(ActorId actorId) {
-            return !groupClosed.get() && members.contains(actorId);
+        boolean isMember(ActorRef<?> actorRef) {
+            return !groupClosed.get()
+                    && actorRef != null
+                    && members.get(actorRef.id()) == actorRef;
+        }
+
+        ActorRef<?> requireCurrentMemberRef(String operation) {
+            requireCallerRuntimeAffinity(operation);
+            ActorRef<?> actorRef = ActorRuntime.currentActorRef();
+            if (actorRef == null) {
+                throw new SecurityException(operation + " requires an actor execution context");
+            }
+            if (!isMember(actorRef)) {
+                throw new SecurityException(
+                        "actor " + actorRef.id() + "@" + actorRef.generation()
+                                + " is not a member of ActorGroup " + id);
+            }
+            return actorRef;
         }
 
         ActorId requireCurrentMember(String operation) {
+            return requireCurrentMemberRef(operation).id();
+        }
+
+        ActorRef<?> currentMemberRefOrSystem(String operation) {
             requireCallerRuntimeAffinity(operation);
-            ActorId actorId = currentActorId().orElseThrow(() ->
-                    new SecurityException(operation + " requires an actor execution context"));
-            if (!isMember(actorId)) {
-                throw new SecurityException("actor " + actorId + " is not a member of ActorGroup " + id);
+            requireNotActorGroupMailman(operation);
+            ActorRef<?> actorRef = ActorRuntime.currentActorRef();
+            if (actorRef != null && !isMember(actorRef)) {
+                throw new SecurityException(
+                        "actor " + actorRef.id() + "@" + actorRef.generation()
+                                + " is not a member of ActorGroup " + id);
             }
-            return actorId;
+            return actorRef;
         }
 
         ActorId currentMemberOrSystem(String operation) {
-            requireCallerRuntimeAffinity(operation);
-            requireNotActorGroupMailman(operation);
-            ActorId actorId = currentActorId().orElse(null);
-            if (actorId != null && !isMember(actorId)) {
-                throw new SecurityException("actor " + actorId + " is not a member of ActorGroup " + id);
-            }
-            return actorId;
+            ActorRef<?> actorRef = currentMemberRefOrSystem(operation);
+            return actorRef == null ? null : actorRef.id();
         }
 
         void requireManager(String operation) {
@@ -3562,9 +3584,10 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        private void leaveId(ActorId actorId) {
+        private void leaveRef(ActorRef<?> actorRef) {
+            ActorId actorId = actorRef.id();
             synchronized (groupMembershipLock) {
-                if (!members.remove(actorId)) return;
+                if (!members.remove(actorId, actorRef)) return;
                 Set<ActorGroupId> joined = groupMemberships.get(actorId);
                 if (joined != null) {
                     joined.remove(id);
@@ -3572,19 +3595,20 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 // Rejoin must not overtake subscription draining for the old
                 // membership and inadvertently inherit a previous channel.
-                eventBus.removeActor(actorId);
+                eventBus.removeActor(actorRef);
             }
         }
 
-        private void actorTerminated(ActorId actorId) {
+        private void actorTerminated(ActorRef<?> actorRef) {
+            ActorId actorId = actorRef.id();
             // Fenced against concurrent worker admission so stale actor refs
             // cannot be resurrected after finalization.
             synchronized (authorityLock) {
-                managedWorkers.remove(actorId);
+                managedWorkers.remove(actorId, actorRef);
                 stoppingWorkers.remove(actorId);
             }
-            leaveId(actorId);
-            if (Objects.equals(creator, actorId)) closeFromRuntime();
+            leaveRef(actorRef);
+            if (creatorRef == actorRef) closeFromRuntime();
         }
 
         private void requireOpen() {
@@ -3628,7 +3652,7 @@ public final class ActorRuntime implements AutoCloseable {
             // room close frees membership quota without stopping unrelated
             // members or tearing down their other room subscriptions.
             synchronized (groupMembershipLock) {
-                for (ActorId member : members) {
+                for (ActorId member : members.keySet()) {
                     Set<ActorGroupId> joined = groupMemberships.get(member);
                     if (joined != null) {
                         joined.remove(id);
@@ -4335,7 +4359,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
             if (creator != null) {
                 long ownedGroups = actorGroups.values().stream()
-                        .filter(group -> creator.equals(group.creator))
+                        .filter(group -> group.creatorRef == creatorRef)
                         .filter(group -> !group.closed())
                         .count();
                 int ownerLimit = Math.max(
@@ -5426,7 +5450,7 @@ public final class ActorRuntime implements AutoCloseable {
         for (ActorGroupId groupId : affected) {
             ActorGroup group = actorGroups.get(groupId);
             try {
-                if (group != null) group.actorTerminated(cell.ref.id());
+                if (group != null) group.actorTerminated(cell.ref);
             } catch (VirtualMachineError | ThreadDeath fatal) {
                 throw fatal;
             } catch (Throwable failure) {
