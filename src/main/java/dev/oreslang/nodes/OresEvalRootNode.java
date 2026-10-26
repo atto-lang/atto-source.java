@@ -3208,7 +3208,7 @@ public final class OresEvalRootNode extends RootNode {
                         (ActorRuntime.ActorOutputStream<Object>) rawOutputs;
                 return GeneratorRuntime.asyncGenerator(
                         context.asyncRuntime(),
-                        emitter -> {
+                        (emitter, ignoredRegistration) -> {
                             for (;;) {
                                 OresFuture<GeneratorRuntime.Step<ActorRuntime.ActorOutput<Object>>> pending =
                                         outputs.next();
@@ -3222,7 +3222,9 @@ public final class OresEvalRootNode extends RootNode {
                                 if (step.done()) return;
                                 emitter.emit(step.value());
                             }
-                        });
+                        },
+                        env == null ? null : env.taskScope,
+                        env == null ? null : env.taskScopeParent);
             }
             if (value instanceof OresObject object) {
                 Ast.MethodDecl iterator = findMethod(object.klass,
@@ -3239,13 +3241,17 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
             Iterable<?> synchronous = iterableValues(value, env);
-            return GeneratorRuntime.asyncGenerator(context.asyncRuntime(), emitter -> {
-                try {
-                    for (Object item : synchronous) emitter.emit(item);
-                } finally {
-                    closeIterable(synchronous);
-                }
-            });
+            return GeneratorRuntime.asyncGenerator(
+                    context.asyncRuntime(),
+                    (emitter, ignoredRegistration) -> {
+                        try {
+                            for (Object item : synchronous) emitter.emit(item);
+                        } finally {
+                            closeIterable(synchronous);
+                        }
+                    },
+                    env == null ? null : env.taskScope,
+                    env == null ? null : env.taskScopeParent);
         }
 
         private void runAsyncForOf(SourceTask task, Object value, Env env,
@@ -8768,13 +8774,16 @@ public final class OresEvalRootNode extends RootNode {
         private Iterable<?> asyncSynchronousIterableValues(Object value, Env env) {
             Iterable<?> synchronous = iterableValues(value, env);
             GeneratorRuntime.AsyncGenerator<Object> adapter = GeneratorRuntime.asyncGenerator(
-                    context.asyncRuntime(), emitter -> {
+                    context.asyncRuntime(),
+                    (emitter, ignoredRegistration) -> {
                         try {
                             for (Object item : synchronous) emitter.emit(item);
                         } finally {
                             closeIterable(synchronous);
                         }
-                    });
+                    },
+                    env == null ? null : env.taskScope,
+                    env == null ? null : env.taskScopeParent);
             return asyncIterableValues(adapter, env);
         }
 
