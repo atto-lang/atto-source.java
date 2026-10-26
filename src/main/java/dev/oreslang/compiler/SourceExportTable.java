@@ -54,7 +54,7 @@ public final class SourceExportTable {
         // export table is authoritative and the local spelling must not leak.
         if (matches.isEmpty()
                 && ownerNamespace == null
-                && kind == Ast.ImportKind.MODULE
+                && (kind == Ast.ImportKind.MODULE || kind == Ast.ImportKind.ALL)
                 && !hasBoundLocalModule(resolved, externalName)) {
             for (Ast.ModuleDecl module : program.modules()) {
                 if (module.name().equals(Parser.ROOT_MODULE)) continue;
