@@ -49,7 +49,8 @@ final class StringTransformTest {
 
     @Test
     void embeddedNulIsDataAcrossConcatReplaceAndStdout() {
-        assertEquals("A\u0000B|AXB|A\u0000BC\u0000D", run("""
+        String nul = String.valueOf((char) 0);
+        assertEquals("A" + nul + "B|AXB|A" + nul + "BC" + nul + "D", run("""
                 pub routine main(): void {
                   val string value = "A\\u0000B";
                   stdio.stdout.write(value);
