@@ -172,6 +172,20 @@ public final class TypeChecker {
         }
 
         /**
+         * Re-admission of the same immutable AST must not let a previously
+         * published plan authorize a new ownership pass. Invalidate the exact
+         * staged nodes first; successful ownership republishes them atomically.
+         */
+        private static synchronized void invalidate(
+                Map<Ast.CallExpr, PipelinePlan> staged) {
+            java.util.Objects.requireNonNull(staged, "staged Future pipeline plans");
+            expunge();
+            for (Ast.CallExpr call : staged.keySet()) {
+                if (call != null) CHECKED.remove(new IdentityKey(call, null));
+            }
+        }
+
+        /**
          * Publish atomically only after the entire compilation unit validates.
          * A later declaration failure therefore cannot leak an executable plan
          * for an earlier pipeline prefix.
@@ -356,7 +370,11 @@ public final class TypeChecker {
     }
 
     private static TypeCheckResult publishAfterOwnership(TypeCheckResult checked) {
-        OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
+        CheckedFuturePipe.invalidate(checked.pendingFutureStages());
+        OwnershipChecker.check(
+                checked.program(),
+                checked.shortInferredAliases(),
+                checked.pendingFutureStages());
         CheckedFuturePipe.publish(checked.pendingFutureStages());
         return checked;
     }
@@ -461,8 +479,12 @@ public final class TypeChecker {
             Map<String, Ast.InterfaceDecl> linkedContracts) {
         TypeCheckResult checked = checkTypesWithLinkedMetadataWithDiagnostics(
                 program, linkedClasses, linkedAliases, linkedContracts);
+        CheckedFuturePipe.invalidate(checked.pendingFutureStages());
         OwnershipChecker.checkWithImportedClasses(
-                checked.program(), linkedClasses, checked.shortInferredAliases());
+                checked.program(),
+                linkedClasses,
+                checked.shortInferredAliases(),
+                checked.pendingFutureStages());
         CheckedFuturePipe.publish(checked.pendingFutureStages());
         return checked;
     }
