@@ -5,6 +5,8 @@ import dev.oreslang.ast.Ast;
 import java.lang.ref.Reference;
 import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -55,17 +57,33 @@ public final class MacroSourceUnitIdentity {
 
     public static synchronized Ast.Program attach(Ast.Program program, String unitId) {
         java.util.Objects.requireNonNull(program, "macro source program");
-        if (unitId == null || unitId.isBlank() || unitId.length() > MAX_UNIT_ID_CHARS) {
-            throw new IllegalArgumentException("invalid macro source-unit identity");
-        }
+        String canonical = canonicalize(unitId);
         expunge();
         IdentityKey key = new IdentityKey(program, CLEARED);
-        String previous = UNIT_IDS.putIfAbsent(key, unitId);
-        if (previous != null && !previous.equals(unitId)) {
+        String previous = UNIT_IDS.putIfAbsent(key, canonical);
+        if (previous != null && !previous.equals(canonical)) {
             throw new IllegalArgumentException(
                     "parsed program already has a different macro source-unit identity");
         }
         return program;
+    }
+
+    private static String canonicalize(String unitId) {
+        if (unitId == null || unitId.isBlank()) {
+            throw new IllegalArgumentException("invalid macro source-unit identity");
+        }
+        if (unitId.equals(MEMORY_UNIT)) return MEMORY_UNIT;
+        final String canonical;
+        try {
+            canonical = Path.of(unitId).normalize().toString().replace('\\', '/');
+        } catch (InvalidPathException invalid) {
+            throw new IllegalArgumentException(
+                    "invalid macro source-unit identity", invalid);
+        }
+        if (canonical.isBlank() || canonical.length() > MAX_UNIT_ID_CHARS) {
+            throw new IllegalArgumentException("invalid macro source-unit identity");
+        }
+        return canonical;
     }
 
     public static synchronized String unitId(Ast.Program program) {
