@@ -32,12 +32,14 @@ ownership proof and must not be generalized to escaping borrows or FFI.
 The parser retains `Ast.CallExpr.origin` for value-pipe argument injection
 and Option/Result receiver combinators, distinct from ordinary calls and actor
 `pipe`. Syntax provenance alone is not authorization. The type checker now
-issues `TypeChecker.CheckedPureFuturePipe` identity-bound proofs to a **restricted**
-`Future<int> |> pureUnaryIntFunction()` subset: synchronous **or asynchronous**,
-non-generic, no captures, no effectful bodies, no additional stage arguments
+issues `TypeChecker.CheckedFuturePipe` identity-bound proofs to a **restricted**
+`Future<A> |> pureUnaryFunction()` subset for concrete statically resolved `A`/`B`: synchronous **or asynchronous**,
+non-generic, no captures, no executable exceptional effects, no additional stage arguments
 and no actor execution. A checked async stage may contain cooperative scheduler
 yield points and may `await` a same-module pure async unary-int helper; the
-helper is recursively checked under the same closed restrictions. Stages must also be declared in the current lexical module:
+helper is recursively checked under the same closed restrictions. Each admitted stage gets an identity-bound `PipelinePlan` containing resolved input/output types, whether one Future layer is flattened, per-stage and cumulative `throws`/`raises`/`panics` rows, borrowed-upstream ownership, and stage-result Future cancellation ownership. Source exceptional-effect declarations remain globally fail-closed until executable throw/raise/panic lowering exists; carrying the row in the plan is not a claim that those effects execute yet.
+
+Stages must also be declared in the current lexical module:
 imported/cross-module execution has not yet proven evaluator/environment
 ownership. Adjacent checked stages lower to one TaskPipeline task, preserving
 borrowed input-Future ownership. Proofs bind exact checked declarations and
@@ -61,8 +63,7 @@ Ordinary (non-Future) source `|>` still injects the left operand eagerly.
 If such an eager scalar stage returns `Future<int>`, the next checked pipe
 stage switches into Future-aware lowering; for example
 `21 |> start_async() |> finish()` invokes `start_async(21)` eagerly and
-defers `finish` until that Future succeeds. Only the narrow, checked pure-int
-subset above has compiler-to-runtime lifting. Within that subset, an async
+defers `finish` until that Future succeeds. Only the narrow, checked pure-unary subset above has compiler-to-runtime lifting. Within that subset, an async
 stage's `Future<int>` is flattened by
 the same single `TaskPipeline` task, and the compiler marks the stage-created
 Future as pipeline-owned so cancellation revokes it while leaving the borrowed
@@ -116,10 +117,7 @@ val Option<C> safe = trap await (load() |> save() |> notify());
 ```
 
 Conceptual lowering is `load().flat_map(save).flat_map(notify)`, with checked
-types/effects/ownership and safe actor-bound scheduling. Java/GraalVM now
-executes this behavior for the restricted checked pure-`int` subset,
-including mixed synchronous/asynchronous stages and an async stage that awaits
-a checked pure async helper. General typed pipelines remain intentionally
+types/effects/ownership and safe actor-bound scheduling. Java/GraalVM now executes this behavior for the restricted checked pure-unary subset, including different concrete input/output types, mixed synchronous/asynchronous stages, synchronous `Future<B>`-returning stages with one-level flattening, and an async stage that awaits a checked pure async helper. General typed pipelines remain intentionally
 fail-closed outside that subset.
 
 ### Evaluation order, failure, and lifetime obligations
