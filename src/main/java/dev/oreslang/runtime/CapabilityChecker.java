@@ -21,6 +21,7 @@ public final class CapabilityChecker {
     private final Map<String, Ast.TypeAliasDecl> aliases = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
+    private final Map<String, List<Ast.FunctionDecl>> functionFamilies = new HashMap<>();
     private final Set<String> ambiguousAliases = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
@@ -58,6 +59,16 @@ public final class CapabilityChecker {
                     index(classes, ambiguousClasses, module.name(), klass.name(), klass);
                 } else if (declaration instanceof Ast.FunctionDecl fn) {
                     index(functions, ambiguousFunctions, module.name(), fn.name(), fn);
+                    functionFamilies
+                            .computeIfAbsent(
+                                    module.name() + "." + fn.name(),
+                                    ignored -> new java.util.ArrayList<>())
+                            .add(fn);
+                    functionFamilies
+                            .computeIfAbsent(
+                                    fn.name(),
+                                    ignored -> new java.util.ArrayList<>())
+                            .add(fn);
                 }
             }
         }
@@ -100,6 +111,19 @@ public final class CapabilityChecker {
         return ambiguousFunctions.contains(name) ? null : functions.get(name);
     }
 
+    private List<Ast.FunctionDecl> findFunctionFamily(String name) {
+        List<Ast.FunctionDecl> family = functionFamilies.get(name);
+        return family == null ? List.of() : List.copyOf(family);
+    }
+
+    private void checkReferencedFunctionFamily(
+            String name,
+            IsolatePolicy policy) {
+        for (Ast.FunctionDecl candidate : findFunctionFamily(name)) {
+            checkReferencedFunction(candidate, policy);
+        }
+    }
+
     private void checkReferencedFunction(Ast.FunctionDecl fn, IsolatePolicy policy) {
         if (!callableStack.add(fn)) return;
         try {
@@ -111,6 +135,22 @@ public final class CapabilityChecker {
             checkStatements(fn.body(), effective);
         } finally {
             callableStack.remove(fn);
+        }
+    }
+
+    private void checkReferencedStaticMethodFamily(
+            Ast.Expr callee,
+            IsolatePolicy policy) {
+        if (!(callee instanceof Ast.MemberExpr member)) return;
+        String ownerName = memberPath(member.receiver());
+        if (ownerName == null) return;
+        Ast.ClassDecl owner = findClass(ownerName);
+        if (owner == null) return;
+        for (Ast.MethodDecl method : owner.methods()) {
+            if (method.isStatic()
+                    && method.name().equals(member.member())) {
+                checkReferencedMethod(method, policy);
+            }
         }
     }
 
@@ -387,8 +427,7 @@ public final class CapabilityChecker {
             // Function values can be laundered through locals/callbacks before
             // invocation. Check the referenced body at the point the function
             // enters the actor's value graph, not only for direct call syntax.
-            Ast.FunctionDecl referenced = findFunction(n.name());
-            if (referenced != null) checkReferencedFunction(referenced, policy);
+            checkReferencedFunctionFamily(n.name(), policy);
         }
         else if (expr instanceof Ast.RuntimeCallExpr runtime) {
             if (runtime.operation().equals("spawn")) {
@@ -427,11 +466,9 @@ public final class CapabilityChecker {
                 }
             }
             if (target != null) {
-                Ast.FunctionDecl fn = findFunction(target);
-                if (fn != null) checkReferencedFunction(fn, policy);
+                checkReferencedFunctionFamily(target, policy);
             }
-            Ast.MethodDecl staticMethod = findStaticMethod(c.callee(), c.arguments().size());
-            if (staticMethod != null) checkReferencedMethod(staticMethod, policy);
+            checkReferencedStaticMethodFamily(c.callee(), policy);
             checkExpr(c.callee(), policy);
             for (Ast.Expr arg : c.arguments()) checkExpr(arg, policy);
         } else if (expr instanceof Ast.MemberExpr m) {
@@ -439,10 +476,8 @@ public final class CapabilityChecker {
             if (path != null) {
                 // Qualified module function values have the same laundering
                 // risk as unqualified function values.
-                Ast.FunctionDecl referenced = findFunction(path);
-                if (referenced != null) checkReferencedFunction(referenced, policy);
-                Ast.MethodDecl staticValue = findUniqueStaticMethodValue(m);
-                if (staticValue != null) checkReferencedMethod(staticValue, policy);
+                checkReferencedFunctionFamily(path, policy);
+                checkReferencedStaticMethodFamily(m, policy);
                 if (path.startsWith("stdio.") || path.equals("stdio")) require(policy, IsolatePolicy.Capability.STDOUT, path);
                 if (path.equals("std.process.exit") || path.equals("process.exit")) require(policy, IsolatePolicy.Capability.PROCESS_EXIT, path);
                 if (path.startsWith("process.descriptor") || path.equals("process.context_id")) require(policy, IsolatePolicy.Capability.PROCESS_INFO, path);
