@@ -217,22 +217,18 @@ final class MacroInvocationPlannerTest {
         assertTrue(mismatch.getMessage().contains("compile-time type String"), mismatch::toString);
         assertTrue(mismatch.getMessage().contains("match their declared type exactly"), mismatch::toString);
 
-        Ast.Program unsupportedComposite = Parser.parse("""
+        Ast.Program composite = Parser.parse("""
                 define macro values(Const<List<int>> value) -> Syntax<Expr> {
                     return generated(value);
                 }
                 fnc answer() -> int {
-                    return values!(const [1, 2, 3]);
+                    return values!(const [1, 2 + 3, -4]);
                 }
                 """);
 
-        IllegalArgumentException unsupported = assertThrows(
-                IllegalArgumentException.class,
-                () -> MacroExpansionPlanner.plan(unsupportedComposite));
-        assertTrue(unsupported.getMessage().contains("cannot yet prove its compile-time type"),
-                unsupported::toString);
-        assertTrue(unsupported.getMessage().contains("runtime/type-check fallback is forbidden"),
-                unsupported::toString);
+        MacroExpansionPlanner.Plan compositePlan =
+                assertDoesNotThrow(() -> MacroExpansionPlanner.plan(composite));
+        assertEquals(1, compositePlan.workItems().size());
     }
 
     @Test
@@ -555,20 +551,69 @@ final class MacroInvocationPlannerTest {
     }
 
     @Test
-    void nonliteralConstQuoteFailsClosedRatherThanRunningAtRuntime() {
+    void boundedConstArithmeticIsEvaluatedAndQuotedBeforeRuntime() {
+        Ast.Program checked = assertDoesNotThrow(
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro literal(Const<int> value) -> Syntax<Expr> {
+                            return quote(value);
+                        }
+                        fnc answer() -> int {
+                            return literal!(const (40 + 2) * 2 - 42);
+                        }
+                        """));
+
+        Ast.FunctionDecl function = assertInstanceOf(
+                Ast.FunctionDecl.class,
+                checked.modules().getFirst().declarations().getFirst());
+        Ast.ReturnStmt returned = assertInstanceOf(
+                Ast.ReturnStmt.class, function.body().getFirst());
+        Ast.LiteralExpr emitted = assertInstanceOf(
+                Ast.LiteralExpr.class, returned.value());
+        assertEquals(42L, emitted.value());
+    }
+
+    @Test
+    void boundedConstCollectionsAreNormalizedIntoCheckedRuntimeAst() {
+        Ast.Program checked = assertDoesNotThrow(
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro values(Const<List<int>> value) -> Syntax<Expr> {
+                            return quote(value);
+                        }
+                        fnc answer() -> List<int> {
+                            return values!(const [1 + 1, 3 * 2, 10 - 1]);
+                        }
+                        """));
+
+        Ast.FunctionDecl function = assertInstanceOf(
+                Ast.FunctionDecl.class,
+                checked.modules().getFirst().declarations().getFirst());
+        Ast.ReturnStmt returned = assertInstanceOf(
+                Ast.ReturnStmt.class, function.body().getFirst());
+        Ast.ListExpr emitted = assertInstanceOf(
+                Ast.ListExpr.class, returned.value());
+        assertEquals(List.of(2L, 6L, 9L),
+                emitted.elements().stream()
+                        .map(Ast.LiteralExpr.class::cast)
+                        .map(Ast.LiteralExpr::value)
+                        .toList());
+    }
+
+    @Test
+    void runtimeDependentConstStillFailsClosedWithoutEarlyExecution() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
                         define macro literal(Const<int> value) -> Syntax<Expr> {
                             return quote(value);
                         }
-                        fnc answer() -> int {
-                            return literal!(const 40 + 2);
+                        fnc answer(int runtimeValue) -> int {
+                            return literal!(const runtimeValue + 1);
                         }
                         """));
-        assertTrue(failure.getMessage().contains("bounded comptime evaluator"),
+
+        assertTrue(failure.getMessage().contains("not a closed compile-time expression"),
                 failure::toString);
-        assertTrue(failure.getMessage().contains("runtime fallback is forbidden"),
+        assertTrue(failure.getMessage().contains("runtime evaluation fallback is forbidden"),
                 failure::toString);
     }
 
