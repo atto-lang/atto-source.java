@@ -23,6 +23,7 @@ The method name describes the operation, not the scheduling mechanism:
 | `socket.close()` | `void` |
 | `http.get_text(url)` | `String` (response body) |
 | `http.post_text(url, text)` | `String` (response body) |
+| `stdio.stdin.read_line()` | `Option<String>` (`None` at EOF) |
 
 `File` aliases `fs`; `net` aliases `network`. TCP connections are local
 capabilities, not mailbox-sendable values. Await each operation before starting
@@ -48,6 +49,9 @@ awaitable and still returns `Future<T>`:
 val String text = await fs.read_text_sync("./message.txt");
 val TcpConnection socket = await network.connect_sync("127.0.0.1", 9000);
 ```
+
+`stdio.stdin.read_line_sync()` follows the same convention as the other explicit
+sync spellings.
 
 `_sync` means “this implementation performs synchronous/blocking host I/O on
 a bounded native-I/O worker”; it does **not** mean “park the actor carrier”.
@@ -93,8 +97,9 @@ Close TCP sockets explicitly when finished; context shutdown is a fallback.
 
 The server-side HTTP API already returns futures for accept, body reads, response
 writes and graceful shutdown. Listener setup and synchronous abort/close control
-remain separate operations. Stdout/console export and stdin are not migrated by
-this change. This implementation does not add physical actor heap isolation.
+remain separate operations. `stdio.stdin.read_line()` is migrated to the bounded
+native-I/O scheduler; stdout/console export is not changed by this proposal.
+This implementation does not add physical actor heap isolation.
 
 ## Validation
 
