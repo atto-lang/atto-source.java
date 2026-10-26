@@ -3025,7 +3025,7 @@ public final class TypeChecker {
         if (expr instanceof Ast.CallExpr call) {
             // Future-aware value pipes are authorized by an identity-bound
             // static proof. Ordinary direct calls keep their normal semantics.
-            Type lifted = checkedPureFuturePipe(call, env, generics, self);
+            Type lifted = checkedFuturePipe(call, env, generics, self);
             if (lifted != null) return lifted;
             if (call.callee() instanceof Ast.MemberExpr sumMethod
                     && Set.of("map", "map_err", "and_then", "or_else", "filter",
@@ -4929,47 +4929,49 @@ public final class TypeChecker {
     }
 
     /**
-     * Static admission for the first runnable Future-pipe slice:
-     * a pure, unary int -> int function, with no eager extra arguments.
+     * Static admission for the first executable Future-pipe slice.
      *
-     * <p>Do not widen this to arbitrary callbacks, HasFuture, user-defined
-     * effects, borrows or actors by syntax inspection. Those need a separate
-     * checked lowering plan and physical work-retirement proof.</p>
+     * <p>The plan is now type-general: any concrete A -> B stage is accepted
+     * when its body fits the closed pure-expression subset below. A stage whose
+     * invocation returns Future<B> is flattened exactly once. Effects are
+     * resolved and retained in the plan even though source exceptional-effect
+     * execution remains globally gated until throw/raise/panic lowering lands.</p>
      */
-    private Type checkedPureFuturePipe(
+    private Type checkedFuturePipe(
             Ast.CallExpr call, Env env, Set<String> generics, Type self) {
         if (call.origin() != Ast.CallOrigin.VALUE_PIPE_ARGUMENT
                 || call.arguments().isEmpty()) return null;
 
-        // The first executable lowering slice only admits a named Future
-        // binding or a function-call producer. Avoid rechecking arbitrary
-        // scalar-pipe operands (especially assignments and rt take) in this
-        // speculative Future detection path.
         Ast.Expr source = call.arguments().getFirst();
         if (!(source instanceof Ast.NameExpr) && !(source instanceof Ast.CallExpr)) {
             return null;
         }
+
         final Type prior;
+        Types.CheckedEffects priorEffects = Types.CheckedEffects.none();
         if (source instanceof Ast.CallExpr candidate
                 && candidate.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT) {
-            // A pipe chain is syntactically nested. Prefer an already-lifted
-            // inner stage, but also allow an eager scalar prefix to *become*
-            // asynchronous. Example:
+            // Prefer an already-lifted inner stage, but allow an eager scalar
+            // prefix to become asynchronous:
             //
-            //   21 |> start_async() |> finish()
+            //   value |> start_async() |> finish()
             //
-            // The first pipe keeps ordinary eager semantics and produces a
-            // Future<int>; only the following stage is deferred. Typing the
-            // scalar prefix here is safe because this is static analysis, and
-            // it preserves the syntax-origin distinction from direct
-            // f(Future<T>) calls.
-            Type nested = checkedPureFuturePipe(candidate, env, generics, self);
-            prior = nested != null
-                    ? nested
-                    : typeOf(candidate, env, generics, self);
+            Type nested = checkedFuturePipe(candidate, env, generics, self);
+            if (nested != null) {
+                prior = nested;
+                PipelinePlan nestedPlan = pendingFutureStages.get(candidate);
+                if (nestedPlan == null) {
+                    throw new IllegalStateException(
+                            "checked nested Future pipeline is missing its staged plan");
+                }
+                priorEffects = nestedPlan.cumulativeEffects();
+            } else {
+                prior = typeOf(candidate, env, generics, self);
+                priorEffects = sourceFutureEffects(candidate);
+            }
         } else {
             if (source instanceof Ast.CallExpr candidate) {
-                // Avoid speculative retyping of ordinary scalar producers.
+                // Avoid speculative retyping of arbitrary scalar producers.
                 if (candidate.origin() != Ast.CallOrigin.DIRECT
                         || !(candidate.callee() instanceof Ast.NameExpr producerName)
                         || env.lookup(producerName.name()) != null) return null;
@@ -4978,6 +4980,7 @@ public final class TypeChecker {
                 if (producer == null
                         || (!producer.async()
                                 && !producer.returnType().name().equals("Future"))) return null;
+                priorEffects = resolvedPipelineEffects(producer.effects());
             }
             prior = typeOf(source, env, generics, self);
         }
@@ -4994,12 +4997,8 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "Future value-pipe currently requires a named unary stage with no extra arguments");
         }
+
         Ast.FunctionDecl stage = findFunction(name.name(), 1);
-        // This implementation invokes the checked declaration through the
-        // current evaluator. Cross-module/imported callable execution needs
-        // its own owner/environment binding, not just a declaration pointer.
-        // Fail closed rather than accidentally run an imported body with the
-        // caller's module namespace or privileges.
         if (stage != null
                 && !java.util.Objects.equals(
                         unqualifiedFunctionOwners.get(name.name()), currentLexicalModule)) {
@@ -5015,37 +5014,119 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "Future value-pipe stage requires a pure sync/async non-generic unary function");
         }
+
         Ast.Param param = stage.parameters().getFirst();
-        Type input = resolveParam(param, generics, self);
-        Type output = resolve(stage.returnType(), generics, self);
-        if (input != Primitive.INT || output != Primitive.INT
-                || !isPurePipeIntFunctionBody(
-                        stage,
-                        param.name(),
-                        java.util.Collections.newSetFromMap(new IdentityHashMap<>()))) {
-            throw new IllegalArgumentException(
-                    "Future value-pipe currently requires a pure int -> int sync/async stage");
-        }
+        Type input = resolveParam(param, Set.of(), null);
         requireAssignable(pending.arguments().getFirst(), input,
                 "Future pipeline stage " + name.name() + " input");
-        // This proof is attached only after the entire stage is checked.
-        // Rewrites deliberately lose it, so the evaluator cannot execute a
-        // type-checked stage body with a substituted callee or argument.
-        Ast.FunctionDecl priorStage = pendingPureFutureStages.putIfAbsent(call, stage);
-        if (priorStage != null && priorStage != stage) {
+
+        if (!stage.effects().isEmpty()) {
+            // Keep the local boundary explicit even if the global source-effect
+            // gate is relaxed independently. Pipeline runtime classification
+            // must exist before an exceptional row becomes executable.
+            throw new IllegalArgumentException(
+                    "Future value-pipe stage effects are preserved in PipelinePlan but "
+                            + "exceptional effect execution is not yet enabled");
+        }
+        if (!isPurePipeFunctionBody(
+                stage,
+                param.name(),
+                java.util.Collections.newSetFromMap(new IdentityHashMap<>()))) {
+            throw new IllegalArgumentException(
+                    "Future value-pipe currently requires a pure unary sync/async stage body");
+        }
+
+        Type declaredResult = resolve(stage.returnType(), Set.of(), null);
+        Type invocationResult = callableResult(stage.async(), false, declaredResult);
+        boolean flattensFuture = invocationResult instanceof Named future
+                && future.name().equals("Future")
+                && future.arguments().size() == 1;
+        Type output = flattensFuture
+                ? ((Named) invocationResult).arguments().getFirst()
+                : invocationResult;
+        Ast.TypeRef outputRef = pipelineOutputTypeRef(stage, flattensFuture);
+
+        Types.CheckedEffects stageEffects = resolvedPipelineEffects(stage.effects());
+        Types.CheckedEffects cumulativeEffects = priorEffects.union(stageEffects);
+        PipelinePlan plan = new PipelinePlan(
+                stage,
+                input,
+                output,
+                outputRef,
+                stage.async(),
+                flattensFuture,
+                stageEffects,
+                cumulativeEffects,
+                PipelineInputOwnership.BORROWED_UPSTREAM,
+                flattensFuture
+                        ? PipelineStageFutureOwnership.OWNED_STAGE_RESULT
+                        : PipelineStageFutureOwnership.NONE);
+
+        PipelinePlan priorPlan = pendingFutureStages.putIfAbsent(call, plan);
+        if (priorPlan != null
+                && (priorPlan.target() != stage || !priorPlan.equals(plan))) {
             throw new IllegalStateException(
                     "Future pipeline stage rebound during type checking");
         }
         return new Named("Future", List.of(output));
     }
 
-    private boolean isPurePipeIntFunctionBody(
+    /**
+     * Source exceptional effects remain globally fail-closed, but plans retain
+     * the exact resolved category rows now so later lowering cannot erase them.
+     */
+    private Types.CheckedEffects resolvedPipelineEffects(Ast.EffectSpec effects) {
+        return new Types.CheckedEffects(
+                effects.throwsTypes().stream()
+                        .map(type -> resolve(type, Set.of(), null)).toList(),
+                effects.raisesTypes().stream()
+                        .map(type -> resolve(type, Set.of(), null)).toList(),
+                effects.panicsTypes().stream()
+                        .map(type -> resolve(type, Set.of(), null)).toList());
+    }
+
+    /** Best-effort producer row for a directly visible source call. */
+    private Types.CheckedEffects sourceFutureEffects(Ast.CallExpr source) {
+        if (!(source.callee() instanceof Ast.NameExpr name)) {
+            return Types.CheckedEffects.none();
+        }
+        Ast.FunctionDecl producer = findFunction(name.name(), source.arguments().size());
+        if (producer == null
+                || !java.util.Objects.equals(
+                        unqualifiedFunctionOwners.get(name.name()), currentLexicalModule)) {
+            return Types.CheckedEffects.none();
+        }
+        return resolvedPipelineEffects(producer.effects());
+    }
+
+    /**
+     * The pipeline's Future wraps the value produced after exactly one await of
+     * the stage invocation result. For an async function the declared return is
+     * already its Future payload; for a synchronous Future-returning function
+     * the payload is the Future's element.
+     */
+    private static Ast.TypeRef pipelineOutputTypeRef(
+            Ast.FunctionDecl stage, boolean flattensFuture) {
+        if (!flattensFuture) return stage.returnType();
+        if (stage.async()) return stage.returnType();
+        Ast.TypeRef declared = stage.returnType();
+        if (!declared.name().equals("Future") || declared.arguments().size() != 1) {
+            throw new IllegalStateException(
+                    "synchronous flattened Future stage lacks Future<T> return metadata");
+        }
+        return declared.arguments().getFirst();
+    }
+
+    private boolean isPurePipeFunctionBody(
             Ast.FunctionDecl stage,
             String inputName,
             Set<Ast.FunctionDecl> checking) {
         if (!checking.add(stage)) return false;
         try {
-            if (stage.body().isEmpty()) return false;
+            if (!stage.effects().isEmpty()) return false;
+            if (stage.body().isEmpty()) {
+                return stage.returnType().name().equals("void");
+            }
             int last = stage.body().size() - 1;
             for (int i = 0; i < last; i++) {
                 Ast.Stmt statement = stage.body().get(i);
@@ -5057,70 +5138,74 @@ public final class TypeChecker {
                     return false;
                 }
             }
-            return stage.body().get(last) instanceof Ast.ReturnStmt ret
-                    && isPurePipeIntExpression(ret.value(), inputName, checking);
+            if (!(stage.body().get(last) instanceof Ast.ReturnStmt ret)) return false;
+            if (ret.value() == null) return stage.returnType().name().equals("void");
+            return isPurePipeExpression(ret.value(), inputName, checking);
         } finally {
             checking.remove(stage);
         }
     }
 
-    private boolean isPurePipeIntExpression(
+    private boolean isPurePipeExpression(
             Ast.Expr expression,
             String inputName,
             Set<Ast.FunctionDecl> checking) {
         if (expression instanceof Ast.NameExpr name) return name.name().equals(inputName);
-        if (expression instanceof Ast.LiteralExpr literal) return literal.value() instanceof Long;
+        if (expression instanceof Ast.LiteralExpr) return true;
         if (expression instanceof Ast.UnaryExpr unary) {
-            return (unary.operator().equals("-") || unary.operator().equals("+"))
-                    && isPurePipeIntExpression(unary.operand(), inputName, checking);
+            return Set.of("+", "-", "!").contains(unary.operator())
+                    && isPurePipeExpression(unary.operand(), inputName, checking);
         }
         if (expression instanceof Ast.BinaryExpr binary) {
-            return (binary.operator().equals("+") || binary.operator().equals("-")
-                            || binary.operator().equals("*"))
-                    && isPurePipeIntExpression(binary.left(), inputName, checking)
-                    && isPurePipeIntExpression(binary.right(), inputName, checking);
+            return Set.of(
+                            "+", "-", "*", "/", "%", "==", "!=", "<", "<=", ">", ">=",
+                            "&&", "||", "&", "|", "^", "<<", ">>")
+                    .contains(binary.operator())
+                    && isPurePipeExpression(binary.left(), inputName, checking)
+                    && isPurePipeExpression(binary.right(), inputName, checking);
         }
         if (expression instanceof Ast.AwaitExpr awaited) {
-            return isPurePipeAwait(awaited.expression(), inputName, checking);
+            return isPurePipeHelperCall(
+                    awaited.expression(), inputName, checking, true);
+        }
+        if (expression instanceof Ast.CallExpr) {
+            // This admits a synchronous stage returning a freshly created
+            // Future from a checked pure async helper. TaskPipeline owns and
+            // flattens that stage result exactly once.
+            return isPurePipeHelperCall(expression, inputName, checking, false);
         }
         return false;
     }
 
-    /**
-     * A pure async stage may itself await a same-module pure async int helper.
-     * This is deliberately structural and closed: no first-class callback,
-     * generic, actor, imported, trapped, explicitly-suspends, or effectful
-     * helper can acquire a pipeline proof through this path.
-     */
-    private boolean isPurePipeAwait(
-            Ast.Expr awaited,
+    private boolean isPurePipeHelperCall(
+            Ast.Expr expression,
             String inputName,
-            Set<Ast.FunctionDecl> checking) {
-        if (!(awaited instanceof Ast.CallExpr call)
+            Set<Ast.FunctionDecl> checking,
+            boolean mustBeAsync) {
+        if (!(expression instanceof Ast.CallExpr call)
                 || call.origin() != Ast.CallOrigin.DIRECT
                 || call.typeArgumentsPresent()
                 || call.arguments().size() != 1
-                || !(call.callee() instanceof Ast.NameExpr name)) {
+                || !(call.callee() instanceof Ast.NameExpr name)
+                || !isPurePipeExpression(call.arguments().getFirst(), inputName, checking)) {
             return false;
         }
-        if (!isPurePipeIntExpression(call.arguments().getFirst(), inputName, checking)) {
-            return false;
-        }
+
         Ast.FunctionDecl helper = findFunction(name.name(), 1);
         if (helper == null
                 || !java.util.Objects.equals(
                         unqualifiedFunctionOwners.get(name.name()), currentLexicalModule)
                 || helper.kind() != Ast.CallableKind.FNC
                 || helper.actorKind() != Ast.ActorKind.NONE
-                || !helper.async() || helper.suspends() || helper.generator()
+                || (mustBeAsync && !helper.async())
+                || helper.suspends() || helper.generator()
                 || helper.trapped() || helper.nonLexical()
                 || !helper.genericParameters().isEmpty() || !helper.annotations().isEmpty()
-                || helper.parameters().size() != 1 || helper.parameters().getFirst().mutable()
-                || !helper.parameters().getFirst().type().name().equals("int")
-                || !helper.returnType().name().equals("int")) {
+                || !helper.effects().isEmpty()
+                || helper.parameters().size() != 1 || helper.parameters().getFirst().mutable()) {
             return false;
         }
-        return isPurePipeIntFunctionBody(
+        return isPurePipeFunctionBody(
                 helper,
                 helper.parameters().getFirst().name(),
                 checking);
