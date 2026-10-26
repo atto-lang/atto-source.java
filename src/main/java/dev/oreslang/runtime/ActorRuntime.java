@@ -1863,18 +1863,22 @@ public final class ActorRuntime implements AutoCloseable {
      * code directly.</p>
      */
     public final class ContinuationTarget {
-        private final ActorId actorId;
+        private final ActorRef<?> actorRef;
 
-        private ContinuationTarget(ActorId actorId) {
-            this.actorId = Objects.requireNonNull(actorId, "actorId");
+        private ContinuationTarget(ActorRef<?> actorRef) {
+            this.actorRef = Objects.requireNonNull(actorRef, "actorRef");
         }
 
         public ActorId actorId() {
-            return actorId;
+            return actorRef.id();
+        }
+
+        public long actorGeneration() {
+            return actorRef.generation();
         }
 
         private boolean enqueue(Runnable continuation) {
-            return enqueueContinuation(actorId, continuation);
+            return enqueueContinuation(actorRef, continuation);
         }
     }
 
@@ -1899,7 +1903,7 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "deferred actor continuation requires an executing actor turn");
         }
-        return new ContinuationTarget(cell.ref.id());
+        return new ContinuationTarget(cell.ref);
     }
 
     /**
@@ -2076,7 +2080,7 @@ public final class ActorRuntime implements AutoCloseable {
                         ? Math.max(0L, nowCpu - cell.turnStartedCpuNanos) : 0L;
                 inheritedQuota = new UntrustedLogicalQuota(
                         ActorRuntime.this,
-                        cell.ref.id(),
+                        cell.ref,
                         cell.policy.maxWallTime().toNanos(),
                         cell.untrustedFuelRemaining,
                         cell.turnStartedWallNanos,
@@ -2085,7 +2089,7 @@ public final class ActorRuntime implements AutoCloseable {
                         ActorRuntime::currentThreadCpuNanos);
                 cell.activeUntrustedSourceQuota = inheritedQuota;
             } else if (inheritedQuota != cell.activeUntrustedSourceQuota
-                    || !inheritedQuota.ownedBy(ActorRuntime.this, cell.ref.id())) {
+                    || !inheritedQuota.ownedBy(ActorRuntime.this, cell.ref)) {
                 throw new SecurityException(
                         "untrusted source-task quota belongs to a different actor or runtime");
             }
@@ -2300,7 +2304,7 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(continuation, "continuation");
 
-        ActorCell<?> cell = actors.get(target.actorId());
+        ActorCell<?> cell = exactCell(target.actorRef);
         if (cell == null || !ownFuture(cell, future, false)) return;
 
         future.whenCompleteRuntime(
@@ -2348,14 +2352,14 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    private boolean enqueueContinuation(ActorId actorId, Runnable continuation) {
-        Objects.requireNonNull(actorId, "actorId");
+    private boolean enqueueContinuation(ActorRef<?> actorRef, Runnable continuation) {
+        Objects.requireNonNull(actorRef, "actorRef");
         Objects.requireNonNull(continuation, "continuation");
-        ActorCell<?> cell = actors.get(actorId);
+        ActorCell<?> cell = exactCell(actorRef);
         if (cell == null || cell.stopped.get() || closed.get()) return false;
         if (!cell.reserveContinuationSlot()) {
             cell.fail(new IllegalStateException(
-                    "actor internal continuation queue overflow for " + actorId));
+                    "actor internal continuation queue overflow for " + actorRef.id()));
             return false;
         }
 
@@ -2366,7 +2370,7 @@ public final class ActorRuntime implements AutoCloseable {
                 if (!cell.continuationMailbox.tryWrite(
                         MessageEnvelope.continuation(continuation))) {
                     throw new IllegalStateException(
-                            "actor continuation mailbox capacity invariant violated for " + actorId);
+                            "actor continuation mailbox capacity invariant violated for " + actorRef.id());
                 }
                 admitted = true;
 
@@ -2415,7 +2419,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         future.whenCompleteRuntime((ignored, failure) -> {
-            if (!enqueueContinuation(cell.ref.id(), () -> {
+            if (!enqueueContinuation(cell.ref, () -> {
                 long completedSequence;
                 synchronized (cell.lifecycleLock) {
                     completedSequence = cell.activeMail == null
@@ -5971,7 +5975,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (cell != null && cell.kind == ActorKind.UNTRUSTED) {
             UntrustedLogicalQuota logicalQuota = CURRENT_UNTRUSTED_QUOTA.get();
             if (logicalQuota != null) {
-                if (!logicalQuota.ownedBy(this, cell.ref.id())) {
+                if (!logicalQuota.ownedBy(this, cell.ref)) {
                     throw new SecurityException(
                             "untrusted source-task quota escaped its actor");
                 }
@@ -6033,7 +6037,7 @@ public final class ActorRuntime implements AutoCloseable {
      */
     static final class UntrustedLogicalQuota {
         private final ActorRuntime ownerRuntime;
-        private final ActorId ownerActor;
+        private final ActorRef<?> ownerActorRef;
         private final long wallBudgetNanos;
         private final long startedNanos;
         private final LongSupplier wallClock;
@@ -6057,7 +6061,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         UntrustedLogicalQuota(
                 ActorRuntime ownerRuntime,
-                ActorId ownerActor,
+                ActorRef<?> ownerActorRef,
                 long wallBudgetNanos,
                 long fuelRemaining,
                 long startedNanos,
@@ -6068,7 +6072,7 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalArgumentException("invalid untrusted logical quota");
             }
             this.ownerRuntime = ownerRuntime;
-            this.ownerActor = ownerActor;
+            this.ownerActorRef = ownerActorRef;
             this.wallBudgetNanos = wallBudgetNanos;
             this.fuelRemaining = fuelRemaining;
             this.startedNanos = startedNanos;
@@ -6077,8 +6081,8 @@ public final class ActorRuntime implements AutoCloseable {
             this.cpuClock = Objects.requireNonNull(cpuClock, "cpuClock");
         }
 
-        boolean ownedBy(ActorRuntime runtime, ActorId actor) {
-            return ownerRuntime == runtime && Objects.equals(ownerActor, actor);
+        boolean ownedBy(ActorRuntime runtime, ActorRef<?> actorRef) {
+            return ownerRuntime == runtime && ownerActorRef == actorRef;
         }
 
         /** Remaining cohort wall time, including elapsed suspended time. */
@@ -6094,7 +6098,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (ownerRuntime != null) {
                 ActorExecutionContext context = CURRENT_ACTOR_EXECUTION.get();
                 if (context == null || context.runtime() != ownerRuntime
-                        || !context.actorId().equals(ownerActor)) {
+                        || ActorRuntime.currentActorRef() != ownerActorRef) {
                     throw new SecurityException(
                             "untrusted source-task quota entered outside its actor");
                 }
