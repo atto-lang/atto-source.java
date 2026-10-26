@@ -46,9 +46,28 @@ All returned payloads are defensive copies. The implementation uses only
 closed-world JDK primitives and has no reflection requirement, preserving the
 Native Image/AOT direction.
 
+## Implemented opening-handshake boundary
+
+`WebSocketHandshake.admit` now validates the protocol-defining fields before
+any connection capability can exist: exact GET + HTTP/1.1, bounded ASCII
+Upgrade/Connection token lists, WebSocket version 13, and a canonical padded
+Base64 16-byte nonce. It returns the RFC 6455 Sec-WebSocket-Accept value using
+the protocol-required SHA-1 construction. SHA-1 here is a protocol transform,
+not a password/signature security primitive.
+
+`requireAllowedOrigin` provides a deliberately exact browser-origin allowlist:
+missing policy, `null`, wildcard spellings, and unlisted origins fail closed.
+Authentication remains application-owned and must be checked alongside origin
+policy before actor connection authority is granted.
+
+The helper owns no HTTP exchange or socket. A future transport adapter must
+also reject duplicate singleton handshake headers at the raw HTTP-header layer;
+the current first-value HttpExchange accessor is not sufficient evidence for
+that property.
+
 ## Not yet implemented
 
-- HTTP upgrade and Sec-WebSocket-Accept calculation.
+- Binding the validated upgrade to a native HTTP/socket handoff.
 - Native socket/listener ownership and bounded incremental frame reads.
 - Source types such as `WebSocketServer`, `WebSocketConnection`, or actor
   dispatch/claim tokens.
