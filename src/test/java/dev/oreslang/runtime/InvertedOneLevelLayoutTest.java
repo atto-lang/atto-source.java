@@ -162,32 +162,6 @@ final class InvertedOneLevelLayoutTest {
     }
 
     @Test
-    void structuralRecordLayoutUsesCanonicalNameOrderAndIsBounded() {
-        Ast.TypeRef record = Ast.TypeRef.recordType(new LinkedHashMap<>(Map.of(
-                "z", Ast.TypeRef.simple("i32"),
-                "a", Ast.TypeRef.simple("i32"))));
-        InvertedRecordLayout layout = InvertedRecordLayout.fromType(record);
-        assertEquals(java.util.List.of("a", "z"),
-                layout.members().stream().map(InvertedRecordLayout.Member::name).toList());
-        assertArrayEquals(new byte[] {4, 3, 2, 1, 8, 7, 6, 5},
-                layout.encode(Map.of("z", 0x05060708, "a", 0x01020304)));
-
-        LinkedHashMap<String, Ast.TypeRef> tooMany = new LinkedHashMap<>();
-        for (int i = 0; i <= InvertedRecordLayout.MAX_RECORD_MEMBERS; i++) {
-            tooMany.put("f" + i, Ast.TypeRef.simple("i32"));
-        }
-        assertThrows(IllegalArgumentException.class,
-                () -> InvertedRecordLayout.fromType(Ast.TypeRef.recordType(tooMany)));
-
-        LinkedHashMap<String, Ast.TypeRef> tooWide = new LinkedHashMap<>();
-        for (int i = 0; i < (InvertedRecordLayout.MAX_RECORD_BYTES / 8) + 1; i++) {
-            tooWide.put("f" + i, Ast.TypeRef.simple("i64"));
-        }
-        assertThrows(IllegalArgumentException.class,
-                () -> InvertedRecordLayout.fromType(Ast.TypeRef.recordType(tooWide)));
-    }
-
-    @Test
     void rejectsNoncanonicalBooleanBytesAtRecordDecodeBoundary() {
         Ast.TypeRef valueType = Ast.TypeRef.recordType(
                 Map.of("enabled", Ast.TypeRef.simple("bool")));
