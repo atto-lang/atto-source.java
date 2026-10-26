@@ -184,6 +184,65 @@ final class ActorGroupManagedWorkerTest {
     }
 
     @Test
+    void stopAdmissionLedgerUsesExactActorRefNotLogicalId() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            java.util.concurrent.CountDownLatch entered =
+                    new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.CountDownLatch release =
+                    new java.util.concurrent.CountDownLatch(1);
+
+            ActorRuntime.ActorRef<String> live = runtime.spawnShared(
+                    () -> (message, context) -> {
+                        entered.countDown();
+                        release.await(5, TimeUnit.SECONDS);
+                    });
+            group.manageWorker(live);
+            live.send("hold");
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+
+            assertEquals(1, group.cancelWorkers());
+
+            var field = group.getClass().getDeclaredField("stoppingWorkers");
+            field.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            java.util.Set<Object> stopping =
+                    (java.util.Set<Object>) field.get(group);
+            assertTrue(stopping.contains(live),
+                    "stop admission must retain the exact ActorRef incarnation");
+            assertFalse(stopping.contains(live.id()),
+                    "logical ActorId must not be the stop-admission authority key");
+
+            release.countDown();
+            assertTrue(live.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void reverseMembershipIndexUsesExactActorRefIdentity() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorRef<String> live = runtime.spawnShared(
+                    () -> (message, context) -> { });
+            group.join(live, group.joinCapability());
+
+            var field = ActorRuntime.class.getDeclaredField("groupMemberships");
+            field.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            java.util.Map<Object, ?> memberships =
+                    (java.util.Map<Object, ?>) field.get(runtime);
+            assertTrue(memberships.containsKey(live),
+                    "reverse membership quota must be scoped to the exact ActorRef");
+            assertFalse(memberships.containsKey(live.id()),
+                    "logical ActorId must not merge membership quotas across generations");
+
+            group.close();
+            live.stop();
+            live.done().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void managementRejectsCrossRuntimeRefsAndRequiresActiveActor() throws Exception {
         try (ActorRuntime one = new ActorRuntime();
              ActorRuntime two = new ActorRuntime()) {
