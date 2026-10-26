@@ -291,23 +291,19 @@ final class NamedArgumentAndRecordSpreadTest {
     }
 
     @Test
-    void genericNamedCallsRemainFailClosed() {
-        IllegalArgumentException failure = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        fnc identity<T>(T value): T {
-                            return value;
-                        }
+    void genericNamedCallsUseTheCheckedFormalBindingPlan() throws Exception {
+        String code = """
+                fnc identity<T>(T value): T {
+                    return value;
+                }
 
-                        pub routine main(): void {
-                            stdio.stdout.write(identity(value: 42));
-                            return;
-                        }
-                        """)));
-        assertTrue(
-                failure.getMessage().contains("generic")
-                        || failure.getMessage().contains("named"),
-                failure.getMessage());
+                pub routine main(): void {
+                    stdio.stdout.write(identity(value: 42));
+                    return;
+                }
+                """;
+
+        assertEquals("42", checkedExecution(code));
     }
 
     @Test
