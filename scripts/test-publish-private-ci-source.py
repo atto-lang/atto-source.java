@@ -161,6 +161,29 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "repository identity/state"):
                 ORIGINAL_REQUIRE_RESOLVED()
 
+    def test_quarantined_repository_id_rejected_even_after_slug_rename(self):
+        renamed = b"renamed-owner/renamed-carrier 1323575966\n"
+        with self.assertRaisesRegex(pub.Denied, "repository ID is quarantined"):
+            pub._parse_policy_approval(
+                renamed,
+                "renamed-owner/renamed-carrier",
+                "private CI approval policy",
+            )
+
+        metadata = {
+            "id": 1323575966,
+            "full_name": "renamed-owner/renamed-carrier",
+            "visibility": "private",
+            "private": True,
+            "archived": False,
+            "disabled": False,
+            "fork": False,
+            "default_branch": "main",
+        }
+        with patch.object(pub, "gh_api", return_value=metadata):
+            with self.assertRaisesRegex(pub.Denied, "repository ID is quarantined"):
+                pub.checked_repo("renamed-owner/renamed-carrier", 1323575966)
+
     def test_quarantined_incident_carrier_rejected_before_incident_or_local_guard(self):
         with (
             patch.object(pub, "require_resolved_blocking_incidents") as incidents,
@@ -184,6 +207,71 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "blocking incident"):
                 ORIGINAL_REQUIRE_PREFLIGHT("trusted/ci", self.root)
             run.assert_not_called()
+
+    def test_legacy_cli_is_unconditionally_disabled(self):
+        with patch.object(pub, "publish") as publish:
+            self.assertEqual(pub.main([]), 1)
+            publish.assert_not_called()
+
+    def test_github_api_environment_rejects_ambient_transport_and_config(self):
+        hostile = {
+            "GH_TOKEN": "token",
+            "HTTP_PROXY": "http://attacker.invalid:8080",
+            "https_proxy": "http://attacker.invalid:8080",
+            "SSL_CERT_FILE": "/tmp/evil-ca.pem",
+            "NODE_EXTRA_CA_CERTS": "/tmp/evil-node-ca.pem",
+            "GH_CONFIG_DIR": "/tmp/evil-gh",
+            "GITHUB_API_URL": "https://attacker.invalid/api/v3",
+            "HOME": "/tmp/evil-home",
+            "XDG_CONFIG_HOME": "/tmp/evil-xdg",
+        }
+        with patch.dict(os.environ, hostile, clear=True):
+            env = pub.github_api_environment()
+        self.assertEqual(env["GH_TOKEN"], "token")
+        self.assertEqual(env["GH_HOST"], "github.com")
+        self.assertEqual(env["HOME"], "/nonexistent")
+        self.assertEqual(env["XDG_CONFIG_HOME"], "/nonexistent")
+        self.assertEqual(env["GIT_CONFIG_NOSYSTEM"], "1")
+        self.assertEqual(env["GIT_CONFIG_GLOBAL"], "/dev/null")
+        for name in (
+            "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+            "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+            "SSL_CERT_FILE", "SSL_CERT_DIR", "SSLKEYLOGFILE",
+            "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+            "GH_CONFIG_DIR", "GH_ENTERPRISE_TOKEN", "GITHUB_API_URL",
+        ):
+            self.assertNotIn(name, env)
+
+    def test_github_api_environment_requires_exactly_one_explicit_token(self):
+        for values in ({}, {"GH_TOKEN": "a", "GITHUB_TOKEN": "b"}):
+            with self.subTest(values=values), patch.dict(os.environ, values, clear=True):
+                with self.assertRaisesRegex(pub.Denied, "exactly one explicit"):
+                    pub.github_api_environment()
+
+    def test_checked_repo_rejects_fork_archived_disabled_and_non_main(self):
+        base = {
+            "id": 246810,
+            "full_name": "TRUSTED/CI",
+            "visibility": "private",
+            "private": True,
+            "archived": False,
+            "disabled": False,
+            "fork": False,
+            "default_branch": "main",
+        }
+        with patch.object(pub, "gh_api", return_value=dict(base)):
+            self.assertEqual(pub.checked_repo("trusted/ci", 246810)["id"], 246810)
+        for field, value in (
+            ("archived", True),
+            ("disabled", True),
+            ("fork", True),
+            ("default_branch", "develop"),
+        ):
+            changed = dict(base)
+            changed[field] = value
+            with self.subTest(field=field), patch.object(pub, "gh_api", return_value=changed):
+                with self.assertRaisesRegex(pub.Denied, "identity/state"):
+                    pub.checked_repo("trusted/ci", 246810)
 
     def test_preflight_treats_checkout_guard_as_data_only(self):
         digest = b"x" * 32
@@ -226,7 +314,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(argv[0], "/usr/bin/gh")
         self.assertEqual(env["GH_TOKEN"], "synthetic-test-token")
         self.assertEqual(env["PATH"], "/usr/bin:/bin")
-        self.assertEqual(env["HOME"], "/")
+        self.assertEqual(env["HOME"], "/nonexistent")
         self.assertNotIn("PYTHONPATH", env)
         self.assertNotIn("GH_CONFIG_DIR", env)
         self.assertNotIn("HTTPS_PROXY", env)
@@ -301,7 +389,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.route_calls.append((method, route, payload))
         if route == "repos/trusted/ci":
             return dict(id=246810, full_name="trusted/ci", visibility=self.visibility.pop(0),
-                        private=True, default_branch="main")
+                        private=True, archived=False, disabled=False, fork=False,
+                        default_branch="main")
         if route == "repos/trusted/ci/git/blobs":
             raw = base64.b64decode(payload["content"])
             return {"sha": hashlib.sha1(b"blob " + str(len(raw)).encode("ascii")
