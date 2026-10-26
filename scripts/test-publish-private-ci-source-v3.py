@@ -200,7 +200,7 @@ class PrivateCiV3Test(unittest.TestCase):
             "allowed_prs": [1482],
             "maven_pom_blob_sha": pom,
             "commands": [{
-                "argv": ["mvn", "-o", "test"],
+                "argv": ["mvn", "-o", "-C", "test"],
                 "cwd": ".",
                 "timeout_seconds": 300,
             }],
@@ -858,6 +858,40 @@ class PrivateCiV3Test(unittest.TestCase):
             policy.assert_not_called()
             repo.assert_not_called()
 
+    def test_authorize_write_rejects_open_carrier_incident_171_before_api_or_blob(self):
+        """V3 must recheck unresolved #171 before every source-bearing write."""
+        carrier = contract()
+        with (
+            patch.object(
+                v3.legacy, "require_resolved_blocking_incidents",
+                side_effect=v3.Denied("blocking P0 incident #171 remains unresolved"),
+            ) as incident_gate,
+            patch.object(v3.legacy, "checked_policy_approval") as policy,
+            patch.object(v3.legacy, "checked_repo") as repo,
+        ):
+            with self.assertRaisesRegex(v3.Denied, "#171 remains unresolved"):
+                v3.authorize_write(Path("."), "trusted/ci", POLICY, carrier)
+            incident_gate.assert_called_once_with()
+            policy.assert_not_called()
+            repo.assert_not_called()
+
+    def test_authorize_write_rejects_open_llvm_carrier_incident_172_before_api_or_blob(self):
+        """V3 must recheck #172 and prevent source-bearing write side effects."""
+        carrier = contract()
+        with (
+            patch.object(
+                v3.legacy, "require_resolved_blocking_incidents",
+                side_effect=v3.Denied("blocking P0 incident #172 remains unresolved"),
+            ) as incident_gate,
+            patch.object(v3.legacy, "checked_policy_approval") as policy,
+            patch.object(v3.legacy, "checked_repo") as repo,
+        ):
+            with self.assertRaisesRegex(v3.Denied, "#172 remains unresolved"):
+                v3.authorize_write(Path("."), "trusted/ci", POLICY, carrier)
+            incident_gate.assert_called_once_with()
+            policy.assert_not_called()
+            repo.assert_not_called()
+
     def test_publish_rejects_contract_repository_id_not_in_reviewed_allowlist(self):
         carrier = contract()
         mismatched = dict(carrier, repository_id=carrier["repository_id"] + 1)
@@ -1474,7 +1508,7 @@ class PrivateCiV3Test(unittest.TestCase):
     def test_live_ref_404_is_absent_only_after_private_carrier_recheck(self):
         response = type(
             "Result", (),
-            {"returncode": 1, "stderr": "HTTP 404: Not Found", "stdout": ""},
+            {"returncode": 1, "stderr": "gh: Not Found (HTTP 404)", "stdout": ""},
         )()
         with (
             patch.object(v3, "_gh_ref_request", return_value=response),

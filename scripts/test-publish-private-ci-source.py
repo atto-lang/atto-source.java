@@ -57,6 +57,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             22: ("closed", "completed"),
             77: ("closed", "completed"),
             127: ("closed", "completed"),
+            171: ("closed", "completed"),
+            172: ("closed", "completed"),
         }
         repository_id = (
             pub.BLOCKING_INCIDENT_REPOSITORY_ID
@@ -122,6 +124,70 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "#127 remains unresolved"):
                 ORIGINAL_REQUIRE_RESOLVED()
 
+    def test_blocking_p0_incidents_reject_open_issue_171(self):
+        states = {
+            22: ("closed", "completed"),
+            77: ("closed", "completed"),
+            127: ("closed", "completed"),
+            171: ("open", None),
+        }
+        with patch.object(pub, "gh_api", side_effect=self.incident_api(states)):
+            with self.assertRaisesRegex(pub.Denied, "#171 remains unresolved"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_issue_171_identity_drift(self):
+        ids = dict(pub.BLOCKING_INCIDENT_IDS)
+        ids[171] += 1
+        with patch.object(
+            pub, "gh_api", side_effect=self.incident_api(issue_ids=ids),
+        ):
+            with self.assertRaisesRegex(pub.Denied, "incident identity"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_issue_171_not_planned(self):
+        states = {
+            22: ("closed", "completed"),
+            77: ("closed", "completed"),
+            127: ("closed", "completed"),
+            171: ("closed", "not_planned"),
+        }
+        with patch.object(pub, "gh_api", side_effect=self.incident_api(states)):
+            with self.assertRaisesRegex(pub.Denied, "#171 remains unresolved"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_open_issue_172(self):
+        states = {
+            22: ("closed", "completed"),
+            77: ("closed", "completed"),
+            127: ("closed", "completed"),
+            171: ("closed", "completed"),
+            172: ("open", None),
+        }
+        with patch.object(pub, "gh_api", side_effect=self.incident_api(states)):
+            with self.assertRaisesRegex(pub.Denied, "#172 remains unresolved"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_issue_172_identity_drift(self):
+        ids = dict(pub.BLOCKING_INCIDENT_IDS)
+        ids[172] += 1
+        with patch.object(
+            pub, "gh_api", side_effect=self.incident_api(issue_ids=ids),
+        ):
+            with self.assertRaisesRegex(pub.Denied, "incident identity"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_issue_172_not_planned(self):
+        states = {
+            22: ("closed", "completed"),
+            77: ("closed", "completed"),
+            127: ("closed", "completed"),
+            171: ("closed", "completed"),
+            172: ("closed", "not_planned"),
+        }
+        with patch.object(pub, "gh_api", side_effect=self.incident_api(states)):
+            with self.assertRaisesRegex(pub.Denied, "#172 remains unresolved"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
     def test_blocking_p0_incidents_reject_not_planned_closure(self):
         states = {
             22: ("closed", "not_planned"),
@@ -171,6 +237,40 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 ORIGINAL_REQUIRE_PREFLIGHT("zed-pkg-test/java-app", self.root)
             incidents.assert_not_called()
             run.assert_not_called()
+            api.assert_not_called()
+
+    def test_quarantined_recovery_carrier_rejected_before_any_source_access(self):
+        with (
+            patch.object(pub, "require_resolved_blocking_incidents") as incidents,
+            patch.object(pub, "checked_policy_approval") as policy,
+            patch.object(pub, "checked_repo") as identity,
+            patch.object(pub, "collect_source") as collect,
+            patch.object(pub, "gh_api") as api,
+        ):
+            with self.assertRaisesRegex(pub.Denied, "quarantined"):
+                ORIGINAL_REQUIRE_PREFLIGHT(
+                    "agent-pontifex-test/agent-pontifex-e2e-tests", self.root,
+                )
+            incidents.assert_not_called()
+            policy.assert_not_called()
+            identity.assert_not_called()
+            collect.assert_not_called()
+            api.assert_not_called()
+
+    def test_quarantined_llvm_carrier_rejected_before_any_source_access(self):
+        with (
+            patch.object(pub, "require_resolved_blocking_incidents") as incidents,
+            patch.object(pub, "checked_policy_approval") as policy,
+            patch.object(pub, "checked_repo") as identity,
+            patch.object(pub, "collect_source") as collect,
+            patch.object(pub, "gh_api") as api,
+        ):
+            with self.assertRaisesRegex(pub.Denied, "quarantined"):
+                ORIGINAL_REQUIRE_PREFLIGHT("led-dynamo/leddy-e2e", self.root)
+            incidents.assert_not_called()
+            policy.assert_not_called()
+            identity.assert_not_called()
+            collect.assert_not_called()
             api.assert_not_called()
 
     def test_preflight_checks_blocking_incidents_before_local_guard(self):
@@ -355,7 +455,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         api, _ = self.verified_origin_api(codeowners_file=valid)
         digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
         with patch.object(pub, "gh_api", side_effect=api):
-            with self.assertRaisesRegex(pub.Denied, "terminal"):
+            with self.assertRaisesRegex(pub.Denied, "exact export rules"):
                 ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
 
     def test_policy_approval_returns_reviewed_numeric_repository_id(self):
