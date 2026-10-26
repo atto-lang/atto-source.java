@@ -302,8 +302,16 @@ public final class Parser {
                     throw error(peek(), "[EXPORT_KIND_PREFIX_IN_GROUP] typed export kind belongs before the group");
                 }
                 items.add(parseExportItem(kind));
-                if (!match(COMMA)) break;
-                if (check(RBRACE)) break; // one trailing comma is canonical-compatible
+                if (match(COMMA)) {
+                    if (check(RBRACE)) break; // one trailing comma is canonical-compatible
+                    continue;
+                }
+                if (!check(RBRACE)) {
+                    rejectUnsupportedExportTargetSuffix();
+                    throw error(peek(),
+                            "[EXPORT_MALFORMED_LIST] expected ',' or '}' after export item");
+                }
+                break;
             }
             consume(RBRACE, "expected '}' after export group");
         } else {
