@@ -203,7 +203,7 @@ public final class TaskCaptureNames {
                 Set<String> armLocals = new HashSet<>(locals);
                 bindPattern(arm.pattern(), armLocals);
                 visitConditionExpr(arm.guard(), armLocals, names);
-                visitExpr(arm.value(), armLocals, names);
+                visitBody(arm.body(), armLocals, names);
             }
         } else if (expr instanceof Ast.TypeTestExpr s) {
             visitExpr(s.value(), locals, names);
