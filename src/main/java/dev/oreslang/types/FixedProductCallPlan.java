@@ -198,7 +198,14 @@ public record FixedProductCallPlan(
             List<String> parameterNames,
             List<InputSlot> inputs) {
         CheckedCallPlan checked =
-                CheckedCallPlan.required(parameterNames, inputs);
+                CheckedCallPlan.required(
+                        parameterNames,
+                        inputs.stream()
+                                .map(input -> new CheckedCallPlan.InputSlot(
+                                        input.label(),
+                                        input.callItemIndex(),
+                                        input.projectionIndex()))
+                                .toList());
         List<BoundSlot> bound =
                 checked.sourceOrder().stream()
                         .map(slot -> new BoundSlot(
