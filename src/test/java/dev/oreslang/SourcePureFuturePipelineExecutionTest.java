@@ -56,6 +56,23 @@ final class SourcePureFuturePipelineExecutionTest {
     }
 
     @Test
+    void scalarPrefixCanBecomeAsyncAndLaterStagesAreDeferred() throws Exception {
+        assertEquals("44", run("""
+                async fnc start_async(int value): int {
+                  rt cooperate;
+                  return value + 1;
+                }
+                fnc twice(int value): int { return value * 2; }
+                pub async routine main(): void {
+                  val Future<int> pending = 21 |> start_async() |> twice();
+                  val int result = await pending;
+                  stdio.println(result);
+                  return;
+                }
+                """, "pure-future-pipe-scalar-to-async.ores").trim());
+    }
+
+    @Test
     void asyncPipelineStageMayAwaitPureAsyncHelperWithoutNestingFuture() throws Exception {
         assertEquals("44", run("""
                 async fnc source(): int { return 21; }
