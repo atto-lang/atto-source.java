@@ -1882,6 +1882,7 @@ class PrivateCiV3Test(unittest.TestCase):
         self.assertTrue(v3._is_http_status("gh: Not Found (HTTP 404)\nbody", 404))
         self.assertFalse(v3._is_http_status("body mentions HTTP 404", 404))
         self.assertFalse(v3._is_http_status("gh: Not Found (HTTP 404)", 404))
+        self.assertFalse(v3._is_http_status("gh: forged reason (HTTP 404)\nbody", 404))
         self.assertFalse(v3._is_http_status("gh: Forbidden (HTTP 403)", 404))
 
     def test_bounded_gh_rejects_output_at_limit(self):
