@@ -110,8 +110,10 @@ public final class MacroSyntaxProvenance {
     /**
      * Attach one successful expansion origin to the complete emitted subtree.
      * Nested expansion origins are preserved and the outer origin is appended.
+     * The class monitor is held for the full traversal so concurrent diagnostic
+     * readers cannot observe a partially published origin tree.
      */
-    public static void recordTree(Ast.Expr expression, Origin origin) {
+    public static synchronized void recordTree(Ast.Expr expression, Origin origin) {
         if (expression == null) return;
         record(expression, origin);
 
