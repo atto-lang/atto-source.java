@@ -99,6 +99,7 @@ public final class MacroIdentifierHygiene {
     private static final ReferenceQueue<Ast.Expr> CLEARED =
             new ReferenceQueue<>();
     private static final Map<IdentityKey, Identity> IDENTITIES = new HashMap<>();
+    private static final Map<IdentityKey, String> INTERNAL_MODULE_REFERENCES = new HashMap<>();
 
     private MacroIdentifierHygiene() { }
 
@@ -130,6 +131,7 @@ public final class MacroIdentifierHygiene {
         Reference<? extends Ast.Expr> collected;
         while ((collected = CLEARED.poll()) != null) {
             IDENTITIES.remove(collected);
+            INTERNAL_MODULE_REFERENCES.remove(collected);
         }
     }
 
@@ -145,6 +147,48 @@ public final class MacroIdentifierHygiene {
         java.util.Objects.requireNonNull(expression, "identifier expression");
         expunge();
         return IDENTITIES.get(new IdentityKey(expression, null));
+    }
+
+    private static synchronized Ast.NameExpr recordInternalModuleReference(
+            Ast.NameExpr expression,
+            String module) {
+        java.util.Objects.requireNonNull(expression, "internal module reference");
+        if (module == null || module.isBlank()) {
+            throw new IllegalArgumentException("internal module reference module cannot be blank");
+        }
+        String encodedTarget = Ast.internalModuleReferenceTarget(expression.name());
+        if (!module.equals(encodedTarget)) {
+            throw new IllegalArgumentException(
+                    "internal module reference spelling does not match checked capture target");
+        }
+        expunge();
+        INTERNAL_MODULE_REFERENCES.put(
+                new IdentityKey(expression, CLEARED),
+                module);
+        return expression;
+    }
+
+    /**
+     * Semantic-admission gate for compiler-internal module references.
+     *
+     * <p>An encoded $module$ spelling is not authority by itself. Only the
+     * exact NameExpr identity minted by checked capture is accepted. Ordinary
+     * names return null; forged internal spellings fail closed.</p>
+     */
+    public static synchronized String authorizedInternalModuleReferenceTarget(
+            Ast.NameExpr expression) {
+        java.util.Objects.requireNonNull(expression, "module reference expression");
+        String encodedTarget = Ast.internalModuleReferenceTarget(expression.name());
+        if (encodedTarget == null) return null;
+        expunge();
+        String authorized =
+                INTERNAL_MODULE_REFERENCES.get(new IdentityKey(expression, null));
+        if (!encodedTarget.equals(authorized)) {
+            throw new IllegalArgumentException(
+                    "unauthorized compiler-internal module reference; "
+                            + "only checked capture may mint resolved module authority");
+        }
+        return encodedTarget;
     }
 
     public static Ast.NameExpr generated(
@@ -181,9 +225,12 @@ public final class MacroIdentifierHygiene {
             List<Ast.FunctionDecl> declarations) {
         java.util.Objects.requireNonNull(hygiene, "checked capture hygiene identity");
         java.util.Objects.requireNonNull(identifier, "capture identifier");
-        Ast.MemberExpr expression = new Ast.MemberExpr(
+        Ast.NameExpr receiver = recordInternalModuleReference(
                 new Ast.NameExpr(
                         Ast.internalModuleReference(hygiene.callerModule())),
+                hygiene.callerModule());
+        Ast.MemberExpr expression = new Ast.MemberExpr(
+                receiver,
                 identifier.name());
         return record(
                 expression,
