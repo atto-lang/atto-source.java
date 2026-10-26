@@ -69,6 +69,8 @@ public final class TypeChecker {
     private final IdentityHashMap<Ast.ClassDecl, Map<String, Ast.TypeAliasDecl>> linkedClassAliases = new IdentityHashMap<>();
     private Map<String, Ast.TypeAliasDecl> resolvingLinkedFieldAliases = Map.of();
     private final Set<String> hiddenLinkedAliasNames = new HashSet<>();
+    /** Importer-local class names admitted from another source unit. */
+    private final Set<String> linkedImportedClassNames = new HashSet<>();
     private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
     /** Lexical compile-time type aliases local to the block currently being checked. */
     private Env currentTypeScope;
@@ -299,6 +301,7 @@ public final class TypeChecker {
                         "linked public class was not uniquely imported: " + name);
             }
             checker.classes.put(name, declaration);
+            checker.linkedImportedClassNames.add(name);
             Map<String, Ast.TypeAliasDecl> aliases =
                     linkedAliases.getOrDefault(name, Map.of());
             for (Map.Entry<String, Ast.TypeAliasDecl> alias : aliases.entrySet()) {
@@ -4238,6 +4241,13 @@ public final class TypeChecker {
             }
 
             Ast.ConstructorDecl constructor = klass.constructor();
+            if (constructor != null
+                    && constructor.visibility() != Ast.Visibility.PUBLIC
+                    && linkedImportedClassNames.contains(klass.name())) {
+                throw new IllegalArgumentException(
+                        "constructor for imported class '" + klass.name()
+                                + "' is private");
+            }
             if (constructor != null) {
                 if (created.arguments().size() != constructor.arity()) {
                     throw new IllegalArgumentException(
