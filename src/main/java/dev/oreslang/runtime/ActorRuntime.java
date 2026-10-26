@@ -3032,6 +3032,7 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public final class ActorGroup implements AutoCloseable {
         private final ActorGroupId id;
+        private final ActorRef<?> creatorRef;
         private final ActorId creator;
         private final ActorSupervisor supervisor;
         private final int memberLimit;
@@ -3059,11 +3060,12 @@ public final class ActorRuntime implements AutoCloseable {
 
         private ActorGroup(
                 ActorGroupId id,
-                ActorId creator,
+                ActorRef<?> creatorRef,
                 IsolatePolicy creatorPolicy,
                 ActorSupervisor supervisor) {
             this.id = Objects.requireNonNull(id, "id");
-            this.creator = creator;
+            this.creatorRef = creatorRef;
+            this.creator = creatorRef == null ? null : creatorRef.id();
             this.supervisor = Objects.requireNonNull(supervisor, "supervisor");
             Objects.requireNonNull(creatorPolicy, "creatorPolicy");
             this.memberLimit = Math.max(
@@ -3408,9 +3410,11 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public void joinCurrent(ActorGroupJoinCapability capability) {
-            ActorId actorId = currentActorId().orElseThrow(() ->
-                    new SecurityException("joinCurrent requires an actor execution context"));
-            joinId(actorId, capability);
+            ActorRef<?> actorRef = ActorRuntime.currentActorRef();
+            if (actorRef == null) {
+                throw new SecurityException("joinCurrent requires an actor execution context");
+            }
+            joinRef(actorRef, capability);
         }
 
         public void join(ActorRef<?> ref, ActorGroupJoinCapability capability) {
@@ -3419,23 +3423,26 @@ public final class ActorRuntime implements AutoCloseable {
             if (!ref.ownedBy(ActorRuntime.this)) {
                 throw new ActorInvalidReferenceException("ActorRef belongs to a different ActorRuntime");
             }
-            ActorId caller = currentActorId().orElse(null);
-            if (caller != null && !caller.equals(ref.id())) {
+            ActorCell<?> caller = currentActor.get();
+            if (caller != null && caller.ref != ref) {
                 throw new SecurityException("actor code may only join itself to an ActorGroup");
             }
-            joinId(ref.id(), capability);
+            joinRef(ref, capability);
         }
 
-        private void joinId(ActorId actorId, ActorGroupJoinCapability capability) {
+        private void joinRef(ActorRef<?> actorRef, ActorGroupJoinCapability capability) {
+            ActorId actorId = actorRef.id();
             // One admission boundary across ALL groups, including creator
             // auto-memberships. Never reserve a slot on duplicate join.
             synchronized (groupMembershipLock) {
                 synchronized (authorityLock) {
                     requireOpen();
                     requireCapabilityLocked(capability);
-                    ActorCell<?> cell = actors.get(actorId);
+                    ActorCell<?> cell = exactCell(actorRef);
                     if (cell == null || cell.stopped.get()) {
-                        throw new IllegalStateException("actor is not alive: " + actorId);
+                        throw new IllegalStateException(
+                                "actor incarnation is not alive: "
+                                        + actorId + "@" + actorRef.generation());
                     }
                     if (members.contains(actorId)) return;
                     if (members.size() >= memberLimit) {
@@ -3471,7 +3478,7 @@ public final class ActorRuntime implements AutoCloseable {
         public boolean contains(ActorRef<?> ref) {
             Objects.requireNonNull(ref, "ref");
             requireObserver("inspect ActorGroup membership");
-            if (!ref.ownedBy(ActorRuntime.this)) return false;
+            if (!ref.ownedBy(ActorRuntime.this) || exactCell(ref) == null) return false;
             return members.contains(ref.id());
         }
 
@@ -3511,10 +3518,11 @@ public final class ActorRuntime implements AutoCloseable {
         void requireManager(String operation) {
             requireCallerRuntimeAffinity(operation);
             requireNotActorGroupMailman(operation);
-            ActorId caller = currentActorId().orElse(null);
-            if (caller != null && !Objects.equals(caller, creator)) {
+            ActorCell<?> caller = currentActor.get();
+            if (caller != null && caller.ref != creatorRef) {
                 throw new SecurityException(
-                        operation + " requires the ActorGroup creator or host/supervisor");
+                        operation + " requires the exact ActorGroup creator incarnation "
+                                + "or host/supervisor");
             }
         }
 
@@ -4293,11 +4301,12 @@ public final class ActorRuntime implements AutoCloseable {
         requireNotActorGroupMailman("create an ActorGroup");
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
 
-        ActorId creator = currentActorId().orElse(null);
+        ActorRef<?> creatorRef = ActorRuntime.currentActorRef();
+        ActorId creator = creatorRef == null ? null : creatorRef.id();
         IsolatePolicy creatorPolicy =
                 currentActorPolicy() == null ? policyCeiling : currentActorPolicy();
-        if (creator != null && !actors.containsKey(creator)) {
-            throw new IllegalStateException("current actor is no longer registered");
+        if (creatorRef != null && exactCell(creatorRef) == null) {
+            throw new IllegalStateException("current actor incarnation is no longer registered");
         }
 
         synchronized (runtimeLifecycleLock) {
@@ -4324,7 +4333,7 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             }
             synchronized (groupMembershipLock) {
-                ActorCell<?> creatorCell = creator == null ? null : actors.get(creator);
+                ActorCell<?> creatorCell = creatorRef == null ? null : exactCell(creatorRef);
                 if (creator != null && (creatorCell == null || creatorCell.stopped.get())) {
                     throw new IllegalStateException("group creator is no longer alive");
                 }
@@ -4340,7 +4349,7 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 while (true) {
                     ActorGroupId id = ActorGroupId.create();
-                    ActorGroup group = new ActorGroup(id, creator, creatorPolicy, supervisor);
+                    ActorGroup group = new ActorGroup(id, creatorRef, creatorPolicy, supervisor);
                     if (actorGroups.putIfAbsent(id, group) == null) {
                         if (joined != null) {
                             joined.add(id);
