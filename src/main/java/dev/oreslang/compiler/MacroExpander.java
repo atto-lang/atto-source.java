@@ -211,6 +211,11 @@ public final class MacroExpander {
                 if (!(value instanceof Long || value instanceof Double
                         || value instanceof String || value instanceof Boolean
                         || value instanceof dev.oreslang.runtime.OresSymbol)) return false;
+                if (value instanceof Double floating && !Double.isFinite(floating)) {
+                    throw new IllegalArgumentException(
+                            "compile-time macro template non-finite float is forbidden; "
+                                    + "runtime fallback is forbidden");
+                }
                 if (value instanceof String text
                         && text.length() > CompileTimeConstEvaluator.MAX_STRING_CHARS) {
                     throw new IllegalArgumentException(
@@ -424,7 +429,7 @@ public final class MacroExpander {
                 throw new IllegalArgumentException(
                         "macro '" + invocation.name() + "' argument count changed after planning");
             }
-            Map<String, Ast.Expr> syntaxBindings = new HashMap<>();
+            Map<String, Ast.Expr> syntaxBindings = new java.util.LinkedHashMap<>();
             for (int i = 0; i < macro.parameters().size(); i++) {
                 Ast.MacroParam parameter = macro.parameters().get(i);
                 Ast.MacroArgument argument = invocation.arguments().get(i);
