@@ -45,6 +45,8 @@ final class HotCodeGenerationRetentionV1 {
     private final long maxBytes;
     private final Map<Long, Ticket> retained = new LinkedHashMap<>();
     private long heldBytes;
+    // Monotonic across collected images: generation IDs must never ABA-recycle.
+    private long highestAdmittedGeneration;
 
     HotCodeGenerationRetentionV1(int maxImages, long maxBytes) {
         if (maxImages < 1 || maxBytes < 1)
@@ -62,14 +64,15 @@ final class HotCodeGenerationRetentionV1 {
         if (generation < 1 || imageSha256 == null
                 || !imageSha256.matches("[0-9a-f]{64}") || bytes < 1)
             throw new IllegalArgumentException("invalid code-image descriptor");
-        if (retained.containsKey(generation))
-            throw new IllegalStateException("generation already retained");
+        if (generation <= highestAdmittedGeneration)
+            throw new IllegalStateException("stale or reused code-image generation");
         // Subtract first to avoid overflow and keep failed admission atomic.
         if (retained.size() >= maxImages || bytes > maxBytes - heldBytes)
             throw new IllegalStateException("code-image retention budget exhausted; no forced purge");
         Ticket ticket = new Ticket(this, generation, imageSha256, bytes);
         retained.put(generation, ticket);
         heldBytes += bytes;
+        highestAdmittedGeneration = generation;
         return ticket;
     }
 
@@ -88,6 +91,8 @@ final class HotCodeGenerationRetentionV1 {
     /** Failed image cleanup consumes budget and is NEVER silently discarded. */
     synchronized void quarantine(Ticket ticket) {
         require(ticket);
+        if (ticket.phase == Phase.SERVING)
+            throw new IllegalStateException("serving image must be detached before quarantine");
         ticket.phase = Phase.QUARANTINED;
     }
 
