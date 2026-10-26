@@ -7,6 +7,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -64,10 +65,10 @@ public final class ExportMetadataCollector {
         }
 
         result.sort(Comparator
-                .comparing(Entry::ownerNamespaceId)
-                .thenComparing(Entry::externalName)
+                .comparing(Entry::ownerNamespaceId, ExportMetadataCollector::compareUtf8)
+                .thenComparing(Entry::externalName, ExportMetadataCollector::compareUtf8)
                 .thenComparing(e -> e.localKind().name())
-                .thenComparing(Entry::localSymbolId));
+                .thenComparing(Entry::localSymbolId, ExportMetadataCollector::compareUtf8));
         return List.copyOf(result);
     }
 
@@ -102,6 +103,11 @@ public final class ExportMetadataCollector {
                             + binding.ownerNamespaceId() + "' was not found");
         }
 
+        if (binding.localKind() == Ast.ExportKind.CONST) {
+            throw new IllegalArgumentException(
+                    "[EXPORT_CONST_ABI_VALUE_UNENCODED] exported const metadata requires canonical compile-time value encoding");
+        }
+
         List<String> declarationSignatures = new ArrayList<>();
         for (int i = 0; i < owner.declarations().size(); i++) {
             Ast.Decl declaration = owner.declarations().get(i);
@@ -119,7 +125,7 @@ public final class ExportMetadataCollector {
                             + binding.localName() + "' was not found");
         }
 
-        declarationSignatures.sort(String::compareTo);
+        declarationSignatures.sort(ExportMetadataCollector::compareUtf8);
         signature.append(declarationSignatures.size()).append('[');
         for (String item : declarationSignatures) field(signature, item);
         signature.append(']');
@@ -201,7 +207,7 @@ public final class ExportMetadataCollector {
                 appendAnnotations(part, method.annotations());
                 methods.add(part.toString());
             }
-            methods.sort(String::compareTo);
+            methods.sort(ExportMetadataCollector::compareUtf8);
             appendStrings(out, methods);
             return out.toString();
         }
@@ -233,7 +239,7 @@ public final class ExportMetadataCollector {
                 }
                 members.add(part.toString());
             }
-            members.sort(String::compareTo);
+            members.sort(ExportMetadataCollector::compareUtf8);
             appendStrings(out, members);
             return out.toString();
         }
@@ -337,7 +343,7 @@ public final class ExportMetadataCollector {
             appendTypes(part, annotation.arguments());
             parts.add(part.toString());
         }
-        parts.sort(String::compareTo);
+        parts.sort(ExportMetadataCollector::compareUtf8);
         appendStrings(out, parts);
     }
 
@@ -381,6 +387,12 @@ public final class ExportMetadataCollector {
     private static void flags(StringBuilder out, boolean... values) {
         for (boolean value : values) out.append(value ? '1' : '0');
         out.append(';');
+    }
+
+    private static int compareUtf8(String left, String right) {
+        return Arrays.compareUnsigned(
+                left.getBytes(StandardCharsets.UTF_8),
+                right.getBytes(StandardCharsets.UTF_8));
     }
 
     private static String sha256(String source) {
