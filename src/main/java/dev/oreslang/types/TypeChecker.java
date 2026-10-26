@@ -2361,9 +2361,17 @@ public final class TypeChecker {
         List<PipeEndpointContracts.Endpoint> endpoints = stageTypes.stream()
                 .map(this::pipeEndpointFor)
                 .toList();
+
+        // Validate the complete graph's directional ABI before asking whether
+        // any particular transport is executable. An unimplemented first
+        // bridge must never mask a later type mismatch.
+        List<PipeEndpointContracts.Link> links =
+                new ArrayList<>(Math.max(0, endpoints.size() - 1));
         for (int i = 0; i + 1 < endpoints.size(); i++) {
-            PipeEndpointContracts.Link link =
-                    PipeEndpointContracts.connect(endpoints.get(i), endpoints.get(i + 1));
+            links.add(PipeEndpointContracts.connect(
+                    endpoints.get(i), endpoints.get(i + 1)));
+        }
+        for (PipeEndpointContracts.Link link : links) {
             PipeEndpointContracts.requireExecutable(link);
         }
         throw new IllegalStateException(
