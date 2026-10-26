@@ -26,20 +26,26 @@ public final class InvertedArray implements AutoCloseable {
     /** Immutable, ordered, validated physical schema. */
     public static final class Schema {
         public record Field(String name, InvertedColumnStore.Kind kind,
-                            InvertedRecordLayout recordLayout) {
+                            InvertedRecordLayout recordLayout,
+                            Ast.BindingKind bindingKind) {
             public Field(String name, InvertedColumnStore.Kind kind) {
-                this(name, kind, null);
+                this(name, kind, null, Ast.BindingKind.LET);
             }
             public Field {
                 Objects.requireNonNull(name, "field name");
                 Objects.requireNonNull(kind, "field kind");
+                Objects.requireNonNull(bindingKind, "field binding kind");
                 if (!name.matches("[A-Za-z_][A-Za-z0-9_]*")) {
                     throw new IllegalArgumentException("invalid inverted field name");
                 }
                 if ((kind == InvertedColumnStore.Kind.RECORD) != (recordLayout != null)) {
                     throw new IllegalArgumentException("record column requires an explicit fixed layout");
                 }
+                if (bindingKind == Ast.BindingKind.CONST) {
+                    throw new IllegalArgumentException("const inverted fields require unsupported declaration initialization");
+                }
             }
+            public boolean writable() { return bindingKind == Ast.BindingKind.LET; }
         }
         private final String className;
         private final List<Field> fields;
@@ -90,26 +96,30 @@ public final class InvertedArray implements AutoCloseable {
                                     + "' requires a supported fixed-width type with no initializer/annotation");
                 }
                 Ast.TypeRef type = field.type();
-                if (aliases.containsKey(type.name())) {
+                InvertedColumnStore.Kind scalarKind = InvertedRecordLayout.scalarKind(type);
+                if (type.isRecordType()) {
+                    ordered.add(new Field(field.name(), InvertedColumnStore.Kind.RECORD,
+                            InvertedRecordLayout.fromType(type), field.bindingKind()));
+                } else if (scalarKind != null) {
+                    // Builtins always win over a caller-supplied alias map.
+                    // An alias environment must never be able to reinterpret
+                    // an ABI scalar such as f64 as an opaque record.
+                    ordered.add(new Field(field.name(), scalarKind, null, field.bindingKind()));
+                } else if (aliases.containsKey(type.name())) {
                     if (!type.arguments().isEmpty() || type.inferArguments()) {
                         throw new IllegalArgumentException("generic inverted record aliases are unsupported");
                     }
-                    type = Objects.requireNonNull(aliases.get(type.name()), "record alias type");
-                    if (!type.isRecordType()) {
+                    Ast.TypeRef alias = Objects.requireNonNull(
+                            aliases.get(type.name()), "record alias type");
+                    if (!alias.isRecordType()) {
                         throw new IllegalArgumentException("only direct fixed-layout record aliases are supported");
                     }
-                }
-                if (type.isRecordType()) {
                     ordered.add(new Field(field.name(), InvertedColumnStore.Kind.RECORD,
-                            InvertedRecordLayout.fromType(type)));
+                            InvertedRecordLayout.fromType(alias), field.bindingKind()));
                 } else {
-                    InvertedColumnStore.Kind kind = InvertedRecordLayout.scalarKind(type);
-                    if (kind == null) {
-                        throw new IllegalArgumentException(
-                                "unsupported inverted field type '" + type.name()
-                                        + "'; no implicit AoS fallback or recursive SoA lowering");
-                    }
-                    ordered.add(new Field(field.name(), kind));
+                    throw new IllegalArgumentException(
+                            "unsupported inverted field type '" + type.name()
+                                    + "'; no implicit AoS fallback or recursive SoA lowering");
                 }
             }
             return new Schema(klass.name(), ordered, !klass.methods().isEmpty());
@@ -241,6 +251,19 @@ public final class InvertedArray implements AutoCloseable {
         return record == null ? value : record.decode((byte[]) value);
     }
 
+    private void requireWritable(int column) {
+        Field field = schema.fields().get(column);
+        if (!field.writable()) {
+            throw new IllegalStateException(
+                    "inverted field '" + schema.className() + "." + field.name()
+                            + "' is immutable/final after row construction");
+        }
+    }
+
+    private void requireWholeRowWritable() {
+        for (int i = 0; i < schema.fieldCount(); i++) requireWritable(i);
+    }
+
     public void eraseSwap(InvertedColumnStore.Handle handle) {
         store.eraseSwap(handle);
     }
@@ -252,6 +275,7 @@ public final class InvertedArray implements AutoCloseable {
 
     public void write(InvertedColumnStore.Handle handle, String field, Object value) {
         int column = schema.index(field);
+        requireWritable(column);
         store.set(handle, column, encoded(column, value));
     }
 
@@ -266,6 +290,7 @@ public final class InvertedArray implements AutoCloseable {
     }
 
     public void updateRow(InvertedColumnStore.Handle handle, Map<String, ?> fields) {
+        requireWholeRowWritable();
         store.updateRow(handle, checkedValues(fields));
     }
 
@@ -298,6 +323,7 @@ public final class InvertedArray implements AutoCloseable {
             return decoded(column, store.get(handle, column));
         }
         public void set(InvertedColumnStore.Handle handle, Object value) {
+            requireWritable(column);
             store.set(handle, column, encoded(column, value));
         }
     }
@@ -322,6 +348,7 @@ public final class InvertedArray implements AutoCloseable {
 
     public FieldLoan borrowWrite(String field) {
         int index = schema.index(field);
+        requireWritable(index);
         return new FieldLoan(store.borrowWrite(index), index, true);
     }
 
@@ -341,6 +368,7 @@ public final class InvertedArray implements AutoCloseable {
         }
         public void writeAt(int physicalRow, Object value) {
             if (!write) throw new IllegalStateException("read-only column loan");
+            requireWritable(field);
             underlying.set(physicalRow, encoded(field, value));
         }
         @Override public void close() { underlying.close(); }
