@@ -34,6 +34,49 @@ public final class IncrementalCompiler {
         return compile(sources, Map.of());
     }
 
+    /**
+     * Opt-in checked compilation with real, bounded parser diagnostics.
+     * Inspect all independent source units before building a single artifact.
+     * If any syntax issue is found, discard ALL recovered ASTs and fail before
+     * import linking, semantic lowering, or cache mutation.
+     *
+     * Later phases still retain their existing fail-fast behavior; this method
+     * does not claim recovered type/effect/ownership errors.
+     */
+    public synchronized BuildResult compileWithDiagnostics(
+            Map<String, String> sources,
+            Map<String, Map<String, String>> importResolutions,
+            int maxErrors) {
+        java.util.Objects.requireNonNull(sources, "sources");
+        java.util.Objects.requireNonNull(importResolutions, "importResolutions");
+        DiagnosticCollector collector = new DiagnosticCollector(maxErrors);
+        java.util.TreeMap<String, String> ordered = new java.util.TreeMap<>();
+        for (Map.Entry<String, String> entry : sources.entrySet()) {
+            String unitId = normalizeUnitId(entry.getKey());
+            String previous = ordered.putIfAbsent(
+                    unitId, java.util.Objects.requireNonNull(entry.getValue(), "source text"));
+            if (previous != null)
+                throw new IllegalArgumentException("duplicate source unit '" + unitId + "'");
+        }
+        for (Map.Entry<String, String> source : ordered.entrySet()) {
+            Parser.collectSyntaxDiagnostics(source.getValue(), source.getKey(), collector);
+            if (collector.atLimit()) {
+                collector.markDiscoveryIncomplete();
+                break;
+            }
+        }
+        if (!collector.diagnostics().isEmpty()) {
+            throw new CompilationDiagnosticsException(collector);
+        }
+        // Existing semantic validation and cache rollback continue unchanged.
+        return compile(sources, importResolutions);
+    }
+
+    public synchronized BuildResult compileWithDiagnostics(
+            Map<String, String> sources, int maxErrors) {
+        return compileWithDiagnostics(sources, Map.of(), maxErrors);
+    }
+
     public synchronized BuildResult compile(
             Map<String, String> sources,
             Map<String, Map<String, String>> importResolutions) {
