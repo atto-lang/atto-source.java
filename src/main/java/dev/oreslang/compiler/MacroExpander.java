@@ -12,7 +12,8 @@ import java.util.Set;
 /**
  * First executable, full-AOT macro evaluator slice.
  *
- * <p>This intentionally supports only hygienic Syntax&lt;Expr&gt; passthrough:
+ * <p>This intentionally supports a small, hygienic Syntax&lt;Expr&gt; evaluator:
+ * caller-supplied syntax passthrough and primitive Const&lt;T&gt; literal quotation.
  *
  * <pre>
  * define macro identity(Syntax&lt;Expr&gt; value) -> Syntax&lt;Expr&gt; {
@@ -20,8 +21,8 @@ import java.util.Set;
  * }
  * </pre>
  *
- * The returned syntax is caller-owned quoted AST, so this slice creates no new
- * identifier and therefore cannot perform textual capture. All other macro
+ * Returned syntax is caller-owned AST or a compiler-proven primitive literal;
+ * neither form introduces an identifier or permits textual capture. All other macro
  * bodies/result positions fail closed. Expansion happens before ordinary
  * type/effect/ownership checks and leaves no macro declarations/invocations in
  * the returned Program.</p>
@@ -82,12 +83,11 @@ public final class MacroExpander {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (!(declaration instanceof Ast.MacroDecl macro)) continue;
-                if (!isSyntaxExprPassthrough(macro)) {
+                if (!isSyntaxExprPassthrough(macro) && !isConstLiteralQuote(macro)) {
                     throw unsupported(
                             macro.name(),
-                            "the first evaluator slice only admits "
-                                    + "Syntax<Expr> passthrough macros with exactly one "
-                                    + "Syntax<Expr> parameter and body 'return <parameter>;'");
+                            "the first evaluator slice only admits Syntax<Expr> identity "
+                                    + "or Const<T> literal quotation ('return quote(value);')");
                 }
             }
         }
@@ -108,6 +108,34 @@ public final class MacroExpander {
         return macro.body().getFirst() instanceof Ast.ReturnStmt returned
                 && returned.value() instanceof Ast.NameExpr name
                 && name.name().equals(parameter.name());
+    }
+
+    /**
+     * Compiler-only literal quotation: a macro accepting Const<T> can emit a
+     * *proven literal* as executable syntax without a runtime macro engine.
+     *
+     * Other closed expressions intentionally remain unavailable until a
+     * bounded, value-preserving compile-time evaluator is implemented.
+     */
+    private boolean isConstLiteralQuote(Ast.MacroDecl macro) {
+        if (macro.resultKind().list()
+                || macro.resultKind().syntaxKind() != Ast.MacroSyntaxKind.EXPR
+                || macro.parameters().size() != 1
+                || macro.body().size() != 1) {
+            return false;
+        }
+        Ast.MacroParam parameter = macro.parameters().getFirst();
+        if (parameter.type().kind() != Ast.MacroParamKind.CONST) return false;
+        if (!(macro.body().getFirst() instanceof Ast.ReturnStmt returned)
+                || !(returned.value() instanceof Ast.CallExpr call)
+                || !(call.callee() instanceof Ast.NameExpr callee)
+                || !callee.name().equals("quote")
+                || call.typeArgumentsPresent()
+                || call.arguments().size() != 1
+                || !(call.arguments().getFirst() instanceof Ast.NameExpr input)) {
+            return false;
+        }
+        return input.name().equals(parameter.name());
     }
 
     private IllegalArgumentException unsupported(String name, String detail) {
@@ -156,18 +184,36 @@ public final class MacroExpander {
         }
 
         Ast.MacroDecl macro = resolve(module, invocation.name());
-        if (!isSyntaxExprPassthrough(macro)) {
+        boolean syntaxIdentity = isSyntaxExprPassthrough(macro);
+        boolean constQuote = isConstLiteralQuote(macro);
+        if (!syntaxIdentity && !constQuote) {
             throw unsupported(
                     invocation.name(),
                     "this invocation requires an evaluator feature not enabled "
-                            + "by the first Syntax<Expr> passthrough slice");
+                            + "by the first Syntax<Expr> evaluator slice");
         }
-        if (invocation.arguments().size() != 1
-                || !(invocation.arguments().getFirst()
-                        instanceof Ast.MacroSyntaxExprArgument quoted)) {
+        if (invocation.arguments().size() != 1) {
             throw new IllegalArgumentException(
-                    "macro '" + invocation.name()
-                            + "' requires exactly one Syntax<Expr> argument");
+                    "macro '" + invocation.name() + "' requires exactly one argument");
+        }
+        Ast.Expr emitted;
+        if (syntaxIdentity) {
+            if (!(invocation.arguments().getFirst()
+                    instanceof Ast.MacroSyntaxExprArgument quoted)) {
+                throw new IllegalArgumentException(
+                        "macro '" + invocation.name() + "' requires Syntax<Expr>");
+            }
+            emitted = quoted.expression();
+        } else {
+            if (!(invocation.arguments().getFirst()
+                    instanceof Ast.MacroConstArgument constant)
+                    || !(constant.expression() instanceof Ast.LiteralExpr literal)) {
+                throw unsupported(
+                        invocation.name(),
+                        "Const<T> quote currently requires a proven primitive literal; "
+                                + "closed expressions need a bounded comptime evaluator");
+            }
+            emitted = literal;
         }
 
         String activeKey = module + "\0" + invocation.name()
@@ -179,9 +225,9 @@ public final class MacroExpander {
                             + "'; runtime fallback is forbidden");
         }
         try {
-            // The quoted expression comes directly from the call site. This is
-            // a typed AST splice, not generated text and not a runtime eval.
-            return rewriteExpression(module, quoted.expression(), depth + 1);
+            // Emits verified literal or caller-owned syntax: no generated source
+            // strings, newly introduced identifiers, or runtime evaluation.
+            return rewriteExpression(module, emitted, depth + 1);
         } finally {
             active.remove(activeKey);
         }
