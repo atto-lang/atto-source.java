@@ -112,14 +112,21 @@ final class NamedValueCallGuestTest {
 
     @Test
     void repeatedMoveOnlyValueThroughReorderedLabelsIsRejected() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+        String source = """
                 define class Box as end
                 fnc consume(Box first, Box second): void { return; }
                 fnc invalid(Box box): void {
                   consume(second: box, first: box);
                   return;
                 }
-                """)));
+                """;
+        // TypeChecker.check includes the ownership pass; checkTypes is deliberately
+        // type-only. Both the integrated and direct ownership entrypoints must reject.
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(source)));
+        assertThrows(IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse(source)));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
     }
 
     @Test
@@ -132,7 +139,7 @@ final class NamedValueCallGuestTest {
 
     @Test
     void namedCallPreservesExclusiveBorrowAcrossLaterSourceArgument() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+        String source = """
                 define class Cell as
                   pub let int value = 1;
                 end
@@ -141,7 +148,12 @@ final class NamedValueCallGuestTest {
                   val Cell cell = new Cell();
                   return consume(owner: rt borrow mut cell, value: cell.value);
                 }
-                """)));
+                """;
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(source)));
+        assertThrows(IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse(source)));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
     }
 
     @Test
