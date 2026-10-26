@@ -1949,7 +1949,7 @@ class PrivateCiV3Test(unittest.TestCase):
     def test_live_ref_404_is_absent_only_after_private_carrier_recheck(self):
         response = type(
             "Result", (),
-            {"returncode": 1, "stderr": "gh: Not Found (HTTP 404)", "stdout": ""},
+            {"returncode": 1, "stderr": "gh: Not Found (HTTP 404)\nbody", "stdout": ""},
         )()
         with (
             patch.object(v3, "_gh_ref_request", return_value=response),
