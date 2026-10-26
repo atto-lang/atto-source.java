@@ -9,6 +9,8 @@ import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 final class MacroInvocationPlannerTest {
@@ -612,6 +614,73 @@ final class MacroInvocationPlannerTest {
                         """));
 
         assertTrue(failure.getMessage().contains("not a closed compile-time expression"),
+                failure::toString);
+        assertTrue(failure.getMessage().contains("runtime evaluation fallback is forbidden"),
+                failure::toString);
+    }
+
+    @Test
+    void boundedConstBitwiseAndConditionalEvaluationMatchesRuntimeSemantics() {
+        Ast.Program checked = assertDoesNotThrow(
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro literal(Const<int> value) -> Syntax<Expr> {
+                            return quote(value);
+                        }
+                        fnc answer() -> int {
+                            return literal!(const true ? ((1 << 4) | 3) : 0);
+                        }
+                        """));
+
+        Ast.FunctionDecl function = assertInstanceOf(
+                Ast.FunctionDecl.class,
+                checked.modules().getFirst().declarations().getFirst());
+        Ast.ReturnStmt returned = assertInstanceOf(
+                Ast.ReturnStmt.class, function.body().getFirst());
+        Ast.LiteralExpr emitted = assertInstanceOf(
+                Ast.LiteralExpr.class, returned.value());
+        assertEquals(19L, emitted.value());
+    }
+
+    @Test
+    void invalidConstOperationFailsDuringCompileTimeEvaluation() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro literal(Const<int> value) -> Syntax<Expr> {
+                            return quote(value);
+                        }
+                        fnc answer() -> int {
+                            return literal!(const 7 % 0);
+                        }
+                        """));
+
+        assertTrue(failure.getMessage().contains("not a valid compile-time constant"),
+                failure::toString);
+        assertTrue(failure.getMessage().contains("remainder by zero"),
+                failure::toString);
+        assertTrue(failure.getMessage().contains("runtime evaluation fallback is forbidden"),
+                failure::toString);
+    }
+
+    @Test
+    void constAggregateBudgetFailsClosedDeterministically() {
+        String elements = String.join(", ", java.util.Collections.nCopies(257, "1"));
+        String source = """
+                define macro values(Const<List<int>> value) -> Syntax<Expr> {
+                    return quote(value);
+                }
+                fnc answer() -> List<int> {
+                    return values!(const [%s]);
+                }
+                """.formatted(elements);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+
+        assertTrue(failure.getMessage().contains("exceeds deterministic compile-time evaluation budgets"),
+                failure::toString);
+        assertTrue(failure.getMessage().contains("aggregate element budget"),
                 failure::toString);
         assertTrue(failure.getMessage().contains("runtime evaluation fallback is forbidden"),
                 failure::toString);
