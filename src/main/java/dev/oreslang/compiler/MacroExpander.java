@@ -115,13 +115,25 @@ public final class MacroExpander {
     }
 
     private Ast.MacroDecl resolve(String module, String name) {
-        Ast.MacroDecl macro = name.indexOf('.') >= 0
-                ? macros.get(name)
-                : macros.get(module + "." + name);
+        String owner = module;
+        Ast.MacroDecl macro;
+        if (name.indexOf('.') >= 0) {
+            int separator = name.lastIndexOf('.');
+            owner = name.substring(0, separator);
+            macro = macros.get(name);
+        } else {
+            macro = macros.get(module + "." + name);
+        }
         if (macro == null) {
             throw new IllegalArgumentException(
                     "unresolved compile-time macro '" + name
                             + "'; runtime call fallback is forbidden");
+        }
+        if (!owner.equals(module) && macro.visibility() != Ast.Visibility.PUBLIC) {
+            throw new IllegalArgumentException(
+                    "private compile-time macro '" + name
+                            + "' is not visible from module '" + module
+                            + "'; expansion cannot bypass compile-time visibility");
         }
         return macro;
     }
