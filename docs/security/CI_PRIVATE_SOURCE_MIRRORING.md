@@ -73,9 +73,11 @@ primitive for its own export.
 ## Destination-bound source snapshot publisher
 
 The only supported transfer entry point is **not an arbitrary command
-launcher**. V3 accepts an approved destination, a bounded local source
-directory, the exact open source PR head, and one test plan already pinned by
-the protected carrier contract:
+launcher**. The direct CLI in `scripts/publish-private-ci-source.py` is
+unconditionally disabled; that module remains importable only for shared
+verification helpers and offline adversarial tests. V3 accepts an approved
+destination, a bounded local source directory, the exact open source PR head,
+and one test plan already pinned by the protected carrier contract:
 
 ```bash
 scripts/run-in-private-ci-destination.sh opto-sync-test/go-java-validation \
