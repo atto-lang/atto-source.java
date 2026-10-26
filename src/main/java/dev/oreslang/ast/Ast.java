@@ -55,7 +55,7 @@ public final class Ast {
         public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) { this(name, annotations, List.of(), declarations); }
     }
 
-    public sealed interface Decl permits FunctionDecl, MacroDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
+    public sealed interface Decl permits FunctionDecl, MacroDecl, MacroInvocationDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
 
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }
@@ -167,6 +167,69 @@ public final class Ast {
                     throw new IllegalArgumentException("duplicate macro parameter '" + parameter.name() + "'");
                 }
             }
+        }
+    }
+
+    /** Source location retained for macro diagnostics/provenance only. */
+    public record SourceSite(int line, int column) {
+        public SourceSite {
+            if (line < 1 || column < 1) {
+                throw new IllegalArgumentException("source site coordinates are 1-based");
+            }
+        }
+    }
+
+    /** Compiler-only macro invocation arguments; never runtime values or ABI types. */
+    public sealed interface MacroArgument permits MacroTypeArgument, MacroConstArgument,
+            MacroIdentifierArgument, MacroSyntaxExprArgument, MacroSyntaxStmtArgument,
+            MacroSyntaxTypeArgument, MacroSyntaxPatternArgument { }
+
+    public record MacroTypeArgument(TypeRef type) implements MacroArgument {
+        public MacroTypeArgument { java.util.Objects.requireNonNull(type, "macro type argument"); }
+    }
+
+    public record MacroConstArgument(Expr expression) implements MacroArgument {
+        public MacroConstArgument { java.util.Objects.requireNonNull(expression, "macro const argument"); }
+    }
+
+    /**
+     * Explicit call-site capture request. The parser stores spelling + site;
+     * semantic macro binding must resolve identity/visibility before expansion.
+     */
+    public record MacroIdentifierArgument(String name, SourceSite site) implements MacroArgument {
+        public MacroIdentifierArgument {
+            if (name == null || name.isBlank() || name.equals("_") || name.startsWith("$")) {
+                throw new IllegalArgumentException("invalid macro identifier argument");
+            }
+            java.util.Objects.requireNonNull(site, "macro identifier call site");
+        }
+    }
+
+    public record MacroSyntaxExprArgument(Expr expression) implements MacroArgument {
+        public MacroSyntaxExprArgument { java.util.Objects.requireNonNull(expression, "macro Syntax<Expr> argument"); }
+    }
+
+    public record MacroSyntaxStmtArgument(Stmt statement) implements MacroArgument {
+        public MacroSyntaxStmtArgument { java.util.Objects.requireNonNull(statement, "macro Syntax<Stmt> argument"); }
+    }
+
+    public record MacroSyntaxTypeArgument(TypeRef type) implements MacroArgument {
+        public MacroSyntaxTypeArgument { java.util.Objects.requireNonNull(type, "macro Syntax<Type> argument"); }
+    }
+
+    public record MacroSyntaxPatternArgument(Pattern pattern) implements MacroArgument {
+        public MacroSyntaxPatternArgument { java.util.Objects.requireNonNull(pattern, "macro Syntax<Pattern> argument"); }
+    }
+
+    /** Declaration-position macro invocation. Expansion must eliminate this node. */
+    public record MacroInvocationDecl(
+            String name,
+            List<MacroArgument> arguments,
+            SourceSite site) implements Decl {
+        public MacroInvocationDecl {
+            if (name == null || name.isBlank()) throw new IllegalArgumentException("macro invocation name cannot be blank");
+            arguments = List.copyOf(arguments);
+            java.util.Objects.requireNonNull(site, "macro invocation source site");
         }
     }
 
@@ -1144,7 +1207,7 @@ public final class Ast {
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
-            CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
+            CallExpr, MacroInvocationExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
@@ -1194,6 +1257,21 @@ public final class Ast {
 
     /** Argument-list spread. The parser only constructs this inside call argument lists. */
     public record SpreadExpr(Expr expression) implements Expr { }
+
+    /**
+     * Expression-position macro invocation. This is compiler syntax, not a
+     * runtime call; expansion must remove it before executable semantic IR.
+     */
+    public record MacroInvocationExpr(
+            String name,
+            List<MacroArgument> arguments,
+            SourceSite site) implements Expr {
+        public MacroInvocationExpr {
+            if (name == null || name.isBlank()) throw new IllegalArgumentException("macro invocation name cannot be blank");
+            arguments = List.copyOf(arguments);
+            java.util.Objects.requireNonNull(site, "macro invocation source site");
+        }
+    }
 
     /** Syntax provenance, not proof that asynchronous pipeline lowering exists. */
     public enum CallOrigin {
