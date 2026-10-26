@@ -36,13 +36,13 @@ positionally-colliding, and post-named positional arguments. Method
 overloads cannot differ only by argument label; overrides must preserve
 inherited parameter names.
 
-**Current evidence:** Java `Parser.parseCallArgumentsUntil` emits
-`Ast.Expr` or `Ast.SpreadExpr` and does not construct named-value
-arguments. Java `docs/NAMED_ARGUMENTS_CONTRACT.md` therefore correctly
-marks the feature unimplemented on main. LLVM has
-`named-call-reordered-main.ores`, `named-call-source-order.ores` and
-negative fixtures. That is evidence of LLVM fixtures, **not** proof of
-Java/LLVM executable parity.
+**Current evidence:** draft Java PR #2082 adds `Ast.NamedValueArgumentExpr`,
+a static name-slot binder, type/ownership checks and both ordinary and
+suspendable interpreter direct-function invocation. It **only admits statically
+resolved direct functions** at this stage; methods, constructors, first-class
+functions, imported callables and record spreading are intentionally gated.
+No successful exact-tree Java/GraalVM CI has yet proved this implementation.
+LLVM has independent `named-call-*` fixtures, not verified Java/LLVM parity.
 
 ## Two deliberately different spread operations
 
