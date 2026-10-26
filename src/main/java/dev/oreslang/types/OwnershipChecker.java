@@ -1631,7 +1631,7 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
                         fn.parameters(), fn.returnType(), call, scope, Map.of(), fn.genericSpecs());
-                if (fn.suspends()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
+                if (fn.suspends() && !fn.generator()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
                 checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name());
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.suspends(), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
@@ -1647,7 +1647,7 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
                         fn.parameters(), fn.returnType(), call, scope, Map.of(), fn.genericSpecs());
-                if (fn.suspends()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
+                if (fn.suspends() && !fn.generator()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
                 checkArguments(
                         call.arguments(),
                         signature.parameters(),
@@ -1722,7 +1722,7 @@ public final class OwnershipChecker {
                             call,
                             scope,
                             Map.of());
-                    if (staticFunction.suspends()) checkSuspensionBorrows(scope, "suspends call " + staticFunction.name());
+                    if (staticFunction.suspends() && !staticFunction.generator()) checkSuspensionBorrows(scope, "suspends call " + staticFunction.name());
                     checkArguments(
                             call.arguments(),
                             signature.parameters(),
@@ -1873,7 +1873,7 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         allGenerics, method.genericParameters(),
                         method.parameters(), method.returnType(), call, scope, ownerBindings);
-                if (method.suspends()) checkSuspensionBorrows(scope, "suspends call " + method.name());
+                if (method.suspends() && !method.generator()) checkSuspensionBorrows(scope, "suspends call " + method.name());
                 if (method.explicitReceiverType() != null
                         && method.explicitReceiverType().isBorrow()
                         && method.explicitReceiverType().mutableBorrow()
