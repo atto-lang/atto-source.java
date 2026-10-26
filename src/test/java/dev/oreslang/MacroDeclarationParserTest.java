@@ -204,6 +204,49 @@ final class MacroDeclarationParserTest {
     }
 
     @Test
+    void unquoteIntrinsicCannotBeShadowedInsideMacroScope() {
+        IllegalArgumentException parameter = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define macro bad(Syntax<Expr> unquote) -> Syntax<Expr> {
+                            return quote(unquote(unquote));
+                        }
+                        """));
+        assertTrue(parameter.getMessage().contains("'unquote' is reserved"),
+                parameter::toString);
+
+        IllegalArgumentException local = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define macro bad(Syntax<Expr> value) -> Syntax<Expr> {
+                            const unquote = value;
+                            return quote(unquote(value));
+                        }
+                        """));
+        assertTrue(local.getMessage().contains("'unquote' is reserved"),
+                local::toString);
+        assertTrue(local.getMessage().contains("cannot be rebound in a macro body"),
+                local::toString);
+    }
+
+    @Test
+    void quoteAndUnquoteRemainOrdinaryRuntimeNamesOutsideMacroScope() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                fnc quote(int value) -> int {
+                    return value;
+                }
+
+                fnc unquote(int value) -> int {
+                    return value;
+                }
+
+                fnc answer() -> int {
+                    return quote(unquote(42));
+                }
+                """));
+    }
+
+    @Test
     void quoteRemainsAnOrdinaryRuntimeNameOutsideMacroScope() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 fnc quote(int value) -> int {
