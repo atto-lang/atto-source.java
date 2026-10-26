@@ -49,6 +49,26 @@ final class GeneratorRuntimeTest {
     }
 
     @Test
+    void explicitStructuredGeneratorCloseIsSuccessfulScopeRetirement()
+            throws Exception {
+        TaskScope scope = new TaskScope();
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             var generator = GeneratorRuntime.generator(
+                     runtime,
+                     (emitter, registration) -> emitter.emit(1),
+                     scope,
+                     null)) {
+            assertEquals(1, generator.nextStep().value());
+            generator.close();
+
+            assertTrue(scope.close());
+            assertNull(scope.failure(),
+                    "normal iterator close must not become a scoped child failure");
+            assertTrue(generator.nextStep().done());
+        }
+    }
+
+    @Test
     void structuredGeneratorCancellationInterruptsProducerAndDrainsAfterExit()
             throws Exception {
         CountDownLatch started = new CountDownLatch(1);
