@@ -674,6 +674,10 @@ final class MacroInvocationPlannerTest {
         assertEquals("literal", origin.hygiene().macroName());
         assertEquals(0, origin.hygiene().expansionOrdinal());
         assertTrue(origin.hygiene().invocationSite().line() > 0);
+        assertTrue(origin.definitionSite().line() > 0);
+        assertTrue(origin.definitionSite().column() > 0);
+        assertNotEquals(origin.definitionSite(), origin.hygiene().invocationSite(),
+                "definition and invocation provenance must remain distinct");
     }
 
     @Test
@@ -769,6 +773,12 @@ final class MacroInvocationPlannerTest {
         assertEquals("Producer", hygiene.macroOwnerModule());
         assertEquals("identity", hygiene.macroName());
         assertEquals("Producer.identity", hygiene.qualifiedMacroName());
+        MacroSyntaxProvenance.Origin qualifiedOrigin =
+                MacroSyntaxProvenance.lookup(returned.value()).getFirst();
+        assertTrue(qualifiedOrigin.definitionSite().line() > 0);
+        assertNotEquals(
+                qualifiedOrigin.definitionSite(),
+                qualifiedOrigin.hygiene().invocationSite());
     }
 
     @Test
