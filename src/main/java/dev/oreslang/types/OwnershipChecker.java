@@ -46,6 +46,9 @@ public final class OwnershipChecker {
     private final Map<Ast.BindingStmt, String> validatedShortAliases;
     /** Exact immutable Program identity checked by this ownership pass. */
     private final Ast.Program checkedProgram;
+    /** TypeChecker-issued plans staged for this exact ownership admission. */
+    private final IdentityHashMap<Ast.CallExpr, TypeChecker.PipelinePlan>
+            validatedFuturePipelines;
     /** Monotonic epoch published only if this whole ownership pass succeeds. */
     private final long taskCheckEpoch;
     private int mutexCriticalSectionDepth;
@@ -64,15 +67,25 @@ public final class OwnershipChecker {
             new IdentityHashMap<>();
 
     private OwnershipChecker(Ast.Program program) {
-        this(program, Map.of());
+        this(program, Map.of(), Map.of());
     }
 
     private OwnershipChecker(
             Ast.Program program, Map<Ast.BindingStmt, String> validatedShortAliases) {
+        this(program, validatedShortAliases, Map.of());
+    }
+
+    private OwnershipChecker(
+            Ast.Program program,
+            Map<Ast.BindingStmt, String> validatedShortAliases,
+            Map<Ast.CallExpr, TypeChecker.PipelinePlan> validatedFuturePipelines) {
         // Preserve AST declaration identity: equality-based maps can merge
         // separate bindings with identical syntax in different scopes.
         this.checkedProgram =
                 java.util.Objects.requireNonNull(program, "ownership program");
+        this.validatedFuturePipelines = new IdentityHashMap<>(
+                java.util.Objects.requireNonNull(
+                        validatedFuturePipelines, "validated Future pipelines"));
         this.taskCheckEpoch = Ast.CheckedTaskCaptures.newCheckEpoch();
         // Rechecking an existing immutable Program immediately invalidates
         // older executable Task proofs. A failed check must fail closed.
@@ -88,7 +101,16 @@ public final class OwnershipChecker {
     /** Called only after TypeChecker has proved which short forms create aliases. */
     public static Ast.Program check(
             Ast.Program program, Map<Ast.BindingStmt, String> validatedShortAliases) {
-        OwnershipChecker checker = new OwnershipChecker(program, validatedShortAliases);
+        return check(program, validatedShortAliases, Map.of());
+    }
+
+    /** Full ownership admission for TypeChecker-staged Future-pipeline plans. */
+    public static Ast.Program check(
+            Ast.Program program,
+            Map<Ast.BindingStmt, String> validatedShortAliases,
+            Map<Ast.CallExpr, TypeChecker.PipelinePlan> validatedFuturePipelines) {
+        OwnershipChecker checker = new OwnershipChecker(
+                program, validatedShortAliases, validatedFuturePipelines);
         checker.validate(program);
         checker.publishTaskAdmissions();
         return program;
@@ -103,10 +125,20 @@ public final class OwnershipChecker {
     public static Ast.Program checkWithImportedClasses(
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
             Map<Ast.BindingStmt, String> validatedShortAliases) {
+        return checkWithImportedClasses(
+                program, linkedClasses, validatedShortAliases, Map.of());
+    }
+
+    public static Ast.Program checkWithImportedClasses(
+            Ast.Program program,
+            Map<String, Ast.ClassDecl> linkedClasses,
+            Map<Ast.BindingStmt, String> validatedShortAliases,
+            Map<Ast.CallExpr, TypeChecker.PipelinePlan> validatedFuturePipelines) {
         if (linkedClasses == null) {
             throw new IllegalArgumentException("linked public classes cannot be null");
         }
-        OwnershipChecker checker = new OwnershipChecker(program, validatedShortAliases);
+        OwnershipChecker checker = new OwnershipChecker(
+                program, validatedShortAliases, validatedFuturePipelines);
         for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
             String name = entry.getKey();
             Ast.ClassDecl declaration = entry.getValue();
@@ -1567,7 +1599,10 @@ public final class OwnershipChecker {
                 }
             }
         }
-        TypeChecker.PipelinePlan pipelinePlan = TypeChecker.CheckedFuturePipe.plan(call);
+        TypeChecker.PipelinePlan pipelinePlan = validatedFuturePipelines.get(call);
+        if (pipelinePlan == null) {
+            pipelinePlan = TypeChecker.CheckedFuturePipe.plan(call);
+        }
         if (pipelinePlan != null) {
             // The producer is an observation only. Stage-created Future work
             // has separate ownership in PipelinePlan and is revoked by the
