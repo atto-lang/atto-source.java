@@ -149,10 +149,8 @@ public final class FuturePipelineTypingCheck {
         }
 
         rejected("""
-                async fnc source(): Future<int> {
-                  async fnc impossible_local(): int { return 1; }
-                  return impossible_local();
-                }
+                async fnc inner(): int { return 1; }
+                async fnc source(): Future<int> { return inner(); }
                 fnc identity(Future<int> pending): Future<int> { return pending; }
                 fnc main(): void {
                   val Future<int> nested = source() |> identity();
