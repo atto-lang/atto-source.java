@@ -104,7 +104,7 @@ public final class ExportResolver {
         return resolution;
     }
 
-    private static String namespaceId(Ast.Program program, Ast.ModuleDecl module) {
+    public static String namespaceId(Ast.Program program, Ast.ModuleDecl module) {
         String prefix = program.namespace() == null || program.namespace().isBlank()
                 ? "<file>"
                 : program.namespace();
