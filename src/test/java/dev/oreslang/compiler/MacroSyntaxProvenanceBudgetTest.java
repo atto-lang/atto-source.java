@@ -17,7 +17,7 @@ final class MacroSyntaxProvenanceBudgetTest {
         Ast.SourceSite site = new Ast.SourceSite(1, 1);
         return new MacroSyntaxProvenance.Origin(
                 new MacroSyntaxProvenance.HygieneIdentity(
-                        "root", "root", "identity", site, ordinal),
+                        "test/unit.ores", "root", "root", "identity", site, ordinal),
                 site,
                 MacroSyntaxProvenance.EmissionKind.CALL_SITE_SPLICE);
     }
