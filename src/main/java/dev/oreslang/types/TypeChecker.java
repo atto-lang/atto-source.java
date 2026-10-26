@@ -4342,6 +4342,17 @@ public final class TypeChecker {
                         + "' cannot be constructed with new; actor instances must be created through the actor runtime");
             }
 
+            boolean productConstructorSyntax =
+                    created.arguments().stream().anyMatch(
+                            argument -> argument instanceof Ast.NamedArgExpr
+                                    || argument instanceof Ast.SpreadExpr);
+            if (productConstructorSyntax && !klass.genericParameters().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "constructor " + klass.name()
+                                + " named/spread binding on generic classes remains fail-closed "
+                                + "until class inference consumes the checked source-to-ABI plan");
+            }
+
             Named nominal;
             if (created.type().inferArguments()) {
                 if (!created.type().arguments().isEmpty()) {
@@ -4358,12 +4369,34 @@ public final class TypeChecker {
 
             Ast.ConstructorDecl constructor = klass.constructor();
             if (constructor != null) {
-                if (created.arguments().size() != constructor.arity()) {
+                String constructorLabel = "constructor " + klass.name();
+                List<ExpandedCallArgument> expanded =
+                        expandFixedCallArguments(
+                                created.arguments(),
+                                env,
+                                generics,
+                                self,
+                                constructorLabel,
+                                true);
+                if (expanded.size() != constructor.arity()) {
                     throw new IllegalArgumentException(
-                            "constructor for " + klass.name() + " expects "
+                            constructorLabel + " expects "
                                     + constructor.arity() + " argument(s), got "
-                                    + created.arguments().size());
+                                    + expanded.size());
                 }
+                FixedProductCallPlan plan = FixedProductCallPlan.bind(
+                        constructor.parameters().stream()
+                                .map(Ast.Param::name)
+                                .toList(),
+                        expanded.stream()
+                                .map(ExpandedCallArgument::inputSlot)
+                                .toList());
+                List<ExpandedCallArgument> byAbi =
+                        new ArrayList<>(expanded.size());
+                for (int source : plan.abiToSource()) {
+                    byAbi.add(expanded.get(source));
+                }
+
                 Map<String, Type> classBindings = classGenericBindings(klass, nominal);
                 Set<String> classGenerics = Set.copyOf(klass.genericParameters());
                 Type constructorSelf = nominalClassType(klass);
@@ -4371,8 +4404,14 @@ public final class TypeChecker {
                     Ast.Param param = constructor.parameters().get(i);
                     Type expectedPattern = resolveParam(param, classGenerics, constructorSelf);
                     Type expected = substituteGenerics(expectedPattern, classBindings);
+                    ExpandedCallArgument argument = byAbi.get(i);
                     Type actualArgument =
-                            typeOf(created.arguments().get(i), env, generics, self);
+                            expandedCallArgumentType(
+                                    argument,
+                                    expected,
+                                    env,
+                                    generics,
+                                    self);
                     requireReadonlyCapabilityPreserved(
                             actualArgument,
                             expected,
@@ -4387,6 +4426,12 @@ public final class TypeChecker {
                             "constructor parameter " + param.name());
                 }
                 return nominal;
+            }
+
+            if (productConstructorSyntax) {
+                throw new IllegalArgumentException(
+                        "synthesized field constructors accept positional scalar arguments only; "
+                                + "declare an explicit constructor before using named or spread arguments");
             }
 
             // Backward-compatible synthesized constructor: when no explicit
