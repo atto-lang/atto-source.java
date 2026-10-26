@@ -151,6 +151,19 @@ public final class TypeChecker {
      * these rows, reject *before* annotation expansion or linked-type shape
      * projection could silently discard the metadata.
      */
+    private static void rejectUnexpandedMacros(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.MacroDecl macro) {
+                    throw new IllegalArgumentException(
+                            "define macro '" + macro.name()
+                                    + "' is compile-time-only and must be expanded before executable semantic analysis; "
+                                    + "runtime fallback is forbidden");
+                }
+            }
+        }
+    }
+
     private static void rejectUnloweredCheckedEffects(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
@@ -192,10 +205,12 @@ public final class TypeChecker {
     }
 
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
+        rejectUnexpandedMacros(program);
         rejectUnloweredCheckedEffects(program);
         program = AnnotationExpander.expand(program);
         // Expansion can synthesize declarations; recheck before type or
         // structural projection can discard newly introduced effect rows.
+        rejectUnexpandedMacros(program);
         rejectUnloweredCheckedEffects(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
@@ -237,6 +252,7 @@ public final class TypeChecker {
         if (linkedClasses == null || linkedAliases == null) {
             throw new IllegalArgumentException("linked public classes/aliases cannot be null");
         }
+        rejectUnexpandedMacros(program);
         rejectUnloweredCheckedEffects(program);
         for (Ast.ClassDecl linked : linkedClasses.values()) {
             rejectUnloweredCheckedClassEffects(linked);
@@ -247,6 +263,7 @@ public final class TypeChecker {
         program = AnnotationExpander.expand(program);
         // Expansion can synthesize declarations; recheck before type or
         // structural projection can discard newly introduced effect rows.
+        rejectUnexpandedMacros(program);
         rejectUnloweredCheckedEffects(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
