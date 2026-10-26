@@ -3,6 +3,7 @@
 import importlib.util
 import base64
 import hashlib
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -57,6 +58,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             22: ("closed", "completed"),
             77: ("closed", "completed"),
             127: ("closed", "completed"),
+            171: ("closed", "completed"),
+            172: ("closed", "completed"),
         }
         repository_id = (
             pub.BLOCKING_INCIDENT_REPOSITORY_ID
@@ -161,6 +164,29 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "repository identity/state"):
                 ORIGINAL_REQUIRE_RESOLVED()
 
+    def test_quarantined_repository_id_rejected_even_after_slug_rename(self):
+        renamed = b"renamed-owner/renamed-carrier 1323575966\n"
+        with self.assertRaisesRegex(pub.Denied, "repository ID is quarantined"):
+            pub._parse_policy_approval(
+                renamed,
+                "renamed-owner/renamed-carrier",
+                "private CI approval policy",
+            )
+
+        metadata = {
+            "id": 1323575966,
+            "full_name": "renamed-owner/renamed-carrier",
+            "visibility": "private",
+            "private": True,
+            "archived": False,
+            "disabled": False,
+            "fork": False,
+            "default_branch": "main",
+        }
+        with patch.object(pub, "gh_api", return_value=metadata):
+            with self.assertRaisesRegex(pub.Denied, "repository ID is quarantined"):
+                pub.checked_repo("renamed-owner/renamed-carrier", 1323575966)
+
     def test_quarantined_incident_carrier_rejected_before_incident_or_local_guard(self):
         with (
             patch.object(pub, "require_resolved_blocking_incidents") as incidents,
@@ -171,6 +197,104 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 ORIGINAL_REQUIRE_PREFLIGHT("zed-pkg-test/java-app", self.root)
             incidents.assert_not_called()
             run.assert_not_called()
+            api.assert_not_called()
+
+    def test_blocking_p0_incidents_reject_open_issue_171(self):
+        states = {
+            22: ("closed", "completed"),
+            77: ("closed", "completed"),
+            127: ("closed", "completed"),
+            171: ("open", None),
+        }
+        with patch.object(pub, "gh_api", side_effect=self.incident_api(states)):
+            with self.assertRaisesRegex(pub.Denied, "#171 remains unresolved"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_issue_171_identity_drift(self):
+        ids = dict(pub.BLOCKING_INCIDENT_IDS)
+        ids[171] += 1
+        with patch.object(
+            pub, "gh_api", side_effect=self.incident_api(issue_ids=ids),
+        ):
+            with self.assertRaisesRegex(pub.Denied, "incident identity"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_issue_171_not_planned(self):
+        states = {
+            22: ("closed", "completed"),
+            77: ("closed", "completed"),
+            127: ("closed", "completed"),
+            171: ("closed", "not_planned"),
+        }
+        with patch.object(pub, "gh_api", side_effect=self.incident_api(states)):
+            with self.assertRaisesRegex(pub.Denied, "#171 remains unresolved"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_open_issue_172(self):
+        states = {
+            22: ("closed", "completed"),
+            77: ("closed", "completed"),
+            127: ("closed", "completed"),
+            171: ("closed", "completed"),
+            172: ("open", None),
+        }
+        with patch.object(pub, "gh_api", side_effect=self.incident_api(states)):
+            with self.assertRaisesRegex(pub.Denied, "#172 remains unresolved"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_issue_172_identity_drift(self):
+        ids = dict(pub.BLOCKING_INCIDENT_IDS)
+        ids[172] += 1
+        with patch.object(
+            pub, "gh_api", side_effect=self.incident_api(issue_ids=ids),
+        ):
+            with self.assertRaisesRegex(pub.Denied, "incident identity"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_issue_172_not_planned(self):
+        states = {
+            22: ("closed", "completed"),
+            77: ("closed", "completed"),
+            127: ("closed", "completed"),
+            171: ("closed", "completed"),
+            172: ("closed", "not_planned"),
+        }
+        with patch.object(pub, "gh_api", side_effect=self.incident_api(states)):
+            with self.assertRaisesRegex(pub.Denied, "#172 remains unresolved"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_quarantined_recovery_carrier_rejected_before_any_source_access(self):
+        with (
+            patch.object(pub, "require_resolved_blocking_incidents") as incidents,
+            patch.object(pub, "checked_policy_approval") as policy,
+            patch.object(pub, "checked_repo") as identity,
+            patch.object(pub, "collect_source") as collect,
+            patch.object(pub, "gh_api") as api,
+        ):
+            with self.assertRaisesRegex(pub.Denied, "quarantined"):
+                ORIGINAL_REQUIRE_PREFLIGHT(
+                    "agent-pontifex-test/agent-pontifex-e2e-tests", self.root,
+                )
+            incidents.assert_not_called()
+            policy.assert_not_called()
+            identity.assert_not_called()
+            collect.assert_not_called()
+            api.assert_not_called()
+
+    def test_quarantined_llvm_carrier_rejected_before_any_source_access(self):
+        with (
+            patch.object(pub, "require_resolved_blocking_incidents") as incidents,
+            patch.object(pub, "checked_policy_approval") as policy,
+            patch.object(pub, "checked_repo") as identity,
+            patch.object(pub, "collect_source") as collect,
+            patch.object(pub, "gh_api") as api,
+        ):
+            with self.assertRaisesRegex(pub.Denied, "quarantined"):
+                ORIGINAL_REQUIRE_PREFLIGHT("led-dynamo/leddy-e2e", self.root)
+            incidents.assert_not_called()
+            policy.assert_not_called()
+            identity.assert_not_called()
+            collect.assert_not_called()
             api.assert_not_called()
 
     def test_preflight_checks_blocking_incidents_before_local_guard(self):
@@ -184,6 +308,159 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "blocking incident"):
                 ORIGINAL_REQUIRE_PREFLIGHT("trusted/ci", self.root)
             run.assert_not_called()
+
+    def test_legacy_cli_is_unconditionally_disabled(self):
+        with patch.object(pub, "publish") as publish:
+            self.assertEqual(pub.main([]), 1)
+            publish.assert_not_called()
+
+    def test_github_api_environment_rejects_ambient_transport_and_config(self):
+        hostile = {
+            "GH_TOKEN": "token",
+            "HTTP_PROXY": "http://attacker.invalid:8080",
+            "https_proxy": "http://attacker.invalid:8080",
+            "SSL_CERT_FILE": "/tmp/evil-ca.pem",
+            "NODE_EXTRA_CA_CERTS": "/tmp/evil-node-ca.pem",
+            "GH_CONFIG_DIR": "/tmp/evil-gh",
+            "GITHUB_API_URL": "https://attacker.invalid/api/v3",
+            "HOME": "/tmp/evil-home",
+            "XDG_CONFIG_HOME": "/tmp/evil-xdg",
+        }
+        with patch.dict(os.environ, hostile, clear=True):
+            env = pub.github_api_environment()
+        self.assertEqual(env["GH_TOKEN"], "token")
+        self.assertEqual(env["GH_HOST"], "github.com")
+        self.assertEqual(env["HOME"], "/nonexistent")
+        self.assertEqual(env["XDG_CONFIG_HOME"], "/nonexistent")
+        self.assertEqual(env["GIT_CONFIG_NOSYSTEM"], "1")
+        self.assertEqual(env["GIT_CONFIG_GLOBAL"], "/dev/null")
+        for name in (
+            "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+            "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+            "SSL_CERT_FILE", "SSL_CERT_DIR", "SSLKEYLOGFILE",
+            "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+            "GH_CONFIG_DIR", "GH_ENTERPRISE_TOKEN", "GITHUB_API_URL",
+        ):
+            self.assertNotIn(name, env)
+
+    def test_github_api_environment_requires_exactly_one_explicit_token(self):
+        for values in ({}, {"GH_TOKEN": "a", "GITHUB_TOKEN": "b"}):
+            with self.subTest(values=values), patch.dict(os.environ, values, clear=True):
+                with self.assertRaisesRegex(pub.Denied, "exactly one explicit"):
+                    pub.github_api_environment()
+
+    def test_checked_repo_rejects_fork_archived_disabled_and_non_main(self):
+        base = {
+            "id": 246810,
+            "full_name": "TRUSTED/CI",
+            "visibility": "private",
+            "private": True,
+            "archived": False,
+            "disabled": False,
+            "fork": False,
+            "default_branch": "main",
+        }
+        with patch.object(pub, "gh_api", return_value=dict(base)):
+            self.assertEqual(pub.checked_repo("trusted/ci", 246810)["id"], 246810)
+        for field, value in (
+            ("archived", True),
+            ("disabled", True),
+            ("fork", True),
+            ("default_branch", "develop"),
+        ):
+            changed = dict(base)
+            changed[field] = value
+            with self.subTest(field=field), patch.object(pub, "gh_api", return_value=changed):
+                with self.assertRaisesRegex(pub.Denied, "identity/state"):
+                    pub.checked_repo("trusted/ci", 246810)
+
+    def test_preflight_treats_checkout_guard_as_data_only(self):
+        digest = b"x" * 32
+        with (
+            patch.object(pub, "require_resolved_blocking_incidents") as incidents,
+            patch.object(
+                pub, "checked_policy_approval",
+                return_value=(digest, 246810),
+            ) as policy,
+            patch.object(pub, "checked_repo", return_value={"id": 246810}) as repo,
+            patch.object(pub.subprocess, "run") as run,
+        ):
+            ORIGINAL_REQUIRE_PREFLIGHT("trusted/ci", self.root)
+            incidents.assert_called_once_with()
+            policy.assert_called_once_with(self.root, "trusted/ci")
+            repo.assert_called_once_with("trusted/ci", 246810)
+            run.assert_not_called()
+
+    def test_gh_api_uses_root_owned_binary_and_isolated_token_environment(self):
+        process = type("Result", (), {
+            "returncode": 0, "stdout": '{"ok":true}', "stderr": "",
+        })()
+        poisoned = {
+            "GH_TOKEN": "synthetic-test-token",
+            "PYTHONPATH": "/attacker",
+            "GH_CONFIG_DIR": "/attacker",
+            "HTTPS_PROXY": "http://attacker.invalid",
+            "PATH": "/attacker",
+            "HOME": "/attacker",
+        }
+        with (
+            patch.dict(pub.os.environ, poisoned, clear=True),
+            patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh") as cli,
+            patch.object(pub.subprocess, "run", return_value=process) as run,
+        ):
+            self.assertEqual(pub.gh_api("repos/trusted/ci"), {"ok": True})
+        cli.assert_called_once_with()
+        argv = run.call_args.args[0]
+        env = run.call_args.kwargs["env"]
+        self.assertEqual(argv[0], "/usr/bin/gh")
+        self.assertEqual(env["GH_TOKEN"], "synthetic-test-token")
+        self.assertEqual(env["PATH"], "/usr/bin:/bin")
+        self.assertEqual(env["HOME"], "/nonexistent")
+        self.assertNotIn("PYTHONPATH", env)
+        self.assertNotIn("GH_CONFIG_DIR", env)
+        self.assertNotIn("HTTPS_PROXY", env)
+        self.assertNotIn("synthetic-test-token", argv)
+
+    def test_gh_api_denies_missing_or_ambiguous_credentials(self):
+        for variables in ({}, {"GH_TOKEN": "a", "GITHUB_TOKEN": "b"}):
+            with (
+                self.subTest(tokens=sorted(variables)),
+                patch.dict(pub.os.environ, variables, clear=True),
+                patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh"),
+                patch.object(pub.subprocess, "run") as run,
+            ):
+                with self.assertRaisesRegex(pub.Denied, "exactly one explicit"):
+                    pub.gh_api("repos/trusted/ci")
+                run.assert_not_called()
+
+    def test_strict_github_json_rejects_duplicates_nonfinite_and_overflow(self):
+        for payload in ('{"x":1,"x":2}', '{"x":NaN}', '{"x":Infinity}', '{"x":1e999}'):
+            with self.subTest(payload=payload), self.assertRaises(pub.Denied):
+                pub.strict_json_loads(payload)
+
+        process = type("Result", (), {
+            "returncode": 0, "stdout": '{"ok":true}', "stderr": "0123456789",
+        })()
+        with (
+            patch.dict(pub.os.environ, {"GH_TOKEN": "synthetic"}, clear=True),
+            patch.object(pub, "trusted_github_cli", return_value="/usr/bin/gh"),
+            patch.object(pub, "MAX_GH_API_RESPONSE_CHARS", 8),
+            patch.object(pub.subprocess, "run", return_value=process),
+        ):
+            with self.assertRaisesRegex(pub.Denied, "response exceeds size limit"):
+                pub.gh_api("repos/trusted/ci")
+
+    def test_private_ci_policy_rejects_noncanonical_control_bytes(self):
+        for raw in (
+            b"trusted/ci 246810\r\n",
+            b"trusted/ci 246810\x00",
+            b"trusted/ci 246810\t\n",
+            b"trusted/ci 246810\xe2\x80\xa8",
+        ):
+            with self.subTest(raw=raw), self.assertRaises(pub.Denied):
+                pub._parse_policy_approval(
+                    raw, "trusted/ci", "protected source policy"
+                )
 
     def test_descriptor_safety_flags_require_distinct_positive_integers(self):
         with (
@@ -213,7 +490,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.route_calls.append((method, route, payload))
         if route == "repos/trusted/ci":
             return dict(id=246810, full_name="trusted/ci", visibility=self.visibility.pop(0),
-                        private=True, default_branch="main")
+                        private=True, archived=False, disabled=False, fork=False,
+                        default_branch="main")
         if route == "repos/trusted/ci/git/blobs":
             raw = base64.b64decode(payload["content"])
             return {"sha": hashlib.sha1(b"blob " + str(len(raw)).encode("ascii")
@@ -311,6 +589,42 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 A,
             )
 
+    def test_origin_rejects_main_move_during_attestation(self):
+        api, _ = self.verified_origin_api(protected=True)
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
+        calls = [0]
+        def moved(route, method="GET", payload=None):
+            if route == "repos/"+pub.SOURCE_REPO+"/branches/main":
+                calls[0] += 1
+                if calls[0] == 2:
+                    return {"name": "main", "protected": True,
+                            "commit": {"sha": B}}
+            return api(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=moved):
+            with self.assertRaisesRegex(pub.Denied, "changed during"):
+                ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
+        self.assertEqual(calls[0], 2)
+
+    def test_origin_rejects_protection_change_during_attestation(self):
+        api, _ = self.verified_origin_api(protected=True, approvals=2)
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
+        calls = [0]
+        def changed(route, method="GET", payload=None):
+            if route.endswith("/branches/main/protection"):
+                calls[0] += 1
+                result = api(route, method, payload)
+                if calls[0] == 2:
+                    result = dict(result)
+                    reviews = dict(result["required_pull_request_reviews"])
+                    reviews["required_approving_review_count"] = 1
+                    result["required_pull_request_reviews"] = reviews
+                return result
+            return api(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=changed):
+            with self.assertRaisesRegex(pub.Denied, "protection changed during"):
+                ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
+        self.assertEqual(calls[0], 2)
+
     def test_origin_rejects_source_repository_id_replacement(self):
         api, _ = self.verified_origin_api(
             source_id=pub.SOURCE_REPOSITORY_ID + 1
@@ -345,6 +659,33 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "gh_api", side_effect=api):
             with self.assertRaisesRegex(pub.Denied, "independent security owner"):
                 ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
+
+    def test_origin_rejects_mixed_independent_and_author_codeowners(self):
+        mixed = (
+            "\n".join(path + " @ORESoftware @the1mills"
+                      for path in pub.SECURITY_CODEOWNER_PATHS)
+            + "\n"
+        ).encode("utf-8")
+        api, _ = self.verified_origin_api(codeowners_file=mixed)
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
+        with patch.object(pub, "gh_api", side_effect=api):
+            with self.assertRaisesRegex(pub.Denied, "solely owned"):
+                ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest)
+
+    def test_origin_protection_fingerprint_handles_duplicate_context_app_ids(self):
+        api, _ = self.verified_origin_api(
+            contexts=[],
+            named_checks=[
+                {"context": "private-ci-gate", "app_id": None},
+                {"context": "private-ci-gate", "app_id": 15368},
+            ],
+        )
+        digest = hashlib.sha256(b"trusted/ci 246810\n").digest()
+        with patch.object(pub, "gh_api", side_effect=api):
+            self.assertEqual(
+                ORIGINAL_VERIFY_PROTECTED_ORIGIN("trusted/ci", digest),
+                A,
+            )
 
     def test_origin_rejects_nonterminal_security_codeowners(self):
         valid = (
@@ -461,7 +802,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     collect.assert_not_called()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
-    def test_protected_origin_verification_before_and_after_upload(self):
+    def test_protected_origin_verification_before_every_write(self):
         api, routes = self.verified_origin_api(protected=True)
         with patch.object(pub, "verify_protected_origin",
                           side_effect=ORIGINAL_VERIFY_PROTECTED_ORIGIN):
@@ -471,7 +812,13 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual((sha, count), (A, 1))
         branch_reads = [r for r in routes
                         if r == "repos/"+pub.SOURCE_REPO+"/branches/main"]
-        self.assertEqual(len(branch_reads), 2)
+        # Every attestation reads main twice (start/end), and publish performs
+        # one initial attestation plus one before each of five writes.
+        self.assertEqual(len(branch_reads), 12)
+        protection_reads = [r for r in routes
+                            if r == "repos/"+pub.SOURCE_REPO
+                            +"/branches/main/protection"]
+        self.assertEqual(len(protection_reads), 12)
 
     def test_protected_origin_recheck_rejects_last_minute_revocation(self):
         api, routes = self.verified_origin_api(protected=True)
@@ -479,7 +826,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         def revoke(route, method="GET", payload=None):
             if route == "repos/"+pub.SOURCE_REPO+"/branches/main":
                 calls[0] += 1
-                if calls[0] == 2:
+                # Reads 1-2 are the initial stable attestation. Revoke at the
+                # start of the per-write attestation before the first blob.
+                if calls[0] == 3:
                     return {"name": "main", "protected": False,
                             "commit": {"sha": A}}
             return api(route, method, payload)
@@ -489,9 +838,44 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 with self.assertRaisesRegex(pub.Denied, "not protected"):
                     pub.publish("trusted/ci", self.source,
                                 "ci/oreslang-test", self.root, A)
-        self.assertEqual(calls[0], 2)
+        self.assertEqual(calls[0], 3)
         self.assertFalse(any(r == "repos/trusted/ci/git/refs"
                              for m, r, _ in self.route_calls if m == "POST"))
+
+    def test_protected_origin_revocation_before_first_write_blocks_all_posts(self):
+        calls = [0]
+        def authority(*args, **kwargs):
+            calls[0] += 1
+            if calls[0] > 1:
+                raise pub.Denied("source main is not protected; CODEOWNER approval is unenforced")
+            return A
+        with patch.object(pub, "verify_protected_origin", side_effect=authority):
+            with self.assertRaisesRegex(pub.Denied, "not protected"):
+                self.publish()
+        self.assertGreaterEqual(calls[0], 2)
+        self.assertFalse(any(method == "POST"
+                             for method, _, _ in self.route_calls))
+
+    def test_protected_origin_revocation_after_blob_blocks_next_write(self):
+        original = self.fake_api
+        revoked = [False]
+        def api(route, method="GET", payload=None):
+            result = original(route, method, payload)
+            if method == "POST" and route == "repos/trusted/ci/git/blobs":
+                revoked[0] = True
+            return result
+        def authority(*args, **kwargs):
+            if revoked[0]:
+                raise pub.Denied("source main is not protected; CODEOWNER approval is unenforced")
+            return A
+        with patch.object(pub, "verify_protected_origin", side_effect=authority):
+            with patch.object(pub, "gh_api", side_effect=api):
+                with self.assertRaisesRegex(pub.Denied, "not protected"):
+                    pub.publish("trusted/ci", self.source,
+                                "ci/oreslang-test", self.root, A)
+        writes = [route for method, route, _ in self.route_calls
+                  if method == "POST"]
+        self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
 
     def test_git_tree_proof_exactly_matches_all_local_files(self):
         data = (self.source / "hello.ores").read_bytes()
