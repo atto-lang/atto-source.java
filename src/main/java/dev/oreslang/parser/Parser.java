@@ -252,7 +252,7 @@ public final class Parser {
         }
 
         validateForwardTypes(rootForwards, rootDeclarations, "file root");
-        if (!rootDeclarations.isEmpty()) {
+        if (!rootDeclarations.isEmpty() || !rootExports.isEmpty()) {
             modules.add(new Ast.ModuleDecl(
                     ROOT_MODULE,
                     List.of(),
