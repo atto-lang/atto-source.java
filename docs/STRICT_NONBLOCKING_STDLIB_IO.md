@@ -30,11 +30,13 @@ is installed. Canonical `*_blocking` spellings remain reserved until implicit
 continuation-suspension lowering is implemented. `stdlib/testing.ores` is
 pure and no longer writes to stdout.
 
-The release gate `tools/strict-nonblocking-io-audit.py` checks that stdlib
-dispatch cannot reach legacy `NativeIo`, worker-offloaded `AsyncNativeIo`,
+The Rust release gate `tools/stdlib-boundary-audit` now checks both sides of the
+boundary: packaged `.ores` modules may not call synchronous I/O names, and Java
+guest dispatch may not reach legacy `NativeIo`, worker-offloaded `AsyncNativeIo`,
 blocking stdin/stdout, blocking socket methods, or the legacy JDK HttpServer
-listener. `tools/stdlib-boundary-audit` separately rejects bare synchronous I/O
-calls from packaged `.ores` modules.
+listener. The audit strips Java comments and literals before matching executable
+host edges, while checking typechecker string literals separately so async names
+do not create false positives.
 
 Legacy runtime classes still contain blocking APIs and must not be presented as
 strict providers. Completion is not achieved until those adapters are replaced
