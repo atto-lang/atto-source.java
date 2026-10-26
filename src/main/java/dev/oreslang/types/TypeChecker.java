@@ -160,6 +160,12 @@ public final class TypeChecker {
                                     + "' is compile-time-only and must be expanded before executable semantic analysis; "
                                     + "runtime fallback is forbidden");
                 }
+                if (declaration instanceof Ast.MacroInvocationDecl invocation) {
+                    throw new IllegalArgumentException(
+                            "macro invocation '" + invocation.name()
+                                    + "' remains in declaration position; compile-time expansion must eliminate "
+                                    + "all macro invocations before executable semantic analysis; runtime fallback is forbidden");
+                }
             }
         }
     }
@@ -2405,6 +2411,12 @@ public final class TypeChecker {
     }
 
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.MacroInvocationExpr invocation) {
+            throw new IllegalArgumentException(
+                    "macro invocation '" + invocation.name()
+                            + "' remains in expression position; compile-time expansion must eliminate "
+                            + "all macro invocations before executable semantic analysis; runtime fallback is forbidden");
+        }
         if (expr instanceof Ast.LiteralExpr literal) {
             Object value = literal.value();
             if (value == null) throw new IllegalArgumentException("standalone null values are forbidden; use Option<T>");
