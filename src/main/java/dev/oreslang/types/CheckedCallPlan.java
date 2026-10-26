@@ -28,6 +28,81 @@ public record CheckedCallPlan(
         List<CheckedCallPlan.BoundSlot> sourceOrder,
         List<Integer> abiToSource) {
 
+    /**
+     * One flattened scalar before formal binding.
+     *
+     * <p>A direct scalar uses projection {@code -1}. Tuple/record expansion
+     * uses projection {@code 0..n-1}; record projections also carry a label.
+     * The optional one-argument constructor is retained only for pure binder
+     * tests that intentionally do not model compiler provenance.</p>
+     */
+    public record InputSlot(
+            String label,
+            int callItemIndex,
+            int projectionIndex) {
+        public InputSlot {
+            if (label != null && label.isBlank()) {
+                throw new IllegalArgumentException(
+                        "named argument label cannot be empty");
+            }
+            if (callItemIndex < -1 || projectionIndex < -1) {
+                throw new IllegalArgumentException(
+                        "call-item provenance index cannot be below -1");
+            }
+            if (callItemIndex == -1 && projectionIndex != -1) {
+                throw new IllegalArgumentException(
+                        "projection provenance requires a source call-item index");
+            }
+        }
+
+        public InputSlot(String label) {
+            this(label, -1, -1);
+        }
+
+        public static InputSlot positional() {
+            return new InputSlot(null);
+        }
+
+        public static InputSlot positional(int callItemIndex) {
+            return new InputSlot(null, callItemIndex, -1);
+        }
+
+        public static InputSlot positionalProjection(
+                int callItemIndex,
+                int projectionIndex) {
+            return new InputSlot(
+                    null, callItemIndex, projectionIndex);
+        }
+
+        public static InputSlot named(String label) {
+            return new InputSlot(
+                    Objects.requireNonNull(label, "label"));
+        }
+
+        public static InputSlot named(
+                String label,
+                int callItemIndex) {
+            return new InputSlot(
+                    Objects.requireNonNull(label, "label"),
+                    callItemIndex,
+                    -1);
+        }
+
+        public static InputSlot namedProjection(
+                String label,
+                int callItemIndex,
+                int projectionIndex) {
+            return new InputSlot(
+                    Objects.requireNonNull(label, "label"),
+                    callItemIndex,
+                    projectionIndex);
+        }
+
+        public boolean hasProvenance() {
+            return callItemIndex >= 0;
+        }
+    }
+
     /** One supplied scalar in lexical evaluation order and its formal ABI slot. */
     public record BoundSlot(
             int sourceIndex,
@@ -185,7 +260,7 @@ public record CheckedCallPlan(
 
     public static CheckedCallPlan required(
             List<String> parameterNames,
-            List<FixedProductCallPlan.InputSlot> inputs) {
+            List<InputSlot> inputs) {
         Objects.requireNonNull(parameterNames, "parameterNames");
         return bind(
                 parameterNames,
@@ -197,7 +272,7 @@ public record CheckedCallPlan(
     public static CheckedCallPlan bind(
             List<String> parameterNames,
             List<Boolean> omittable,
-            List<FixedProductCallPlan.InputSlot> inputs) {
+            List<InputSlot> inputs) {
         Objects.requireNonNull(parameterNames, "parameterNames");
         Objects.requireNonNull(omittable, "omittable");
         Objects.requireNonNull(inputs, "inputs");
@@ -235,7 +310,7 @@ public record CheckedCallPlan(
         for (int sourceIndex = 0;
                 sourceIndex < inputs.size();
                 sourceIndex++) {
-            FixedProductCallPlan.InputSlot input =
+            InputSlot input =
                     Objects.requireNonNull(
                             inputs.get(sourceIndex), "input slot");
             int target;
