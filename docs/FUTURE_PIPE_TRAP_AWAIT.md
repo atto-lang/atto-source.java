@@ -36,8 +36,8 @@ issues `TypeChecker.CheckedFuturePipe` identity-bound proofs to a **restricted**
 `Future<A> |> pureUnaryFunction()` subset for concrete statically resolved `A`/`B`: synchronous **or asynchronous**,
 non-generic, no captures, no executable exceptional effects, no additional stage arguments
 and no actor execution. A checked async stage may contain cooperative scheduler
-yield points and may `await` a same-module pure async unary-int helper; the
-helper is recursively checked under the same closed restrictions. Each admitted stage gets an identity-bound `PipelinePlan` containing resolved input/output types, whether one Future layer is flattened, per-stage and cumulative `throws`/`raises`/`panics` rows, borrowed-upstream ownership, and stage-result Future cancellation ownership. Source exceptional-effect declarations remain globally fail-closed until executable throw/raise/panic lowering exists; carrying the row in the plan is not a claim that those effects execute yet.
+yield points and may `await` a same-module pure async unary helper; the
+helper is recursively checked under the same closed restrictions. Each admitted stage gets an identity-bound `PipelinePlan` containing resolved input/output types, whether one Future layer is flattened, per-stage and cumulative `throws`/`raises`/`panics` rows, borrowed-upstream ownership, and stage-result Future cancellation ownership. The plan also records whether its cumulative exceptional-effect row has `COMPLETE_STATIC` provenance or an `UPSTREAM_FUTURE_UNKNOWN` prefix; an opaque `Future<T>` binding must never be silently reclassified as effect-free. Source exceptional-effect declarations remain globally fail-closed until executable throw/raise/panic lowering exists; carrying the row in the plan is not a claim that those effects execute yet.
 
 Stages must also be declared in the current lexical module:
 imported/cross-module execution has not yet proven evaluator/environment
@@ -45,14 +45,17 @@ ownership. Adjacent checked stages lower to one TaskPipeline task, preserving
 borrowed input-Future ownership. Proofs bind exact checked declarations and
 rewritten ASTs lose authorization. Proof issuance is private to TypeChecker:
 host code may inspect the checked declaration but cannot call a public
-`record` method to authorize an unchecked AST. Chained value pipes are
-checked from the inner stage outward, and proofs are staged per compiler
-instance and published atomically only after the entire type-check pass
-succeeds; later invalid declarations cannot publish an earlier prefix. Detection of Future-producing calls is
+`record` method to authorize an unchecked AST. Chained value pipes are checked from the inner stage outward. Plans are staged
+per compiler instance during type analysis but are **not executable authority**
+at that point. Full compiler admission invalidates any older proof for those
+exact AST nodes, passes the staged plans directly through ownership checking,
+and publishes them atomically only after ownership succeeds. Type-only or
+ownership-failed compilation therefore cannot mint a runnable pipeline proof. Detection of Future-producing calls is
 restricted to known async/Future declarations rather than speculatively
 rechecking arbitrary scalar functions. `CallExpr.rewrite` retains that origin but drops identity-bound checked
-proofs; replacements require rechecking. Explicit checked-metadata transfers
-reject changed call origins before copying any proof.
+proofs; replacements require rechecking. The pipeline plan is deliberately outside Ast's copyable checked-metadata
+registry; reconstructed or rewritten call nodes therefore lose authorization
+and must be rechecked.
 
 The standalone `bash scripts/test-future-pipeline-provenance.sh` check requires
 JDK 21 and verifies parser/AST and frontend typing boundaries. The JUnit
@@ -63,14 +66,19 @@ Ordinary (non-Future) source `|>` still injects the left operand eagerly.
 If such an eager scalar stage returns `Future<int>`, the next checked pipe
 stage switches into Future-aware lowering; for example
 `21 |> start_async() |> finish()` invokes `start_async(21)` eagerly and
-defers `finish` until that Future succeeds. Only the narrow, checked pure-unary subset above has compiler-to-runtime lifting. Within that subset, an async
+defers `finish` until that Future succeeds. Only the narrow, checked pure-unary subset above has compiler-to-runtime lifting. Because the initial Future is only observed, not consumed, its payload must
+currently prove **Send + Share**. Unique Send-only payloads (for example
+`Box<T>`) require a future explicit consuming/`rt take` pipeline mode and
+are rejected by this borrowed form.
+
+Within that subset, an async
 stage's Future result is flattened by
 the same single `TaskPipeline` task, and the compiler marks the stage-created
 Future as pipeline-owned so cancellation revokes it while leaving the borrowed
 producer Future alone.
-Synchronous `Future<B>`-returning stages are admitted only when the returned Future is proven fresh from a checked async helper; returning a borrowed/shared Future does not grant the pipeline cancellation ownership. Future stages with effect declarations, extra arguments,
-non-int payloads, HasFuture projections, actor affinity or loan/capture
-requirements still fail closed. There is no general
+Synchronous `Future<B>`-returning stages are admitted only when the returned Future is proven fresh from a checked async helper; returning a borrowed/shared Future does not grant the pipeline cancellation ownership. Future stages with effect declarations, extra arguments, generic stages,
+HasFuture projections, actor affinity, non-Share borrowed payloads, or
+loan/capture requirements still fail closed. There is no general
 `Task.pipeline` source intrinsic or Java/LLVM/JS/Wasm executable parity.
 Do not claim the general example below runs.
 
