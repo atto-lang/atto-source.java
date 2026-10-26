@@ -1347,6 +1347,7 @@ public final class OwnershipChecker {
                     }
                 }
                 checkArguments(
+                        created,
                         created.arguments(),
                         klass.constructor().parameters(),
                         scope,
@@ -1701,6 +1702,7 @@ public final class OwnershipChecker {
                             scope, "suspends call " + fn.name());
                 }
                 checkArguments(
+                        call,
                         call.arguments(),
                         signature.parameters(),
                         scope,
@@ -1835,6 +1837,7 @@ public final class OwnershipChecker {
                                 "suspends call " + staticFunction.name());
                     }
                     checkArguments(
+                            call,
                             call.arguments(),
                             signature.parameters(),
                             scope,
@@ -2042,6 +2045,7 @@ public final class OwnershipChecker {
                     receiverReadReservations.merge(root, 1, Integer::sum);
                     try {
                         checkArguments(
+                                call,
                                 call.arguments(),
                                 signature.parameters(),
                                 scope,
@@ -2069,6 +2073,7 @@ public final class OwnershipChecker {
                         // while building an argument, but no write or new
                         // exclusive loan may occur before outer activation.
                         checkArguments(
+                                call,
                                 call.arguments(),
                                 signature.parameters(),
                                 scope,
@@ -2078,6 +2083,7 @@ public final class OwnershipChecker {
                         beginPersistentBorrow(receiver, false);
                         try {
                             checkArguments(
+                                call,
                                 call.arguments(),
                                 signature.parameters(),
                                 scope,
@@ -2091,6 +2097,7 @@ public final class OwnershipChecker {
                     }
                 } else {
                     checkArguments(
+                                call,
                                 call.arguments(),
                                 signature.parameters(),
                                 scope,
@@ -2566,10 +2573,32 @@ public final class OwnershipChecker {
             List<Ast.Param> params,
             Scope scope,
             String callable) {
-        checkArguments(arguments, params, scope, callable, false);
+        checkArguments(
+                null,
+                arguments,
+                params,
+                scope,
+                callable,
+                false);
     }
 
     private void checkArguments(
+            List<Ast.Expr> arguments,
+            List<Ast.Param> params,
+            Scope scope,
+            String callable,
+            boolean permitLabeledProducts) {
+        checkArguments(
+                null,
+                arguments,
+                params,
+                scope,
+                callable,
+                permitLabeledProducts);
+    }
+
+    private void checkArguments(
+            Ast.Expr callSite,
             List<Ast.Expr> arguments,
             List<Ast.Param> params,
             Scope scope,
@@ -2582,10 +2611,26 @@ public final class OwnershipChecker {
                         permitLabeledProducts,
                         callable);
 
-        CheckedCallPlan plan = CheckedCallPlan.bind(
+        CheckedCallPlan reconstructed = CheckedCallPlan.bind(
                 params.stream().map(Ast.Param::name).toList(),
                 params.stream().map(Ast.Param::omittable).toList(),
                 inputs);
+        CheckedCallPlan plan = reconstructed;
+        if (callSite != null) {
+            CheckedCallPlan published =
+                    CheckedCallPlan.lookup(callSite);
+            if (published == null) {
+                throw error(
+                        callable
+                                + " is missing the TypeChecker-published call plan");
+            }
+            if (!published.equals(reconstructed)) {
+                throw error(
+                        callable
+                                + " type/ownership checked call-plan disagreement");
+            }
+            plan = published;
+        }
         List<Ast.Param> reordered =
                 new ArrayList<>(plan.sourceOrder().size());
         for (CheckedCallPlan.BoundSlot slot : plan.sourceOrder()) {
