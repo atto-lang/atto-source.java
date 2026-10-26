@@ -85,10 +85,9 @@ def require_security_codeowners(contents):
     tail = rules[-len(SECURITY_CODEOWNER_PATHS):]
     for expected_path, rule in zip(SECURITY_CODEOWNER_PATHS, tail):
         fields = rule.split()
-        if (len(fields) < 2 or fields[0] != expected_path
-                or SECURITY_CODEOWNER not in fields[1:]):
+        if fields != [expected_path, SECURITY_CODEOWNER]:
             raise Denied(
-                "protected CODEOWNERS must end with terminal exact export rules owned by the independent security owner"
+                "protected CODEOWNERS must end with terminal exact export rules solely owned by the independent security owner"
             )
 
 
@@ -294,7 +293,9 @@ def _require_strict_source_protection(protection):
                        for category in ("users", "teams", "apps"))):
             raise Denied("origin main has PR review bypass allowances")
     named_contract = tuple(sorted(
-        (item["context"], item.get("app_id")) for item in named_checks
+        (item["context"], json.dumps(item.get("app_id"), sort_keys=True,
+                                     separators=(",", ":")))
+        for item in named_checks
     ))
     return (
         reviews["require_code_owner_reviews"],
