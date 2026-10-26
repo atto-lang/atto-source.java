@@ -227,10 +227,25 @@ public final class TaskPipeline {
         final List<Stage> chain;
         try {
             Objects.requireNonNull(stages, "stages");
-            if (stages.size() > 128) {
+            int stageCount = stages.size();
+            if (stageCount > 128) {
                 throw new IllegalArgumentException("pipeline exceeds 128 stages");
             }
-            chain = List.copyOf(stages);
+            if (stageCount < 0) {
+                throw new IllegalArgumentException("pipeline stage count cannot be negative");
+            }
+            // Copy exactly the bounded count, not the caller's iterator/toArray.
+            // An AbstractList may change size after the first size() check;
+            // List.copyOf(stages) could then traverse and allocate an
+            // arbitrarily larger chain before rejecting it.
+            java.util.ArrayList<Stage> snapshot = new java.util.ArrayList<>(stageCount);
+            for (int i = 0; i < stageCount; i++) {
+                snapshot.add(Objects.requireNonNull(stages.get(i), "pipeline stage"));
+            }
+            if (stages.size() != stageCount) {
+                throw new IllegalArgumentException("pipeline stages changed during admission");
+            }
+            chain = List.copyOf(snapshot);
         } catch (RuntimeException | Error validationFailure) {
             if (ownsInput) input.cancel(false);
             throw validationFailure;
