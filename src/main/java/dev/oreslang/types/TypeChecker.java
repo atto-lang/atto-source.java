@@ -10447,6 +10447,22 @@ public final class TypeChecker {
                                     + "Option<T> omittable parameters default to None");
                 }
             } else {
+                // A declaration default must be valid for every specialization.
+                // Generic is deliberately assignable as a type variable, so
+                // ordinary assignability alone cannot prove that a literal
+                // inhabits T. None is safe for Option<T>; scalar literals
+                // are only safe for generic-independent formal types.
+                if (containsGenericNamed(expected, generics)
+                        && !(explicit.name().equals("None")
+                                && explicit.arguments().isEmpty()
+                                && !explicit.inferArguments()
+                                && isOptionType(expected))) {
+                    throw new IllegalArgumentException(
+                            "default for generic-dependent parameter '"
+                                    + param.name()
+                                    + "' must be None for Option<T>; "
+                                    + "scalar defaults require a concrete type");
+                }
                 Type actual = defaultLiteralType(
                         explicit,
                         expected,
