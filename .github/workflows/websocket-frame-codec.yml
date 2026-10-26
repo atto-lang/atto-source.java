@@ -1,11 +1,8 @@
-name: WebSocket frame codec contract
+name: WebSocket protocol contract
 on:
   push:
     branches:
       - feat/websocket-frame-codec-20261026
-  pull_request:
-    branches:
-      - main
     paths:
       - src/main/java/dev/oreslang/runtime/WebSocketFrameCodec.java
       - src/main/java/dev/oreslang/runtime/WebSocketHandshake.java
@@ -13,7 +10,6 @@ on:
       - src/test/java/dev/oreslang/runtime/WebSocketHandshakeTest.java
       - docs/WEBSOCKET_TRANSPORT_V1.md
       - .github/workflows/websocket-frame-codec.yml
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -23,24 +19,42 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  frame-codec:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, linux, x64, oreslang-jdk25]
-    timeout-minutes: 20
+  deny-unapproved-runner:
+    if: ${{ github.repository != 'ores-truffle-oreslang/oreslang-source.java' || github.event.repository.private != true || github.ref != 'refs/heads/feat/websocket-frame-codec-20261026' || vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER != 'true' || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == '' || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != github.sha || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE == '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Fail closed without source checkout
+        shell: bash
+        run: |
+          echo "::error::Private compiler CI admission denied: require approved ephemeral runner plus exact SHA/tree variables"
+          exit 1
+
+  contract:
+    if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event.repository.private == true && github.ref == 'refs/heads/feat/websocket-frame-codec-20261026' && vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER == 'true' && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != '' && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == github.sha && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE != '' }}
+    runs-on: [self-hosted, linux, x64, oreslang-private-ephemeral]
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
-      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
-        with:
-          distribution: temurin
-          java-version: '25'
-      - name: Record exact source identity
+      - name: Verify exact private source identity
         shell: bash
         run: |
           set -euo pipefail
-          echo "source_head=$(git rev-parse HEAD)"
-          echo "source_tree=$(git rev-parse HEAD^{tree})"
+          test "$GITHUB_REPOSITORY" = "ores-truffle-oreslang/oreslang-source.java"
+          test "$GITHUB_REF" = "refs/heads/feat/websocket-frame-codec-20261026"
+          test "${{ github.event.repository.private }}" = "true"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$GITHUB_SHA" = "${{ vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA }}"
+          test "$(git rev-parse HEAD^{tree})" = "${{ vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE }}"
           test -z "$(git status --porcelain --untracked-files=all)"
+          echo "Verified source SHA: $(git rev-parse HEAD)"
+          echo "Verified source tree: $(git rev-parse HEAD^{tree})"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          java-version: '25'
+          version: '25.3'
+          distribution: graalvm
       - name: Execute bounded WebSocket wire contracts
         run: mvn -B -ntp -Dtest='dev.oreslang.runtime.WebSocketFrameCodecTest,dev.oreslang.runtime.WebSocketHandshakeTest' test
