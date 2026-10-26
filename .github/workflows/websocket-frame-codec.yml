@@ -8,7 +8,9 @@ on:
       - main
     paths:
       - src/main/java/dev/oreslang/runtime/WebSocketFrameCodec.java
+      - src/main/java/dev/oreslang/runtime/WebSocketHandshake.java
       - src/test/java/dev/oreslang/runtime/WebSocketFrameCodecTest.java
+      - src/test/java/dev/oreslang/runtime/WebSocketHandshakeTest.java
       - docs/WEBSOCKET_TRANSPORT_V1.md
       - .github/workflows/websocket-frame-codec.yml
   workflow_dispatch:
@@ -40,5 +42,5 @@ jobs:
           echo "source_head=$(git rev-parse HEAD)"
           echo "source_tree=$(git rev-parse HEAD^{tree})"
           test -z "$(git status --porcelain --untracked-files=all)"
-      - name: Execute bounded WebSocket frame contracts
-        run: mvn -B -ntp -Dtest=dev.oreslang.runtime.WebSocketFrameCodecTest test
+      - name: Execute bounded WebSocket wire contracts
+        run: mvn -B -ntp -Dtest='dev.oreslang.runtime.WebSocketFrameCodecTest,dev.oreslang.runtime.WebSocketHandshakeTest' test
