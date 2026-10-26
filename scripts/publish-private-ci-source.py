@@ -36,6 +36,7 @@ BLOCKING_INCIDENT_IDS = {
 }
 BLOCKING_INCIDENTS = (22, 77, 127)
 QUARANTINED_DESTINATIONS = ("zed-pkg-test/java-app",)
+QUARANTINED_DESTINATION_IDS = (1323575966,)
 SOURCE_PROTECTED_BRANCH = "main"
 POLICY_PATH = ".github/private-ci-approved-repositories.txt"
 CODEOWNERS_PATH = ".github/CODEOWNERS"
@@ -128,11 +129,16 @@ def checked_repo(repository, expected_repository_id=None):
             or result.get("visibility") != "private"
             or result.get("private") is not True):
         raise Denied("destination identity or private visibility changed")
+    repository_id = result.get("id")
+    if type(repository_id) is not int or isinstance(repository_id, bool) or repository_id <= 0:
+        raise Denied("destination numeric repository ID is invalid")
+    if repository_id in QUARANTINED_DESTINATION_IDS:
+        raise Denied("destination repository ID is quarantined by private-source incident policy")
     if expected_repository_id is not None:
         if (type(expected_repository_id) is not int
+                or isinstance(expected_repository_id, bool)
                 or expected_repository_id <= 0
-                or type(result.get("id")) is not int
-                or result["id"] != expected_repository_id):
+                or repository_id != expected_repository_id):
             raise Denied("destination numeric repository ID differs from reviewed approval")
     return result
 
@@ -205,12 +211,15 @@ def _parse_policy_approval(contents, repository, label):
         if match is None:
             raise Denied(label + " requires exact owner/repo numeric-id pairs")
         slug, numeric_id = match.groups()
+        candidate_id = int(numeric_id)
+        if candidate_id in QUARANTINED_DESTINATION_IDS:
+            raise Denied("destination repository ID is quarantined by private-source incident policy")
         key = slug.casefold()
         if key in seen:
             raise Denied(label + " contains duplicate repository identities")
         seen.add(key)
         if key == repository.casefold():
-            approved_id = int(numeric_id)
+            approved_id = candidate_id
     if approved_id is None:
         raise Denied("destination approval was revoked or absent")
     return approved_id
