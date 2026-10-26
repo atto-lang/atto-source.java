@@ -112,6 +112,7 @@ final class HttpActorGenerationCoordinatorV1<R> implements AutoCloseable {
             } finally {
                 closed = true;
                 generations.remove(candidate.routeEpoch, candidate);
+                candidate.http.beginDrain();
                 retention.quarantine(candidate.imageTicket);
             }
         }
@@ -121,7 +122,7 @@ final class HttpActorGenerationCoordinatorV1<R> implements AutoCloseable {
                 throw new IllegalStateException("candidate is not an aborted stage");
             if (candidateCleanupAcknowledged) return;
             retention.acknowledgePhysicalCleanup(
-                    candidate.imageTicket, null, loaderConfirmed);
+                    candidate.imageTicket, candidate.http, loaderConfirmed);
             candidateCleanupAcknowledged = true;
         }
 
