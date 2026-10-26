@@ -187,8 +187,29 @@ int main(int argc, char **argv) {
                 if (getenv("MOCK_EARLY_TEST_SUMMARY"))
                     puts("ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0");
                 if (!getenv("MOCK_MISSING_TEST_EVENTS")) {
-                    if (!getenv("MOCK_LATE_ARITHMETIC_PASS"))
-                        puts("ORES_TEST|PASS|core/arithmetic/adds|");
+                    if (!getenv("MOCK_LATE_ARITHMETIC_PASS")) {
+                        if (getenv("MOCK_TEST_PASS_EXTRA_FIELD"))
+                            puts("ORES_TEST|PASS|core/arithmetic/adds|FATAL|additional unexpected field");
+                        else if (getenv("MOCK_TEST_PASS_MISSING_FIELD"))
+                            puts("ORES_TEST|PASS|core/arithmetic/adds");
+                        else if (getenv("MOCK_TEST_PASS_NUL")) {
+                            fputs("ORES_TEST|PASS|core/arithmetic/adds|", stdout);
+                            fputc(0, stdout);
+                            fputc('\n', stdout);
+                        }
+                        else if (getenv("MOCK_TEST_PASS_CR")) {
+                            fputs("ORES_TEST|PASS|core/arithmetic/adds|", stdout);
+                            fputc('\r', stdout);
+                            fputc('\n', stdout);
+                        }
+                        else if (getenv("MOCK_TEST_PASS_ANSI_ESCAPE")) {
+                            fputs("ORES_TEST|PASS|core/arithmetic/adds|", stdout);
+                            fputc('\033', stdout);
+                            fputs("[31m\n", stdout);
+                        }
+                        else
+                            puts("ORES_TEST|PASS|core/arithmetic/adds|");
+                    }
                     if (getenv("MOCK_REPLACE_FLOAT_WITH_ARITHMETIC_PASS"))
                         puts("ORES_TEST|PASS|core/arithmetic/adds|");
                     else
@@ -398,7 +419,10 @@ assert_case() {
       'duplicate arithmetic PASS identity'|'wrong SKIP test identity'|'duplicate SKIP identity'|\
       'summary emitted before test events'|'PASS emitted after final summary'|\
       'stray stdout with valid test events and summary'|'unexpected blank stdout record'|\
-      'trailing blank stdout after valid summary')
+      'trailing blank stdout after valid summary'|\
+      'test PASS event has extra pipe field'|'test PASS event lacks detail field'|\
+      'test PASS event contains NUL'|'test PASS event contains CR'|\
+      'test PASS event contains ANSI escape')
         expected_diagnostic='native executable did not produce the exact unique PASS/SKIP guest tests and summary' ;;
       'unrelated CLI error impersonates AOT JIT rejection'|\
       'wrong AOT JIT refusal reason'|'wrong hybrid JIT refusal reason'|\
@@ -545,6 +569,11 @@ assert_case 'wrong SKIP test identity' failure aot compressed32 MOCK_WRONG_SKIP_
 assert_case 'duplicate SKIP identity' failure aot compressed32 MOCK_DUPLICATE_TEST_SKIP_ID=1
 assert_case 'summary emitted before test events' failure aot compressed32 MOCK_EARLY_TEST_SUMMARY=1
 assert_case 'PASS emitted after final summary' failure aot compressed32 MOCK_LATE_ARITHMETIC_PASS=1
+assert_case 'test PASS event has extra pipe field' failure aot compressed32 MOCK_TEST_PASS_EXTRA_FIELD=1
+assert_case 'test PASS event lacks detail field' failure aot compressed32 MOCK_TEST_PASS_MISSING_FIELD=1
+assert_case 'test PASS event contains NUL' failure aot compressed32 MOCK_TEST_PASS_NUL=1
+assert_case 'test PASS event contains CR' failure aot compressed32 MOCK_TEST_PASS_CR=1
+assert_case 'test PASS event contains ANSI escape' failure aot compressed32 MOCK_TEST_PASS_ANSI_ESCAPE=1
 assert_case 'unrelated CLI error impersonates AOT JIT rejection' failure aot compressed32 MOCK_JIT_UNRELATED_USAGE_ERROR=1
 grep -Fx 'native executable refused JIT without the required build-mode diagnostic' "$tmp/stderr" >/dev/null || {
   echo 'FAILED: JIT-related negative case did not reach the mode-specific refusal check' >&2
