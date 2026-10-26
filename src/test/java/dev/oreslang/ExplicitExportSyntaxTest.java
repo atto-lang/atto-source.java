@@ -1,7 +1,10 @@
 package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.BuildOptions;
 import dev.oreslang.compiler.ExportResolver;
+import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.compiler.TreeShaker;
 import dev.oreslang.parser.Parser;
 import org.junit.jupiter.api.Test;
 
@@ -226,6 +229,27 @@ final class ExplicitExportSyntaxTest {
                 pub fnc f(): int { return 1; }
                 fnc f(int value): int { return value; }
                 """, "EXPORT_OVERLOAD_VISIBILITY_CONFLICT");
+    }
+
+    @Test
+    void explicitExportsAreConservativeLibraryTreeShakerRoots() {
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                export fnc api;
+
+                fnc api(): int { return 42; }
+                fnc hidden(): int { return 7; }
+                """, BuildOptions.library(java.util.Map.of()));
+
+        assertTrue(result.retained(Parser.ROOT_MODULE + ".api"));
+        assertTrue(result.rootSymbols().contains(Parser.ROOT_MODULE + ".api"));
+        assertTrue(result.removed(Parser.ROOT_MODULE + ".hidden"));
+
+        Ast.Program pruned = result.program();
+        assertEquals(1, pruned.exports().size(),
+                "tree shaking must preserve root export declarations");
+        assertEquals(1, pruned.declarationMetadata().size(),
+                "tree shaking must filter root declaration metadata in lockstep");
+        assertEquals("api", pruned.declarationMetadata().getFirst().name());
     }
 
     @Test
