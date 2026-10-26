@@ -108,33 +108,84 @@ final class CompileTimeConstEvaluator {
         return evaluated;
     }
 
+    // Compiler meta-types can be built directly as AST. Bound their traversal
+    // independently of the Const<T> expression evaluator and its 512 steps.
+    // Otherwise a deeply nested type can exhaust the JVM stack while deciding
+    // whether to reject a macro argument or while reporting that rejection.
+    static final int MAX_CONST_TYPE_NODES = 512;
+    static final int MAX_CONST_TYPE_DEPTH = 64;
+    private static final int MAX_TYPE_DISPLAY_DEPTH = 16;
+    private static final int MAX_TYPE_DISPLAY_NODES = 128;
+    private static final int MAX_TYPE_DISPLAY_CHILDREN = 16;
+    private static final int MAX_TYPE_DISPLAY_CHARS = 1_024;
+
+    private record TypePair(Ast.TypeRef expected, Ast.TypeRef actual, int depth) { }
+
     static boolean typeMatches(Ast.TypeRef expected, Ast.TypeRef actual) {
-        if (expected == null || actual == null || expected.inferArguments() || actual.inferArguments()) {
-            return false;
-        }
-        String expectedName = normalizeTypeName(expected.name());
-        String actualName = normalizeTypeName(actual.name());
-        if (!expectedName.equals(actualName)
-                || expected.arguments().size() != actual.arguments().size()) {
-            return false;
-        }
-        for (int i = 0; i < expected.arguments().size(); i++) {
-            if (!typeMatches(expected.arguments().get(i), actual.arguments().get(i))) return false;
+        if (expected == null || actual == null) return false;
+        java.util.ArrayDeque<TypePair> pending = new java.util.ArrayDeque<>();
+        pending.push(new TypePair(expected, actual, 0));
+        int visited = 0;
+        while (!pending.isEmpty()) {
+            TypePair pair = pending.pop();
+            if (++visited > MAX_CONST_TYPE_NODES
+                    || pair.depth() > MAX_CONST_TYPE_DEPTH) return false;
+            Ast.TypeRef left = pair.expected();
+            Ast.TypeRef right = pair.actual();
+            if (left == null || right == null
+                    || left.inferArguments() || right.inferArguments()
+                    || !normalizeTypeName(left.name()).equals(normalizeTypeName(right.name()))
+                    || left.arguments().size() != right.arguments().size()) return false;
+            int children = left.arguments().size();
+            if ((long) visited + pending.size() + children > MAX_CONST_TYPE_NODES) {
+                return false;
+            }
+            for (int i = children - 1; i >= 0; i--) {
+                pending.push(new TypePair(
+                        left.arguments().get(i), right.arguments().get(i),
+                        pair.depth() + 1));
+            }
         }
         return true;
     }
 
+    /** Bounded compiler diagnostic: no recursive stream reductions or huge names. */
     static String displayType(Ast.TypeRef type) {
-        if (type.arguments().isEmpty()) return normalizeTypeName(type.name());
-        if (type.isTupleType()) {
-            return "(" + type.arguments().stream()
-                    .map(CompileTimeConstEvaluator::displayType)
-                    .reduce((a, b) -> a + ", " + b).orElse("") + ")";
+        if (type == null) return "<unknown>";
+        StringBuilder text = new StringBuilder();
+        renderType(type, text, 0, new int[] { 0 });
+        if (text.length() > MAX_TYPE_DISPLAY_CHARS) {
+            return text.substring(0, MAX_TYPE_DISPLAY_CHARS) + "...";
         }
-        return normalizeTypeName(type.name()) + "<"
-                + type.arguments().stream()
-                .map(CompileTimeConstEvaluator::displayType)
-                .reduce((a, b) -> a + ", " + b).orElse("") + ">";
+        return text.toString();
+    }
+
+    private static void renderType(
+            Ast.TypeRef type, StringBuilder text, int depth, int[] visited) {
+        if (type == null || depth > MAX_TYPE_DISPLAY_DEPTH
+                || ++visited[0] > MAX_TYPE_DISPLAY_NODES
+                || text.length() >= MAX_TYPE_DISPLAY_CHARS) {
+            text.append("...");
+            return;
+        }
+        boolean tuple = type.isTupleType();
+        if (tuple) {
+            text.append("(");
+        } else {
+            String name = normalizeTypeName(type.name());
+            text.append(name, 0, Math.min(name.length(), 128));
+            if (name.length() > 128) text.append("...");
+            if (!type.arguments().isEmpty()) text.append("<");
+        }
+        int size = type.arguments().size();
+        int shown = Math.min(size, MAX_TYPE_DISPLAY_CHILDREN);
+        for (int i = 0; i < shown && text.length() < MAX_TYPE_DISPLAY_CHARS; i++) {
+            if (i != 0) text.append(", ");
+            renderType(type.arguments().get(i), text, depth + 1, visited);
+        }
+        if (shown < size) text.append(", ...");
+        if (tuple) text.append(")");
+        else if (size > 0) text.append(">");
     }
 
     private static String normalizeTypeName(String name) {
