@@ -50,5 +50,15 @@ final class ActorCompressed32ReferenceTest {
         assertEquals(ActorCompressed32Reference.MAX_OFFSET_BYTES,
                 ActorCompressed32Reference.decodeChecked(0xffff_ffffL,
                         ActorCompressed32Reference.MAX_SPAN_BYTES, 8));
+        // A caller-supplied logical span must never enlarge the 32-bit ABI.
+        assertThrows(SecurityException.class,
+                () -> ActorCompressed32Reference.decodeChecked(1,
+                        ActorCompressed32Reference.MAX_SPAN_BYTES + 1, 8));
+        assertThrows(SecurityException.class,
+                () -> ActorCompressed32Reference.decodeChecked(0xffff_ffffL,
+                        ActorCompressed32Reference.MAX_SPAN_BYTES + 1, 8));
+        assertThrows(SecurityException.class,
+                () -> ActorCompressed32Reference.decodeChecked(0xffff_ffffL,
+                        ActorCompressed32Reference.MAX_SPAN_BYTES, 9));
     }
 }
