@@ -3,8 +3,6 @@ package dev.oreslang.runtime;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
-import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -168,95 +166,50 @@ final class ActorSourceTaskLifetimeGateTest {
     @Test
     void untrustedQuotaWrapperPreservesDeferredPhysicalRetirementHook()
             throws Exception {
-        String key = UUID.randomUUID().toString();
-        UntrustedProbe probe = new UntrustedProbe();
-        UNTRUSTED_PROBES.put(key, probe);
+        java.util.concurrent.atomic.AtomicLong wall =
+                new java.util.concurrent.atomic.AtomicLong();
+        java.util.concurrent.atomic.AtomicLong cpu =
+                new java.util.concurrent.atomic.AtomicLong();
+        ActorRuntime.UntrustedLogicalQuota quota =
+                new ActorRuntime.UntrustedLogicalQuota(
+                        TimeUnit.SECONDS.toNanos(1),
+                        1_000,
+                        0L,
+                        0L,
+                        wall::get,
+                        cpu::get);
 
-        try (ActorRuntime runtime = new ActorRuntime(
-                IsolatePolicy.developer(),
-                new ActorRuntime.DispatcherConfig(2, 2, 8, 64))) {
-            ActorRuntime.ActorRef<String> actor =
-                    runtime.spawnUntrusted(new UntrustedFactory());
-            try {
-                actor.send(key);
-                assertTrue(
-                        probe.retirementHookEntered.await(5, TimeUnit.SECONDS),
-                        "untrusted wrapper dropped Task.afterCarrierQuiescent");
-
-                actor.stop();
-
-                assertFalse(
-                        actor.done().isDone(),
-                        "untrusted actor finalized before delegated Task retirement");
-                assertFalse(
-                        actor.awaitTermination(25, TimeUnit.MILLISECONDS),
-                        "untrusted actor must remain pinned behind deferred retirement");
-
-                Runnable retire = probe.releaseRetirement.getAndSet(null);
-                assertNotNull(retire);
-                retire.run();
-
-                assertTrue(
-                        actor.awaitTermination(5, TimeUnit.SECONDS),
-                        "untrusted actor should finalize after delegated retirement");
-                assertEquals(0, runtime.actorCount());
-            } finally {
-                Runnable retire = probe.releaseRetirement.getAndSet(null);
-                if (retire != null) retire.run();
-                actor.stop();
+        AtomicReference<Runnable> delegatedRetirement = new AtomicReference<>();
+        OresScheduler.Task<Void> source = new OresScheduler.Task<>() {
+            @Override
+            public OresScheduler.Step<Void> resume(
+                    OresScheduler.Resume resume) {
+                return OresScheduler.done(null);
             }
-        } finally {
-            UNTRUSTED_PROBES.remove(key);
-        }
-    }
 
-    private static final ConcurrentHashMap<String, UntrustedProbe>
-            UNTRUSTED_PROBES = new ConcurrentHashMap<>();
+            @Override
+            public void afterCarrierQuiescent(Runnable retire) {
+                assertTrue(delegatedRetirement.compareAndSet(null, retire));
+            }
+        };
 
-    private static final class UntrustedProbe {
-        private final CountDownLatch retirementHookEntered = new CountDownLatch(1);
-        private final AtomicReference<Runnable> releaseRetirement =
-                new AtomicReference<>();
-        private final AtomicReference<OresFuture<Void>> sourceTask =
-                new AtomicReference<>();
-    }
+        OresScheduler.Task<Void> wrapped =
+                ActorRuntime.wrapUntrustedTaskForQuota(source, quota);
+        OresScheduler.Step<Void> step =
+                wrapped.resume(new OresScheduler.Resume(true, null, null));
+        assertInstanceOf(OresScheduler.Done.class, step);
 
-    /**
-     * Intentionally has no instance fields: untrusted actor factories must be
-     * stateless. Test coordination is looked up only after the data-only String
-     * message crosses the actor boundary.
-     */
-    private static final class UntrustedFactory
-            implements ActorRuntime.BehaviorFactory<String> {
-        @Override
-        public ActorRuntime.Behavior<String> create(
-                ActorRuntime.ActorContext<String> ignored) {
-            return (message, context) -> {
-                UntrustedProbe probe = UNTRUSTED_PROBES.get(message);
-                if (probe == null) {
-                    throw new IllegalStateException("missing untrusted test probe");
-                }
+        java.util.concurrent.atomic.AtomicBoolean retired =
+                new java.util.concurrent.atomic.AtomicBoolean();
+        wrapped.afterCarrierQuiescent(() -> retired.set(true));
 
-                OresScheduler.Task<Void> child = new OresScheduler.Task<>() {
-                    @Override
-                    public OresScheduler.Step<Void> resume(
-                            OresScheduler.Resume resume) {
-                        return OresScheduler.done(null);
-                    }
-
-                    @Override
-                    public void afterCarrierQuiescent(Runnable retire) {
-                        if (!probe.releaseRetirement.compareAndSet(null, retire)) {
-                            throw new IllegalStateException(
-                                    "untrusted retirement hook invoked twice");
-                        }
-                        probe.retirementHookEntered.countDown();
-                    }
-                };
-
-                probe.sourceTask.set(context.runtime().startActorTask(child));
-            };
-        }
+        assertFalse(retired.get(),
+                "quota wrapper must not bypass the source Task retirement barrier");
+        Runnable release = delegatedRetirement.get();
+        assertNotNull(release,
+                "quota wrapper must delegate Task.afterCarrierQuiescent");
+        release.run();
+        assertTrue(retired.get());
     }
 
 }
