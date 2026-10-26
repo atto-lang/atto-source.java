@@ -238,6 +238,53 @@ class AsyncNativeIoTest {
         }
     }
 
+    @Test void sameLogicalActorIdCannotAliasNativeLoanAuthority()
+            throws Exception {
+        try (var io = new AsyncNativeIo(2);
+             var runtime = new ActorRuntime()) {
+            AutoCloseable resource = () -> { };
+            io.register(resource);
+            runtime.setNativeIoLoanRetirementGate(io::actorPhysicallyRetired);
+            io.setActorLoanRetiredListener(runtime::onNativeIoLoanRetired);
+
+            var loan = new java.util.concurrent.atomic.AtomicReference<AsyncNativeIo.IoLoan>();
+            var admitted = new CountDownLatch(1);
+            var owner = runtime.<String>spawnShared(() -> (message, ctx) -> {
+                loan.set(io.borrow(resource));
+                admitted.countDown();
+            });
+            owner.send("borrow");
+            assertTrue(admitted.await(3, TimeUnit.SECONDS));
+            owner.drain().get(3, TimeUnit.SECONDS);
+
+            var constructor = owner.getClass().getDeclaredConstructor(
+                    ActorRuntime.class,
+                    ActorRuntime.ActorId.class,
+                    ActorRuntime.ActorKind.class,
+                    long.class);
+            constructor.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            ActorRuntime.ActorRef<String> replacement =
+                    (ActorRuntime.ActorRef<String>) constructor.newInstance(
+                            runtime, owner.id(), owner.kind(), owner.generation() + 1L);
+
+            assertEquals(owner.id(), replacement.id(),
+                    "restart-style replacement keeps the logical actor id");
+            assertNotEquals(owner.generation(), replacement.generation());
+            assertEquals(1, io.outstandingActorOperations(owner));
+            assertEquals(0, io.outstandingActorOperations(replacement),
+                    "logical id alone must not inherit physical native loans");
+            assertFalse(io.actorPhysicallyRetired(owner));
+            assertTrue(io.actorPhysicallyRetired(replacement),
+                    "physical retirement is scoped to the exact actor ref");
+
+            owner.cancel();
+            assertFalse(owner.done().isDone());
+            loan.get().close();
+            assertTrue(owner.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void differentActorIncarnationsCannotReleaseEachOthersNativeLoans()
             throws Exception {
         try (var io = new AsyncNativeIo(4);
