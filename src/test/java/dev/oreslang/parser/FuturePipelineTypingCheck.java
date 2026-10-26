@@ -45,13 +45,13 @@ public final class FuturePipelineTypingCheck {
         Ast.BindingStmt pending = (Ast.BindingStmt) liftedMain.body().get(0);
         Ast.CallExpr second = (Ast.CallExpr) pending.initializer();
         Ast.CallExpr first = (Ast.CallExpr) second.arguments().getFirst();
-        if (!TypeChecker.CheckedPureFuturePipe.lookup(first)
-                || !TypeChecker.CheckedPureFuturePipe.lookup(second)) {
+        if (!TypeChecker.CheckedFuturePipe.lookup(first)
+                || !TypeChecker.CheckedFuturePipe.lookup(second)) {
             throw new AssertionError("checked Future chain lost a stage proof");
         }
-        if (TypeChecker.CheckedPureFuturePipe.target(first)
+        if (TypeChecker.CheckedFuturePipe.target(first)
                 != lifted.modules().get(0).declarations().get(1)
-                || TypeChecker.CheckedPureFuturePipe.target(second)
+                || TypeChecker.CheckedFuturePipe.target(second)
                 != lifted.modules().get(0).declarations().get(2)) {
             throw new AssertionError("checked Future stage bound to the wrong declaration identity");
         }
@@ -74,7 +74,7 @@ public final class FuturePipelineTypingCheck {
             TypeChecker.checkTypes(invalidWholeProgram);
             throw new AssertionError("later invalid declaration unexpectedly type-checked");
         } catch (IllegalArgumentException expected) {
-            if (TypeChecker.CheckedPureFuturePipe.lookup(unsafeEarlierPipe)) {
+            if (TypeChecker.CheckedFuturePipe.lookup(unsafeEarlierPipe)) {
                 throw new AssertionError(
                         "failed compilation published a partially checked Future proof");
             }
@@ -83,17 +83,69 @@ public final class FuturePipelineTypingCheck {
         // Host code must not have a public proof-minting capability,
         // even if it constructs a matching function declaration and CallExpr.
         try {
-            TypeChecker.CheckedPureFuturePipe.class.getMethod(
-                    "record", Ast.CallExpr.class, Ast.FunctionDecl.class);
+            TypeChecker.CheckedFuturePipe.class.getMethod(
+                    "record", Ast.CallExpr.class, TypeChecker.PipelinePlan.class);
             throw new AssertionError("pipeline proof minting is publicly accessible");
         } catch (NoSuchMethodException expected) {
             // The compiler is the only permitted issuer.
         }
 
-        if (TypeChecker.CheckedPureFuturePipe.lookup(
+        if (TypeChecker.CheckedFuturePipe.lookup(
                 second.rewrite(second.callee(), second.typeArguments(),
                         second.typeArgumentsPresent(), second.arguments()))) {
             throw new AssertionError("rewritten Future stage inherited stale lowering proof");
+        }
+
+        Ast.Program typedAB = TypeChecker.check(Parser.parse("""
+                async fnc source(): int { return 21; }
+                fnc render(int value): String { return "ok"; }
+                fnc main(): void {
+                  val Future<String> pending = source() |> render();
+                  return;
+                }
+                """));
+        Ast.FunctionDecl typedABMain = (Ast.FunctionDecl)
+                typedAB.modules().getFirst().declarations().get(2);
+        Ast.CallExpr typedABPipe = (Ast.CallExpr)
+                ((Ast.BindingStmt) typedABMain.body().getFirst()).initializer();
+        TypeChecker.PipelinePlan typedABPlan =
+                TypeChecker.CheckedFuturePipe.plan(typedABPipe);
+        if (typedABPlan == null
+                || !typedABPlan.outputTypeRef().name().equals("String")
+                || !typedABPlan.stageEffects().isEmpty()
+                || !typedABPlan.cumulativeEffects().isEmpty()
+                || typedABPlan.inputOwnership()
+                        != TypeChecker.PipelineInputOwnership.BORROWED_UPSTREAM
+                || typedABPlan.producedFutureOwnership()
+                        != TypeChecker.PipelineStageFutureOwnership.NONE) {
+            throw new AssertionError("typed A -> B pipeline plan metadata is incomplete");
+        }
+
+        Ast.Program syncFutureStage = TypeChecker.check(Parser.parse("""
+                async fnc source(): int { return 21; }
+                async fnc delayed(int value): int {
+                  rt cooperate;
+                  return value + 1;
+                }
+                fnc bridge(int value): Future<int> { return delayed(value); }
+                fnc main(): void {
+                  val Future<int> pending = source() |> bridge();
+                  return;
+                }
+                """));
+        Ast.FunctionDecl syncFutureMain = (Ast.FunctionDecl)
+                syncFutureStage.modules().getFirst().declarations().get(3);
+        Ast.CallExpr syncFuturePipe = (Ast.CallExpr)
+                ((Ast.BindingStmt) syncFutureMain.body().getFirst()).initializer();
+        TypeChecker.PipelinePlan syncFuturePlan =
+                TypeChecker.CheckedFuturePipe.plan(syncFuturePipe);
+        if (syncFuturePlan == null
+                || !syncFuturePlan.flattensFuture()
+                || syncFuturePlan.asyncStage()
+                || syncFuturePlan.producedFutureOwnership()
+                        != TypeChecker.PipelineStageFutureOwnership.OWNED_STAGE_RESULT
+                || !syncFuturePlan.outputTypeRef().name().equals("int")) {
+            throw new AssertionError("sync Future-returning stage lost flatten/ownership plan");
         }
 
         Ast.Program becomesAsync = TypeChecker.check(Parser.parse("""
@@ -112,12 +164,12 @@ public final class FuturePipelineTypingCheck {
                 becomesAsync.modules().getFirst().declarations().get(2);
         Ast.CallExpr liftedAfterAsync = (Ast.CallExpr)
                 ((Ast.BindingStmt) becomesAsyncMain.body().getFirst()).initializer();
-        if (!TypeChecker.CheckedPureFuturePipe.lookup(liftedAfterAsync)) {
+        if (!TypeChecker.CheckedFuturePipe.lookup(liftedAfterAsync)) {
             throw new AssertionError("pipeline did not lift after scalar prefix became async");
         }
         Ast.CallExpr eagerAsyncPrefix = (Ast.CallExpr)
                 liftedAfterAsync.arguments().getFirst();
-        if (TypeChecker.CheckedPureFuturePipe.lookup(eagerAsyncPrefix)) {
+        if (TypeChecker.CheckedFuturePipe.lookup(eagerAsyncPrefix)) {
             throw new AssertionError("scalar prefix was incorrectly converted into a deferred stage");
         }
 
@@ -140,8 +192,8 @@ public final class FuturePipelineTypingCheck {
                 asyncLifted.modules().getFirst().declarations().get(3);
         Ast.CallExpr asyncPipe = (Ast.CallExpr)
                 ((Ast.BindingStmt) asyncMain.body().getFirst()).initializer();
-        if (!TypeChecker.CheckedPureFuturePipe.lookup(asyncPipe)
-                || !TypeChecker.CheckedPureFuturePipe.target(asyncPipe).async()) {
+        if (!TypeChecker.CheckedFuturePipe.lookup(asyncPipe)
+                || !TypeChecker.CheckedFuturePipe.target(asyncPipe).async()) {
             throw new AssertionError("checked async Future stage lost its lowering proof");
         }
 
@@ -155,7 +207,7 @@ public final class FuturePipelineTypingCheck {
                   val Future<int> pending = source() |> save();
                   return;
                 }
-                """, "pure int -> int sync/async stage");
+                """, "pure unary sync/async stage body");
 
         rejected("""
                 async fnc source(): int { return 21; }
@@ -176,7 +228,7 @@ public final class FuturePipelineTypingCheck {
                   val Future<int> pending = source() |> save();
                   return;
                 }
-                """, "pure int -> int sync/async stage");
+                """, "pure unary sync/async stage body");
 
         // Scalar call-shaped producers do not incur speculative Future
         // type checking or acquire a checked Future pipeline proof.
