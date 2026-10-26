@@ -6262,7 +6262,11 @@ public final class OresEvalRootNode extends RootNode {
                     // Crossing an untyped linked-code-unit boundary keeps this
                     // activation until the imported call returns so the caller's
                     // declared return-shape check still runs.
-                    throw new ReturnSignal(invoke(invocation));
+                    throw new ReturnSignal(
+                            invoke(
+                                    invocation,
+                                    env.taskScope,
+                                    env.taskScopeParent));
                 }
                 if (value instanceof Ast.ConditionalExpr conditional) {
                     Ast.Expr selected = truth(eval(conditional.condition(), env))
@@ -6933,7 +6937,10 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.CallExpr call) {
                 if (isBooleanIntrinsicCall(call, env)) return evalBooleanIntrinsic(call, env);
-                return invoke(prepareInvocation(call, env));
+                return invoke(
+                        prepareInvocation(call, env),
+                        env.taskScope,
+                        env.taskScopeParent);
             }
             if (expr instanceof Ast.MemberExpr member) return member(eval(member.receiver(), env), member.member(), env);
             if (expr instanceof Ast.IndexExpr indexed) {
