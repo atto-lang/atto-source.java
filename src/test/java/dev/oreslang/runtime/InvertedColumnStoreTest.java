@@ -474,6 +474,16 @@ final class InvertedColumnStoreTest {
     }
 
     @Test
+    void rawRecordColumnsEnforceTheSharedHostReferenceStrideCap() {
+        assertDoesNotThrow(() -> InvertedColumnStore.ColumnSpec.record(64 * 1024));
+        assertThrows(IllegalArgumentException.class,
+                () -> InvertedColumnStore.ColumnSpec.record(64 * 1024 + 1));
+        assertThrows(IllegalArgumentException.class,
+                () -> new InvertedColumnStore.ColumnSpec(
+                        InvertedColumnStore.Kind.RECORD, Integer.MAX_VALUE));
+    }
+
+    @Test
     void structuralMutationDoesNotProceedWithAnyLiveReadLoan() {
         try (var store = new InvertedColumnStore(
                 InvertedColumnStore.Kind.I32, InvertedColumnStore.Kind.I32)) {

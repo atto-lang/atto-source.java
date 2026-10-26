@@ -15,6 +15,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * No raw array, ByteBuffer, or writable view escapes the owning store.
  */
 public final class InvertedColumnStore implements AutoCloseable {
+    private static final int MAX_RECORD_BYTES = 64 * 1024;
+
     public enum Kind {
         I32(4), I64(8), F32(4), F64(8), BOOL(1), RECORD(0);
         private final int bytes;
@@ -30,7 +32,9 @@ public final class InvertedColumnStore implements AutoCloseable {
     public record ColumnSpec(Kind kind, int bytes) {
         public ColumnSpec {
             Objects.requireNonNull(kind, "column kind");
-            if (bytes <= 0 || (kind != Kind.RECORD && kind.bytes() != bytes)) {
+            if (bytes <= 0
+                    || (kind != Kind.RECORD && kind.bytes() != bytes)
+                    || (kind == Kind.RECORD && bytes > MAX_RECORD_BYTES)) {
                 throw new IllegalArgumentException("invalid inverted column stride");
             }
         }
