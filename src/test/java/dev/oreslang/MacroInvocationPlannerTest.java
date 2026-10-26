@@ -289,6 +289,35 @@ final class MacroInvocationPlannerTest {
     }
 
     @Test
+    void quotedSyntaxCannotSmugglePrivateMacroInvocationAcrossModules() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define module Producer as
+                            define macro secret(Syntax<Expr> value) -> Syntax<Expr> {
+                                return value;
+                            }
+                            define pub macro expose(Syntax<Expr> value) -> Syntax<Expr> {
+                                return value;
+                            }
+                        end
+
+                        define module Consumer as
+                            fnc answer() -> int {
+                                return Producer.expose!(
+                                    syntax expr Producer.secret!(syntax expr 42)
+                                );
+                            }
+                        end
+                        """));
+
+        assertTrue(failure.getMessage().contains("private compile-time macro"),
+                failure::toString);
+        assertTrue(failure.getMessage().contains("cannot bypass compile-time visibility"),
+                failure::toString);
+    }
+
+    @Test
     void unsupportedMacroBodyCannotFallBackToRuntimeExecution() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
