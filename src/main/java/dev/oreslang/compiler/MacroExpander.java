@@ -428,7 +428,8 @@ public final class MacroExpander {
             }
             try {
                 emitted = CompileTimeConstEvaluator.evaluate(
-                        constant.expression()).expression();
+                        constant.expression(),
+                        macro.parameters().getFirst().type().constType()).expression();
             } catch (CompileTimeConstEvaluator.Failure failure) {
                 throw unsupported(
                         invocation.name(),
