@@ -151,7 +151,7 @@ final class MacroInvocationPlannerTest {
                 second.workItems().getFirst().hygieneMark());
         MacroExpansionPlanner.HygieneMark mark =
                 first.workItems().getFirst().hygieneMark();
-        assertEquals("root", mark.module());
+        assertEquals(Parser.ROOT_MODULE, mark.module());
         assertEquals("literal", mark.macroName());
         assertTrue(mark.line() > 0);
         assertTrue(mark.column() > 0);
