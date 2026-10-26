@@ -130,6 +130,33 @@ final class NamedValueCallGuestTest {
                 """)));
     }
 
+    @Test
+    void namedCallPreservesExclusiveBorrowAcrossLaterSourceArgument() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class Cell as
+                  pub let int value = 1;
+                end
+                fnc consume(borrow mut Cell owner, int value): int { return value; }
+                fnc invalid(): int {
+                  val Cell cell = new Cell();
+                  return consume(owner: rt borrow mut cell, value: cell.value);
+                }
+                """)));
+    }
+
+    @Test
+    void capabilityCheckerTraversesNestedNamedValueOperands() {
+        var parsed = Parser.parse("""
+                fnc sink(int left, int right): int { return left; }
+                fnc attempt(): int {
+                  return sink(right: process.descriptor, left: 42);
+                }
+                """);
+        assertThrows(SecurityException.class,
+                () -> dev.oreslang.runtime.CapabilityChecker.check(
+                        parsed, dev.oreslang.runtime.IsolatePolicy.strictFaas()));
+    }
+
     private static String run(String program) throws Exception {
         var parsed = Parser.parse(program);
         OwnershipChecker.check(TypeChecker.check(parsed));
