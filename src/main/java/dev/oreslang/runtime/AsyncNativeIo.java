@@ -467,26 +467,35 @@ public final class AsyncNativeIo implements AutoCloseable {
     void requestShutdown() {
         synchronized (shutdownLock) {
             final boolean first;
-            final List<java.net.Socket> sockets = new ArrayList<>();
+            final Set<AutoCloseable> transportWakeups =
+                    java.util.Collections.newSetFromMap(new IdentityHashMap<>());
             synchronized (this) {
                 first = !closed;
                 closed = true;
                 if (first) {
                     for (AutoCloseable resource : resources) {
-                        if (resource instanceof java.net.Socket socket) sockets.add(socket);
+                        if (resource instanceof java.net.Socket
+                                || resource instanceof java.net.ServerSocket) {
+                            transportWakeups.add(resource);
+                        }
                     }
                     for (AutoCloseable resource : deferredUnregister) {
-                        if (resource instanceof java.net.Socket socket) sockets.add(socket);
+                        if (resource instanceof java.net.Socket
+                                || resource instanceof java.net.ServerSocket) {
+                            transportWakeups.add(resource);
+                        }
                     }
                 }
             }
             if (!first) return;
             reportDiscarded(workers.shutdownNow());
             reportDiscarded(controlWorkers.shutdownNow());
-            for (java.net.Socket socket : sockets) {
+            for (AutoCloseable transport : transportWakeups) {
                 try {
-                    socket.close(); // unblock only; physical loans still own state
-                } catch (java.io.IOException wakeFailure) {
+                    // Wake blocking read/accept only. Resource loans and the
+                    // post-join sweep remain the physical retirement proof.
+                    transport.close();
+                } catch (Exception wakeFailure) {
                     recordIncomplete(wakeFailure);
                 }
             }
