@@ -44,7 +44,7 @@ final class ExplicitExportSyntaxTest {
                 end
                 import type Message from "+core/actor";
                 """));
-        assertTrue(failure.getMessage().contains("[IMPORT_AFTER_DECLARATION]"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("[EXPORT_IMPORT_PRELUDE]"), failure.getMessage());
     }
 
     @Test
@@ -68,21 +68,57 @@ final class ExplicitExportSyntaxTest {
     }
 
     @Test
+    void matchesAllCommonSourceSyntaxVectors() {
+        assertParses("export X;");
+        assertParses("export[pkg] actor Counter;");
+        assertParses("export(package) class {X, Y as Z,};");
+        assertParses("export {X, Y as Z, #ready,};");
+        assertParses("export symbol {#ready, #failed,};");
+        assertParses("export class {X};");
+        assertParses("export symbol #ready as #ready;");
+
+        assertParseError("EXPORT_SEMICOLON_REQUIRED", "export X");
+        assertParseError("EXPORT_EMPTY_GROUP", "export {};");
+        assertParseError("EXPORT_EMPTY_GROUP", "export class {};");
+        assertParseError("EXPORT_MALFORMED_LIST", "export actor {,X};");
+        assertParseError("EXPORT_MALFORMED_LIST", "export actor {X,,Y};");
+        assertParseError("EXPORT_MALFORMED_LIST", "export actor {X Y};");
+        assertParseError("EXPORT_NESTED_GROUP", "export actor {{X}};");
+        assertParseError("EXPORT_WILDCARD_UNSUPPORTED", "export *;");
+        assertParseError("EXPORT_REEXPORT_UNSUPPORTED", "export * from \"./dep\";");
+        assertParseError("EXPORT_REEXPORT_UNSUPPORTED", "export from \"./dep\" {X};");
+        assertParseError("EXPORT_QUALIFIED_TARGET_UNSUPPORTED", "export dep.X;");
+        assertParseError("EXPORT_QUALIFIED_TARGET_UNSUPPORTED", "export dep::X;");
+        assertParseError("EXPORT_GENERIC_TARGET_UNSUPPORTED", "export Foo<int>;");
+        assertParseError("EXPORT_CALLABLE_SIGNATURE_UNSUPPORTED", "export foo(int);");
+        assertParseError("EXPORT_KIND_PREFIX_IN_GROUP", "export {class X, actor Y};");
+        assertParseError("EXPORT_KIND_PREFIX_IN_GROUP", "export actor {actor X};");
+        assertParseError("EXPORT_SYMBOL_BINDING_ALIAS_UNSUPPORTED", "export symbol #ready as Ready;");
+        assertParseError("EXPORT_SYMBOL_IDENTITY_MISMATCH", "export symbol #ready as #ok;");
+        assertParseError("EXPORT_MULTIPLE_SCOPES", "export[pkg][file] X;");
+        assertParseError("EXPORT_UNKNOWN_SCOPE", "export[project] X;");
+        assertParseError("EXPORT_SYMBOL_IDENTITY_TARGET_REQUIRES_SYMBOL_SOURCE", "export symbol ready as #ready;");
+        assertParseError("EXPORT_UNKNOWN_DECLARATION_KIND", "export string ready as 'ready';");
+        assertParseError("EXPORT_LITERAL_ALIAS_UNSUPPORTED", "export const ready as 'ready';");
+        assertParseError("EXPORT_LITERAL_ALIAS_UNSUPPORTED", "export class Foo as \"foo\";");
+    }
+
+    @Test
     void rejectsPinnedAdversarialSyntaxWithStableCategories() {
         assertParseError("EXPORT_SEMICOLON_REQUIRED", "export class X\nfnc main(): void { return; }");
-        assertParseError("EMPTY_EXPORT_GROUP", "export actor {}; fnc main(): void { return; }");
-        assertParseError("MALFORMED_EXPORT_LIST", "export actor {A,,B}; fnc main(): void { return; }");
-        assertParseError("WILDCARD_EXPORT_UNSUPPORTED", "export *; fnc main(): void { return; }");
-        assertParseError("REEXPORT_UNSUPPORTED", "export from \"./dep\" {X}; fnc main(): void { return; }");
-        assertParseError("QUALIFIED_EXPORT_UNSUPPORTED", "export dep.X; fnc main(): void { return; }");
-        assertParseError("QUALIFIED_EXPORT_UNSUPPORTED", "export dep::X; fnc main(): void { return; }");
-        assertParseError("GENERIC_EXPORT_TARGET_UNSUPPORTED", "export Foo<int>; fnc main(): void { return; }");
-        assertParseError("CALLABLE_SIGNATURE_EXPORT_UNSUPPORTED", "export foo(int); fnc main(): void { return; }");
-        assertParseError("KIND_PREFIX_IN_GROUP", "export {class X, actor Y}; fnc main(): void { return; }");
-        assertParseError("SYMBOL_IDENTITY_MISMATCH", "export symbol #ready as #other; fnc main(): void { return; }");
-        assertParseError("SYMBOL_IDENTITY_TARGET_REQUIRES_SYMBOL_SOURCE", "export symbol ready as #ready; fnc main(): void { return; }");
-        assertParseError("UNKNOWN_EXPORT_DECLARATION_KIND", "export string ready as 'ready'; fnc main(): void { return; }");
-        assertParseError("LITERAL_EXPORT_ALIAS_UNSUPPORTED", "export const ready as 'ready'; fnc main(): void { return; }");
+        assertParseError("EXPORT_EMPTY_GROUP", "export actor {}; fnc main(): void { return; }");
+        assertParseError("EXPORT_MALFORMED_LIST", "export actor {A,,B}; fnc main(): void { return; }");
+        assertParseError("EXPORT_WILDCARD_UNSUPPORTED", "export *; fnc main(): void { return; }");
+        assertParseError("EXPORT_REEXPORT_UNSUPPORTED", "export from \"./dep\" {X}; fnc main(): void { return; }");
+        assertParseError("EXPORT_QUALIFIED_TARGET_UNSUPPORTED", "export dep.X; fnc main(): void { return; }");
+        assertParseError("EXPORT_QUALIFIED_TARGET_UNSUPPORTED", "export dep::X; fnc main(): void { return; }");
+        assertParseError("EXPORT_GENERIC_TARGET_UNSUPPORTED", "export Foo<int>; fnc main(): void { return; }");
+        assertParseError("EXPORT_CALLABLE_SIGNATURE_UNSUPPORTED", "export foo(int); fnc main(): void { return; }");
+        assertParseError("EXPORT_KIND_PREFIX_IN_GROUP", "export {class X, actor Y}; fnc main(): void { return; }");
+        assertParseError("EXPORT_SYMBOL_IDENTITY_MISMATCH", "export symbol #ready as #other; fnc main(): void { return; }");
+        assertParseError("EXPORT_SYMBOL_IDENTITY_TARGET_REQUIRES_SYMBOL_SOURCE", "export symbol ready as #ready; fnc main(): void { return; }");
+        assertParseError("EXPORT_UNKNOWN_DECLARATION_KIND", "export string ready as 'ready'; fnc main(): void { return; }");
+        assertParseError("EXPORT_LITERAL_ALIAS_UNSUPPORTED", "export const ready as 'ready'; fnc main(): void { return; }");
     }
 
     @Test
@@ -175,7 +211,7 @@ final class ExplicitExportSyntaxTest {
                 import class X from "./dep";
                 fnc main(): void { return; }
                 """);
-        assertExportError("IMPORTED_EXPORT_REQUIRES_REEXPORT", imported);
+        assertExportError("EXPORT_IMPORTED_NAME", imported);
     }
 
     @Test
@@ -185,7 +221,7 @@ final class ExplicitExportSyntaxTest {
                 define type X = int;
                 const int X = 1;
                 """);
-        assertExportError("AMBIGUOUS_EXPORT_TARGET", program);
+        assertExportError("EXPORT_AMBIGUOUS_TARGET", program);
     }
 
     @Test
@@ -218,7 +254,7 @@ final class ExplicitExportSyntaxTest {
                   }
                 end
                 """);
-        assertExportError("EXPORT_API_VISIBILITY_LEAK", leaking);
+        assertExportError("EXPORT_API_LEAK", leaking);
 
         Ast.Program packageSafe = Parser.parse("""
                 export[pkg] type InternalId;
@@ -277,6 +313,10 @@ final class ExplicitExportSyntaxTest {
         String prefix = program.namespace() == null || program.namespace().isBlank()
                 ? "<file>" : program.namespace();
         return prefix + "::" + module.name();
+    }
+
+    private static void assertParses(String exportSource) {
+        assertDoesNotThrow(() -> Parser.parse(exportSource + "\nfnc main(): void { return; }"));
     }
 
     private static void assertParseError(String code, String source) {
