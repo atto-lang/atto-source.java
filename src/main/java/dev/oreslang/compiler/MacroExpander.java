@@ -302,6 +302,17 @@ public final class MacroExpander {
                 throw new IllegalStateException(
                         "validated unquote references unknown syntax parameter '" + name.name() + "'");
             }
+            // Every emitted AST occurrence gets a distinct identity. Parser-built
+            // trees never reuse one Expr object for two source occurrences, and
+            // compiler side tables/provenance are identity-keyed. Duplicate
+            // unquote is admitted only for these trivial forms, so clone them
+            // instead of aliasing one caller-owned node into multiple positions.
+            if (bound instanceof Ast.NameExpr callerName) {
+                return new Ast.NameExpr(callerName.name());
+            }
+            if (bound instanceof Ast.LiteralExpr literal) {
+                return new Ast.LiteralExpr(literal.value());
+            }
             return bound;
         }
         if (expression instanceof Ast.LiteralExpr) return expression;
