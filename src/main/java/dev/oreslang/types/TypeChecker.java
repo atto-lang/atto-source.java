@@ -2922,7 +2922,7 @@ public final class TypeChecker {
                     && env.lookup(functionName.name()) == null) {
                 int arity = fixedCallArity(
                         call.arguments(), env, generics, self,
-                        "function " + functionName.name());
+                        "function " + functionName.name(), true);
                 Ast.FunctionDecl target = findFunction(functionName.name(), arity);
                 if (target != null) {
                     rejectImplicitClassCallable(functionName.name());
@@ -2945,7 +2945,8 @@ public final class TypeChecker {
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
                             label, target.genericSpecs(),
                             GenericCallArguments.bind(
-                                    target.genericParameters(), call.typeArguments(), label).inferenceHoles());
+                                    target.genericParameters(), call.typeArguments(), label).inferenceHoles(),
+                            true);
                     requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
