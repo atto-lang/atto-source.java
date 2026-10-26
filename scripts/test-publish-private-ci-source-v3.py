@@ -678,11 +678,18 @@ class PrivateCiV3Test(unittest.TestCase):
             "required_pull_request_reviews": {
                 "require_code_owner_reviews": True,
                 "dismiss_stale_reviews": True,
+                "require_last_push_approval": True,
                 "required_approving_review_count": 1,
                 "bypass_pull_request_allowances": {
                     "users": [], "teams": [], "apps": [],
                 },
             },
+            "required_status_checks": {
+                "strict": True,
+                "contexts": ["carrier-source-free-gate"],
+                "checks": [],
+            },
+            "required_conversation_resolution": {"enabled": True},
             "enforce_admins": {"enabled": True},
             "allow_force_pushes": {"enabled": False},
             "allow_deletions": {"enabled": False},
@@ -711,6 +718,43 @@ class PrivateCiV3Test(unittest.TestCase):
             self.assertEqual(
                 v3.checked_carrier_main("trusted/ci", carrier), BASE
             )
+
+        for mutate, message in (
+            (
+                lambda p: p["required_pull_request_reviews"].__setitem__(
+                    "require_last_push_approval", False
+                ),
+                "last-push approval",
+            ),
+            (
+                lambda p: p["required_status_checks"].__setitem__("strict", False),
+                "strict required CI",
+            ),
+            (
+                lambda p: p.__setitem__(
+                    "required_conversation_resolution", {"enabled": False}
+                ),
+                "conversation resolution",
+            ),
+        ):
+            weakened = json.loads(json.dumps(protection))
+            mutate(weakened)
+
+            def weakened_api(route, method="GET", payload=None, weakened=weakened):
+                if route == "repos/trusted/ci/branches/main":
+                    return {
+                        "name": "main",
+                        "protected": True,
+                        "commit": {"sha": BASE},
+                    }
+                if route == "repos/trusted/ci/branches/main/protection":
+                    return weakened
+                raise AssertionError(route)
+
+            with self.subTest(message=message):
+                with patch.object(v3.legacy, "gh_api", side_effect=weakened_api):
+                    with self.assertRaisesRegex(v3.Denied, message):
+                        v3.checked_carrier_main("trusted/ci", carrier)
 
         weak = json.loads(json.dumps(protection))
         weak["required_pull_request_reviews"]["bypass_pull_request_allowances"]["users"] = [{"login": "bypass"}]
