@@ -101,13 +101,13 @@ public final class Ast {
             List<Annotation> annotations,
             List<TypeRef> contracts,
             List<ExportDecl> exports,
-            List<String> explicitlyPrivateNames,
+            List<String> explicitlyPrivateSymbols,
             List<Decl> declarations) {
         public ModuleDecl {
             annotations = List.copyOf(annotations);
             contracts = List.copyOf(contracts);
             exports = List.copyOf(exports);
-            explicitlyPrivateNames = List.copyOf(explicitlyPrivateNames);
+            explicitlyPrivateSymbols = List.copyOf(explicitlyPrivateSymbols);
             declarations = List.copyOf(declarations);
         }
 
