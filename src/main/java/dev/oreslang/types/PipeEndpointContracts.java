@@ -124,8 +124,12 @@ final class PipeEndpointContracts {
         IdentityHashMap<Type, Boolean> seen = new IdentityHashMap<>();
         pending.push(root);
         int examined = 0;
+        int scheduled = 1;
         while (!pending.isEmpty()) {
             Type type = pending.pop();
+            if (type == null) {
+                throw new IllegalArgumentException("pipe payload contains a null nested type");
+            }
             if (seen.put(type, Boolean.TRUE) != null) continue;
             if (++examined > 1024) {
                 throw new IllegalArgumentException("pipe payload type exceeds complexity budget");
@@ -137,16 +141,29 @@ final class PipeEndpointContracts {
                 throw new IllegalArgumentException(
                         "pipe payload requires a resolved, owned, non-void type: " + type);
             }
+            java.util.Collection<? extends Type> children = java.util.List.of();
             if (type instanceof Named named) {
-                named.arguments().forEach(pending::push);
+                children = named.arguments();
             } else if (type instanceof ListType list) {
-                pending.push(list.element());
+                children = java.util.Collections.singletonList(list.element());
             } else if (type instanceof Tuple tuple) {
-                tuple.elements().forEach(pending::push);
+                children = tuple.elements();
             } else if (type instanceof Union union) {
-                union.options().forEach(pending::push);
+                children = union.options();
             } else if (type instanceof Record record) {
-                record.members().values().forEach(pending::push);
+                children = record.members().values();
+            }
+            // Bound total scheduled work, including repeated references to the
+            // same node, before allocating traversal stack entries.
+            if (children.size() > 1024 - scheduled) {
+                throw new IllegalArgumentException("pipe payload type exceeds complexity budget");
+            }
+            for (Type child : children) {
+                if (child == null) {
+                    throw new IllegalArgumentException("pipe payload contains a null nested type");
+                }
+                pending.push(child);
+                scheduled++;
             }
         }
     }
