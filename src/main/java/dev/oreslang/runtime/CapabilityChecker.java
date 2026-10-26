@@ -460,6 +460,9 @@ public final class CapabilityChecker {
                         || path.startsWith("fs.stat")
                         || path.startsWith("File.read")
                         || path.startsWith("File.exists")
+                        || path.startsWith("File.list_dir")
+                        || path.startsWith("File.is_dir")
+                        || path.startsWith("File.is_symlink")
                         || path.startsWith("File.stat")) {
                     require(policy, IsolatePolicy.Capability.FILESYSTEM_READ, path);
                 }
