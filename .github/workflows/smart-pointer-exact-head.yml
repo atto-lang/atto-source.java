@@ -19,6 +19,8 @@ jobs:
         with:
           persist-credentials: false
           submodules: false
+          # Avoid the synthetic refs/pull/N/merge commit: test the exact head.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Set up GraalVM 25 (JDK 25)
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
         with:
@@ -28,9 +30,11 @@ jobs:
           cache: maven
       - name: Verify checked-out source head and JDK
         shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
-          git rev-parse HEAD
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           java -version
           mvn -version
       - name: Compile and run actual smart-pointer JUnit tests
