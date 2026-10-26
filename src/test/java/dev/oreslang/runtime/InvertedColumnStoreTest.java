@@ -11,6 +11,57 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class InvertedColumnStoreTest {
     @Test
+    void checkedDenseSubscriptsNeverWrapAndTrackSwapDeleteByIdentity() {
+        try (var store = new InvertedColumnStore(InvertedColumnStore.Kind.I32)) {
+            for (long invalid : new long[]{-1L, 0L, 1L, Long.MIN_VALUE,
+                    Long.MAX_VALUE, (long) Integer.MAX_VALUE + 1}) {
+                assertThrows(IndexOutOfBoundsException.class, () -> store.handleAt(invalid));
+            }
+            var first = store.push(11);
+            var middle = store.push(22);
+            var last = store.push(33);
+            assertEquals(first.slot(), store.handleAt(0).slot());
+            assertEquals(middle.slot(), store.handleAt(1L).slot());
+            assertEquals(last.slot(), store.handleAt(2L).slot());
+            assertEquals(33, store.get(store.handleAt(2), 0));
+            assertThrows(IndexOutOfBoundsException.class, () -> store.handleAt(3));
+            assertThrows(IndexOutOfBoundsException.class, () -> store.handleAt(-1));
+
+            var selectedBeforeErase = store.handleAt(2);
+            store.eraseSwap(middle);
+            assertEquals(2, store.size());
+            assertEquals(last.slot(), store.handleAt(1).slot());
+            assertEquals(last.generation(), store.handleAt(1).generation());
+            assertEquals(33, store.get(selectedBeforeErase, 0));
+            assertThrows(IllegalArgumentException.class, () -> store.get(middle, 0));
+            assertThrows(IndexOutOfBoundsException.class, () -> store.handleAt(2));
+
+            var replacement = store.push(44);
+            assertEquals(middle.slot(), replacement.slot());
+            assertNotEquals(middle.generation(), replacement.generation());
+            assertEquals(replacement.slot(), store.handleAt(2).slot());
+            assertEquals(44, store.get(store.handleAt(2), 0));
+            store.eraseSwap(first);
+            assertEquals(44, store.get(replacement, 0));
+            assertEquals(44, store.get(store.handleAt(0), 0));
+        }
+    }
+
+    @Test
+    void checkedSubscriptsDoNotExposeInvalidHandlesAfterTeardown() {
+        var store = new InvertedColumnStore(InvertedColumnStore.Kind.I32);
+        var old = store.push(7);
+        var selected = store.handleAt(0);
+        try (var read = store.borrowRead(0)) {
+            assertEquals(old.slot(), store.handleAt(0).slot());
+            assertThrows(IllegalStateException.class, () -> store.eraseSwap(old));
+        }
+        store.close();
+        assertThrows(IllegalStateException.class, () -> store.handleAt(0));
+        assertThrows(IllegalStateException.class, () -> store.get(selected, 0));
+    }
+
+    @Test
     void independentTypedColumnsAndGenerationalRows() {
         try (var store = new InvertedColumnStore(
                 InvertedColumnStore.Kind.F32,
