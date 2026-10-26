@@ -41,10 +41,16 @@ module_member   = contract_decl
                 | binding_decl ;
 
 visibility      = [ "pub" | "private" ] ;
-callable_modifier = "abstract" | "async" | "suspend" | "suspends" | "nlex" | "structural" ;
-method_modifier   = "abstract" | "async" | "suspend" | "suspends" | "structural" ;
+generator_marker = "gen" "*" | "generator" [ "*" ] ;
+callable_modifier = "abstract" | "async" | "suspend" | "suspends" | "nlex" | "structural"
+                  | generator_marker ;
+method_modifier   = "abstract" | "async" | "suspend" | "suspends" | "structural"
+                  | generator_marker ;
 
-callable_decl   = { annotation } visibility { callable_modifier } callable_kind callable_name [ generic_params ]
+(* callable_kind may be omitted only when the modifier set contains a
+   generator_marker. Canonical generators use bare gen*; generator fnc/routine,
+   fnc/routine gen*, and generator* remain migration aliases. *)
+callable_decl   = { annotation } visibility { callable_modifier } [ callable_kind ] callable_name [ generic_params ]
                   ( "(" [ param_list ] ")" return_spec block
                   | "=" "|" [ param_list ] "|" "->" [ type_ref ] block ) ;
 callable_kind   = "fnc" | "routine" ;
@@ -105,8 +111,11 @@ method_head     = "(" [ explicit_receiver | param_list ] ")" [ "(" [ param_list 
 explicit_receiver = "self" type_ref ;
 
 static_function_decl
-                = { annotation } visibility "static" { "async" | "structural" } "fnc" callable_name [ generic_params ]
+                = { annotation } visibility "static" { method_modifier } [ "fnc" ] callable_name [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
+(* static fnc remains mandatory for non-generator static callables; static gen*
+   may omit fnc. Instance gen* is parsed but currently rejected semantically
+   until an iterator-owned receiver lifetime can be represented. *)
 
 contract_decl   = visibility "define" "contract" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ] interface_body ;
@@ -200,6 +209,7 @@ block           = "{" { statement } "}" ;
 statement       = binding_decl
                 | destructure_stmt
                 | return_stmt
+                | yield_stmt
                 | block_stmt
                 | break_stmt
                 | continue_stmt
@@ -215,6 +225,7 @@ statement       = binding_decl
                 | expression stmt_terminator ;
 
 return_stmt     = "return" [ expression ] stmt_terminator ;
+yield_stmt      = "yield" [ "*" ] expression stmt_terminator ;
 defer_stmt      = "defer" expression stmt_terminator ;
 block_stmt      = "block" block ;
 break_stmt      = "break" stmt_terminator ;
