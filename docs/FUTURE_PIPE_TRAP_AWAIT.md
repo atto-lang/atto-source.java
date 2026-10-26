@@ -33,9 +33,11 @@ The parser retains `Ast.CallExpr.origin` for value-pipe argument injection
 and Option/Result receiver combinators, distinct from ordinary calls and actor
 `pipe`. Syntax provenance alone is not authorization. The type checker now
 issues `TypeChecker.CheckedPureFuturePipe` identity-bound proofs to a **restricted**
-`Future<int> |> pureUnaryIntFunction()` subset: synchronous, non-generic,
-no captures, no effectful bodies, no additional stage arguments and no actor
-execution. Stages must also be declared in the current lexical module:
+`Future<int> |> pureUnaryIntFunction()` subset: synchronous **or asynchronous**,
+non-generic, no captures, no effectful bodies, no additional stage arguments
+and no actor execution. A checked async stage may contain cooperative scheduler
+yield points and may `await` a same-module pure async unary-int helper; the
+helper is recursively checked under the same closed restrictions. Stages must also be declared in the current lexical module:
 imported/cross-module execution has not yet proven evaluator/environment
 ownership. Adjacent checked stages lower to one TaskPipeline task, preserving
 borrowed input-Future ownership. Proofs bind exact checked declarations and
@@ -57,9 +59,12 @@ runtime execution, Future lifting, cancellation, or actor scheduling.
 
 Ordinary (non-Future) source `|>` still injects the left operand eagerly.
 Only the narrow, checked pure-int subset above has compiler-to-runtime
-lifting. Future stages with effect declarations, asynchronous stage returns,
-extra arguments, non-int payloads, HasFuture projections, actor affinity or
-loan/capture requirements still fail closed. There is no general
+lifting. Within that subset, an async stage's `Future<int>` is flattened by
+the same single `TaskPipeline` task, and the compiler marks the stage-created
+Future as pipeline-owned so cancellation revokes it while leaving the borrowed
+producer Future alone. Future stages with effect declarations, extra arguments,
+non-int payloads, HasFuture projections, actor affinity or loan/capture
+requirements still fail closed. There is no general
 `Task.pipeline` source intrinsic or Java/LLVM/JS/Wasm executable parity.
 Do not claim the general example below runs.
 
@@ -107,8 +112,11 @@ val Option<C> safe = trap await (load() |> save() |> notify());
 ```
 
 Conceptual lowering is `load().flat_map(save).flat_map(notify)`, with checked
-types/effects/ownership and safe actor-bound scheduling. The parser currently
-lowers `|>` to ordinary `save(load())`, so this is *not* yet supported.
+types/effects/ownership and safe actor-bound scheduling. Java/GraalVM now
+executes this behavior for the restricted checked pure-`int` subset,
+including mixed synchronous/asynchronous stages and an async stage that awaits
+a checked pure async helper. General typed pipelines remain intentionally
+fail-closed outside that subset.
 
 ### Evaluation order, failure, and lifetime obligations
 
