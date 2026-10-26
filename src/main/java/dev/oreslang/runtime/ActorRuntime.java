@@ -502,10 +502,11 @@ public final class ActorRuntime implements AutoCloseable {
      * close releases authorityLock before taking groupMembershipLock.
      */
     private final Object groupMembershipLock = new Object();
-    private final Map<ActorId, Set<ActorGroupId>> groupMemberships = new java.util.HashMap<>();
+    private final Map<ActorRef<?>, Set<ActorGroupId>> groupMemberships =
+            new java.util.IdentityHashMap<>();
     /** Actor-created groups remain structurally owned even after creator leaves. */
-    private final Map<ActorId, Set<ActorGroupId>> createdGroupsByActor =
-            new java.util.HashMap<>();
+    private final Map<ActorRef<?>, Set<ActorGroupId>> createdGroupsByActor =
+            new java.util.IdentityHashMap<>();
     private final AtomicInteger actorCount = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
     /** Distinct from admission sealing: dispatcher stop must still occur later. */
@@ -3043,7 +3044,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final Map<ActorId, ActorRef<?>> managedWorkers = new ConcurrentHashMap<>();
         // Guarded by authorityLock: a stop-admitted actor cannot be released
         // into a different supervisor before stop actually dispatches.
-        private final Set<ActorId> stoppingWorkers = new java.util.HashSet<>();
+        private final Set<ActorRef<?>> stoppingWorkers =
+                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
         private final AtomicBoolean groupClosed = new AtomicBoolean();
         // Runtime-owned, non-cancellable observer; actor retirement may outlive
         // group admission revocation and clearing managed-worker references.
@@ -3134,7 +3136,7 @@ public final class ActorRuntime implements AutoCloseable {
                 requireOpen();
                 ActorCell<?> cell = exactCell(worker);
                 ActorRef<?> existing = managedWorkers.get(worker.id());
-                if (cell == null || cell.stopped.get() || stoppingWorkers.contains(worker.id())) {
+                if (cell == null || cell.stopped.get() || stoppingWorkers.contains(worker)) {
                     throw new IllegalStateException(
                             "cannot manage a stopped, stopping, stale or unknown worker");
                 }
@@ -3229,7 +3231,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
             synchronized (authorityLock) {
                 requireOpen();
-                if (stoppingWorkers.contains(worker.id())) {
+                if (stoppingWorkers.contains(worker)) {
                     throw new IllegalStateException(
                             "cannot transfer worker after stop/cancellation was admitted");
                 }
@@ -3300,7 +3302,7 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (authorityLock) {
                 requireOpen();
                 stopRequests = List.copyOf(managedWorkers.values());
-                for (ActorRef<?> ref : stopRequests) stoppingWorkers.add(ref.id());
+                for (ActorRef<?> ref : stopRequests) stoppingWorkers.add(ref);
             }
             // Do not acquire actor lifecycle locks while group authority is
             // held: actor finalization takes its own lock before group cleanup.
@@ -3316,7 +3318,7 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (authorityLock) {
                 requireOpen();
                 stopRequests = List.copyOf(managedWorkers.values());
-                for (ActorRef<?> ref : stopRequests) stoppingWorkers.add(ref.id());
+                for (ActorRef<?> ref : stopRequests) stoppingWorkers.add(ref);
             }
             int cancelled = 0;
             for (ActorRef<?> ref : stopRequests) {
@@ -3472,7 +3474,7 @@ public final class ActorRuntime implements AutoCloseable {
                                 "ActorGroup member limit exceeded: maximum " + memberLimit);
                     }
                     Set<ActorGroupId> joined = groupMemberships.computeIfAbsent(
-                            actorId, ignored -> new java.util.HashSet<>());
+                            actorRef, ignored -> new java.util.HashSet<>());
                     int limit = Math.max(1, Math.min(
                             MAX_ACTOR_GROUP_MEMBERSHIPS_PER_ACTOR,
                             cell.policy.maxMailboxMessages()));
@@ -3485,7 +3487,7 @@ public final class ActorRuntime implements AutoCloseable {
                     if (groupClosed.get() || cell.stopped.get() || exactCell(actorRef) != cell) {
                         members.remove(actorId, actorRef);
                         joined.remove(id);
-                        if (joined.isEmpty()) groupMemberships.remove(actorId);
+                        if (joined.isEmpty()) groupMemberships.remove(actorRef);
                         throw new IllegalStateException("ActorGroup or actor closed during join");
                     }
                 }
@@ -3588,10 +3590,10 @@ public final class ActorRuntime implements AutoCloseable {
             ActorId actorId = actorRef.id();
             synchronized (groupMembershipLock) {
                 if (!members.remove(actorId, actorRef)) return;
-                Set<ActorGroupId> joined = groupMemberships.get(actorId);
+                Set<ActorGroupId> joined = groupMemberships.get(actorRef);
                 if (joined != null) {
                     joined.remove(id);
-                    if (joined.isEmpty()) groupMemberships.remove(actorId);
+                    if (joined.isEmpty()) groupMemberships.remove(actorRef);
                 }
                 // Rejoin must not overtake subscription draining for the old
                 // membership and inadvertently inherit a previous channel.
@@ -3605,7 +3607,7 @@ public final class ActorRuntime implements AutoCloseable {
             // cannot be resurrected after finalization.
             synchronized (authorityLock) {
                 managedWorkers.remove(actorId, actorRef);
-                stoppingWorkers.remove(actorId);
+                stoppingWorkers.remove(actorRef);
             }
             leaveRef(actorRef);
             if (creatorRef == actorRef) closeFromRuntime();
@@ -3652,19 +3654,19 @@ public final class ActorRuntime implements AutoCloseable {
             // room close frees membership quota without stopping unrelated
             // members or tearing down their other room subscriptions.
             synchronized (groupMembershipLock) {
-                for (ActorId member : members.keySet()) {
-                    Set<ActorGroupId> joined = groupMemberships.get(member);
+                for (ActorRef<?> memberRef : members.values()) {
+                    Set<ActorGroupId> joined = groupMemberships.get(memberRef);
                     if (joined != null) {
                         joined.remove(id);
-                        if (joined.isEmpty()) groupMemberships.remove(member);
+                        if (joined.isEmpty()) groupMemberships.remove(memberRef);
                     }
                 }
                 members.clear();
-                if (creator != null) {
-                    Set<ActorGroupId> created = createdGroupsByActor.get(creator);
+                if (creatorRef != null) {
+                    Set<ActorGroupId> created = createdGroupsByActor.get(creatorRef);
                     if (created != null) {
                         created.remove(id);
-                        if (created.isEmpty()) createdGroupsByActor.remove(creator);
+                        if (created.isEmpty()) createdGroupsByActor.remove(creatorRef);
                     }
                 }
             }
@@ -4378,9 +4380,9 @@ public final class ActorRuntime implements AutoCloseable {
                 if (creator != null && (creatorCell == null || creatorCell.stopped.get())) {
                     throw new IllegalStateException("group creator is no longer alive");
                 }
-                Set<ActorGroupId> joined = creator == null
+                Set<ActorGroupId> joined = creatorRef == null
                         ? null : groupMemberships.computeIfAbsent(
-                                creator, ignored -> new java.util.HashSet<>());
+                                creatorRef, ignored -> new java.util.HashSet<>());
                 int limit = creatorCell == null ? 0 : Math.max(1, Math.min(
                         MAX_ACTOR_GROUP_MEMBERSHIPS_PER_ACTOR,
                         creatorCell.policy.maxMailboxMessages()));
@@ -4395,7 +4397,7 @@ public final class ActorRuntime implements AutoCloseable {
                         if (joined != null) {
                             joined.add(id);
                             createdGroupsByActor.computeIfAbsent(
-                                    creator, ignored -> new java.util.HashSet<>()).add(id);
+                                    creatorRef, ignored -> new java.util.HashSet<>()).add(id);
                         }
                         // Finalization calls unregisterActor() while holding
                         // ActorCell.lifecycleLock. Never acquire that lock here:
@@ -5438,9 +5440,9 @@ public final class ActorRuntime implements AutoCloseable {
         Throwable deregistrationFailure = null;
         Set<ActorGroupId> affected = new java.util.HashSet<>();
         synchronized (groupMembershipLock) {
-            Set<ActorGroupId> memberships = groupMemberships.get(cell.ref.id());
+            Set<ActorGroupId> memberships = groupMemberships.get(cell.ref);
             if (memberships != null) affected.addAll(memberships);
-            Set<ActorGroupId> created = createdGroupsByActor.get(cell.ref.id());
+            Set<ActorGroupId> created = createdGroupsByActor.get(cell.ref);
             if (created != null) affected.addAll(created);
             // An explicitly managed worker is not necessarily a cooperating
             // member. The owner needs its independent termination callback.
