@@ -5,6 +5,7 @@ import dev.oreslang.compiler.MacroExpansionPlanner;
 import dev.oreslang.compiler.MacroExpander;
 import dev.oreslang.compiler.MacroSyntaxProvenance;
 import dev.oreslang.compiler.MacroIdentifierHygiene;
+import dev.oreslang.compiler.MacroDeclarationProvenance;
 import dev.oreslang.compiler.MacroSourceUnitIdentity;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
@@ -935,6 +936,166 @@ final class MacroInvocationPlannerTest {
         assertTrue(failure.getMessage().contains(
                 "could not resolve ordinary module-level function 'helper'"),
                 failure::toString);
+    }
+
+    @Test
+    void declareFncProducesPrivateDeclarationAndReentersTypeChecking() {
+        Ast.Program checked = assertDoesNotThrow(
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro make(
+                            Identifier name,
+                            Type result,
+                            Syntax<Expr> body
+                        ) -> Syntax<Decl> {
+                            return declare_fnc(name, result, body);
+                        }
+
+                        make!(ident answer, type int, syntax expr 40 + 2);
+
+                        fnc main() -> int {
+                            return answer();
+                        }
+                        """));
+
+        Ast.ModuleDecl root = checked.modules().getFirst();
+        Ast.FunctionDecl generated = root.declarations().stream()
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(fn -> fn.name().equals("answer"))
+                .findFirst()
+                .orElseThrow();
+        assertEquals(Ast.Visibility.PRIVATE, generated.visibility());
+        assertEquals(Ast.ActorKind.NONE, generated.actorKind());
+        assertTrue(generated.parameters().isEmpty());
+        assertEquals("int", generated.returnType().name());
+
+        MacroSyntaxProvenance.Origin origin =
+                MacroDeclarationProvenance.lookup(generated);
+        assertNotNull(origin);
+        assertEquals(
+                MacroSyntaxProvenance.EmissionKind.DECLARE_FUNCTION,
+                origin.emissionKind());
+        assertEquals(MacroSourceUnitIdentity.MEMORY_UNIT,
+                origin.hygiene().sourceUnitId());
+        assertEquals("make", origin.hygiene().macroName());
+
+        Ast.ReturnStmt returned = assertInstanceOf(
+                Ast.ReturnStmt.class, generated.body().getFirst());
+        List<MacroSyntaxProvenance.Origin> expressionOrigins =
+                MacroSyntaxProvenance.lookup(returned.value());
+        assertEquals(1, expressionOrigins.size());
+        assertEquals(origin, expressionOrigins.getFirst());
+    }
+
+    @Test
+    void declareFncExpandsNestedExpressionMacrosBeforeSemanticChecks() {
+        Ast.Program checked = assertDoesNotThrow(
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro literal(Const<int> value) -> Syntax<Expr> {
+                            return quote(value);
+                        }
+
+                        define macro make(
+                            Identifier name,
+                            Type result,
+                            Syntax<Expr> body
+                        ) -> Syntax<Decl> {
+                            return declare_fnc(name, result, body);
+                        }
+
+                        make!(
+                            ident answer,
+                            type int,
+                            syntax expr literal!(const 40 + 2)
+                        );
+                        """));
+
+        Ast.FunctionDecl generated = checked.modules().getFirst().declarations().stream()
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(fn -> fn.name().equals("answer"))
+                .findFirst()
+                .orElseThrow();
+        Ast.Expr value = assertInstanceOf(
+                Ast.ReturnStmt.class, generated.body().getFirst()).value();
+        Ast.LiteralExpr literal = assertInstanceOf(Ast.LiteralExpr.class, value);
+        assertEquals(42L, literal.value());
+
+        List<MacroSyntaxProvenance.Origin> origins =
+                MacroSyntaxProvenance.lookup(value);
+        assertEquals(2, origins.size(),
+                "nested literal origin and outer declaration origin must both survive");
+        assertEquals(MacroSyntaxProvenance.EmissionKind.CONST_QUOTE,
+                origins.get(0).emissionKind());
+        assertEquals(MacroSyntaxProvenance.EmissionKind.DECLARE_FUNCTION,
+                origins.get(1).emissionKind());
+    }
+
+    @Test
+    void declareFncRejectsStableNameCollisionBeforePublication() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro make(
+                            Identifier name,
+                            Type result,
+                            Syntax<Expr> body
+                        ) -> Syntax<Decl> {
+                            return declare_fnc(name, result, body);
+                        }
+
+                        fnc answer() -> int {
+                            return 1;
+                        }
+
+                        make!(ident answer, type int, syntax expr 2);
+                        """));
+
+        assertTrue(failure.getMessage().contains("declare_fnc generated name 'answer'"),
+                failure::toString);
+        assertTrue(failure.getMessage().contains("collides with an existing declaration"),
+                failure::toString);
+    }
+
+    @Test
+    void declareFncRejectsCollisionBetweenGeneratedDeclarations() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro make(
+                            Identifier name,
+                            Type result,
+                            Syntax<Expr> body
+                        ) -> Syntax<Decl> {
+                            return declare_fnc(name, result, body);
+                        }
+
+                        make!(ident answer, type int, syntax expr 1);
+                        make!(ident answer, type int, syntax expr 2);
+                        """));
+
+        assertTrue(failure.getMessage().contains("declare_fnc generated name 'answer'"),
+                failure::toString);
+    }
+
+    @Test
+    void generatedFunctionBodyMustPassOrdinaryTypeChecking() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define macro make(
+                            Identifier name,
+                            Type result,
+                            Syntax<Expr> body
+                        ) -> Syntax<Decl> {
+                            return declare_fnc(name, result, body);
+                        }
+
+                        make!(ident answer, type int, syntax expr "wrong");
+                        """));
+
+        assertFalse(failure.getMessage().contains("runtime fallback"),
+                "failure should come from ordinary semantic rechecking, not a macro fallback gate");
     }
 
     @Test
